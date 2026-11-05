@@ -29,6 +29,7 @@ def binary_owner(tmp_path, monkeypatch, datasets=3):
         "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
         "prepare_slots": 4, "source_bytes": 64 * 1024**2,
         "preparation_workers": 2, "assembly_workers": 2, "prepared_batches": 3,
+        "lock_timing": True,
     })
     owner = SegmentLearner(config, tmp_path / "owner", io)
     monkeypatch.setenv(AUTH_ENV, owner.pool.environment()[AUTH_ENV])

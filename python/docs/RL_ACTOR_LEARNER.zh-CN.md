@@ -187,7 +187,10 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
     "lanes": 400,
     "source_bytes": 21474836480,
     "source_slots": 8192,
-    "prepare_slots": 8,
+    "prepare_slots": 12,
+    "prepare_source_bytes": 32212254720,
+    "source_wait_seconds": 60,
+    "lock_timing": false,
     "preparation_workers": 8,
     "assembly_workers": 2,
     "prepared_batches": 4,
@@ -209,13 +212,21 @@ learner启动抬高并核实际`RLIMIT_NOFILE`，按每路连接额度、源槽�
 profile回执写实际fd限制、探测结果及容量，status有当前连接、accept错误/FD耗尽和source/preparer状态。
 `source_bytes`约束接收body，`source_slots`约束接收条数；它们与PPO行数额度独立。
 行容量为`max(旧capacity_rows, lanes*steps+4*dataset_rows)`，episode公平上限不变。
-`prepare_slots`为P1共享arena数，P1也分别使用`source_bytes`作为总arena额度；接收body+整块copy实际两份，
-不能当总共20GiB。P1的prepared/pinned预算另计；准备worker与拼批worker分别由
+`prepare_slots`为P1共享arena数，默认`2*(prepared_batches+2)`，包括当前、预备批与标签在途。
+`prepare_source_bytes`单独约束arena；省略时为`source_bytes*(prepared_batches+2)/4`。
+接收body+arena实际两份，P1的prepared/pinned预算另计，不能当总共20GiB。
+arena全忙时释放部分reservation，在condition上等完成/释放通知，至多`source_wait_seconds`（默认60 s，最大120 s）；
+超时返回现有typed `CAPACITY_WAIT`，不改旧输入或重投World。后台投机预取只提示，不占着gate等容量。
+准备worker与拼批worker分别由
 `preparation_workers/assembly_workers`控制，health给配置数与实际PID/忙时。
 
 `dataplane.root`可省略，默认learner节点`/tmp/stpd-rl-<uid>/<run>/<generation>`；
 显式路径必须节点本地且本代独占，启动会做文件系统检查、write/fsync/readback，不能写共享NFS。
 WAL `synchronous=FULL`在原输入ACK前落盘，异步不可变前缀复制沿原archive目标；副本缺尾只能答UNKNOWN。
+输入变更使用`input_gate → learner condition → source短元数据锁`顺序；等WAL提交只保留input gate，
+释放learner condition；容量等待不占input gate。WAL writer提交不占enqueue/receipt元数据锁，reader独立连接。
+上传write/hash只占各credit的IO锁，取消不等待在途write，字节额度在实际回收后释放。
+`lock_timing`默认关；开启后status提供两把锁按线程/调用方的wait/hold累计，Condition睡眠不算hold。
 重新打开旧本地WAL只提供fenced receipt读，不恢复grant、queue或SGD；正常恢复仍只读自包含CP并用新generation/work。
 原`receipt`保留完整原请求与response，丢回复先查询；unknown不自动重发。STOP停止新lease，
 已授World/段按原close/drain收口，未使用训练行追加discard处置，不改旧ACK或World结果。

@@ -27,6 +27,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
+from spireagent.json_boundary import BoundaryError
 from spireagent.rl_dataplane_ports import (
     MAX_PACKET_BYTES,
     TENSOR_SEGMENT_FORMAT,
@@ -467,6 +468,7 @@ class BinaryBatchPreparer:
         assembly_workers: int = 2,
         prepared_batches: int = 2,
         label_workers: int = 1,
+        source_wait_seconds: float = 60,
         **existing_assembly_options: Any,
     ) -> None:
         if (
@@ -479,6 +481,11 @@ class BinaryBatchPreparer:
                    prepared_batches, label_workers) < 1
         ):
             raise ValueError("positive_binary_preparation_limits_required")
+        if not 0 < source_wait_seconds <= 120:
+            raise ValueError("invalid_binary_source_wait_bound")
+        self.source_wait_seconds = source_wait_seconds
+        self.source_wait_seconds_total = 0.0
+        self.main_source_wait_seconds = 0.0
         self.provider, self.vocabulary = provider, vocabulary
         self.workers, self.threads = workers, threads
         self.assembly_workers = assembly_workers
@@ -574,6 +581,8 @@ class BinaryBatchPreparer:
                 "actual_source_workers": len(live["source"]),
                 "actual_assembly_workers": len(live["assembly"]),
                 "source_slots": self.slot_count,
+                "source_capacity_wait_seconds": self.source_wait_seconds_total,
+                "main_source_capacity_wait_seconds": self.main_source_wait_seconds,
                 "max_source_bytes": self.maximum,
                 "source_cached_bytes": sum(d.length for _, d in self.sources.values()),
                 "window_seconds": window,
@@ -683,9 +692,31 @@ class BinaryBatchPreparer:
         job.add_done_callback(lambda done: self._record_worker("source", done))
         job.add_done_callback(lambda _job: self._release((descriptor,)))
 
-    def prefetch(self, ref: BinaryRef, envelope: dict[str, Any]) -> None:
+    def _wait_for_source(self, deadline: float) -> None:
+        if self.closed or self.fenced:
+            raise RuntimeError("binary_preparer_fenced_or_closed")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise BoundaryError("rl_prepare", "CAPACITY_WAIT")
+        began = time.perf_counter()
+        self.condition.wait(remaining)
+        waited = time.perf_counter() - began
+        self.source_wait_seconds_total += waited
+        if threading.current_thread() is threading.main_thread():
+            self.main_source_wait_seconds += waited
+
+    def prefetch(self, ref: BinaryRef, envelope: dict[str, Any], *,
+                 body: bytes | None = None, wait: bool = True) -> None:
+        deadline = time.monotonic() + self.source_wait_seconds
         with self.condition:
-            self._prefetch(ref, envelope)
+            while True:
+                try:
+                    self._prefetch(ref, envelope, body)
+                    return
+                except ValueError as error:
+                    if not wait or str(error) != "binary_source_slots_busy":
+                        raise
+                    self._wait_for_source(deadline)
 
     def _reserve(
         self, refs: tuple[BinaryRef, ...]
@@ -693,25 +724,31 @@ class BinaryBatchPreparer:
         unique = tuple(dict.fromkeys(refs))
         if sum(ref.size for ref in unique) > self.maximum - 8 * self.slot_count:
             raise ValueError("binary_request_source_byte_limit")
-        indices: dict[BinaryRef, int] = {}
-        descriptors: list[_Descriptor] = []
-        arenas: list[int] = []
-        try:
-            for ref in unique:
-                if ref not in self.sources:
-                    # Refill from the immutable packet header itself. Consumed
-                    # metadata never accumulates in a second run-long registry.
-                    self._prefetch(ref, None)
-                arena_index, descriptor = self.sources[ref]
-                self.arenas[arena_index].users += 1
-                arenas.append(arena_index)
-                indices[ref] = len(descriptors)
-                descriptors.append(descriptor)
-            return tuple(descriptors), tuple(indices[ref] for ref in refs)
-        except BaseException:
-            for index in arenas:
-                self.arenas[index].users -= 1
-            raise
+        deadline = time.monotonic() + self.source_wait_seconds
+        while True:
+            indices: dict[BinaryRef, int] = {}
+            descriptors: list[_Descriptor] = []
+            arenas: list[int] = []
+            try:
+                for ref in unique:
+                    if ref not in self.sources:
+                        # Refill from the immutable packet header itself.
+                        self._prefetch(ref, None)
+                    arena_index, descriptor = self.sources[ref]
+                    self.arenas[arena_index].users += 1
+                    arenas.append(arena_index)
+                    indices[ref] = len(descriptors)
+                    descriptors.append(descriptor)
+                return tuple(descriptors), tuple(indices[ref] for ref in refs)
+            except BaseException as error:
+                # Never wait while retaining a partial request: two concurrent
+                # label/assembly reservations must be able to free all arenas.
+                for index in arenas:
+                    self.arenas[index].users -= 1
+                self.condition.notify_all()
+                if not isinstance(error, ValueError) or str(error) != "binary_source_slots_busy":
+                    raise
+                self._wait_for_source(deadline)
 
     def _release(self, descriptors: tuple[_Descriptor, ...]) -> None:
         with self.condition:
@@ -852,7 +889,7 @@ class BinaryBatchPreparer:
                         )
                     if ref.size != len(item.body) or ref.sha256 != envelope["packet_sha256"]:
                         raise ValueError("binary_auxiliary_snapshot_integrity_changed")
-                    self._prefetch(ref, envelope, item.body)
+                    self.prefetch(ref, envelope, body=item.body)
                 selected.append(item)
             refs = tuple(m.payload for m in request.members) + tuple(
                 a.member.payload for a in selected
@@ -894,6 +931,7 @@ class BinaryBatchPreparer:
     def barrier(self, *, generation: str) -> None:
         with self.condition:
             self.fenced = True
+            self.condition.notify_all()
             self.pinned.fence()
             pending = tuple(self.pending)
         errors = []
@@ -934,6 +972,7 @@ class BinaryBatchPreparer:
             if self.closed:
                 return
             self.closed = True
+            self.condition.notify_all()
         self.pinned.close()
 
         def close() -> None:

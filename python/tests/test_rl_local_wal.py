@@ -224,3 +224,41 @@ def test_async_replication_failure_keeps_local_ack_and_copies_lifecycle_facts(tm
     finally:
         replica.close()
         owner.close()
+
+
+def test_blocked_FULL_commit_keeps_receipts_status_and_enqueue_serviceable(tmp_path):
+    import threading
+
+    owner = LocalControlWAL(tmp_path / "wal", run="r", generation="g")
+    real = owner.db
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowCommit:
+        def __getattr__(self, key):
+            return getattr(real, key)
+
+        def execute(self, sql, *args):
+            if sql == "COMMIT":
+                entered.set()
+                assert release.wait(5)
+            return real.execute(sql, *args)
+
+    owner.db = SlowCommit()
+    try:
+        first = owner.append_async("first", original(), {"lease": "a/0"})
+        assert entered.wait(3)
+        assert first.cancel() is False
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            result = reader.submit(lambda: (owner.status(), owner.receipt("first", original()),
+                owner.receipt("missing", original()), owner.append_async("next", original(1), {})))
+            status, receipt, missing, second = result.result(timeout=1)
+        assert not first.done() and not second.done()
+        assert status["local_durable_position"] == 0
+        assert receipt["status"] == "UNKNOWN" and missing["status"] == "NOT_ACCEPTED"
+        release.set()
+        assert first.result(timeout=3)["sequence"] == 1
+        assert second.result(timeout=3)["sequence"] == 2
+        assert owner.receipt("first", original())["response"] == {"lease": "a/0"}
+    finally:
+        release.set()
+        owner.close()

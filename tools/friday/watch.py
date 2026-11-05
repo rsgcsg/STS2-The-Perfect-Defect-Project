@@ -1900,6 +1900,13 @@ class SegmentWatcher(Watcher):
             if attempt.get('failed'):
                 self.state['stop'] = 'learner_failed_requires_diagnosis'
             return
+        if attempt.get('window_closed'):
+            # The learner emits its closed training window before draining
+            # original Worlds/CP, including failure unwinding. No new capacity
+            # is useful here, even while Slurm still reports RUNNING.
+            self.stop_attempt(attempt, 'learner_draining')
+            self.persist()
+            return
         self.offer_initial_actors(attempt)
         if attempt['actor_plans']:
             progress_at = attempt.get('last_progress_at')

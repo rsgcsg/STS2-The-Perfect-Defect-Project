@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -22,6 +23,79 @@ from typing import Any
 MAX_BYTES = 1024 * 1024
 BACKUPS = 2
 _write_lock = threading.Lock()
+
+
+class TimedRLock:
+    """Opt-in bounded lock timings; Condition sleep is excluded from hold time."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.stats_lock = threading.Lock()
+        self.local = threading.local()
+        self.rows: dict[tuple[str, str], dict[str, float]] = {}
+
+    def _caller(self) -> str:
+        frame = sys._getframe(2)
+        while frame.f_back and frame.f_code.co_filename in {__file__, threading.__file__}:
+            frame = frame.f_back
+        return f"{frame.f_code.co_name}:{frame.f_lineno}"
+
+    def _record(self, caller: str, field: str, seconds: float) -> None:
+        key = threading.current_thread().name, caller
+        with self.stats_lock:
+            if key not in self.rows and len(self.rows) >= 128:
+                key = "other", "other"
+            row = self.rows.setdefault(key, {"wait_seconds": 0., "hold_seconds": 0.,
+                                              "acquires": 0.})
+            row[field] += seconds
+            if field == "wait_seconds":
+                row["acquires"] += 1
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        caller, began = self._caller(), time.perf_counter()
+        acquired = self.lock.acquire(blocking, timeout)
+        if acquired:
+            self._record(caller, "wait_seconds", time.perf_counter() - began)
+            if not getattr(self.local, "depth", 0):
+                self.local.started, self.local.caller = time.perf_counter(), caller
+            self.local.depth = getattr(self.local, "depth", 0) + 1
+        return acquired
+
+    def release(self) -> None:
+        if self.local.depth == 1:
+            self._record(self.local.caller, "hold_seconds",
+                         time.perf_counter() - self.local.started)
+        self.local.depth -= 1
+        self.lock.release()
+
+    def _release_save(self) -> Any:
+        depth, caller = self.local.depth, self.local.caller
+        self._record(caller, "hold_seconds", time.perf_counter() - self.local.started)
+        self.local.depth = 0
+        return self.lock._release_save(), depth, caller  # type: ignore[attr-defined]
+
+    def _acquire_restore(self, state: Any) -> None:
+        raw, depth, caller = state
+        began = time.perf_counter()
+        self.lock._acquire_restore(raw)  # type: ignore[attr-defined]
+        self._record(caller, "wait_seconds", time.perf_counter() - began)
+        self.local.depth, self.local.caller = depth, caller
+        self.local.started = time.perf_counter()
+
+    def _is_owned(self) -> bool:
+        return self.lock._is_owned()  # type: ignore[attr-defined, no-any-return]
+
+    def __enter__(self) -> TimedRLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *_error: Any) -> None:
+        self.release()
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self.stats_lock:
+            return [{"thread": thread, "caller": caller, **row}
+                    for (thread, caller), row in self.rows.items()]
 
 
 @dataclass

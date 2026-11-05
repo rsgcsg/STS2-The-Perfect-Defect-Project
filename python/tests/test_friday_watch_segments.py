@@ -493,3 +493,20 @@ def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
     assert rollback['checkpoint_artifact_id'] == 'anchor'
     assert rollback['recipe_after_diagnosis'] == recipe
     assert rollback['automatic_training_resume'] is False
+
+
+def test_closed_training_window_stops_replacement_while_learner_still_drains(
+        owner, watch, monkeypatch):
+    value = attempt(owner)
+    event(owner, "training_window", training_generation="g-one", active_seconds=10, updates=363)
+    owner.collect_segment_evaluation = lambda: None
+    owner.schedule_segment_evaluation = lambda: None
+    owner.retain_segment_checkpoints = lambda: None
+    def unexpected(_):
+        raise AssertionError("draining learner must not receive new actors")
+    owner.offer_initial_actors = owner.replace_actors = unexpected
+    stops = []
+    owner.stop_attempt = lambda _, reason: stops.append(reason)
+    monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": False})
+    owner.tick_segment()
+    assert value["window_closed"] and stops == ["learner_draining"]

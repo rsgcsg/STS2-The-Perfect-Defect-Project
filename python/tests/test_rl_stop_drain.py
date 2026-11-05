@@ -5,9 +5,11 @@ import json
 import os
 import signal
 import threading
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
+
 from spireagent.artifact_contracts import Producer
 from spireagent.local_diagnostics import exception_facts
 from spireagent.rl_exchange import Exchange, control_input, input_key
@@ -40,6 +42,9 @@ def test_original_empty_end_after_stop_and_real_auxiliary_worker_failure(
     owner = object.__new__(SegmentLearner)
     owner.config = SimpleNamespace(run=request["run"], operating_budget=None)
     owner.generation = request["training_generation"]
+    owner.input_gate = threading.RLock()
+    owner.source_prefetch_gate = threading.RLock()
+    owner.ahead_batches = deque()
     owner.condition = threading.Condition(threading.RLock())
     owner.exchange = Exchange(
         {"kind": "local", "directory": str(tmp_path / "peer")}, request["run"])

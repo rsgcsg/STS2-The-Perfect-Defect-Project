@@ -9,6 +9,7 @@ from dataclasses import asdict
 from multiprocessing.connection import Client
 
 import pytest
+
 from spireagent.json_boundary import json_bytes
 from spireagent.rl_dataplane_ports import (
     CONTROL_SCHEMA,
@@ -346,12 +347,13 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
 
+    from test_rl41_w2_actor import publish_mu
+
     from spireagent.rl_exchange import Exchange
     from spireagent.rl_socket_transport import NodeMuCache
     from stpd.p1.local_inference import SEGMENT_SCHEMA
     from stpd.p1.local_mu import LocalMuScorer
     from stpd.rl.segment_learner import SegmentLearner
-    from test_rl41_w2_actor import publish_mu
 
     peer = {"kind": "local", "directory": str(tmp_path / "store")}
     exchange = Exchange(peer, "r")
@@ -602,6 +604,7 @@ def capacity_owner(tmp_path, lanes):
     )
     owner.archive = None
     owner.queue = SegmentQueue(owner.settings)
+    owner.input_gate = threading.RLock()
     owner.control_lock = threading.RLock()
     owner.condition = owner.queue.condition = threading.Condition(owner.control_lock)
     owner.capacity_waiters, owner.episode_load, owner.lease_owners = {}, {}, {}
@@ -826,11 +829,11 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     prefetch_entered, prefetch_release = threading.Event(), threading.Event()
     original_prefetch = owner.input_preparer.prefetch
 
-    def delayed_prefetch(ref, envelope):
+    def delayed_prefetch(ref, envelope, **options):
         if not prefetch_entered.is_set():
             prefetch_entered.set()
             assert prefetch_release.wait(5)
-        return original_prefetch(ref, envelope)
+        return original_prefetch(ref, envelope, **options)
 
     monkeypatch.setattr(owner.input_preparer, "prefetch", delayed_prefetch)
 
@@ -1156,7 +1159,8 @@ def test_binary_listener_preserves_safe_remote_exception_diagnostic(tmp_path, mo
         attachment={'schema': SEGMENT_SCHEMA, 'pool_id': 'p', 'adapter': adapter_identity()},
         auth=auth, control=failing_control, sources=sources, address=('127.0.0.1', 0))
     try:
-        with (SegmentConnection({**server.attachment(), 'run': 'r', 'training_generation': 'g'}) as channel,
+        with (SegmentConnection({**server.attachment(), 'run': 'r',
+                                 'training_generation': 'g'}) as channel,
               pytest.raises(ValueError) as caught):
             channel.request('status')
         facts = exception_facts(caught.value)['remote']
@@ -1185,10 +1189,12 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tm
     owner.source_prefetch_changed = threading.Event()
     owner.source_prefetch_stopping = threading.Event()
     owner.source_prefetch_gate = threading.Lock()
+    owner.prepared_batches = 1
     owner.newlease_stopped = owner.input_fenced = False
     calls = []
 
-    def prefetch(ref, _envelope):
+    def prefetch(ref, _envelope, *, wait=True):
+        assert wait is False  # speculative background hints never block consumers
         with owner.condition:
             assert (ref.slot, "source-prefetch") in owner.hot_references
         with owner.binary_sources.borrow(ref) as raw:
@@ -1240,8 +1246,8 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tm
     assert owner.binary_sources.status()["spool_bytes"] == 0
 
 
-def test_checkpoint_barrier_pauses_background_source_copy_without_fencing(tmp_path, monkeypatch):
-    """Real CP entry/barrier; CP serialization is outside this source-lifetime check."""
+def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path, monkeypatch):
+    """CP no longer owns a generation barrier; pending source work stays live."""
     import random
     from concurrent.futures import Future, ThreadPoolExecutor
     from types import SimpleNamespace
@@ -1264,6 +1270,7 @@ def test_checkpoint_barrier_pauses_background_source_copy_without_fencing(tmp_pa
     owner.source_prefetch_changed = threading.Event()
     owner.source_prefetch_stopping = threading.Event()
     owner.source_prefetch_gate = threading.Lock()
+    owner.prepared_batches = 1
     owner.newlease_stopped = owner.input_fenced = False
     preparer = BinaryBatchPreparer(
         provider=owner.binary_sources,
@@ -1299,31 +1306,25 @@ def test_checkpoint_barrier_pauses_background_source_copy_without_fencing(tmp_pa
     preparer.pending.add(pending)
     copied = threading.Event()
 
-    def prefetch(_ref, _envelope):
+    def prefetch(_ref, _envelope, *, wait=True):
         assert not preparer.fenced
         copied.set()
 
     monkeypatch.setattr(preparer, "prefetch", prefetch)
     with ThreadPoolExecutor(max_workers=1) as executor:
         checkpoint = executor.submit(owner.checkpoint)
-        until = time.monotonic() + 2
-        while not preparer.fenced and time.monotonic() < until:
-            threading.Event().wait(0.001)
-        assert preparer.fenced
+        checkpoint.result(2)
+        assert not preparer.fenced and not pending.done()
+        assert pending in preparer.pending
         worker = threading.Thread(target=owner._source_prefetch_loop)
         worker.start()
         try:
             owner.source_prefetch_changed.set()
-            until = time.monotonic() + 2
-            while (ref.slot, "source-prefetch") not in owner.hot_references:
-                assert time.monotonic() < until
-                threading.Event().wait(0.001)
-            assert not copied.wait(0.05) and not owner.input_fenced
+            assert copied.wait(2) and not owner.input_fenced
             assert owner.condition.acquire(timeout=1)
             owner.condition.release()
+            assert not pending.done() and pending in preparer.pending
             pending.set_result(None)
-            checkpoint.result(2)
-            assert copied.wait(2)
         finally:
             if not pending.done():
                 pending.set_result(None)
@@ -1337,3 +1338,96 @@ def test_checkpoint_barrier_pauses_background_source_copy_without_fencing(tmp_pa
             owner._release(ref, "ppo:a/0")
     assert not owner.input_fenced and not owner.newlease_stopped
     assert not owner.hot_references and owner.binary_sources.status()["spool_bytes"] == 0
+
+
+def test_blocked_upload_write_does_not_hold_source_lock_or_block_revocation(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    sources = BinarySources(tmp_path, run="r", generation="g", lock_timing=True)
+    value = encoded()
+    credit = sources.begin(value.envelope)
+    state = sources.credits[credit]
+    real = state["stream"]
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowStream:
+        def write(self, raw):
+            entered.set()
+            assert release.wait(5)
+            return real.write(raw)
+
+        def close(self):
+            return real.close()
+
+    state["stream"] = SlowStream()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(sources.chunk, credit, value.packet)
+        try:
+            assert entered.wait(3)
+            def revoke():
+                sources.release_uploads("a")
+                return sources.status()
+            status = pool.submit(revoke).result(timeout=1)
+            assert status["upload_credits"] == 0 and status["source_slots"] == 0
+            # Bytes remain charged until the in-flight write has actually closed.
+            assert status["spool_bytes"] == len(value.packet) and state["path"].exists()
+            assert status["source_lock_timing"]
+        finally:
+            release.set()
+        future.result(timeout=3)
+    assert not state["path"].exists() and sources.status()["spool_bytes"] == 0
+    with pytest.raises(KeyError):
+        sources.finish(credit)
+
+
+def test_durable_begin_releases_control_lock_and_serializes_duplicate_and_STOP(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    owner = capacity_owner(tmp_path, 1)
+    with owner.condition:
+        selected = owner.queue.dataset()
+        owner._dataset_released(selected)
+    entered, release = threading.Event(), threading.Event()
+    real = owner.wal.db
+
+    class SlowCommit:
+        def __getattr__(self, key):
+            return getattr(real, key)
+
+        def execute(self, sql, *args):
+            if sql == "COMMIT":
+                entered.set()
+                assert release.wait(5)
+            return real.execute(sql, *args)
+
+    owner.wal.db = SlowCommit()
+    workers = ThreadPoolExecutor(max_workers=3)
+    try:
+        leader = workers.submit(owner.control, begin_request("a0"))
+        assert entered.wait(3)
+        # Actual owning control lock, while SQLite FULL commit is stalled.
+        assert owner.control_lock.acquire(timeout=1)
+        try:
+            assert owner.input_sequence == 0 and not owner.queue.leases
+        finally:
+            owner.control_lock.release()
+        duplicate = workers.submit(owner.control, begin_request("a0"))
+        stop = workers.submit(owner.control, {"operation": "stop", "run": "r",
+            "training_generation": "g", "epoch": 1, "reason": "test"})
+        assert not leader.done() and not stop.done()
+        release.set()
+        response = leader.result(timeout=3)
+        assert duplicate.result(timeout=3) == response
+        assert stop.result(timeout=3)["stopped"]
+        original = control_input(begin_request("a0"))
+        assert owner.wal.receipt(input_key(original), original)["response"] == response
+        facts = owner.wal.records_since(0)
+        assert sum(f["kind"] == "input" for f in facts) == 1
+        assert response["lease"] in owner.queue.leases
+    finally:
+        release.set()
+        with owner.condition:
+            owner.newlease_stopped = True
+            owner._notify_capacity(force=True)
+        workers.shutdown(wait=True)
+        owner.wal.close()

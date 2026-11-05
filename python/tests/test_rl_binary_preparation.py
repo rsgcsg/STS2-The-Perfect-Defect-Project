@@ -404,3 +404,53 @@ def test_binary_ref_never_enters_historical_JSON_reader():
     ref = BinaryRef(TENSOR_SEGMENT_FORMAT, "opaque", "a" * 64, 32)
     with pytest.raises(ValueError, match="requires_binary_preparer"):
         bp._read_source(ref, None)
+
+
+def test_full_arena_waits_then_resumes_after_real_reservation_release(model, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    values = [segment(model, name=f"actor/{i}", run_id=f"episode-{i}") for i in range(2)]
+    packets = [enc.encode(v) for v in values]
+    preparer = BinaryBatchPreparer(provider=provider, vocabulary=model.vocabulary,
+        workers=1, threads=1, scratch=tmp_path / "prepare", source_slots=1,
+        max_source_bytes=max(len(p.packet) for p in packets) + 8, source_wait_seconds=5)
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    held = ()
+    try:
+        preparer.prefetch(refs[0], packets[0].envelope)
+        preparer.source_jobs[refs[0]].result(timeout=30)
+        with preparer.condition:
+            held, _ = preparer._reserve((refs[0],))
+        from spireagent.json_boundary import BoundaryError
+
+        preparer.source_wait_seconds = .01
+        with pytest.raises(BoundaryError) as error:
+            preparer.prefetch(refs[1], packets[1].envelope)
+        assert error.value.code == "CAPACITY_WAIT" and refs[0] in preparer.sources
+        preparer.source_wait_seconds = 5
+        waiting = threading.Event()
+        real_wait = preparer._wait_for_source
+        def observed(deadline):
+            waiting.set()
+            return real_wait(deadline)
+        preparer._wait_for_source = observed
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            future = worker.submit(preparer.prefetch, refs[1], packets[1].envelope)
+            try:
+                assert waiting.wait(3) and not future.done()
+                preparer._release(held)
+                held = ()
+                future.result(timeout=3)
+                assert refs[1] in preparer.sources
+            finally:
+                if held:
+                    preparer._release(held)
+                    held = ()
+        assert preparer.summary()["source_capacity_wait_seconds"] > 0
+    finally:
+        if held:
+            preparer._release(held)
+        preparer.shutdown()

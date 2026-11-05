@@ -136,13 +136,17 @@ class BinarySources:
         generation: str,
         max_bytes: int = 20 * 1024**3,
         max_slots: int = 8192,
+        lock_timing: bool = False,
     ) -> None:
         if max_bytes < 1 or max_slots < 1:
             raise ValueError("invalid_binary_source_capacity")
         root.mkdir(parents=True, exist_ok=True)
         self.root, self.run, self.generation = root, run, generation
         self.max_bytes, self.max_slots = max_bytes, max_slots
-        self.condition = threading.Condition(threading.RLock())
+        from spireagent.local_diagnostics import TimedRLock
+
+        self.source_lock: Any = TimedRLock() if lock_timing else threading.RLock()
+        self.condition = threading.Condition(cast(Any, self.source_lock))
         self.entries: dict[str, dict[str, Any]] = {}
         self.credits: dict[str, dict[str, Any]] = {}
         self.upload_owners: set[tuple[Any, ...]] = set()
@@ -226,9 +230,12 @@ class BinarySources:
                 self.credits[credit] = {
                     "envelope": envelope,
                     "path": Path(name),
-                    "stream": os.fdopen(fd, "wb"),
+                    "stream": os.fdopen(fd, "wb", buffering=0),
                     "hash": hashlib.sha256(),
                     "received": 0,
+                    "io_lock": threading.Lock(),
+                    "io_users": 0,
+                    "cancelled": False,
                     "owner_key": owner_key,
                     "created": time.time(),
                 }
@@ -238,21 +245,54 @@ class BinarySources:
                 self.upload_owners.discard(owner_key)
                 raise
 
-    def chunk(self, credit: str, raw: bytes) -> None:
+    @contextmanager
+    def _upload_io(self, credit: str) -> Iterator[dict[str, Any]]:
+        # Only this credit serializes its stream/hash. Cancellation never waits
+        # under the global source (or caller's learner) lock for an active write.
         with self.condition:
             state = self.credits[credit]
+            state["io_users"] += 1
+        try:
+            with state["io_lock"]:
+                with self.condition:
+                    if state["cancelled"] or self.credits.get(credit) is not state:
+                        raise DataplaneError("STOPPED")
+                yield state
+        finally:
+            with self.condition:
+                state["io_users"] -= 1
+                reclaim = state["cancelled"] and not state["io_users"]
+            if reclaim:
+                self._discard_upload(state)
+
+    def _discard_upload(self, state: dict[str, Any]) -> None:
+        try:
+            state["stream"].close()
+            state["path"].unlink(missing_ok=True)
+        finally:
+            with self.condition:
+                self.upload_owners.discard(state["owner_key"])
+                self.occupied -= state["envelope"]["packet_size"]
+                self.condition.notify_all()
+
+    def chunk(self, credit: str, raw: bytes) -> None:
+        with self._upload_io(credit) as state:
             if (
                 not 0 < len(raw) <= MAX_CHUNK_BYTES
                 or state["received"] + len(raw) > state["envelope"]["packet_size"]
             ):
                 raise DataplaneError("INVALID_PACKET")
-            state["stream"].write(raw)
+            view = memoryview(raw)
+            while view:
+                written = state["stream"].write(view)
+                if not written:
+                    raise OSError("binary_upload_short_write")
+                view = view[written:]
             state["hash"].update(raw)
             state["received"] += len(raw)
 
     def finish(self, credit: str) -> BinaryRef:
-        with self.condition:
-            state = self.credits[credit]
+        with self._upload_io(credit) as state:
             envelope = state["envelope"]
             if state["received"] != envelope["packet_size"]:
                 raise DataplaneError("INVALID_PACKET")
@@ -266,19 +306,22 @@ class BinarySources:
                 envelope["packet_sha256"],
                 envelope["packet_size"],
             )
-            self.entries[ref.slot] = {**state, "ref": ref, "owners": {"upload"}, "borrows": 0}
-            del self.credits[credit]
+            with self.condition:
+                if state["cancelled"]:
+                    raise DataplaneError("STOPPED")
+                self.entries[ref.slot] = {**state, "ref": ref, "owners": {"upload"}, "borrows": 0}
+                del self.credits[credit]
             return ref
 
     def cancel(self, credit: str) -> None:
         with self.condition:
             state = self.credits.pop(credit, None)
-            if state is not None:
-                self.upload_owners.discard(state["owner_key"])
-                state["stream"].close()
-                state["path"].unlink(missing_ok=True)
-                self.occupied -= state["envelope"]["packet_size"]
-                self.condition.notify_all()
+            if state is None:
+                return
+            state["cancelled"] = True
+            reclaim = not state["io_users"]
+        if reclaim:
+            self._discard_upload(state)
 
     def release_uploads(self, actor: str, episode: str | None = None) -> None:
         """Original close/retire owner revokes uncommitted uploads, never PPO refs.
@@ -370,6 +413,8 @@ class BinarySources:
                 time.time() - s["created"] for s in (*self.entries.values(), *self.credits.values())
             ]
             return {
+                "source_lock_timing": (self.source_lock.snapshot()
+                    if hasattr(self.source_lock, "snapshot") else []),
                 "spool_bytes": self.occupied,
                 "source_slots": len(self.entries),
                 "upload_credits": len(self.credits),

@@ -65,6 +65,11 @@ class LocalControlWAL:
                 self.db.close()
             self.guard.close()
             raise
+        # WAL readers use a separate connection. FULL commit/fsync belongs only
+        # to the writer; enqueue/status/receipt never contend on that IO lock.
+        self.reader_lock = threading.Lock()
+        self.reader = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self.reader.execute("PRAGMA query_only=ON")
         self.writer = threading.Thread(target=self._write, name="rl-wal", daemon=True)
         self.writer.start()
 
@@ -129,9 +134,16 @@ class LocalControlWAL:
     def append(
         self, key: str, request: dict[str, Any], response: dict[str, Any], *, kind: str = "input"
     ) -> dict[str, Any]:
+        return self.append_async(key, request, response, kind=kind).result()
+
+    def append_async(
+        self, key: str, request: dict[str, Any], response: dict[str, Any], *, kind: str = "input"
+    ) -> Future[dict[str, Any]]:
         # Freeze before enqueue; a caller cannot change a queued original body.
         raw, reply = json_bytes(request), json_bytes(response)
         future: Future[dict[str, Any]] = Future()
+        # Submission cannot be revoked once its durability outcome is unknown.
+        future.set_running_or_notify_cancel()
         with self.lock:
             if self.closed or self.failure is not None or not self.authoritative or self.reopened:
                 raise WalUncertain("wal_owner_fenced")
@@ -140,7 +152,7 @@ class LocalControlWAL:
             self.pending.put_nowait((key, kind, raw, reply, future))
             self.pending_keys.add(key)
             self.pending_bytes += len(raw) + len(reply)
-        return future.result()
+        return future
 
     def _write(self) -> None:
         while True:
@@ -166,29 +178,30 @@ class LocalControlWAL:
                     if self.failure is not None:
                         raise WalUncertain("wal_owner_fenced")
                     seq, head = self.sequence, self.head
-                    if (
-                        self._bytes() + sum(len(item[2]) + len(item[3]) for item in batch)
-                        > self.max_bytes
-                    ):
-                        raise WalUncertain("wal_disk_byte_limit")
-                    self.db.execute("BEGIN IMMEDIATE")
-                    for key, kind, raw, reply, _future in batch:
-                        old = self.db.execute("SELECT * FROM facts WHERE key=?", (key,)).fetchone()
-                        if old is not None:
-                            if old[2] != kind or bytes(old[3]) != raw or bytes(old[4]) != reply:
-                                raise ValueError("wal_original_request_or_response_changed")
-                            results.append(self._record(old))
-                            continue
-                        seq += 1
-                        created = time.time()
-                        digest = hashlib.sha256(
-                            self._body(seq, key, kind, raw, reply, head, created)
-                        ).hexdigest()
-                        row = (seq, key, kind, raw, reply, head, digest, created)
-                        self.db.execute("INSERT INTO facts VALUES (?,?,?,?,?,?,?,?)", row)
-                        results.append(self._record(row))
-                        head = digest
-                    self.db.execute("COMMIT")
+                if (
+                    self._bytes() + sum(len(item[2]) + len(item[3]) for item in batch)
+                    > self.max_bytes
+                ):
+                    raise WalUncertain("wal_disk_byte_limit")
+                self.db.execute("BEGIN IMMEDIATE")
+                for key, kind, raw, reply, _future in batch:
+                    old = self.db.execute("SELECT * FROM facts WHERE key=?", (key,)).fetchone()
+                    if old is not None:
+                        if old[2] != kind or bytes(old[3]) != raw or bytes(old[4]) != reply:
+                            raise ValueError("wal_original_request_or_response_changed")
+                        results.append(self._record(old))
+                        continue
+                    seq += 1
+                    created = time.time()
+                    digest = hashlib.sha256(
+                        self._body(seq, key, kind, raw, reply, head, created)
+                    ).hexdigest()
+                    row = (seq, key, kind, raw, reply, head, digest, created)
+                    self.db.execute("INSERT INTO facts VALUES (?,?,?,?,?,?,?,?)", row)
+                    results.append(self._record(row))
+                    head = digest
+                self.db.execute("COMMIT")
+                with self.lock:
                     self.sequence, self.head = seq, head
                     for key, *_parts in batch:
                         self.pending_keys.discard(key)
@@ -196,8 +209,8 @@ class LocalControlWAL:
             except BaseException as error:
                 with self.lock:
                     self.failure = error
-                    if self.db.in_transaction:
-                        self.db.execute("ROLLBACK")
+                if self.db.in_transaction:
+                    self.db.execute("ROLLBACK")
                 for *_parts, future in batch:
                     future.set_exception(WalUncertain(str(error)))
             else:
@@ -224,7 +237,8 @@ class LocalControlWAL:
 
     def receipt(self, key: str, request: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
-            row = self.db.execute("SELECT * FROM facts WHERE key=?", (key,)).fetchone()
+            with self.reader_lock:
+                row = self.reader.execute("SELECT * FROM facts WHERE key=?", (key,)).fetchone()
             if row is not None:
                 if bytes(row[3]) != json_bytes(request):
                     raise ValueError("wal_original_request_changed")
@@ -255,23 +269,19 @@ class LocalControlWAL:
     def events_since(self, sequence: int, *, limit: int = 256) -> list[dict[str, Any]]:
         if type(sequence) is not int or sequence < 0 or not 1 <= limit <= 1024:
             raise ValueError("invalid_event_cursor")
-        with self.lock:
-            return [
-                self._record(row)
-                for row in self.db.execute(
-                    "SELECT * FROM facts WHERE seq>? AND kind='event' ORDER BY seq LIMIT ?",
-                    (sequence, limit),
-                )
-            ]
+        with self.reader_lock:
+            rows = self.reader.execute(
+                "SELECT * FROM facts WHERE seq>? AND kind='event' ORDER BY seq LIMIT ?",
+                (sequence, limit),
+            ).fetchall()
+        return [self._record(row) for row in rows]
 
     def records_since(self, sequence: int, *, limit: int = 256) -> list[dict[str, Any]]:
-        with self.lock:
-            return [
-                self._record(row)
-                for row in self.db.execute(
-                    "SELECT * FROM facts WHERE seq>? ORDER BY seq LIMIT ?", (sequence, limit)
-                )
-            ]
+        with self.reader_lock:
+            rows = self.reader.execute(
+                "SELECT * FROM facts WHERE seq>? ORDER BY seq LIMIT ?", (sequence, limit)
+            ).fetchall()
+        return [self._record(row) for row in rows]
 
     def _bytes(self) -> int:
         return sum(
@@ -301,7 +311,8 @@ class LocalControlWAL:
         self.writer.join(timeout=10)
         if self.writer.is_alive():
             raise WalUncertain("wal_writer_did_not_close")
-        with self.lock:
+        with self.lock, self.reader_lock:
+            self.reader.close()
             self.db.close()
         self.guard.close()
 

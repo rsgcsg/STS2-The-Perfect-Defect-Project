@@ -25,7 +25,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -412,8 +412,12 @@ class SegmentLearner:
         torch.manual_seed(config.seed)
         self.rng = random.Random(config.seed)
         self.queue = SegmentQueue(settings)
-        self.control_lock = threading.RLock()
-        self.condition = self.queue.condition = threading.Condition(self.control_lock)
+        self.input_gate = threading.RLock()
+        from spireagent.local_diagnostics import TimedRLock
+
+        self.control_lock: Any = (TimedRLock() if (self.dataplane or {}).get("lock_timing", False)
+                             else threading.RLock())
+        self.condition = self.queue.condition = threading.Condition(cast(Any, self.control_lock))
         self.capacity_waiters: dict[str, _BeginWait] = {}
         self.capacity_tickets = 0
         self.episode_load: dict[tuple[str, str], dict[str, int]] = {}
@@ -597,7 +601,8 @@ class SegmentLearner:
             self.binary_sources = BinarySources(self.live_work / "sources", run=config.run,
                 generation=self.generation,
                 max_bytes=self.dataplane.get("source_bytes", 20 * 1024**3),
-                max_slots=self.dataplane.get("source_slots", 8192))
+                max_slots=self.dataplane.get("source_slots", 8192),
+                lock_timing=self.dataplane.get("lock_timing", False))
             self.exchange.event_sink = self._durable_event
             self.exchange.live_generation = self.generation
             self.exchange.stop_source = lambda _generation: self.stop_fact
@@ -611,8 +616,11 @@ class SegmentLearner:
                 max_prepared_bytes=settings.prepared_bytes,
                 max_pinned_bytes=settings.prepared_bytes,
                 scratch=self.live_work,
-                source_slots=self.dataplane.get("prepare_slots", 8),
-                max_source_bytes=self.dataplane.get("source_bytes", 20 * 1024**3),
+                source_slots=self.dataplane.get("prepare_slots", 2 * (self.prepared_batches + 2)),
+                max_source_bytes=self.dataplane.get("prepare_source_bytes",
+                    self.dataplane.get("source_bytes", 20 * 1024**3)
+                    * (self.prepared_batches + 2) // 4),
+                source_wait_seconds=self.dataplane.get("source_wait_seconds", 60),
                 **preparation_options)
         else:
             self.input_preparer = BatchPreparer(
@@ -798,7 +806,7 @@ class SegmentLearner:
         disposition = {"run": self.config.run, "training_generation": self.generation,
             "operation": "training_discard", "reason": "STOPPED",
             "segments": [{"segment_id": r["segment_id"], "rows": r["rows"]} for r in records]}
-        self.wal.append("discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
+        self._append_durable("discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
                         disposition, {"discarded_rows": sum(r["rows"] for r in records)},
                         kind="disposition")
         for record in records:
@@ -1018,6 +1026,25 @@ class SegmentLearner:
         legacy_receipt = self.exchange.input_receipt(request)
         return legacy_receipt["response"] if legacy_receipt is not None else None
 
+    def _append_durable(
+        self, key: str, request: dict[str, Any], response: dict[str, Any], *, kind: str = "input"
+    ) -> dict[str, Any]:
+        """Called under input_gate then condition; release only the control lock.
+
+        The mutation gate spans validation -> durable fact -> apply. Training,
+        receipt/status and uploads keep running while the writer commits. No ACK
+        or committed input cursor is published before FULL durability.
+        """
+        assert self.wal is not None
+        future = self.wal.append_async(key, request, response, kind=kind)
+        def completed(_future: Future) -> None:
+            with self.condition:
+                self.condition.notify_all()
+        future.add_done_callback(completed)
+        while not future.done():
+            self.condition.wait()
+        return future.result()
+
     def _accept(
         self, request: dict[str, Any], response: dict[str, Any], apply: Callable[[], None],
         *, receipt_checked: bool = False,
@@ -1029,7 +1056,7 @@ class SegmentLearner:
             if self.wal is not None:
                 from spireagent.rl_exchange import input_key
 
-                fact = self.wal.append(input_key(request), request, response)
+                fact = self._append_durable(input_key(request), request, response)
                 record = {"sequence": fact["sequence"], "input_artifact_id": fact["hash"]}
             else:
                 record = self.exchange.append_input(
@@ -1110,96 +1137,98 @@ class SegmentLearner:
         from spireagent.rl_exchange import input_key
 
         key = input_key(request)
-        previous = self.capacity_waiters.get(key)
-        if previous is not None:
-            # One request owns one grant. Duplicate channels wait for that exact
-            # result and do not become independent capacity candidates.
-            previous.followers += 1
-            try:
-                while not previous.done:
-                    previous.condition.wait()
-            finally:
-                previous.followers -= 1
-            if previous.error is not None:
-                raise previous.error
-            assert previous.response is not None
-            return previous.response
-        node, snapshot = request.get("node_id"), request.get("node_cached_mu_snapshot")
-        if (not isinstance(node, str) or not node
-                or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(
-                    node, set())):
-            raise ValueError("cached_mu_publication_changed")
-        wait = _BeginWait(request, threading.Condition(self.control_lock))
-        self.capacity_waiters[key] = wait
+        with self.condition:
+            previous = self.capacity_waiters.get(key)
+            if previous is not None:
+                previous.followers += 1
+                try:
+                    while not previous.done:
+                        previous.condition.wait()
+                finally:
+                    previous.followers -= 1
+                if previous.error is not None:
+                    raise previous.error
+                assert previous.response is not None
+                return previous.response
+            wait = _BeginWait(request, threading.Condition(self.control_lock))
+            self.capacity_waiters[key] = wait
         actor, episode = request["actor"], request["episode"]
-        unused_ticket = False
+
+        def eligible() -> bool:
+            load = self.episode_load.get((actor, episode), {})
+            return (self.queue.occupied + (self.capacity_tickets + 1) * self.settings.steps
+                <= self.settings.capacity_rows
+                and sum(load.values()) + self.settings.steps <= self.settings.episode_rows
+                and self.archive_capacity()["ready"])
+
+        def stopped() -> bool:
+            if self.input_fenced:
+                raise BoundaryError("rl_learner", "OWNER_FENCED")
+            return (self.newlease_stopped or actor in self.retired_actors
+                or f"{actor}:{episode}" not in self.actor_episodes)
+
         try:
             while True:
-                if wait.notified:
-                    wait.notified = False
-                    self.capacity_tickets -= 1
-                    unused_ticket = True
-                if self.input_fenced:
-                    raise BoundaryError("rl_learner", "OWNER_FENCED")
-                if (self.newlease_stopped or actor in self.retired_actors
-                        or f"{actor}:{episode}" not in self.actor_episodes):
-                    wait.response = {"stopped": True}
-                    break
-                load = self.episode_load.get((actor, episode), {})
-                can_grant = (self.queue.occupied + (self.capacity_tickets + 1) * self.settings.steps
-                    <= self.settings.capacity_rows
-                    and sum(load.values()) + self.settings.steps <= self.settings.episode_rows
-                    and self.archive_capacity()["ready"])
-                if not can_grant:
-                    if unused_ticket:
-                        unused_ticket = False
+                with self.condition:
+                    if wait.notified:
+                        wait.notified = False
+                        self.capacity_tickets -= 1
+                    if stopped():
+                        wait.response = {"stopped": True}
+                        break
+                    if not eligible():
                         self._notify_capacity()
-                    wait.condition.wait()
-                    continue
-                prior = request.get("previous_lease")
-                if prior is not None and prior != f"{actor}/{self.queue.cursors.get(actor, -1)}":
-                    raise ValueError("segment_begin_predecessor_changed")
-                node = request.get("node_id")
-                snapshot = request.get("node_cached_mu_snapshot")
-                if (not isinstance(node, str) or not node
-                        or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(
-                    node, set())):
-                    raise ValueError("cached_mu_publication_changed")
-                lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
-                mu = copy.deepcopy(self.pool.snapshots[snapshot])
-                def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
-                    if not self.queue.reserve(lease):
-                        raise ValueError("input_reservation_capacity_changed")
-                    self.lease_owners[lease] = {"actor": actor, "episode": episode, "mu": mu}
-                    self._episode_rows(actor, episode, inflight=self.settings.steps)
-                wait.response = self._accept(request, {
-                    "run": self.config.run, "training_generation": self.generation,
-                    "lease": lease, "mu": mu, "server_time": time.time()}, grant,
-                    receipt_checked=True)
-                unused_ticket = False
-                break
+                        wait.condition.wait()
+                        continue
+                # Fixed order: input gate -> control -> short source metadata.
+                # A capacity waiter never holds the gate or blocks input commits.
+                with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
+                    if stopped():
+                        wait.response = {"stopped": True}
+                        break
+                    if not eligible():
+                        continue
+                    prior = request.get("previous_lease")
+                    if (prior is not None
+                            and prior != f"{actor}/{self.queue.cursors.get(actor, -1)}"):
+                        raise ValueError("segment_begin_predecessor_changed")
+                    node, snapshot = request.get("node_id"), request.get("node_cached_mu_snapshot")
+                    cache = cast(SegmentInferencePool, self.pool).node_caches
+                    if (not isinstance(node, str) or not node
+                            or snapshot not in cache.get(node, set())):
+                        raise ValueError("cached_mu_publication_changed")
+                    lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
+                    mu = copy.deepcopy(self.pool.snapshots[snapshot])
+                    def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
+                        if not self.queue.reserve(lease):
+                            raise ValueError("input_reservation_capacity_changed")
+                        self.lease_owners[lease] = {"actor": actor, "episode": episode, "mu": mu}
+                        self._episode_rows(actor, episode, inflight=self.settings.steps)
+                    wait.response = self._accept(request, {
+                        "run": self.config.run, "training_generation": self.generation,
+                        "lease": lease, "mu": mu, "server_time": time.time()}, grant,
+                        receipt_checked=True)
+                    break
             assert wait.response is not None
             return wait.response
         except BaseException as error:
             wait.error = error
             raise
         finally:
-            wait.done = True
-            if wait.notified:
-                self.capacity_tickets -= 1
-                wait.notified = False
-                unused_ticket = True
-            wait.condition.notify_all()  # only followers of this original key
-            self.capacity_waiters.pop(key)
-            if ((unused_ticket or wait.error is not None)
-                    and not self.newlease_stopped and not self.input_fenced):
+            with self.condition:
+                wait.done = True
+                if wait.notified:
+                    self.capacity_tickets -= 1
+                    wait.notified = False
+                wait.condition.notify_all()
+                self.capacity_waiters.pop(key)
                 self._notify_capacity()
 
     def control(self, request: dict[str, Any]) -> dict[str, Any]:
         operation = request["operation"]
         if self.wal is not None:
             if operation == "stop":
-                with self.condition:
+                with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
                     if request.get("run") != self.config.run or request.get(
                             "training_generation") != self.generation:
                         raise ValueError("stop_owner_identity_changed")
@@ -1217,7 +1246,7 @@ class SegmentLearner:
                         "epoch": max(self.stop_epoch, epoch),
                         "original": self.stop_fact or original}
                     try:
-                        self.wal.append(key, original, response, kind="stop")
+                        self._append_durable(key, original, response, kind="stop")
                     except BaseException:
                         self.input_fenced = self.newlease_stopped = True
                         self.condition.notify_all()
@@ -1250,7 +1279,9 @@ class SegmentLearner:
                     **self.wal_replication.status(),
                     "preparation": cast("BinaryBatchPreparer", self.input_preparer).summary(),
                     "training_discarded_rows": self.training_discarded_rows,
-                    "stop_epoch": self.stop_epoch, "owner": self.pool.pool_id}
+                    "stop_epoch": self.stop_epoch, "owner": self.pool.pool_id,
+                    "control_lock_timing": (self.control_lock.snapshot()
+                        if hasattr(self.control_lock, "snapshot") else [])}
                    if self.wal is not None else {}),
             }
         if operation == "receipt":
@@ -1285,14 +1316,17 @@ class SegmentLearner:
                     "reason": "generation_changed",
                     "training_generation": self.generation,
                 }
-            if operation == "begin" and self.wal is not None:
-                return self._begin_binary(request)
+        if operation == "begin" and self.wal is not None:
+            return self._begin_binary(request)
         if operation == "commit":
             return self._admit(request)
         if operation == "episode_end":
             return self._end_episode(request)
         actor, episode = request["actor"], request["episode"]
-        with self.condition:
+        # The legacy begin sleeps on row capacity; it must release every gate
+        # needed by its original commits. Binary begin has its own two phases.
+        gate = self.input_gate if self.wal is not None else nullcontext()
+        with gate, self.condition:
             if actor in self.retired_actors:
                 return {"stopped": True, "reason": "actor_allocation_terminal"}
             if operation == "episode_open":
@@ -1418,7 +1452,7 @@ class SegmentLearner:
                           "episode": owner_snapshot["episode"]}
                 originals = (*self._members_for_run(request["run_id"]), self._member(frozen))
             auxiliary_members = self._binary_auxiliary_members(frozen, originals)
-        with self.condition:
+        with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
@@ -1514,12 +1548,12 @@ class SegmentLearner:
             seen.add(item["segment_id"])
         return tuple(result)
 
-    def _prefetch_members(self, members: tuple[BatchMember, ...]) -> None:
+    def _prefetch_members(self, members: tuple[BatchMember, ...], *, wait: bool = True) -> None:
         if self.wal is not None:
             for member in members:
                 assert isinstance(member.payload, BinaryRef)
                 cast("BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
-                    self.binary_sources.envelope(member.payload))
+                    self.binary_sources.envelope(member.payload), wait=wait)
 
     def _source_prefetch_loop(self) -> None:
         """Coalesce commit hints; copy/decode sources before numerical selection.
@@ -1556,7 +1590,7 @@ class SegmentLearner:
                         # Serialize only this source copy against that window;
                         # never acquire this gate under the learner condition.
                         with self.source_prefetch_gate:
-                            self._prefetch_members((member,))
+                            self._prefetch_members((member,), wait=False)
                     except ValueError as error:
                         if str(error) != "binary_source_slots_busy":
                             raise
@@ -1606,7 +1640,7 @@ class SegmentLearner:
                       if self.wal is not None else
                       self.input_preparer.pool.submit(verify_auxiliary, request, members))
         groups = future.result()
-        with self.condition:
+        with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
@@ -1652,7 +1686,7 @@ class SegmentLearner:
                     "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL",
                     "DEADLINE", "REVOKED"}):
             raise ValueError("exact_terminal_actor_allocation_required")
-        with self.condition:
+        with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
             if actor in self.retired_actors:
                 return {"actor": actor, "already_retired": True}
             episodes = [key.split(":", 1)[1] for key in self.actor_episodes
@@ -1671,11 +1705,11 @@ class SegmentLearner:
             result = {"actor": actor, "allocation": allocation,
                       "unresolved_episodes": episodes, "released_leases": leases,
                       "new_games": 0, "original_receipts_changed": False}
-            self._event("actor_retired", **result)
             self._forget_locked()
             self.condition.notify_all()
             self._notify_capacity()
-            return result
+        self._event("actor_retired", **result)
+        return result
 
     def _add_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]) -> None:
         for kind, identity, rows in groups:
@@ -1736,6 +1770,8 @@ class SegmentLearner:
 
     def _select(self, *, take: bool = True) -> dict[str, Any] | None:
         with self.condition:
+            if self.wal is not None and (self.newlease_stopped or self.input_fenced):
+                return None
             pending = self._pending_batches()
             excluded = frozenset(record["segment_id"]
                 for active, _ in pending for record in active["segments"])
@@ -1863,6 +1899,8 @@ class SegmentLearner:
         self.timing["prepared_batches"] += 1
         if not active["taken"]:
             with self.condition:
+                if self.wal is not None and self.newlease_stopped:
+                    return False
                 if self.queue.dataset() != active["segments"]:
                     raise ValueError("prepared_dataset_membership_changed")
                 self._dataset_released(active["segments"])
@@ -2206,7 +2244,7 @@ class SegmentLearner:
                     temporary.replace(target)
 
     def close(self, *, keep_journal: bool = False) -> None:
-        with self.condition:
+        with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
             self.newlease_stopped = True
             self.condition.notify_all()
             if self.wal is not None:
@@ -2315,7 +2353,7 @@ class SegmentLearner:
                 self._prepare_ahead()
                 self._step()
         finally:
-            with self.condition:
+            with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
                 self.newlease_stopped = True
                 if self.wal is not None:
                     if not self.input_fenced:
