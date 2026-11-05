@@ -262,13 +262,14 @@ def test_previous_watch_state_must_bind_the_same_run_peer_and_budget(owner, watc
     assert resumed.state["configuration"]["path"] == str(resumed.work / "watch-config.json")
 
 
-@pytest.mark.parametrize("closed,stopped", [(20, False), (19, True)])
+@pytest.mark.parametrize("closed,unknown,stopped",
+                         [(20, 5, False), (20, 6, True), (220, 11, False), (218, 11, True)])
 def test_global_five_percent_gate_excludes_inflight_worlds(owner, watch, monkeypatch,
-                                                          closed, stopped):
+                                                          closed, unknown, stopped):
     value = attempt(owner)
     value["actor_plans"] = []
     games = [{"intent_id": f"done-{i}", "seed": f"seed-{i}",
-              "status": "unknown" if i == 0 else "finished",
+              "status": "unknown" if i < unknown else "finished",
               "world_mutation_offered": True, "training_generation": "g-one"}
              for i in range(closed)]
     event(owner, "actor_games_closed", actor="actor", games=games)
@@ -284,7 +285,7 @@ def test_global_five_percent_gate_excludes_inflight_worlds(owner, watch, monkeyp
     monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": False})
     owner.tick_segment()
     assert owner.state["health"]["completed_for_stop"] == closed
-    assert owner.state["health"]["known_unknown"] == 1
+    assert owner.state["health"]["known_unknown"] == unknown
     assert owner.state["stop"] == ("training_unknown_fraction_above_limit" if stopped else None)
     assert stops == (["training_unknown_fraction_above_limit"] if stopped else [])
 

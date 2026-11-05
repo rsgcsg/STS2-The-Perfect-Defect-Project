@@ -37,6 +37,15 @@ def test_stops_keep_unknown_denominator_strict_and_baseline_strict(watch):
     config = {"started_at": 100, "wall_seconds": 72000}
     games = [{"status": "unknown"}] + [{"status": "finished"}] * 19
     assert watch.stop_reason(1000, config, games, None, []) is None
+    # Before 100 completed games one occasional unknown cannot stop the round.
+    assert watch.stop_reason(1000, config, games[:-1], None, []) is None
+    games = [{"status": "unknown"}] * 6 + [{"status": "finished"}] * 13
+    assert (
+        watch.stop_reason(1000, config, games, None, [])
+        == "training_unknown_fraction_above_5_percent"
+    )
+    games = [{"status": "unknown"}] * 11 + [{"status": "finished"}] * 209
+    assert watch.stop_reason(1000, config, games, None, []) is None
     assert (
         watch.stop_reason(1000, config, games[:-1], None, [])
         == "training_unknown_fraction_above_5_percent"

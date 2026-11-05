@@ -151,12 +151,18 @@ def evaluate_result(path: Path, version: int, updates: int, *,
             'result_path': str(path), 'result_sha256': hashed(path)}
 
 
+def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool:
+    """Occasional unknowns never stop a round: the fraction's denominator is at least
+    100 games, so the first few completed games cannot trip it with one unknown."""
+    return unknown > config.get('unknown_stop_fraction', .05) * max(total, 100)
+
+
 def stop_reason(now: float, config: dict[str, Any], games: list[dict[str, Any]],
                 event: dict[str, Any] | None, evaluations: list[dict[str, Any]]) -> str | None:
     if now >= config['started_at'] + config['wall_seconds']:
         return 'first_round_wall_limit'
     limit = config.get('unknown_stop_fraction', 0.05)
-    if games and sum(g['status'] == 'unknown' for g in games) / len(games) > limit:
+    if unknown_over_limit(sum(g['status'] == 'unknown' for g in games), len(games), config):
         return f'training_unknown_fraction_above_{100 * limit:g}_percent'
     if event:
         if event['kind'] == 'failed':
@@ -1549,9 +1555,8 @@ class SegmentWatcher(Watcher):
                                                | {row['actor'] for row in terminal})
         self.refresh_world_health()
         health = self.state['health']
-        if (health['completed_for_stop'] and (health['known_unknown'] + health['lost_offers'])
-                / health['completed_for_stop']
-                > self.config.get('unknown_stop_fraction', .05)):
+        if unknown_over_limit(health['known_unknown'] + health['lost_offers'],
+                              health['completed_for_stop'], self.config):
             self.state['stop'] = 'training_unknown_fraction_above_limit'
             self.stop_attempt(attempt, self.state['stop'])
             return
@@ -1851,11 +1856,10 @@ class SegmentWatcher(Watcher):
         health = self.state['health']
         unknown = health.get('known_unknown', 0) + health.get('lost_offers', 0)
         total = health.get('completed_for_stop', 0)
-        if total and unknown / total > self.config.get('unknown_stop_fraction', .05):
+        if unknown_over_limit(unknown, total, self.config):
             self.state['stop'] = self.state['stop'] or 'training_unknown_fraction_above_limit'
         uncertain = health.get('unresolved_admissions', 0)
-        if uncertain and uncertain / (total + uncertain) > self.config.get(
-                'unknown_stop_fraction', .05):
+        if unknown_over_limit(uncertain, total + uncertain, self.config):
             self.state['stop'] = self.state['stop'] or 'unresolved_admission_fraction_above_limit'
         if now >= self.config['deadline_at'] - 900 and self.state['pending'] is not None:
             pending = self.state['pending']
