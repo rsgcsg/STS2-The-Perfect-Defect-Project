@@ -370,3 +370,44 @@ def test_final_wal_snapshot_closes_event_cursor_without_reconnecting(
         assert len(owner.seen_events) == 2
         owner.collect_events()
         assert len(owner.seen_events) == 2
+
+
+def test_inconclusive_audit_window_pauses_only_new_admission(owner):
+    attempt(owner)
+    for n in range(4):
+        event(owner,'sampling_audit',run_id=f'i{n}',status='audit_inconclusive')
+    for n in range(20):
+        event(owner,'sampling_audit',run_id=f'p{n}',status='pass')
+    event(owner,'sampling_audit',run_id='i4',status='audit_inconclusive')
+    owner.collect_events()
+    assert owner.state['health']['sampling_audit']['window_fraction']==.2
+    assert not owner.state.get('audit_admission_paused')
+    event(owner,'sampling_audit',run_id='i5',status='audit_inconclusive')
+    owner.collect_events()
+    assert owner.state['health']['sampling_audit']['inconclusive']==6
+    assert owner.exchange.admission_pause(owner.config['budget_id']) is not None
+    assert owner.exchange.admission_pause('another-budget') is None
+    assert owner.state['stop'] is None
+    assert owner.exchange.stop_request(training_generation='g-one') is None
+
+
+def test_held_step_stop_keeps_worker_processes_alive_and_uses_existing_markers(owner, watch, monkeypatch):
+    from pathlib import Path
+
+    value = attempt(owner)
+    value.update(job_id="1424613.98", actor_plans=[])
+    root = Path(value["root"])
+    (root / "learner").mkdir(parents=True)
+    signals = []
+    owner.signal_once = signals.append
+    owner.stop_attempt(value, "normal-stop")
+    assert signals == []
+    assert owner.exchange.stop_request(training_generation="g-one")["reason"] == "normal-stop"
+    assert (root / "login-launch/STOP").is_file()
+    assert (root / "learner/STOP").is_file()
+    assert value["stopping"] == "normal-stop"
+    cancellations = []
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **kwargs:
+        (cancellations.append(command) or SimpleNamespace(returncode=0)))
+    owner.cancel_at_deadline()
+    assert cancellations == [["scancel", "1424613.98"]]

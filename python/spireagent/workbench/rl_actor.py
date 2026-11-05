@@ -207,6 +207,9 @@ class Actor:
             return True
         if self.segment_stop_reason:
             return True
+        if self.exchange.admission_pause(self.config.get("budget_id")) is not None:
+            self.segment_stop_reason = "sampling_audit_inconclusive_admission_paused"
+            return True
         if self.service is not None:
             try:
                 state = self.service.request("status")

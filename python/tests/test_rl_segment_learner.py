@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -839,3 +840,98 @@ def test_binary_terminal_event_is_durable_before_wal_closes(tmp_path, monkeypatc
         assert events[-1]['error_type'] == 'RuntimeError'
         assert not any(event['kind'] == 'finished' for event in events)
     assert not (owner.work / 'failed-event-unpublished.json').exists()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='real publisher process failure')
+def test_final_publication_process_failure_preserves_last_complete_SGD_checkpoint(
+        tmp_path, monkeypatch):
+    import signal
+    from concurrent.futures.process import BrokenProcessPool
+
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / 'owner', io)
+    deliver(owner, actor='a')
+    deliver(owner, actor='b')
+    assert owner._prepare()
+    assert owner._step()['stepped']
+    assert owner.updates == 1 and owner.published_updates == 0 and owner.active is not None
+    # Kill only this test's actual CPU publisher, after initialization and SGD.
+    process = next(iter(owner.publisher._processes.values()))
+    os.kill(process.pid, signal.SIGKILL)
+    process.join(timeout=5)
+    assert not process.is_alive()
+    with pytest.raises(BrokenProcessPool):
+        owner.publisher.submit(os.getpid).result(timeout=5)
+    (owner.work / 'STOP').touch()
+    with pytest.raises(BrokenProcessPool):
+        owner.run()
+    record, cp = read_cp(owner)
+    assert cp.counters.updates == cp.counters.first_use == 1
+    assert cp.counters.published_updates == 0
+    assert_tree(cp.weights, owner.model.state_dict())
+    assert_tree(cp.optimizer, owner.optimizer.state_dict())
+    failed = [event for event in owner.exchange.event_records() if event['kind'] == 'failed']
+    assert len(failed) == 1 and failed[0]['error_type'] == 'BrokenProcessPool'
+    assert failed[0]['finalization_failure']['stage'] == 'final_model_publication'
+    assert failed[0]['finalization_failure']['diagnostic']['exception_type'] == 'BrokenProcessPool'
+    assert not [event for event in owner.exchange.event_records() if event['kind'] == 'finished']
+    assert owner.publisher._shutdown_thread
+    cold_peer = {'kind': 'local', 'directory': str(tmp_path / 'cold')}
+    cold = Exchange(cold_peer, config.run)
+    copy_artifact(
+        owner.exchange.store, cold.store, record['checkpoint_artifact_id'], scratch=tmp_path)
+    replacement = SegmentLearner(dataclasses.replace(config, peer=cold_peer, start_package=None,
+        resume_checkpoint=record['checkpoint_artifact_id'], segments=dataclasses.replace(
+            config.segments, training_generation='g-after-publisher-failure')),
+        tmp_path / 'replacement', io)
+    try:
+        assert_tree(replacement.model.state_dict(), cp.weights)
+        assert_tree(replacement.optimizer.state_dict(), cp.optimizer)
+        assert_tree(replacement.ema, cp.ema)
+        assert replacement.updates == replacement.first_use == 1
+        deliver(replacement, actor='fresh-c')
+        deliver(replacement, actor='fresh-d')
+        assert replacement._prepare() and replacement._step()['stepped']
+        assert replacement.updates == 2
+    finally:
+        replacement.close()
+
+
+def test_drain_keeps_listener_until_actor_final_lifecycle_work_finishes(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / 'owner', io)
+    owner.actor_allocation_pending = frozenset({'a'})
+    observed = []
+    original_close = owner.pool.close
+    def close_after_actor():
+        assert not owner.actor_allocation_pending
+        observed.append('listener_closed')
+        return original_close()
+    monkeypatch.setattr(owner.pool, 'close', close_after_actor)
+    def actor_completed():
+        observed.append('actor_final_events_and_evidence_copy_finished')
+        owner.actor_allocation_pending = frozenset()
+    owner.run(initialize_only=True, on_tick=actor_completed)
+    assert observed == ['actor_final_events_and_evidence_copy_finished', 'listener_closed']
+
+
+def test_actor_allocation_drain_deadline_is_failed_with_pending_names(tmp_path, monkeypatch):
+    import itertools
+    import json
+
+    import stpd.rl.segment_learner as module
+
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / 'owner', io)
+    owner.actor_allocation_pending = frozenset({'audit-still-running'})
+    clock = itertools.count(0, 1000)
+    real = module.time
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: next(clock),
+        perf_counter=real.perf_counter, time=real.time))
+    with pytest.raises(BoundaryError, match='unresolved_actor_allocations_after_drain'):
+        owner.run(initialize_only=True)
+    summary = json.loads((owner.work / 'learner-summary.json').read_bytes())
+    assert summary['unresolved_actor_allocations'] == ['audit-still-running']
+    events = owner.exchange.event_records()
+    assert events[-1]['kind'] == 'failed'
+    assert not any(e['kind'] == 'finished' for e in events)

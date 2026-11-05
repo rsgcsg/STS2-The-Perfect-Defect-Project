@@ -33,6 +33,7 @@ from typing import Any, cast
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import json_bytes
+from spireagent.local_diagnostics import exception_facts
 from spireagent.rl_dataplane_ports import (
     MAX_CHUNK_BYTES,
     MAX_PACKET_BYTES,
@@ -557,6 +558,7 @@ class SocketDataplane:
                                 "request_id": request_id,
                                 "error": type(error).__name__,
                                 "error_code": getattr(error, "code", None),
+                                "error_diagnostic": exception_facts(error),
                             }
                         )
                     )

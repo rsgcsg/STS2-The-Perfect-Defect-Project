@@ -634,6 +634,7 @@ class ActorAllocationMonitor:
 
     def __init__(self, plan: Path):
         self.plan = plan
+        self.expected_actors = frozenset(ref['actor'] for ref in load_plan(plan)['actors'])
         self.stop = threading.Event()
         self.observations: queue.SimpleQueue = queue.SimpleQueue()
         self.thread = threading.Thread(target=self.observe, name='actor-allocation-monitor', daemon=True)
@@ -653,6 +654,8 @@ class ActorAllocationMonitor:
                     candidate = load_plan(path)
                     if candidate['run'] != base['run'] or candidate['peer'] != base['peer']:
                         raise ValueError('replacement_actor_run_or_peer_changed')
+                    self.expected_actors = self.expected_actors | frozenset(
+                        ref['actor'] for ref in candidate['actors'])
                     for row in actor_accounting(path):
                         if row['terminal']:
                             self.observations.put(row)
@@ -668,6 +671,9 @@ class ActorAllocationMonitor:
                 learner._event('actor_accounting_unavailable', **row)
             elif row['actor'] not in learner.retired_actors:
                 learner.retire_actor(row['actor'], row)
+        # Keep the original lifecycle listener alive through actor-side audit,
+        # final lifecycle publication and evidence-copy completion, not only end labels.
+        learner.actor_allocation_pending = self.expected_actors - learner.retired_actors
 
     def __enter__(self):
         self.thread.start()

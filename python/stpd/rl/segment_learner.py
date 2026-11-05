@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 import torch
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.local_diagnostics import exception_facts
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 from spireagent.rl_exchange import Exchange, control_input
@@ -417,6 +418,7 @@ class SegmentLearner:
         self.lease_owners: dict[str, dict[str, Any]] = {}
         self.actor_episodes: dict[str, str] = {}
         self.retired_actors: set[str] = set()
+        self.actor_allocation_pending: frozenset[str] = frozenset()
         self.sources: dict[str, dict[str, Any]] = {}
         self.hp_binary_members: dict[str, tuple[BatchMember, ...]] = {}
         self.hot_references: dict[tuple[str, str], HotPayloadRef | BinaryRef] = {}
@@ -2132,10 +2134,14 @@ class SegmentLearner:
             self.exchange.publish_event("finished", **summary)
             return summary
         except BaseException as error:
-            fields = {"training_generation": self.generation, "updates": self.updates,
-                      "budget_id": (self.config.operating_budget or {}).get("id"),
-                      "error_type": type(error).__name__,
-                      "error_code": getattr(error, "code", None)}
+            fields: dict[str, Any] = {
+                "training_generation": self.generation, "updates": self.updates,
+                "budget_id": (self.config.operating_budget or {}).get("id"),
+                "error_type": type(error).__name__, "error_code": getattr(error, "code", None),
+                "diagnostic": exception_facts(error),
+            }
+            if getattr(self, "finalization_failure", None) is not None:
+                fields["finalization_failure"] = self.finalization_failure
             try:
                 self.exchange.publish_event("failed", **fields)
             except Exception as publication_error:
@@ -2218,7 +2224,8 @@ class SegmentLearner:
                 drain = time.monotonic() + 600
                 while (
                     not self.input_fenced
-                    and (self.queue.leases or self.actor_episodes)
+                    and (self.queue.leases or self.actor_episodes
+                         or self.actor_allocation_pending)
                     and time.monotonic() < drain
                 ):
                     if on_tick is not None:
@@ -2226,11 +2233,21 @@ class SegmentLearner:
                     with self.condition:
                         self.condition.wait(0.2)
                 if not self.input_fenced:
-                    self._collect_labels(wait=True)
-                    if self.updates > self.published_updates:
-                        self._schedule_publication()
-                    self._collect_publication(wait=True)
-                    self.checkpoint(final=True)
+                    phase = "final_labels"
+                    try:
+                        self._collect_labels(wait=True)
+                        phase = "final_model_publication"
+                        if self.updates > self.published_updates:
+                            self._schedule_publication()
+                        self._collect_publication(wait=True)
+                    except Exception as error:
+                        self.finalization_failure = {
+                            "stage": phase, "diagnostic": exception_facts(error)}
+                        raise
+                    finally:
+                        # Complete SGD state is independent of the disposable mu
+                        # export pool. Save before close even if publication fails.
+                        self.checkpoint(final=True)
             finally:
                 self.close(keep_journal=True)
         summary = {
@@ -2256,6 +2273,7 @@ class SegmentLearner:
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),
+            "unresolved_actor_allocations": sorted(self.actor_allocation_pending),
             "input_fenced": self.input_fenced,
             "input_failure": self.input_failure,
             "deadline_at": self.deadline_at,
@@ -2267,4 +2285,6 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
         if self.queue.leases or self.actor_episodes:
             raise BoundaryError("rl_learner", "unresolved_worlds_after_drain")
+        if self.actor_allocation_pending:
+            raise BoundaryError("rl_learner", "unresolved_actor_allocations_after_drain")
         return summary

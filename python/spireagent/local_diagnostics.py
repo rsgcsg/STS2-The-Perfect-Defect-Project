@@ -39,6 +39,20 @@ class _Trace:
 _current: ContextVar[_Trace | None] = ContextVar("local_diagnostic_trace", default=None)
 
 
+def exception_facts(error: BaseException) -> dict[str, Any]:
+    """Bounded stack locations for durable failures, without messages or locals."""
+    result: dict[str, Any] = {
+        "exception_type": type(error).__name__,
+        "stack": [{"file": frame.filename[-512:], "line": frame.lineno,
+                   "function": frame.name[:128]}
+                  for frame in traceback.extract_tb(error.__traceback__, limit=32)],
+    }
+    remote = getattr(error, "remote_diagnostic", None)
+    if remote is not None:
+        result["remote"] = remote
+    return result
+
+
 class LocalDiagnostics:
     def __init__(self, state_dir: Path) -> None:
         self.directory = state_dir / "logs"
@@ -89,14 +103,12 @@ class LocalDiagnostics:
             return previous[1]
         error_id = uuid.uuid4().hex
         trace.errors[id(error)] = (error, error_id)
-        frames = [{"file": frame.filename[-512:], "line": frame.lineno,
-                   "function": frame.name[:128]}
-                  for frame in traceback.extract_tb(error.__traceback__, limit=32)]
+        facts = exception_facts(error)
         self._write("errors.jsonl", {
             **_facts(trace), "event": "exception", "error_id": error_id,
             "path": path or trace.path, "action": action or trace.action,
             "stage": stage or (trace.phases[-1] if trace.phases else "request"),
-            "exception_type": type(error).__name__, "stack": frames,
+            **facts,
         })
         return error_id
 

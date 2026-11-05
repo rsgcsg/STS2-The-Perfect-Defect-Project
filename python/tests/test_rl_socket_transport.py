@@ -9,7 +9,6 @@ from dataclasses import asdict
 from multiprocessing.connection import Client
 
 import pytest
-
 from spireagent.json_boundary import json_bytes
 from spireagent.rl_dataplane_ports import (
     CONTROL_SCHEMA,
@@ -346,13 +345,12 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
 
-    from test_rl41_w2_actor import publish_mu
-
     from spireagent.rl_exchange import Exchange
     from spireagent.rl_socket_transport import NodeMuCache
     from stpd.p1.local_inference import SEGMENT_SCHEMA
     from stpd.p1.local_mu import LocalMuScorer
     from stpd.rl.segment_learner import SegmentLearner
+    from test_rl41_w2_actor import publish_mu
 
     peer = {"kind": "local", "directory": str(tmp_path / "store")}
     exchange = Exchange(peer, "r")
@@ -791,8 +789,6 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     from test_rl41_w1 import PRODUCER, configuration, segment
 
     pytest.importorskip("stpd.rl.binary_preparation")
-    from stpd.rl.tensor_segment import TensorSegmentEncoder
-
     from spireagent.rl_exchange import Exchange
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
     from stpd.p1.export import input_spec, runtime_projection
@@ -802,6 +798,7 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     from stpd.p1.tensor_input import TensorFrame
     from stpd.rl import batch_preparation as bp
     from stpd.rl.segment_learner import SegmentLearner
+    from stpd.rl.tensor_segment import TensorSegmentEncoder
 
     config, io = configuration(tmp_path, monkeypatch, generation="g-wire-" + uuid.uuid4().hex[:12])
     io = dataclasses.replace(
@@ -974,10 +971,11 @@ def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(
     import dataclasses
     import socket
     import uuid
-    from test_rl41_w1 import PRODUCER, configuration, segment
+
+    from test_rl41_w1 import configuration, segment
     pytest.importorskip('stpd.rl.binary_preparation')
-    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
     from spireagent.rl_socket_transport import NodeMuCache
+    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
     from stpd.p1.local_inference import SegmentConnection
     from stpd.p1.local_mu import LocalMuScorer
     from stpd.rl.segment_learner import SegmentLearner
@@ -1042,3 +1040,28 @@ def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(
         connection.close()
         scorer.close()
         owner.close()
+
+
+def test_binary_listener_preserves_safe_remote_exception_diagnostic(tmp_path, monkeypatch):
+    from spireagent.local_diagnostics import exception_facts
+    from stpd.p1.export import adapter_identity
+    from stpd.p1.local_inference import SEGMENT_SCHEMA, SegmentConnection
+
+    def failing_control(request):
+        raise RuntimeError('diagnostic message must remain private')
+    auth = b'y' * 32
+    monkeypatch.setenv(AUTH_ENV, auth.hex())
+    sources = BinarySources(tmp_path / 'sources', run='r', generation='g', max_bytes=1024)
+    server = SocketDataplane(
+        attachment={'schema': SEGMENT_SCHEMA, 'pool_id': 'p', 'adapter': adapter_identity()},
+        auth=auth, control=failing_control, sources=sources, address=('127.0.0.1', 0))
+    try:
+        with (SegmentConnection({**server.attachment(), 'run': 'r', 'training_generation': 'g'}) as channel,
+              pytest.raises(ValueError) as caught):
+            channel.request('status')
+        facts = exception_facts(caught.value)['remote']
+        assert facts['exception_type'] == 'RuntimeError'
+        assert facts['stack'][-1]['function'] == 'failing_control'
+        assert 'diagnostic message must remain private' not in str(facts)
+    finally:
+        server.close()

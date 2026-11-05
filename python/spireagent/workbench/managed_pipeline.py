@@ -297,10 +297,15 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                 except Exception as error:
                     # A lost label/segment ACK does not retry World or prevent
                     # full retention of the original that was just verified.
+                    from spireagent.local_diagnostics import exception_facts
+
                     row.update(execution_status="unknown",
                         execution_reason="post_verification_processing_failed",
                         processing_error=error.code if isinstance(error, BoundaryError)
                         else type(error).__name__)
+                    checkpoint()  # Diagnostic I/O cannot leave a retryable delivery.
+                    row["processing_diagnostic"] = artifacts.put("processing-error.json",
+                        json_bytes(exception_facts(error)))
                     self._preserve_failure(row, artifacts, job, private)
                     row["elapsed_seconds"] = time.time() - row.get(
                         "pipeline_started_at", time.time()
@@ -408,6 +413,9 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                 _referenced(artifacts.root, row["typed_verification"]))
         if "processing_error" in row:
             facts["processing_error"] = row["processing_error"]
+        if "processing_diagnostic" in row:
+            facts["processing_diagnostic"] = json.loads(
+                _referenced(artifacts.root, row["processing_diagnostic"]))
         source = artifacts.root / (job["run"] or "runs")
         with _phase(row, "preserve"):
             stored = publish_failure(self.store, source, self.producer, facts, scratch=private)

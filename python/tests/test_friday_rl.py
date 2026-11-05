@@ -1312,3 +1312,19 @@ def test_explicit_node_types_never_silently_mix_slow_nodes(rl, inputs, tmp_path,
         with pytest.raises(ValueError, match='explicit_node_type_capacity'):
             rl.submit(path, dry_run=True)
         assert not (path.parent / 'submission-intent.json').exists()
+
+
+def test_actor_monitor_preserves_expected_pending_until_terminal_observation(rl, tmp_path, monkeypatch):
+    monkeypatch.setattr(rl, 'load_plan', lambda path: {'actors': [{'actor': 'a'}, {'actor': 'b'}]})
+    monitor = rl.ActorAllocationMonitor(tmp_path / 'plan.json')
+    retired = set()
+    owner = SimpleNamespace(retired_actors=retired,
+        retire_actor=lambda actor, row: retired.add(actor))
+    monitor.poll(owner)
+    assert owner.actor_allocation_pending == {'a', 'b'}
+    monitor.observations.put({'actor': 'a', 'terminal': True})
+    monitor.poll(owner)
+    assert owner.actor_allocation_pending == {'b'}
+    monitor.observations.put({'actor': 'b', 'terminal': True})
+    monitor.poll(owner)
+    assert not owner.actor_allocation_pending

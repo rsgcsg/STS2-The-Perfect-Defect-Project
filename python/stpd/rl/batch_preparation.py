@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 import torch
-from torch import Tensor
-
 from spireagent.rl_contracts import HotPayloadRef, RowRef
 from spireagent.rl_dataplane_ports import BinaryRef
+from torch import Tensor
+
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.tensor_input import TensorFrame, joint_nodes, text_batch
@@ -993,6 +993,20 @@ def read_auxiliary_inputs(member: Any, rows: tuple[int, ...]) -> tuple[Auxiliary
 
 
 def verify_auxiliary(
+    request: dict[str, Any], members: tuple[Any, ...]
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    # ProcessPool's textual RemoteTraceback is otherwise lost at the RPC seam.
+    # Attach only stack locations before pickling the original exception back.
+    from spireagent.local_diagnostics import exception_facts
+
+    try:
+        return _verify_auxiliary(request, members)
+    except Exception as error:
+        cast(Any, error).remote_diagnostic = exception_facts(error)
+        raise
+
+
+def _verify_auxiliary(
     request: dict[str, Any], members: tuple[Any, ...]
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
     """Validate late typed/public labels in a CPU process, outside learner locks.

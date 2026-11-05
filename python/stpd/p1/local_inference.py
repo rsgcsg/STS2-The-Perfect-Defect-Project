@@ -26,6 +26,8 @@ from typing import Any, cast
 
 import torch
 
+from spireagent.local_diagnostics import exception_facts
+
 from .data import digest, json_bytes
 from .export import adapter_identity, bound_projection, load_model
 from .frame_compiler import FrameCompiler
@@ -392,7 +394,8 @@ class SegmentInferencePool(LocalInferencePool):
                 except Exception as error:
                     response = {"request_id": value["request_id"],
                                 "error": type(error).__name__,
-                                "error_code": getattr(error, "code", None)}
+                                "error_code": getattr(error, "code", None),
+                                "error_diagnostic": exception_facts(error)}
                 connection.send_bytes(json_bytes(response))
         except (OSError, EOFError, ValueError, TypeError, KeyError):
             return
@@ -592,7 +595,8 @@ class CentralInferencePool(LocalInferencePool):
                                                        "result": response}))
                 except Exception as error:
                     connection.send_bytes(json_bytes({"request_id": value["request_id"],
-                        "error": type(error).__name__, "error_code": getattr(error, "code", None)}))
+                        "error": type(error).__name__, "error_code": getattr(error, "code", None),
+                        "error_diagnostic": exception_facts(error)}))
         except (OSError, EOFError, ValueError, TypeError, KeyError):
             return  # No inference or control request is automatically retried.
         finally:
@@ -800,8 +804,11 @@ class SegmentConnection:
             if response.get("error_code"):
                 from spireagent.json_boundary import BoundaryError
 
-                raise BoundaryError("rl_control", response["error_code"])
-            raise ValueError(f"RL service {operation} failed: {response.get('error')}")
+                error: ValueError = BoundaryError("rl_control", response["error_code"])
+            else:
+                error = ValueError(f"RL service {operation} failed: {response.get('error')}")
+            cast(Any, error).remote_diagnostic = response.get("error_diagnostic")
+            raise error
         return cast(dict[str, Any], response["result"])
 
     def close(self) -> None:
