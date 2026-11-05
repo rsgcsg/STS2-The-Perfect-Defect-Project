@@ -13,12 +13,13 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
 from safetensors.torch import save as save_tensors
 
+from spireagent.rl_contracts import RowRef
 from spireagent.rl_dataplane_ports import (
     MAX_HEADER_BYTES,
     MAX_PACKET_BYTES,
@@ -37,7 +38,7 @@ from .prepared_batch import AuxiliaryFrame
 
 # Closed descriptor vocabulary. No dynamic import/class construction from wire.
 _CLASSES = {c.__name__: c for c in (bp.PreparedSource, bp._TensorView, TensorFrame, Reduction)}
-_DTYPES = {
+_DTYPES: dict[str, np.dtype[Any]] = {
     "F32": np.dtype("<f4"),
     "F64": np.dtype("<f8"),
     "I64": np.dtype("<i8"),
@@ -91,9 +92,9 @@ def _pack(value: Any) -> Any:
     raise ValueError("binary_unsupported_descriptor")
 
 
-def _unpack(value: Any) -> Any:
+def _unpack(value: Any, slabs: tuple[torch.Tensor, ...]) -> Any:
     if isinstance(value, list):
-        return [_unpack(v) for v in value]
+        return [_unpack(v, slabs) for v in value]
     if not isinstance(value, dict):
         return value
     if "$class" in value:
@@ -105,14 +106,28 @@ def _unpack(value: Any) -> Any:
             expected -= {"host", "metadata_cache"}
         if set(value["fields"]) != expected:
             raise ValueError("binary_descriptor_fields_changed")
-        return cls(**{k: _unpack(v) for k, v in value["fields"].items()})
+        fields = {k: _unpack(v, slabs) for k, v in value["fields"].items()}
+        if cls is bp._TensorView:
+            index, offset, shape = fields["slab"], fields["offset"], fields["shape"]
+            if (
+                type(index) is not int
+                or not 0 <= index < len(slabs)
+                or type(offset) is not int
+                or offset < 0
+                or not isinstance(shape, tuple)
+                or any(type(d) is not int or d < 0 for d in shape)
+                or math.prod(shape) > slabs[index].numel() - offset
+            ):
+                raise ValueError("binary_tensor_offset_out_of_bounds")
+            return slabs[index][offset : offset + math.prod(shape)].view(shape)
+        return cls(**fields)
     if "$tuple" in value:
         if set(value) != {"$tuple"}:
             raise ValueError("binary_invalid_tuple")
-        return tuple(_unpack(v) for v in value["$tuple"])
+        return tuple(_unpack(v, slabs) for v in value["$tuple"])
     if any(k.startswith("$") for k in value):
         raise ValueError("binary_unknown_descriptor")
-    return {k: _unpack(v) for k, v in value.items()}
+    return {k: _unpack(v, slabs) for k, v in value.items()}
 
 
 def _slabs(raw: memoryview) -> tuple[np.ndarray, ...]:
@@ -189,7 +204,20 @@ def _witness(segment: dict[str, Any]) -> dict[str, Any]:
                 "successor": {
                     "acquisition_id": successor["acquisition_id"],
                     "observation": {
-                        k: observation.get(k) for k in ("status", "scene", "combat", "player")
+                        "status": observation.get("status"),
+                        "scene": {
+                            "native_kind": (observation.get("scene") or {}).get("native_kind")
+                        },
+                        "combat": {
+                            "availability": (observation.get("combat") or {}).get("availability")
+                        },
+                        "player": {
+                            "content": {
+                                "hp": ((observation.get("player") or {}).get("content") or {}).get(
+                                    "hp"
+                                )
+                            }
+                        },
                     },
                 },
                 "successor_sha256": _sha(json_bytes(successor)),
@@ -203,7 +231,7 @@ def _bindings(segment: dict[str, Any], source: bp.PreparedSource) -> list[dict[s
     return [
         {
             "source": ref,
-            "choices": list(frame.choices),
+            "choices": list(cast(TensorFrame, frame).choices),
             "input_sha256": step["behavior"]["input_sha256"],
             "observation_sha256": step["behavior"]["compiled_input"]["observation_sha256"],
             "catalog_sha256": step["behavior"]["compiled_input"]["catalog_sha256"],
@@ -250,12 +278,8 @@ def encode_packet(
     return EncodedSegment(dict(env, packet_sha256=_sha(packet), packet_size=len(packet)), packet)
 
 
-def decode_packet(
-    raw: bytes | memoryview,
-    *,
-    envelope: dict[str, Any] | None = None,
-    compiler: FrameCompiler | None = None,
-) -> tuple[bp.PreparedSource, dict[str, Any]]:
+def packet_header(raw: bytes | memoryview) -> dict[str, Any]:
+    """Bounded descriptor inspection without decoding tensors or reading JSON inputs."""
     raw = memoryview(raw)
     if len(raw) < 24 or len(raw) > MAX_PACKET_BYTES or raw[:8] != TENSOR_SEGMENT_MAGIC:
         raise ValueError("binary_magic_or_size_changed")
@@ -269,6 +293,18 @@ def decode_packet(
         or header["schema"] != TENSOR_SEGMENT_FORMAT
     ):
         raise ValueError("binary_unknown_schema")
+    return header
+
+
+def decode_packet(
+    raw: bytes | memoryview,
+    *,
+    envelope: dict[str, Any] | None = None,
+    compiler: FrameCompiler | None = None,
+) -> tuple[bp.PreparedSource, dict[str, Any]]:
+    raw = memoryview(raw)
+    header = packet_header(raw)
+    n = int.from_bytes(raw[8:16], "little")
     env = header["envelope"]
     common = {
         "format",
@@ -317,24 +353,10 @@ def decode_packet(
         or env.get("row_bindings_sha256") != _sha(json_bytes(header["bindings"]))
     ):
         raise ValueError("binary_row_bindings_changed")
-    slabs = _slabs(raw[16 + n :])
-    tree = _unpack(header["source"])
-
-    def validate(node: Any) -> Any:
-        if isinstance(node, bp._TensorView) and (
-            type(node.slab) is not int
-            or not 0 <= node.slab < len(slabs)
-            or type(node.offset) is not int
-            or node.offset < 0
-            or not isinstance(node.shape, tuple)
-            or any(type(d) is not int or d < 0 for d in node.shape)
-            or math.prod(node.shape) > len(slabs[node.slab]) - node.offset
-        ):
-            raise ValueError("binary_tensor_offset_out_of_bounds")
-        return node
-
-    bp._map_structure(tree, validate)
-    source = bp.unpack_transport((tree, slabs))
+    slabs = tuple(torch.from_numpy(array) for array in _slabs(raw[16 + n :]))
+    # Decode + bounds-check + materialize views in one traversal. No discarded
+    # dataclass copies or second walk over all scalar metadata.
+    source = _unpack(header["source"], slabs)
     validate_source(source, header, compiler=compiler)
     return source, header
 
@@ -457,7 +479,7 @@ def validate_source(
         raise ValueError("binary_ragged_row_count_changed")
 
 
-def auxiliary_frame(source: bp.PreparedSource, ref: dict[str, Any]) -> AuxiliaryFrame:
+def auxiliary_frame(source: bp.PreparedSource, ref: RowRef) -> AuxiliaryFrame:
     row = ref.get("row")
     if (
         type(row) is not int
@@ -466,7 +488,10 @@ def auxiliary_frame(source: bp.PreparedSource, ref: dict[str, Any]) -> Auxiliary
         or source.frames[row] is None
     ):
         raise ValueError("binary_auxiliary_row_binding_changed")
-    return AuxiliaryFrame(ref, source.frames[row], source.floors[row])
+    frame = source.frames[row]
+    if frame is None:
+        raise ValueError("binary_auxiliary_frame_missing")
+    return AuxiliaryFrame(ref, frame, source.floors[row])
 
 
 class TensorSegmentEncoder:
@@ -600,7 +625,24 @@ class TensorSegmentEncoder:
                 bundle_id=_sha(json_bytes({"segment": segment_id, "labels": labels})),
                 typed_original=labels.get("typed_original"),
             )
+            witness = dict(header["witness"])
+            original = next(
+                (
+                    s.get("payload")
+                    for s in labels.get("segments", ())
+                    if s.get("segment_id") == segment_id
+                ),
+                None,
+            )
+            if original is not None:
+                if (
+                    original.get("format") != TENSOR_SEGMENT_FORMAT
+                    or original.get("sha256") != _sha(raw)
+                    or original.get("size") != len(raw)
+                ):
+                    raise ValueError("binary_auxiliary_original_packet_changed")
+                witness["original_payload"] = dict(original)
             packets.append(
-                encode_packet(aux, aux_env, witness=header["witness"], bindings=header["bindings"])
+                encode_packet(aux, aux_env, witness=witness, bindings=header["bindings"])
             )
         return tuple(packets)

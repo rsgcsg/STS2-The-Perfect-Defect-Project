@@ -48,6 +48,10 @@ class AuxiliaryInput:
     source: RowRef
     member: BatchMember
     body: bytes
+    # Binary snapshots carry the already verified packet envelope so selection
+    # need not parse a large descriptor again on the learner thread. Historical
+    # JSON snapshots leave this unset; reader choice is still explicit by ref.
+    envelope: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
