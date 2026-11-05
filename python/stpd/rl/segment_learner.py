@@ -375,6 +375,10 @@ class SegmentLearner:
         self.wal = None
         self.binary_sources: BinarySources
         self.wal_replication: WalReplication
+        self.source_prefetch_changed = threading.Event()
+        self.source_prefetch_stopping = threading.Event()
+        self.source_prefetch_gate = threading.Lock()
+        self.source_prefetch_thread: threading.Thread | None = None
         self.stop_fact: dict[str, Any] | None = None
         self.stop_epoch = 0
         self.training_discarded_rows = 0
@@ -703,6 +707,10 @@ class SegmentLearner:
                                                      on_change=self._notify_capacity)
             else:
                 self.archive.start_capacity_monitor(settings.archive_poll_seconds)
+        if self.wal is not None:
+            self.source_prefetch_thread = threading.Thread(
+                target=self._source_prefetch_loop, name="rl-source-prefetch", daemon=True)
+            self.source_prefetch_thread.start()
 
     def archive_capacity(self) -> dict[str, Any]:
         if self.archive is None:
@@ -801,8 +809,8 @@ class SegmentLearner:
             identity = copy.deepcopy(self.pool.snapshots[key or self.pool.latest])
             if not isinstance(cached, list) or len(cached) > 2048:
                 raise ValueError("invalid_node_cache_snapshot_list")
-            cast(SegmentInferencePool, self.pool).node_caches[node] = (set(cached) & self.pool.snapshots.keys()) | {
-                identity["snapshot_sha256"]}
+            cast(SegmentInferencePool, self.pool).node_caches[node] = (
+                set(cached) & self.pool.snapshots.keys()) | {identity["snapshot_sha256"]}
         root = self.live_work / "mu-network" / identity["snapshot_sha256"]
         root.mkdir(parents=True, exist_ok=True)
         if not (root / "COMPLETE").exists():
@@ -1106,7 +1114,8 @@ class SegmentLearner:
             return previous.response
         node, snapshot = request.get("node_id"), request.get("node_cached_mu_snapshot")
         if (not isinstance(node, str) or not node
-                or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+                or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(
+                    node, set())):
             raise ValueError("cached_mu_publication_changed")
         wait = _BeginWait(request, threading.Condition(self.control_lock))
         self.capacity_waiters[key] = wait
@@ -1141,7 +1150,8 @@ class SegmentLearner:
                 node = request.get("node_id")
                 snapshot = request.get("node_cached_mu_snapshot")
                 if (not isinstance(node, str) or not node
-                        or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+                        or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(
+                    node, set())):
                     raise ValueError("cached_mu_publication_changed")
                 lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
                 mu = copy.deepcopy(self.pool.snapshots[snapshot])
@@ -1191,8 +1201,9 @@ class SegmentLearner:
                     stop_receipt = self.wal.receipt(key, original)
                     if stop_receipt["found"]:
                         return cast(dict[str, Any], stop_receipt["response"])
-                    response: dict[str, Any] = {"stopped": True, "epoch": max(self.stop_epoch, epoch),
-                                "original": self.stop_fact or original}
+                    response: dict[str, Any] = {"stopped": True,
+                        "epoch": max(self.stop_epoch, epoch),
+                        "original": self.stop_fact or original}
                     try:
                         self.wal.append(key, original, response, kind="stop")
                     except BaseException:
@@ -1310,8 +1321,9 @@ class SegmentLearner:
                         snapshot = request.get("node_cached_mu_snapshot", self.pool.latest)
                         if self.wal is not None:
                             node = request.get("node_id")
-                            if (not isinstance(node, str) or not node or
-                                    snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+                            node_cache = cast(SegmentInferencePool, self.pool).node_caches
+                            if (not isinstance(node, str) or not node
+                                    or snapshot not in node_cache.get(node, set())):
                                 raise ValueError("cached_mu_publication_changed")
                         mu = copy.deepcopy(self.pool.snapshots[snapshot])
 
@@ -1454,6 +1466,8 @@ class SegmentLearner:
                     self._release(member.payload, "ppo:" + member.segment_id)
                     for aux in self.hp_binary_members.pop(member.segment_id, ()):
                         self._release(aux.payload, "labels:" + member.segment_id)
+                else:
+                    self.source_prefetch_changed.set()
             return result
 
     def _binary_auxiliary_members(self, request: dict[str, Any],
@@ -1497,6 +1511,67 @@ class SegmentLearner:
                 cast("BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
                     self.binary_sources.envelope(member.payload))
 
+    def _source_prefetch_loop(self) -> None:
+        """Coalesce commit hints; copy/decode sources before numerical selection.
+
+        A normal admitted queue already enforces the per-episode row limit, so
+        its first two datasets are a FIFO prefix. This only reads that prefix;
+        it never freezes a request, samples auxiliary rows or advances RNG.
+        """
+        while True:
+            self.source_prefetch_changed.wait()
+            self.source_prefetch_changed.clear()
+            if self.source_prefetch_stopping.is_set():
+                return
+            held: list[BatchMember] = []
+            try:
+                with self.condition:
+                    if self.newlease_stopped or self.input_fenced:
+                        continue
+                    rows = 0
+                    for record in self.queue.pending:
+                        member = self._member(record)
+                        self._retain(member.payload, "source-prefetch")
+                        held.append(member)
+                        rows += member.rows
+                        if rows >= 2 * self.settings.dataset_rows:
+                            break
+                # Provider borrow, hashing, arena copy and worker submission
+                # hold neither the learner condition nor a socket handler.
+                for member in held:
+                    if self.source_prefetch_stopping.is_set():
+                        break
+                    try:
+                        # A CP barrier temporarily fences the same preparer.
+                        # Serialize only this source copy against that window;
+                        # never acquire this gate under the learner condition.
+                        with self.source_prefetch_gate:
+                            self._prefetch_members((member,))
+                    except ValueError as error:
+                        if str(error) != "binary_source_slots_busy":
+                            raise
+                        # Current/next requests still own every arena. Normal
+                        # submission remains authoritative; retry on the next
+                        # commit or dataset release, never on a timed spin.
+                        break
+            except BaseException as error:
+                with self.condition:
+                    self.input_fenced = self.newlease_stopped = True
+                    self.input_failure = {"operation": "source_prefetch",
+                        "code": "INVALID_PACKET", "error_type": type(error).__name__}
+                    self.condition.notify_all()
+                    self._notify_capacity(force=True)
+                try:
+                    self._transport_failure({"fatal": True, **self.input_failure})
+                except BaseException as notification_error:
+                    with self.condition:
+                        self.input_failure["notification_error_type"] = type(
+                            notification_error).__name__
+                return
+            finally:
+                for member in held:
+                    self._release(member.payload, "source-prefetch")
+
     def _members_for_run(self, run_id: str) -> tuple[BatchMember, ...]:
         with self.condition:
             return tuple(
@@ -1515,7 +1590,8 @@ class SegmentLearner:
         members = (self._binary_auxiliary_members(request, originals)
                    if self.wal is not None else originals)
         self._prefetch_members(members)
-        groups = (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(request, members).result()
+        groups = (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
+                      request, members).result()
                   if self.wal is not None else
                   self.input_preparer.pool.submit(verify_auxiliary, request, members).result())
         with self.condition:
@@ -1631,7 +1707,9 @@ class SegmentLearner:
             self._prefetch_members(members)
             self.pending_labels.append(
                 (
-                    (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(request, members) if self.wal is not None
+                    (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
+                         request, members)
+                     if self.wal is not None
                      else self.input_preparer.pool.submit(verify_auxiliary, request, members)),
                     members,
                     owner,
@@ -1706,6 +1784,7 @@ class SegmentLearner:
             for record in records:
                 self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
             self._notify_capacity()
+            self.source_prefetch_changed.set()
 
     def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
         request = active["request"]
@@ -2064,7 +2143,10 @@ class SegmentLearner:
                     self._release(member.payload,
                         f"prepare:{self.generation}:{pending['request'].identity.sequence}")
                 self.pending_batch = None
-            cast("BinaryBatchPreparer", self.input_preparer).barrier(generation=self.generation)
+            with self.source_prefetch_gate:
+                cast("BinaryBatchPreparer", self.input_preparer).barrier(
+                    generation=self.generation)
+            self.source_prefetch_changed.set()
             self.rng.setstate(self.committed_selection_rng)
         self.checkpoint_sequence += 1
         began = time.perf_counter()
@@ -2105,6 +2187,10 @@ class SegmentLearner:
             self.condition.notify_all()
             if self.wal is not None:
                 self._notify_capacity(force=True)
+        if self.source_prefetch_thread is not None:
+            self.source_prefetch_stopping.set()
+            self.source_prefetch_changed.set()
+            self.source_prefetch_thread.join()
         with ExitStack() as cleanup:
             if self.wal is not None and not keep_journal:
                 cleanup.callback(self._close_journal)

@@ -16,6 +16,7 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 | 边 | requires → provides；失败含义 | 实现状态 | 开关 / 唯一入口 |
 |---|---|---|---|
 | E1 打局→段 | Runtime 确认的 completed directive、真实 successor、同 μ 全分布及尾值、原件 fsync 承诺 → ≤64 行单 μ 热段；未知动作不入段 | **默认**：Exchange 本地 `.rl-hot/<run>/<generation>`，准入不等待 archive；自然终局尾段仍等待 typed 终局 | `LearnerConfig.segments`；`SegmentManagedExecutor` → `put_hot_segment` → commit |
+| E1 socket 实现 | 同原 E1，bytes 与 row lease 分别计量 | **备选**：R42 显式 profile；CPU合流门已验，真实World吞吐由本轮P3验证；没有自动回退 | 下节“显式 binary socket profile”；producer → socket →本地FULL WAL → P1 BinaryBatchPreparer |
 | E1 历史编码 | 原完整 artifact/input pack → 原历史内容 | **只读**：segment v1/v2 reader；逐段上传/压缩/复制后准入已移除 | `managed_segment_store.read_segment`；旧 writer 拒绝 live 发布 |
 | E2 推理 | 公平公开输入、完整 catalog、冻结 μ → scores 与51类分布；不判合法性 | **默认**：actor CPU μ、1线程、μ 内有界文字缓存 | `segments.central_scoring=false`；`LocalMuScorer`，actor loopback 统一服务 Agent 和 producer |
 | E2 中央实现 | 同上 | **临时**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；退出条件：RL5 收卡时仍无两卡计划就退役。当前工程测试显式使用；当本地推理加到本卡100核仍喂不满GPU时，按实测比较同一卡的中央评分；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
@@ -166,6 +167,71 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
 不重新 offer seed。尾段写入撞上已撤销的旧热代也追加丢弃，不改成 unknown 或 accepted。
 关局或actor终态后，尚未准备的PPO段仍可能带跨段HP回填；此前段的delayed引用保留到同局PPO
 均交接给标签reader，再按真实引用释放。关局不等于所有标签已消费，也不补造终局标签。
+
+## 显式 binary socket profile（R42）
+
+这是同一 Actor/Exchange/learner 的传输和准备实现选择，学习规则、原World账本和两种5%分母不变。
+只在新代、新work及准确配套的codec/preparer版本上启用；配置不写入正在运行的final，旧JSON输入不自动迁移。
+纯契约在 `spireagent.rl_dataplane_ports`，字节/引用与WAL归 `spireagent.rl_socket_transport/rl_local_wal`，
+完整数值、catalog及晚标签验证仍由 `stpd.rl.binary_preparation` 的worker负责。
+
+正常运营沿原 `tools/friday/watch.py --config <完整watch.json> --work <fresh-work>`，在原完整segment配置加：
+
+```json
+{
+  "cpus": 32,
+  "cpu_budget": 500,
+  "actors": 400,
+  "actor_node_types": ["fc430"],
+  "dataplane": {
+    "lanes": 400,
+    "source_bytes": 21474836480,
+    "source_slots": 8192,
+    "prepare_slots": 8,
+    "preparation_workers": 8,
+    "assembly_workers": 2,
+    "preparation_threads": 1,
+    "mu_pull_interval_seconds": 15
+  }
+}
+```
+
+此片段不是完整启动配置；原run/peer/CP/seed/预算、健康门和精确源码字段必须保留。
+`rl.py learn --dataplane-profile <profile.json>` 或应用 `rl_learner --dataplane-profile` 也接同一实现，
+profile内容就是上面的dataplane对象；不传则沿原JSON实现。socket实现要求actor本地μ，不选中央评分。
+`rl.py launch --cpus` 参数化，默认32；核数总额由原watch检查。配置支持1–4096路，
+本轮CPU预算500时actor≤468，实际fc430空闲不足会报错；`rl.py submit --node-type`可重复给显式OR列表，
+watch使用`actor_node_types`，都默认仅fc430。没有不够时自动混入c6220的分支。
+
+learner启动抬高并核实际`RLIMIT_NOFILE`，按每路连接额度、源槽和保留FD计算；不足直接拒绝。
+profile回执写实际fd限制、探测结果及容量，status有当前连接、accept错误/FD耗尽和source/preparer状态。
+`source_bytes`约束接收body，`source_slots`约束接收条数；它们与PPO行数额度独立。
+行容量为`max(旧capacity_rows, lanes*steps+4*dataset_rows)`，episode公平上限不变。
+`prepare_slots`为P1共享arena数，P1也分别使用`source_bytes`作为总arena额度；接收body+整块copy实际两份，
+不能当总共20GiB。P1的prepared/pinned预算另计；准备worker与拼批worker分别由
+`preparation_workers/assembly_workers`控制，health给配置数与实际PID/忙时。
+
+`dataplane.root`可省略，默认learner节点`/tmp/stpd-rl-<uid>/<run>/<generation>`；
+显式路径必须节点本地且本代独占，启动会做文件系统检查、write/fsync/readback，不能写共享NFS。
+WAL `synchronous=FULL`在原输入ACK前落盘，异步不可变前缀复制沿原archive目标；副本缺尾只能答UNKNOWN。
+重新打开旧本地WAL只提供fenced receipt读，不恢复grant、queue或SGD；正常恢复仍只读自包含CP并用新generation/work。
+原`receipt`保留完整原请求与response，丢回复先查询；unknown不自动重发。STOP停止新lease，
+已授World/段按原close/drain收口，未使用训练行追加discard处置，不改旧ACK或World结果。
+
+commit只做envelope/ref/size/hash/lease/身份及`packet_header`核验；完整decode/数值验证不在控制线程。
+commit后后台只预取FIFO队头两批的immutable source，事件合并、复制在learner锁外，
+不选aux、不改RNG、不提前冻结下一批。checkpoint屏障与这个预取线程互斥；close先停并join预取，再关闭preparer。
+晚终局/HP通过原segment refs绑定的binary aux验证，即使原PPO body已释放也保留原typed标签时点。
+actor节点μ缓存单次拉取完整model+heads并核身份，默认15秒metadata刷新；不足以装新μ时暂停新grant，
+不替换仍被旧尾值引用的快照。初次actor本地Store为空时，由已验证缓存导入原manifest和payload再注册。
+
+actor-summary记录hostname、CPU型号和五段时间：game step往返、μ推理、begin等待、上传、原件小文件fsync。
+这些墙钟区间可重叠，不能相加当总耗时；可选观测缺失保留unknown。各分进程CPU统计本轮不实现。
+FD耗尽会计数/告警并退避，其它accept错误发typed failure；准备/完整包验证失败fence owner，
+沿原watch/Runtime Stop诊断，不能切回JSON或补造NOT_ACCEPTED。
+
+CPU合成合流、loopback连接及配对hash只证明接线与所测反例；真实跨节点吞吐、World、CP替换恢复、GPU和模型效果
+各需原阶段实测。本实现仍是一个learner控制/WAL/选批owner与单数值更新owner，多GPU不由该profile自动获得。
 
 ## 启动、CPU 短测和只替换 learner
 

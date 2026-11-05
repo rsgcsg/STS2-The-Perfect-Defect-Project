@@ -621,6 +621,7 @@ def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails
         newlease_stopped=False,
         input_fenced=False,
         pending_labels=[],
+        source_prefetch_thread=None,
         hot_references={},
         wal=None,
         telemetry_futures=[],
