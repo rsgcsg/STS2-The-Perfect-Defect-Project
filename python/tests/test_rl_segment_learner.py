@@ -936,3 +936,33 @@ def test_actor_allocation_drain_deadline_is_failed_with_pending_names(tmp_path, 
     events = owner.exchange.event_records()
     assert events[-1]['kind'] == 'failed'
     assert not any(e['kind'] == 'finished' for e in events)
+
+
+def test_label_checks_do_not_queue_ahead_of_next_batch_preparation() -> None:
+    from concurrent.futures import Future, ThreadPoolExecutor
+
+    owner = SimpleNamespace(preparation_dispatch=ThreadPoolExecutor(max_workers=1),
+                            label_dispatch=ThreadPoolExecutor(max_workers=1))
+    gate = threading.Event()
+
+    def done(value: str) -> Future:
+        future: Future = Future()
+        future.set_result(value)
+        return future
+
+    def slow_label() -> Future:
+        gate.wait(10)
+        return done("label")
+
+    try:
+        label = SegmentLearner._dispatch_preparation(owner, slow_label,
+                                                     executor=owner.label_dispatch)
+        batch = SegmentLearner._dispatch_preparation(owner, lambda: done("batch"))
+        assert batch.result(timeout=2) == "batch"
+        assert not label.done()
+        gate.set()
+        assert label.result(timeout=10) == "label"
+    finally:
+        gate.set()
+        owner.preparation_dispatch.shutdown(wait=True)
+        owner.label_dispatch.shutdown(wait=True)
