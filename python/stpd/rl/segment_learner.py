@@ -380,6 +380,7 @@ class SegmentLearner:
         self.source_prefetch_changed = threading.Event()
         self.source_prefetch_stopping = threading.Event()
         self.source_prefetch_gate = threading.Lock()
+        self.episode_ends: dict[str, threading.Event] = {}
         self.source_prefetch_thread: threading.Thread | None = None
         self.stop_fact: dict[str, Any] | None = None
         self.stop_epoch = 0
@@ -1330,7 +1331,7 @@ class SegmentLearner:
         if operation == "commit":
             return self._admit(request)
         if operation == "episode_end":
-            return self._end_episode(request)
+            return self._end_episode_once_only(request)
         actor, episode = request["actor"], request["episode"]
         # The legacy begin sleeps on row capacity; it must release every gate
         # needed by its original commits. Binary begin has its own two phases.
@@ -1638,6 +1639,28 @@ class SegmentLearner:
                 for record in self.sources.values()
                 if record["run_id"] == run_id
             )
+
+    def _end_episode_once_only(self, request: dict[str, Any]) -> dict[str, Any]:
+        # The client's 120 s wait can expire while label validation runs; its
+        # reconnect sees no receipt yet and resubmits. Run one original only:
+        # the resubmission waits and answers from that original's receipt.
+        key = hashlib.sha256(json_bytes(request)).hexdigest()
+        with self.condition:
+            running = self.episode_ends.get(key)
+            if running is None:
+                done = self.episode_ends[key] = threading.Event()
+        if running is not None:
+            running.wait()
+            with self.condition:
+                duplicate = self._receipt(request)
+            return (duplicate if duplicate is not None
+                    else self._end_episode_once_only(request))
+        try:
+            return self._end_episode(request)
+        finally:
+            with self.condition:
+                del self.episode_ends[key]
+            done.set()
 
     def _end_episode(self, request: dict[str, Any]) -> dict[str, Any]:
         with self.condition:

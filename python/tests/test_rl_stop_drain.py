@@ -44,6 +44,7 @@ def test_original_empty_end_after_stop_and_real_auxiliary_worker_failure(
     owner.generation = request["training_generation"]
     owner.input_gate = threading.RLock()
     owner.source_prefetch_gate = threading.RLock()
+    owner.episode_ends = {}
     owner.ahead_batches = deque()
     owner.condition = threading.Condition(threading.RLock())
     owner.exchange = Exchange(

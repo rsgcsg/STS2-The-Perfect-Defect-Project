@@ -966,3 +966,50 @@ def test_label_checks_do_not_queue_ahead_of_next_batch_preparation() -> None:
         gate.set()
         owner.preparation_dispatch.shutdown(wait=True)
         owner.label_dispatch.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("original_fails", [False, True])
+def test_resubmitted_episode_end_waits_for_inflight_original(original_fails) -> None:
+    gate, started, calls, receipts = threading.Event(), threading.Event(), [], {}
+
+    class Owner:
+        condition = threading.Condition()
+        episode_ends: dict = {}
+        _end_episode_once_only = SegmentLearner._end_episode_once_only
+
+        def _receipt(self, request):
+            return receipts.get(request["episode"])
+
+        def _end_episode(self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                started.set()
+                assert gate.wait(2)
+                if original_fails:
+                    raise ValueError("original_failed_without_fact")
+            receipts[request["episode"]] = {"run_id": request["run_id"]}
+            return receipts[request["episode"]]
+
+    owner, request = Owner(), {"actor": "a", "episode": "e", "run_id": "e"}
+    results, errors = [], []
+
+    def call():
+        try:
+            results.append(owner._end_episode_once_only(request))
+        except ValueError as error:
+            errors.append(str(error))
+
+    first = threading.Thread(target=call)
+    first.start()
+    assert started.wait(2)
+    second = threading.Thread(target=call)
+    second.start()
+    time.sleep(0.05)
+    assert len(calls) == 1  # the reconnect resubmission never runs a second validation
+    gate.set()
+    first.join(2)
+    second.join(2)
+    # A failed original leaves no fact, so the waiting resubmission validates once itself.
+    assert results == [{"run_id": "e"}] * (1 if original_fails else 2)
+    assert errors == (["original_failed_without_fact"] if original_fails else [])
+    assert len(calls) == (2 if original_fails else 1) and not owner.episode_ends
