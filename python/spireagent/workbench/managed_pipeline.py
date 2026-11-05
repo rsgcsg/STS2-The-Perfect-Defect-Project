@@ -299,12 +299,13 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                     # full retention of the original that was just verified.
                     from spireagent.local_diagnostics import exception_facts
 
-                    row["processing_diagnostic"] = artifacts.put("processing-error.json",
-                        json_bytes(exception_facts(error)))
                     row.update(execution_status="unknown",
                         execution_reason="post_verification_processing_failed",
                         processing_error=error.code if isinstance(error, BoundaryError)
                         else type(error).__name__)
+                    checkpoint()  # Diagnostic I/O cannot leave a retryable delivery.
+                    row["processing_diagnostic"] = artifacts.put("processing-error.json",
+                        json_bytes(exception_facts(error)))
                     self._preserve_failure(row, artifacts, job, private)
                     row["elapsed_seconds"] = time.time() - row.get(
                         "pipeline_started_at", time.time()

@@ -551,7 +551,9 @@ def test_hot_records_and_lineage_do_not_join_two_restore_generations(tmp_path):
         assembler.close()
 
 
-def test_label_delivery_failure_keeps_full_original_without_replaying_world(tmp_path, monkeypatch):
+@pytest.mark.parametrize("diagnostic_write_fails", [False, True])
+def test_label_delivery_failure_keeps_full_original_without_replaying_world(
+        tmp_path, monkeypatch, diagnostic_write_fails):
     import shutil
     from types import SimpleNamespace
 
@@ -602,7 +604,25 @@ def test_label_delivery_failure_keeps_full_original_without_replaying_world(tmp_
         raise error
 
     monkeypatch.setattr(executor, "_record_verified_original", lost)
+    original_put = _Artifacts.put
+
+    def put(self, name, raw):
+        if diagnostic_write_fails and name == "processing-error.json":
+            raise OSError("injected diagnostic disk failure")
+        return original_put(self, name, raw)
+
+    monkeypatch.setattr(_Artifacts, "put", put)
     result = executor.preserve_report(artifacts.root / "report.json")["episodes"][0]
+    if diagnostic_write_fails:
+        assert result["status"] == "save_failed" and result["save_error"] == "OSError"
+        assert result["execution_status"] == "unknown"
+        assert result["execution_reason"] == "post_verification_processing_failed"
+        persisted = json.loads((artifacts.root / "report.json").read_bytes())["episodes"][0]
+        assert persisted["execution_status"] == "unknown"
+        # A save-only recovery reopens originals but must never repeat label delivery.
+        executor.preserve_report(artifacts.root / "report.json")
+        assert calls == [1]
+        return
     assert result["status"] == "unknown"
     assert result["reason"] == "post_verification_processing_failed"
     assert calls == [1]
