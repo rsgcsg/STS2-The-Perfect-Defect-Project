@@ -928,8 +928,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
                                           '-p', 'smp_gpu', '-o', '%i']).splitlines()
             coexistence = None
             if held_job_id is not None:
-                if existing != [held_job_id]:
-                    raise ValueError('exact_single_held_GPU_allocation_required')
+                if held_job_id not in existing:
+                    raise ValueError('owned_held_GPU_allocation_required')
                 detail = scheduler.output(['squeue', '-h', '-j', held_job_id,
                     '-o', '%T|%b|%j']).split('|')
                 if detail != ['RUNNING', f'gres/gpu:{gpu}:1', 'rl4-learner']:

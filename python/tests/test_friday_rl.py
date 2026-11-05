@@ -1231,7 +1231,10 @@ def test_explicit_capacity_limit_survives_repeated_actor_binding():
             SegmentConfig(capacity_limit_rows=invalid)
 
 
-def test_held_gpu_launch_offers_one_step_and_never_sbatch(rl, inputs, tmp_path, monkeypatch):
+@pytest.mark.parametrize('other_jobs', ['', '\n80'])
+def test_held_gpu_launch_offers_one_step_and_never_sbatch(
+    rl, inputs, tmp_path, monkeypatch, other_jobs
+):
     execution, config, actors = inputs
     script = tmp_path/'gpu.sh'
     script.write_text('#!/bin/sh\n')
@@ -1244,7 +1247,7 @@ def test_held_gpu_launch_offers_one_step_and_never_sbatch(rl, inputs, tmp_path, 
             return '79.batch\n79.extern'
         if '-j' in command:
             return 'RUNNING|gres/gpu:a100:1|rl4-learner'
-        return '79'
+        return '79' + other_jobs
     monkeypatch.setattr(rl.scheduler, 'output', schedule)
     def process(command, **kwargs):
         commands.append(command)
