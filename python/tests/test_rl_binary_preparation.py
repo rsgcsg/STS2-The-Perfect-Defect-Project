@@ -473,3 +473,23 @@ def test_full_arena_waits_then_resumes_after_real_reservation_release(model, tmp
         if held:
             preparer._release(held)
         preparer.shutdown()
+
+
+def test_process_pool_callbacks_never_wait_for_preparer_lock(model, tmp_path):
+    # Submitters hold preparer.condition across pool.submit. A pool manager
+    # thread that waits for it stops draining results (Friday R5 hang).
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    values = [segment(model, name=f"actor/{i}", run_id=f"episode-{i}") for i in range(2)]
+    packets = [enc.encode(v) for v in values]
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    try:
+        with preparer.condition:
+            for ref, packet in zip(refs, packets, strict=True):
+                preparer.prefetch(ref, packet.envelope)
+                preparer.source_jobs[ref].result(timeout=20)
+        preparer.callbacks.submit(lambda: None).result(timeout=20)
+        assert all(arena.users == 0 for arena in preparer.arenas)
+    finally:
+        preparer.shutdown()

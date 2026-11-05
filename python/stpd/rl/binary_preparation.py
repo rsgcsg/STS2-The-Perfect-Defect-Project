@@ -530,6 +530,13 @@ class BinaryBatchPreparer:
             max_workers=prepared_batches, thread_name_prefix="rl-binary-ready")
         self.label_coordinator = ThreadPoolExecutor(
             max_workers=label_workers, thread_name_prefix="rl-binary-labels")
+        # ProcessPool done-callbacks run on that pool's manager thread, while
+        # pool.submit is called under self.condition. A manager thread waiting
+        # for self.condition stops draining results and its wakeup pipe; on
+        # Python <3.11.6 (gh-105829) the next submit then blocks forever.
+        # Callbacks only enqueue here; this one thread takes the lock.
+        self.callbacks = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-binary-callbacks")
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
@@ -694,8 +701,9 @@ class BinaryBatchPreparer:
             del self.sources[ref]
             raise
         self.source_jobs[ref] = job
-        job.add_done_callback(lambda done: self._record_worker("source", done))
-        job.add_done_callback(lambda _job: self._release((descriptor,)))
+        job.add_done_callback(
+            lambda done: self.callbacks.submit(self._record_worker, "source", done))
+        job.add_done_callback(lambda _job: self.callbacks.submit(self._release, (descriptor,)))
 
     def _wait_for_source(self, deadline: float) -> None:
         if self.closed or self.fenced:
@@ -794,7 +802,8 @@ class BinaryBatchPreparer:
                 role = "assembly" if function is _assemble else "labels"
                 pool = self.assembly_pool if function is _assemble else self.label_pool
                 future = pool.submit(_timed, function, ready, *worker_args)
-                future.add_done_callback(lambda done: self._record_worker(role, done))
+                future.add_done_callback(
+                    lambda done: self.callbacks.submit(self._record_worker, role, done))
                 result = future.result().value
                 if function is _assemble:
                     if output is None:
@@ -956,6 +965,8 @@ class BinaryBatchPreparer:
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.assembly_pool.shutdown(wait=True, cancel_futures=True)
         self.label_pool.shutdown(wait=True, cancel_futures=True)
+        # Deferred releases still name these arenas; apply them before teardown.
+        self.callbacks.submit(lambda: None).result()
         with self.condition:
             for arena in self.arenas:
                 arena.mapping.close()
@@ -992,6 +1003,7 @@ class BinaryBatchPreparer:
             finally:
                 self.coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
                 self.label_coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
+                self.callbacks.shutdown(wait=True)
 
         if wait:
             close()
