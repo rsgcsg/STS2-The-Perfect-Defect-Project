@@ -309,3 +309,14 @@ watch health分别报告pending、完成和inconclusive；最近50次已完成�
 inconclusive且占比严格超过20%时告警，只暂停当前budget的新World准入和补位，
 已有World继续正常收口，不作废已有数据。每次审计的不可变request/result留在原attempt，
 inconclusive不自动重放，后续诊断保留原失败身份。
+
+
+正常STOP先封新准入，继续让inflight World通过原 `episode_end` 和receipt收口。
+held allocation中的数字learner step使用原generation Stop、`login-launch/STOP`及
+`learner/STOP`协作通知，不发step-wide USR1；绝对deadline仍按原owner取消step。
+自定义learner supervisor的普通signal relay必须只 `child.send_signal(SIGUSR1)`，
+不能 `killpg`：preparer/publisher及Python resource tracker需要存活到排空结束；
+显式崩溃注入或硬超时的整组KILL仍是原故障路径。更换外部supervisor时更新其hash pin，
+旧脚本和旧run不覆盖。CPU反例不证明旧200次失败的内层异常；原失败分母不重写。
+后处理失败会保存 `processing-error.json`，并把异常类型、栈位置及跨RPC/worker的
+原诊断纳入failure artifact；不保存异常message、源码行或locals，避免泄露请求/凭据。

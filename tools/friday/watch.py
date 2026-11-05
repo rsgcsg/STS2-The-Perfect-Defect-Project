@@ -1470,7 +1470,12 @@ class SegmentWatcher(Watcher):
         save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():
             (root / 'learner/STOP').touch()
-        self.signal_once(attempt['job_id'])
+        # Numeric steps share the held allocation. Cooperative generation/file
+        # Stop leaves their CPU pools and resource tracker alive for drain/CP.
+        # A step-wide USR1 also reaches descendants; hard cancellation remains
+        # owned by the frozen deadline below.
+        if not re.fullmatch(r'[1-9][0-9]*\.[0-9]+', attempt['job_id']):
+            self.signal_once(attempt['job_id'])
         for plan in attempt['actor_plans']:
             path = Path(plan)
             save(path.parent / 'STOP', {'reason': reason})

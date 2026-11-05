@@ -596,7 +596,10 @@ def test_label_delivery_failure_keeps_full_original_without_replaying_world(tmp_
 
     def lost(*a, **kw):
         calls.append(1)
-        raise TimeoutError("original terminal-label ACK lost")
+        error = TimeoutError("original terminal-label ACK lost SECRET_DO_NOT_SERIALIZE")
+        error.remote_diagnostic = {"exception_type": "BrokenProcessPool", "stack": [
+            {"file": "segment_learner.py", "line": 959, "function": "_end_episode"}]}
+        raise error
 
     monkeypatch.setattr(executor, "_record_verified_original", lost)
     result = executor.preserve_report(artifacts.root / "report.json")["episodes"][0]
@@ -606,6 +609,13 @@ def test_label_delivery_failure_keeps_full_original_without_replaying_world(tmp_
     assert result["stored_failure_id"]
     receipt = json.loads((artifacts.root / result["failure_preservation"]["path"]).read_bytes())
     assert receipt["full_readback"] is True and receipt["typed_recording_qualified"] is False
+    diagnostic = json.loads((artifacts.root / result["processing_diagnostic"]["path"]).read_bytes())
+    assert diagnostic["exception_type"] == "TimeoutError"
+    assert diagnostic["stack"][-1]["function"] == "lost"
+    assert diagnostic["remote"]["exception_type"] == "BrokenProcessPool"
+    assert "SECRET_DO_NOT_SERIALIZE" not in json.dumps(diagnostic)
+    pending = json.loads((artifacts.root / result["failure_pending"]["path"]).read_bytes())
+    assert pending["facts"]["processing_diagnostic"] == diagnostic
 
 
 def test_model_and_cp_numbers_are_scoped_by_generation_without_a_guessed_latest(tmp_path):

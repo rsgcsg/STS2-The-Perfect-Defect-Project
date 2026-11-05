@@ -973,6 +973,20 @@ def read_auxiliary_inputs(member: Any, rows: tuple[int, ...]) -> tuple[Auxiliary
 def verify_auxiliary(
     request: dict[str, Any], members: tuple[Any, ...]
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    # ProcessPool's textual RemoteTraceback is otherwise lost at the RPC seam.
+    # Attach only stack locations before pickling the original exception back.
+    from spireagent.local_diagnostics import exception_facts
+
+    try:
+        return _verify_auxiliary(request, members)
+    except Exception as error:
+        cast(Any, error).remote_diagnostic = exception_facts(error)
+        raise
+
+
+def _verify_auxiliary(
+    request: dict[str, Any], members: tuple[Any, ...]
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
     """Validate late typed/public labels in a CPU process, outside learner locks.
 
     Native/Human origin remains the W3 reader/verifier's responsibility. This
