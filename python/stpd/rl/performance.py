@@ -58,7 +58,7 @@ class PerformanceConfig:
                 self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches,
                 self.deduplicate_text, self.compile_loss)):
             raise BoundaryError("rl_performance", "invalid_boolean")
-        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 1024
+        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 1280
                 or any(type(value) is not int or not 1 <= value <= 2**40 for value in (
                     self.scene_attention_area, self.text_attention_area))
                 or self.precision not in {"fp32", "bf16"}):
