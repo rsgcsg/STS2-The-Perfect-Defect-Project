@@ -365,7 +365,8 @@ def test_final_wal_snapshot_closes_event_cursor_without_reconnecting(
         assert not current.get('socket_events_closed')
     else:
         assert current['finished'] and current['window_closed']
-        assert current['socket_events_closed'] and current['event_sequence'] == facts[-1]['sequence']
+        assert current['socket_events_closed']
+        assert current['event_sequence'] == facts[-1]['sequence']
         assert owner.state['stop'] is None
         assert len(owner.seen_events) == 2
         owner.collect_events()
@@ -391,7 +392,8 @@ def test_inconclusive_audit_window_pauses_only_new_admission(owner):
     assert owner.exchange.stop_request(training_generation='g-one') is None
 
 
-def test_held_step_stop_keeps_worker_processes_alive_and_uses_existing_markers(owner, watch, monkeypatch):
+def test_held_step_stop_keeps_worker_processes_alive_and_uses_existing_markers(
+        owner, watch, monkeypatch):
     from pathlib import Path
 
     value = attempt(owner)
