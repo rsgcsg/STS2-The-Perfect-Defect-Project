@@ -16,10 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import torch
+
 from spireagent.artifact_contracts import Parent
 from spireagent.rl_contracts import MuScore
 from spireagent.rl_socket_transport import NodeMuCache
-
 from stpd.workers.checkpoint_codec import decode_checkpoint
 
 from .data import digest, json_bytes
@@ -122,30 +122,38 @@ class LocalMuScorer:
         model.text_cache_namespace = identity["snapshot_sha256"]
         return model
 
-    def adopt(self, identity: dict[str, Any]) -> None:
+    def adopt(self, identity: dict[str, Any], *, retain: bool = False) -> None:
         key = identity["snapshot_sha256"]
         with self.capacity:
+            if self.closed:
+                raise ValueError("actor_mu_owner_closed")
             if key in self.identities and self.identities[key] != identity:
                 raise ValueError("same_mu_identity_changed")
             self._retire(keep={key})
             if key not in self.models:
-                while len(self.models) >= self.max_snapshots and not self.closed:
+                while (key not in self.models and len(self.models) >= self.max_snapshots
+                       and not self.closed):
                     # The previous observer can still be committing a tail.
                     # Pause begin/await, rather than failing a live World or
                     # evicting a referenced mu to make room for the new grant.
                     self.capacity.wait()
                 if self.closed:
                     raise ValueError("actor_mu_owner_closed")
-                started = time.perf_counter()
-                model = self._load(identity)
-                self.models[key] = model
-                self.identities[key] = copy.deepcopy(identity)
-                self.compilers[key] = FrameCompiler(model.vocabulary)
-                self.load_seconds.append(time.perf_counter() - started)
+                if key not in self.models:
+                    started = time.perf_counter()
+                    model = self._load(identity)
+                    self.models[key] = model
+                    self.identities[key] = copy.deepcopy(identity)
+                    self.compilers[key] = FrameCompiler(model.vocabulary)
+                    self.load_seconds.append(time.perf_counter() - started)
+                elif self.identities[key] != identity:
+                    raise ValueError("same_mu_identity_changed")
             if key != self.latest:
                 # Invalidate at adoption, after any old-tail capacity wait.
                 self.text_cache.retire(set())
             self.latest = key
+            if retain:
+                self.references[key] = self.references.get(key, 0) + 1
 
     def _retire(self, *, keep: set[str]) -> None:
         for key in list(self.models):
@@ -241,7 +249,7 @@ class RemoteMuScorer:
         self.lock = threading.RLock()
         self.requests = 0
 
-    def adopt(self, identity: dict[str, Any]) -> None:
+    def adopt(self, identity: dict[str, Any], *, retain: bool = False) -> None:
         with self.score_lock, self.lock:
             if self.closed:
                 raise ValueError("actor_mu_owner_closed")
@@ -257,6 +265,8 @@ class RemoteMuScorer:
             self.identities = {k: v for k, v in self.identities.items()
                                if k == key or self.references.get(k, 0)}
             self.identities[key] = copy.deepcopy(identity)
+            if retain:
+                self.references[key] = self.references.get(key, 0) + 1
 
     def retain_mu(self, snapshot_sha256: str) -> None:
         with self.lock:
@@ -433,6 +443,25 @@ class ActorInferencePool(SegmentInferencePool):
             if remote is not None:
                 remote.close()
 
+    def _adopt_grant(self, grant: dict[str, Any], actor: str, episode: str,
+                     owner: dict[str, str] | None) -> None:
+        lease_key = (grant["mu"].get("training_generation", ""), grant["lease"])
+        owner_key = actor, episode
+        with self.controls:
+            if owner is None or self.episode_owners.get(owner_key) is not owner:
+                return
+            if lease_key in self.leases:
+                return
+        # Adopt and acquire the lease's pin in one model critical section. Do
+        # not hold controls across capacity waits: old commits must progress.
+        self.scorer.adopt(grant["mu"], retain=True)
+        with self.controls:
+            if (self.episode_owners.get(owner_key) is owner
+                    and lease_key not in self.leases):
+                self.leases[lease_key] = (grant["mu"]["snapshot_sha256"], episode)
+            else:
+                self.scorer.release_mu(grant["mu"]["snapshot_sha256"])
+
     def _dispatch(self, value: dict[str, Any]) -> dict[str, Any]:
         operation = value["operation"]
         if operation == "score":
@@ -446,6 +475,16 @@ class ActorInferencePool(SegmentInferencePool):
                     "server_seconds": time.perf_counter() - started}
         fields = {key: item for key, item in value.items()
                   if key not in {"schema", "pool_id", "adapter", "request_id", "operation"}}
+        pending_owner = None
+        if operation == "begin":
+            with self.controls:
+                owner_key = fields["actor"], fields["episode"]
+                if owner_key not in self.episode_owners:
+                    # Direct clients bind before sending, never from a late reply.
+                    self.episode_owners[owner_key] = {
+                        key: fields.get(key, self.remote_attachment[key])
+                        for key in ("run", "training_generation")}
+                pending_owner = self.episode_owners.get(owner_key)
         client_original = None
         if self.event_journal is not None:
             from spireagent.rl_exchange import control_input, input_key
@@ -458,8 +497,10 @@ class ActorInferencePool(SegmentInferencePool):
             if (reply.get("admitted") and
                     reply["training_generation"] == current.get("training_generation")):
                 with self.controls:
-                    self.episode_owners[(fields["actor"], fields["episode"])] = {
-                        key: reply[key] for key in ("run", "training_generation")}
+                    owner_key = fields["actor"], fields["episode"]
+                    owner = {key: reply[key] for key in ("run", "training_generation")}
+                    if self.episode_owners.get(owner_key) != owner:
+                        self.episode_owners[owner_key] = owner
 
         adoption = (self.node_cache.latest() if operation == "begin" and self.node_cache
                     else nullcontext(None))
@@ -505,17 +546,25 @@ class ActorInferencePool(SegmentInferencePool):
                          "run": remote.attachment["run"],
                          "training_generation": remote.attachment["training_generation"]}
                 admission = remote.request("episode_open", **owner)
-                record_open(admission, remote.attachment)
+                with self.controls:
+                    owner_key = fields["actor"], fields["episode"]
+                    if (operation == "begin" and
+                            self.episode_owners.get(owner_key) is not pending_owner):
+                        pending_owner = None
+                    else:
+                        record_open(admission, remote.attachment)
+                        pending_owner = self.episode_owners.get(owner_key)
                 if operation == "begin":
                     result = (remote.request("begin", **owner, previous_lease=None)
-                              if admission.get("admitted") else {"stopped": True})
+                              if admission.get("admitted") and pending_owner is not None
+                              else {"stopped": True})
                 else:
                     result = admission
             # Keep the node cache's shared pin until the full model and heads
             # have been loaded; release the global refresh lock before begin.
             if operation == "begin" and "mu" in result:
                 adopt_started = time.perf_counter()
-                self.scorer.adopt(result["mu"])
+                self._adopt_grant(result, fields["actor"], fields["episode"], pending_owner)
                 self.control_timing["mu_adopt_seconds"] += time.perf_counter() - adopt_started
         if operation == "begin":
             self.observe_timing("begin_wait_seconds", time.perf_counter() - started)
@@ -531,48 +580,39 @@ class ActorInferencePool(SegmentInferencePool):
             if original is not None:
                 assert response is not None
                 self.event_journal.append("control:" + input_key(original), original, response)
-        grant: dict[str, Any] = {}
-        if operation == "begin":
-            grant = result
-        elif operation == "receipt" and value["input"]["operation"] == "begin":
-            grant = result.get("response") or {}
-        if "mu" in grant and operation != "begin":
-            # No map/control lock during bounded model-capacity waits: the
-            # observer's commit/release must remain able to free the old mu.
-            self.scorer.adopt(grant["mu"])
+        # A receipt is a historical fact, not a new lease. Remote ACK loss is
+        # reconciled inside request(begin), before the normal adoption above.
         if operation == "status":
             result = {**result, "actor_timing": {**self.timing_report(),
                 "mu_inference_seconds": getattr(self.scorer, "score_seconds", 0.)},
                 **({'node_mu_cache': self.node_cache.status(), 'actor_fd_limits': self.fd_limits}
                    if self.node_cache is not None else {})}
         with self.controls:
-            if "mu" in grant:
-                lease, key = grant["lease"], grant["mu"]["snapshot_sha256"]
-                episode = (value["input"]["episode"] if operation == "receipt"
-                           else value["episode"])
-                lease_key = (grant["mu"].get("training_generation", ""), lease)
-                if lease_key not in self.leases:
-                    self.scorer.retain_mu(key)
-                    self.leases[lease_key] = (key, episode)
-            elif operation == "commit" and ("segment_id" in result
+            if operation == "commit" and ("segment_id" in result
                                             or result.get("reason") == "generation_changed"):
                 lease_key = (fields["mu"].get("training_generation", ""), fields["segment_id"])
                 held = self.leases.pop(lease_key, None)
                 if held is not None:
                     self.scorer.release_mu(held[0])
             elif operation == "episode_end":
-                owner_key = (fields["actor"], fields["episode"])
-                current_owner = self.episode_owners.get(owner_key)
-                current_close = (current_owner is not None and
-                    current_owner["training_generation"] == fields.get("training_generation"))
-                if current_close:
-                    self.episode_owners.pop(owner_key)
-                for lease, (key, episode) in list(self.leases.items()):
-                    if (episode == fields.get("episode")
-                            and (current_close or lease[0] == fields.get("training_generation"))):
-                        self.scorer.release_mu(key)
-                        del self.leases[lease]
+                self.release_closed_episode(fields["actor"], fields["episode"],
+                                            fields.get("training_generation", ""))
         return result
+
+    def release_closed_episode(self, actor: str, episode: str, generation: str | None) -> None:
+        """Release local readers only; this records no remote delivery outcome."""
+        with self.controls:
+            owner_key = actor, episode
+            current = self.episode_owners.get(owner_key)
+            current_close = current is not None and (
+                generation is None or current["training_generation"] == generation)
+            if current_close:
+                self.episode_owners.pop(owner_key)
+            for lease, (key, lease_episode) in list(self.leases.items()):
+                if lease_episode == episode and (
+                        generation is None or current_close or lease[0] == generation):
+                    self.scorer.release_mu(key)
+                    del self.leases[lease]
 
     def release_discarded_lease(self, generation: str, lease: str) -> None:
         # This comes from the producer after it has observed explicit restore
@@ -609,3 +649,6 @@ class ActorControlConnection(SegmentConnection):
 
     def release_discarded_lease(self, generation: str, lease: str) -> None:
         self.pool.release_discarded_lease(generation, lease)
+
+    def release_closed_episode(self, actor: str, episode: str) -> None:
+        self.pool.release_closed_episode(actor, episode, None)

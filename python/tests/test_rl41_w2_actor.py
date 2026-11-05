@@ -675,3 +675,210 @@ def test_restore_zero_segment_close_uses_actual_episode_admission(
         assert not any(actor.scorer.references.values())
     finally:
         admission.close()
+
+
+def test_begin_pin_precedes_delayed_registration_and_observer_read(running, tmp_path, monkeypatch):
+    actor, pool, _, exchange, first, _ = running
+    second, _ = publish_mu(exchange, tmp_path, 2)
+    adopted, resume = threading.Event(), threading.Event()
+    original = actor.scorer.adopt
+
+    def delayed(identity, **kwargs):
+        original(identity, **kwargs)
+        if identity == first:
+            adopted.set()
+            assert resume.wait(10)
+
+    monkeypatch.setattr(actor.scorer, "adopt", delayed)
+    results, errors = [], []
+
+    def begin_first():
+        try:
+            with SegmentConnection(actor.attachment()) as connection:
+                results.append(connection.request("begin", actor="actor", episode="delayed",
+                                                  previous_lease=None))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=begin_first)
+    worker.start()
+    try:
+        assert adopted.wait(10)
+        pool.publish(second)
+        with SegmentConnection(actor.attachment()) as connection:
+            connection.request("begin", actor="other", episode="new", previous_lease=None)
+        # Observer has not yet read its first row or added its own pin.
+        key = first["snapshot_sha256"]
+        actor.scorer.retain_mu(key)
+        scored = actor.scorer.score_compiled(key,
+            FrameCompiler(public_vocabulary()).encode(public_state()), 0, policy=True)
+        assert scored.snapshot_sha256 == key
+        actor.scorer.release_mu(key)
+    finally:
+        resume.set()
+        worker.join(10)
+    assert not worker.is_alive() and not errors and results[0]["mu"] == first
+    assert actor.scorer.references[first["snapshot_sha256"]] == 1
+
+
+@pytest.mark.parametrize("restore", [False, True])
+def test_observer_failure_releases_lease_pins_before_next_world(
+    running, tmp_path, monkeypatch, restore
+):
+    from types import SimpleNamespace
+
+    from spireagent.workbench.reference_suite import _Artifacts
+    from spireagent.workbench.rl_segment_producer import (
+        LiveSegmentProducer,
+        PipelinedManagedExecutor,
+        SegmentManagedExecutor,
+    )
+    from stpd.p1.local_mu import ActorControlConnection
+
+    actor, pool, control, exchange, first, path = running
+    second, _ = publish_mu(exchange, tmp_path, 2)
+    third, _ = publish_mu(exchange, tmp_path, 3)
+    admission = ActorControlConnection(actor)
+    episode = "failed-observer"
+    admission.request("episode_open", actor="actor", episode=episode)
+    admission.request("begin", actor="actor", episode=episode, previous_lease=None)
+    if restore:
+        pool.close()
+        second = {**second, "training_generation": "restored"}
+        third = {**third, "training_generation": "restored"}
+        restored_control = DurableControl(exchange)
+        pool = SegmentInferencePool(public_vocabulary(), second, control=restored_control,
+            address=("127.0.0.1", 0), segment_steps=2)
+        restored_control.pool = control.pool = pool
+        path.write_bytes(json_bytes(pool.attachment()))
+    else:
+        pool.publish(second)
+    admission.request("begin", actor="actor", episode=episode, previous_lease="actor/0")
+    actor.scorer.retain_mu(first["snapshot_sha256"])
+    observer = LiveSegmentProducer.__new__(LiveSegmentProducer)
+    observer.error = observer.error_record = None
+    observer.error_path = tmp_path / "observer-error.json"
+    observer._record_error(ValueError("original observer failure"), "transition")
+    observer.end_started = False
+    observer.interruption, observer.after_interruption = None, 0
+    observer.assembler = SimpleNamespace(identity={"intent_id": episode}, committed=[],
+        commit_started=False, finish=lambda _: None,
+        close=lambda: actor.scorer.release_mu(first["snapshot_sha256"]))
+    observer.process = SimpleNamespace(poll=lambda: 0, stdout=None)
+    observer.stderr = (tmp_path / "verifier.stderr").open("wb")
+    observer.thread = threading.Thread(target=lambda: None)
+    observer.thread.start()
+    observer.thread.join()
+    artifacts = _Artifacts(tmp_path / "attempt-cleanup")
+    row = {"run_id": "failed-run"}
+    report = {"episodes": [row]}
+    artifacts.save(report)
+    monkeypatch.setattr(PipelinedManagedExecutor, "preserve_report", lambda *_: report)
+    executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
+    executor.observers = {"failed-run": observer}
+    executor.connections = {"failed-run": ActorControlConnection(actor)}
+    executor.attachment = {}
+    executor.exchange, executor.producer = exchange, PRODUCER
+    executor.actor, executor.admission = "actor", admission
+    try:
+        result = executor.preserve_report(artifacts.root / "report.json")
+        assert result["episodes"][0]["status"] == "save_failed"
+        assert observer.end_started and not actor.leases and not actor.scorer.references
+        assert exchange.episode_end_input("actor", episode,
+            training_generation=second["training_generation"])["terminal"] is None
+        pool.publish(third)
+        admission.request("episode_open", actor="actor", episode="next-world")
+        grant = admission.request("begin", actor="actor", episode="next-world", previous_lease=None)
+        assert grant["mu"] == third
+    finally:
+        admission.close()
+
+
+def test_late_begin_reply_cannot_resurrect_ended_episode(running, monkeypatch):
+    actor, _, _, _, first, _ = running
+    entered, resume = threading.Event(), threading.Event()
+    original = actor._adopt_grant
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert resume.wait(10)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(actor, "_adopt_grant", delayed)
+    errors = []
+
+    def begin():
+        try:
+            with SegmentConnection(actor.attachment()) as client:
+                client.request("begin", actor="actor", episode="closing", previous_lease=None)
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=begin)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        with SegmentConnection(actor.attachment()) as client:
+            client.request("episode_end", actor="actor", episode="closing", run_id="run",
+                terminal=None, outcome_states=[], hp_battles=[], segments=[])
+    finally:
+        resume.set()
+        worker.join(10)
+    assert not errors and not worker.is_alive()
+    assert ("actor", "closing") not in actor.episode_owners
+    assert not actor.leases and not actor.scorer.references
+    assert first["snapshot_sha256"] not in actor.scorer.models
+
+
+def test_historical_begin_receipt_after_commit_does_not_repin(running):
+    actor, _, _, _, first, _ = running
+    with SegmentConnection(actor.attachment()) as client:
+        grant = client.request("begin", actor="actor", episode="live", previous_lease=None)
+        client.request("commit", segment_id=grant["lease"], run_id="run", rows=2, mu=first)
+        assert not actor.leases and not actor.scorer.references
+        receipt = client.request("receipt", input={"operation": "begin", "actor": "actor",
+            "episode": "live", "previous_lease": None})
+        assert receipt["response"] == grant
+        assert not actor.leases and not actor.scorer.references
+
+
+def test_end_during_restore_readmission_cannot_reopen_local_owner(running, monkeypatch):
+    actor, _, _, _, first, _ = running
+    entered, resume = threading.Event(), threading.Event()
+    calls = []
+
+    def restored_request(client, operation, **fields):
+        calls.append(operation)
+        client.attachment.update(run=first["run"], training_generation="restored")
+        if operation == "begin":
+            assert calls == ["begin"]
+            return {"reason": "generation_changed"}
+        assert operation == "episode_open"
+        entered.set()
+        assert resume.wait(10)
+        return {"admitted": True, "run": first["run"], "training_generation": "restored"}
+
+    monkeypatch.setattr(SegmentConnection, "request", restored_request)
+    results = []
+    worker = threading.Thread(target=lambda: results.append(actor._dispatch({
+        "operation": "begin", "actor": "actor", "episode": "closing-restore",
+        "previous_lease": None})))
+    worker.start()
+    try:
+        assert entered.wait(10)
+        actor.release_closed_episode("actor", "closing-restore", None)
+    finally:
+        resume.set()
+        worker.join(10)
+    assert results == [{"stopped": True}] and calls == ["begin", "episode_open"]
+    assert ("actor", "closing-restore") not in actor.episode_owners
+    assert not actor.leases and not actor.scorer.references
+
+
+def test_cached_mu_cannot_gain_pin_after_scorer_close(running):
+    actor, _, _, _, first, _ = running
+    actor.scorer.adopt(first)
+    actor.scorer.close()
+    with pytest.raises(ValueError, match="actor_mu_owner_closed"):
+        actor.scorer.adopt(first, retain=True)
+    assert not actor.scorer.references

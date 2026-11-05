@@ -20,16 +20,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from stpd.p1.data import json_bytes as input_bytes
-from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.sampling import distribution
-from stpd.p1.trajectory import validate_behavior
 from sts2_platform_evidence import AgentSessionRunEvidence, VerificationResult
 
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_contracts import LocalMuScorer
 from spireagent.storage.store import copy_artifact
+from stpd.p1.data import json_bytes as input_bytes
+from stpd.p1.frame_compiler import FrameCompiler
+from stpd.p1.sampling import distribution
+from stpd.p1.trajectory import validate_behavior
 
 
 class OriginalBarrier:
@@ -453,6 +453,9 @@ class LiveSegmentProducer:
         # Never persist raw SDK messages, URLs, credentials or game inputs.
         self.error_record = {"at": time.time(), "operation": operation,
             "error_type": type(error).__name__}
+        from spireagent.local_diagnostics import exception_facts
+
+        self.error_record["diagnostic"] = exception_facts(error)
         if isinstance(error, BoundaryError):
             self.error_record.update(stage=error.stage, code=error.code)
         elif isinstance(error, OSError):
@@ -484,6 +487,9 @@ class LiveSegmentProducer:
             self.process.terminate()
             self.process.wait(timeout=10)
         self.thread.join(timeout=10)
+        if self.thread.is_alive():
+            # A still-reading observer retains its models and payload owners.
+            raise BoundaryError("rl_segment", "prefix_verifier_close_pending")
         self.assembler.close()
         self.stderr.close()
         if self.process.stdout is not None:
@@ -726,6 +732,20 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                 "commit_requires_reconciliation": observer.assembler.commit_started,
             }
             observer.close()
+            # A failed observer is now fully stopped. Close its admitted episode
+            # once, without assigning a terminal label or retrying an unknown End.
+            episode = observer.assembler.identity["intent_id"]
+            if not observer.end_started:
+                observer.end_started = True
+                try:
+                    self._end_episode(self.connections[run_id], run_id=run_id,
+                        terminal=None, outcome_states=[], hp_battles=[], unqualified=True,
+                        segments=observer.assembler.committed, actor=self.actor,
+                        episode=episode)
+                except Exception:
+                    row["segment_control_cleanup_pending"] = True
+            if hasattr(self.admission, "release_closed_episode"):
+                self.admission.release_closed_episode(self.actor, episode)
             self.connections.pop(run_id).close()
             self.observers.pop(run_id)
             from .reference_suite import _Artifacts
@@ -812,9 +832,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                 "hot_bytes": payload.size}
 
     def _upload_auxiliary(self, labels: dict[str, Any]) -> list[dict[str, Any]]:
-        from stpd.rl.tensor_segment import packet_header
-
         from spireagent.rl_socket_transport import upload
+        from stpd.rl.tensor_segment import packet_header
 
         encoder = self.binary_encoders.get(str(labels.get("run_id")))
         if encoder is None:

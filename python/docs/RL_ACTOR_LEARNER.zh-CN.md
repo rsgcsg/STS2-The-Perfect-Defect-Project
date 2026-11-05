@@ -237,13 +237,17 @@ commit只做envelope/ref/size/hash/lease/身份及`packet_header`核验；完整
 commit后后台只预取FIFO队头`prepared_batches+1`批的immutable source，事件合并、复制在learner锁外，
 该预取线程不选aux、不改RNG。learner按FIFO冻结至多`prepared_batches`个待处理请求（默认4），
 跨active/pending排除已保留aux；待处理PPO仍计入原queue容量，成功SGD才计uses。
+冻结请求和持有source之后，单个后台dispatch线程执行预取/arena预留和submit；
+它不等待CPU结果，原pending Future接续CPU任务结果。准备credit等待不阻塞当前GPU步，
+选择成员、aux和RNG仍归learner主线程。标签提交也沿该dispatch入口，实际验证仍使用独立进程。
 `prepared_bytes`覆盖active和所有pending；每批输出上限是该预算除以`prepared_batches+1`，
 pinned槽也按同一数量配置，防止晚完成的队头被后续批占满槽而死锁。
 标签校验使用独立`label_workers`进程/协调队列（默认1），不占拼批队列。
 同代CP不调用preparer barrier、不取消pending、不重启池或重置选择RNG。
 新写CP为`stpd/rl-segment-checkpoint-3`，显式记录committed/speculative选择RNG、pending请求和标签请求；
 v2只读兼容。新generation恢复仍只恢复已提交学习状态/RNG并丢弃热输入，pending记录不是重放授权，
-旧v2源码不能读v3，回滚代码时须选择原v2 CP。close先停并join source预取，再关闭preparer；
+旧v2源码不能读v3，回滚代码时须选择原v2 CP。close先停并join source预取，
+排完dispatch后再关闭preparer，最后释放热输入所有者；
 显式barrier仍会排空并释放池/arena，包括同generation的主动资源回收。
 软训练截止和绝对截止前均留一个dataset的收尾余量；不再开新dataset/预取，
 已经开始的dataset使用原600秒排空余量完成，最后120秒留给保全，然后保存完整最终CP。
@@ -277,8 +281,12 @@ learner 把完整新 attachment 原子写回同一路径；环境 capability 保
 `episode_open` 的成功 ACK 带实际 run/generation；actor 按 episode 保存这个准入归属，
 恢复后的重新准入在等待新 lease 之前更新。producer 用该归属持久化 close，不能用启动 attachment
 或最后一条旧段猜代。旧 receipt 只读、不回滚归属；当前 episode close 释放该 World 各代的本地 μ 引用。
+grant的μ装载与lease pin原子完成，早于actor WAL登记；观察器随后再持有自己的读取pin。
+begin发出前绑定准入owner，End或换代后的晚回复不能重新登记旧lease。
+观察失败后先确认读取线程停止，再尝试一次无terminal标签的技术End，并释放该World各代本地lease；
+原End结果未知时不重试，不把本地清理当作远端成功。读取线程仍活着时保留它的模型和输入。
 当前代零段时只收口控制，不附 terminal/outcome/HP 训练标签；原 typed World 结果仍完整保留。
-观察线程和收口 tail 的第一个错误以 type/stage/code/errno 留在原 report/私有诊断，
+观察线程和收口 tail 的第一个错误以 type/stage/code/errno和有限栈位置留在原 report/私有诊断，
 后来的 reconciliation 错误不覆盖它，不保存原 SDK 消息或连接地址。
 
 旧 CP16 转换先准备一个正常 learner JSON：同原 run、原 CP16 ID、目标新 generation，

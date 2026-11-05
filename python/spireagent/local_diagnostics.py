@@ -30,7 +30,6 @@ class TimedRLock:
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.stats_lock = threading.Lock()
         self.local = threading.local()
         self.rows: dict[tuple[str, str], dict[str, float]] = {}
 
@@ -42,23 +41,25 @@ class TimedRLock:
 
     def _record(self, caller: str, field: str, seconds: float) -> None:
         key = threading.current_thread().name, caller
-        with self.stats_lock:
-            if key not in self.rows and len(self.rows) >= 128:
-                key = "other", "other"
-            row = self.rows.setdefault(key, {"wait_seconds": 0., "hold_seconds": 0.,
-                                              "acquires": 0.})
-            row[field] += seconds
-            if field == "wait_seconds":
-                row["acquires"] += 1
+        # Every writer already owns self.lock. A second mutex here adds a
+        # scheduling boundary inside every measured critical section.
+        if key not in self.rows and len(self.rows) >= 128:
+            key = "other", "other"
+        row = self.rows.setdefault(key, {"wait_seconds": 0., "hold_seconds": 0.,
+                                          "acquires": 0.})
+        row[field] += seconds
+        if field == "wait_seconds":
+            row["acquires"] += 1
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         caller, began = self._caller(), time.perf_counter()
         acquired = self.lock.acquire(blocking, timeout)
         if acquired:
-            self._record(caller, "wait_seconds", time.perf_counter() - began)
+            arrived = time.perf_counter()
             if not getattr(self.local, "depth", 0):
-                self.local.started, self.local.caller = time.perf_counter(), caller
+                self.local.started, self.local.caller = arrived, caller
             self.local.depth = getattr(self.local, "depth", 0) + 1
+            self._record(caller, "wait_seconds", arrived - began)
         return acquired
 
     def release(self) -> None:
@@ -78,9 +79,10 @@ class TimedRLock:
         raw, depth, caller = state
         began = time.perf_counter()
         self.lock._acquire_restore(raw)  # type: ignore[attr-defined]
-        self._record(caller, "wait_seconds", time.perf_counter() - began)
+        arrived = time.perf_counter()
         self.local.depth, self.local.caller = depth, caller
-        self.local.started = time.perf_counter()
+        self.local.started = arrived
+        self._record(caller, "wait_seconds", arrived - began)
 
     def _is_owned(self) -> bool:
         return self.lock._is_owned()  # type: ignore[attr-defined, no-any-return]
@@ -93,7 +95,9 @@ class TimedRLock:
         self.release()
 
     def snapshot(self) -> list[dict[str, Any]]:
-        with self.stats_lock:
+        # Read under the same uninstrumented RLock; no second lock order and no
+        # recursive diagnostic acquire is introduced by observing the counters.
+        with self.lock:
             return [{"thread": thread, "caller": caller, **row}
                     for (thread, caller), row in self.rows.items()]
 

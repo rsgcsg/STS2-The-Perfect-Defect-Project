@@ -182,3 +182,32 @@ def test_cutoff_finishes_frozen_two_minibatch_dataset_and_final_CP(tmp_path, mon
     assert cp.counters.updates == 2 and cp.counters.datasets == 1
     assert owner.active is None
     assert not cp.input_pipeline["pending_requests"]
+
+
+def test_source_frontend_wait_overlaps_real_optimizer_step(tmp_path, monkeypatch):
+    import threading
+
+    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=2)
+    entered, resume = threading.Event(), threading.Event()
+    try:
+        assert owner._prepare()
+        original = owner._prefetch_members
+
+        def delayed(members, **kwargs):
+            entered.set()
+            assert resume.wait(15)
+            return original(members, **kwargs)
+
+        monkeypatch.setattr(owner, "_prefetch_members", delayed)
+        owner._prepare_ahead()
+        assert entered.wait(5)
+        pending = owner._pending_batches()
+        assert len(pending) == 1 and not pending[0][1].done()
+        before = owner.updates
+        owner._step()
+        assert owner.updates == before + 1 and not resume.is_set()
+        resume.set()
+        assert pending[0][1].result(timeout=30).request == pending[0][0]["request"]
+    finally:
+        resume.set()
+        owner.close()

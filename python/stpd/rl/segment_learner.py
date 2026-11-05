@@ -634,6 +634,10 @@ class SegmentLearner:
             reader=io.read_hot_segment,
             **preparation_options,
         )
+        # Source reservation/copy may wait for arena credit. It must not sit on
+        # the theta owner's path before an already-ready GPU minibatch.
+        self.preparation_dispatch = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-prepare-dispatch")
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
             mp_context=multiprocessing.get_context("spawn"),
@@ -1763,13 +1767,16 @@ class SegmentLearner:
             if self.wal is None:
                 for member in members:
                     self._retain(member.payload, owner)
-            self._prefetch_members(members)
-            self.pending_labels.append(
-                (
-                    (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
+            def submit_labels(request: dict[str, Any] = request,
+                              members: tuple[BatchMember, ...] = members) -> Future[Any]:
+                self._prefetch_members(members)
+                return (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
                          request, members)
                      if self.wal is not None
-                     else self.input_preparer.pool.submit(verify_auxiliary, request, members)),
+                     else self.input_preparer.pool.submit(verify_auxiliary, request, members))
+            self.pending_labels.append(
+                (
+                    self._dispatch_preparation(submit_labels),
                     members,
                     owner,
                 )
@@ -1855,15 +1862,52 @@ class SegmentLearner:
             self._notify_capacity()
             self.source_prefetch_changed.set()
 
+    def _dispatch_preparation(self, submit: Callable[[], Future[Any]]) -> Future[Any]:
+        result: Future[Any] = Future()
+
+        def complete(future: Future[Any]) -> None:
+            try:
+                result.set_result(future.result())
+            except BaseException as error:
+                result.set_exception(error)
+
+        def dispatch() -> None:
+            try:
+                submit().add_done_callback(complete)
+            except BaseException as error:
+                result.set_exception(error)
+
+        self.preparation_dispatch.submit(dispatch)
+        return result
+
     def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
+        began = time.perf_counter()
         request = active["request"]
         owner = f"prepare:{self.generation}:{request.identity.sequence}"
         # Aux holds a complete verified row copy; only PPO still reads hot bytes.
         for member in request.members:
             self._retain(member.payload, owner)
-        self._prefetch_members(request.members)
         inputs = tuple(row["prepared_input"] for kind in ("terminal", "hp") for row in active[kind])
-        return self.input_preparer.submit(request, inputs)
+        scheduled = time.perf_counter()
+        def submit() -> Future[PreparedBatch]:
+            started = time.perf_counter()
+            self._prefetch_members(request.members)
+            prefetched = time.perf_counter()
+            future = self.input_preparer.submit(request, inputs)
+            submitted = time.perf_counter()
+
+            def observe(finished: Future[PreparedBatch]) -> None:
+                if not finished.cancelled() and finished.exception() is None:
+                    finished.result().timings.update(
+                        frontend_retain_seconds=scheduled - began,
+                        frontend_dispatch_queue_seconds=started - scheduled,
+                        frontend_prefetch_seconds=prefetched - started,
+                        frontend_submit_seconds=submitted - prefetched,
+                        frontend_wall_seconds=submitted - started)
+
+            future.add_done_callback(observe)
+            return future
+        return self._dispatch_preparation(submit)
 
     def _prepare_ahead(self) -> None:
         while (self.settings.prepare_ahead
@@ -2278,7 +2322,10 @@ class SegmentLearner:
             try:
                 self.pool.close()
             finally:
-                self.input_preparer.shutdown(wait=True, cancel_futures=False)
+                try:
+                    self.preparation_dispatch.shutdown(wait=True, cancel_futures=False)
+                finally:
+                    self.input_preparer.shutdown(wait=True, cancel_futures=False)
             for future, _, _ in self.pending_labels:
                 future.result()
             for (_slot, owner), payload in list(self.hot_references.items()):
