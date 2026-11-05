@@ -25,6 +25,7 @@ from typing import Any
 from spireagent.artifact_contracts import Manifest
 from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.rl_contracts import exchange_prefix
 
 from .blobs import StoreError, safe_key
 from .local import LocalBlobStore
@@ -446,9 +447,7 @@ class Archive:
         Artifact reads remain the existing verified Store read-through. This
         imports no other run, changes no records and never reoffers a game.
         """
-        from spireagent.rl_exchange import Exchange
-
-        prefix = Exchange({"kind": "local", "directory": str(self.root)}, run).prefix
+        prefix = exchange_prefix(run)
         keys = self.target.blobs.keys(prefix)
         for key in keys:
             raw = self.target.blobs.get(key)

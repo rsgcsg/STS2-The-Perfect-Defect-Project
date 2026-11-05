@@ -166,6 +166,17 @@ def test_existing_exchange_seed_is_exact_and_archive_binding_cannot_drift(tmp_pa
         open_peer({**binding, "archive": {"kind": "local", "directory": str(tmp_path / "wrong")}})
 
 
+@pytest.mark.parametrize("run", ["../escape", "UPPER", "a" * 64])
+def test_exchange_and_archive_seed_reject_invalid_run_before_peer_access(
+    tmp_path, monkeypatch, run,
+):
+    binding, hot, archive = peers(tmp_path)
+    monkeypatch.setattr(archive.blobs, "keys", lambda _: pytest.fail("read invalid namespace"))
+    for open_namespace in (lambda: Exchange(binding, run), lambda: hot.archive.seed_exchange(run)):
+        with pytest.raises(BoundaryError, match="stage=rl_exchange; code=invalid_run_name"):
+            open_namespace()
+
+
 def test_normal_decision_segments_and_tensorboard_binary_archive_without_JSON_parsing(tmp_path):
     import collections
     import json

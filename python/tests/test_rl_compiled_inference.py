@@ -7,6 +7,7 @@ import json
 
 import pytest
 import torch
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_p1_input_v2 import public_state
 from test_rl41_w2_actor import current, running  # noqa: F401
 

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_p1_input_v2 import public_state
 from test_rl_loop import PRODUCER
 
@@ -49,9 +50,6 @@ from stpd.rl.prepared_batch import BatchMember, PrepareRequest
 from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
 from stpd.rl.segment_targets import recorded_targets
 from stpd.rl.segments import SegmentConfig
-
-if torch.get_num_interop_threads() != 1:
-    torch.set_num_interop_threads(1)
 
 
 @pytest.fixture

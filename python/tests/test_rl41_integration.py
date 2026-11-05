@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_rl41_w1 import (
     assert_tree,
     configuration,

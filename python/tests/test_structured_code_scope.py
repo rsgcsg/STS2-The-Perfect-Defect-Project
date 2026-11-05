@@ -121,6 +121,7 @@ def test_workbench_is_excluded_but_legacy_digest_stays_broad(source_tree):
     ("stpd/workers/structured_execution.py", {TRAINING_SCOPE}),
     ("stpd/workers/structured_run.py", {TRAINING_SCOPE}),
     ("spireagent/storage/store.py", {TRAINING_SCOPE}),
+    ("spireagent/rl_contracts.py", {TRAINING_SCOPE}),
 ])
 def test_scopes_bind_all_owning_source_paths(source_tree, path, affected):
     before = {scope: code_identity(scope, source_tree)
