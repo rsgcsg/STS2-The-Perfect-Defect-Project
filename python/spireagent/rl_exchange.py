@@ -23,7 +23,8 @@ from typing import Any, NoReturn
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
-from spireagent.rl_contracts import HotPayloadRef, control_request_key
+from spireagent.rl_contracts import RL_NAME as _NAME
+from spireagent.rl_contracts import HotPayloadRef, control_request_key, exchange_prefix
 from spireagent.storage.blobs import StoreError
 from spireagent.storage.config import open_peer
 from spireagent.storage.local import LocalBlobStore
@@ -38,7 +39,6 @@ STOP_SCHEMA = "spireagent/rl-stop-request-1"
 EVENT_SCHEMA = "spireagent/rl-learner-event-1"
 INPUT_SCHEMA = "spireagent/rl-segment-input-1"
 END_SCHEMA = "spireagent/rl-episode-end-input-1"
-_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 def reject(reason: str) -> NoReturn:
@@ -144,12 +144,11 @@ def _hot_ref(value: HotPayloadRef | dict[str, Any]) -> HotPayloadRef:
 
 class Exchange:
     def __init__(self, peer: dict[str, Any], run: str) -> None:
-        if not _NAME.fullmatch(run):
-            reject("invalid_run_name")
+        prefix = exchange_prefix(run)
         self.binding, self.run = peer, run
         self.store: ManifestArtifactStore = open_peer(peer)
         self.blobs = self.store.blobs
-        self.prefix = f"exchange/rl/{run}/"
+        self.prefix = prefix
 
     def _hot_store(self) -> LocalBlobStore:
         if not isinstance(self.blobs, LocalBlobStore):

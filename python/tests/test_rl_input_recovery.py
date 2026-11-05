@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_rl41_w1 import configuration, deliver
 
 from spireagent.json_boundary import BoundaryError

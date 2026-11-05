@@ -58,7 +58,7 @@ pyyaml==6.0.3
 referencing==0.37.0
 rich==15.0.0
 rpds-py==2026.6.3
-rsgcsg-sts2-platform-evidence @ git+https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git@078c4da9a579c7f5337f664676a0b1979330f9c8#subdirectory=components/evidence
+rsgcsg-sts2-platform-evidence @ git+https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git@fc9783c8345d09a854042efc90b6f168b14704cf#subdirectory=components/evidence
 ruff==0.16.4
 s3transfer==0.19.2
 safetensors==0.8.0

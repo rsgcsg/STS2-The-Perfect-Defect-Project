@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import copy
 import math
+import os
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 import torch
+from rl_actor_test_runtime import ACTOR_PROCESS_TEST
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_p1_input_v2 import public_state
 from test_rl_loop import PRODUCER
 
@@ -20,6 +26,7 @@ from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import FrozenObject
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.workbench.global_evidence_store import publish_detached_p1_model
+from stpd.p1 import local_mu
 from stpd.p1.data import digest, json_bytes
 from stpd.p1.execution import MStdExecution
 from stpd.p1.export import adapter_identity, export_model, runtime_projection
@@ -30,14 +37,14 @@ from stpd.p1.local_inference import (
     SegmentInferenceClient,
     SegmentInferencePool,
 )
-from stpd.p1.local_mu import ActorInferencePool, LocalMuScorer, RemoteMuScorer, single_cpu_thread
+from stpd.p1.local_mu import ActorInferencePool, LocalMuScorer, RemoteMuScorer
 from stpd.p1.model import MStd
 from stpd.p1.vocabulary import public_vocabulary
 from stpd.workers.checkpoint_codec import encode_checkpoint
 
 
 def publish_mu(exchange, root, version, *, model=None):
-    single_cpu_thread()
+    local_mu.single_cpu_thread()
     if model is None:
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(100 + version)
@@ -125,7 +132,7 @@ class DurableControl:
 
 @pytest.fixture
 def running(tmp_path, monkeypatch):
-    single_cpu_thread()
+    local_mu.single_cpu_thread()
     monkeypatch.setenv(AUTH_ENV, "35" * 32)
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "store")}, "w2-test")
     first, _ = publish_mu(exchange, tmp_path, 1)
@@ -176,7 +183,19 @@ def reasonable(result):
     assert all(math.isfinite(p) for p in result.scores)
 
 
-def test_full_mu_loading_distribution_identity_and_one_cpu_thread(running, tmp_path):
+def test_full_mu_loading_distribution_identity_and_one_cpu_thread(request, tmp_path):
+    if os.environ.get(ACTOR_PROCESS_TEST) != "1":
+        # The real Actor initializes interop threads irreversibly. Keep the
+        # complete loading/scoring assertions in its own fresh process.
+        child = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q",
+             str(Path(__file__).resolve()) + "::" + request.node.name],
+            env={**os.environ, ACTOR_PROCESS_TEST: "1"},
+            capture_output=True, text=True, timeout=60,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+        return
+    running = request.getfixturevalue("running")
     actor, _, _, _, first, _ = running
     client = client_for(actor, tmp_path)
     try:
@@ -557,7 +576,7 @@ def test_retained_mu_capacity_wait_releases_control_lock_for_old_commit(running,
 def test_explicit_central_scoring_switch_cpu_smoke(monkeypatch):
     from stpd.p1.local_inference import CentralInferencePool, create_segment_inference_pool
 
-    single_cpu_thread()
+    local_mu.single_cpu_thread()
     vocabulary = public_vocabulary()
     identity = {"snapshot_sha256": "a" * 64, "version": 1}
     default = create_segment_inference_pool(vocabulary, identity, control=lambda _: {},

@@ -22,3 +22,10 @@ revision. Its SHA256 must remain
 This avoids copying the full lock twice and keeps historical compatibility tests
 independent of today's dependency upgrades. Production still rejects current
 unapproved inference or lock changes; this is test source-read data only.
+
+`evidence_rc27_blobs.py.txt` preserves the exact `python/spireagent/storage/blobs.py`
+bytes from the original rc27 revision above, SHA256
+`01d578ad120855f97702f093a3cfded8937491df80a55584d087a4cbf23d1e2e`.
+RL4.1 adds a configurable bound to today's blob transport; the historical source
+fixture must keep the original file instead of borrowing today's implementation.
+The existing per-file and complete source digest checks still validate these bytes.
