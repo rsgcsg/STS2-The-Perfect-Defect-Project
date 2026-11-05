@@ -13,6 +13,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -92,7 +93,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             or base.get('schema') != 'spireagent/managed-evaluation-execution-v1'):
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))
-    if (type(actors) is not int or not 1 <= actors <= 500
+    maximum_actors = 4096 if inference and inference.get('dataplane') else 500
+    if (type(actors) is not int or not 1 <= actors <= maximum_actors
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 172800
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= (
                 172800 if inference is not None else 1800)
@@ -154,6 +156,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         frozen_inference.write_bytes(inference_raw)
         plan['trajectory_encoding'] = 'short-segment-1'
         plan['inference'] = {'path': str(frozen_inference), 'sha256': hashed(frozen_inference)}
+        if inference.get('dataplane'):
+            plan['dataplane'] = inference['dataplane']
     if requested_learner is not None:
         plan['learner_request'] = {'path': str(canonical_path(requested_learner)),
                                    'sha256': hashed(requested_learner)}
@@ -219,7 +223,8 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
 def learner_launcher(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
                      source: Path, actors: int, seed_namespace: str,
                      python: Path, episode_seconds: int = 14400,
-                     supervisor: dict[str, str] | None = None) -> str:
+                     supervisor: dict[str, str] | None = None,
+                     dataplane: dict[str, Any] | None = None) -> str:
     """Use the same environment and E2 owner for a learner allocation, CPU or GPU."""
     config = json.loads(configuration.read_bytes())
     allocation = configuration.parent / 'learner-allocation.json'
@@ -231,6 +236,10 @@ def learner_launcher(configuration: Path, work: Path, execution: Path, actors_ou
         '--actors-output', str(actors_output), '--actors', str(actors),
         '--seed-namespace', seed_namespace, '--episode-seconds', str(episode_seconds),
         '--external-submit']
+    if dataplane is not None:
+        profile = configuration.parent / 'dataplane-profile.json'
+        save(profile, {**dataplane, 'lanes': actors})
+        command += ['--dataplane-profile', str(profile)]
     if supervisor is not None:
         if hashed(canonical_path(Path(supervisor["path"]))) != supervisor["sha256"]:
             raise ValueError("learner_supervisor_pin_changed")
@@ -289,7 +298,7 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
 def submit(path: Path, *, dry_run: bool = False,
            additional_to: list[Path] | None = None, memory_gb: int = 4,
            exclude_nodes: list[str] | None = None, partition: str = 'smp',
-           constraint: str | None = None) -> dict[str, Any]:
+           constraint: str | None = None, node_types: list[str] | None = None) -> dict[str, Any]:
     if partition not in {'smp', 'general', 'debug'}:
         raise ValueError('supported_Friday_CPU_partition_required')
     if (type(memory_gb) is not int or memory_gb < 1
@@ -297,6 +306,13 @@ def submit(path: Path, *, dry_run: bool = False,
                 or any(not isinstance(node, str) or not NAME.fullmatch(node)
                        for node in exclude_nodes))):
         raise ValueError('positive_memory_and_explicit_scheduler_node_names_required')
+    if node_types is not None and constraint is not None:
+        raise ValueError('choose_explicit_node_types_or_constraint')
+    selected_types = node_types or (constraint.split('|') if constraint else ['fc430'])
+    if (not selected_types or len(set(selected_types)) != len(selected_types)
+            or any(not isinstance(kind, str) or not NAME.fullmatch(kind) for kind in selected_types)):
+        raise ValueError('explicit_node_type_names_required')
+    constraint = '|'.join(selected_types)
     plan = load_plan(path)
     require_modules(Path(plan['source_root']))
     root = private_root(path.parent)
@@ -345,7 +361,14 @@ def submit(path: Path, *, dry_run: bool = False,
         # scale. Keep idle/queue checks; other callers retain the default share.
         options = ({'maximum': 500, 'idle_divisor': 1}
                    if plan.get('trajectory_encoding') == 'short-segment-1' else {})
-        if capacity(idle, queued, count, **options) < count:
+        # Reuse the original fair-share policy; its historical 500-row helper
+        # stays unchanged. Only the explicit binary profile admits a larger
+        # requested array after the same queue/idle checks have allowed 500.
+        requested = min(count, 500) if plan.get('dataplane') else count
+        permitted = capacity(idle, queued, requested, **options)
+        if plan.get('dataplane') and count > 500 and permitted == 500:
+            permitted = min(count, idle)
+        if permitted < count:
             raise ValueError('requested_RL_actors_exceed_current_fair_share')
         script = root / 'launch.sh'
         script.write_text(launcher(path, plan), encoding='utf-8')
@@ -355,16 +378,15 @@ def submit(path: Path, *, dry_run: bool = False,
         advance = plan.get('games_per_ledger', 1) * plan['episode_seconds'] + 180
         if partition == 'debug' and minutes > 60 or partition == 'general' and minutes > 1440:
             raise ValueError('actor_exceeds_CPU_partition_wall_limit')
-        if constraint is None and partition == 'smp':
-            constraint = 'fc430'
         if plan.get('trajectory_encoding') == 'short-segment-1':
             advance = 300
-        if (plan.get('trajectory_encoding') == 'short-segment-1'
-                and partition == 'smp' and constraint == 'fc430'):
-            features = scheduler.output(['sinfo', '-h', '-p', 'smp', '-o', '%f|%C'])
-            idle_fast = sum(int(row.split('|')[1].split('/')[1]) for row in features.splitlines()
-                            if 'fc430' in row.split('|')[0].split(','))
-            constraint = 'fc430' if idle_fast >= count else 'fc430|c6220'
+        features = scheduler.output(['sinfo', '-h', '-p', partition, '-o', '%f|%C'])
+        idle_selected = sum(int(row.split('|')[1].split('/')[1])
+            for row in features.splitlines()
+            if len(row.split('|')) == 2 and set(selected_types) &
+                set(row.split('|')[0].split(',')))
+        if idle_selected < count:
+            raise ValueError('requested_RL_actors_exceed_explicit_node_type_capacity')
         command = ['sbatch', '--parsable', '--partition=' + partition, '--nodes=1', '--ntasks=1',
             '--cpus-per-task=1', f'--mem={memory_gb}G', f'--time={minutes}', '--no-requeue',
             f'--signal=B:USR1@{advance}', '--job-name=spireagent-f2',
@@ -374,6 +396,7 @@ def submit(path: Path, *, dry_run: bool = False,
             *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []), str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
             'cores': count, 'idle_smp_cores': idle, 'queued_smp_jobs': queued,
+            'node_types': selected_types, 'idle_selected_cores': idle_selected,
             'dry_run': dry_run, 'memory_gb_per_actor': memory_gb,
             'partition': partition,
             'excluded_nodes': exclude_nodes or [], 'cross_actor_immediate_unknown_stop': False,
@@ -383,6 +406,24 @@ def submit(path: Path, *, dry_run: bool = False,
             result['job_id'] = scheduler.output(command)
             save(root / 'submission.json', result)
         return result
+
+
+def augment_actor_summary(work: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    """Node identity and the existing per-lane phase observations only."""
+    del work
+    result = {**summary, 'hostname': socket.gethostname(), 'cpu_model': None}
+    cpuinfo = Path('/proc/cpuinfo')
+    if cpuinfo.exists():
+        result['cpu_model'] = next((line.partition(':')[2].strip()
+            for line in cpuinfo.read_text().splitlines() if line.startswith('model name')), None)
+    metrics = {'game_step_seconds': 'game_step_roundtrip', 'mu_inference_seconds': 'mu_inference',
+        'begin_wait_seconds': 'begin_wait', 'upload_seconds': 'tensor_upload',
+        'original_fsync_seconds': 'original_small_file_fsync'}
+    result['actor_timing'] = {name: (sum(game['phase_seconds'][phase]
+        for game in summary.get('games', [])) if all(phase in game.get('phase_seconds', {})
+            for game in summary.get('games', [])) else None) for name, phase in metrics.items()}
+    result['actor_timing_scope'] = 'original per-game phases; overlapping wall intervals, not a sum'
+    return result
 
 
 def run(path: Path) -> dict[str, Any]:
@@ -454,6 +495,8 @@ def run(path: Path) -> dict[str, Any]:
             evidence_only = True
         if (work / 'actor-summary.json').is_file():
             summary = json.loads((work / 'actor-summary.json').read_bytes())
+            summary = augment_actor_summary(work, summary)
+            save(work / 'actor-summary.json', summary)
         uncertain = any(game.get('status') in {'unknown', 'save_failed'}
                         or (game.get('status') not in {'saved', 'finished'}
                             and not game.get('shard')
@@ -789,7 +832,8 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
 
 def learn(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
           actors: int, seed_namespace: str, episode_seconds: int = 14400,
-          memory_gb: int = 4, external_submit: bool = False) -> dict[str, Any]:
+          memory_gb: int = 4, external_submit: bool = False,
+          dataplane_profile: Path | None = None) -> dict[str, Any]:
     """The GPU owner starts control, then submits the CPU actor adapter.
 
     The transient control capability reaches sbatch through its inherited environment;
@@ -801,7 +845,11 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     from spireagent.workbench.managed_segment_store import read_segment
     from stpd.p1.local_inference import AUTH_ENV
     from stpd.rl.learner import LearnerConfig
-    from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
+    from stpd.rl.segment_learner import (
+        SegmentLearner,
+        SegmentLearnerIO,
+        bind_dataplane_capacity,
+    )
 
     configuration = canonical_path(configuration)
     config = LearnerConfig.read(configuration)
@@ -809,6 +857,13 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     require_modules(source)
     require_managed_slot()
     settings = config.segments
+    dataplane = (json.loads(canonical_path(dataplane_profile).read_bytes())
+                 if dataplane_profile is not None else None)
+    if dataplane is not None and (not isinstance(dataplane, dict)
+                                 or dataplane.get('lanes', actors) != actors):
+        raise ValueError('dataplane_profile_actor_binding_changed')
+    if dataplane is not None:
+        dataplane['lanes'] = actors
     episode_capacity = (settings.episode_rows // settings.steps * settings.steps
                         if settings is not None else 1)
     minimum_actors = ((settings.dataset_rows + episode_capacity - 1)
@@ -816,7 +871,7 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device not in {'cuda', 'cpu'} or config.segments is None
             or type(actors) is not int
-            or not minimum_actors <= actors <= 500):
+            or not minimum_actors <= actors <= (4096 if dataplane is not None else 500)):
         raise ValueError('allocated_Friday_learner_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)
@@ -843,14 +898,15 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
 
         # One stable path belongs to the launch, even when only learner/work is
         # replaced. Preserve the inherited capability through the same launch.
-        config = config.bind_actors(actors)
+        config = (bind_dataplane_capacity(config, actors) if dataplane is not None
+                  else config.bind_actors(actors))
         assert config.segments is not None
         config = replace(config, segments=replace(config.segments,
             rendezvous_path=settings.rendezvous_path or str(work / 'inference.json')))
         effective_configuration = work / 'learner-config.json'
         save(effective_configuration, config.frozen())
         learner = SegmentLearner(config, work,
-            SegmentLearnerIO(read_segment, publish_detached_p1_model))
+            SegmentLearnerIO(read_segment, publish_detached_p1_model, dataplane=dataplane))
         try:
             prepare(execution, effective_configuration, actors_output, actors=actors,
                 wall_seconds=int(config.wall_seconds)+600, episode_seconds=episode_seconds,
@@ -880,11 +936,12 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
 
 def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Path,
            output: Path, *, gpu: str = 'a30', minutes: int = 85,
-           cpus: int = 16, memory_gb: int = 64,
+           cpus: int = 32, memory_gb: int = 64,
            actor_memory_gb: int = 4, ready_seconds: float = 120,
            alongside_job: str | None = None, reserve_only: bool = False,
            retain_capability: bool = False,
-           held_job_id: str | None = None) -> dict[str, Any]:
+           held_job_id: str | None = None,
+           actor_node_types: list[str] | None = None) -> dict[str, Any]:
     """Login-side resource adapter; both original sbatch calls inherit one capability.
 
     The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
@@ -1021,7 +1078,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         if plan.get('learner_request', plan['learner_origin']) != {
                 'path': str(configuration), 'sha256': hashed(configuration)}:
             raise ValueError('GPU_prepared_actor_plan_has_different_learner_configuration')
-        actors = submit(plan_file, memory_gb=actor_memory_gb)
+        actors = submit(plan_file, memory_gb=actor_memory_gb,
+                        **({"node_types": actor_node_types} if actor_node_types else {}))
         result = {'GPU_job_id': job, 'actors': actors, 'plan_sha256': hashed(plan_file)}
         save(root/'launch-receipt.json', result)
         completed = True
@@ -1074,6 +1132,8 @@ def main():
         if name == 'submit':
             sub.add_argument('--partition', choices=('smp', 'general', 'debug'), default='smp')
             sub.add_argument('--constraint')
+            sub.add_argument('--node-type', action='append', dest='node_types',
+                             help='explicit node features; default fc430, repeat for an OR list')
             sub.add_argument('--dry-run', action='store_true')
             sub.add_argument('--additional-to', type=Path, nargs='+')
             sub.add_argument('--memory-gb', type=int, default=4)
@@ -1092,14 +1152,17 @@ def main():
     learn_parser.add_argument('--memory-gb', type=int, default=4)
     learn_parser.add_argument('--external-submit', action='store_true',
                               help='login owns sbatch; GPU prepares the Actor plan')
+    learn_parser.add_argument('--dataplane-profile', type=Path,
+                              help='explicit binary socket/WAL and node mu cache profile')
     launch_parser = commands.add_parser('launch')
     for name in ('gpu-script', 'config', 'work', 'actors-output', 'output'):
         launch_parser.add_argument('--'+name, type=Path, required=True)
     launch_parser.add_argument('--gpu', choices=('a30', 'a100'), default='a30')
     launch_parser.add_argument('--minutes', type=int, default=85)
-    launch_parser.add_argument('--cpus', type=int, default=16)
+    launch_parser.add_argument('--cpus', type=int, default=32)
     launch_parser.add_argument('--memory-gb', type=int, default=64)
     launch_parser.add_argument('--actor-memory-gb', type=int, default=4)
+    launch_parser.add_argument('--actor-node-type', action='append', dest='actor_node_types')
     launch_parser.add_argument('--ready-seconds', type=float, default=120,
         help='Actor-plan readiness after the GPU job is observed RUNNING; queue time is excluded')
     launch_parser.add_argument('--held-job-id')
@@ -1119,12 +1182,13 @@ def main():
             args.output, gpu=args.gpu, minutes=args.minutes, cpus=args.cpus,
             memory_gb=args.memory_gb, actor_memory_gb=args.actor_memory_gb,
             ready_seconds=args.ready_seconds, alongside_job=args.alongside_job,
-            reserve_only=args.reserve_only, held_job_id=args.held_job_id)
+            reserve_only=args.reserve_only, held_job_id=args.held_job_id,
+            actor_node_types=args.actor_node_types)
     elif args.command == 'learn':
         result = learn(args.config, args.work, args.execution, args.actors_output,
             actors=args.actors, seed_namespace=args.seed_namespace,
             episode_seconds=args.episode_seconds, memory_gb=args.memory_gb,
-            external_submit=args.external_submit)
+            external_submit=args.external_submit, dataplane_profile=args.dataplane_profile)
     elif args.command == 'prepare':
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,
@@ -1135,7 +1199,8 @@ def main():
     elif args.command == 'submit':
         result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to,
                         memory_gb=args.memory_gb, exclude_nodes=args.exclude_nodes,
-                        partition=args.partition, constraint=args.constraint)
+                        partition=args.partition, constraint=args.constraint,
+                        node_types=args.node_types)
     elif args.command == 'save':
         result = resume_snapshot(args.plan, args.actor)
     else:

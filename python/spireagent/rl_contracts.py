@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 
 RL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
@@ -118,6 +119,8 @@ class Behavior(TypedDict):
     network_request: bool
     clock_offset: dict[str, float] | None
     score_source: str
+    game_step_roundtrip_seconds: NotRequired[float]
+    begin_wait_seconds: NotRequired[float]
 
 
 class HotStep(TypedDict):
@@ -243,7 +246,10 @@ class Commit(ControlBase):
     run_id: str
     rows: int
     mu: MuIdentity
-    payload: HotPayloadRef
+    payload: HotPayloadRef | BinaryRef
+    control_schema: NotRequired[str]
+    envelope: NotRequired[JsonObject]
+    binary_aux: NotRequired[list[JsonObject]]
 
 
 class EpisodeEnd(ControlBase):
@@ -272,8 +278,17 @@ def control_request_key(request: Mapping[str, Any]) -> str:
             identity.append(request["previous_lease"])
     else:
         raise ValueError("unsupported_rl_control_operation")
-    return hashlib.sha256(json_bytes(
-        [request["run"], request["training_generation"], operation, *identity])).hexdigest()
+    namespace = [request["run"], request["training_generation"], operation, *identity]
+    if "control_schema" in request:
+        if request["control_schema"] != CONTROL_SCHEMA:
+            raise ValueError("unsupported_rl_control_schema")
+        # The new representation is explicit and body-bound. Historical keys
+        # retain precisely their original namespace and algorithm.
+        from spireagent.rl_exchange import control_input
+
+        body = control_input(dict(request))
+        namespace += [CONTROL_SCHEMA, hashlib.sha256(json_bytes(body)).hexdigest()]
+    return hashlib.sha256(json_bytes(namespace)).hexdigest()
 
 
 # W1 grants capacity and latest completed mu only at begin; W2 adopts at that boundary.

@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,7 @@ class Archive:
         self.capacity_stop = threading.Event()
         self.capacity_thread: threading.Thread | None = None
         self.capacity_interval = 2.0
+        self.capacity_changed: Callable[[], None] | None = None
         self.filesystem_snapshot: dict[str, Any] = {}
         self.filesystem_checked = 0.0
         self.inventory_snapshot: dict[str, Any] = {}
@@ -196,13 +198,17 @@ class Archive:
                         "error": type(error).__name__}
         with self.lock:
             self.capacity_snapshot = snapshot
+        if self.capacity_changed is not None:
+            self.capacity_changed()
 
-    def start_capacity_monitor(self, interval: float = 2) -> None:
+    def start_capacity_monitor(self, interval: float = 2, *,
+                               on_change: Callable[[], None] | None = None) -> None:
         if not 0.01 <= interval <= 30:
             raise ValueError("invalid_archive_capacity_interval")
         if self.capacity_thread is not None:
             raise StoreError("archive_capacity_monitor_already_owned")
         self.capacity_interval = interval
+        self.capacity_changed = on_change
         self.capacity_stop.clear()
         self._refresh_capacity()
 

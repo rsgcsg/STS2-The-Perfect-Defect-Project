@@ -20,16 +20,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from stpd.p1.data import json_bytes as input_bytes
+from stpd.p1.frame_compiler import FrameCompiler
+from stpd.p1.sampling import distribution
+from stpd.p1.trajectory import validate_behavior
 from sts2_platform_evidence import AgentSessionRunEvidence, VerificationResult
 
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_contracts import LocalMuScorer
 from spireagent.storage.store import copy_artifact
-from stpd.p1.data import json_bytes as input_bytes
-from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.sampling import distribution
-from stpd.p1.trajectory import validate_behavior
 
 
 class OriginalBarrier:
@@ -595,6 +595,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         self.observers: dict[str, LiveSegmentProducer] = {}
         self.connections: dict[str, Any] = {}
         self.new_originals: dict[str, tuple[Path, Path]] = {}
+        self.binary_encoders: dict[str, Any] = {}
+        self.binary_spools: dict[str, Any] = {}
 
     def _before_world_offer(self, row: dict[str, Any]) -> None:
         from .managed_retention import training_audit_selected
@@ -625,7 +627,15 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             # The original typed World result stays intact, but this generation
             # has no verified rows to which training labels can be attached.
             fields.update(terminal=None, outcome_states=[], hp_battles=[])
-        original = self.exchange.persist_episode_end(fields, self.producer)
+        if self.attachment.get("dataplane"):
+            fields["binary_aux"] = self._upload_auxiliary(fields)
+            from spireagent.rl_dataplane_ports import CONTROL_SCHEMA
+            from spireagent.rl_exchange import control_input
+
+            original = control_input({**fields, "operation": "episode_end",
+                                      "control_schema": CONTROL_SCHEMA})
+        else:
+            original = self.exchange.persist_episode_end(fields, self.producer)
         result: dict[str, Any] = connection.request("episode_end",
             **{key: value for key, value in original.items() if key != "operation"})
         if result.get("reason") == "generation_changed":
@@ -636,6 +646,13 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         return result
 
     def _release_episode_payloads(self, observer: LiveSegmentProducer) -> None:
+        if self.attachment.get("dataplane"):
+            run_id = observer.assembler.barrier.run.name
+            self.binary_encoders.pop(run_id, None)
+            spool = self.binary_spools.pop(run_id, None)
+            if spool is not None:
+                spool.cleanup()
+            return
         owner = "episode:" + observer.assembler.identity["intent_id"]
         for segment in observer.assembler.committed:
             if segment.get("payload") is not None:
@@ -748,6 +765,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
 
     def _commit_hot_segment(self, row: dict[str, Any], connection: Any,
                             segment: dict[str, Any]) -> dict[str, Any]:
+        if self.attachment.get("dataplane"):
+            return self._commit_binary_segment(row, connection, segment)
         if self.exchange.hot_generation_discarded(segment["training_generation"]):
             return self._discard_hot_segment(segment)
         # No archive/compressed duplicate/Store manifest on the training edge.
@@ -790,6 +809,93 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                     "commit_ack": time.perf_counter() - began},
                 "hot_bytes": payload.size}
 
+    def _upload_auxiliary(self, labels: dict[str, Any]) -> list[dict[str, Any]]:
+        from stpd.rl.tensor_segment import packet_header
+
+        from spireagent.rl_socket_transport import upload
+
+        encoder = self.binary_encoders.get(str(labels.get("run_id")))
+        if encoder is None:
+            if labels.get("outcome_states") or labels.get("hp_battles"):
+                raise BoundaryError("rl_segment", "binary_auxiliary_spool_missing")
+            return []
+        endpoint = self.attachment.get("learner_endpoint", self.attachment)
+        result = []
+        for encoded in encoder.auxiliary(labels):
+            header = packet_header(encoded.packet)
+            ref = upload(endpoint, encoded)
+            result.append({"segment_id": header["witness"]["segment_id"], "payload": asdict(ref),
+                           "envelope": encoded.envelope})
+        return result
+
+    def _commit_binary_segment(self, row: dict[str, Any], connection: Any,
+                               segment: dict[str, Any]) -> dict[str, Any]:
+        from spireagent.rl_dataplane_ports import CONTROL_SCHEMA
+        from spireagent.rl_socket_transport import upload
+
+        endpoint = self.attachment.get("learner_endpoint", self.attachment)
+        if segment["training_generation"] != endpoint["training_generation"]:
+            return self._discard_hot_segment(segment)
+        with self.admission.pool.controls:
+            generated = self.admission.pool.generated
+            generated["generated_R"] += segment["rows"]
+            generated["generated_D"] += sum(len(s["input"]["catalog"]) > 1
+                                             for s in segment["steps"])
+            generated["generated_segments"] += 1
+        started = time.perf_counter()
+        encoded = self.binary_encoders[segment["run_id"]].encode(segment)
+        compiled = time.perf_counter() - started
+        started = time.perf_counter()
+        payload = upload(endpoint, encoded)
+        auxiliaries = []
+        if segment["hp_battles"]:
+            needed = {s["source"]["segment_id"] for battle in segment["hp_battles"]
+                      for s in battle["states"]} | {segment["segment_id"]}
+            previous = [s for s in self.observers[segment["run_id"]].assembler.committed
+                        if s["segment_id"] in needed]
+            auxiliaries = self._upload_auxiliary({
+                **{key: segment[key] for key in ("run", "training_generation", "run_id")},
+                "actor": self.actor, "episode": row["intent_id"], "terminal": None,
+                "outcome_states": [], "hp_battles": segment["hp_battles"],
+                "segments": [*previous, {"segment_id": segment["segment_id"],
+                                         "payload": asdict(payload)}]})
+        uploaded = time.perf_counter() - started
+        record = {key: segment[key] for key in (
+            "run", "training_generation", "segment_id", "run_id", "rows", "mu")}
+        record.update(payload=asdict(payload), segment_artifact_id="tensor:" + payload.slot,
+                      envelope=encoded.envelope, binary_aux=auxiliaries,
+                      control_schema=CONTROL_SCHEMA)
+        started = time.perf_counter()
+        accepted = connection.request("commit", **record)
+        if accepted.get("segment_id") != segment["segment_id"]:
+            raise BoundaryError("rl_segment", "binary_segment_admission_receipt_changed")
+        inference = [s["behavior"].get("server_seconds") for s in segment["steps"]
+                     if s["behavior"].get("score_source") != "reused_consumption"]
+        costs = {**segment["original_commit"]["cost_seconds"], "tensor_compile": compiled,
+                 "tensor_upload": uploaded, "commit_ack": time.perf_counter() - started,
+                 "game_step_roundtrip": sum(s["behavior"].get(
+                     "game_step_roundtrip_seconds", 0.) for s in segment["steps"]),
+                 "mu_inference": sum(inference) if all(type(t) in (int, float)
+                                                       for t in inference) else None,
+                 "begin_wait": sum(s["behavior"].get("begin_wait_seconds", 0.)
+                                   for s in segment["steps"])}
+        for key in ("game_step_roundtrip", "mu_inference", "begin_wait", "tensor_upload",
+                    "original_small_file_fsync"):
+            if costs[key] is None:
+                row.setdefault("timing_unknown", {})[key] = True
+                continue
+            phases = row.setdefault("phase_seconds", {})
+            phases[key] = phases.get(key, 0.) + costs[key]
+            metric = {"game_step_roundtrip": "game_step_seconds", "mu_inference":
+                "producer_mu_inference_seconds", "begin_wait": "producer_begin_wait_seconds",
+                "tensor_upload": "upload_seconds",
+                "original_small_file_fsync": "original_fsync_seconds"}[key]
+            self.admission.pool.observe_timing(metric, costs[key])
+        return {"segment_artifact_id": "tensor:" + payload.slot, "payload": asdict(payload),
+                "training_generation": segment["training_generation"],
+                "original_commit": segment["original_commit"], "discarded_on_restore": False,
+                "cost_seconds": costs, "binary_bytes": payload.size}
+
     def _runtime_started(
         self, startup: dict[str, Any], row: dict[str, Any], artifacts: Any, registration: Path
     ) -> LiveSegmentProducer:
@@ -807,6 +913,19 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             "behavior_policy": row["behavior_policy"],
             "initial_progress_sha256": self.configuration["initial_progress"]["progress_sha256"],
         }
+        if self.attachment.get("dataplane"):
+            import tempfile
+
+            from stpd.rl.tensor_segment import TensorSegmentEncoder
+
+            endpoint = self.attachment.get("learner_endpoint", self.attachment)
+            spool = tempfile.TemporaryDirectory(prefix="stpd-binary-actor-")
+            self.binary_spools[startup["run_id"]] = spool
+            recipe = {**endpoint["binary_recipe"], "actor": self.actor,
+                      "producer": self.producer.to_dict()}
+            self.binary_encoders[startup["run_id"]] = TensorSegmentEncoder(
+                vocabulary=endpoint["vocabulary"], compiler_identity=endpoint["compiler_identity"],
+                recipe=recipe, spool=spool.name)
 
         def commit(segment: dict[str, Any], _originals: bytes) -> dict[str, Any]:
             return self._commit_hot_segment(row, connection, segment)

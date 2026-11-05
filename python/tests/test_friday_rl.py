@@ -329,7 +329,7 @@ def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path)
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True)
     assert '--array=0-7%8' in result['command']
     assert '--signal=B:USR1@1980' in result['command']
@@ -543,7 +543,7 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
                   patch.object(rl.scheduler, 'submission_lock_path',
                                return_value=tmp_path / 'submit.lock'),
                   patch.object(rl.scheduler, 'output',
-                               side_effect=['123_[0-0]', '0/400/0/400', ''])):
+                               side_effect=['123_[0-0]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
                 submitted = rl.submit(next_plan / 'plan.json', additional_to=[file], dry_run=True)
             assert submitted['cores'] == 32
             previous = submitted['additional_to'][0]
@@ -632,7 +632,7 @@ def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
     plan = rl.prepare(execution, learner, extra, actors=24)
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
-          patch.object(rl.scheduler, 'output', side_effect=['123_[0-31]', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output', side_effect=['123_[0-31]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
     assert '--array=0-23%24' in result['command'] and '--cpus-per-task=1' in result['command']
     assert result['additional_to'][0]['job_id'] == '123'
@@ -672,7 +672,7 @@ def test_additional_submission_uncertain_outcome_is_not_offered_again(rl, inputs
             commands.append(command)
             raise RuntimeError('injected_unknown_scheduler_response')
         if command[0] == 'sinfo':
-            return '0/400/0/400'
+            return 'fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400'
         return '123_[0-11]' if '-n' in command else ''
 
     with (patch.object(rl, 'require_modules'),
@@ -693,7 +693,7 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True, memory_gb=6, exclude_nodes=['smp-9-0'])
     assert '--mem=6G' in result['command'] and '--mem=4G' not in result['command']
     assert '--exclude=smp-9-0' in result['command']
@@ -786,7 +786,7 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
         if command[0] == 'sbatch':
             commands.append(command)
             raise RuntimeError('injected_unknown_scheduler_response')
-        return '0/400/0/400' if command[0] == 'sinfo' else ''
+        return ('fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400') if command[0] == 'sinfo' else ''
 
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
@@ -1164,7 +1164,8 @@ def test_general_segment_submission_keeps_300_second_advance(rl, tmp_path, monke
     monkeypatch.setattr(rl, "launcher", lambda *args: "#!/bin/bash\nexit 0\n")
     monkeypatch.setattr(rl.scheduler, "user_submission_lock", nullcontext)
     monkeypatch.setattr(
-        rl.scheduler, "output", lambda command: "0/100/0/100" if command[0] == "sinfo" else ""
+        rl.scheduler, "output", lambda command: ("fc430|0/100/0/100" if "%f|%C" in command
+                         else "0/100/0/100") if command[0] == "sinfo" else ""
     )
     result = rl.submit(path, dry_run=True, partition="general")
     assert "--signal=B:USR1@300" in result["command"]
@@ -1279,3 +1280,27 @@ def test_held_gpu_active_step_rejected_without_submission(rl, tmp_path, monkeypa
     with pytest.raises(ValueError, match='active_step'):
         rl.launch(script, config, tmp_path/'learner', tmp_path/'actors', tmp_path/'login',
                   gpu='a100', held_job_id='79')
+
+
+@pytest.mark.parametrize('node_types,allowed', [(None, False), (['fc430', 'c6220'], True)])
+def test_explicit_node_types_never_silently_mix_slow_nodes(rl, inputs, tmp_path,
+                                                          monkeypatch, node_types, allowed):
+    _, path = prepared(rl, inputs)
+    from contextlib import nullcontext
+
+    def scheduler(command):
+        if command[0] == 'sinfo':
+            return ('fc430|0/0/0/16\nc6220|0/400/0/400'
+                    if '%f|%C' in command else '0/400/0/416')
+        return ''
+
+    monkeypatch.setattr(rl, 'require_modules', lambda _: None)
+    monkeypatch.setattr(rl.scheduler, 'user_submission_lock', nullcontext)
+    monkeypatch.setattr(rl.scheduler, 'output', scheduler)
+    if allowed:
+        result = rl.submit(path, dry_run=True, node_types=node_types)
+        assert '--constraint=fc430|c6220' in result['command']
+    else:
+        with pytest.raises(ValueError, match='explicit_node_type_capacity'):
+            rl.submit(path, dry_run=True)
+        assert not (path.parent / 'submission-intent.json').exists()

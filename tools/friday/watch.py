@@ -956,12 +956,19 @@ def read_segment_config(path: Path) -> dict[str, Any]:
             or not math.isfinite(value['deadline_at'])
             or type(value.get('training_seconds')) not in (int, float)
             or not 1 <= value['training_seconds'] <= 72000
-            or type(value.get('actors')) is not int or not 1 <= value['actors'] <= 500
+            or type(value.get('actors')) is not int
+            or not 1 <= value['actors'] <= (4096 if value.get('dataplane') is not None else 500)
             or not isinstance(value.get('budget_id'), str)
             or not 1 <= value.get('poll_seconds', 30) <= 300
             or value.get('actor_partition', 'smp') not in {'smp', 'general', 'debug'}
             or not 0 < value.get('unknown_stop_fraction', .05) <= 1):
         raise ValueError('bounded_segment_run_watch_configuration_required')
+    if value.get('dataplane') is not None and not isinstance(value['dataplane'], dict):
+        raise ValueError('explicit_binary_dataplane_profile_required')
+    if value.get('dataplane') is not None:
+        learner_cpus = value.get('cpus', 32)
+        if value['actors'] + learner_cpus > value.get('cpu_budget', 500):
+            raise ValueError('actor_and_learner_exceed_explicit_CPU_budget')
     from stpd.rl.learner import LearnerConfig
     source = Path(value['runtime_source'])
     base = LearnerConfig.read(Path(value['learner_config']))
@@ -1064,16 +1071,86 @@ class SegmentWatcher(Watcher):
         self.state['incarnation'] = self.incarnation
         self.seen_events = set(self.state.get('seen_event_keys', []))
 
+    def _socket_attachment(self, attempt):
+        import rl
+
+        attachment = attempt.get('socket_attachment')
+        if attachment is None:
+            plans = attempt.get('actor_plans', [])
+            if not plans:
+                return None
+            plan = rl.load_plan(Path(plans[0]))
+            attachment = evaluate.read_pinned(plan['inference'])
+            if not attachment.get('dataplane'):
+                raise ValueError('binary_watch_requires_exact_socket_plan')
+            attempt['socket_attachment'] = attachment  # immutable bootstrap, no polling
+        return attachment
+
+    def _socket_event_rows(self):
+        from spireagent.rl_exchange import EVENT_SCHEMA, _open
+        from spireagent.rl_local_wal import LocalControlWAL
+        from stpd.p1.local_inference import SegmentConnection
+
+        if not hasattr(self, 'event_channels'):
+            self.event_channels = {}
+        rows, cursors = [], []
+        for attempt in self.state['attempts']:
+            attachment = self._socket_attachment(attempt)
+            if attachment is None or attempt.get('socket_events_closed'):
+                continue
+            generation = attachment['training_generation']
+            channel = self.event_channels.setdefault(generation, SegmentConnection(attachment))
+            sequence = attempt.get('event_sequence', 0)
+            try:
+                for _chunk in range(16):
+                    result = channel.request('events_since', sequence=sequence)
+                    if (result.get('run') != self.config['run']
+                            or result.get('training_generation') != generation):
+                        raise ValueError('lifecycle_cursor_owner_changed')
+                    events = result['events']
+                    for fact in events:
+                        if fact['sequence'] <= sequence or fact['kind'] != 'event':
+                            raise ValueError('lifecycle_cursor_order_changed')
+                        body = LocalControlWAL._body(fact['sequence'], fact['key'], fact['kind'],
+                            json_bytes(fact['request']), json_bytes(fact['response']),
+                            fact['previous'], fact['created'])
+                        if hashlib.sha256(body).hexdigest() != fact['hash']:
+                            raise ValueError('lifecycle_durable_record_changed')
+                        event = _open(json_bytes(fact['request']), EVENT_SCHEMA)
+                        if (event['run'] != self.config['run']
+                                or event['training_generation'] != generation):
+                            raise ValueError('lifecycle_event_owner_changed')
+                        key = f"socket:{attachment['pool_id']}:{fact['sequence']:012d}:{fact['hash']}"
+                        rows.append((key, event))
+                        sequence = fact['sequence']
+                    if len(events) < 256:
+                        break
+                cursors.append((attempt, sequence))
+            except (OSError, EOFError, ValueError, TimeoutError) as error:
+                channel.close()
+                attempt['socket_events_error'] = {'type': type(error).__name__,
+                    'code': getattr(error, 'code', None), 'after_sequence': sequence}
+                # A missing lifecycle suffix is not zero Worlds/unknowns. Keep
+                # original health facts and stop new offers for diagnosis.
+                self.state['stop'] = self.state['stop'] or 'dataplane_events_unavailable'
+        return rows, cursors
+
     def collect_events(self):
         worlds = self.state['worlds']
         unresolved = set(self.state['unresolved_admissions'])
         terminal = set(self.state['terminal_actors'])
         attempts = {g: a for a in self.state['attempts']
                     for g in a.get('generations', [a['generation']])}
-        keys = sorted(k for k in self.exchange.blobs.keys(self.exchange.prefix + 'learner-events/')
-                      if k.endswith('.json') and k not in self.seen_events)
-        for key in keys:
-            event = self.exchange.event_record(key)
+        if self.config.get('dataplane') is not None:
+            rows, cursors = self._socket_event_rows()
+        else:
+            keys = sorted(k for k in self.exchange.blobs.keys(self.exchange.prefix + 'learner-events/')
+                          if k.endswith('.json') and k not in self.seen_events)
+            rows = [(key, self.exchange.event_record(key)) for key in keys]
+            cursors = []
+        for key, event in rows:
+            if key in self.seen_events:
+                continue
             self.seen_events.add(key)
             if event.get('budget_id') != self.config['budget_id']:
                 continue
@@ -1149,6 +1226,8 @@ class SegmentWatcher(Watcher):
                     # observation; the original ledger's unknown is never upgraded.
                     unresolved.discard(intent)
         self.state['seen_event_keys'] = sorted(self.seen_events)
+        for attempt, sequence in cursors:
+            attempt['event_sequence'] = sequence
         self.state['unresolved_admissions'] = sorted(intent for intent in unresolved
             if not worlds.get(intent, {}).get('offered') and not worlds.get(intent, {}).get('closed'))
         self.state['terminal_actors'] = sorted(terminal)
@@ -1329,7 +1408,13 @@ class SegmentWatcher(Watcher):
                 'total_seconds': self.config['training_seconds'],
                 'consumed_seconds': self.state['training_seconds']},
             segments=dataclasses.replace(base.segments, training_generation=generation,
-                rendezvous_path=str(self.work / 'inference.json'))).bind_actors(self.config['actors'])
+            rendezvous_path=str(self.work / 'inference.json')))
+        if self.config.get('dataplane') is not None:
+            from stpd.rl.segment_learner import bind_dataplane_capacity
+
+            config = bind_dataplane_capacity(config, self.config['actors'])
+        else:
+            config = config.bind_actors(self.config['actors'])
         configuration = root / 'learner.json'
         save(configuration, config.frozen())
         script = root / 'learner.sh'
@@ -1338,7 +1423,8 @@ class SegmentWatcher(Watcher):
             actors=self.config['actors'], seed_namespace=f'ops-{self.work.name}-{number}',
             python=Path(self.config['learner_python']),
             episode_seconds=self.config.get('episode_seconds', 14400),
-            supervisor=self.config.get('learner_supervisor')))
+            supervisor=self.config.get('learner_supervisor'),
+            dataplane=self.config.get('dataplane')))
         script.chmod(0o700)
         attempt = {'root': str(root), 'generation': generation, 'config': str(configuration),
                    'checkpoint': cp, 'actor_plans': [], 'replaced': [], 'active_seconds': 0,
@@ -1362,7 +1448,7 @@ class SegmentWatcher(Watcher):
         else:
             receipt = rl.launch(script, configuration, root / 'learner', root / 'actors',
                 root / 'login-launch', gpu=self.config.get('gpu', 'a100'),
-                minutes=self.config.get('minutes', 2880), cpus=self.config.get('cpus', 16),
+                minutes=self.config.get('minutes', 2880), cpus=self.config.get('cpus', 32),
                 memory_gb=self.config.get('memory_gb', 64),
                 ready_seconds=self.config.get('ready_seconds', 3600), retain_capability=True,
                 held_job_id=self.config.get('held_job_id'))
@@ -1423,6 +1509,7 @@ class SegmentWatcher(Watcher):
         rl.submit(root / 'plan.json', additional_to=[Path(p) for p in attempt['actor_plans']],
             partition=self.config.get('actor_partition', 'smp'),
             constraint=self.config.get('actor_constraint'),
+            node_types=self.config.get('actor_node_types'),
             memory_gb=self.config.get('actor_memory_gb', 4),
             exclude_nodes=self.config.get('exclude_nodes'))
         attempt['actor_plans'].append(str(root / 'plan.json'))
@@ -1431,8 +1518,9 @@ class SegmentWatcher(Watcher):
         self.persist()
 
     def stop_attempt(self, attempt: dict[str, Any], reason: str) -> None:
-        for generation in attempt.get('generations', [attempt['generation']]):
-            self.exchange.request_stop(reason, training_generation=generation)
+        if self.config.get('dataplane') is None:
+            for generation in attempt.get('generations', [attempt['generation']]):
+                self.exchange.request_stop(reason, training_generation=generation)
         root = Path(attempt['root'])
         save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():
@@ -1445,6 +1533,17 @@ class SegmentWatcher(Watcher):
             self.signal_once(str(job).split(';')[0])
         attempt['stopping'] = reason
         self.persist()
+        if self.config.get('dataplane') is not None:
+            from stpd.p1.local_inference import SegmentConnection
+
+            attachment = self._socket_attachment(attempt)
+            if attachment is not None:
+                attempt['stop_epoch'] = attempt.get('stop_epoch', 0) + 1
+                self.persist()
+                with SegmentConnection(attachment) as channel:
+                    channel.request('stop', run=self.config['run'],
+                        training_generation=attachment['training_generation'],
+                        reason=reason, epoch=attempt['stop_epoch'])
 
     def cancel_at_deadline(self):
         """The frozen absolute boundary authorizes cancellation of owned allocations."""

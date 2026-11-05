@@ -12,8 +12,9 @@ import signal
 import threading
 from pathlib import Path
 
-from spireagent.json_boundary import BoundaryError
 from stpd.rl.learner import LearnerConfig, LearnerIO
+
+from spireagent.json_boundary import BoundaryError
 
 from .global_evidence_store import publish_detached_p1_model
 from .managed_segment_store import read_segment
@@ -33,10 +34,6 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     """
     from dataclasses import asdict, replace
 
-    from spireagent.artifact_contracts import Manifest
-    from spireagent.json_boundary import FrozenObject
-    from spireagent.rl_exchange import Exchange
-    from spireagent.source import source_identity
     from stpd.p1.export import adapter_identity, input_spec, load_model, runtime_projection
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.rl.checkpoint_state import (
@@ -49,6 +46,11 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     )
     from stpd.rl.learner import ROOT
     from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.rl_exchange import Exchange
+    from spireagent.source import source_identity
 
     if (config.segments is None or not config.resume_checkpoint
             or not config.segments.training_generation
@@ -126,6 +128,8 @@ def main() -> None:
                         help="bind dataset + actors*steps capacity for CP16 conversion")
     parser.add_argument("--initialize-only", action="store_true",
                         help="publish the exact warmed start and full CP; no actors or SGD")
+    parser.add_argument("--dataplane-profile", type=Path,
+                        help="explicit binary socket/WAL and node mu cache profile")
     parser.add_argument("--convert-cp16-package", type=Path,
                         help="explicit construction package; convert only, zero SGD/World")
     parser.add_argument("--source-generation")
@@ -162,7 +166,9 @@ def main() -> None:
 
         summary = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment=read_segment,
-                             publish_model=publish_detached_p1_model)).run(
+                             publish_model=publish_detached_p1_model,
+                             dataplane=(json.loads(args.dataplane_profile.read_bytes())
+                                        if args.dataplane_profile else None))).run(
                                  initialize_only=args.initialize_only)
     finally:
         for number, handler in previous.items():

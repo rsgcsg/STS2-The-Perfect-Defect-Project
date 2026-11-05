@@ -653,6 +653,7 @@ def test_restore_zero_segment_close_uses_actual_episode_admission(
             assert admission.episode_owner("actor", episode)["training_generation"] == "restored"
             assert any(key[0] == "restored" for key in actor.leases)
         executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
+        executor.attachment = {}
         executor.exchange, executor.producer, executor.admission = exchange, PRODUCER, admission
         # The observer socket and model registration still name the startup A.
         with SegmentConnection(actor.attachment()) as stale:

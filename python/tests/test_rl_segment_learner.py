@@ -626,6 +626,7 @@ def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails
         input_fenced=False,
         pending_labels=[],
         hot_references={},
+        wal=None,
         telemetry_futures=[],
         pool=SimpleNamespace(close=pool_close),
         archive=Archive(),

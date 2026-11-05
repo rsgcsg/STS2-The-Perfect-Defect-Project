@@ -14,17 +14,21 @@ import math
 import re
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from spireagent.rl_socket_transport import NodeMuCache
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_contracts import RL_NAME as _NAME
 from spireagent.rl_contracts import HotPayloadRef, control_request_key, exchange_prefix
+from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 from spireagent.storage.blobs import StoreError
 from spireagent.storage.config import open_peer
 from spireagent.storage.local import LocalBlobStore
@@ -75,18 +79,39 @@ def control_input(value: dict[str, Any]) -> dict[str, Any]:
             reject("episode_labels_generation_changed")
         value = {**value, **value["labels"]}
     result = {key: value[key] for key in fields[operation] if key in value}
+    binary = value.get("control_schema") == CONTROL_SCHEMA
+    if "control_schema" in value and not binary:
+        reject("unsupported_rl_control_schema")
+    if binary:
+        result["control_schema"] = CONTROL_SCHEMA
+        if operation == "begin":
+            for key in ("node_id", "node_cached_mu_snapshot"):
+                if key in value:
+                    result[key] = value[key]
+        for key in (("envelope", "binary_aux") if operation == "commit" else
+                    ("binary_aux",) if operation == "episode_end" else ()):
+            if key in value:
+                result[key] = value[key]
     if "training_generation" in value:
         generation = value["training_generation"]
         if not isinstance(generation, str) or not _NAME.fullmatch(generation):
             reject("invalid_training_generation")
         result.update(run=value["run"], training_generation=generation)
         if operation == "commit" and "payload" in result:
-            ref = _hot_ref(result["payload"])
+            ref: HotPayloadRef | BinaryRef
+            if binary:
+                from spireagent.rl_socket_transport import binary_ref
+
+                ref = binary_ref(result["payload"])
+                prefix = "tensor:"
+            else:
+                ref = _hot_ref(result["payload"])
+                prefix = "hot:"
             if (ref.slot.split("/")[:2] != [result["run"], generation]
-                    or result.get("segment_artifact_id", "hot:" + ref.slot) != "hot:" + ref.slot):
+                    or result.get("segment_artifact_id", prefix + ref.slot) != prefix + ref.slot):
                 reject("hot_commit_reference_changed")
             result["payload"] = asdict(ref)
-            result.setdefault("segment_artifact_id", "hot:" + ref.slot)
+            result.setdefault("segment_artifact_id", prefix + ref.slot)
     if operation != "commit" and (not isinstance(result.get("actor"), str)
                 or not _NAME.fullmatch(result["actor"])
                 or not isinstance(result.get("episode"), str)
@@ -149,6 +174,12 @@ class Exchange:
         self.store: ManifestArtifactStore = open_peer(peer)
         self.blobs = self.store.blobs
         self.prefix = prefix
+        self.event_sink: Callable[[dict[str, Any]], Any] | None = None
+        self.stop_source: Callable[[str | None], dict[str, Any] | None] | None = None
+        self.stop_sink: Callable[[str, str | None], dict[str, Any]] | None = None
+        self.generation_source: Callable[[str], bool] | None = None
+        self.live_generation: str | None = None
+        self.model_provider: NodeMuCache | None = None
 
     def _hot_store(self) -> LocalBlobStore:
         if not isinstance(self.blobs, LocalBlobStore):
@@ -346,6 +377,8 @@ class Exchange:
                 "references": sum(len(s["owners"]) for s in states)}
 
     def hot_generation_discarded(self, training_generation: str) -> bool:
+        if self.generation_source is not None:
+            return self.generation_source(training_generation)
         ref = _hot_ref(HotPayloadRef(f"{self.run}/{training_generation}/restore", "0" * 64, 1))
         return self._hot_store()._path(
             "/".join(ref.slot.split("/")[:2]) + "/discarded.json").exists()
@@ -595,6 +628,8 @@ class Exchange:
         """First request wins; later callers observe that original request."""
         if not isinstance(reason, str) or not reason:
             reject("invalid_stop_reason")
+        if self.stop_sink is not None:
+            return self.stop_sink(reason, training_generation)
         existing = self.stop_request(training_generation=training_generation)
         if existing is not None:
             return existing
@@ -614,6 +649,8 @@ class Exchange:
         return result
 
     def stop_request(self, *, training_generation: str | None = None) -> dict[str, Any] | None:
+        if self.stop_source is not None:
+            return self.stop_source(training_generation)
         # An explicit whole-run stop remains binding. Operational stops fence only
         # their generation; a fresh, authorized continuation preserves the old fact.
         prefix = self.prefix
@@ -631,11 +668,17 @@ class Exchange:
         return value
 
     def publish_event(self, kind: str, **fields: Any) -> dict[str, Any]:
+        if self.live_generation is not None:
+            fields.setdefault("training_generation", self.live_generation)
         raw = _sealed({**fields, "schema": EVENT_SCHEMA, "run": self.run,
                        "at": time.time(), "kind": kind})
+        if self.event_sink is not None:
+            value: dict[str, Any] = json.loads(raw)
+            self.event_sink(value)
+            return value
         key = f"{self.prefix}learner-events/{time.time_ns():020d}-{uuid.uuid4().hex}.json"
         self.blobs.put_if_absent(key, raw)
-        value: dict[str, Any] = json.loads(raw)
+        value = json.loads(raw)
         return value
 
     def event_records(self) -> list[dict[str, Any]]:
@@ -766,6 +809,8 @@ class Exchange:
         return value
 
     def latest_model(self, *, training_generation: str | None = None) -> dict[str, Any] | None:
+        if self.model_provider is not None:
+            return self.model_provider.model_record(training_generation)
         versions = self.model_versions(training_generation=training_generation)
         return (
             self.model(versions[-1], training_generation=training_generation) if versions else None
@@ -773,6 +818,8 @@ class Exchange:
 
     def materialize_model(self, record: dict[str, Any], cache: Path) -> Path:
         """Fetch the package (model.json + model.tensor-tree) once and verify both hashes."""
+        if self.model_provider is not None:
+            return self.model_provider.bootstrap_model(record, cache, self.store)
         destination: Path = cache / str(record["model_artifact_id"])
         if (destination / "COMPLETE").exists():
             return destination

@@ -18,6 +18,7 @@ import os
 import random
 import resource
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -27,16 +28,23 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from spireagent.rl_local_wal import WalReplication
+    from spireagent.rl_socket_transport import BinarySources
+
+    from stpd.rl.binary_preparation import BinaryBatchPreparer
 
 import torch
-
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
+from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
+
 from stpd.p1.data import json_bytes as p1_json_bytes
 from stpd.p1.export import (
     adapter_identity,
@@ -46,7 +54,11 @@ from stpd.p1.export import (
     runtime_projection,
 )
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.local_inference import CentralInferencePool, create_segment_inference_pool
+from stpd.p1.local_inference import (
+    CentralInferencePool,
+    SegmentInferencePool,
+    create_segment_inference_pool,
+)
 from stpd.p1.model import MStd
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
@@ -87,6 +99,18 @@ class SegmentLearnerIO:
     read_segment: Callable[..., dict[str, Any]]
     publish_model: Callable[..., Any]
     read_hot_segment: Callable[..., dict[str, Any]] | None = None
+    dataplane: dict[str, Any] | None = None
+
+
+@dataclass
+class _BeginWait:
+    request: dict[str, Any]
+    condition: threading.Condition
+    notified: bool = False
+    done: bool = False
+    response: dict[str, Any] | None = None
+    error: BaseException | None = None
+    followers: int = 0
 
 
 def _publisher_initialize() -> None:
@@ -309,11 +333,34 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def bind_dataplane_capacity(config: LearnerConfig, lanes: int) -> LearnerConfig:
+    """Operational row credit for the explicit binary deployment profile."""
+    settings = config.segments
+    if settings is None or type(lanes) is not int or not 1 <= lanes <= 4096:
+        raise ValueError("invalid_binary_dataplane_lanes")
+    capacity = lanes * settings.steps + 4 * settings.dataset_rows
+    if settings.capacity_limit_rows is not None and settings.capacity_limit_rows < capacity:
+        raise ValueError("binary_dataplane_capacity_limit_below_lane_requirement")
+    return replace(config, segments=replace(settings,
+        capacity_rows=max(capacity, settings.capacity_rows)))
+
+
 class SegmentLearner:
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
         settings = config.segments
+        self.dataplane = copy.deepcopy(io.dataplane)
+        self.fd_limits = None
+        if self.dataplane is not None:
+            from spireagent.rl_socket_transport import ensure_fd_capacity
+
+            config = bind_dataplane_capacity(config, self.dataplane["lanes"])
+            assert config.segments is not None
+            settings = config.segments
+            self.fd_limits = ensure_fd_capacity(self.dataplane["lanes"],
+                source_slots=self.dataplane.get("source_slots", 8192),
+                connections_per_lane=self.dataplane.get("connections_per_lane", 6))
         if config.performance is not None and config.performance.compile_loss:
             raise BoundaryError("rl_learner", "prepared_loss_compile_retired_after_G0")
         if config.loss.mode != "ppo":
@@ -325,9 +372,30 @@ class SegmentLearner:
         self.config, self.settings, self.work, self.io = config, settings, work, io
         work.mkdir(parents=True, exist_ok=True)
         self.producer = source_identity(ROOT)
+        self.wal = None
+        self.binary_sources: BinarySources
+        self.wal_replication: WalReplication
+        self.stop_fact: dict[str, Any] | None = None
+        self.stop_epoch = 0
+        self.training_discarded_rows = 0
+        self.live_work = work
+        self.generation = settings.training_generation or "g" + uuid.uuid4().hex
+        if self.dataplane is not None:
+            from spireagent.rl_socket_transport import require_local_scratch
+
+            self.live_work = Path(self.dataplane.get("root") or (
+                Path(tempfile.gettempdir()) / f"stpd-rl-{os.getuid()}" / config.run
+                / self.generation))
+            self.live_work.mkdir(parents=True, exist_ok=True)
+            self.local_scratch_probe = require_local_scratch(self.live_work)
+            # Publications/CPs retain the existing Store/archive owner, with its
+            # active working set on this learner node rather than the shared peer.
+            peer = {"kind": "local", "directory": str(self.live_work / "store")}
+            peer["archive"] = config.peer.get("archive", config.peer)
+            config = replace(config, peer=peer)
+            self.config = config
         self.exchange = Exchange(config.peer, config.run)
         self.archive = None
-        self.generation = settings.training_generation or "g" + uuid.uuid4().hex
         if self.exchange.stop_request(training_generation=self.generation) is not None:
             raise BoundaryError("rl_learner", "cannot_resume_a_permanently_stopped_run")
         self.deadline_at = None
@@ -338,7 +406,11 @@ class SegmentLearner:
         torch.manual_seed(config.seed)
         self.rng = random.Random(config.seed)
         self.queue = SegmentQueue(settings)
-        self.condition = self.queue.condition
+        self.control_lock = threading.RLock()
+        self.condition = self.queue.condition = threading.Condition(self.control_lock)
+        self.capacity_waiters: dict[str, _BeginWait] = {}
+        self.capacity_tickets = 0
+        self.episode_load: dict[tuple[str, str], dict[str, int]] = {}
         self.gpu_lock = threading.RLock()
         self.terminal = AuxiliaryPool(settings.terminal_games, settings.terminal_uses)
         self.hp = AuxiliaryPool(settings.hp_battles, settings.hp_uses)
@@ -346,7 +418,8 @@ class SegmentLearner:
         self.actor_episodes: dict[str, str] = {}
         self.retired_actors: set[str] = set()
         self.sources: dict[str, dict[str, Any]] = {}
-        self.hot_references: dict[tuple[str, str], HotPayloadRef] = {}
+        self.hp_binary_members: dict[str, tuple[BatchMember, ...]] = {}
+        self.hot_references: dict[tuple[str, str], HotPayloadRef | BinaryRef] = {}
         self.newlease_stopped = self.input_fenced = False
         self.input_failure: dict[str, Any] | None = None
         self.input_sequence = 0
@@ -484,7 +557,50 @@ class SegmentLearner:
             self.conversion = restored.conversion
             self.cuda_rng = restored.rng.cuda_rng
             self.rng.setstate(restored.rng.learner_random)
-        self.input_preparer = BatchPreparer(
+        self.committed_selection_rng = self.rng.getstate()
+        self.input_preparer: BatchPreparer | BinaryBatchPreparer
+        preparation_options: dict[str, Any] = dict(
+            microbatch_size=self.performance.microbatch_size,
+            deduplicate_text=self.performance.deduplicate_text,
+            scene_attention_area=self.performance.scene_attention_area,
+            text_attention_area=self.performance.text_attention_area,
+            excluded_seeds=frozenset(settings.excluded_seeds),
+            gae_lambda=settings.gae_lambda,
+        )
+        if self.dataplane is not None:
+            from spireagent.rl_local_wal import LocalControlWAL, WalReplication
+            from spireagent.rl_socket_transport import BinarySources
+
+            from stpd.rl.binary_preparation import BinaryBatchPreparer
+
+            self.wal = LocalControlWAL(self.live_work / "control.sqlite", run=config.run,
+                generation=self.generation,
+                max_bytes=self.dataplane.get("wal_max_bytes", 4 * 1024**3))
+            if self.wal.reopened:
+                self.wal.close()
+                raise ValueError("binary_owner_requires_fresh_generation_and_local_journal")
+            from spireagent.storage.config import open_peer
+
+            self.wal_replication = WalReplication(self.wal,
+                open_peer(config.peer["archive"]).blobs)
+            self.binary_sources = BinarySources(self.live_work / "sources", run=config.run,
+                generation=self.generation,
+                max_bytes=self.dataplane.get("source_bytes", 20 * 1024**3),
+                max_slots=self.dataplane.get("source_slots", 8192))
+            self.exchange.event_sink = self._durable_event
+            self.exchange.live_generation = self.generation
+            self.exchange.stop_source = lambda _generation: self.stop_fact
+            self.input_preparer = BinaryBatchPreparer(provider=self.binary_sources,
+                vocabulary=self.model.vocabulary,
+                workers=self.dataplane.get("preparation_workers", settings.preparation_workers),
+                threads=self.dataplane.get("preparation_threads", settings.preparation_threads),
+                assembly_workers=self.dataplane.get("assembly_workers", 2),
+                scratch=self.live_work,
+                source_slots=self.dataplane.get("prepare_slots", 8),
+                max_source_bytes=self.dataplane.get("source_bytes", 20 * 1024**3),
+                **preparation_options)
+        else:
+            self.input_preparer = BatchPreparer(
             self.model.vocabulary,
             workers=settings.preparation_workers,
             threads=settings.preparation_threads,
@@ -492,12 +608,7 @@ class SegmentLearner:
             run=config.run,
             scratch=work,
             reader=io.read_hot_segment,
-            microbatch_size=self.performance.microbatch_size,
-            deduplicate_text=self.performance.deduplicate_text,
-            scene_attention_area=self.performance.scene_attention_area,
-            text_attention_area=self.performance.text_attention_area,
-            excluded_seeds=frozenset(settings.excluded_seeds),
-            gae_lambda=settings.gae_lambda,
+            **preparation_options,
         )
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
@@ -548,7 +659,25 @@ class SegmentLearner:
             window_ms=settings.inference_window_ms,
             segment_steps=settings.steps,
             compiler_identity=self.compiler_identity,
+            dataplane={"sources": self.binary_sources, "upload_check": self._check_upload,
+                       "model_files": self._model_files, "on_failure": self._transport_failure}
+                       if self.dataplane is not None else None,
         )
+        if self.dataplane is not None:
+            recipe = _resume_config(asdict(self.config))
+            cast(SegmentInferencePool, self.pool).binary_profile = {"binary_recipe": {
+                "producer": self.producer.to_dict(),
+                "recipe_digest": hashlib.sha256(json_bytes(recipe)).hexdigest(),
+                "use_and_seed_digest": hashlib.sha256(json_bytes({"training_split": "TRAIN",
+                    "excluded_seeds": settings.excluded_seeds})).hexdigest(),
+                "excluded_seeds": settings.excluded_seeds, "gae_lambda": settings.gae_lambda},
+                "mu_pull_interval_seconds": self.dataplane.get("mu_pull_interval_seconds", 15),
+                "mu_cache_bytes": self.dataplane.get("mu_cache_bytes", 512 * 1024**2)}
+            (work / "dataplane-profile.json").write_bytes(json_bytes({
+                **self.dataplane, "root": str(self.live_work),
+                "capacity_rows": settings.capacity_rows,
+                "episode_rows": settings.episode_rows, "fd_limits": self.fd_limits,
+                "local_scratch_probe": self.local_scratch_probe}))
         for destination in {
             work / "inference.json",
             Path(settings.rendezvous_path) if settings.rendezvous_path else work / "inference.json",
@@ -569,7 +698,11 @@ class SegmentLearner:
         self.archive = self.exchange.store.archive if isinstance(
             self.exchange.store, ArchivedStore) else None
         if self.archive is not None:
-            self.archive.start_capacity_monitor(settings.archive_poll_seconds)
+            if self.wal is not None:
+                self.archive.start_capacity_monitor(settings.archive_poll_seconds,
+                                                     on_change=self._notify_capacity)
+            else:
+                self.archive.start_capacity_monitor(settings.archive_poll_seconds)
 
     def archive_capacity(self) -> dict[str, Any]:
         if self.archive is None:
@@ -583,6 +716,110 @@ class SegmentLearner:
                 and state["free_inodes"] >= self.settings.archive_min_free_inodes))
             and state.get("pending_bytes_estimate", 0) <= self.settings.archive_pending_bytes)
         return {**state, "ready": ready}
+
+    def _durable_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        assert self.wal is not None
+        from spireagent.rl_exchange import EVENT_SCHEMA, _open
+
+        event = _open(json_bytes(event), EVENT_SCHEMA)
+        if (event.get("run") != self.config.run
+                or event.get("training_generation") != self.generation):
+            raise ValueError("lifecycle_event_owner_changed")
+        try:
+            fact = self.wal.append("event:" + event["record_sha256"], event, {}, kind="event")
+        except BaseException:
+            with self.condition:
+                self.input_fenced = self.newlease_stopped = True
+                self.condition.notify_all()
+                self._notify_capacity(force=True)
+            raise
+        return {"sequence": fact["sequence"], "record_sha256": event["record_sha256"]}
+
+    def _dataplane_health(self) -> dict[str, Any]:
+        transport = cast(SegmentInferencePool, self.pool).transport
+        assert transport is not None
+        return transport.health()
+
+    def _transport_failure(self, failure: dict[str, Any]) -> None:
+        with self.condition:
+            if failure["fatal"]:
+                self.input_fenced = self.newlease_stopped = True
+                self.condition.notify_all()
+                self._notify_capacity(force=True)
+        self.exchange.publish_event("failed" if failure["fatal"] else "transport_degraded",
+            training_generation=self.generation,
+            budget_id=(self.config.operating_budget or {}).get("id"),
+            failure=failure)
+
+    def _check_upload(self, envelope: dict[str, Any]) -> bool:
+        # Byte credit is subordinate to an existing original lease/episode.
+        with self.condition:
+            recipe = cast(SegmentInferencePool, self.pool).binary_profile["binary_recipe"]
+            if any(envelope.get(key) != recipe[key] for key in (
+                    "producer", "recipe_digest", "use_and_seed_digest")):
+                raise BoundaryError("rl_learner", "IDENTITY_MISMATCH")
+            if self.input_fenced:
+                raise BoundaryError("rl_learner", "OWNER_FENCED")
+            if envelope.get("payload_kind", "ppo") == "ppo":
+                owner = self.lease_owners.get(str(envelope.get("segment_id")))
+                if owner is None or any(owner.get(k) != envelope.get(k)
+                                        for k in ("actor", "episode", "mu")):
+                    raise BoundaryError("rl_learner", "IDENTITY_MISMATCH")
+            elif f"{envelope.get('actor')}:{envelope.get('episode')}" not in self.actor_episodes:
+                raise BoundaryError("rl_learner", "IDENTITY_MISMATCH")
+            return True  # original already-granted World/lease may drain after STOP
+
+    def _discard_stopped_queue(self) -> None:
+        """Terminal training discard; original accepted facts and World ledger stay intact."""
+        assert self.wal is not None
+        records = list(self.queue.pending)
+        if not records:
+            return
+        disposition = {"run": self.config.run, "training_generation": self.generation,
+            "operation": "training_discard", "reason": "STOPPED",
+            "segments": [{"segment_id": r["segment_id"], "rows": r["rows"]} for r in records]}
+        self.wal.append("discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
+                        disposition, {"discarded_rows": sum(r["rows"] for r in records)},
+                        kind="disposition")
+        for record in records:
+            self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
+            payload = self._member(record).payload
+            owner = "ppo:" + record["segment_id"]
+            if (payload.slot, owner) in self.hot_references:
+                self._release(payload, owner)
+            for member in self.hp_binary_members.pop(record["segment_id"], ()):
+                self._release(member.payload, "labels:" + record["segment_id"])
+        self.training_discarded_rows += sum(record["rows"] for record in records)
+        self.queue.pending.clear()
+        self.queue.rows = 0
+
+    def _model_files(self, key: str | None, node: str, cached: list[str]) -> tuple[
+            dict[str, Any], list[tuple[str, Path]], dict[str, Any]]:
+        if not isinstance(node, str) or not 0 < len(node) <= 256:
+            raise ValueError("node_identity_required_for_mu_cache")
+        with self.condition:
+            identity = copy.deepcopy(self.pool.snapshots[key or self.pool.latest])
+            if not isinstance(cached, list) or len(cached) > 2048:
+                raise ValueError("invalid_node_cache_snapshot_list")
+            cast(SegmentInferencePool, self.pool).node_caches[node] = (set(cached) & self.pool.snapshots.keys()) | {
+                identity["snapshot_sha256"]}
+        root = self.live_work / "mu-network" / identity["snapshot_sha256"]
+        root.mkdir(parents=True, exist_ok=True)
+        if not (root / "COMPLETE").exists():
+            model = self.exchange.store.get_manifest(identity["model_artifact_id"])
+            heads = self.exchange.store.get_manifest(identity["heads_artifact_id"])
+            for name, payload in (("model.tensor-tree", model.payload("weights")),
+                                  ("model.json", model.payload("package_manifest")),
+                                  ("heads.tensor-tree", heads.payload("checkpoint"))):
+                self.exchange.store.materialize(payload, root / name)
+            (root / "model-manifest.json").write_bytes(model.to_bytes())
+            (root / "heads-manifest.json").write_bytes(heads.to_bytes())
+            (root / "COMPLETE").write_text(identity["snapshot_sha256"])
+        publication = self.exchange.model(identity["version"],
+                                           training_generation=self.generation)
+        return identity, [(name, root / name) for name in (
+            "model.tensor-tree", "model.json", "heads.tensor-tree",
+            "model-manifest.json", "heads-manifest.json")], publication
 
     def _read_checkpoint(self, artifact_id: str) -> SelfContainedCheckpoint:
         manifest = self.exchange.store.get_manifest(artifact_id)
@@ -685,7 +922,7 @@ class SegmentLearner:
             updates=updates,
             producer=self.producer,
             publish_model=self.io.publish_model,
-            work=str(self.work),
+                work=str(self.live_work),
         )
         if not self.settings.central_scoring:
             return published
@@ -753,17 +990,29 @@ class SegmentLearner:
         self._kick_publication()
 
     def _receipt(self, request: dict[str, Any]) -> dict[str, Any] | None:
-        receipt = self.exchange.input_receipt(request)
-        return receipt["response"] if receipt is not None else None
+        if self.wal is not None:
+            from spireagent.rl_exchange import input_key
+
+            receipt = self.wal.receipt(input_key(request), request)
+            return receipt["response"] if receipt["found"] else None
+        legacy_receipt = self.exchange.input_receipt(request)
+        return legacy_receipt["response"] if legacy_receipt is not None else None
 
     def _accept(
-        self, request: dict[str, Any], response: dict[str, Any], apply: Callable[[], None]
+        self, request: dict[str, Any], response: dict[str, Any], apply: Callable[[], None],
+        *, receipt_checked: bool = False,
     ) -> dict[str, Any]:
-        duplicate = self._receipt(request)
+        duplicate = None if receipt_checked else self._receipt(request)
         if duplicate is not None:
             return duplicate
         try:
-            record = self.exchange.append_input(
+            if self.wal is not None:
+                from spireagent.rl_exchange import input_key
+
+                fact = self.wal.append(input_key(request), request, response)
+                record = {"sequence": fact["sequence"], "input_artifact_id": fact["hash"]}
+            else:
+                record = self.exchange.append_input(
                 request,
                 response,
                 sequence=self.input_sequence + 1,
@@ -781,12 +1030,188 @@ class SegmentLearner:
                 "last_applied_sequence": self.input_sequence,
             }
             self.condition.notify_all()
+            self._notify_capacity(force=True)
             raise
         self.condition.notify_all()
         return response
 
+    def _episode_rows(self, actor: str, episode: str, *, queued: int = 0,
+                      inflight: int = 0) -> None:
+        if self.wal is None:
+            return
+        key = actor, episode
+        load = self.episode_load.setdefault(key, {"queued": 0, "inflight": 0})
+        load["queued"] += queued
+        load["inflight"] += inflight
+        if min(load.values()) < 0:
+            raise ValueError("episode_row_accounting_changed")
+        if not any(load.values()) and f"{actor}:{episode}" not in self.actor_episodes:
+            del self.episode_load[key]
+
+    def _notify_capacity(self, *, force: bool = False) -> None:
+        """Wake only eligible capacity waiters, sharing the queue's owning lock.
+
+        Notification tickets reserve wakeups, not leases or business rows. No
+        receipt query or pending/lease scan runs in an awakened begin.
+        """
+        if self.wal is None:
+            return
+        with self.condition:
+            if force or self.newlease_stopped or self.input_fenced:
+                for wait in self.capacity_waiters.values():
+                    wait.condition.notify_all()  # STOP/fence, or duplicate followers only
+                return
+            for wait in self.capacity_waiters.values():
+                actor, episode = wait.request["actor"], wait.request["episode"]
+                if actor in self.retired_actors or f"{actor}:{episode}" not in self.actor_episodes:
+                    wait.condition.notify_all()
+            available = ((self.settings.capacity_rows - self.queue.occupied) //
+                         self.settings.steps - self.capacity_tickets)
+            if available <= 0 or not self.archive_capacity()["ready"]:
+                return
+            for wait in self.capacity_waiters.values():
+                if wait.notified or wait.done:
+                    continue
+                actor, episode = wait.request["actor"], wait.request["episode"]
+                if actor in self.retired_actors or f"{actor}:{episode}" not in self.actor_episodes:
+                    wait.condition.notify_all()
+                    continue
+                load = self.episode_load.get((actor, episode), {})
+                if sum(load.values()) + self.settings.steps > self.settings.episode_rows:
+                    continue
+                wait.notified = True
+                self.capacity_tickets += 1
+                wait.condition.notify(1 + wait.followers)
+                available -= 1
+                if available == 0:
+                    break
+
+    def _begin_binary(self, request: dict[str, Any]) -> dict[str, Any]:
+        from spireagent.rl_exchange import input_key
+
+        key = input_key(request)
+        previous = self.capacity_waiters.get(key)
+        if previous is not None:
+            # One request owns one grant. Duplicate channels wait for that exact
+            # result and do not become independent capacity candidates.
+            previous.followers += 1
+            try:
+                while not previous.done:
+                    previous.condition.wait()
+            finally:
+                previous.followers -= 1
+            if previous.error is not None:
+                raise previous.error
+            assert previous.response is not None
+            return previous.response
+        node, snapshot = request.get("node_id"), request.get("node_cached_mu_snapshot")
+        if (not isinstance(node, str) or not node
+                or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+            raise ValueError("cached_mu_publication_changed")
+        wait = _BeginWait(request, threading.Condition(self.control_lock))
+        self.capacity_waiters[key] = wait
+        actor, episode = request["actor"], request["episode"]
+        unused_ticket = False
+        try:
+            while True:
+                if wait.notified:
+                    wait.notified = False
+                    self.capacity_tickets -= 1
+                    unused_ticket = True
+                if self.input_fenced:
+                    raise BoundaryError("rl_learner", "OWNER_FENCED")
+                if (self.newlease_stopped or actor in self.retired_actors
+                        or f"{actor}:{episode}" not in self.actor_episodes):
+                    wait.response = {"stopped": True}
+                    break
+                load = self.episode_load.get((actor, episode), {})
+                can_grant = (self.queue.occupied + (self.capacity_tickets + 1) * self.settings.steps
+                    <= self.settings.capacity_rows
+                    and sum(load.values()) + self.settings.steps <= self.settings.episode_rows
+                    and self.archive_capacity()["ready"])
+                if not can_grant:
+                    if unused_ticket:
+                        unused_ticket = False
+                        self._notify_capacity()
+                    wait.condition.wait()
+                    continue
+                prior = request.get("previous_lease")
+                if prior is not None and prior != f"{actor}/{self.queue.cursors.get(actor, -1)}":
+                    raise ValueError("segment_begin_predecessor_changed")
+                node = request.get("node_id")
+                snapshot = request.get("node_cached_mu_snapshot")
+                if (not isinstance(node, str) or not node
+                        or snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+                    raise ValueError("cached_mu_publication_changed")
+                lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
+                mu = copy.deepcopy(self.pool.snapshots[snapshot])
+                def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
+                    if not self.queue.reserve(lease):
+                        raise ValueError("input_reservation_capacity_changed")
+                    self.lease_owners[lease] = {"actor": actor, "episode": episode, "mu": mu}
+                    self._episode_rows(actor, episode, inflight=self.settings.steps)
+                wait.response = self._accept(request, {
+                    "run": self.config.run, "training_generation": self.generation,
+                    "lease": lease, "mu": mu, "server_time": time.time()}, grant,
+                    receipt_checked=True)
+                unused_ticket = False
+                break
+            assert wait.response is not None
+            return wait.response
+        except BaseException as error:
+            wait.error = error
+            raise
+        finally:
+            wait.done = True
+            if wait.notified:
+                self.capacity_tickets -= 1
+                wait.notified = False
+                unused_ticket = True
+            wait.condition.notify_all()  # only followers of this original key
+            self.capacity_waiters.pop(key)
+            if ((unused_ticket or wait.error is not None)
+                    and not self.newlease_stopped and not self.input_fenced):
+                self._notify_capacity()
+
     def control(self, request: dict[str, Any]) -> dict[str, Any]:
         operation = request["operation"]
+        if self.wal is not None:
+            if operation == "stop":
+                with self.condition:
+                    if request.get("run") != self.config.run or request.get(
+                            "training_generation") != self.generation:
+                        raise ValueError("stop_owner_identity_changed")
+                    epoch = request.get("epoch")
+                    if (type(epoch) is not int or epoch < 1
+                            or not isinstance(request.get("reason"), str) or not request["reason"]):
+                        raise ValueError("invalid_stop_epoch_or_reason")
+                    original = {key: request[key] for key in (
+                        "run", "training_generation", "epoch", "reason", "operation")}
+                    key = "stop:" + hashlib.sha256(json_bytes(original)).hexdigest()
+                    stop_receipt = self.wal.receipt(key, original)
+                    if stop_receipt["found"]:
+                        return cast(dict[str, Any], stop_receipt["response"])
+                    response: dict[str, Any] = {"stopped": True, "epoch": max(self.stop_epoch, epoch),
+                                "original": self.stop_fact or original}
+                    try:
+                        self.wal.append(key, original, response, kind="stop")
+                    except BaseException:
+                        self.input_fenced = self.newlease_stopped = True
+                        self.condition.notify_all()
+                        raise
+                    self.stop_fact = response["original"]
+                    self.stop_epoch = response["epoch"]
+                    self.newlease_stopped = True
+                    self._discard_stopped_queue()
+                    self.binary_sources.stop()
+                    self.condition.notify_all()
+                    self._notify_capacity(force=True)
+                    return response
+            if operation == "lifecycle_event":
+                return self._durable_event(request["event"])
+            if operation == "events_since":
+                return {"events": self.wal.events_since(request.get("sequence", 0)),
+                        "run": self.config.run, "training_generation": self.generation}
         if operation == "status":
             return {
                 "run": self.config.run,
@@ -797,12 +1222,26 @@ class SegmentLearner:
                 "input_sequence": self.input_sequence,
                 "input_fenced": self.input_fenced,
                 "archive_capacity": self.archive_capacity(),
+                **(self._dataplane_health() if self.wal is not None else {}),
+                **({**self.wal.status(), **self.binary_sources.status(),
+                    **self.wal_replication.status(),
+                    "preparation": cast("BinaryBatchPreparer", self.input_preparer).summary(),
+                    "training_discarded_rows": self.training_discarded_rows,
+                    "stop_epoch": self.stop_epoch, "owner": self.pool.pool_id}
+                   if self.wal is not None else {}),
             }
         if operation == "receipt":
+            if self.wal is not None:
+                from spireagent.rl_exchange import input_key
+
+                original = control_input(request["input"])
+                return self.wal.receipt(input_key(original), original)
             # Old generation receipts remain facts; querying does not restore a
             # queue, re-grant a lease or retry a World action.
-            response = self._receipt(control_input(request["input"]))
-            return {"found": response is not None, "response": response}
+            previous_response = self._receipt(control_input(request["input"]))
+            return {"found": previous_response is not None, "response": previous_response}
+        if self.wal is not None and request.get("control_schema") != CONTROL_SCHEMA:
+            raise BoundaryError("rl_learner", "SCHEMA_MISMATCH")
         request = control_input(request)
         if request.get("run") != self.config.run:
             return {
@@ -812,7 +1251,8 @@ class SegmentLearner:
             }
         with self.condition:
             if self.input_fenced:
-                raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
+                raise BoundaryError("rl_learner", "OWNER_FENCED" if self.wal is not None else
+                                    "input_owner_fenced_restore_last_checkpoint")
             duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
@@ -822,6 +1262,8 @@ class SegmentLearner:
                     "reason": "generation_changed",
                     "training_generation": self.generation,
                 }
+            if operation == "begin" and self.wal is not None:
+                return self._begin_binary(request)
         if operation == "commit":
             return self._admit(request)
         if operation == "episode_end":
@@ -865,7 +1307,13 @@ class SegmentLearner:
                     if (self.queue.occupied + self.settings.steps <= self.settings.capacity_rows
                             and episode_pending + episode_inflight + self.settings.steps
                             <= self.settings.episode_rows):
-                        mu = copy.deepcopy(self.pool.snapshots[self.pool.latest])
+                        snapshot = request.get("node_cached_mu_snapshot", self.pool.latest)
+                        if self.wal is not None:
+                            node = request.get("node_id")
+                            if (not isinstance(node, str) or not node or
+                                    snapshot not in cast(SegmentInferencePool, self.pool).node_caches.get(node, set())):
+                                raise ValueError("cached_mu_publication_changed")
+                        mu = copy.deepcopy(self.pool.snapshots[snapshot])
 
                         def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
                             if not self.queue.reserve(lease):
@@ -887,7 +1335,7 @@ class SegmentLearner:
                             },
                             grant,
                         )
-                    self.condition.wait(0.1)
+                    self.condition.wait()
                 return {"stopped": True}
         raise ValueError("unsupported_segment_control")
 
@@ -896,26 +1344,57 @@ class SegmentLearner:
         payload = record["payload"]
         return BatchMember(
             record["segment_id"],
-            payload if isinstance(payload, HotPayloadRef) else HotPayloadRef(**payload),
+            payload if isinstance(payload, (HotPayloadRef, BinaryRef)) else (
+                BinaryRef(**payload) if "format" in payload else HotPayloadRef(**payload)),
             record["run_id"],
             record["rows"],
             record["mu"]["snapshot_sha256"],
             record["episode"],
         )
 
-    def _retain(self, payload: HotPayloadRef, owner: str) -> None:
+    def _retain(self, payload: HotPayloadRef | BinaryRef, owner: str) -> None:
         with self.condition:
-            self.exchange.retain_hot_payload(payload, owner)
+            if isinstance(payload, BinaryRef):
+                self.binary_sources.retain(payload, owner)
+            else:
+                self.exchange.retain_hot_payload(payload, owner)
             self.hot_references[payload.slot, owner] = payload
 
-    def _release(self, payload: HotPayloadRef, owner: str) -> None:
+    def _release(self, payload: HotPayloadRef | BinaryRef, owner: str) -> None:
         with self.condition:
-            self.exchange.release_hot_payload(payload, owner)
+            if isinstance(payload, BinaryRef):
+                self.binary_sources.release(payload, owner)
+            else:
+                self.exchange.release_hot_payload(payload, owner)
             del self.hot_references[payload.slot, owner]
 
     def _admit(self, request: dict[str, Any]) -> dict[str, Any]:
         # ACK checks only the immutable envelope/capacity. W3 verifies the source;
         # workers perform complete read/decoding/target checks before ready.
+        if self.wal is not None:
+            from spireagent.rl_socket_transport import binary_ref
+
+            from stpd.rl.tensor_segment import packet_header
+
+            ref = binary_ref(request["payload"])
+            with self.binary_sources.borrow(ref) as raw:
+                header = packet_header(raw)
+            if {**header["envelope"], "packet_size": ref.size,
+                    "packet_sha256": ref.sha256} != request.get("envelope"):
+                raise BoundaryError("rl_learner", "IDENTITY_MISMATCH")
+        auxiliary_members: tuple[BatchMember, ...] = ()
+        if self.wal is not None and request.get("binary_aux"):
+            with self.condition:
+                owner_snapshot = copy.deepcopy(self.lease_owners.get(request["segment_id"]))
+                if owner_snapshot is None:
+                    duplicate = self._receipt(request)
+                    if duplicate is not None:
+                        return duplicate
+                    raise ValueError("segment_reserved_behavior_changed")
+                frozen = {**request, "actor": owner_snapshot["actor"],
+                          "episode": owner_snapshot["episode"]}
+                originals = (*self._members_for_run(request["run_id"]), self._member(frozen))
+            auxiliary_members = self._binary_auxiliary_members(frozen, originals)
         with self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
@@ -925,20 +1404,98 @@ class SegmentLearner:
                 raise ValueError("segment_reserved_behavior_changed")
             record = {**request, "episode": owner["episode"], "actor": owner["actor"]}
             member = self._member(record)
+            if isinstance(member.payload, BinaryRef):
+                envelope = self.binary_sources.envelope(member.payload)
+                if (envelope != request.get("envelope")
+                        or envelope.get("payload_kind", "ppo") != "ppo"
+                        or any(envelope.get(k) != record[k] for k in (
+                            "run", "training_generation", "actor", "episode", "segment_id",
+                            "run_id", "rows", "mu"))
+                        or envelope["compiler_identity"] != self.compiler_identity):
+                    raise ValueError("binary_commit_envelope_changed")
             if member.payload.slot.split("/")[:2] != [self.config.run, self.generation]:
                 raise ValueError("segment_payload_generation_changed")
             self.queue.validate_commit(member.segment_id, record)
+            reserved_rows = self.queue.leases[member.segment_id]
             # Explicit owners, acquired before ACK; an uncertain write keeps refs
             # and fences the owner rather than deleting/retrying unknown delivery.
             self._retain(member.payload, "ppo:" + member.segment_id)
-            self._retain(member.payload, "delayed:" + owner["episode"])
+            if not isinstance(member.payload, BinaryRef):
+                self._retain(member.payload, "delayed:" + owner["episode"])
+
+            if auxiliary_members:
+                for aux in auxiliary_members:
+                    self._retain(aux.payload, "labels:" + member.segment_id)
 
             def admit() -> None:
-                self.queue.commit(member.segment_id, record)
+                if self.wal is not None and self.newlease_stopped:
+                    self.queue.release(member.segment_id)
+                    self.training_discarded_rows += member.rows
+                else:
+                    self.queue.commit(member.segment_id, record)
                 self.sources[member.segment_id] = record
                 self.lease_owners.pop(member.segment_id)
+                self._episode_rows(owner["actor"], owner["episode"],
+                    inflight=-reserved_rows, queued=0 if self.newlease_stopped else member.rows)
+                if reserved_rows > (0 if self.newlease_stopped else member.rows):
+                    self._notify_capacity()
+                if auxiliary_members:
+                    self.hp_binary_members[member.segment_id] = auxiliary_members
 
-            return self._accept(request, {"segment_id": member.segment_id}, admit)
+            discarded = self.wal is not None and self.newlease_stopped
+            result = self._accept(request, {"segment_id": member.segment_id,
+                **({"training_discarded": True, "reason": "STOPPED"} if discarded else {})}, admit)
+            if isinstance(member.payload, BinaryRef):
+                self.binary_sources.release(member.payload, "upload")
+                for aux in auxiliary_members:
+                    assert isinstance(aux.payload, BinaryRef)
+                    self.binary_sources.release(aux.payload, "upload")
+                if discarded:
+                    self._release(member.payload, "ppo:" + member.segment_id)
+                    for aux in self.hp_binary_members.pop(member.segment_id, ()):
+                        self._release(aux.payload, "labels:" + member.segment_id)
+            return result
+
+    def _binary_auxiliary_members(self, request: dict[str, Any],
+                                  originals: tuple[BatchMember, ...]) -> tuple[BatchMember, ...]:
+        from spireagent.rl_socket_transport import binary_ref
+
+        from stpd.rl.tensor_segment import packet_header
+
+        by_segment = {m.segment_id: m for m in originals}
+        result = []
+        seen = set()
+        for item in request.get("binary_aux", []):
+            ref = binary_ref(item["payload"])
+            envelope = self.binary_sources.envelope(ref)
+            if (envelope != item["envelope"] or envelope.get("payload_kind") != "aux"
+                    or any(envelope.get(k) != request[k] for k in (
+                        "run", "training_generation", "actor", "episode", "run_id"))
+                    or item["segment_id"] in seen or item["segment_id"] not in by_segment):
+                raise ValueError("binary_auxiliary_owner_or_envelope_changed")
+            with self.binary_sources.borrow(ref) as raw:
+                header = packet_header(raw)
+            original = by_segment[item["segment_id"]]
+            witness = header["witness"]
+            if ({**header["envelope"], "packet_size": ref.size,
+                    "packet_sha256": ref.sha256} != envelope
+                    or witness["segment_id"] != original.segment_id
+                    or witness["run_id"] != original.run_id
+                    or witness["training_generation"] != self.generation
+                    or header["witness"]["mu"]["snapshot_sha256"] != original.mu_snapshot_sha256
+                    or header["witness"]["rows"] != original.rows):
+                raise ValueError("binary_auxiliary_source_binding_changed")
+            member = replace(original, payload=ref)
+            result.append(member)
+            seen.add(item["segment_id"])
+        return tuple(result)
+
+    def _prefetch_members(self, members: tuple[BatchMember, ...]) -> None:
+        if self.wal is not None:
+            for member in members:
+                assert isinstance(member.payload, BinaryRef)
+                cast("BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
+                    self.binary_sources.envelope(member.payload))
 
     def _members_for_run(self, run_id: str) -> tuple[BatchMember, ...]:
         with self.condition:
@@ -952,17 +1509,22 @@ class SegmentLearner:
         with self.condition:
             if f"{request['actor']}:{request['episode']}" not in self.actor_episodes:
                 raise ValueError("episode_end_without_open")
-            members = self._members_for_run(request["run_id"])
+            originals = self._members_for_run(request["run_id"])
             request_hash = hashlib.sha256(json_bytes(request)).hexdigest()
         # No condition/GPU lock while source/label validation runs in a CPU worker.
-        groups = self.input_preparer.pool.submit(verify_auxiliary, request, members).result()
+        members = (self._binary_auxiliary_members(request, originals)
+                   if self.wal is not None else originals)
+        self._prefetch_members(members)
+        groups = (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(request, members).result()
+                  if self.wal is not None else
+                  self.input_preparer.pool.submit(verify_auxiliary, request, members).result())
         with self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
 
             if (f"{request['actor']}:{request['episode']}" not in self.actor_episodes
-                    or members != self._members_for_run(request["run_id"])
+                    or originals != self._members_for_run(request["run_id"])
                     or hashlib.sha256(json_bytes(request)).hexdigest() != request_hash):
                 raise ValueError("episode_end_source_or_owner_changed_during_validation")
 
@@ -974,8 +1536,14 @@ class SegmentLearner:
                         and owner["episode"] == request["episode"]
                     ):
                         self.queue.release(lease)
+                        self._episode_rows(owner["actor"], owner["episode"],
+                                           inflight=-self.settings.steps)
                         self.lease_owners.pop(lease)
                 self.actor_episodes.pop(f"{request['actor']}:{request['episode']}")
+                self._episode_rows(request["actor"], request["episode"])
+                self._notify_capacity()
+                if self.wal is not None:
+                    self.binary_sources.release_uploads(request["actor"], request["episode"])
 
             response = self._accept(request, {"run_id": request["run_id"]}, end)
             # A queued PPO segment can still carry HP labels for earlier rows
@@ -1004,16 +1572,21 @@ class SegmentLearner:
             leases = [key for key, owner in self.lease_owners.items() if owner["actor"] == actor]
             for key in leases:
                 self.queue.release(key)
+                self._episode_rows(actor, self.lease_owners[key]["episode"],
+                                   inflight=-self.settings.steps)
                 self.lease_owners.pop(key)
             for episode in episodes:
                 self.actor_episodes.pop(f"{actor}:{episode}")
             self.retired_actors.add(actor)
+            if self.wal is not None:
+                self.binary_sources.release_uploads(actor)
             result = {"actor": actor, "allocation": allocation,
                       "unresolved_episodes": episodes, "released_leases": leases,
                       "new_games": 0, "original_receipts_changed": False}
             self._event("actor_retired", **result)
             self._forget_locked()
             self.condition.notify_all()
+            self._notify_capacity()
             return result
 
     def _add_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]) -> None:
@@ -1047,13 +1620,19 @@ class SegmentLearner:
             # Terminal supervision arrives through typed EpisodeLabels; a PPO
             # source's already checked reward boundaries can backfill HP sooner.
             request["terminal"] = None
-            members = self._members_for_run(labels["run_id"])
+            members = (self.hp_binary_members.pop(labels["segment_id"], ())
+                       if self.wal is not None else self._members_for_run(labels["run_id"]))
+            if self.wal is not None and not members:
+                raise ValueError("binary_HP_tick_requires_bound_auxiliary_sources")
             owner = "labels:" + labels["segment_id"]
-            for member in members:
-                self._retain(member.payload, owner)
+            if self.wal is None:
+                for member in members:
+                    self._retain(member.payload, owner)
+            self._prefetch_members(members)
             self.pending_labels.append(
                 (
-                    self.input_preparer.pool.submit(verify_auxiliary, request, members),
+                    (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(request, members) if self.wal is not None
+                     else self.input_preparer.pool.submit(verify_auxiliary, request, members)),
                     members,
                     owner,
                 )
@@ -1064,6 +1643,8 @@ class SegmentLearner:
             records = self.queue.dataset(take=take)
             if records is None:
                 return None
+            if take:
+                self._dataset_released(records)
             n = sum(record["rows"] for record in records)
             order = list(range(n))
             self.rng.shuffle(order)
@@ -1120,12 +1701,19 @@ class SegmentLearner:
             }
             return active
 
+    def _dataset_released(self, records: list[dict[str, Any]]) -> None:
+        if self.wal is not None:
+            for record in records:
+                self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
+            self._notify_capacity()
+
     def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
         request = active["request"]
         owner = f"prepare:{self.generation}:{request.identity.sequence}"
         # Aux holds a complete verified row copy; only PPO still reads hot bytes.
         for member in request.members:
             self._retain(member.payload, owner)
+        self._prefetch_members(request.members)
         inputs = tuple(row["prepared_input"] for kind in ("terminal", "hp") for row in active[kind])
         return self.input_preparer.submit(request, inputs)
 
@@ -1146,14 +1734,28 @@ class SegmentLearner:
             self.pending_batch = active, self._submit_batch(active)
         active, future = self.pending_batch
         began = time.perf_counter()
-        batch = future.result()
+        try:
+            batch = future.result()
+        except ValueError as error:
+            if self.wal is None:
+                raise
+            with self.condition:
+                self.input_fenced = self.newlease_stopped = True
+                self.input_failure = {"operation": "prepare", "code": "INVALID_PACKET",
+                    "producer_error_type": type(error).__name__}
+                self._notify_capacity(force=True)
+            raise BoundaryError("rl_prepare", "INVALID_PACKET") from error
+        if self.wal is not None and self.newlease_stopped:
+            return False
         self.timing["preparation_wait_seconds"] += time.perf_counter() - began
-        self.timing["preparation_seconds"] += batch.timings["request_wall_seconds"]
+        timing_key = "binary_ipc_wall_seconds" if self.wal is not None else "request_wall_seconds"
+        self.timing["preparation_seconds"] += batch.timings[timing_key]
         self.timing["prepared_batches"] += 1
         if not active["taken"]:
             with self.condition:
                 if self.queue.dataset() != active["segments"]:
                     raise ValueError("prepared_dataset_membership_changed")
+                self._dataset_released(active["segments"])
             active["taken"] = True
         self.pending_batch = None
         self.active, self.active_batch = active, batch
@@ -1285,6 +1887,8 @@ class SegmentLearner:
             active["epoch"] += 1
             active["minibatch"] = 0
         if finished:
+            if self.wal is not None:
+                self.committed_selection_rng = batch.request.selection_rng_state
             self.datasets += 1
             self.active = self.active_batch = None
             self.device_batch = None
@@ -1409,7 +2013,7 @@ class SegmentLearner:
             ),
             RngState(
                 random.getstate(),
-                self.rng.getstate(),
+                self.committed_selection_rng if self.wal is not None else self.rng.getstate(),
                 torch.get_rng_state().clone(),
                 tuple(value.cpu().clone() for value in cuda),
             ),
@@ -1443,8 +2047,25 @@ class SegmentLearner:
         if self.active is not None and not final:
             self.checkpoint_requested = True
             return
+        if self.wal is not None and self.active is not None:
+            raise BoundaryError("rl_learner", "binary_checkpoint_requires_dataset_boundary")
         if self.checkpoint_encoding is not None or self.checkpoints.pending:
             return
+        if self.wal is not None:
+            self._collect_labels(wait=True)
+            if self.pending_batch is not None:
+                pending, future = self.pending_batch
+                if pending["taken"]:
+                    raise ValueError("checkpoint_cannot_abandon_taken_dataset")
+                future.cancel()
+                if not future.cancelled():
+                    future.result()
+                for member in pending["request"].members:
+                    self._release(member.payload,
+                        f"prepare:{self.generation}:{pending['request'].identity.sequence}")
+                self.pending_batch = None
+            cast("BinaryBatchPreparer", self.input_preparer).barrier(generation=self.generation)
+            self.rng.setstate(self.committed_selection_rng)
         self.checkpoint_sequence += 1
         began = time.perf_counter()
         state = self._learning_state()
@@ -1459,7 +2080,12 @@ class SegmentLearner:
         with self.condition:
             self.newlease_stopped = True
             self.condition.notify_all()
+            if self.wal is not None:
+                self._notify_capacity(force=True)
         with ExitStack() as cleanup:
+            if self.wal is not None:
+                cleanup.callback(self.wal.close)
+                cleanup.callback(self.wal_replication.close)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
             cleanup.callback(self.telemetry.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoint_encoder.shutdown, wait=True, cancel_futures=False)
@@ -1510,6 +2136,7 @@ class SegmentLearner:
                 and time.monotonic() < deadline
                 and (self.deadline_at is None or time.time() < self.deadline_at - 600)
                 and not (self.work / "STOP").exists()
+                and self.stop_fact is None
                 and self.version < self.config.max_versions
             ):
                 if time.monotonic() >= stop_at:
@@ -1538,6 +2165,19 @@ class SegmentLearner:
                 self._prepare_ahead()
                 self._step()
         finally:
+            with self.condition:
+                self.newlease_stopped = True
+                if self.wal is not None:
+                    if not self.input_fenced:
+                        self._discard_stopped_queue()
+                    self.binary_sources.stop()
+                    self._notify_capacity(force=True)
+            # Finish only the frozen dataset within the original compute and
+            # absolute budget. Stop never selects another dataset.
+            if self.wal is not None and not self.input_fenced:
+                while (self.active is not None and time.monotonic() < deadline
+                        and (self.deadline_at is None or time.time() < self.deadline_at - 600)):
+                    self._step()
             training_elapsed = time.monotonic() - began
             self.active_training_seconds = training_elapsed
             self.active_training_began = None

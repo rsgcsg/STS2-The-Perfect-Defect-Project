@@ -2,17 +2,24 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import os
 import random
+import socket
 import tempfile
 import threading
 import time
+from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
-
 from spireagent.artifact_contracts import Parent
 from spireagent.rl_contracts import MuScore
+from spireagent.rl_socket_transport import NodeMuCache
+
 from stpd.workers.checkpoint_codec import decode_checkpoint
 
 from .data import digest, json_bytes
@@ -63,20 +70,25 @@ class LocalMuScorer:
         self.score_sample_rng = random.Random(0)  # telemetry only, never acting RNG
         self.requests = 0
         self.scoring_threads: set[tuple[int, int]] = set()
+        self.node_cache: NodeMuCache | None = None
 
     def _load(self, identity: dict[str, Any]) -> Any:
         # Download only this grant, never walk all intermediate publications. The
         # temporary package is owned here; no existing Store asset is removed.
-        with tempfile.TemporaryDirectory(prefix="mu-", dir=self.cache_root) as temporary:
-            package = self.exchange.materialize_model(identity, Path(temporary))
-            model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
-        head = self.exchange.store.get_manifest(identity["heads_artifact_id"])
+        if self.node_cache is not None:
+            with self.node_cache.materialize(identity) as (package, head, raw):
+                model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
+        else:
+            with tempfile.TemporaryDirectory(prefix="mu-", dir=self.cache_root) as temporary:
+                package = self.exchange.materialize_model(identity, Path(temporary))
+                model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
+            head = self.exchange.store.get_manifest(identity["heads_artifact_id"])
+            raw = b"".join(self.exchange.store.read_payload(head.payload("checkpoint")))
         payload = head.payload("checkpoint")
         if (head.kind != "checkpoint" or payload.sha256 != identity["heads_sha256"]
                 or head.parameters.value().get("schema") != "stpd/rl-behavior-heads-1"
                 or head.parents != (Parent("policy", identity["model_artifact_id"]),)):
             raise ValueError("behavior_heads_binding_changed")
-        raw = b"".join(self.exchange.store.read_payload(payload))
         if digest(raw) != identity["heads_sha256"]:
             raise ValueError("behavior_heads_checksum_changed")
         state = decode_checkpoint(raw)
@@ -324,6 +336,41 @@ class ActorInferencePool(SegmentInferencePool):
         self.leases: dict[tuple[str, str], tuple[str, str]] = {}
         self.episode_owners: dict[tuple[str, str], dict[str, str]] = {}
         self.controls = threading.RLock()
+        self.remote_channels = threading.local()
+        self.control_timing = {"begin_wait_seconds": 0., "begin_calls": 0,
+                               "mu_adopt_seconds": 0.}
+        self.timing_samples: dict[str, deque[float]] = {}
+        self.timing_counts: dict[str, int] = {}
+        self.generated = {"generated_R": 0, "generated_D": 0, "generated_segments": 0}
+        self.node_cache: NodeMuCache | None = None
+        self.event_journal = None
+        if attachment.get("dataplane"):
+            from spireagent.rl_local_wal import LocalControlWAL
+            from spireagent.rl_socket_transport import NodeMuCache, ensure_fd_capacity
+
+            if not isinstance(scorer, LocalMuScorer):
+                raise ValueError("binary_dataplane_requires_actor_local_mu")
+            self.fd_limits = ensure_fd_capacity(1)
+            node_root = Path(tempfile.gettempdir()) / f"stpd-node-mu-{os.getuid()}" / (
+                attachment["run"]) / attachment["training_generation"]
+            self.node_cache = NodeMuCache(attachment, node_root / "snapshots",
+                interval=attachment.get("mu_pull_interval_seconds", 15),
+                max_bytes=attachment.get("mu_cache_bytes", 512 * 1024**2))
+            scorer.node_cache = self.node_cache
+            journal_name = hashlib.sha256(str(scorer.cache_root).encode()).hexdigest()
+            self.event_journal = LocalControlWAL(
+                node_root / "journals" / (journal_name + ".sqlite"),
+                run=attachment["run"], generation=attachment["training_generation"])
+            exchange = scorer.exchange
+            exchange.live_generation = attachment["training_generation"]
+            exchange.model_provider = self.node_cache
+            exchange.event_sink = self._publish_event
+            exchange.stop_sink = lambda reason, generation: self._remote_request("stop",
+                run=attachment["run"],
+                training_generation=generation or attachment["training_generation"],
+                reason=reason, epoch=1)
+            exchange.generation_source = lambda generation: generation != self._remote_request(
+                "status")["training_generation"]
         # Each connection gets its own control channel: a blocked begin must not
         # prevent the observer's commit/status/episode_end from reaching learner.
         super().__init__(attachment["vocabulary"], {"snapshot_sha256": "unadopted"},
@@ -333,7 +380,58 @@ class ActorInferencePool(SegmentInferencePool):
     def attachment(self) -> dict[str, Any]:
         return {**super().attachment(),
                 **{key: self.remote_attachment[key] for key in ("run", "training_generation")
-                   if key in self.remote_attachment}, "role": "actor_local_mu"}
+                   if key in self.remote_attachment}, "role": "actor_local_mu",
+                **({"dataplane": self.remote_attachment["dataplane"],
+                    "learner_endpoint": self.remote_attachment} if self.node_cache else {})}
+
+    @contextmanager
+    def _remote_channel(self) -> Iterator[SegmentConnection]:
+        remote = getattr(self.remote_channels, "connection", None)
+        if remote is None:
+            remote = SegmentConnection(self.remote_attachment)
+            self.remote_channels.connection = remote
+        try:
+            yield remote
+        except BaseException:
+            remote.close()
+            self.remote_channels.connection = None
+            raise
+
+    def _remote_request(self, operation: str, **fields: Any) -> dict[str, Any]:
+        with self._remote_channel() as remote:
+            return remote.request(operation, **fields)
+
+    def _publish_event(self, event: dict[str, Any]) -> None:
+        assert self.event_journal is not None
+        self.event_journal.append("event:" + event["record_sha256"], event, {}, kind="event")
+        self._remote_request("lifecycle_event", event=event)
+
+    def observe_timing(self, name: str, seconds: float) -> None:
+        with self.controls:
+            self.control_timing[name] = self.control_timing.get(name, 0.) + seconds
+            self.timing_samples.setdefault(name, deque(maxlen=256)).append(seconds)
+            self.timing_counts[name] = self.timing_counts.get(name, 0) + 1
+
+    def timing_report(self) -> dict[str, Any]:
+        with self.controls:
+            samples = {}
+            for name, values in self.timing_samples.items():
+                ordered = sorted(values)
+                samples[name] = {"n": self.timing_counts[name], "sampled": len(ordered),
+                    "p50": ordered[len(ordered) // 2],
+                    "p95": ordered[min(len(ordered) - 1, int(len(ordered) * .95))]}
+            return {**self.control_timing, **self.generated, "latency_seconds": samples,
+                "sample_scope": "last 256 observations per metric; producer sums one segment",
+                "overlap": "control, producer and native intervals may overlap; do not sum",
+                "unattributed_wall_seconds": None}
+
+    def _actor(self, connection: Any) -> None:
+        try:
+            super()._actor(connection)
+        finally:
+            remote = getattr(self.remote_channels, "connection", None)
+            if remote is not None:
+                remote.close()
 
     def _dispatch(self, value: dict[str, Any]) -> dict[str, Any]:
         operation = value["operation"]
@@ -348,6 +446,14 @@ class ActorInferencePool(SegmentInferencePool):
                     "server_seconds": time.perf_counter() - started}
         fields = {key: item for key, item in value.items()
                   if key not in {"schema", "pool_id", "adapter", "request_id", "operation"}}
+        client_original = None
+        if self.event_journal is not None:
+            from spireagent.rl_exchange import control_input, input_key
+
+            if operation in {"episode_open", "begin", "commit", "episode_end"}:
+                client_original = control_input({**fields, "operation": operation})
+            elif operation == "receipt":
+                client_original = control_input(fields["input"])
         def record_open(reply: dict[str, Any], current: dict[str, Any]) -> None:
             if (reply.get("admitted") and
                     reply["training_generation"] == current.get("training_generation")):
@@ -355,8 +461,40 @@ class ActorInferencePool(SegmentInferencePool):
                     self.episode_owners[(fields["actor"], fields["episode"])] = {
                         key: reply[key] for key in ("run", "training_generation")}
 
-        with SegmentConnection(self.remote_attachment) as remote:
-            result = remote.request(operation, **fields)
+        adoption = (self.node_cache.latest() if operation == "begin" and self.node_cache
+                    else nullcontext(None))
+        result: dict[str, Any]
+        started = time.perf_counter()
+        with adoption as cached_mu, self._remote_channel() as remote:
+            if cached_mu is not None:
+                fields["node_cached_mu_snapshot"] = cached_mu["snapshot_sha256"]
+                fields["node_id"] = socket.gethostname()
+            if client_original is not None and operation != "receipt":
+                assert self.event_journal is not None
+                remote_original = control_input({**fields, "operation": operation})
+                key = "intent:" + input_key(client_original)
+                intent = self.event_journal.receipt(key, client_original)
+                if intent["found"]:
+                    remote_original = intent["response"]["remote_input"]
+                    fields = {key: item for key, item in remote_original.items()
+                              if key != "operation"}
+                else:
+                    self.event_journal.append(key, client_original,
+                        {"remote_input": remote_original}, kind="control_intent")
+                result = remote.request(operation, **fields)
+            elif client_original is not None:
+                assert self.event_journal is not None
+                local = self.event_journal.receipt("control:" + input_key(client_original),
+                                                   client_original)
+                if local["found"]:
+                    result = {**local, "durability_scope": "actor_witness"}
+                else:
+                    intent = self.event_journal.receipt("intent:" + input_key(client_original),
+                                                       client_original)
+                    result = (remote.request("receipt", input=intent["response"]["remote_input"])
+                              if intent["found"] else local)
+            else:
+                result = remote.request(operation, **fields)
             if operation == "episode_open":
                 record_open(result, remote.attachment)
             if operation in {"begin", "episode_open"} and result.get("reason") == (
@@ -373,15 +511,40 @@ class ActorInferencePool(SegmentInferencePool):
                               if admission.get("admitted") else {"stopped": True})
                 else:
                     result = admission
+            # Keep the node cache's shared pin until the full model and heads
+            # have been loaded; release the global refresh lock before begin.
+            if operation == "begin" and "mu" in result:
+                adopt_started = time.perf_counter()
+                self.scorer.adopt(result["mu"])
+                self.control_timing["mu_adopt_seconds"] += time.perf_counter() - adopt_started
+        if operation == "begin":
+            self.observe_timing("begin_wait_seconds", time.perf_counter() - started)
+            self.control_timing["begin_calls"] += 1
+        if self.event_journal is not None:
+            from spireagent.rl_exchange import control_input, input_key
+
+            original = client_original
+            response: dict[str, Any] | None = result
+            if operation == "receipt":
+                original = client_original if result.get("found") else None
+                response = result.get("response")
+            if original is not None:
+                assert response is not None
+                self.event_journal.append("control:" + input_key(original), original, response)
         grant: dict[str, Any] = {}
         if operation == "begin":
             grant = result
         elif operation == "receipt" and value["input"]["operation"] == "begin":
             grant = result.get("response") or {}
-        if "mu" in grant:
+        if "mu" in grant and operation != "begin":
             # No map/control lock during bounded model-capacity waits: the
             # observer's commit/release must remain able to free the old mu.
             self.scorer.adopt(grant["mu"])
+        if operation == "status":
+            result = {**result, "actor_timing": {**self.timing_report(),
+                "mu_inference_seconds": getattr(self.scorer, "score_seconds", 0.)},
+                **({'node_mu_cache': self.node_cache.status(), 'actor_fd_limits': self.fd_limits}
+                   if self.node_cache is not None else {})}
         with self.controls:
             if "mu" in grant:
                 lease, key = grant["lease"], grant["mu"]["snapshot_sha256"]
@@ -421,7 +584,10 @@ class ActorInferencePool(SegmentInferencePool):
 
     def close(self) -> dict[str, Any]:
         self.scorer.close()
-        return super().close()
+        result = super().close()
+        if self.event_journal is not None:
+            self.event_journal.close()
+        return result
 
 
 class ActorControlConnection(SegmentConnection):
