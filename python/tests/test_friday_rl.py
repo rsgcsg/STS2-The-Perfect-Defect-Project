@@ -252,8 +252,12 @@ def host_startup_release(tmp_path, monkeypatch):
     host_fixture = tmp_path/'host-fixture'
     host_fixture.mkdir()
     _config, host, candidate, pin, _audit, _checked = fixture(host_fixture)
-    (candidate/'.git').mkdir()
-    (candidate/'.git/HEAD').write_text('synthetic stopped candidate; no Native claim')
+    (candidate/'source.txt').write_text('synthetic stopped candidate; no Native claim')
+    subprocess.run(['git', 'init', '--quiet', str(candidate)], check=True)
+    subprocess.run(['git', 'add', 'source.txt'], cwd=candidate, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '--quiet', '-m', 'synthetic stopped fixture'],
+                   cwd=candidate, check=True)
     native = tmp_path/'native-libraries'
     native.mkdir()
     (native/'sts2.dll').write_bytes(b'synthetic game input')
@@ -302,9 +306,19 @@ def test_Host_startup_copy_is_complete_concurrent_and_immutable(
     assert receipt['candidate_audit_cached'] is False
     assert Path(environment['DOTNET']).is_file()
     assert (execution.read_bytes(), actor.read_bytes()) == before
+    index_before = (candidate/'.git/index').read_bytes()
+    subprocess.run(['git', 'update-index', '--refresh'], cwd=candidate, check=True)
+    assert (candidate/'.git/index').read_bytes() != index_before
+    assert materialize(2)[1]['cache_hit']  # Legitimate Git stat-cache refresh is allowed.
+    subprocess.run(['git', 'update-index', '--assume-unchanged', 'source.txt'],
+                   cwd=candidate, check=True)
+    with pytest.raises(ValueError, match='Host_startup_cache_changed'):
+        materialize(3)
+    subprocess.run(['git', 'update-index', '--no-assume-unchanged', 'source.txt'],
+                   cwd=candidate, check=True)
     (candidate/'lib/sts2.dll').write_bytes(b'changed cached input')
     with pytest.raises(ValueError, match='Host_startup_cache_changed'):
-        materialize(2)
+        materialize(4)
 
 
 def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path):

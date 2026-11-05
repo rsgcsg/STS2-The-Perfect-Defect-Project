@@ -232,6 +232,8 @@ submit 校验完整计划；每个已分配 actor 只校验自己的固定配置
 同一 worker 随后物化完整 Host 包、candidate（含自包含 `.git` 和实际 lib 字节）、游戏目录、
 Node 可执行文件与 .NET SDK；按原路径/Host pin/游戏 assembly pin 隔离，一次 staging 后原子发布。
 原/副本相对路径、字节和模式一致；命中时在发布锁外核本地树及原 Host pin，避免串行大 hash。
+Git index 的 inode/ctime stat 缓存会随原审计刷新，按原 `git ls-files --stage -v` 的
+路径/blob/模式/stage/flags 绑定；不把临时 index.lock 当输入，HEAD、源文件和原 diff 审计仍完整保留。
 子进程使用本地 Host/candidate/game/Node/.NET 和独立 CLI 缓存；原 Actor 构造与每局 Host
 candidate 审计仍照常执行，不缓存审计结论。完整原/派生配置、闭包大小/hash 与耗时归原 snapshot。
 Python 源/环境、模型、Hot/Archive、rendezvous 和输出仍走原 owner；可变控制事实不冻结进节点副本。
