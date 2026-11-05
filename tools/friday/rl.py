@@ -941,7 +941,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
            alongside_job: str | None = None, reserve_only: bool = False,
            retain_capability: bool = False,
            held_job_id: str | None = None,
-           actor_node_types: list[str] | None = None) -> dict[str, Any]:
+           actor_node_types: list[str] | None = None,
+           actor_exclude_nodes: list[str] | None = None) -> dict[str, Any]:
     """Login-side resource adapter; both original sbatch calls inherit one capability.
 
     The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
@@ -1078,8 +1079,12 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         if plan.get('learner_request', plan['learner_origin']) != {
                 'path': str(configuration), 'sha256': hashed(configuration)}:
             raise ValueError('GPU_prepared_actor_plan_has_different_learner_configuration')
-        actors = submit(plan_file, memory_gb=actor_memory_gb,
-                        **({"node_types": actor_node_types} if actor_node_types else {}))
+        actor_options: dict[str, Any] = {'memory_gb': actor_memory_gb}
+        if actor_node_types:
+            actor_options['node_types'] = actor_node_types
+        if actor_exclude_nodes:
+            actor_options['exclude_nodes'] = actor_exclude_nodes
+        actors = submit(plan_file, **actor_options)
         result = {'GPU_job_id': job, 'actors': actors, 'plan_sha256': hashed(plan_file)}
         save(root/'launch-receipt.json', result)
         completed = True

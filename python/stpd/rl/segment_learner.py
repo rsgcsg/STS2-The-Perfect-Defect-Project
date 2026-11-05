@@ -2076,16 +2076,38 @@ class SegmentLearner:
         if final:
             self._collect_checkpoint(wait=True)
 
-    def close(self) -> None:
+    def _close_journal(self) -> None:
+        if self.wal is not None and not self.wal.closed:
+            with ExitStack() as cleanup:
+                cleanup.callback(self.wal.close)
+                cleanup.callback(self.wal_replication.close)
+                # The listener is already closed. Preserve its terminal event
+                # suffix from the same WAL for the operational owner's last read;
+                # this single closeout write is outside the live control path.
+                events: list[dict[str, Any]] = []
+                sequence = 0
+                while rows := self.wal.events_since(sequence):
+                    events.extend(rows)
+                    sequence = rows[-1]["sequence"]
+                if events and events[-1]["request"]["kind"] in {"finished", "failed"}:
+                    target = self.work / "control-wal-final.json"
+                    temporary = target.with_suffix(".json.new")
+                    with temporary.open("wb") as stream:
+                        stream.write(json_bytes({"run": self.config.run,
+                            "training_generation": self.generation, "events": events}))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    temporary.replace(target)
+
+    def close(self, *, keep_journal: bool = False) -> None:
         with self.condition:
             self.newlease_stopped = True
             self.condition.notify_all()
             if self.wal is not None:
                 self._notify_capacity(force=True)
         with ExitStack() as cleanup:
-            if self.wal is not None:
-                cleanup.callback(self.wal.close)
-                cleanup.callback(self.wal_replication.close)
+            if self.wal is not None and not keep_journal:
+                cleanup.callback(self._close_journal)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
             cleanup.callback(self.telemetry.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoint_encoder.shutdown, wait=True, cancel_futures=False)
@@ -2107,6 +2129,8 @@ class SegmentLearner:
             on_tick: Callable[[], None] | None = None) -> dict[str, Any]:
         try:
             summary = self._run(initialize_only=initialize_only, on_tick=on_tick)
+            self.exchange.publish_event("finished", **summary)
+            return summary
         except BaseException as error:
             fields = {"training_generation": self.generation, "updates": self.updates,
                       "budget_id": (self.config.operating_budget or {}).get("id"),
@@ -2118,8 +2142,10 @@ class SegmentLearner:
                 (self.work / "failed-event-unpublished.json").write_bytes(json_bytes(
                     {**fields, "publication_error_type": type(publication_error).__name__}))
             raise
-        self.exchange.publish_event("finished", **summary)
-        return summary
+        finally:
+            # Terminal events still use the normal durable WAL sink. The writer
+            # and its replicator must outlive both success and failure events.
+            self._close_journal()
 
     def _run(self, *, initialize_only: bool = False,
              on_tick: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -2206,7 +2232,7 @@ class SegmentLearner:
                     self._collect_publication(wait=True)
                     self.checkpoint(final=True)
             finally:
-                self.close()
+                self.close(keep_journal=True)
         summary = {
             "updates": self.updates,
             "published_updates": self.published_updates,
