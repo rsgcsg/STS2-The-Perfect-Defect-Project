@@ -450,8 +450,10 @@ def run(path: Path) -> dict[str, Any]:
                                 and game.get('cleanup_accepted') is True
                                 and game.get('segment_prefix_close') is True))
                         for game in (summary or {}).get('games', []))
-        if code != 0 or summary is None or uncertain:
-            # Fences pending workers before the potentially slow final NFS snapshot.
+        if (code != 0 or summary is None
+                or uncertain and plan.get('trajectory_encoding') != 'short-segment-1'):
+            # Short-segment uncertain games belong to the watcher global denominator.
+            # Process failures still fence pending workers before the final snapshot.
             save(root / 'STOP', {'actor': ref['actor'], 'reason': 'actor_failed_or_unknown',
                                 'exit_code': code})
     except Exception as error:  # noqa: BLE001 -- preserve this exact owned attempt, never retry.

@@ -245,7 +245,8 @@ CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
 恢复用原owner保守时间与CP对账，原失败和回滚掉的更新不升级成有效训练。
 真实offer/close/actor终态按唯一intent归并，迟到/乱序不增分母；未offer准入单列。
 `watch.py mode=segments` 的全局5%门用已结束或已证失联尝试，在途不当成功；
-恰好5%不停、超过才停。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
+恰好5%不停、超过才停。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
+进程异常仍阻止待启动worker。单局ledger停止和保存义务不变，未知局不重投。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
 直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 

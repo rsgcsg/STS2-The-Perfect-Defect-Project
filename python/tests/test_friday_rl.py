@@ -179,8 +179,9 @@ def test_actor_runtime_materializes_full_pinned_bundle_and_rechecks_cache(
     assert not (scratch/'runtime-actor.json').exists()
 
 
+@pytest.mark.parametrize('disposition', [None, 'unknown', 'save_failed'])
 def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
-        rl, inputs, tmp_path, bundled_release, host_startup_release, monkeypatch):
+        rl, inputs, tmp_path, bundled_release, host_startup_release, monkeypatch, disposition):
     _, package, pin = bundled_release
     execution, _, _ = inputs
     base = json.loads(execution.read_bytes())
@@ -233,12 +234,14 @@ def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
         work = Path(command[command.index('--work')+1])
         (work/'actor-summary.json').write_text(json.dumps({
             'schema': 'spireagent/rl-actor-summary-1', 'actor': ref['actor'],
-            'run': plan['run'], 'status': 'stopped_before_offer', 'games': []}))
+            'run': plan['run'], 'status': 'stopped_before_offer',
+            'games': [] if disposition is None else [{'status': disposition, 'shard': None}]}))
         return SimpleNamespace(wait=lambda: 0, poll=lambda: 0)
 
     monkeypatch.setattr(rl.subprocess, 'Popen', start)
     result = rl.run(path)
     assert len(observed) == 1
+    assert not (path.parent/'STOP').exists()
     assert result['runtime_materialization']['verified_package']['package_content_sha256'] == pin[
         'package_content_sha256']
     assert result['actor_config_sha256'] == ref['sha256']
