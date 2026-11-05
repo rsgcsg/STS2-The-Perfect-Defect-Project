@@ -299,3 +299,13 @@ H1通过后用户可明确开一个新的72000秒运营窗口，并继续同一�
 `evaluation.initial_checkpoint`可指定本次长训起点CP作为首个2h周期的anchor：入场先安排其50槽，
 后续仍在7200/14400/...秒评估当前CP；首个当前点同时对CP16和该H1 anchor逐seed比较。
 这复用同一个pending/ledger/evaluation owner，不增加并行业务链；每个计划最多16workers，合计不超过已批CPU上限。
+
+
+抽样整局重放由 Actor 的单线程后台审计执行，不阻塞保存/下一局；重放预算600秒、
+低优先级。超时、子进程不可用或审计执行异常追加 `audit_inconclusive`，原typed结果
+和数据保留，原件不释放；真实字节/身份/语义不一致才追加integrity finding并STOP。
+审计结果使用独立控制连接请求STOP，避免与Actor正在进行的控制请求串读。
+watch health分别报告pending、完成和inconclusive；最近50次已完成审计内，至少5次
+inconclusive且占比严格超过20%时告警，只暂停当前budget的新World准入和补位，
+已有World继续正常收口，不作废已有数据。每次审计的不可变request/result留在原attempt，
+inconclusive不自动重放，后续诊断保留原失败身份。

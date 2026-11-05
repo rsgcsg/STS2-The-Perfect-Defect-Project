@@ -648,8 +648,12 @@ def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals
     executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
     executor.exchange = exchange
     executor.budget_id = None
-    executor.admission = SimpleNamespace(request=lambda operation: {
-        "run": exchange.run, "training_generation": "audit-g"})
+    from stpd.p1 import local_inference
+
+    executor.admission = SimpleNamespace(attachment={})
+    monkeypatch.setattr(local_inference, "SegmentConnection", lambda attachment: SimpleNamespace(
+        request=lambda operation: {"run": exchange.run, "training_generation": "audit-g"},
+        close=lambda: None))
     artifacts = _Artifacts(tmp_path / "attempt")
     run = artifacts.root / "run"
     run.mkdir()
@@ -663,9 +667,9 @@ def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals
     failed = VerificationResult(AgentSessionRunEvidenceVerifier.descriptor, "fail", run,
         findings=(VerificationFinding("audit_counterexample", "injected semantic finding"),))
     monkeypatch.setattr(evidence_owner, "audit_global_session", lambda *a: failed)
-    with pytest.raises(BoundaryError, match="sampled_original_audit_failed"):
-        executor._after_preservation(row, artifacts, run, {}, "full_peer")
-    finding = json.loads((artifacts.root / row["sampling_audit"]["path"]).read_bytes())
+    executor._after_preservation(row, artifacts, run, {}, "full_peer")
+    executor.sampling_audits.close()
+    finding = json.loads((artifacts.root / "sampling-audit-result.json").read_bytes())
     assert finding["findings"][0]["code"] == "audit_counterexample"
     assert exchange.stop_request(training_generation="audit-g")["reason"] == (
         "sampled_original_audit_failed")
@@ -865,7 +869,7 @@ def test_hot_transport_honors_64mib_reference_without_widening_artifact_blobs(tm
     assert exchange.hot_status('g-test')['payloads'] == 0
 
 
-def test_integrity_finding_survives_unavailable_control_status(tmp_path):
+def test_integrity_finding_survives_unavailable_control_status(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
@@ -877,11 +881,47 @@ def test_integrity_finding_survives_unavailable_control_status(tmp_path):
     def unavailable(*args, **kwargs):
         raise OSError("control unavailable")
 
+    from stpd.p1 import local_inference
+
+    channel = SimpleNamespace(request=unavailable, close=lambda: None)
+    monkeypatch.setattr(local_inference, "SegmentConnection", lambda attachment: channel)
     owner = SimpleNamespace(
-        exchange=exchange, budget_id="ops-test", admission=SimpleNamespace(request=unavailable)
+        exchange=exchange, budget_id="ops-test", admission=SimpleNamespace(attachment={})
     )
     SegmentManagedExecutor._request_training_stop(owner, "sampled_original_audit_failed")
     events = exchange.event_records()
     assert [e["kind"] for e in events] == ["integrity_failed", "integrity_stop_pending"]
     assert events[0]["reason"] == "sampled_original_audit_failed"
     assert events[0]["budget_id"] == "ops-test"
+
+
+def test_audit_stop_uses_separate_control_without_touching_actor_socket(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from stpd.p1 import local_inference
+    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "audit-control")
+    attachment = {"test": "actor-attachment"}
+    calls = []
+
+    class AuditControl:
+        def __init__(self, attached):
+            assert attached is attachment
+            calls.append("new")
+
+        def request(self, operation):
+            calls.append(operation)
+            return {"run": exchange.run, "training_generation": "g-audit"}
+
+        def close(self):
+            calls.append("close")
+
+    def actor_request(*args):
+        pytest.fail("audit used the actor's in-flight control connection")
+
+    monkeypatch.setattr(local_inference, "SegmentConnection", AuditControl)
+    owner = SimpleNamespace(exchange=exchange, budget_id="b", admission=SimpleNamespace(
+        attachment=attachment, request=actor_request))
+    SegmentManagedExecutor._request_training_stop(owner, "sampled_original_audit_failed")
+    assert calls == ["new", "status", "close"]
+    assert exchange.stop_request(training_generation="g-audit")["reason"] == "sampled_original_audit_failed"

@@ -631,6 +631,36 @@ class Exchange:
             reject("stop_request_identity_mismatch")
         return value
 
+    def admission_pause(self, budget_id: str | None) -> dict[str, Any] | None:
+        """A budget-scoped pause blocks new Worlds, never existing input or closure."""
+        identity = hashlib.sha256(json_bytes(budget_id)).hexdigest()
+        key = f"{self.prefix}control/admission-pause-{identity}.json"
+        try:
+            value = _open(self.blobs.get(key), EVENT_SCHEMA)
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise
+            return None
+        if (value.get("run") != self.run or value.get("budget_id") != budget_id
+                or value.get("kind") != "admission_pause"):
+            reject("admission_pause_identity_mismatch")
+        return value
+
+    def pause_admission(self, budget_id: str | None, reason: str) -> None:
+        if self.admission_pause(budget_id) is not None:
+            return
+        identity = hashlib.sha256(json_bytes(budget_id)).hexdigest()
+        raw = _sealed({"schema": EVENT_SCHEMA, "run": self.run, "budget_id": budget_id,
+                       "kind": "admission_pause", "reason": reason, "at": time.time()})
+        try:
+            self.blobs.put_if_absent(
+                f"{self.prefix}control/admission-pause-{identity}.json", raw)
+        except BoundaryError as error:
+            if error.code != "immutable_key_collision":
+                raise
+        if self.admission_pause(budget_id) is None:
+            reject("admission_pause_missing_after_publication")
+
     def publish_event(self, kind: str, **fields: Any) -> dict[str, Any]:
         raw = _sealed({**fields, "schema": EVENT_SCHEMA, "run": self.run,
                        "at": time.time(), "kind": kind})

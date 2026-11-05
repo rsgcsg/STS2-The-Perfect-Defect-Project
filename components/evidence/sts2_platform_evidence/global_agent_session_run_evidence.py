@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
@@ -44,6 +46,7 @@ ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin(?:\.gz)?\Z")
 # A measured 33-floor original needs ~58s after decoded-payload retention is
 # bounded. This is a finite verification budget, not a gameplay or validity rule.
 GLOBAL_REPLAY_TIMEOUT_SECONDS = 120
+AUDIT_REPLAY_TIMEOUT_SECONDS = 600
 _SEMANTIC_REPLAY_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _SEMANTIC_REPLAY_CACHE_LOCK = Lock()
 _LIVE_REPLAY: ContextVar[LiveGlobalReplay | None] = ContextVar("global_live_replay", default=None)
@@ -203,7 +206,7 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
     except (OSError, subprocess.SubprocessError):
         _require(False, "global_shared_replay_identity_unavailable")
     _require(checked.returncode == 0 and len(checked.stdout) <= 65536,
-             "global_shared_replay_identity_failed")
+             "global_shared_replay_identity_unavailable")
     parsed_identity = json.loads(checked.stdout)
     semantic_identity = _object(parsed_identity) if parsed_identity is not None else None
     replay_key = None
@@ -226,14 +229,31 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
                 report = _SEMANTIC_REPLAY_CACHE.get(replay_key)
     _require(_LIVE_REPLAY.get() is None or report is not None, "global_live_proof_required")
     if report is None:
-        script = "import{pathToFileURL}from'node:url';const m=await import(pathToFileURL(process.argv[1]));console.log(JSON.stringify(await m.replayGlobalAgentRun(process.argv[2])));"
+        script = (
+            "import{pathToFileURL}from'node:url';"
+            "const m=await import(pathToFileURL(process.argv[1]));"
+            "try{console.log(JSON.stringify(await m.replayGlobalAgentRun(process.argv[2])))}"
+            "catch(e){if((e?.name==='Error'&&!e.code)||"
+            "['AgentSessionError','ZodError','SyntaxError'].includes(e?.name))"
+            "console.log(JSON.stringify({replay_rejected:e.message}));else throw e}"
+        )
         try:
-            result = subprocess.run(["node", "--input-type=module", "-e", script, str(runtime / "global-replay.js"), str(directory)],
-                                    capture_output=True, text=True, timeout=GLOBAL_REPLAY_TIMEOUT_SECONDS, check=False)
+            command = ["node", "--input-type=module", "-e", script,
+                       str(runtime / "global-replay.js"), str(directory)]
+            options: dict[str, Any] = {}
+            if _FORCE_REPLAY.get():
+                if os.name == "posix":
+                    command = ["nice", "-n", "10", *command]
+                elif sys.platform == "win32":
+                    options["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            result = subprocess.run(command, capture_output=True, text=True,
+                timeout=(AUDIT_REPLAY_TIMEOUT_SECONDS if _FORCE_REPLAY.get()
+                         else GLOBAL_REPLAY_TIMEOUT_SECONDS), check=False, **options)
         except (OSError, subprocess.SubprocessError):
             _require(False, "global_shared_replay_unavailable")
-        _require(result.returncode == 0 and len(result.stdout) <= 65536, "global_shared_replay_failed")
+        _require(result.returncode == 0 and len(result.stdout) <= 65536, "global_shared_replay_unavailable")
         report = _object(json.loads(result.stdout))
+        _require("replay_rejected" not in report, "global_shared_replay_failed")
     _require(report.get("schema") == "sts2.policy-runtime/global-replay-1" and report.get("run_id") == run["run_id"]
              and report.get("verdict") == "verified" and report.get("native_qualification") is False
              and report.get("human_origin") is False and report.get("research_admission") is False, "global_shared_replay_report")

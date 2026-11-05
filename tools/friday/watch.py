@@ -1121,6 +1121,13 @@ class SegmentWatcher(Watcher):
                 self.state['unresolved_admission_generations'].update({
                     intent: event['training_generation'] for intent in event['unresolved_episodes']})
                 terminal.add(event['actor'])
+            if event['kind'] in {'sampling_audit_scheduled', 'sampling_audit'}:
+                audits = self.state.setdefault('sampling_audits', {})
+                status = event.get('status', 'pending')
+                previous = audits.get(event['run_id'])
+                if previous and previous['status'] != 'pending' and previous['status'] != status:
+                    raise ValueError('immutable_sampling_audit_result_changed')
+                audits[event['run_id']] = {'status': status, 'at': event['at']}
             if event['kind'] == 'integrity_failed':
                 self.state['blocking_integrity_findings'][key] = event['record_sha256']
                 acknowledged = self.config.get('acknowledged_integrity_events', {}).get(key)
@@ -1187,6 +1194,29 @@ class SegmentWatcher(Watcher):
             'known_unknown': len(active & unknown), 'lost_offers': len(active & lost),
             'unresolved_admissions': sum(self.state['unresolved_admission_generations'].get(k)
                 in generations for k in self.state['unresolved_admissions']) if generation else 0}
+        self.refresh_audit_health()
+
+    def refresh_audit_health(self):
+        audits = list(self.state.get('sampling_audits', {}).values())
+        completed = sorted((a for a in audits if a['status'] != 'pending'),
+                           key=lambda a: a['at'])
+        window = completed[-50:]
+        inconclusive = sum(a['status'] == 'audit_inconclusive' for a in window)
+        fraction = inconclusive / len(window) if window else 0.
+        paused = self.state.get('audit_admission_paused', False)
+        if inconclusive >= 5 and fraction > .2 and not paused:
+            self.exchange.pause_admission(self.config['budget_id'],
+                                           'sampling_audit_inconclusive_window')
+            self.state['audit_admission_paused'] = paused = True
+            self.telemetry('attention', reason='sampling_audit_inconclusive_admission_paused',
+                           audit_window=len(window), inconclusive=inconclusive)
+        self.state['health']['sampling_audit'] = {
+            'pending': sum(a['status'] == 'pending' for a in audits),
+            'completed': len(completed), 'inconclusive': sum(
+                a['status'] == 'audit_inconclusive' for a in completed),
+            'window_size': 50, 'window_completed': len(window),
+            'window_inconclusive': inconclusive, 'window_fraction': fraction,
+            'admission_paused': paused}
 
     def cold_checkpoint(self, artifact_id: str) -> dict[str, Any]:
         import tempfile
@@ -1390,6 +1420,9 @@ class SegmentWatcher(Watcher):
 
     def replace_actors(self, attempt: dict[str, Any]) -> None:
         import rl
+
+        if self.state.get('audit_admission_paused'):
+            return
         terminal = [row for plan in attempt['actor_plans']
                     for row in rl.actor_accounting(Path(plan)) if row['terminal']
                     and row['actor'] not in attempt['replaced']]

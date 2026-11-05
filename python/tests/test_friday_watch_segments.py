@@ -323,3 +323,22 @@ def test_learner_only_restore_preserves_unknown_denominator_and_charged_time(own
     assert 130 <= owner.state['training_seconds'] < 140
     assert owner.state['health']['completed_for_stop'] == 1
     assert owner.state['health']['known_unknown'] == 1
+
+
+def test_inconclusive_audit_window_pauses_only_new_admission(owner):
+    attempt(owner)
+    for n in range(4):
+        event(owner,'sampling_audit',run_id=f'i{n}',status='audit_inconclusive')
+    for n in range(20):
+        event(owner,'sampling_audit',run_id=f'p{n}',status='pass')
+    event(owner,'sampling_audit',run_id='i4',status='audit_inconclusive')
+    owner.collect_events()
+    assert owner.state['health']['sampling_audit']['window_fraction']==.2
+    assert not owner.state.get('audit_admission_paused')
+    event(owner,'sampling_audit',run_id='i5',status='audit_inconclusive')
+    owner.collect_events()
+    assert owner.state['health']['sampling_audit']['inconclusive']==6
+    assert owner.exchange.admission_pause(owner.config['budget_id']) is not None
+    assert owner.exchange.admission_pause('another-budget') is None
+    assert owner.state['stop'] is None
+    assert owner.exchange.stop_request(training_generation='g-one') is None
