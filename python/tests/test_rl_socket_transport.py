@@ -122,6 +122,41 @@ def test_byte_credit_wait_is_not_row_credit_and_stop_wakes_it(tmp_path):
     assert sources.status()["spool_bytes"] == 0
 
 
+def test_reclaim_wakes_only_fitting_byte_credit_waiters_in_order(tmp_path):
+    sources = BinarySources(tmp_path, run="r", generation="g", max_bytes=16)
+    value = encoded(b"0123456789abcdef")
+    held = sources.begin(value.envelope)
+    granted, failed = [], []
+
+    def waiting(index):
+        try:
+            granted.append((index, sources.begin({**value.envelope, "segment_id": f"a/{index}"})))
+        except DataplaneError as error:
+            failed.append(error.code)
+
+    workers = []
+    for index in range(1, 6):
+        workers.append(threading.Thread(target=waiting, args=(index,)))
+        workers[-1].start()
+        until = time.monotonic() + 2
+        while len(sources.capacity_waiters) < index and time.monotonic() < until:
+            threading.Event().wait(0.005)
+    assert len(sources.capacity_waiters) == 5
+    for expected in range(1, 6):
+        sources.cancel(held)
+        until = time.monotonic() + 2
+        while len(granted) < expected and time.monotonic() < until:
+            threading.Event().wait(0.005)
+        # One 16-byte release fits exactly one waiter; the rest stay asleep.
+        assert [index for index, _ in granted] == list(range(1, expected + 1))
+        assert len(sources.capacity_waiters) == 5 - expected
+        held = granted[-1][1]
+    sources.cancel(held)
+    for worker in workers:
+        worker.join(2)
+    assert not failed and sources.status()["spool_bytes"] == 0
+
+
 def test_control_canonical_preserves_binary_hash_and_separates_historical_keys():
     ref = {
         "format": TENSOR_SEGMENT_FORMAT,

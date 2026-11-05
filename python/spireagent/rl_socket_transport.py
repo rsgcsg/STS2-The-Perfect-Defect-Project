@@ -152,6 +152,10 @@ class BinarySources:
         self.upload_owners: set[tuple[Any, ...]] = set()
         self.closed_episodes: set[tuple[str, str]] = set()
         self.retired_actors: set[str] = set()
+        # Byte-credit waiters, FIFO. Each sleeps on its own Condition over the
+        # one source lock, so a reclaim wakes only waiters that now fit instead
+        # of every blocked upload thread (hundreds under a full spool).
+        self.capacity_waiters: list[tuple[int, threading.Condition]] = []
         self.occupied = 0
         self.peak_reserved_bytes = 0
         self.byte_credit_wait_seconds = 0.0
@@ -225,7 +229,12 @@ class BinarySources:
                     if revoked():
                         raise DataplaneError("STOPPED")
                     began = time.perf_counter()
-                    self.condition.wait()
+                    waiter = (size, threading.Condition(cast(Any, self.source_lock)))
+                    self.capacity_waiters.append(waiter)
+                    try:
+                        waiter[1].wait()
+                    finally:
+                        self.capacity_waiters.remove(waiter)
                     self.byte_credit_wait_seconds += time.perf_counter() - began
                 if revoked():
                     raise DataplaneError("STOPPED")
@@ -278,7 +287,7 @@ class BinarySources:
             with self.condition:
                 self.upload_owners.discard(state["owner_key"])
                 self.occupied -= state["envelope"]["packet_size"]
-                self.condition.notify_all()
+                self._wake_capacity()
 
     def chunk(self, credit: str, raw: bytes) -> None:
         with self._upload_io(credit) as state:
@@ -351,7 +360,7 @@ class BinarySources:
                 if owned(state):
                     state["owners"].discard("upload")
                     self._reclaim(slot)
-            self.condition.notify_all()
+            self._wake_capacity(revoked=True)
 
     def _entry(self, ref: BinaryRef) -> dict[str, Any]:
         ref = binary_ref(ref)
@@ -404,13 +413,25 @@ class BinarySources:
             self.occupied -= state["ref"].size
             self.upload_owners.discard(state["owner_key"])
             del self.entries[slot]
-            self.condition.notify_all()
+            self._wake_capacity()
+
+    def _wake_capacity(self, *, revoked: bool = False) -> None:
+        # Caller owns the source lock. FIFO waiters that fit the freed bytes and
+        # slots are woken; a woken waiter that loses the race re-queues and is
+        # reconsidered on the next reclaim, so no capacity change is missed.
+        free = self.max_bytes - self.occupied
+        slots = self.max_slots - len(self.entries) - len(self.credits)
+        for size, waiter in self.capacity_waiters:
+            if not revoked and (size > free or slots < 1):
+                break
+            free, slots = free - size, slots - 1
+            waiter.notify()
 
     def stop(self, *, close: bool = False) -> None:
         with self.condition:
             self.stopped = True
             self.closed = self.closed or close
-            self.condition.notify_all()
+            self._wake_capacity(revoked=True)
 
     def status(self) -> dict[str, Any]:
         with self.condition:
