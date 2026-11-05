@@ -264,7 +264,7 @@ module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
 test -x "$actor_root/node22.23.4/bin/node" || { echo 'pinned Node22.23.4 required' >&2; exit 2; }
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
 export PATH="$actor_root/node22.23.4/bin:$PATH"
-export PYTHONPATH="$source_root/python"
+export PYTHONPATH="$source_root/python:$source_root/components/evidence"
 export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1

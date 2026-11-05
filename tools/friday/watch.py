@@ -1576,7 +1576,8 @@ class SegmentWatcher(Watcher):
         save(Path(attempt['root']) / 'actor-allocations.json', {'plans': refs})
         self.persist()
 
-    def stop_attempt(self, attempt: dict[str, Any], reason: str) -> None:
+    def stop_attempt(self, attempt: dict[str, Any], reason: str, *,
+                     learner_terminal: bool = False) -> None:
         if self.config.get('dataplane') is None:
             for generation in attempt.get('generations', [attempt['generation']]):
                 self.exchange.request_stop(reason, training_generation=generation)
@@ -1597,7 +1598,8 @@ class SegmentWatcher(Watcher):
             self.signal_once(str(job).split(';')[0])
         attempt['stopping'] = reason
         self.persist()
-        if self.config.get('dataplane') is not None:
+        if (self.config.get('dataplane') is not None and not learner_terminal
+                and not attempt.get('socket_events_closed')):
             from stpd.p1.local_inference import SegmentConnection
 
             attachment = self._socket_attachment(attempt)
@@ -1846,7 +1848,7 @@ class SegmentWatcher(Watcher):
         account = job_accounting(attempt['job_id'])
         if account['terminal']:
             attempt.setdefault('terminal_observed_at', now)
-            self.stop_attempt(attempt, 'learner_allocation_terminal')
+            self.stop_attempt(attempt, 'learner_allocation_terminal', learner_terminal=True)
             import rl
 
             actors_terminal = True

@@ -233,7 +233,7 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
         # Only site-specific scheduler IO/lock path are replaced, as in other Friday tests.
         lock_path = Path(sys.argv[2])
         rl.scheduler.submission_lock_path = lambda: lock_path
-        rl.scheduler.output = lambda args: '0/400/0/400' if args[0] == 'sinfo' else ''
+        rl.scheduler.output = lambda args: ('fc430|0/400/0/400' if '%f|%C' in args else '0/400/0/400') if args[0] == 'sinfo' else ''
         sys.argv = ['rl.py', 'submit', '--plan', sys.argv[3], '--dry-run']
         rl.main()
         """)
@@ -259,7 +259,7 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
     assert "--array=0-11%12" in submission["command"]
     launcher = (output / "launch.sh").read_text()
     assert f"source_root={frozen}" in launcher
-    assert 'export PYTHONPATH="$source_root/python"' in launcher
+    assert 'export PYTHONPATH="$source_root/python:$source_root/components/evidence"' in launcher
     assert not (output / "submission.json").exists()
 
 
@@ -792,10 +792,9 @@ def test_full_checkpoint_reference_rejects_wrong_updates_or_different_weights(wa
     from types import SimpleNamespace
 
     import torch
-    from test_artifact_store_v1 import PRODUCER
-
     from spireagent.json_boundary import FrozenObject
     from stpd.workers.checkpoint_codec import encode_checkpoint
+    from test_artifact_store_v1 import PRODUCER
 
     instance = tier_observer(watch, tmp_path)
     info = {'schema': 'stpd/rl-learner-checkpoint-2',

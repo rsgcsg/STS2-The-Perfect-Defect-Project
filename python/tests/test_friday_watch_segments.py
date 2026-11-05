@@ -181,7 +181,7 @@ def test_failed_event_stops_before_live_or_terminal_allocation_can_recover(
     owner.schedule_segment_evaluation = lambda: None
     owner.retain_segment_checkpoints = lambda: None
     stops = []
-    owner.stop_attempt = lambda _, reason: stops.append(reason)
+    owner.stop_attempt = lambda _, reason, **kwargs: stops.append(reason)
     owner.start_attempt = lambda: pytest.fail("a typed learner failure requires diagnosis")
     monkeypatch.setitem(watch.sys.modules, "rl", SimpleNamespace())  # No actor allocations here.
     monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": terminal})
@@ -411,3 +411,20 @@ def test_held_step_stop_keeps_worker_processes_alive_and_uses_existing_markers(o
         (cancellations.append(command) or SimpleNamespace(returncode=0)))
     owner.cancel_at_deadline()
     assert cancellations == [["scancel", "1424613.98"]]
+
+
+def test_terminal_learner_stop_preserves_actor_drain_without_reconnecting(owner, monkeypatch):
+    from pathlib import Path
+
+    value = attempt(owner)
+    value.update(job_id='1427035.12', actor_plans=[])
+    root = Path(value['root'])
+    (root / 'learner').mkdir(parents=True)
+    owner.config['dataplane'] = {}
+    def no_dead_socket(_attempt):
+        raise AssertionError('Slurm-terminal learner must not receive another RPC Stop')
+    monkeypatch.setattr(owner, '_socket_attachment', no_dead_socket)
+    owner.stop_attempt(value, 'learner_allocation_terminal', learner_terminal=True)
+    assert (root / 'login-launch/STOP').is_file()
+    assert (root / 'learner/STOP').is_file()
+    assert value['stopping'] == 'learner_allocation_terminal'
