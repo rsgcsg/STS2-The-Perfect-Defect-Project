@@ -639,10 +639,6 @@ class SegmentLearner:
         # the theta owner's path before an already-ready GPU minibatch.
         self.preparation_dispatch = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-prepare-dispatch")
-        # Delayed HP label checks are off the update path; a large dataset makes
-        # one per segment, so they must not queue ahead of the next batch.
-        self.label_dispatch = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rl-label-dispatch")
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
             mp_context=multiprocessing.get_context("spawn"),
@@ -1803,7 +1799,7 @@ class SegmentLearner:
                      else self.input_preparer.pool.submit(verify_auxiliary, request, members))
             self.pending_labels.append(
                 (
-                    self._dispatch_preparation(submit_labels, executor=self.label_dispatch),
+                    self._dispatch_preparation(submit_labels),
                     members,
                     owner,
                 )
@@ -1889,8 +1885,7 @@ class SegmentLearner:
             self._notify_capacity()
             self.source_prefetch_changed.set()
 
-    def _dispatch_preparation(self, submit: Callable[[], Future[Any]], *,
-                              executor: ThreadPoolExecutor | None = None) -> Future[Any]:
+    def _dispatch_preparation(self, submit: Callable[[], Future[Any]]) -> Future[Any]:
         result: Future[Any] = Future()
 
         def complete(future: Future[Any]) -> None:
@@ -1905,7 +1900,7 @@ class SegmentLearner:
             except BaseException as error:
                 result.set_exception(error)
 
-        (executor or self.preparation_dispatch).submit(dispatch)
+        self.preparation_dispatch.submit(dispatch)
         return result
 
     def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
@@ -2352,7 +2347,6 @@ class SegmentLearner:
             finally:
                 try:
                     self.preparation_dispatch.shutdown(wait=True, cancel_futures=False)
-                    self.label_dispatch.shutdown(wait=True, cancel_futures=False)
                 finally:
                     self.input_preparer.shutdown(wait=True, cancel_futures=False)
             for future, _, _ in self.pending_labels:
