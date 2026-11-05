@@ -13,8 +13,9 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, obj
 
 MAGIC = b"STPDCKP1"
 MAX_BYTES = 512 * 1024 * 1024
-MAX_HEADER = 8 * 1024 * 1024
-MAX_NODES = 100_000
+MAX_HEADER = 32 * 1024 * 1024
+# Covers the pending-batch requests of up to 4 prepared batches in learner CPs.
+MAX_NODES = 400_000
 
 
 def encode_checkpoint(state: Mapping[str, Any]) -> bytes:
