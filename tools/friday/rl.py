@@ -580,7 +580,9 @@ def materialize_actor_host(reference: dict[str, str], scratch: Path,
     environment = {'STS2_GAME_DIR': str(target / 'game'),
         'DOTNET': str(target / 'dotnet/dotnet'), 'DOTNET_ROOT': str(target / 'dotnet'),
         'DOTNET_CLI_HOME': str(private_root(root / 'dotnet-home')),
-        'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'GIT_OPTIONAL_LOCKS': '0',
+        # A fresh CLI home otherwise prepends "Welcome to .NET" to the JSON
+        # fingerprint tool's stdout, failing the unchanged Host audit parser.
+        'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1', 'GIT_OPTIONAL_LOCKS': '0',
         'PATH': str(target / 'node/bin') + os.pathsep + str(target / 'dotnet')
                 + os.pathsep + os.environ.get('PATH', '')}
     receipt = {'source_actor_sha256': reference['sha256'],

@@ -375,6 +375,38 @@ def test_order_cache_avoids_rescanning_but_does_not_cache_source_or_completion(
     assert archive.status(owned=False)["full_readback"]
 
 
+def test_capacity_reuses_immutable_intent_cost_but_observes_new_completion(
+        tmp_path, monkeypatch):
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    key, raw = "exchange/test/capacity.json", b'{"size":"original"}'
+    archive.source.blobs.put_if_absent(key, raw)
+    identity = archive.offer(key, raw, start=False)
+    get, reads = archive.source.blobs.get, []
+
+    def counted(key):
+        reads.append(key)
+        return get(key)
+
+    monkeypatch.setattr(archive.source.blobs, "get", counted)
+    archive._refresh_capacity()
+    assert archive.capacity_status()["pending_bytes_estimate"] == len(raw)
+    assert reads == [key]
+    archive._refresh_capacity()
+    assert archive.capacity_status()["pending_bytes_estimate"] == len(raw)
+    assert reads == [key]  # No second NFS read of unchanged immutable bytes.
+    archive._copy(identity)
+    archive._refresh_capacity()
+    assert archive.capacity_status()["pending"] == 0
+    assert archive.capacity_status()["pending_bytes_estimate"] == 0
+    other, second = "exchange/test/new-capacity.json", b'{"new":"intent"}'
+    archive.source.blobs.put_if_absent(other, second)
+    archive.offer(other, second, start=False)
+    archive._refresh_capacity()
+    assert archive.capacity_status()["pending_bytes_estimate"] == len(second)
+    assert reads[-1] == other
+
+
 @pytest.mark.parametrize("key,code", [
     (None, "invalid_object_key"), (7, None),
     ("", "invalid_object_key"), ("a/../escape", "nonportable_object_key")])

@@ -228,6 +228,7 @@ def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
         assert local['candidate_directory'] != base['candidate_directory']
         assert options['env']['DOTNET'].startswith(str(tmp_path/'isolated-host-cache'))
         assert options['env']['STS2_GAME_DIR'] != os.environ['STS2_GAME_DIR']
+        assert options['env']['DOTNET_NOLOGO'] == '1'
         observed.append(actual)
         work = Path(command[command.index('--work')+1])
         (work/'actor-summary.json').write_text(json.dumps({
