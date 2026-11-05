@@ -269,6 +269,10 @@ submit支持general/debug及排除G1节点，仍用原容量门、E2和分区时
 
 watch的evaluation配置固定seconds=7200、seeds=50..100、canonical manifest pin、
 baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/result/snapshot pin）及执行JSON。
+配方切换可显式设置`rollback_reference="initial_checkpoint"`，绑定已有`initial_checkpoint`的
+0秒评估作固定参照；连续两个后续2h点的配对区间全负即停止。部分回升但仍显著低于切换点
+也触发，不再只看相邻两点。默认仍比较上一点评估。`rollback_recipe`可记录已批准回退参数，
+随具名CP写入原`rollback-checkpoint.json`，诊断后另代恢复；不会热改在用配方或自动重投。
 所有点必须完全同题，核完整Host/Runtime/Input/初始进度/argmax协议，分别对CP16和上一点评估。
 报每层分布、最大层、Act1 Boss正见证、胜局、配对差区间；unknown或未获资格的那一对排除并单计，
 不补题。评估准备、排队后运行和在途停止都受同一绝对截止。

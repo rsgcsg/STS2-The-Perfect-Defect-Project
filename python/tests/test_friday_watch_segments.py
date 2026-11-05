@@ -428,3 +428,66 @@ def test_terminal_learner_stop_preserves_actor_drain_without_reconnecting(owner,
     assert (root / 'login-launch/STOP').is_file()
     assert (root / 'learner/STOP').is_file()
     assert value['stopping'] == 'learner_allocation_terminal'
+
+
+@pytest.mark.parametrize('reference', ['initial_checkpoint', 'previous'])
+def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
+        owner, watch, tmp_path, monkeypatch, reference):
+    """A partial rebound can still be below the switch point twice (CARD §5c)."""
+    import json
+
+    from stpd.evaluation import rl_observation
+
+    protocol = {"host_pin": {"source": "fixed"}, "runtime_pin": {"source": "fixed"},
+                "input_spec": "fixed", "initial_progress_sha256": "fixed",
+                "behavior_policy": {"mode": "argmax"}}
+
+    def cohort(floor):
+        return {"host_kind": "managed", "character": "Defect", "ascension": 0,
+                "planned": 2, "protocol_observed": protocol,
+                "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished"}
+                         for seed in ("seed-a", "seed-b")]}
+
+    recipe = {"performance": {"microbatch_size": 640},
+              "segments": {"minibatches": 2, "auxiliary_rows": 128}}
+    owner.config['evaluation'] = {
+        'baseline_binding': {'id': 'baseline'}, 'baseline_batches': [],
+        'baseline_checkpoint': 'baseline', 'manifest': {'sha256': 'fixed'},
+        'initial_checkpoint': 'anchor', 'baseline_resume_checkpoint': 'anchor',
+        'rollback_reference': reference, 'rollback_recipe': recipe,
+    }
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    monkeypatch.setattr(watch.evaluate, 'fixed_baseline',
+                        lambda *a, **kw: {'offers_accounted': True, 'cohort': cohort(20)})
+    monkeypatch.setattr(watch.evaluate, 'read_pinned', lambda ref: ref)
+    monkeypatch.setattr(rl_observation, 'write_report', lambda *a, **kw: None)
+    for index, (due, checkpoint, floor) in enumerate(
+            ((0, 'anchor', 20), (7200, 'lower', 17), (14400, 'partial-rebound', 18))):
+        root = tmp_path / f'eval-{index}'
+        root.mkdir()
+        (root / 'result.json').write_text('{}')
+        (root / 'snapshot.json').write_text('{}')
+        path = root / 'plan.json'
+        plan = {'checkpoint_binding': {'checkpoint_artifact_id': checkpoint},
+                'manifest': {'sha256': 'fixed'}}
+        result = {'ledger_report': {'slots': [{'status': 'finished'}] * 2}}
+        owner.evaluation_cohort = (
+            lambda *a, plan=plan, result=result, floor=floor: (plan, result, cohort(floor), True))
+        owner.state['pending'] = {'root': str(root), 'plan': str(path), 'stage': 'running',
+                                  'job_id': '80', 'due_seconds': due}
+        owner.collect_segment_evaluation()
+        if due < 14400:
+            assert owner.state['stop'] is None
+    assert owner.state['evaluations'][0]['paired_regression'] is False
+    assert owner.state['evaluations'][-1]['against_previous']['mean_delta'] == 1
+    if reference == 'previous':
+        assert owner.state['stop'] is None
+        assert owner.state['evaluations'][-1]['paired_regression'] is False
+        assert not (owner.work / 'rollback-checkpoint.json').exists()
+        return
+    assert all(row['paired_regression'] for row in owner.state['evaluations'][1:])
+    assert owner.state['stop'] == 'two_paired_regressions_restore_best_after_diagnosis'
+    rollback = json.loads((owner.work / 'rollback-checkpoint.json').read_bytes())
+    assert rollback['checkpoint_artifact_id'] == 'anchor'
+    assert rollback['recipe_after_diagnosis'] == recipe
+    assert rollback['automatic_training_resume'] is False

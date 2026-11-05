@@ -1006,6 +1006,11 @@ def read_segment_config(path: Path) -> dict[str, Any]:
         if (evaluation.get('initial_checkpoint') is not None
                 and evaluation['initial_checkpoint'] != base.resume_checkpoint):
             raise ValueError('initial_evaluation_must_bind_continuation_checkpoint')
+        if (evaluation.get('rollback_reference', 'previous') not in
+                {'previous', 'initial_checkpoint'}
+                or evaluation.get('rollback_reference') == 'initial_checkpoint'
+                and not evaluation.get('initial_checkpoint')):
+            raise ValueError('explicit_initial_checkpoint_rollback_reference_required')
         binding = evaluate.read_pinned(evaluation['baseline_binding'])
         if binding['checkpoint_artifact_id'] != evaluation['baseline_checkpoint']:
             raise ValueError('baseline_checkpoint_model_and_result_binding_required')
@@ -1727,20 +1732,42 @@ class SegmentWatcher(Watcher):
                 self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
                 self.state['best_cohort'] = cohort
             elif best is None:
-                from stpd.rl.learner import LearnerConfig
-                self.state['best_checkpoint'] = self.config['evaluation'].get(
-                    'baseline_resume_checkpoint', LearnerConfig.read(
-                        Path(self.config['learner_config'])).resume_checkpoint)
+                resume = cfg.get('baseline_resume_checkpoint')
+                if resume is None:
+                    from stpd.rl.learner import LearnerConfig
+                    resume = LearnerConfig.read(
+                        Path(self.config['learner_config'])).resume_checkpoint
+                self.state['best_checkpoint'] = resume
                 self.state['best_cohort'] = baseline
-            interval = report['against_previous']['bootstrap95_fixed_seed_sensitivity']
+            reference = cfg.get('rollback_reference', 'previous')
+            regression_comparison: dict[str, Any] | None = report['against_previous']
+            if reference == 'initial_checkpoint':
+                anchor = next((row for row in self.state['evaluations']
+                               if row['at_training_seconds'] == 0), None)
+                if anchor is None:
+                    if pending['due_seconds'] != 0:
+                        raise ValueError('initial_checkpoint_evaluation_missing')
+                    regression_comparison = None  # The anchor is not a post-switch evaluation.
+                else:
+                    if (anchor['checkpoint']['checkpoint_artifact_id']
+                            != cfg['initial_checkpoint']):
+                        raise ValueError('initial_checkpoint_evaluation_binding_changed')
+                    regression_comparison = compare(anchor['cohort'], cohort)
+                report['against_recipe_switch'] = regression_comparison
+            interval = (regression_comparison['bootstrap95_fixed_seed_sensitivity']
+                        if regression_comparison is not None else None)
             regression = bool(interval and interval[1] < 0)
             prior = self.state['evaluations'][-1] if self.state['evaluations'] else {}
             report['paired_regression'] = regression
-            if regression and prior.get('paired_regression'):
+            report['regression_reference'] = reference
+            if (regression and prior.get('paired_regression')
+                    and prior.get('regression_reference', 'previous') == reference):
                 self.state['stop'] = 'two_paired_regressions_restore_best_after_diagnosis'
                 save(self.work / 'rollback-checkpoint.json', {
                     'checkpoint_artifact_id': self.state['best_checkpoint'],
                     'selection': 'highest_fixed_pool_paired_point_estimate',
+                    'regression_reference': reference,
+                    'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
         else:
             self.state['stop'] = 'evaluation_audit_or_originals_incomplete'
