@@ -19,9 +19,9 @@ from stpd.rl import batch_preparation as bp
 from stpd.rl.tensor_segment import (
     TensorSegmentEncoder,
     decode_packet,
-    validate_source,
     packet_header,
     packet_header_fields,
+    validate_source,
 )
 
 
