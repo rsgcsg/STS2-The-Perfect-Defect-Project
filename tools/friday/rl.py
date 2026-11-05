@@ -617,19 +617,28 @@ class ActorAllocationMonitor:
             raise RuntimeError('actor_accounting_observer_not_released')
 
 
-def _tree_identity(directory: Path) -> dict[str, Any]:
+def _tree_identity(directory: Path, *, logical_git_index: bool = False) -> dict[str, Any]:
     """Same relative bytes/modes, including a candidate's admitted lib symlink target."""
     digest, count, size = hashlib.sha256(), 0, 0
     files = sorted(Path(root) / name for root, _dirs, names in os.walk(
         directory, followlinks=True) for name in names if (Path(root) / name).is_file())
     for path in files:
         relative = path.relative_to(directory).as_posix()
+        if logical_git_index and relative == '.git/index.lock':
+            continue  # Git's in-progress index transaction is not an input file.
         digest.update(relative.encode() + b'\0')
-        digest.update(str(path.stat().st_mode & 0o777).encode() + b'\0')
-        with path.open('rb') as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b''):
-                digest.update(block)
-                size += len(block)
+        size += path.stat().st_size
+        if logical_git_index and relative == '.git/index':
+            # Git refreshes inode/ctime/stat cache after a physical copy. Bind
+            # the same staged paths/blob IDs/modes/stages/flags, not that cache.
+            digest.update(b'git-stage-entries-v1\0')
+            digest.update(subprocess.check_output(['git', 'ls-files', '--stage', '-v'],
+                cwd=directory, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'}))
+        else:
+            digest.update(str(path.stat().st_mode & 0o777).encode() + b'\0')
+            with path.open('rb') as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(block)
         digest.update(b'\0')
         count += 1
     return {'sha256': digest.hexdigest(), 'files': count, 'bytes': size}
@@ -663,7 +672,8 @@ def materialize_actor_host(reference: dict[str, str], scratch: Path,
              'game': canonical_path(Path(game).resolve()),
              'dotnet': canonical_path(Path(dotnet).resolve().parent)}
     node = str(canonical_path(Path(node).resolve()))
-    binding = {'directories': {key: str(value) for key, value in roots.items()},
+    binding = {'candidate_index_binding': 'git-stage-entries-v1',
+               'directories': {key: str(value) for key, value in roots.items()},
                'node': node, 'host_pin': config['host_pin'],
                'game_assembly_sha256': config['game_assembly_sha256']}
     key = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
@@ -675,14 +685,15 @@ def materialize_actor_host(reference: dict[str, str], scratch: Path,
         if not cached:
             _verify_host(host, config['host_pin'])
             stage = Path(tempfile.mkdtemp(prefix='stage-', dir=root))
-            expected = {name: _tree_identity(source) for name, source in roots.items()}
+            expected = {name: _tree_identity(source, logical_git_index=name == 'candidate')
+                        for name, source in roots.items()}
             for name, source in roots.items():
                 shutil.copytree(source, stage / name, symlinks=False)
             (stage / 'node/bin').mkdir(parents=True)
             shutil.copy2(node, stage / 'node/bin/node')
             if hashed(stage / 'node/bin/node') != hashed(Path(node)):
                 raise ValueError('node_interpreter_copy_changed')
-            if any(_tree_identity(stage / name) != identity
+            if any(_tree_identity(stage / name, logical_git_index=name == 'candidate') != identity
                    for name, identity in expected.items()):
                 raise ValueError('node_local_Host_startup_copy_changed')
             _verify_host(stage / 'host', config['host_pin'])
@@ -691,7 +702,8 @@ def materialize_actor_host(reference: dict[str, str], scratch: Path,
             stage.rename(target)
     copied = json.loads((target / 'copy-receipt.json').read_bytes())
     if copied['binding'] != binding or any(
-            _tree_identity(target / name) != copied['directories'][name] for name in roots):
+            _tree_identity(target / name, logical_git_index=name == 'candidate')
+            != copied['directories'][name] for name in roots):
         raise ValueError('node_local_Host_startup_cache_changed')
     if hashed(target / 'node/bin/node') != copied['node_sha256']:
         raise ValueError('node_interpreter_cache_changed')
