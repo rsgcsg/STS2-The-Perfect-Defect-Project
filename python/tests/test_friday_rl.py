@@ -1256,12 +1256,20 @@ def test_held_gpu_launch_offers_one_step_and_never_sbatch(
         rl.prepare(execution, config, actors)
         return SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(rl.subprocess, 'Popen', process)
-    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': '80'})
+    submitted_options = []
+    def submit(*args, **options):
+        submitted_options.append(options)
+        return {'job_id': '80'}
+    monkeypatch.setattr(rl, 'submit', submit)
     result = rl.launch(script, config, tmp_path/'learner', actors, root,
-                       gpu='a100', held_job_id='79')
+                       gpu='a100', held_job_id='79', actor_node_types=['fc430'],
+                       actor_exclude_nodes=['smp-9-3'])
     assert result['GPU_job_id'] == '79.17'
     assert sum(c[0] == 'srun' for c in commands) == 1
     assert all(c[0] != 'sbatch' for c in commands)
+
+    assert submitted_options == [{'memory_gb': 4, 'node_types': ['fc430'],
+                                  'exclude_nodes': ['smp-9-3']}]
 
 
 def test_held_gpu_active_step_rejected_without_submission(rl, tmp_path, monkeypatch):

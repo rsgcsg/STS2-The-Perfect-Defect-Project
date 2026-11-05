@@ -1092,7 +1092,7 @@ class SegmentWatcher(Watcher):
         from stpd.p1.local_inference import SegmentConnection
 
         if not hasattr(self, 'event_channels'):
-            self.event_channels = {}
+            self.event_channels: dict[str, SegmentConnection] = {}
         rows, cursors = [], []
         for attempt in self.state['attempts']:
             attachment = self._socket_attachment(attempt)
@@ -1101,9 +1101,30 @@ class SegmentWatcher(Watcher):
             generation = attachment['training_generation']
             channel = self.event_channels.setdefault(generation, SegmentConnection(attachment))
             sequence = attempt.get('event_sequence', 0)
+            final_path = Path(attempt['root']) / 'learner/control-wal-final.json'
+            def terminal_snapshot(sequence, final_path=final_path,
+                                  generation=generation, attempt=attempt):
+                final = json.loads(final_path.read_bytes())
+                if (final.get('run') != self.config['run']
+                        or final.get('training_generation') != generation
+                        or not final.get('events')
+                        or final['events'][-1]['request']['kind'] not in {'finished', 'failed'}):
+                    raise ValueError('terminal_lifecycle_snapshot_binding_changed')
+                attempt['terminal_lifecycle_sha256'] = hashed(final_path)
+                return {**final, 'events': [e for e in final['events']
+                                          if e['sequence'] > sequence]}
             try:
                 for _chunk in range(16):
-                    result = channel.request('events_since', sequence=sequence)
+                    final = final_path.exists()
+                    if final:
+                        result = terminal_snapshot(sequence)
+                    else:
+                        try:
+                            result = channel.request('events_since', sequence=sequence)
+                        except (OSError, EOFError, TimeoutError):
+                            if not final_path.exists():
+                                raise
+                            result, final = terminal_snapshot(sequence), True
                     if (result.get('run') != self.config['run']
                             or result.get('training_generation') != generation):
                         raise ValueError('lifecycle_cursor_owner_changed')
@@ -1123,7 +1144,10 @@ class SegmentWatcher(Watcher):
                         key = f"socket:{attachment['pool_id']}:{fact['sequence']:012d}:{fact['hash']}"
                         rows.append((key, event))
                         sequence = fact['sequence']
-                    if len(events) < 256:
+                    if final:
+                        attempt['socket_events_closed'] = True
+                        channel.close()
+                    if final or len(events) < 256:
                         break
                 cursors.append((attempt, sequence))
             except (OSError, EOFError, ValueError, TimeoutError) as error:
@@ -1451,7 +1475,9 @@ class SegmentWatcher(Watcher):
                 minutes=self.config.get('minutes', 2880), cpus=self.config.get('cpus', 32),
                 memory_gb=self.config.get('memory_gb', 64),
                 ready_seconds=self.config.get('ready_seconds', 3600), retain_capability=True,
-                held_job_id=self.config.get('held_job_id'))
+                held_job_id=self.config.get('held_job_id'),
+                actor_node_types=self.config.get('actor_node_types'),
+                actor_exclude_nodes=self.config.get('exclude_nodes'))
             attempt['job_id'] = receipt['GPU_job_id']
             attempt['actor_plans'] = [str(root / 'actors/plan.json')]
         self.capability_lost = False

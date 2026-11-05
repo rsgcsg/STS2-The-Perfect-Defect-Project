@@ -9,13 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
-from test_rl41_w1 import assert_tree, configuration, deliver
-
 from spireagent.json_boundary import BoundaryError
 from spireagent.rl_exchange import Exchange
 from spireagent.storage.store import copy_artifact
 from stpd.rl.checkpoint_state import decode_state
 from stpd.rl.segment_learner import SegmentLearner
+from test_rl41_w1 import assert_tree, configuration, deliver
 
 
 def cleanup(learner):
@@ -56,7 +55,6 @@ def test_first_use_bias_pairs_rows_and_pools_histograms_without_pooling_quantile
     from types import SimpleNamespace
 
     import torch
-
     from stpd.rl.segment_learner import _first_use_policy_bias
 
     batch = SimpleNamespace(policy_mask=torch.tensor([True, False, True, True, True]),
@@ -263,11 +261,10 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
 def test_reward_HP_backfills_consumed_rows_across_episode_close(tmp_path, monkeypatch, closure):
     import copy
 
-    from test_rl41_w1 import segment
-
     from stpd.p1.data import digest, json_bytes
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.p1.local_mu import LocalMuScorer
+    from test_rl41_w1 import segment
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(
@@ -429,9 +426,8 @@ def test_fast_episode_backpressure_keeps_first_dataset_reachable(tmp_path, monke
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    from test_rl41_w1 import segment
-
     from spireagent.rl_exchange import control_input
+    from test_rl41_w1 import segment
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(config, segments=dataclasses.replace(config.segments,
@@ -792,3 +788,54 @@ def test_explicit_completed_window_link_preserves_learning_state_with_new_budget
     with pytest.raises(ValueError, match='cannot_be_reset'):
         SegmentLearner(dataclasses.replace(request, operating_budget_parent={**parent,
             'checkpoint_artifact_id': '0'*64}), tmp_path/'bad-window', io)
+
+
+@pytest.mark.parametrize('failure_phase', [None, 'run', 'close'])
+def test_binary_terminal_event_is_durable_before_wal_closes(tmp_path, monkeypatch, failure_phase):
+    """Real binary owner/WAL: both terminal paths append before close fences writes."""
+    from spireagent.rl_local_wal import LocalControlWAL
+    from stpd.p1.local_inference import AUTH_ENV
+
+    config, io = configuration(tmp_path, monkeypatch)
+    monkeypatch.setenv(AUTH_ENV, 'ab' * 32)
+    io = dataclasses.replace(io, dataplane={
+        'lanes': 2, 'root': str(tmp_path / 'live'), 'source_slots': 8,
+        'prepare_slots': 2, 'source_bytes': 16 * 1024**2,
+        'preparation_workers': 1, 'assembly_workers': 1,
+    })
+    owner = SegmentLearner(config, tmp_path / 'owner', io)
+    journal = owner.live_work / 'control.sqlite'
+    failed = failure_phase is not None
+    if failure_phase == 'close':
+        original_close = owner.pool.close
+        def injected_close_failure():
+            original_close()
+            raise RuntimeError('bounded original run failure')
+        monkeypatch.setattr(owner.pool, 'close', injected_close_failure)
+    if failure_phase == 'run':
+        def injected_failure(*, wait=False):
+            raise RuntimeError('bounded original run failure')
+        monkeypatch.setattr(owner, '_collect_labels', injected_failure)
+    if failed:
+        with pytest.raises(RuntimeError, match='bounded original run failure'):
+            owner.run(initialize_only=True)
+    else:
+        owner.run(initialize_only=True)
+    assert owner.wal.closed
+    import json
+    final_snapshot = json.loads((owner.work / 'control-wal-final.json').read_bytes())
+    assert final_snapshot['run'] == config.run
+    assert final_snapshot['training_generation'] == owner.generation
+    reader = LocalControlWAL(journal, run=config.run, generation=owner.generation)
+    try:
+        events = [row['request'] for row in reader.records_since(0) if row['kind'] == 'event']
+    finally:
+        reader.close()
+    expected = 'failed' if failed else 'finished'
+    assert final_snapshot['events'][-1]['request'] == events[-1]
+    assert events[-1]['kind'] == expected
+    assert sum(event['kind'] == expected for event in events) == 1
+    if failed:
+        assert events[-1]['error_type'] == 'RuntimeError'
+        assert not any(event['kind'] == 'finished' for event in events)
+    assert not (owner.work / 'failed-event-unpublished.json').exists()

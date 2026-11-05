@@ -323,3 +323,50 @@ def test_learner_only_restore_preserves_unknown_denominator_and_charged_time(own
     assert 130 <= owner.state['training_seconds'] < 140
     assert owner.state['health']['completed_for_stop'] == 1
     assert owner.state['health']['known_unknown'] == 1
+
+
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_final_wal_snapshot_closes_event_cursor_without_reconnecting(
+        owner, monkeypatch, corrupt):
+    import json
+
+    from spireagent.rl_local_wal import LocalControlWAL
+    from stpd.p1.export import adapter_identity
+    from stpd.p1.local_inference import SEGMENT_SCHEMA, SegmentConnection
+
+    current = attempt(owner)
+    owner.config['dataplane'] = {}
+    monkeypatch.setattr(owner, '_socket_attachment', lambda _attempt: {
+        'run': owner.config['run'], 'training_generation': 'g-one', 'pool_id': 'p-one',
+        'schema': SEGMENT_SCHEMA, 'adapter': adapter_identity(),
+    })
+    def no_network(*args, **kwargs):
+        raise AssertionError('closed listener must not be reconnected')
+    monkeypatch.setattr(SegmentConnection, 'request', no_network)
+    journal = LocalControlWAL(owner.work / 'terminal.sqlite',
+                              run=owner.config['run'], generation='g-one')
+    try:
+        for kind in ('training_window', 'finished'):
+            record = event(owner, kind, training_generation='g-one', active_seconds=5, updates=1)
+            journal.append('event:' + record['record_sha256'], record, {}, kind='event')
+        facts = journal.events_since(0)
+    finally:
+        journal.close()
+    if corrupt:
+        facts[-1]['hash'] = '0' * 64
+    path = owner.work / 'attempt/learner/control-wal-final.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'run': owner.config['run'],
+        'training_generation': 'g-one', 'events': facts}))
+    owner.collect_events()
+    if corrupt:
+        assert owner.state['stop'] == 'dataplane_events_unavailable'
+        assert not current.get('finished')
+        assert not current.get('socket_events_closed')
+    else:
+        assert current['finished'] and current['window_closed']
+        assert current['socket_events_closed'] and current['event_sequence'] == facts[-1]['sequence']
+        assert owner.state['stop'] is None
+        assert len(owner.seen_events) == 2
+        owner.collect_events()
+        assert len(owner.seen_events) == 2
