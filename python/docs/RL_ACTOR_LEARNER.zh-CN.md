@@ -229,5 +229,11 @@ submit 校验完整计划；每个已分配 actor 只校验自己的固定配置
 源、私有 staging、命中副本均走原 Runtime 包验证，不放宽协商或 Evidence 身份检查的超时。
 缓存按包内容 SHA 隔离并单写入发布，actor 使用私有派生配置；原计划/配置保持，snapshot 留原/派生 hash 收据。
 副本不随单 actor 退出删除；原共享安装仍是长期恢复入口，节点外读回须提供同 pin 的可信代码位置。
+同一 worker 随后物化完整 Host 包、candidate（含自包含 `.git` 和实际 lib 字节）、游戏目录、
+Node 可执行文件与 .NET SDK；按原路径/Host pin/游戏 assembly pin 隔离，一次 staging 后原子发布。
+原/副本相对路径、字节和模式一致；命中时在发布锁外核本地树及原 Host pin，避免串行大 hash。
+子进程使用本地 Host/candidate/game/Node/.NET 和独立 CLI 缓存；原 Actor 构造与每局 Host
+candidate 审计仍照常执行，不缓存审计结论。完整原/派生配置、闭包大小/hash 与耗时归原 snapshot。
+Python 源/环境、模型、Hot/Archive、rendezvous 和输出仍走原 owner；可变控制事实不冻结进节点副本。
 共享 inference 每次读取一次，避免 N 路各重读 N 份完整词表配置，造成平方级启动开销。
 11-05 I1 原约594核只允许约148路的旧限制已被本轮500路授权替代；旧128/256未offer的事实不改。
