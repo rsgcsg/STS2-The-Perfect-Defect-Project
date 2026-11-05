@@ -238,9 +238,9 @@ def _bindings(segment: dict[str, Any], source: bp.PreparedSource) -> list[dict[s
             "record_sha256": step["behavior"]["compiled_input"]["record_sha256"],
             "successor_sha256": _sha(json_bytes(step["successor"])),
             "witness_sha256": _sha(json_bytes(witness_steps[i])),
-            "mu": segment["mu"],
-            "compiler_identity": segment["compiler_identity"],
-            "original_commit": segment["original_commit"],
+            # mu, compiler_identity and original_commit are segment-wide and
+            # bound once in the witness; per-row copies made the header ~95%
+            # duplicate bytes (64 x ~110 KB original_commit).
         }
         for i, (step, ref, frame) in enumerate(
             zip(segment["steps"], source.row_refs, source.frames, strict=True)
@@ -458,9 +458,13 @@ def validate_source(
         if (
             source.row_refs[i] != ref
             or binding["source"] != ref
-            or binding["mu"] != witness["mu"]
-            or binding["compiler_identity"] != source.compiler_identity
-            or binding["original_commit"] != witness["original_commit"]
+            # Older packets repeat the segment-wide values per row; a present
+            # copy must still equal the single witness/source binding.
+            or binding.get("mu", witness["mu"]) != witness["mu"]
+            or binding.get("compiler_identity", source.compiler_identity)
+            != source.compiler_identity
+            or binding.get("original_commit", witness["original_commit"])
+            != witness["original_commit"]
             or binding["successor_sha256"] != witness["steps"][i]["successor_sha256"]
             or binding["witness_sha256"] != _sha(json_bytes(witness["steps"][i]))
             or type(source.floors[i]) is not int

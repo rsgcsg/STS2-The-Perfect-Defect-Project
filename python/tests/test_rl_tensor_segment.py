@@ -19,6 +19,7 @@ from stpd.rl import batch_preparation as bp
 from stpd.rl.tensor_segment import (
     TensorSegmentEncoder,
     decode_packet,
+    validate_source,
     packet_header,
     packet_header_fields,
 )
@@ -171,7 +172,7 @@ def test_late_aux_uses_original_row_and_mu_and_rejects_new_generation(model, tmp
     aux, header = decode_packet(packet.packet, envelope=packet.envelope, compiler=enc.compiler)
     assert packet.envelope["payload_kind"] == "aux" and packet.envelope["rows"] == 1
     assert aux.frames[0] is None and aux.frames[2].choices == decoded.frames[2].choices
-    assert header["bindings"][2]["mu"] == value["mu"]
+    assert header["witness"]["mu"] == value["mu"] and "mu" not in header["bindings"][2]
     bad = copy.deepcopy(labels)
     bad["training_generation"] = "next"
     with pytest.raises(ValueError, match="late_label_generation"):
@@ -201,3 +202,17 @@ def test_worker_header_fields_match_in_process_header_and_reject_size_change(mod
         "envelope": header["envelope"]}
     with pytest.raises(ValueError, match="size_changed"):
         packet_header_fields(str(path), len(encoded.packet) + 1, ("envelope",))
+
+
+def test_older_per_row_segment_values_must_still_equal_the_witness(model, tmp_path):
+    encoded = encoder(model, tmp_path).encode(segment(model))
+    source, header = decode_packet(encoded.packet)
+    older = copy.deepcopy(header)
+    for row in older["bindings"]:
+        row.update(mu=older["witness"]["mu"], compiler_identity=source.compiler_identity,
+                   original_commit=older["witness"]["original_commit"])
+    validate_source(source, older)
+    older["bindings"][0]["original_commit"] = dict(
+        older["witness"]["original_commit"], at="changed")
+    with pytest.raises(ValueError, match="row_binding_changed"):
+        validate_source(source, older)
