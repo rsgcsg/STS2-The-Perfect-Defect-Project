@@ -493,3 +493,46 @@ def test_process_pool_callbacks_never_wait_for_preparer_lock(model, tmp_path):
         assert all(arena.users == 0 for arena in preparer.arenas)
     finally:
         preparer.shutdown()
+
+
+def test_source_copy_runs_outside_preparer_lock_and_barrier_waits_for_it(model, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    class SlowProvider(BytesProvider):
+        def __init__(self):
+            super().__init__()
+            self.entered, self.go = threading.Event(), threading.Event()
+
+        @contextmanager
+        def borrow(self, ref):
+            with super().borrow(ref) as raw:
+                if ref.slot == "slow":
+                    self.entered.set()
+                    assert self.go.wait(10)
+                yield raw
+
+    provider = SlowProvider()
+    enc = encoder(model, tmp_path / "spool")
+    values = [segment(model, name=f"actor/{i}", run_id=f"episode-{i}") for i in range(2)]
+    packets = [enc.encode(v) for v in values]
+    slow, fast = (provider.add(p, s) for p, s in zip(packets, ("slow", "fast"), strict=True))
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            copying = pool.submit(preparer.prefetch, slow, packets[0].envelope)
+            assert provider.entered.wait(10)
+            # Another source copies and the preparer lock is free meanwhile.
+            preparer.prefetch(fast, packets[1].envelope)
+            assert fast in preparer.sources and slow in preparer.copying
+            fencing = pool.submit(preparer.barrier, generation="next")
+            with pytest.raises(TimeoutError):
+                fencing.result(timeout=.3)
+            provider.go.set()
+            with pytest.raises(RuntimeError, match="fenced_or_closed"):
+                copying.result(timeout=10)
+            fencing.result(timeout=30)
+        assert not preparer.copying and not preparer.sources and not preparer.arenas
+    finally:
+        provider.go.set()
+        preparer.shutdown()

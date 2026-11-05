@@ -522,6 +522,8 @@ class BinaryBatchPreparer:
         self.next_arena = 0
         self.sources: OrderedDict[BinaryRef, tuple[int, _Descriptor]] = OrderedDict()
         self.source_jobs: dict[BinaryRef, Future] = {}
+        # Sources whose arena bytes are being hashed/copied outside the lock.
+        self.copying: set[BinaryRef] = set()
         self.pending: set[Future] = set()
         self.preparing: set[Future] = set()
         self.generation: str | None = None
@@ -617,6 +619,14 @@ class BinaryBatchPreparer:
     def _prefetch(
         self, ref: BinaryRef, envelope: dict[str, Any] | None, body: bytes | None = None
     ) -> None:
+        copy = self._reserve_copy(ref, envelope)
+        if copy is not None:
+            self._finish_copy(ref, *copy, self._copy_source(ref, *copy, envelope, body))
+
+    def _reserve_copy(
+        self, ref: BinaryRef, envelope: dict[str, Any] | None
+    ) -> tuple[int, int] | None:
+        """Under the condition: validate and reserve arena bytes; None if cached."""
         if (
             not isinstance(ref, BinaryRef)
             or ref.format != TENSOR_SEGMENT_FORMAT
@@ -635,9 +645,11 @@ class BinaryBatchPreparer:
             if envelope is not None and previous != envelope:
                 raise ValueError("binary_same_reference_changed_envelope")
             self.sources.move_to_end(ref)
-            return
+            return None
         if self.closed or self.fenced:
             raise RuntimeError("binary_preparer_fenced_or_closed")
+        if ref in self.copying:
+            raise ValueError("binary_source_slots_busy")
         order = sorted(
             range(len(self.arenas)), key=lambda i: (i - self.next_arena) % self.slot_count
         )
@@ -669,10 +681,33 @@ class BinaryBatchPreparer:
             arena.mapping[:8] = arena.epoch.to_bytes(8, "little")
         arena = self.arenas[arena_index]
         self.next_arena = (arena_index + 1) % self.slot_count
-        # Provider owns the borrow until the single complete byte copy finishes.
+        # The arena cannot be reset or unmapped while it has a user; the
+        # reserved byte range is private to this copy until it is published.
+        offset = arena.cursor
+        arena.cursor += ref.size
+        arena.users += 1
+        self.copying.add(ref)
+        return arena_index, offset
+
+    def _copy_source(
+        self, ref: BinaryRef, arena_index: int, offset: int,
+        envelope: dict[str, Any] | None, body: bytes | None,
+    ) -> dict[str, Any] | BaseException:
+        """Hash/copy one immutable packet into its reserved range; may run unlocked."""
         from contextlib import nullcontext
 
-        context = self.provider.borrow(ref) if body is None else nullcontext(memoryview(body))
+        arena = self.arenas[arena_index]
+        try:
+            return self._copy_bytes(ref, arena, offset, envelope,
+                                    self.provider.borrow(ref) if body is None
+                                    else nullcontext(memoryview(body)))
+        except BaseException as error:
+            return error
+
+    @staticmethod
+    def _copy_bytes(ref: BinaryRef, arena: _Arena, offset: int,
+                    envelope: dict[str, Any] | None, context: Any) -> dict[str, Any]:
+        # Provider owns the borrow until the single complete byte copy finishes.
         with context as raw:
             if len(raw) != ref.size or hashlib.sha256(raw).hexdigest() != ref.sha256:
                 raise ValueError("binary_provider_integrity_changed")
@@ -683,17 +718,32 @@ class BinaryBatchPreparer:
                     packet_header(raw)["envelope"], packet_size=ref.size, packet_sha256=ref.sha256
                 )
             )
-            generation = bound_envelope["training_generation"]
+            arena.mapping[offset : offset + ref.size] = raw
+        return copy.deepcopy(bound_envelope)
+
+    def _finish_copy(
+        self, ref: BinaryRef, arena_index: int, offset: int,
+        copied: dict[str, Any] | BaseException,
+    ) -> None:
+        """Under the condition: publish the copied source and submit its decode."""
+        arena = self.arenas[arena_index]
+        self.copying.discard(ref)
+        self.condition.notify_all()
+        try:
+            if isinstance(copied, BaseException):
+                raise copied
+            generation = copied["training_generation"]
             if self.generation is None:
                 self.generation = generation
             if generation != self.generation:
                 raise ValueError("binary_prefetch_generation_changed")
-            arena.mapping[arena.cursor : arena.cursor + ref.size] = raw
-        envelope = copy.deepcopy(bound_envelope)
-        descriptor = _Descriptor(arena.name, arena.cursor, ref.size, arena.epoch, dict(envelope))
-        arena.cursor += ref.size
+            if self.closed or self.fenced:
+                raise RuntimeError("binary_preparer_fenced_or_closed")
+        except BaseException:
+            arena.users -= 1
+            raise
+        descriptor = _Descriptor(arena.name, offset, ref.size, arena.epoch, dict(copied))
         self.sources[ref] = arena_index, descriptor
-        arena.users += 1
         try:
             job = self.pool.submit(_timed, _decode_source, descriptor)
         except BaseException:
@@ -721,15 +771,27 @@ class BinaryBatchPreparer:
     def prefetch(self, ref: BinaryRef, envelope: dict[str, Any], *,
                  body: bytes | None = None, wait: bool = True) -> None:
         deadline = time.monotonic() + self.source_wait_seconds
+        # A caller already inside the condition (submit) keeps the locked copy.
+        nested = self.condition._is_owned()  # type: ignore[attr-defined]
         with self.condition:
             while True:
                 try:
-                    self._prefetch(ref, envelope, body)
-                    return
+                    if nested:
+                        self._prefetch(ref, envelope, body)
+                        return
+                    reserved = self._reserve_copy(ref, envelope)
+                    break
                 except ValueError as error:
                     if not wait or str(error) != "binary_source_slots_busy":
                         raise
                     self._wait_for_source(deadline)
+        if reserved is None:
+            return
+        # SHA-256 and the arena copy of a 10-30 MB packet run without the
+        # preparer condition, so sources copy in parallel with submit/labels.
+        copied = self._copy_source(ref, *reserved, envelope, body)
+        with self.condition:
+            self._finish_copy(ref, *reserved, copied)
 
     def _reserve(
         self, refs: tuple[BinaryRef, ...],
@@ -952,6 +1014,9 @@ class BinaryBatchPreparer:
         with self.condition:
             self.fenced = True
             self.condition.notify_all()
+            # Unlocked copies still write into reserved arena ranges.
+            while self.copying:
+                self.condition.wait()
             self.pinned.fence()
             pending = tuple(self.pending)
         errors = []
