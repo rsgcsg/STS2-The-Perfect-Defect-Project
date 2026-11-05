@@ -35,6 +35,16 @@ NVML采样及这些区间不能拆出准确GPU训练/推理/重叠/空闲比例�
 上限会改变后续成员，不能把同512引用重复热测倍率作全链收益。配置有旧字段不代表新
 prepared_update实际消费，旧能力要核到本次路径/开关。
 
+prepared 路径已有 current+next：下一批准备与当前批 SGD 重叠，不代表多批准备彼此并行。
+`request_wall_seconds` 是请求返回墙钟；`sources_ready_wall_seconds`、
+`auxiliary_ready_wait_seconds`、`assemble_roundtrip_seconds`、`batch_unpack_seconds`
+定位收集和 IPC。`assemble_queue_seconds`、`assemble_unpack_seconds`、
+`assemble_cpu_seconds` 是 roundtrip 内的 worker 区间。`source_queue_seconds`、
+`source_pack_seconds`、`hot_read_wall_seconds`、`hot_json_seconds`、`hot_validate_seconds`
+为各 source 累加；pack 不含进程间 pickle/传输，read 含 Hot owner/锁和完整性读回。
+这些桶不能相加成墙钟。正常 Exchange 已验证原文后可复用其 hash 进入 FrameCompiler，
+仍查 wire/frame/tensor/动作顺序；直接 prepare_source 和自定义 reader 继续验证原文。
+
 系统速度是冻结工作量的完成墙钟；学习效果是相同预算下的固定评估差值。
 两者分别报告。更快、吞吐更高、loss更低，都不自动等于策略变强。
 测速工作量可固定，墙钟仍有机器调度、缓存和网络波动，须报告重复次数和范围。

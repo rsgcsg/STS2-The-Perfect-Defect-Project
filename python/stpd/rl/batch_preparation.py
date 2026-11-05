@@ -123,13 +123,15 @@ def _initialize(
 def _read_source(
     payload: HotPayloadRef,
     member: Any,
+    submitted_at: float | None = None,
 ) -> Any:
     began = time.perf_counter()
     reader = _worker["reader"]
+    read_costs: dict[str, float] = {}
     if reader is None:
         # W3 owns this transport/typed verifier. No artifact reader fallback is
         # permitted on the new live path.
-        segment = _worker["exchange"].read_hot_segment(payload)
+        segment = _worker["exchange"].read_hot_segment(payload, costs=read_costs)
     else:
         segment = reader(_worker["exchange"], payload, scratch=_worker["scratch"])
     read_seconds = time.perf_counter() - began
@@ -141,15 +143,23 @@ def _read_source(
         or segment["mu"]["snapshot_sha256"] != member.mu_snapshot_sha256
     ):
         raise ValueError("prepared_source_membership_or_mu_changed")
-    source = prepare_source(
+    source = _prepare_source(
         segment,
         _worker["compiler"],
         _worker["expected_spec"],
         excluded_seeds=_worker["excluded_seeds"],
         gae_lambda=_worker["gae_lambda"],
+        public_bindings_verified=reader is None,
     )
-    source = dataclasses.replace(source, seconds={**source.seconds, "read_verify": read_seconds})
-    return pack_transport(contiguous_slabs(source)[0])
+    source = dataclasses.replace(source, seconds={**source.seconds, **read_costs,
+        "read_verify": read_seconds,
+        "source_queue_seconds": began - submitted_at if submitted_at is not None else 0})
+    packing = time.perf_counter()
+    packed = pack_transport(contiguous_slabs(source)[0])
+    # This metadata is part of the source, so transport itself remains unchanged.
+    tree, slabs = packed
+    return dataclasses.replace(tree, seconds={**source.seconds,
+        "source_pack_seconds": time.perf_counter() - packing}), slabs
 
 
 def prepare_source(
@@ -161,6 +171,14 @@ def prepare_source(
     gae_lambda: float = 0.99,
 ) -> PreparedSource:
     """One verified source read, one decoder call per current row; no boundary frame decode."""
+    return _prepare_source(segment, compiler, expected_spec, excluded_seeds=excluded_seeds,
+                           gae_lambda=gae_lambda, public_bindings_verified=False)
+
+
+def _prepare_source(
+    segment: dict[str, Any], compiler: FrameCompiler, expected_spec: dict[str, Any], *,
+    excluded_seeds: frozenset[str], gae_lambda: float, public_bindings_verified: bool,
+) -> PreparedSource:
     began = time.perf_counter()
     validate_training_source(segment, excluded_seeds)
     # FrameCompiler checks the frozen producer against this vocabulary/InputSpec.
@@ -176,15 +194,17 @@ def prepare_source(
         value = step["input"]
         if value["input_spec"] != expected_spec:
             raise ValueError("segment_model_input_spec_changed")
-        frame = compiler.decode(
-            step["behavior"]["compiled_input"],
-            observation=value["observation"],
-            expected_identity=expected_identity,
-        )
+        wire = step["behavior"]["compiled_input"]
+        # Only the normal Exchange read has already bound these hashes to the
+        # original public bytes. Direct/alternate readers still hash the bytes.
+        frame = compiler.decode(wire, expected_identity=expected_identity, **(
+            {"observation_sha256": wire["observation_sha256"],
+             "catalog_sha256": wire["catalog_sha256"]} if public_bindings_verified else
+            {"observation": value["observation"]}))
         if not frame.choices:
             raise ValueError("PPO_row_requires_complete_catalog")
         catalog = [choice["choice_id"] for choice in value["catalog"]]
-        if len(set(catalog)) != len(catalog) or set(catalog) != set(frame.choices):
+        if len(set(catalog)) != len(catalog) or tuple(catalog) != frame.choices:
             raise ValueError("prepared_catalog_membership_changed")
         frames.append(frame)
         floors.append(step["behavior"]["floor"])
@@ -594,7 +614,9 @@ def assemble(
             "metadata": metadata_ready - partitions_ready,
             **{
                 key: sum(source.seconds.get(key, 0) for source in sources)
-                for key in ("read_verify", "decode_bind", "lambda_targets")
+                for key in ("read_verify", "decode_bind", "lambda_targets",
+                            "source_queue_seconds", "source_pack_seconds",
+                            "hot_read_wall_seconds", "hot_json_seconds", "hot_validate_seconds")
             },
         },
         tuple(sorted({source.pid for source in sources} | {os.getpid()})),
@@ -731,7 +753,8 @@ class BatchPreparer:
                 raise ValueError("auxiliary_snapshot_membership_changed")
             selected_inputs[key] = item
         futures = [
-            self.pool.submit(_read_source, member.payload, member) for member in request.members
+            self.pool.submit(_read_source, member.payload, member, time.perf_counter())
+            for member in request.members
         ]
         inputs = tuple(selected_inputs.values())
         auxiliary_futures = [
@@ -744,14 +767,21 @@ class BatchPreparer:
 
         def collect() -> PreparedBatch:
             sources = tuple(future.result() for future in futures)
+            sources_at = time.perf_counter()
             auxiliary = tuple(future.result() for future in auxiliary_futures)
+            assembly_at = time.perf_counter()
             packed = self.pool.submit(
-                _assemble_transport, request, sources, self.options, auxiliary
+                _assemble_transport, request, sources, self.options, auxiliary, assembly_at
             ).result()
+            returned_at = time.perf_counter()
             batch = cast(PreparedBatch, unpack_transport(packed))
             return dataclasses.replace(
                 batch,
-                timings={**batch.timings, "request_wall_seconds": time.perf_counter() - started},
+                timings={**batch.timings, "request_wall_seconds": time.perf_counter() - started,
+                    "sources_ready_wall_seconds": sources_at - started,
+                    "auxiliary_ready_wait_seconds": assembly_at - sources_at,
+                    "assemble_roundtrip_seconds": returned_at - assembly_at,
+                    "batch_unpack_seconds": time.perf_counter() - returned_at},
             )
 
         self.pending = self.coordinator.submit(collect)
@@ -874,13 +904,17 @@ def _assemble_transport(
     packed: tuple[Any, ...],
     options: dict[str, Any],
     auxiliary: tuple[Any, ...] = (),
+    submitted_at: float | None = None,
 ) -> Any:
+    began = time.perf_counter()
     aux_frames = tuple(
         frame for result, _seconds in auxiliary for frame in unpack_transport(result)
     )
+    sources = tuple(unpack_transport(source) for source in packed)
+    unpacked_at = time.perf_counter()
     batch = assemble(
         request,
-        tuple(unpack_transport(source) for source in packed),
+        sources,
         auxiliary_frames=aux_frames,
         **options,
     )
@@ -890,6 +924,9 @@ def _assemble_transport(
             timings={
                 **batch.timings,
                 "auxiliary_decode_seconds": sum(seconds for _result, seconds in auxiliary),
+                "assemble_queue_seconds": began - submitted_at if submitted_at is not None else 0,
+                "assemble_unpack_seconds": unpacked_at - began,
+                "assemble_cpu_seconds": time.perf_counter() - unpacked_at,
             },
         )
     )
