@@ -416,17 +416,23 @@ def run(path: Path) -> dict[str, Any]:
     error_type = error_code = None
     summary = None
     materialization = None
+    host_materialization = None
     try:
         actor_configuration = Path(ref['path'])
+        actor_environment = os.environ.copy()
         if plan.get('trajectory_encoding') == 'short-segment-1':
             actor_configuration, materialization = materialize_actor_runtime(
                 ref, scratch, Path('/tmp') / f'spireagent-friday-runtime-{os.getuid()}')
+            actor_configuration, host_materialization, environment = materialize_actor_host(
+                {'path': str(actor_configuration), 'sha256': hashed(actor_configuration)},
+                scratch, Path('/tmp') / f'spireagent-friday-host-{os.getuid()}')
+            actor_environment.update(environment)
         with ((scratch / 'actor.out').open('wb') as stdout,
               (scratch / 'actor.err').open('wb') as stderr):
             actor_process = subprocess.Popen(
                 [sys.executable, '-m', 'spireagent.workbench.rl_actor',
                  '--config', str(actor_configuration), '--work', str(work)],
-                stdout=stdout, stderr=stderr)
+                stdout=stdout, stderr=stderr, env=actor_environment)
             code = actor_process.wait()
             evidence_only = True
         if (work / 'actor-summary.json').is_file():
@@ -457,6 +463,7 @@ def run(path: Path) -> dict[str, Any]:
             'actor_config_sha256': ref['sha256'], 'retry_unknown': False,
             'cross_actor_immediate_unknown_stop': False,
             'runtime_materialization': materialization,
+            'host_materialization': host_materialization,
             'forwarded_actor_signals': forwarded_actor_signals}
         save(scratch / 'result.json', result)
         try:
@@ -608,6 +615,109 @@ class ActorAllocationMonitor:
         self.thread.join(timeout=20)
         if self.thread.is_alive():
             raise RuntimeError('actor_accounting_observer_not_released')
+
+
+def _tree_identity(directory: Path) -> dict[str, Any]:
+    """Same relative bytes/modes, including a candidate's admitted lib symlink target."""
+    digest, count, size = hashlib.sha256(), 0, 0
+    files = sorted(Path(root) / name for root, _dirs, names in os.walk(
+        directory, followlinks=True) for name in names if (Path(root) / name).is_file())
+    for path in files:
+        relative = path.relative_to(directory).as_posix()
+        digest.update(relative.encode() + b'\0')
+        digest.update(str(path.stat().st_mode & 0o777).encode() + b'\0')
+        with path.open('rb') as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(block)
+                size += len(block)
+        digest.update(b'\0')
+        count += 1
+    return {'sha256': digest.hexdigest(), 'files': count, 'bytes': size}
+
+
+def materialize_actor_host(reference: dict[str, str], scratch: Path,
+                           cache_root: Path) -> tuple[Path, dict[str, Any], dict[str, str]]:
+    """Materialize the existing Host audit/startup closure, never a cached audit verdict.
+
+    Every normal Actor constructor and World startup still performs the original
+    Host candidate audit. Mutable Exchange/attachment/model/output paths stay with
+    their existing owners; this cache contains only stopped release inputs.
+    """
+    from spireagent.instance_lock import instance_lock
+    from spireagent.workbench.local_environment import _verify_host
+
+    actor = read_pinned(reference)
+    execution = canonical_path(Path(actor['execution']))
+    config = json.loads(execution.read_bytes())
+    host = canonical_path(Path(config['host_directory']))
+    candidate = canonical_path(Path(config['candidate_directory']))
+    if (not (candidate / '.git').is_dir() or (candidate / '.git').is_symlink()
+            or (candidate / '.git/objects/info/alternates').exists()):
+        raise ValueError('node_local_candidate_requires_self_contained_git_directory')
+    node = shutil.which('node')
+    dotnet = os.environ.get('DOTNET') or shutil.which('dotnet')
+    game = os.environ.get('STS2_GAME_DIR')
+    if node is None or dotnet is None or game is None:
+        raise ValueError('original_Node_DOTNET_and_game_locations_required')
+    roots = {'host': host, 'candidate': candidate,
+             'game': canonical_path(Path(game).resolve()),
+             'dotnet': canonical_path(Path(dotnet).resolve().parent)}
+    node = str(canonical_path(Path(node).resolve()))
+    binding = {'directories': {key: str(value) for key, value in roots.items()},
+               'node': node, 'host_pin': config['host_pin'],
+               'game_assembly_sha256': config['game_assembly_sha256']}
+    key = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    root = private_root(private_root(cache_root) / key)
+    target = canonical_path(root / 'install', existing=False)
+    began = time.perf_counter()
+    with instance_lock(root / 'materialize.lock', blocking=True):
+        cached = target.exists()
+        if not cached:
+            _verify_host(host, config['host_pin'])
+            stage = Path(tempfile.mkdtemp(prefix='stage-', dir=root))
+            expected = {name: _tree_identity(source) for name, source in roots.items()}
+            for name, source in roots.items():
+                shutil.copytree(source, stage / name, symlinks=False)
+            (stage / 'node/bin').mkdir(parents=True)
+            shutil.copy2(node, stage / 'node/bin/node')
+            if hashed(stage / 'node/bin/node') != hashed(Path(node)):
+                raise ValueError('node_interpreter_copy_changed')
+            if any(_tree_identity(stage / name) != identity
+                   for name, identity in expected.items()):
+                raise ValueError('node_local_Host_startup_copy_changed')
+            _verify_host(stage / 'host', config['host_pin'])
+            save(stage / 'copy-receipt.json', {'binding': binding, 'directories': expected,
+                 'node_sha256': hashed(Path(node))})
+            stage.rename(target)
+    copied = json.loads((target / 'copy-receipt.json').read_bytes())
+    if copied['binding'] != binding or any(
+            _tree_identity(target / name) != copied['directories'][name] for name in roots):
+        raise ValueError('node_local_Host_startup_cache_changed')
+    if hashed(target / 'node/bin/node') != copied['node_sha256']:
+        raise ValueError('node_interpreter_cache_changed')
+    _verify_host(target / 'host', config['host_pin'])
+    derived_execution = scratch / 'host-execution.json'
+    save(derived_execution, {**config, 'host_directory': str(target / 'host'),
+                           'candidate_directory': str(target / 'candidate')})
+    derived_actor = scratch / 'host-actor.json'
+    save(derived_actor, {**actor, 'execution': str(derived_execution)})
+    environment = {'STS2_GAME_DIR': str(target / 'game'),
+        'DOTNET': str(target / 'dotnet/dotnet'), 'DOTNET_ROOT': str(target / 'dotnet'),
+        'DOTNET_CLI_HOME': str(private_root(root / 'dotnet-home')),
+        # A fresh CLI home otherwise prepends "Welcome to .NET" to the JSON
+        # fingerprint tool's stdout, failing the unchanged Host audit parser.
+        'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1', 'GIT_OPTIONAL_LOCKS': '0',
+        'PATH': str(target / 'node/bin') + os.pathsep + str(target / 'dotnet')
+                + os.pathsep + os.environ.get('PATH', '')}
+    receipt = {'source_actor_sha256': reference['sha256'],
+        'source_execution_sha256': hashed(execution),
+        'derived_actor_sha256': hashed(derived_actor),
+        'derived_execution_sha256': hashed(derived_execution),
+        'binding': binding, 'cache_hit': cached, 'copy': copied,
+        'seconds': time.perf_counter() - began, 'World_calls_during_materialization': 0,
+        'candidate_audit_cached': False}
+    save(scratch / 'host-materialization.json', receipt)
+    return derived_actor, receipt, environment
 
 
 def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:

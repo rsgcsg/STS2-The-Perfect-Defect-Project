@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,9 @@ class Archive:
         self.lock = threading.Lock()
         self.owned: set[str] = set()
         self.owned_done: set[str] = set()
+        # Immutable pending intent key/size metadata. Completion, payload bytes and
+        # readback remain uncached and are rechecked by _copy.
+        self.order_keys: OrderedDict[str, tuple[str, int | None]] = OrderedDict()
         self.verified_at: float | None = None
         self.last_error: dict[str, Any] | None = None
         self.capacity_snapshot: dict[str, Any] | None = None
@@ -164,25 +168,21 @@ class Archive:
             inodes = os.statvfs(self.root).f_favail if hasattr(os, "statvfs") else None
             free = shutil.disk_usage(self.root).free
             count = size = 0
+            completed = {Path(key).stem for key in self.queue.keys("completed/")}
             for key in self.queue.keys("pending/"):
                 if self.capacity_stop.is_set():
                     return
                 identity = Path(key).stem
-                if (self.queue.root / "completed" / f"{identity}.json").is_file():
+                if identity in completed:
                     continue
                 try:
-                    task = json.loads(self.queue.get(key))
+                    _key, estimated = self._intent_metadata(identity, measure=True)
                 except StoreError as error:
                     if error.code == "object_not_found":
                         continue  # Another archive worker completed this intent.
                     raise
-                raw = self.source.blobs.get(task["key"])
-                size += len(raw)
-                if task["key"].startswith("manifests/"):
-                    manifest = Manifest.from_bytes(raw)
-                    # Conservative CAS/temporary-copy allowance. Parents have
-                    # their own intents; don't repeatedly count warmup ancestry.
-                    size += 2 * sum(payload.size for payload in manifest.payloads)
+                assert estimated is not None
+                size += estimated
                 count += 1
             snapshot: dict[str, Any] = {"pending": count, "pending_bytes_estimate": size,
                         **self.filesystem_snapshot,
@@ -288,6 +288,35 @@ class Archive:
         failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
         self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
 
+    def _intent_metadata(self, identity: str, *, measure: bool = False) -> tuple[str, int | None]:
+        """Bounded immutable key/size facts, shared by ordering and capacity observation."""
+        with self.lock:
+            entry = self.order_keys.get(identity)
+            if entry is not None:
+                self.order_keys.move_to_end(identity)
+        if entry is None:
+            task = json.loads(self.queue.get(f"pending/{identity}.json"))
+            key = task["key"]
+            safe_key(key)
+            entry = key, None
+        key, size = entry
+        if measure and size is None:
+            raw = self.source.blobs.get(key)
+            size = len(raw)
+            if key.startswith("manifests/"):
+                manifest = Manifest.from_bytes(raw)
+                size += 2 * sum(payload.size for payload in manifest.payloads)
+        with self.lock:
+            # An overlapping observer may already have measured this immutable
+            # intent. A sorter must not replace its size with an unknown value.
+            current = self.order_keys.get(identity)
+            if size is None and current is not None:
+                size = current[1]
+            self.order_keys[identity] = key, size
+            if len(self.order_keys) > 16384:
+                self.order_keys.popitem(last=False)
+        return key, size
+
     def _ordered_pending(self, identities: list[str],
                          deadline: float | None) -> list[str] | None:
         ranked = []
@@ -295,12 +324,8 @@ class Archive:
             if deadline is not None and time.monotonic() >= deadline:
                 break
             receipt = self.queue.root / "completed" / f"{identity}.json"
-            if receipt.is_file():
-                continue
             try:
-                task = json.loads(self.queue.get(f"pending/{identity}.json"))
-                key = task["key"]
-                safe_key(key)
+                key, _size = self._intent_metadata(identity)
             except BoundaryError as error:
                 if error.code == "object_not_found" and receipt.is_file():
                     continue  # Another publisher finished after our first check.
@@ -312,7 +337,8 @@ class Archive:
             # Input indices already encode generation and zero-padded sequence.
             # Their previous_input DAG must be copied bottom-up, rather than
             # repeatedly discovering a long absent prefix from random SHA roots.
-            ranked.append((0, key, identity) if "/inputs/" in key else (1, identity, identity))
+            rank = (0, key, identity) if "/inputs/" in key else (1, identity, identity)
+            ranked.append(rank)
         return [identity for _, _, identity in sorted(ranked)]
 
     def step(self, *, deadline: float | None = None, owned: bool = False) -> int:

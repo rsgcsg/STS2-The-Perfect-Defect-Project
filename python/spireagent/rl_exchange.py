@@ -302,14 +302,23 @@ class Exchange:
         return self.put_hot_payload(raw,
             training_generation=segment["training_generation"], owner=owner, costs=costs)
 
-    def read_hot_segment(self, payload: HotPayloadRef | dict[str, Any]) -> dict[str, Any]:
+    def read_hot_segment(self, payload: HotPayloadRef | dict[str, Any], *,
+                         costs: dict[str, float] | None = None) -> dict[str, Any]:
         from .workbench.managed_segment_store import validate_hot_segment
 
         ref = _hot_ref(payload)
-        segment: dict[str, Any] = json.loads(self.read_hot_payload(ref))
+        began = time.perf_counter()
+        raw = self.read_hot_payload(ref)
+        read_at = time.perf_counter()
+        segment: dict[str, Any] = json.loads(raw)
+        decoded_at = time.perf_counter()
         validate_hot_segment(segment)
         if segment["run"] != self.run or segment["training_generation"] != ref.slot.split("/")[1]:
             reject("hot_segment_generation_changed")
+        if costs is not None:
+            costs.update(hot_read_wall_seconds=read_at - began,
+                         hot_json_seconds=decoded_at - read_at,
+                         hot_validate_seconds=time.perf_counter() - decoded_at)
         return segment
 
     def hot_payload_reference(self, slot: str) -> HotPayloadRef:

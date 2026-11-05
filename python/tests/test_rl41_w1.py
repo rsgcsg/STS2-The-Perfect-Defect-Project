@@ -18,7 +18,7 @@ from test_p1_input_v2 import public_state
 from test_rl_loop import PRODUCER
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.json_boundary import FrozenObject
+from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_exchange import Exchange
 from spireagent.storage.store import copy_artifact
@@ -939,3 +939,47 @@ def test_configured_lambda_reaches_prepared_targets_from_recorded_mu(model):
     assert torch.equal(one_step.targets[0], one_step.probabilities[1])
     assert full_trace.targets[:, 49].eq(1).all()
     assert not torch.equal(one_step.raw_advantages, full_trace.raw_advantages)
+
+
+def test_verified_hot_preparation_preserves_tensors_and_rejects_changed_bytes(
+    model, tmp_path, monkeypatch
+):
+    import stpd.rl.batch_preparation as preparation
+
+    value = segment(model, rows=3)
+    compiler = FrameCompiler(model.vocabulary)
+    spec = input_spec(model.vocabulary, runtime_projection(model.vocabulary))
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    exchange = Exchange(peer, value["run"])
+    payload = exchange.put_hot_segment(value, owner="test")
+    member = dataclasses.replace(request([value]).members[0], payload=payload)
+    monkeypatch.setattr(preparation, "_worker", dict(reader=None, exchange=exchange,
+        compiler=compiler, expected_spec=spec, excluded_seeds=frozenset(), gae_lambda=.99))
+    original = source(model, value)
+    actual = preparation.unpack_transport(preparation._read_source(payload, member))
+    for field in ("probabilities", "targets", "raw_advantages"):
+        assert torch.equal(getattr(original, field), getattr(actual, field))
+    for left, right in zip(original.frames, actual.frames, strict=True):
+        assert_tree(left.state(), right.state())
+    assert original.policy_probabilities == actual.policy_probabilities
+    assert original.actions == actual.actions and original.row_refs == actual.row_refs
+    assert actual.seconds["hot_read_wall_seconds"] >= 0
+    assert actual.seconds["source_pack_seconds"] >= 0
+    changed = copy.deepcopy(value)
+    changed["steps"][0]["input"]["observation"]["run"]["content"]["floor"] = 4
+    with pytest.raises(BoundaryError, match="compiled_public_input_binding_changed"):
+        exchange.put_hot_segment(changed, owner="test")
+    with pytest.raises(BoundaryError, match="public_input_hash_mismatch"):
+        source(model, changed)
+
+
+def test_verified_prepare_keeps_ordered_catalog_check(model):
+    from stpd.rl.batch_preparation import _prepare_source
+
+    value = segment(model, rows=2, forced=False)
+    value["steps"][0]["input"]["catalog"] = list(
+        reversed(value["steps"][0]["input"]["catalog"]))
+    with pytest.raises(ValueError, match="prepared_catalog_membership_changed"):
+        _prepare_source(value, FrameCompiler(model.vocabulary),
+            input_spec(model.vocabulary, runtime_projection(model.vocabulary)),
+            excluded_seeds=frozenset(), gae_lambda=.99, public_bindings_verified=True)

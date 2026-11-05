@@ -180,11 +180,12 @@ def test_actor_runtime_materializes_full_pinned_bundle_and_rechecks_cache(
 
 
 def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
-        rl, inputs, tmp_path, bundled_release, monkeypatch):
+        rl, inputs, tmp_path, bundled_release, host_startup_release, monkeypatch):
     _, package, pin = bundled_release
     execution, _, _ = inputs
     base = json.loads(execution.read_bytes())
-    base.update(runtime_directory=str(package/'dist'), runtime_pin=pin)
+    base.update(runtime_directory=str(package/'dist'), runtime_pin=pin,
+                **host_startup_release)
     execution.write_text(json.dumps(base))
     plan, path = prepared(rl, inputs, actors=1)
     inference = {'schema': 'synthetic-inference'}
@@ -208,6 +209,10 @@ def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
     monkeypatch.setattr(rl, 'materialize_actor_runtime',
         lambda reference, scratch, _cache: materialize(
             reference, scratch, tmp_path.resolve()/'isolated-cache'))
+    materialize_host = rl.materialize_actor_host
+    monkeypatch.setattr(rl, 'materialize_actor_host',
+        lambda reference, scratch, _cache: materialize_host(
+            reference, scratch, tmp_path.resolve()/'isolated-host-cache'))
     observed = []
     real_popen = rl.subprocess.Popen
 
@@ -219,6 +224,11 @@ def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
         private = json.loads(actual.read_bytes())
         local = json.loads(Path(private['execution']).read_bytes())
         assert local['runtime_directory'] != str(package/'dist')
+        assert local['host_directory'] != base['host_directory']
+        assert local['candidate_directory'] != base['candidate_directory']
+        assert options['env']['DOTNET'].startswith(str(tmp_path/'isolated-host-cache'))
+        assert options['env']['STS2_GAME_DIR'] != os.environ['STS2_GAME_DIR']
+        assert options['env']['DOTNET_NOLOGO'] == '1'
         observed.append(actual)
         work = Path(command[command.index('--work')+1])
         (work/'actor-summary.json').write_text(json.dumps({
@@ -232,6 +242,69 @@ def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
     assert result['runtime_materialization']['verified_package']['package_content_sha256'] == pin[
         'package_content_sha256']
     assert result['actor_config_sha256'] == ref['sha256']
+    assert result['host_materialization']['candidate_audit_cached'] is False
+
+
+@pytest.fixture
+def host_startup_release(tmp_path, monkeypatch):
+    from test_local_environment import fixture
+
+    host_fixture = tmp_path/'host-fixture'
+    host_fixture.mkdir()
+    _config, host, candidate, pin, _audit, _checked = fixture(host_fixture)
+    (candidate/'.git').mkdir()
+    (candidate/'.git/HEAD').write_text('synthetic stopped candidate; no Native claim')
+    native = tmp_path/'native-libraries'
+    native.mkdir()
+    (native/'sts2.dll').write_bytes(b'synthetic game input')
+    (candidate/'lib').symlink_to(native, target_is_directory=True)
+    game = tmp_path/'game'
+    game.mkdir()
+    (game/'release_info.json').write_text('{}')
+    sdk = tmp_path/'dotnet-sdk'
+    sdk.mkdir()
+    (sdk/'dotnet').write_text('#!/bin/sh\nexit 0\n')
+    (sdk/'dotnet').chmod(0o755)
+    monkeypatch.setenv('STS2_GAME_DIR', str(game))
+    monkeypatch.setenv('DOTNET', str(sdk/'dotnet'))
+    return {'host_directory': str(host), 'host_pin': pin,
+            'candidate_directory': str(candidate), 'game_assembly_sha256': 'a'*64}
+
+
+def test_Host_startup_copy_is_complete_concurrent_and_immutable(
+        rl, host_startup_release, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    execution = tmp_path/'execution-host.json'
+    execution.write_text(json.dumps(host_startup_release))
+    actor = tmp_path/'actor-host.json'
+    actor.write_text(json.dumps({'execution': str(execution), 'actor': 'test'}))
+    ref = {'path': str(actor), 'sha256': rl.hashed(actor)}
+    cache = tmp_path/'host-cache'
+
+    def materialize(number):
+        scratch = tmp_path/f'host-worker-{number}'
+        scratch.mkdir()
+        return rl.materialize_actor_host(ref, scratch, cache)
+
+    before = execution.read_bytes(), actor.read_bytes()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(materialize, (0, 1)))
+    assert sorted(item[1]['cache_hit'] for item in results) == [False, True]
+    derived, receipt, environment = results[-1]
+    configuration = json.loads(Path(json.loads(derived.read_bytes())['execution']).read_bytes())
+    candidate = Path(configuration['candidate_directory'])
+    assert not (candidate/'lib').is_symlink()
+    assert (candidate/'lib/sts2.dll').read_bytes() == b'synthetic game input'
+    assert (candidate/'.git/HEAD').read_bytes() == (
+        Path(host_startup_release['candidate_directory'])/'.git/HEAD').read_bytes()
+    assert receipt['World_calls_during_materialization'] == 0
+    assert receipt['candidate_audit_cached'] is False
+    assert Path(environment['DOTNET']).is_file()
+    assert (execution.read_bytes(), actor.read_bytes()) == before
+    (candidate/'lib/sts2.dll').write_bytes(b'changed cached input')
+    with pytest.raises(ValueError, match='Host_startup_cache_changed'):
+        materialize(2)
 
 
 def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path):
