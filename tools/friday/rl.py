@@ -209,7 +209,8 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
 
 def learner_launcher(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
                      source: Path, actors: int, seed_namespace: str,
-                     python: Path, episode_seconds: int = 14400) -> str:
+                     python: Path, episode_seconds: int = 14400,
+                     supervisor: dict[str, str] | None = None) -> str:
     """Use the same environment and E2 owner for a learner allocation, CPU or GPU."""
     config = json.loads(configuration.read_bytes())
     allocation = configuration.parent / 'learner-allocation.json'
@@ -221,6 +222,10 @@ def learner_launcher(configuration: Path, work: Path, execution: Path, actors_ou
         '--actors-output', str(actors_output), '--actors', str(actors),
         '--seed-namespace', seed_namespace, '--episode-seconds', str(episode_seconds),
         '--external-submit']
+    if supervisor is not None:
+        if hashed(canonical_path(Path(supervisor["path"]))) != supervisor["sha256"]:
+            raise ValueError("learner_supervisor_pin_changed")
+        command = [str(python), supervisor['path'], '--', *command]
     return prefix + 'exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" ' + (
         '--mode learner --configuration ' + shlex.quote(str(allocation))
         + ' --source-root "$source_root" -- ' + shlex.join(command) + '\n')
@@ -857,7 +862,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
            cpus: int = 16, memory_gb: int = 64,
            actor_memory_gb: int = 4, ready_seconds: float = 120,
            alongside_job: str | None = None, reserve_only: bool = False,
-           retain_capability: bool = False) -> dict[str, Any]:
+           retain_capability: bool = False,
+           held_job_id: str | None = None) -> dict[str, Any]:
     """Login-side resource adapter; both original sbatch calls inherit one capability.
 
     The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
@@ -875,7 +881,9 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
     if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 2880
             or not 1 <= cpus <= 32 or not 1 <= memory_gb <= 256
             or not 1 <= ready_seconds <= 3600
-            or alongside_job is not None and not re.fullmatch(r'[1-9][0-9]*', alongside_job)):
+            or alongside_job is not None and not re.fullmatch(r'[1-9][0-9]*', alongside_job)
+            or held_job_id is not None and (not re.fullmatch(r'[1-9][0-9]*', held_job_id)
+                or alongside_job is not None or reserve_only)):
         raise ValueError('bounded_Friday_GPU_launch_required')
     root = private_root(output)
     prior = os.environ.get(AUTH_ENV)
@@ -898,7 +906,26 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
             existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(),
                                           '-p', 'smp_gpu', '-o', '%i']).splitlines()
             coexistence = None
-            if existing:
+            if held_job_id is not None:
+                if existing != [held_job_id]:
+                    raise ValueError('exact_single_held_GPU_allocation_required')
+                detail = scheduler.output(['squeue', '-h', '-j', held_job_id,
+                    '-o', '%T|%b|%j']).split('|')
+                if detail != ['RUNNING', f'gres/gpu:{gpu}:1', 'rl4-learner']:
+                    raise ValueError('running_owned_held_GPU_allocation_required')
+                steps = scheduler.output(['squeue', '--steps', '-h', '-j', held_job_id,
+                                          '-o', '%i']).splitlines()
+                if any(re.fullmatch(re.escape(held_job_id) + r'\.[0-9]+', x) for x in steps):
+                    raise ValueError('held_GPU_has_active_step_requires_owner_reconciliation')
+                step_file = root / 'GPU-step-id'
+                bridge = ("umask 077; printf '%s.%s\\n' \"$SLURM_JOB_ID\" "
+                          '"$SLURM_STEP_ID" > "$1.new"; mv "$1.new" "$1"; exec bash "$2"')
+                command = ['srun', '--jobid=' + held_job_id, '--overlap', '--exact',
+                    '--ntasks=1', f'--cpus-per-task={cpus}', '--export=ALL',
+                    '--output=' + str(root / 'GPU-step.out'),
+                    '--error=' + str(root / 'GPU-step.err'),
+                    'bash', '-c', bridge, 'held-learner', str(step_file), str(gpu_script)]
+            elif existing:
                 if alongside_job is None or existing != [alongside_job]:
                     raise ValueError('another_Friday_GPU_job_requires_owner_scheduling')
                 detail = scheduler.output(['squeue', '-h', '-j', alongside_job,
@@ -911,8 +938,24 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
             save(root/'GPU-submission-intent.json', {'at': time.time(), 'command': command,
                 'script_sha256': hashed(gpu_script), 'configuration_sha256': hashed(configuration),
                 'alongside': coexistence, 'reservation_only': reserve_only})
-            job = scheduler.output(command)
-            save(root/'GPU-submission.json', {'job_id': job, 'at': time.time()})
+            if held_job_id is None:
+                job = scheduler.output(command)
+            else:
+                # The same sticky intent covers exactly one srun; never repeat on uncertainty.
+                with (root / 'srun.out').open('wb') as out, (root / 'srun.err').open('wb') as err:
+                    step_process = subprocess.Popen(command, stdout=out, stderr=err)
+                step_deadline = time.monotonic() + ready_seconds
+                while not step_file.exists():
+                    if step_process.poll() is not None:
+                        raise RuntimeError('held_GPU_step_ended_before_identity_reconcile_original_offer')
+                    if time.monotonic() >= step_deadline:
+                        raise TimeoutError('held_GPU_step_identity_unknown_reconcile_original_offer')
+                    time.sleep(1)
+                job = step_file.read_text().strip()
+                if not re.fullmatch(re.escape(held_job_id) + r'\.[0-9]+', job):
+                    raise ValueError('exact_held_GPU_step_identity_required')
+            save(root/'GPU-submission.json', {'job_id': job, 'at': time.time(),
+                'held_job_id': held_job_id})
         if reserve_only:
             result = {'GPU_job_id': job, 'reservation_only': True, 'CPU_actors_offered': 0}
             save(root/'launch-receipt.json', result)
@@ -920,7 +963,9 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         deadline = None
         plan_file = actors_output/'plan.json'
         while True:
-            state = scheduler.output(['squeue', '-h', '-j', job, '-o', '%T']).strip()
+            state = ('RUNNING' if held_job_id is not None and step_process.poll() is None
+                     else scheduler.output(['squeue', '-h', '-j', job, '-o', '%T']).strip()
+                     if held_job_id is None else 'FAILED')
             if not state:
                 history = scheduler.output(['sacct', '-n', '-X', '-j', job,
                                             '--format=State', '--parsable2']).splitlines()
@@ -1028,6 +1073,7 @@ def main():
     launch_parser.add_argument('--actor-memory-gb', type=int, default=4)
     launch_parser.add_argument('--ready-seconds', type=float, default=120,
         help='Actor-plan readiness after the GPU job is observed RUNNING; queue time is excluded')
+    launch_parser.add_argument('--held-job-id')
     launch_parser.add_argument('--reserve-only', action='store_true',
         help='Submit the explicit allocation script without offering CPU actors')
     launch_parser.add_argument('--alongside-job',
@@ -1044,7 +1090,7 @@ def main():
             args.output, gpu=args.gpu, minutes=args.minutes, cpus=args.cpus,
             memory_gb=args.memory_gb, actor_memory_gb=args.actor_memory_gb,
             ready_seconds=args.ready_seconds, alongside_job=args.alongside_job,
-            reserve_only=args.reserve_only)
+            reserve_only=args.reserve_only, held_job_id=args.held_job_id)
     elif args.command == 'learn':
         result = learn(args.config, args.work, args.execution, args.actors_output,
             actors=args.actors, seed_namespace=args.seed_namespace,

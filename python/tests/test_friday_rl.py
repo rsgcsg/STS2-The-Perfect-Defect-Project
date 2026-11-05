@@ -1214,3 +1214,62 @@ def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, mon
     owner.write_text(json.dumps({"actor": "a", "job_id": "77_0", "plan_sha256": rl.hashed(path)}))
     with pytest.raises(ValueError, match="terminal_actor_owner_or_submission_binding_changed"):
         rl.actor_accounting(path)
+
+
+def test_explicit_capacity_limit_survives_repeated_actor_binding():
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segments import SegmentConfig
+    config = LearnerConfig(run='capacity', peer={},
+        segments=SegmentConfig(capacity_limit_rows=6400))
+    assert config.bind_actors(256).bind_actors(256).segments.capacity_rows == 6400
+    assert config.bind_actors(32).segments.capacity_rows == 3072
+    for invalid in (True, 0, 3071, 6400.0):
+        with pytest.raises(ValueError, match='invalid_segment'):
+            SegmentConfig(capacity_limit_rows=invalid)
+
+
+def test_held_gpu_launch_offers_one_step_and_never_sbatch(rl, inputs, tmp_path, monkeypatch):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    root = tmp_path/'held-login'
+    commands = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    def schedule(command):
+        commands.append(command)
+        if '--steps' in command:
+            return '79.batch\n79.extern'
+        if '-j' in command:
+            return 'RUNNING|gres/gpu:a100:1|rl4-learner'
+        return '79'
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    def process(command, **kwargs):
+        commands.append(command)
+        (root/'GPU-step-id').write_text('79.17\n')
+        rl.prepare(execution, config, actors)
+        return SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(rl.subprocess, 'Popen', process)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': '80'})
+    result = rl.launch(script, config, tmp_path/'learner', actors, root,
+                       gpu='a100', held_job_id='79')
+    assert result['GPU_job_id'] == '79.17'
+    assert sum(c[0] == 'srun' for c in commands) == 1
+    assert all(c[0] != 'sbatch' for c in commands)
+
+
+def test_held_gpu_active_step_rejected_without_submission(rl, tmp_path, monkeypatch):
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    def schedule(command):
+        if '--steps' in command:
+            return '79.9'
+        if '-j' in command:
+            return 'RUNNING|gres/gpu:a100:1|rl4-learner'
+        return '79'
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl.subprocess, 'Popen', lambda *a, **kw: pytest.fail('must not offer'))
+    with pytest.raises(ValueError, match='active_step'):
+        rl.launch(script, config, tmp_path/'learner', tmp_path/'actors', tmp_path/'login',
+                  gpu='a100', held_job_id='79')

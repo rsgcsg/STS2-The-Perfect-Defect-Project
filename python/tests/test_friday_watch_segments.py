@@ -287,3 +287,39 @@ def test_global_five_percent_gate_excludes_inflight_worlds(owner, watch, monkeyp
     assert owner.state["health"]["known_unknown"] == 1
     assert owner.state["stop"] == ("training_unknown_fraction_above_limit" if stopped else None)
     assert stops == (["training_unknown_fraction_above_limit"] if stopped else [])
+
+
+def test_step_accounting_and_signal_never_select_holder(watch, owner, monkeypatch):
+    commands = []
+    monkeypatch.setattr(watch.subprocess, 'check_output', lambda *a, **kw:
+        '79|RUNNING|0:0|s|e|s|e|99\n79.batch|RUNNING|0:0|s|e|s|e|99\n'
+        '79.17|COMPLETED|0:0|s|e|s|e|20\n')
+    account = watch.job_accounting('79.17')
+    assert account['terminal'] and account['all_completed']
+    assert [r['job_id'] for r in account['rows']] == ['79.17']
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(watch.subprocess, 'run', run)
+    owner.signal_once('79.17')
+    assert commands == [['scancel', '--signal=USR1', '79.17']]
+
+
+def test_learner_only_restore_preserves_unknown_denominator_and_charged_time(owner):
+    value = attempt(owner)
+    event(owner, 'heartbeat', training_generation='g-one', active_seconds=100, updates=370)
+    event(owner, 'actor_world_offered', actor='actor', intent_id='old',
+          training_generation='g-one')
+    event(owner, 'actor_games_closed', actor='actor', games=[{
+        'intent_id': 'old', 'seed': 'seed', 'status': 'unknown',
+        'world_mutation_offered': True, 'training_generation': 'g-one'}])
+    event(owner, 'learner_replacement_started', previous_generation='g-one',
+          training_generation='g-two', charged_seconds=110)
+    event(owner, 'heartbeat', training_generation='g-two', active_seconds=20, updates=372)
+    event(owner, 'training_window', training_generation='g-one', active_seconds=105, updates=370)
+    owner.collect_events()
+    assert value['generations'] == ['g-one', 'g-two']
+    assert value['active_seconds'] == 20 and not value.get('window_closed')
+    assert 130 <= owner.state['training_seconds'] < 140
+    assert owner.state['health']['completed_for_stop'] == 1
+    assert owner.state['health']['known_unknown'] == 1

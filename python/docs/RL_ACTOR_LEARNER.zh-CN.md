@@ -101,7 +101,9 @@ G0的真实320行组，scene为`[320,1123]`、文字`[2048,128]`，旧4行area�
 
 唯一出发点是仓库`python/configs/rl41.json`。普通运行JSON声明`"profile":"rl41"`，补run、peer、原CP、
 新generation、rendezvous和资源时限；各section的显式值覆盖该profile，最后仍是原`LearnerConfig`。
-`learn --actors N`与转换的`--actors N`都冻结`capacity_rows=dataset_rows+N*steps`；
+`learn --actors N`与转换的`--actors N`默认冻结`capacity_rows=dataset_rows+N*steps`；
+可显式设`segments.capacity_limit_rows`作为这个值的上限，至少为三个dataset（current、next和一批余量）；
+重复绑定路数仍保留该上限。容量是operational参数，不改变数据资格或丢弃策略；
 正常`learn`把生效参数写入`work/learner-config.json`，plan同时绑定原请求和生效文件的hash。
 至少需要`ceil(dataset_rows/(episode_rows//steps*steps))`路：默认8路，steps48/episode128需11路。
 原episode份额按pending+inflight共同限额，避免最快一局填满global容量却永远凑不齐dataset。

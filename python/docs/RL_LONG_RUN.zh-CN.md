@@ -224,6 +224,12 @@ CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
   runtime_source/learner_python`。deadline是UTC epoch；training_seconds≤72000。
   `operating_budget={id,total_seconds,consumed_seconds}`随完整CP保存，恢复继承已耗时间和截止，
   不重给20小时。具名运营窗口与CP16学习run分开，诊断不会占用/污染后续长训窗口。
+- 已有获准GPU holder时可显式指定`held_job_id`：正常launcher在同一用户的唯一RUNNING、
+  同型号`rl4-learner`分配内开一个srun step，拒绝已有数字step；不另申请GPU。
+  watcher只核账和停止准确job.step，不释放holder。未知step提交保留原intent，不重投。
+  有限故障资格化可给`learner_supervisor={path,sha256}`：固定脚本在原E2内包住原learn命令，
+  只换learner时用`learner_replacement_started`事件连接原/新generation与已耗秒数；
+  watcher合并两代分母并对全部owned generation Stop。该脚本不拥有游戏或新的提交权限。
 - 登录owner运行 `python tools/friday/watch.py --config <frozen-watch.json> --work <private-work>`。
   capability只在内存/继承环境中，不写文件、命令参数或日志。`cpu_only=true`要求learner为cpu，
   仅用于获批CPU证明。CPU分区、constraint与exclude_nodes明确冻结；GPU只用I1正常launcher。

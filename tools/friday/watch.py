@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -185,7 +186,8 @@ def job_accounting(job_id: str) -> dict[str, Any]:
     rows = []
     for line in raw.splitlines():
         fields = line.split('|')
-        if len(fields) >= 3 and '.' not in fields[0]:
+        if len(fields) >= 3 and (fields[0] == job_id if '.' in job_id
+                                 else '.' not in fields[0]):
             rows.append({'job_id': fields[0], 'state': fields[1].split()[0].rstrip('+'),
                          'exit_code': fields[2], **({'timing': dict(zip(
                              ('submit', 'eligible', 'start', 'end', 'elapsed_seconds'), fields[3:8], strict=True))}
@@ -236,7 +238,10 @@ class Watcher:
         signals[job_id] = {'state': 'intent', 'at': time.time()}
         self.persist()
         try:
-            result = subprocess.run(['scancel', '--signal=USR1', '--batch', job_id],
+            command = ['scancel', '--signal=USR1']
+            if not re.fullmatch(r'[1-9][0-9]*\.[0-9]+', job_id):
+                command.append('--batch')
+            result = subprocess.run([*command, job_id],
                                     check=False, capture_output=True)
         except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             signals[job_id].update(state='outcome_unknown', error_type=type(error).__name__)
@@ -1046,7 +1051,8 @@ class SegmentWatcher(Watcher):
         worlds = self.state['worlds']
         unresolved = set(self.state['unresolved_admissions'])
         terminal = set(self.state['terminal_actors'])
-        attempts = {a['generation']: a for a in self.state['attempts']}
+        attempts = {g: a for a in self.state['attempts']
+                    for g in a.get('generations', [a['generation']])}
         keys = sorted(k for k in self.exchange.blobs.keys(self.exchange.prefix + 'learner-events/')
                       if k.endswith('.json') and k not in self.seen_events)
         for key in keys:
@@ -1054,6 +1060,18 @@ class SegmentWatcher(Watcher):
             self.seen_events.add(key)
             if event.get('budget_id') != self.config['budget_id']:
                 continue
+            if event['kind'] == 'learner_replacement_started':
+                previous = attempts.get(event['previous_generation'])
+                if previous is None:
+                    raise ValueError('learner_replacement_requires_owned_previous_generation')
+                generation = event['training_generation']
+                previous.setdefault('generations', [previous['generation']]).append(generation)
+                previous.setdefault('replacement_elapsed_seconds', 0.)
+                previous['replacement_elapsed_seconds'] += event['charged_seconds']
+                previous['active_seconds'] = 0.
+                previous.pop('active_measured_at', None)
+                previous.pop('window_closed', None)
+                attempts[generation] = previous
             attempt = attempts.get(event.get('training_generation'))
             if event['kind'] in {'heartbeat', 'training_window'}:
                 generation = event['training_generation']
@@ -1068,7 +1086,9 @@ class SegmentWatcher(Watcher):
                     attempt['last_progress_at'] = event['at']
                 if event['kind'] == 'training_started':
                     attempt.setdefault('last_progress_at', event['at'])
-                if event['kind'] in {'heartbeat', 'training_window'}:
+                if (event['kind'] in {'heartbeat', 'training_window'} and
+                        event['training_generation'] == attempt.get(
+                            'generations', [attempt['generation']])[-1]):
                     attempt['active_seconds'] = max(attempt.get('active_seconds', 0),
                                                      event['active_seconds'])
                     attempt['active_measured_at'] = event['at']
@@ -1122,6 +1142,7 @@ class SegmentWatcher(Watcher):
             if not attempt.get('window_closed') and attempt.get('active_measured_at'):
                 end = attempt.get('terminal_observed_at', time.time())
                 measured += max(0, end - attempt['active_measured_at'])
+            measured += attempt.get('replacement_elapsed_seconds', 0.)
             attempt['charged_seconds'] = max(attempt.get('charged_seconds', 0), measured)
             total = max(total, attempt.get('budget_start_seconds', 0) + attempt['charged_seconds'])
         self.state['training_seconds'] = max(self.state['training_seconds'], total,
@@ -1140,13 +1161,15 @@ class SegmentWatcher(Watcher):
                                      if k in offered and not v.get('closed') and k not in lost}
         index = self.state['active']
         generation = self.state['attempts'][index]['generation'] if index is not None else None
-        active = {k for k in offered if worlds[k].get('generation') == generation}
+        generations = set(self.state['attempts'][index].get('generations', [generation])) \
+            if index is not None else set()
+        active = {k for k in offered if worlds[k].get('generation') in generations}
         self.state['health'] = {'generation': generation, 'offered': len(active),
             'completed_for_stop': sum(worlds[k].get('closed') is True
                                       or worlds[k]['actor'] in terminal for k in active),
             'known_unknown': len(active & unknown), 'lost_offers': len(active & lost),
             'unresolved_admissions': sum(self.state['unresolved_admission_generations'].get(k)
-                == generation for k in self.state['unresolved_admissions']) if generation else 0}
+                in generations for k in self.state['unresolved_admissions']) if generation else 0}
 
     def cold_checkpoint(self, artifact_id: str) -> dict[str, Any]:
         import tempfile
@@ -1276,7 +1299,8 @@ class SegmentWatcher(Watcher):
             Path(self.config['execution']), root / 'actors', source=Path(self.config['runtime_source']),
             actors=self.config['actors'], seed_namespace=f'ops-{self.work.name}-{number}',
             python=Path(self.config['learner_python']),
-            episode_seconds=self.config.get('episode_seconds', 14400)))
+            episode_seconds=self.config.get('episode_seconds', 14400),
+            supervisor=self.config.get('learner_supervisor')))
         script.chmod(0o700)
         attempt = {'root': str(root), 'generation': generation, 'config': str(configuration),
                    'checkpoint': cp, 'actor_plans': [], 'replaced': [], 'active_seconds': 0,
@@ -1302,7 +1326,8 @@ class SegmentWatcher(Watcher):
                 root / 'login-launch', gpu=self.config.get('gpu', 'a100'),
                 minutes=self.config.get('minutes', 2880), cpus=self.config.get('cpus', 16),
                 memory_gb=self.config.get('memory_gb', 64),
-                ready_seconds=self.config.get('ready_seconds', 3600), retain_capability=True)
+                ready_seconds=self.config.get('ready_seconds', 3600), retain_capability=True,
+                held_job_id=self.config.get('held_job_id'))
             attempt['job_id'] = receipt['GPU_job_id']
             attempt['actor_plans'] = [str(root / 'actors/plan.json')]
         self.capability_lost = False
@@ -1368,7 +1393,8 @@ class SegmentWatcher(Watcher):
         self.persist()
 
     def stop_attempt(self, attempt: dict[str, Any], reason: str) -> None:
-        self.exchange.request_stop(reason, training_generation=attempt['generation'])
+        for generation in attempt.get('generations', [attempt['generation']]):
+            self.exchange.request_stop(reason, training_generation=generation)
         root = Path(attempt['root'])
         save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():

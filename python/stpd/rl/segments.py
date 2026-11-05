@@ -19,7 +19,8 @@ OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min
                       "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
                       "prepare_ahead", "inference_stream", "preparation_workers",
                       "preparation_threads", "prepared_bytes", "training_generation",
-                      "rendezvous_path", "central_scoring", "checkpoint_seconds", "capacity_rows")
+                      "rendezvous_path", "central_scoring", "checkpoint_seconds", "capacity_rows",
+                      "capacity_limit_rows")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -30,6 +31,7 @@ class SegmentConfig:
     gae_lambda: float = 0.99
     episode_rows: int = 128
     capacity_rows: int = 4608
+    capacity_limit_rows: int | None = None
     terminal_games: int = 256
     hp_battles: int = 128
     auxiliary_rows: int = 128
@@ -75,6 +77,9 @@ class SegmentConfig:
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,
                                  self.archive_poll_seconds))
+                or (self.capacity_limit_rows is not None and (
+                    type(self.capacity_limit_rows) is not int
+                    or self.capacity_limit_rows < 3 * self.dataset_rows))
                 or self.capacity_rows < self.dataset_rows + self.steps
                 or not 0 < self.target_kl < 1 or not 0 < self.ema_decay < 1
                 or not 0 < self.head_lr < 1
