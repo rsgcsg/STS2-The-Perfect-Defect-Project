@@ -98,7 +98,8 @@ def storage_inventory(root: Path, *, stop: threading.Event | None = None) -> dic
             return {"at": time.time(), "cancelled": True}
         manifest = Manifest.from_bytes(path.read_bytes())
         schema = manifest.parameters.value().get("schema", "")
-        category = ("CP" if schema == "stpd/rl-segment-checkpoint-2" else
+        category = ("CP" if schema in {"stpd/rl-segment-checkpoint-2",
+                                       "stpd/rl-segment-checkpoint-3"} else
                     "heads" if schema == "stpd/rl-behavior-heads-1" else manifest.kind)
         counts = logical.setdefault(category, {"payload_bytes": 0, "artifacts": 0})
         counts["artifacts"] += 1

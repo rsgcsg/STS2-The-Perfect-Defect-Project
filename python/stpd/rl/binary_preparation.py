@@ -14,6 +14,7 @@ import hashlib
 import mmap
 import multiprocessing as mp
 import os
+import pickle
 import threading
 import time
 import uuid
@@ -69,7 +70,7 @@ class _SharedArray:
 @dc.dataclass(frozen=True)
 class _ReadySource:
     descriptor: _Descriptor
-    tree: Any
+    tree: bytes
     arrays: tuple[_SharedArray, ...]
     header: dict[str, Any]
     seconds: float
@@ -145,7 +146,11 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
             ]
             return _ReadySource(
                 descriptor,
-                tree,
+                # The spawn queue already uses trusted Python IPC. Keep its
+                # immutable metadata opaque through the parent, so the learner
+                # does not unpickle/re-pickle thousands of per-frame objects.
+                # This is never a public packet or a durable restore format.
+                pickle.dumps(tree, protocol=5),
                 arrays,
                 {"envelope": header["envelope"], "witness": witness},
                 time.perf_counter() - began,
@@ -178,7 +183,7 @@ def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
                     )
                     for a in item.arrays
                 )
-                source = bp.unpack_transport((item.tree, arrays))
+                source = bp.unpack_transport((pickle.loads(item.tree), arrays))
                 source = dc.replace(
                     source, pid=item.pid, seconds={"binary_source_decode_seconds": item.seconds}
                 )
@@ -345,12 +350,12 @@ class _PinnedLease:
 class _PinnedBuffers:
     """Exactly two dtype-slab buffers. Tensor views retain their lease through H2D."""
 
-    def __init__(self, maximum: int) -> None:
+    def __init__(self, maximum: int, slots: int = 2) -> None:
         self.maximum = maximum
         self.condition = threading.Condition()
-        self.buffers: list[dict[torch.dtype, torch.Tensor]] = [{}, {}]
-        self.busy = [False, False]
-        self.events: list[Any] = [None, None]
+        self.buffers: list[dict[torch.dtype, torch.Tensor]] = [{} for _ in range(slots)]
+        self.busy = [False] * slots
+        self.events: list[Any] = [None] * slots
         self.closed = False
         self.epoch = 0
         self.allocation_lock = threading.Lock()
@@ -375,7 +380,7 @@ class _PinnedBuffers:
                     raise CancelledError("binary_pinned_preparation_fenced")
                 available = [
                     i
-                    for i in range(2)
+                    for i in range(len(self.buffers))
                     if not self.busy[i]
                     and (self.events[i] is None or all(e.query() for e in self.events[i]))
                 ]
@@ -460,22 +465,27 @@ class BinaryBatchPreparer:
         source_slots: int,
         max_source_bytes: int,
         assembly_workers: int = 2,
+        prepared_batches: int = 2,
+        label_workers: int = 1,
         **existing_assembly_options: Any,
     ) -> None:
         if (
             any(
                 type(value) is not int
-                for value in (workers, threads, source_slots, max_source_bytes, assembly_workers)
+                for value in (workers, threads, source_slots, max_source_bytes, assembly_workers,
+                              prepared_batches, label_workers)
             )
-            or min(workers, threads, source_slots, max_source_bytes, assembly_workers) < 1
+            or min(workers, threads, source_slots, max_source_bytes, assembly_workers,
+                   prepared_batches, label_workers) < 1
         ):
             raise ValueError("positive_binary_preparation_limits_required")
         self.provider, self.vocabulary = provider, vocabulary
         self.workers, self.threads = workers, threads
         self.assembly_workers = assembly_workers
+        self.prepared_batches, self.label_workers = prepared_batches, label_workers
         self._started = time.perf_counter()
         self._worker_stats: dict[tuple[str, int], dict[str, float]] = {}
-        self._failed_tasks = {"source": 0, "assembly": 0}
+        self._failed_tasks = {"source": 0, "assembly": 0, "labels": 0}
         self.scratch = Path(scratch)
         self.scratch.mkdir(parents=True, exist_ok=True)
         self.capacity = max_source_bytes // source_slots
@@ -485,7 +495,8 @@ class BinaryBatchPreparer:
         self.excluded = frozenset(existing_assembly_options.pop("excluded_seeds", ()))
         self.max_prepared_bytes = existing_assembly_options.pop("max_prepared_bytes", 2 * 1024**3)
         self.pinned = _PinnedBuffers(
-            existing_assembly_options.pop("max_pinned_bytes", 512 * 1024**2)
+            existing_assembly_options.pop("max_pinned_bytes", 512 * 1024**2),
+            slots=prepared_batches + 1,
         )
         # Old construction-only options do not grant a JSON fallback here.
         for key in ("peer", "run", "reader", "gae_lambda"):
@@ -508,9 +519,13 @@ class BinaryBatchPreparer:
         self.preparing: set[Future] = set()
         self.generation: str | None = None
         self.closed = self.fenced = False
-        self.coordinator = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rl-binary-ready")
+        self.coordinator = ThreadPoolExecutor(
+            max_workers=prepared_batches, thread_name_prefix="rl-binary-ready")
+        self.label_coordinator = ThreadPoolExecutor(
+            max_workers=label_workers, thread_name_prefix="rl-binary-labels")
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
+        self.label_pool = self._pool(workers=self.label_workers)
 
     def _record_worker(self, role: str, future: Future) -> None:
         with self.condition:
@@ -530,7 +545,7 @@ class BinaryBatchPreparer:
         """Actual processes and completed-task utilization, never training counters."""
         with self.condition:
             window = max(time.perf_counter() - self._started, 1e-9)
-            pools = {"source": self.pool, "assembly": self.assembly_pool}
+            pools = {"source": self.pool, "assembly": self.assembly_pool, "labels": self.label_pool}
             live = {
                 role: tuple((getattr(pool, "_processes", None) or {}).keys())
                 for role, pool in pools.items()
@@ -554,6 +569,8 @@ class BinaryBatchPreparer:
             return {
                 "source_workers": self.workers,
                 "assembly_workers": self.assembly_workers,
+                "label_workers": self.label_workers,
+                "prepared_batches": self.prepared_batches,
                 "actual_source_workers": len(live["source"]),
                 "actual_assembly_workers": len(live["assembly"]),
                 "source_slots": self.slot_count,
@@ -727,8 +744,10 @@ class BinaryBatchPreparer:
                         os.chmod(output, 0o600)
                         stream.truncate(args[0].max_output_bytes + 64)
                     worker_args = (*args, str(output))
-                future = self.assembly_pool.submit(_timed, function, ready, *worker_args)
-                future.add_done_callback(lambda done: self._record_worker("assembly", done))
+                role = "assembly" if function is _assemble else "labels"
+                pool = self.assembly_pool if function is _assemble else self.label_pool
+                future = pool.submit(_timed, function, ready, *worker_args)
+                future.add_done_callback(lambda done: self._record_worker(role, done))
                 result = future.result().value
                 if function is _assemble:
                     if output is None:
@@ -773,7 +792,8 @@ class BinaryBatchPreparer:
                     output.unlink(missing_ok=True)
                 self._release(descriptors)
 
-        result = self.coordinator.submit(collect)
+        coordinator = self.coordinator if function is _assemble else self.label_coordinator
+        result = coordinator.submit(collect)
 
         # A cancelled collector has never dispatched assembly. Decode jobs
         # independently retain their arenas, so only this reservation is released.
@@ -795,11 +815,12 @@ class BinaryBatchPreparer:
             self.preparing = {f for f in self.preparing if not f.done()}
             if self.closed or self.fenced:
                 raise RuntimeError("binary_preparer_fenced_or_closed")
-            if len(self.preparing) >= 2:
+            if len(self.preparing) >= self.prepared_batches:
                 raise ValueError("binary_current_plus_next_limit")
             if (
                 type(request.max_output_bytes) is not int
-                or not 0 < request.max_output_bytes <= self.max_prepared_bytes // 2
+                or not 0 < request.max_output_bytes
+                <= self.max_prepared_bytes // self.prepared_batches
             ):
                 raise ValueError("binary_current_plus_next_byte_limit")
             if self.generation != request.identity.training_generation:
@@ -885,6 +906,7 @@ class BinaryBatchPreparer:
         # failed task retained an exception traceback with shared tensor views.
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.assembly_pool.shutdown(wait=True, cancel_futures=True)
+        self.label_pool.shutdown(wait=True, cancel_futures=True)
         with self.condition:
             for arena in self.arenas:
                 arena.mapping.close()
@@ -899,6 +921,7 @@ class BinaryBatchPreparer:
             if not self.closed:
                 self.pool = self._pool()
                 self.assembly_pool = self._pool(workers=self.assembly_workers)
+                self.label_pool = self._pool(workers=self.label_workers)
                 self.fenced = False
         self.last_barrier_failures = tuple(str(error) for error in errors)
         # Original Future objects preserve each failure. As with Executor.shutdown,
@@ -918,6 +941,7 @@ class BinaryBatchPreparer:
                 self.barrier(generation=self.generation or "")
             finally:
                 self.coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
+                self.label_coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
 
         if wait:
             close()

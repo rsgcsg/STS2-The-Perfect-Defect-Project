@@ -636,7 +636,9 @@ def test_RL4_record_is_not_preserved_before_its_exact_artifact_dependencies(
     assert archive.status()["full_readback"]
 
 
-def test_CP_retention_preserves_recent_pins_shared_chunks_and_remote_history(tmp_path):
+@pytest.mark.parametrize("schema", ["stpd/rl-segment-checkpoint-2",
+                                  "stpd/rl-segment-checkpoint-3"])
+def test_CP_retention_preserves_recent_pins_shared_chunks_and_remote_history(tmp_path, schema):
     from test_rl41_w1 import PRODUCER
 
     from spireagent.artifact_contracts import Manifest
@@ -654,7 +656,7 @@ def test_CP_retention_preserves_recent_pins_shared_chunks_and_remote_history(tmp
             "checkpoint",
             PRODUCER,
             payloads=(e.store.put_bytes("checkpoint", f"CP{i}".encode()),),
-            parameters=FrozenObject.of({"schema": "stpd/rl-segment-checkpoint-2", "sequence": i}),
+            parameters=FrozenObject.of({"schema": schema, "sequence": i}),
         )
         e.store.publish(m)
         e.publish_checkpoint(i, m.artifact_id, sequence=i, training_generation="g-one")

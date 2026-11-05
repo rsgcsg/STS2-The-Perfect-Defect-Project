@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from stpd.p1.export import export_model, load_model
-from stpd.rl.checkpoint_state import SCHEMA, construct_model, decode_state
+from stpd.rl.checkpoint_state import READABLE_SCHEMAS, construct_model, decode_state
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 
@@ -22,8 +22,8 @@ def export_checkpoint(store: Any, artifact_id: str, output: Path, *,
         raise ValueError("evaluation_checkpoint_required")
     payload = manifest.payload("checkpoint")
     raw = store.bytes(payload, maximum=payload.size)
-    if manifest.parameters.value().get("schema") == SCHEMA:
-        cp = decode_state(raw)
+    if manifest.parameters.value().get("schema") in READABLE_SCHEMAS:
+        cp = decode_state(raw, expected_schema=manifest.parameters.value()["schema"])
         model = construct_model(cp.construction)
         weights = cp.weights
         identity = {"run": cp.identity.run, "training_generation": cp.identity.training_generation,

@@ -179,12 +179,15 @@ class SegmentQueue:
             self.leases.pop(lease)
             self.condition.notify_all()
 
-    def dataset(self, *, take: bool = True) -> list[dict[str, Any]] | None:
+    def dataset(self, *, take: bool = True,
+                exclude: frozenset[str] = frozenset()) -> list[dict[str, Any]] | None:
         with self.condition:
             totals: dict[str, int] = collections.defaultdict(int)
             chosen: list[dict[str, Any]] = []
             count = 0
             for segment in self.pending:
+                if segment["segment_id"] in exclude:
+                    continue
                 run, size = segment["run_id"], segment["rows"]
                 if totals[run] + size > self.config.episode_rows:
                     continue

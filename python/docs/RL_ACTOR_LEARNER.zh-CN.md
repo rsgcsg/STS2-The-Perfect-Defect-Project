@@ -190,6 +190,8 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
     "prepare_slots": 8,
     "preparation_workers": 8,
     "assembly_workers": 2,
+    "prepared_batches": 4,
+    "label_workers": 1,
     "preparation_threads": 1,
     "mu_pull_interval_seconds": 15
   }
@@ -219,8 +221,19 @@ WAL `synchronous=FULL`在原输入ACK前落盘，异步不可变前缀复制沿�
 已授World/段按原close/drain收口，未使用训练行追加discard处置，不改旧ACK或World结果。
 
 commit只做envelope/ref/size/hash/lease/身份及`packet_header`核验；完整decode/数值验证不在控制线程。
-commit后后台只预取FIFO队头两批的immutable source，事件合并、复制在learner锁外，
-不选aux、不改RNG、不提前冻结下一批。checkpoint屏障与这个预取线程互斥；close先停并join预取，再关闭preparer。
+commit后后台只预取FIFO队头`prepared_batches+1`批的immutable source，事件合并、复制在learner锁外，
+该预取线程不选aux、不改RNG。learner按FIFO冻结至多`prepared_batches`个待处理请求（默认4），
+跨active/pending排除已保留aux；待处理PPO仍计入原queue容量，成功SGD才计uses。
+`prepared_bytes`覆盖active和所有pending；每批输出上限是该预算除以`prepared_batches+1`，
+pinned槽也按同一数量配置，防止晚完成的队头被后续批占满槽而死锁。
+标签校验使用独立`label_workers`进程/协调队列（默认1），不占拼批队列。
+同代CP不调用preparer barrier、不取消pending、不重启池或重置选择RNG。
+新写CP为`stpd/rl-segment-checkpoint-3`，显式记录committed/speculative选择RNG、pending请求和标签请求；
+v2只读兼容。新generation恢复仍只恢复已提交学习状态/RNG并丢弃热输入，pending记录不是重放授权，
+旧v2源码不能读v3，回滚代码时须选择原v2 CP。close先停并join source预取，再关闭preparer；
+显式barrier仍会排空并释放池/arena，包括同generation的主动资源回收。
+软训练截止和绝对截止前均留一个dataset的收尾余量；不再开新dataset/预取，
+已经开始的dataset使用原600秒排空余量完成，最后120秒留给保全，然后保存完整最终CP。
 晚终局/HP通过原segment refs绑定的binary aux验证，即使原PPO body已释放也保留原typed标签时点。
 actor节点μ缓存单次拉取完整model+heads并核身份，默认15秒metadata刷新；不足以装新μ时暂停新grant，
 不替换仍被旧尾值引用的快照。初次actor本地Store为空时，由已验证缓存导入原manifest和payload再注册。

@@ -20,7 +20,8 @@ from torch import Tensor
 from spireagent.rl_contracts import RunSequence
 
 # RL4.1 self-contained format, registered in the shared VERSION-SLOT before publication.
-SCHEMA = "stpd/rl-segment-checkpoint-2"
+SCHEMA = "stpd/rl-segment-checkpoint-3"
+READABLE_SCHEMAS = frozenset(("stpd/rl-segment-checkpoint-2", SCHEMA))
 
 
 # W1 owns this payload; W3 transports the completed CP through original Store/R2.
@@ -76,6 +77,9 @@ class SelfContainedCheckpoint:
     counters: LearningCounters
     rng: RngState
     conversion: ConversionRecord | None
+    # Immutable selection receipts, not live-input restore dependencies. Fresh
+    # generations discard these requests and resume the committed learner RNG.
+    input_pipeline: dict[str, Any] | None = None
     # No queue/lease/active remainder/aux/input ancestry is a learning restore dependency.
 
 
@@ -241,12 +245,19 @@ def encode_state(checkpoint: SelfContainedCheckpoint) -> bytes:
     return encode_checkpoint(state)
 
 
-def decode_state(raw: bytes) -> SelfContainedCheckpoint:
+def decode_state(raw: bytes, *, expected_schema: str | None = None) -> SelfContainedCheckpoint:
     from stpd.workers.checkpoint_codec import decode_checkpoint
 
     value = decode_checkpoint(raw)
-    if value.pop("schema", None) != SCHEMA:
+    schema = value.pop("schema", None)
+    if schema not in READABLE_SCHEMAS:
         raise ValueError("explicit_self_contained_checkpoint_required")
+    if expected_schema is not None and schema != expected_schema:
+        raise ValueError("checkpoint_schema_binding_changed")
+    if schema == "stpd/rl-segment-checkpoint-2":
+        if "input_pipeline" in value:
+            raise ValueError("checkpoint_v2_has_no_input_pipeline")
+        value["input_pipeline"] = None
     value["identity"] = RunSequence(**value["identity"])
     value["construction"] = ModelConstruction(**value["construction"])
     value["counters"] = LearningCounters(**value["counters"])

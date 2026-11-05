@@ -33,10 +33,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 if TYPE_CHECKING:
     from spireagent.rl_local_wal import WalReplication
     from spireagent.rl_socket_transport import BinarySources
-
     from stpd.rl.binary_preparation import BinaryBatchPreparer
 
 import torch
+
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.local_diagnostics import exception_facts
@@ -45,7 +45,6 @@ from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
-
 from stpd.p1.data import json_bytes as p1_json_bytes
 from stpd.p1.export import (
     adapter_identity,
@@ -71,8 +70,8 @@ from .batch_preparation import (
     unpack_transport,
     verify_auxiliary,
 )
-from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
 from .checkpoint_state import (
+    READABLE_SCHEMAS,
     LearningCounters,
     ModelConstruction,
     RngState,
@@ -85,6 +84,7 @@ from .checkpoint_state import (
     text_digest,
     validate_optimizer_order,
 )
+from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
 from .learner import ROOT, LearnerConfig, _device
 from .loss import prepared_update
 from .performance import PerformanceConfig
@@ -406,6 +406,7 @@ class SegmentLearner:
         self.deadline_at = None
         self.active_training_began: float | None = None
         self.active_training_seconds = 0.
+        self.selection_deadline: float | None = None
         self.device = _device(config.device)
         torch.set_num_threads(config.threads)
         torch.manual_seed(config.seed)
@@ -437,6 +438,11 @@ class SegmentLearner:
         self.active_batch: PreparedBatch | None = None
         self.device_batch: PreparedBatch | None = None
         self.pending_batch: tuple[dict[str, Any], Future[PreparedBatch]] | None = None
+        self.ahead_batches: deque[tuple[dict[str, Any], Future[PreparedBatch]]] = deque()
+        self.prepared_batches = (self.dataplane.get("prepared_batches", 4)
+                                 if self.dataplane is not None else 1)
+        if type(self.prepared_batches) is not int or self.prepared_batches < 1:
+            raise ValueError("positive_prepared_batches_required")
         self.performance = config.performance or PerformanceConfig(
             packed=True,
             tensor_cache=True,
@@ -576,7 +582,6 @@ class SegmentLearner:
         if self.dataplane is not None:
             from spireagent.rl_local_wal import LocalControlWAL, WalReplication
             from spireagent.rl_socket_transport import BinarySources
-
             from stpd.rl.binary_preparation import BinaryBatchPreparer
 
             self.wal = LocalControlWAL(self.live_work / "control.sqlite", run=config.run,
@@ -601,6 +606,10 @@ class SegmentLearner:
                 workers=self.dataplane.get("preparation_workers", settings.preparation_workers),
                 threads=self.dataplane.get("preparation_threads", settings.preparation_threads),
                 assembly_workers=self.dataplane.get("assembly_workers", 2),
+                prepared_batches=self.prepared_batches,
+                label_workers=self.dataplane.get("label_workers", 1),
+                max_prepared_bytes=settings.prepared_bytes,
+                max_pinned_bytes=settings.prepared_bytes,
                 scratch=self.live_work,
                 source_slots=self.dataplane.get("prepare_slots", 8),
                 max_source_bytes=self.dataplane.get("source_bytes", 20 * 1024**3),
@@ -632,6 +641,7 @@ class SegmentLearner:
         self.pending_publication: Future[dict[str, Any]] | None = None
         self.latest_snapshot: dict[str, Any] | None = None
         self.pending_labels: deque[tuple[Future[Any], tuple[BatchMember, ...], str]] = deque()
+        self.pending_label_requests: dict[str, dict[str, Any]] = {}
         self.metrics = (
             TensorBoardMetrics(
                 self.exchange,
@@ -835,14 +845,14 @@ class SegmentLearner:
         manifest = self.exchange.store.get_manifest(artifact_id)
         if (
             manifest.kind != "checkpoint"
-            or manifest.parameters.value().get("schema") != CHECKPOINT_SCHEMA
+            or manifest.parameters.value().get("schema") not in READABLE_SCHEMAS
         ):
             raise ValueError("self_contained_checkpoint_required_convert_CP16_explicitly")
         # This is the entire restore IO: one manifest and its own payload.
         checkpoint = decode_state(
             self.exchange.store.bytes(
                 manifest.payload("checkpoint"), maximum=manifest.payload("checkpoint").size
-            )
+            ), expected_schema=manifest.parameters.value()["schema"],
         )
         if manifest.parents:
             raise ValueError("self_contained_checkpoint_has_no_restore_parents")
@@ -1387,7 +1397,6 @@ class SegmentLearner:
         # workers perform complete read/decoding/target checks before ready.
         if self.wal is not None:
             from spireagent.rl_socket_transport import binary_ref
-
             from stpd.rl.tensor_segment import packet_header
 
             ref = binary_ref(request["payload"])
@@ -1475,7 +1484,6 @@ class SegmentLearner:
     def _binary_auxiliary_members(self, request: dict[str, Any],
                                   originals: tuple[BatchMember, ...]) -> tuple[BatchMember, ...]:
         from spireagent.rl_socket_transport import binary_ref
-
         from stpd.rl.tensor_segment import packet_header
 
         by_segment = {m.segment_id: m for m in originals}
@@ -1536,7 +1544,7 @@ class SegmentLearner:
                         self._retain(member.payload, "source-prefetch")
                         held.append(member)
                         rows += member.rows
-                        if rows >= 2 * self.settings.dataset_rows:
+                        if rows >= (self.prepared_batches + 1) * self.settings.dataset_rows:
                             break
                 # Provider borrow, hashing, arena copy and worker submission
                 # hold neither the learner condition nor a socket handler.
@@ -1591,11 +1599,13 @@ class SegmentLearner:
         # No condition/GPU lock while source/label validation runs in a CPU worker.
         members = (self._binary_auxiliary_members(request, originals)
                    if self.wal is not None else originals)
-        self._prefetch_members(members)
-        groups = (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
-                      request, members).result()
-                  if self.wal is not None else
-                  self.input_preparer.pool.submit(verify_auxiliary, request, members).result())
+        with self.source_prefetch_gate:
+            self._prefetch_members(members)
+            future = (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
+                          request, members)
+                      if self.wal is not None else
+                      self.input_preparer.pool.submit(verify_auxiliary, request, members))
+        groups = future.result()
         with self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
@@ -1685,6 +1695,7 @@ class SegmentLearner:
         while self.pending_labels and (wait or self.pending_labels[0][0].done()):
             future, members, owner = self.pending_labels.popleft()
             groups = future.result()
+            self.pending_label_requests.pop(owner, None)
             with self.condition:
                 self._add_auxiliary(groups)
                 for member in members:
@@ -1703,6 +1714,7 @@ class SegmentLearner:
             if self.wal is not None and not members:
                 raise ValueError("binary_HP_tick_requires_bound_auxiliary_sources")
             owner = "labels:" + labels["segment_id"]
+            self.pending_label_requests[owner] = copy.deepcopy(request)
             if self.wal is None:
                 for member in members:
                     self._retain(member.payload, owner)
@@ -1718,9 +1730,16 @@ class SegmentLearner:
                 )
             )
 
+    def _pending_batches(self) -> tuple[tuple[dict[str, Any], Future[PreparedBatch]], ...]:
+        return ((self.pending_batch,) if self.pending_batch is not None else ()) + tuple(
+            self.ahead_batches)
+
     def _select(self, *, take: bool = True) -> dict[str, Any] | None:
         with self.condition:
-            records = self.queue.dataset(take=take)
+            pending = self._pending_batches()
+            excluded = frozenset(record["segment_id"]
+                for active, _ in pending for record in active["segments"])
+            records = self.queue.dataset(take=take, exclude=excluded)
             if records is None:
                 return None
             if take:
@@ -1735,7 +1754,8 @@ class SegmentLearner:
             reserved = {
                 row["key"]
                 for name in ("terminal", "hp")
-                for row in (self.active[name] if self.active else [])
+                for active in ((self.active,) if self.active else ()) + tuple(a for a, _ in pending)
+                for row in active[name]
             }
             selected = {}
             for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
@@ -1757,7 +1777,7 @@ class SegmentLearner:
                         )
                     )
                     owners.append(i % self.settings.minibatches)
-            number = self.datasets + (2 if self.active is not None else 1)
+            number = self.datasets + int(self.active is not None) + len(pending) + 1
             request = PrepareRequest(
                 RunSequence(self.config.run, self.generation, number),
                 tuple(self._member(record) for record in records),
@@ -1766,7 +1786,7 @@ class SegmentLearner:
                 tuple(owners),
                 self.compiler_identity,
                 self.rng.getstate(),
-                self.settings.prepared_bytes // 2,
+                self.settings.prepared_bytes // (self.prepared_batches + 1),
                 epochs=self.settings.epochs,
             )
             active = {
@@ -1799,10 +1819,19 @@ class SegmentLearner:
         return self.input_preparer.submit(request, inputs)
 
     def _prepare_ahead(self) -> None:
-        if self.pending_batch is None and self.settings.prepare_ahead:
+        while (self.settings.prepare_ahead
+               and not self.newlease_stopped and not self.input_fenced
+               and (self.selection_deadline is None
+                    or time.monotonic() < self.selection_deadline)
+               and len(self._pending_batches()) < self.prepared_batches):
             active = self._select(take=False)
-            if active is not None:
-                self.pending_batch = active, self._submit_batch(active)
+            if active is None:
+                break
+            pending = active, self._submit_batch(active)
+            if self.pending_batch is None:
+                self.pending_batch = pending
+            else:
+                self.ahead_batches.append(pending)
 
     def _prepare(self) -> bool:
         if self.active_batch is not None:
@@ -1838,7 +1867,7 @@ class SegmentLearner:
                     raise ValueError("prepared_dataset_membership_changed")
                 self._dataset_released(active["segments"])
             active["taken"] = True
-        self.pending_batch = None
+        self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
         self.active, self.active_batch = active, batch
         active["start_updates"] = self.updates
         transfer_started = time.perf_counter()
@@ -2018,7 +2047,7 @@ class SegmentLearner:
                 if (payload.slot, owner) in self.hot_references:
                     self._release(payload, owner)
         retained = {record["segment_id"] for record in self.queue.pending}
-        for active in (self.active, self.pending_batch[0] if self.pending_batch else None):
+        for active in (self.active, *(a for a, _ in self._pending_batches())):
             if active:
                 retained.update(record["segment_id"] for record in active["segments"])
                 retained.update(
@@ -2099,6 +2128,14 @@ class SegmentLearner:
                 tuple(value.cpu().clone() for value in cuda),
             ),
             self.conversion,
+            ({"generation": self.generation,
+              "committed_selection_rng": self.committed_selection_rng,
+              "speculative_selection_rng": self.rng.getstate(),
+              "pending_requests": [asdict(active["request"])
+                                   for active, _ in self._pending_batches()],
+              "pending_labels": copy.deepcopy(self.pending_label_requests),
+              "restore_disposition": "discard_hot_inputs_resume_committed_rng"}
+             if self.wal is not None else None),
         )
 
     def _state(self) -> tuple[bytes, tuple[Parent, ...]]:
@@ -2132,24 +2169,9 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "binary_checkpoint_requires_dataset_boundary")
         if self.checkpoint_encoding is not None or self.checkpoints.pending:
             return
-        if self.wal is not None:
-            self._collect_labels(wait=True)
-            if self.pending_batch is not None:
-                pending, future = self.pending_batch
-                if pending["taken"]:
-                    raise ValueError("checkpoint_cannot_abandon_taken_dataset")
-                future.cancel()
-                if not future.cancelled():
-                    future.result()
-                for member in pending["request"].members:
-                    self._release(member.payload,
-                        f"prepare:{self.generation}:{pending['request'].identity.sequence}")
-                self.pending_batch = None
-            with self.source_prefetch_gate:
-                cast("BinaryBatchPreparer", self.input_preparer).barrier(
-                    generation=self.generation)
-            self.source_prefetch_changed.set()
-            self.rng.setstate(self.committed_selection_rng)
+        # A CP snapshots committed learning state, not a generation transition.
+        # Keep ready/in-flight requests and their speculative selection RNG live;
+        # the CP records both states explicitly and never drains CPU workers.
         self.checkpoint_sequence += 1
         began = time.perf_counter()
         state = self._learning_state()
@@ -2248,6 +2270,14 @@ class SegmentLearner:
         stop_at = began
         try:
             self._event("training_started", active_seconds=0, updates=self.updates)
+            # Reserve one bounded dataset for normal shutdown. Once frozen, it
+            # finishes even when the soft training window expires. The absolute
+            # allocation deadline still owns the final 600-second drain reserve.
+            finish_reserve = min(30.0, self.config.wall_seconds / 10)
+            self.selection_deadline = deadline - finish_reserve
+            if self.deadline_at is not None:
+                self.selection_deadline = min(self.selection_deadline,
+                    time.monotonic() + self.deadline_at - 600 - time.time() - finish_reserve)
             while (
                 not initialize_only
                 and not self.input_fenced
@@ -2272,6 +2302,8 @@ class SegmentLearner:
                     self.checkpoint_requested = True
                     checkpoint_at = time.monotonic() + self.settings.checkpoint_seconds
                 if self.active_batch is None:
+                    if time.monotonic() >= self.selection_deadline:
+                        break
                     if self.checkpoint_requested:
                         self.checkpoint()
                     if not self._prepare():
@@ -2293,8 +2325,8 @@ class SegmentLearner:
             # Finish only the frozen dataset within the original compute and
             # absolute budget. Stop never selects another dataset.
             if self.wal is not None and not self.input_fenced:
-                while (self.active is not None and time.monotonic() < deadline
-                        and (self.deadline_at is None or time.time() < self.deadline_at - 600)):
+                while (self.active is not None
+                        and (self.deadline_at is None or time.time() < self.deadline_at - 120)):
                     self._step()
             training_elapsed = time.monotonic() - began
             self.active_training_seconds = training_elapsed
