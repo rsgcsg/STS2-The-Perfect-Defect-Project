@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -790,3 +791,58 @@ def test_explicit_completed_window_link_preserves_learning_state_with_new_budget
     with pytest.raises(ValueError, match='cannot_be_reset'):
         SegmentLearner(dataclasses.replace(request, operating_budget_parent={**parent,
             'checkpoint_artifact_id': '0'*64}), tmp_path/'bad-window', io)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='real publisher process failure')
+def test_final_publication_process_failure_preserves_last_complete_SGD_checkpoint(
+        tmp_path, monkeypatch):
+    import signal
+    from concurrent.futures.process import BrokenProcessPool
+
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / 'owner', io)
+    deliver(owner, actor='a')
+    deliver(owner, actor='b')
+    assert owner._prepare()
+    assert owner._step()['stepped']
+    assert owner.updates == 1 and owner.published_updates == 0 and owner.active is not None
+    # Kill only this test's actual CPU publisher, after initialization and SGD.
+    process = next(iter(owner.publisher._processes.values()))
+    os.kill(process.pid, signal.SIGKILL)
+    process.join(timeout=5)
+    assert not process.is_alive()
+    with pytest.raises(BrokenProcessPool):
+        owner.publisher.submit(os.getpid).result(timeout=5)
+    (owner.work / 'STOP').touch()
+    with pytest.raises(BrokenProcessPool):
+        owner.run()
+    record, cp = read_cp(owner)
+    assert cp.counters.updates == cp.counters.first_use == 1
+    assert cp.counters.published_updates == 0
+    assert_tree(cp.weights, owner.model.state_dict())
+    assert_tree(cp.optimizer, owner.optimizer.state_dict())
+    failed = [event for event in owner.exchange.event_records() if event['kind'] == 'failed']
+    assert len(failed) == 1 and failed[0]['error_type'] == 'BrokenProcessPool'
+    assert failed[0]['finalization_failure']['stage'] == 'final_model_publication'
+    assert failed[0]['finalization_failure']['diagnostic']['exception_type'] == 'BrokenProcessPool'
+    assert not [event for event in owner.exchange.event_records() if event['kind'] == 'finished']
+    assert owner.publisher._shutdown_thread
+    cold_peer = {'kind': 'local', 'directory': str(tmp_path / 'cold')}
+    cold = Exchange(cold_peer, config.run)
+    copy_artifact(
+        owner.exchange.store, cold.store, record['checkpoint_artifact_id'], scratch=tmp_path)
+    replacement = SegmentLearner(dataclasses.replace(config, peer=cold_peer, start_package=None,
+        resume_checkpoint=record['checkpoint_artifact_id'], segments=dataclasses.replace(
+            config.segments, training_generation='g-after-publisher-failure')),
+        tmp_path / 'replacement', io)
+    try:
+        assert_tree(replacement.model.state_dict(), cp.weights)
+        assert_tree(replacement.optimizer.state_dict(), cp.optimizer)
+        assert_tree(replacement.ema, cp.ema)
+        assert replacement.updates == replacement.first_use == 1
+        deliver(replacement, actor='fresh-c')
+        deliver(replacement, actor='fresh-d')
+        assert replacement._prepare() and replacement._step()['stepped']
+        assert replacement.updates == 2
+    finally:
+        replacement.close()

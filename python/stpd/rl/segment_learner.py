@@ -33,6 +33,7 @@ import torch
 
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.local_diagnostics import exception_facts
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
@@ -1482,10 +1483,14 @@ class SegmentLearner:
         try:
             summary = self._run(initialize_only=initialize_only, on_tick=on_tick)
         except BaseException as error:
-            fields = {"training_generation": self.generation, "updates": self.updates,
-                      "budget_id": (self.config.operating_budget or {}).get("id"),
-                      "error_type": type(error).__name__,
-                      "error_code": getattr(error, "code", None)}
+            fields: dict[str, Any] = {
+                "training_generation": self.generation, "updates": self.updates,
+                "budget_id": (self.config.operating_budget or {}).get("id"),
+                "error_type": type(error).__name__, "error_code": getattr(error, "code", None),
+                "diagnostic": exception_facts(error),
+            }
+            if getattr(self, "finalization_failure", None) is not None:
+                fields["finalization_failure"] = self.finalization_failure
             try:
                 self.exchange.publish_event("failed", **fields)
             except Exception as publication_error:
@@ -1560,11 +1565,21 @@ class SegmentLearner:
                     with self.condition:
                         self.condition.wait(0.2)
                 if not self.input_fenced:
-                    self._collect_labels(wait=True)
-                    if self.updates > self.published_updates:
-                        self._schedule_publication()
-                    self._collect_publication(wait=True)
-                    self.checkpoint(final=True)
+                    phase = "final_labels"
+                    try:
+                        self._collect_labels(wait=True)
+                        phase = "final_model_publication"
+                        if self.updates > self.published_updates:
+                            self._schedule_publication()
+                        self._collect_publication(wait=True)
+                    except Exception as error:
+                        self.finalization_failure = {
+                            "stage": phase, "diagnostic": exception_facts(error)}
+                        raise
+                    finally:
+                        # Complete SGD state is independent of the disposable mu
+                        # export pool. Save before close even if publication fails.
+                        self.checkpoint(final=True)
             finally:
                 self.close()
         summary = {

@@ -320,3 +320,11 @@ held allocation中的数字learner step使用原generation Stop、`login-launch/
 旧脚本和旧run不覆盖。CPU反例不证明旧200次失败的内层异常；原失败分母不重写。
 后处理失败会保存 `processing-error.json`，并把异常类型、栈位置及跨RPC/worker的
 原诊断纳入failure artifact；不保存异常message、源码行或locals，避免泄露请求/凭据。
+
+
+learner收尾先排空既有episode，再完成标签/最后μ发布，最后完整CP完成后才关闭进程池。
+最后μ发布或标签worker失败不会跳过非fenced学习状态的 `checkpoint(final=True)`；
+失败继续抛出并记录typed `failed`，带安全诊断和finalization阶段，不产生finished假成功。
+CP保留实际 `updates` 与 `published_updates` 的差异；恢复从CP内theta重新发布，不把失败μ
+当成功。`input_fenced`仍只允许恢复上一完整CP，不能借此规则保存未确认输入状态。
+这项保障以CP存储可写/可读为条件；CPU故障注入和本地冷恢复不构成R2或GPU运行资格。
