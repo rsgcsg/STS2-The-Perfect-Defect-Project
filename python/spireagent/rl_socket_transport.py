@@ -153,6 +153,8 @@ class BinarySources:
         self.closed_episodes: set[tuple[str, str]] = set()
         self.retired_actors: set[str] = set()
         self.occupied = 0
+        self.peak_reserved_bytes = 0
+        self.byte_credit_wait_seconds = 0.0
         self.stopped = False
         self.closed = False
         self.discarded_bytes = 0
@@ -222,7 +224,9 @@ class BinarySources:
                 ):
                     if revoked():
                         raise DataplaneError("STOPPED")
+                    began = time.perf_counter()
                     self.condition.wait()
+                    self.byte_credit_wait_seconds += time.perf_counter() - began
                 if revoked():
                     raise DataplaneError("STOPPED")
                 credit = secrets.token_hex(16)
@@ -240,6 +244,7 @@ class BinarySources:
                     "created": time.time(),
                 }
                 self.occupied += size
+                self.peak_reserved_bytes = max(self.peak_reserved_bytes, self.occupied)
                 return credit
             except BaseException:
                 self.upload_owners.discard(owner_key)
@@ -416,6 +421,8 @@ class BinarySources:
                 "source_lock_timing": (self.source_lock.snapshot()
                     if hasattr(self.source_lock, "snapshot") else []),
                 "spool_bytes": self.occupied,
+                "source_peak_reserved_bytes": self.peak_reserved_bytes,
+                "source_byte_credit_wait_seconds": self.byte_credit_wait_seconds,
                 "source_slots": len(self.entries),
                 "upload_credits": len(self.credits),
                 "source_capacity_bytes": self.max_bytes,

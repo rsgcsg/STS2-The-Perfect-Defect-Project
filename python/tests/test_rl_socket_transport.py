@@ -1131,7 +1131,11 @@ def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(
         result = connection.request("episode_end", **labels, binary_aux=auxiliary)
         assert result == {"run_id": "episode"}
         assert sum(len(rows) for rows in owner.terminal.groups.values()) == 2
-        assert owner.binary_sources.status()["source_slots"] == 1
+        assert owner.binary_sources.status()["source_slots"] == 0
+        for rows in owner.terminal.groups.values():
+            for row in rows:
+                snapshot = row["prepared_input"]
+                assert hashlib.sha256(snapshot.body).hexdigest() == snapshot.member.payload.sha256
         facts = [
             r for r in owner.wal.records_since(0) if r["request"].get("operation") == "episode_end"
         ]
@@ -1171,7 +1175,9 @@ def test_binary_listener_preserves_safe_remote_exception_diagnostic(tmp_path, mo
         server.close()
 
 
-def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tmp_path):
+@pytest.mark.parametrize("cached_first", [False, True])
+def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(
+        tmp_path, cached_first):
     from types import SimpleNamespace
 
     from stpd.rl.segment_learner import SegmentLearner
@@ -1200,8 +1206,9 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tm
         with owner.binary_sources.borrow(ref) as raw:
             calls.append((ref, bytes(raw)))
 
-    owner.input_preparer = SimpleNamespace(prefetch=prefetch)
     refs = []
+    owner.input_preparer = SimpleNamespace(prefetch=prefetch,
+        cached_sources=lambda: frozenset(refs[:1]) if cached_first else frozenset())
     for index in range(4):
         value = encoded(
             bytes([index]),
@@ -1228,12 +1235,14 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tm
         until = time.monotonic() + 2
         while time.monotonic() < until:
             with owner.condition:
-                if len(calls) == 2 and not any(
+                if len(calls) == (1 if cached_first else 2) and not any(
                     key[1] == "source-prefetch" for key in owner.hot_references
                 ):
                     break
             threading.Event().wait(0.01)
-        assert calls == [(refs[0], b"\x00"), (refs[1], b"\x01")]
+        expected = [(refs[1], b"\x01")] if cached_first else [
+            (refs[0], b"\x00"), (refs[1], b"\x01")]
+        assert calls == expected
         assert owner.queue.state() == before
         assert [owner.queue.dataset()[0]["segment_id"] for _ in range(2)] == ["a0/0", "a1/0"]
     finally:

@@ -131,7 +131,8 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
                           samples: list[dict[str, Any]], *, now: float,
                           version: int, updates: int) -> dict[str, Any]:
     """Mergeable observations of successful first-use multi-choice rows only."""
-    selected = {row for row in newly_used if bool(batch.policy_mask[row])}
+    policy_mask = batch.policy_mask.tolist()
+    selected = {row for row in newly_used if policy_mask[row]}
     rows = []
     for sample in samples:
         if sample["row"] not in selected:
@@ -1559,7 +1560,7 @@ class SegmentLearner:
         """Coalesce commit hints; copy/decode sources before numerical selection.
 
         A normal admitted queue already enforces the per-episode row limit, so
-        its first two datasets are a FIFO prefix. This only reads that prefix;
+        its preparation window is a FIFO prefix. This only reads that prefix;
         it never freezes a request, samples auxiliary rows or advances RNG.
         """
         while True:
@@ -1569,14 +1570,20 @@ class SegmentLearner:
                 return
             held: list[BatchMember] = []
             try:
+                # Read this cache hint before taking the control lock. A later
+                # eviction can lose a hint, never change the authoritative
+                # consumer's reservation/read. Cached prefixes need no repeated
+                # provider retain/envelope/release on every incoming commit.
+                cached = cast("BinaryBatchPreparer", self.input_preparer).cached_sources()
                 with self.condition:
                     if self.newlease_stopped or self.input_fenced:
                         continue
                     rows = 0
                     for record in self.queue.pending:
                         member = self._member(record)
-                        self._retain(member.payload, "source-prefetch")
-                        held.append(member)
+                        if member.payload not in cached:
+                            self._retain(member.payload, "source-prefetch")
+                            held.append(member)
                         rows += member.rows
                         if rows >= (self.prepared_batches + 1) * self.settings.dataset_rows:
                             break
@@ -1718,12 +1725,16 @@ class SegmentLearner:
             before = {key: values for key, values in pool.groups.items()}
             owner = f"aux:{kind}:{identity}"
             for member in {row["member"].segment_id: row["member"] for row in rows}.values():
-                self._retain(member.payload, owner)
+                # Binary labels already own their complete verified packet in
+                # prepared_input. Keeping a second spool pin blocks uploads.
+                if not isinstance(member.payload, BinaryRef):
+                    self._retain(member.payload, owner)
             pool.add(identity, rows)
             for key, old in before.items():
                 if key not in pool.groups:
                     for member in {row["member"].segment_id: row["member"] for row in old}.values():
-                        self._release(member.payload, f"aux:{kind}:{key}")
+                        if not isinstance(member.payload, BinaryRef):
+                            self._release(member.payload, f"aux:{kind}:{key}")
 
     def _collect_labels(self, *, wait: bool = False) -> None:
         while self.pending_labels and (wait or self.pending_labels[0][0].done()):
@@ -1960,7 +1971,8 @@ class SegmentLearner:
         if result["stepped"]:
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
             self.first_use += len(newly_used)
-            self.first_use_multi += sum(bool(batch.policy_mask[i]) for i in newly_used)
+            policy_mask = batch.policy_mask.tolist()
+            self.first_use_multi += sum(policy_mask[i] for i in newly_used)
             active["used"].extend(newly_used)
             with self.condition:
                 for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
@@ -1979,7 +1991,8 @@ class SegmentLearner:
                         for member in {
                             row["member"].segment_id: row["member"] for row in retired
                         }.values():
-                            if member.segment_id not in remaining:
+                            if (member.segment_id not in remaining
+                                    and not isinstance(member.payload, BinaryRef)):
                                 self._release(member.payload, f"aux:{kind}:{identity}")
             decay = self.settings.ema_decay
             with torch.no_grad():

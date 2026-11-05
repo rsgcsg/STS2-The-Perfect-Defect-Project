@@ -419,6 +419,7 @@ class Actor:
                    "model_prefetch_events": self.prefetch.events, "games": self.games}
         if self.segment_mode:
             summary["local_mu"] = self.actor_pool.scorer.report()
+            summary["segment_timing"] = self.actor_pool.timing_report()
         try:
             archive = self.exchange.drain_archive()
         except StoreError as error:

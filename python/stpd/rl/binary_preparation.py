@@ -594,6 +594,11 @@ class BinaryBatchPreparer:
                 ),
             }
 
+    def cached_sources(self) -> frozenset[BinaryRef]:
+        """A speculative hint only; consumers still reserve/revalidate sources."""
+        with self.condition:
+            return frozenset(self.sources)
+
     def _pool(self, workers: int | None = None) -> ProcessPoolExecutor:
         return ProcessPoolExecutor(
             max_workers=self.workers if workers is None else workers,
@@ -719,7 +724,8 @@ class BinaryBatchPreparer:
                     self._wait_for_source(deadline)
 
     def _reserve(
-        self, refs: tuple[BinaryRef, ...]
+        self, refs: tuple[BinaryRef, ...],
+        snapshots: dict[BinaryRef, AuxiliaryInput] | None = None,
     ) -> tuple[tuple[_Descriptor, ...], tuple[int, ...]]:
         unique = tuple(dict.fromkeys(refs))
         if sum(ref.size for ref in unique) > self.maximum - 8 * self.slot_count:
@@ -732,8 +738,12 @@ class BinaryBatchPreparer:
             try:
                 for ref in unique:
                     if ref not in self.sources:
-                        # Refill from the immutable packet header itself.
-                        self._prefetch(ref, None)
+                        # AuxPool owns complete verified bytes after the upload
+                        # spool is released. A concurrent cache eviction must
+                        # refill that same snapshot, never reopen a retired ref.
+                        item = (snapshots or {}).get(ref)
+                        self._prefetch(ref, item.envelope if item else None,
+                                       item.body if item else None)
                     arena_index, descriptor = self.sources[ref]
                     self.arenas[arena_index].users += 1
                     arenas.append(arena_index)
@@ -894,7 +904,8 @@ class BinaryBatchPreparer:
             refs = tuple(m.payload for m in request.members) + tuple(
                 a.member.payload for a in selected
             )
-            descriptors, indices = self._reserve(refs)
+            descriptors, indices = self._reserve(
+                refs, {a.member.payload: a for a in selected})
             offset = len(request.members)
             auxiliary = tuple(
                 (indices[offset + i], a.source, a.member) for i, a in enumerate(selected)

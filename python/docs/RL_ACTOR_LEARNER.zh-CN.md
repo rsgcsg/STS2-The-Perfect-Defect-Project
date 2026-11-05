@@ -226,6 +226,8 @@ WAL `synchronous=FULL`在原输入ACK前落盘，异步不可变前缀复制沿�
 输入变更使用`input_gate → learner condition → source短元数据锁`顺序；等WAL提交只保留input gate，
 释放learner condition；容量等待不占input gate。WAL writer提交不占enqueue/receipt元数据锁，reader独立连接。
 上传write/hash只占各credit的IO锁，取消不等待在途write，字节额度在实际回收后释放。
+Binary AuxPool保存完整已验证snapshot后释放接收spool，不额外长期pin同一份原包；arena驱逐后仍从该snapshot的原字节恢复。
+status的`source_peak_reserved_bytes/source_byte_credit_wait_seconds`报告byte credit峰值与累计等待，不能当进程RSS。
 `lock_timing`默认关；开启后status提供两把锁按线程/调用方的wait/hold累计，Condition睡眠不算hold。
 重新打开旧本地WAL只提供fenced receipt读，不恢复grant、queue或SGD；正常恢复仍只读自包含CP并用新generation/work。
 原`receipt`保留完整原请求与response，丢回复先查询；unknown不自动重发。STOP停止新lease，

@@ -112,6 +112,16 @@ def test_spawn_full_aux_hash_request_rng_and_provider_lifetime(model, tmp_path):
             {"segment_id": member.segment_id, "payload": dc.asdict(member.payload)}
         ]
         groups = preparer.verify_labels(labels, (member,)).result(timeout=30)
+        from stpd.rl.segment_learner import SegmentLearner
+        from stpd.rl.segments import AuxiliaryPool
+
+        owner = SegmentLearner.__new__(SegmentLearner)
+        owner.terminal, owner.hp = AuxiliaryPool(256, 2), AuxiliaryPool(128, 1)
+        # The provider deliberately rejects long-lived business pins; verified
+        # Binary AuxPool snapshots own their bytes independently of that spool.
+        owner._retain, owner._release = provider.retain, provider.release
+        owner._add_auxiliary(groups)
+        assert owner.terminal.groups and owner.hp.groups
         snapshots = tuple(row["prepared_input"] for _, _, rows in groups for row in rows)
         selections = tuple(
             AuxiliarySelection(
@@ -193,6 +203,15 @@ def test_late_aux_packet_survives_PPO_retirement_and_verifies_original_public_hp
         current_encoded = enc.encode(current)
         provider.packets[member_current.payload] = current_encoded.packet
         preparer.prefetch(member_current.payload, current_encoded.envelope)
+        reserve = preparer._reserve
+        def evicted_between_prefetch_and_reservation(refs, snapshots=None):
+            # Reproduce the cache-eviction boundary after an aux upload has
+            # already retired. Its immutable AuxPool bytes must still suffice.
+            for ref in snapshots or {}:
+                preparer.sources.pop(ref, None)
+                preparer.source_jobs.pop(ref, None)
+            return reserve(refs, snapshots)
+        preparer._reserve = evicted_between_prefetch_and_reservation
         batch = preparer.submit(req, items).result(timeout=30)
         original_late = source(model, late)
         aux_frames = tuple(
