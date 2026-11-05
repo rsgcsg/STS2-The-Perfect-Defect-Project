@@ -14,6 +14,7 @@ from spireagent.rl_dataplane_ports import (
     CONTROL_SCHEMA,
     MAX_PACKET_BYTES,
     TENSOR_SEGMENT_FORMAT,
+    BinaryRef,
     EncodedSegment,
 )
 from spireagent.rl_exchange import control_input, input_key
@@ -403,9 +404,12 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
         original = empty_exchange.latest_model(training_generation="initial")
         package = empty_exchange.materialize_model(original, tmp_path / "bootstrap")
         assert (package / "model.tensor-tree").read_bytes() == (
-            tmp_path / "node" / identity["snapshot_sha256"] / "model.tensor-tree").read_bytes()
-        assert empty_exchange.store.get_manifest(identity["model_artifact_id"]).artifact_id == (
-            identity["model_artifact_id"])
+            tmp_path / "node" / identity["snapshot_sha256"] / "model.tensor-tree"
+        ).read_bytes()
+        assert (
+            empty_exchange.store.get_manifest(identity["model_artifact_id"]).artifact_id
+            == (identity["model_artifact_id"])
+        )
         assert empty_exchange.materialize_model(original, tmp_path / "bootstrap") == package
         actor_exchange = Exchange(peer, "r")
 
@@ -602,6 +606,7 @@ def capacity_owner(tmp_path, lanes):
     owner.condition = owner.queue.condition = threading.Condition(owner.control_lock)
     owner.capacity_waiters, owner.episode_load, owner.lease_owners = {}, {}, {}
     owner.capacity_tickets = 0
+    owner.source_prefetch_changed = threading.Event()
     owner.actor_episodes = {f"a{i}:e": "e" for i in range(lanes)}
     owner.retired_actors = set()
     owner.input_fenced = owner.newlease_stopped = False
@@ -818,6 +823,16 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     actor_pools, connections = [], []
     values, deliveries = {}, []
     tensor_init = TensorFrame.__init__
+    prefetch_entered, prefetch_release = threading.Event(), threading.Event()
+    original_prefetch = owner.input_preparer.prefetch
+
+    def delayed_prefetch(ref, envelope):
+        if not prefetch_entered.is_set():
+            prefetch_entered.set()
+            assert prefetch_release.wait(5)
+        return original_prefetch(ref, envelope)
+
+    monkeypatch.setattr(owner.input_preparer, "prefetch", delayed_prefetch)
 
     def no_control_tensor(self, *args, **kwargs):
         if threading.current_thread().name == "rl-channel":
@@ -865,10 +880,30 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
             }
             producer.binary_spools = {}
             row = {"intent_id": episode}
+            selection_rng = owner.rng.getstate()
             delivery = producer._commit_binary_segment(row, connection, value)
             deliveries.append(delivery)
             assert delivery["segment_artifact_id"].startswith("tensor:")
             assert owner.queue.rows == len(deliveries) * 2
+            if actor == "a":
+                assert prefetch_entered.wait(2)  # commit starts before a dataset exists
+                # A blocked source copy must hold neither the control handler
+                # nor learner lock; the original receipt remains serviceable.
+                status = admission.request("status")
+                assert status["run"] == config.run and not status["input_fenced"]
+                prefetch_release.set()
+            ref = BinaryRef(**delivery["payload"])
+            until = time.monotonic() + 5
+            while time.monotonic() < until:
+                with owner.input_preparer.condition:
+                    source_job = owner.input_preparer.source_jobs.get(ref)
+                if source_job is not None:
+                    source_job.result(5)
+                    break
+                threading.Event().wait(0.01)
+            else:
+                pytest.fail("committed FIFO head was not prefetched before selection")
+            assert owner.rng.getstate() == selection_rng
             assert (
                 producer._end_episode(
                     connection,
@@ -930,6 +965,7 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
             )
         )
     finally:
+        prefetch_release.set()
         for connection in connections:
             connection.close()
         for pool in actor_pools:
@@ -939,25 +975,26 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
 
 def test_closed_episode_returns_unused_wakeup_ticket_to_next_waiter(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
+
     owner = capacity_owner(tmp_path, 2)
     workers = ThreadPoolExecutor(max_workers=2)
-    a = workers.submit(owner.control, begin_request('a0'))
-    until = time.monotonic()+3
+    a = workers.submit(owner.control, begin_request("a0"))
+    until = time.monotonic() + 3
     while len(owner.capacity_waiters) != 1 and time.monotonic() < until:
-        threading.Event().wait(.01)
-    b = workers.submit(owner.control, begin_request('a1'))
+        threading.Event().wait(0.01)
+    b = workers.submit(owner.control, begin_request("a1"))
     try:
-        until = time.monotonic()+3
+        until = time.monotonic() + 3
         while len(owner.capacity_waiters) != 2 and time.monotonic() < until:
-            threading.Event().wait(.01)
+            threading.Event().wait(0.01)
         with owner.condition:
             selected = owner.queue.dataset()
             owner._dataset_released(selected)
             assert owner.capacity_tickets == 1
-            owner.actor_episodes.pop('a0:e')
+            owner.actor_episodes.pop("a0:e")
             owner._notify_capacity()
-        assert a.result(timeout=3) == {'stopped': True}
-        assert b.result(timeout=3)['lease'] == 'a1/0'
+        assert a.result(timeout=3) == {"stopped": True}
+        assert b.result(timeout=3)["lease"] == "a1/0"
         assert owner.queue.occupied == 2 and owner.capacity_tickets == 0
     finally:
         with owner.condition:
@@ -967,7 +1004,9 @@ def test_closed_episode_returns_unused_wakeup_ticket_to_next_waiter(tmp_path):
         owner.wal.close()
 
 
-def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(tmp_path, monkeypatch):
+def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(
+    tmp_path, monkeypatch
+):
     import dataclasses
     import socket
     import uuid
@@ -981,61 +1020,122 @@ def test_late_terminal_witness_only_aux_survives_ppo_retirement_and_closes_once(
     from stpd.rl.segment_learner import SegmentLearner
     from stpd.rl.tensor_segment import TensorSegmentEncoder
 
-    config, io = configuration(tmp_path, monkeypatch, generation='g-aux-'+uuid.uuid4().hex[:12])
-    config = dataclasses.replace(config, segments=dataclasses.replace(config.segments, episode_rows=8))
-    io = dataclasses.replace(io, dataplane={'lanes': 1, 'root': str(tmp_path/'live'),
-        'source_bytes': 64*1024**2, 'source_slots': 16, 'prepare_slots': 2, 'assembly_workers': 1})
-    owner = SegmentLearner(config, tmp_path/'owner', io)
+    config, io = configuration(tmp_path, monkeypatch, generation="g-aux-" + uuid.uuid4().hex[:12])
+    config = dataclasses.replace(
+        config, segments=dataclasses.replace(config.segments, episode_rows=8)
+    )
+    io = dataclasses.replace(
+        io,
+        dataplane={
+            "lanes": 1,
+            "root": str(tmp_path / "live"),
+            "source_bytes": 64 * 1024**2,
+            "source_slots": 16,
+            "prepare_slots": 2,
+            "assembly_workers": 1,
+        },
+    )
+    owner = SegmentLearner(config, tmp_path / "owner", io)
     for key, value in owner.pool.environment().items():
         monkeypatch.setenv(key, value)
     endpoint = owner.pool.attachment()
-    scorer = LocalMuScorer(owner.exchange, tmp_path/'mu')
+    scorer = LocalMuScorer(owner.exchange, tmp_path / "mu")
     connection = SegmentConnection(endpoint)
-    cache = NodeMuCache(endpoint, tmp_path/'node')
+    cache = NodeMuCache(endpoint, tmp_path / "node")
     values, records = [], []
     try:
-        connection.request('episode_open', actor='p', episode='episode')
-        encoder = TensorSegmentEncoder(vocabulary=owner.model.vocabulary,
+        connection.request("episode_open", actor="p", episode="episode")
+        encoder = TensorSegmentEncoder(
+            vocabulary=owner.model.vocabulary,
             compiler_identity=owner.compiler_identity,
-            recipe={**owner.pool.binary_profile['binary_recipe'], 'actor': 'p'}, spool=tmp_path/'spool')
+            recipe={**owner.pool.binary_profile["binary_recipe"], "actor": "p"},
+            spool=tmp_path / "spool",
+        )
         for i in range(2):
             with cache.latest() as identity:
-                grant = connection.request('begin', actor='p', episode='episode',
-                    previous_lease=records[-1]['segment_id'] if records else None,
-                    node_id=socket.gethostname(), node_cached_mu_snapshot=identity['snapshot_sha256'])
-            scorer.adopt(grant['mu'])
-            value = segment(scorer.models[grant['mu']['snapshot_sha256']], name=grant['lease'],
-                run_id='episode', rows=2, start=2*i, generation=owner.generation,
-                mu=grant['mu'], terminal=i == 1)
+                grant = connection.request(
+                    "begin",
+                    actor="p",
+                    episode="episode",
+                    previous_lease=records[-1]["segment_id"] if records else None,
+                    node_id=socket.gethostname(),
+                    node_cached_mu_snapshot=identity["snapshot_sha256"],
+                )
+            scorer.adopt(grant["mu"])
+            value = segment(
+                scorer.models[grant["mu"]["snapshot_sha256"]],
+                name=grant["lease"],
+                run_id="episode",
+                rows=2,
+                start=2 * i,
+                generation=owner.generation,
+                mu=grant["mu"],
+                terminal=i == 1,
+            )
             encoded_value = encoder.encode(value)
             ref = upload(endpoint, encoded_value)
-            record = {'segment_id': grant['lease'], 'payload': asdict(ref), 'rows': 2,
-                      'training_generation': owner.generation, 'segment_artifact_id': 'tensor:'+ref.slot}
-            connection.request('commit', **record, run=config.run, run_id='episode',
-                               mu=grant['mu'], envelope=encoded_value.envelope)
+            record = {
+                "segment_id": grant["lease"],
+                "payload": asdict(ref),
+                "rows": 2,
+                "training_generation": owner.generation,
+                "segment_artifact_id": "tensor:" + ref.slot,
+            }
+            connection.request(
+                "commit",
+                **record,
+                run=config.run,
+                run_id="episode",
+                mu=grant["mu"],
+                envelope=encoded_value.envelope,
+            )
             values.append(value)
             records.append(record)
         assert owner._prepare()
-        assert owner.binary_sources.status()['source_slots'] == 0
+        assert owner.binary_sources.status()["source_slots"] == 0
         # Valid selected old rows plus a terminal-only final source. No original
         # PPO body remains, so only the exact aux alias can verify the final witness.
-        labels = {'run': config.run, 'training_generation': owner.generation, 'actor': 'p',
-            'episode': 'episode', 'run_id': 'episode', 'terminal': values[-1]['terminal'],
-            'typed_original': values[-1]['terminal']['typed_original'], 'unqualified': False,
-            'outcome_states': [{'source': {'run_id': 'episode', 'segment_id': records[0]['segment_id'],
-                'training_generation': owner.generation, 'row': i, 'key': f'episode:{i}'},
-                'outcome': 3} for i in range(2)], 'hp_battles': [], 'segments': records}
+        labels = {
+            "run": config.run,
+            "training_generation": owner.generation,
+            "actor": "p",
+            "episode": "episode",
+            "run_id": "episode",
+            "terminal": values[-1]["terminal"],
+            "typed_original": values[-1]["terminal"]["typed_original"],
+            "unqualified": False,
+            "outcome_states": [
+                {
+                    "source": {
+                        "run_id": "episode",
+                        "segment_id": records[0]["segment_id"],
+                        "training_generation": owner.generation,
+                        "row": i,
+                        "key": f"episode:{i}",
+                    },
+                    "outcome": 3,
+                }
+                for i in range(2)
+            ],
+            "hp_battles": [],
+            "segments": records,
+        }
         producer = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
         producer.attachment = endpoint
-        producer.binary_encoders = {'episode': encoder}
+        producer.binary_encoders = {"episode": encoder}
         auxiliary = producer._upload_auxiliary(labels)
         assert len(auxiliary) == 2
-        result = connection.request('episode_end', **labels, binary_aux=auxiliary)
-        assert result == {'run_id': 'episode'}
+        result = connection.request("episode_end", **labels, binary_aux=auxiliary)
+        assert result == {"run_id": "episode"}
         assert sum(len(rows) for rows in owner.terminal.groups.values()) == 2
-        assert owner.binary_sources.status()['source_slots'] == 1
-        facts = [r for r in owner.wal.records_since(0) if r['request'].get('operation') == 'episode_end']
-        assert len(facts) == 1 and owner.wal.receipt(facts[0]['key'], facts[0]['request'])['response'] == result
+        assert owner.binary_sources.status()["source_slots"] == 1
+        facts = [
+            r for r in owner.wal.records_since(0) if r["request"].get("operation") == "episode_end"
+        ]
+        assert (
+            len(facts) == 1
+            and owner.wal.receipt(facts[0]["key"], facts[0]["request"])["response"] == result
+        )
     finally:
         connection.close()
         scorer.close()
@@ -1065,3 +1165,175 @@ def test_binary_listener_preserves_safe_remote_exception_diagnostic(tmp_path, mo
         assert 'diagnostic message must remain private' not in str(facts)
     finally:
         server.close()
+
+
+def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(tmp_path):
+    from types import SimpleNamespace
+
+    from stpd.rl.segment_learner import SegmentLearner
+    from stpd.rl.segments import SegmentConfig, SegmentQueue
+
+    owner = SegmentLearner.__new__(SegmentLearner)
+    owner.settings = SegmentConfig(
+        steps=1, dataset_rows=1, minibatches=1, episode_rows=1, capacity_rows=4
+    )
+    owner.queue = SegmentQueue(owner.settings)
+    owner.condition = owner.queue.condition
+    owner.binary_sources = BinarySources(tmp_path / "bodies", run="r", generation="g")
+    owner.hot_references = {}
+    owner.wal = object()
+    owner.source_prefetch_changed = threading.Event()
+    owner.source_prefetch_stopping = threading.Event()
+    owner.source_prefetch_gate = threading.Lock()
+    owner.newlease_stopped = owner.input_fenced = False
+    calls = []
+
+    def prefetch(ref, _envelope):
+        with owner.condition:
+            assert (ref.slot, "source-prefetch") in owner.hot_references
+        with owner.binary_sources.borrow(ref) as raw:
+            calls.append((ref, bytes(raw)))
+
+    owner.input_preparer = SimpleNamespace(prefetch=prefetch)
+    refs = []
+    for index in range(4):
+        value = encoded(
+            bytes([index]),
+            actor=f"a{index}",
+            episode=f"e{index}",
+            segment_id=f"a{index}/0",
+            run_id=f"world{index}",
+            rows=1,
+        )
+        credit = owner.binary_sources.begin(value.envelope)
+        owner.binary_sources.chunk(credit, value.packet)
+        ref = owner.binary_sources.finish(credit)
+        refs.append(ref)
+        owner._retain(ref, "ppo:" + value.envelope["segment_id"])
+        owner.binary_sources.release(ref, "upload")
+        record = {**value.envelope, "payload": asdict(ref)}
+        assert owner.queue.reserve(record["segment_id"])
+        owner.queue.commit(record["segment_id"], record)
+    before = owner.queue.state()
+    worker = threading.Thread(target=owner._source_prefetch_loop)
+    worker.start()
+    try:
+        owner.source_prefetch_changed.set()
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            with owner.condition:
+                if len(calls) == 2 and not any(
+                    key[1] == "source-prefetch" for key in owner.hot_references
+                ):
+                    break
+            threading.Event().wait(0.01)
+        assert calls == [(refs[0], b"\x00"), (refs[1], b"\x01")]
+        assert owner.queue.state() == before
+        assert [owner.queue.dataset()[0]["segment_id"] for _ in range(2)] == ["a0/0", "a1/0"]
+    finally:
+        owner.source_prefetch_stopping.set()
+        owner.source_prefetch_changed.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        for ref, index in zip(refs, range(4), strict=True):
+            owner._release(ref, f"ppo:a{index}/0")
+    assert owner.binary_sources.status()["spool_bytes"] == 0
+
+
+def test_checkpoint_barrier_pauses_background_source_copy_without_fencing(tmp_path, monkeypatch):
+    """Real CP entry/barrier; CP serialization is outside this source-lifetime check."""
+    import random
+    from concurrent.futures import Future, ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    pytest.importorskip("stpd.rl.binary_preparation")
+    import stpd.rl.segment_learner as module
+    from stpd.rl.binary_preparation import BinaryBatchPreparer
+    from stpd.rl.segments import SegmentConfig, SegmentQueue
+
+    owner = module.SegmentLearner.__new__(module.SegmentLearner)
+    owner.settings = SegmentConfig(
+        steps=1, dataset_rows=1, minibatches=1, episode_rows=1, capacity_rows=4
+    )
+    owner.queue = SegmentQueue(owner.settings)
+    owner.condition = owner.queue.condition
+    owner.binary_sources = BinarySources(tmp_path / "bodies", run="r", generation="g")
+    owner.hot_references, owner.capacity_waiters = {}, {}
+    owner.wal = object()
+    owner.generation = "g"
+    owner.source_prefetch_changed = threading.Event()
+    owner.source_prefetch_stopping = threading.Event()
+    owner.source_prefetch_gate = threading.Lock()
+    owner.newlease_stopped = owner.input_fenced = False
+    preparer = BinaryBatchPreparer(
+        provider=owner.binary_sources,
+        vocabulary={},
+        workers=1,
+        threads=1,
+        scratch=tmp_path / "scratch",
+        source_slots=2,
+        max_source_bytes=1024,
+        assembly_workers=1,
+    )
+    owner.input_preparer = preparer
+    value = encoded(b"queued-packet", rows=1)
+    credit = owner.binary_sources.begin(value.envelope)
+    owner.binary_sources.chunk(credit, value.packet)
+    ref = owner.binary_sources.finish(credit)
+    owner._retain(ref, "ppo:a/0")
+    owner.binary_sources.release(ref, "upload")
+    owner.queue.reserve("a/0")
+    owner.queue.commit("a/0", {**value.envelope, "payload": asdict(ref)})
+    owner.active = owner.pending_batch = owner.checkpoint_encoding = None
+    owner.checkpoints = SimpleNamespace(pending=False)
+    owner._collect_checkpoint = lambda **_: None
+    owner._collect_labels = lambda **_: None
+    owner.rng = random.Random(7)
+    owner.committed_selection_rng = owner.rng.getstate()
+    owner.checkpoint_sequence = 0
+    owner._learning_state = owner._memory = lambda: {}
+    owner._event = lambda *_, **__: None
+    owner.checkpoint_encoder = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(module, "_encode_snapshot", lambda state: state)
+    pending = Future()
+    preparer.pending.add(pending)
+    copied = threading.Event()
+
+    def prefetch(_ref, _envelope):
+        assert not preparer.fenced
+        copied.set()
+
+    monkeypatch.setattr(preparer, "prefetch", prefetch)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        checkpoint = executor.submit(owner.checkpoint)
+        until = time.monotonic() + 2
+        while not preparer.fenced and time.monotonic() < until:
+            threading.Event().wait(0.001)
+        assert preparer.fenced
+        worker = threading.Thread(target=owner._source_prefetch_loop)
+        worker.start()
+        try:
+            owner.source_prefetch_changed.set()
+            until = time.monotonic() + 2
+            while (ref.slot, "source-prefetch") not in owner.hot_references:
+                assert time.monotonic() < until
+                threading.Event().wait(0.001)
+            assert not copied.wait(0.05) and not owner.input_fenced
+            assert owner.condition.acquire(timeout=1)
+            owner.condition.release()
+            pending.set_result(None)
+            checkpoint.result(2)
+            assert copied.wait(2)
+        finally:
+            if not pending.done():
+                pending.set_result(None)
+            checkpoint.result(2)
+            owner.source_prefetch_stopping.set()
+            owner.source_prefetch_changed.set()
+            worker.join(2)
+            assert not worker.is_alive()
+            preparer.shutdown()
+            owner.checkpoint_encoder.shutdown()
+            owner._release(ref, "ppo:a/0")
+    assert not owner.input_fenced and not owner.newlease_stopped
+    assert not owner.hot_references and owner.binary_sources.status()["spool_bytes"] == 0
