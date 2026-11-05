@@ -979,6 +979,23 @@ def verify_auxiliary(
     consumer checks the exact terminal witness, source row and public HP binding;
     it never upgrades an unknown or reconstructs combat legality.
     """
+    return verify_auxiliary_sources(request, members,
+        read_source=lambda member: (
+            _worker["reader"](_worker["exchange"], member.payload, scratch=_worker["scratch"])
+            if _worker["reader"] is not None
+            else _worker["exchange"].read_hot_segment(member.payload)),
+        snapshot_row=_snapshot_auxiliary_input,
+        excluded_seeds=_worker["excluded_seeds"])
+
+
+def verify_auxiliary_sources(
+    request: dict[str, Any], members: tuple[Any, ...], *,
+    read_source: Callable[[Any], dict[str, Any]],
+    snapshot_row: Callable[[Any, dict[str, Any], int], AuxiliaryInput],
+    excluded_seeds: frozenset[str] = frozenset(),
+    successor_digest: Callable[[dict[str, Any]], str] | None = None,
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """The one label rule implementation, independent of JSON/binary transport."""
     from stpd.p1.data import digest, json_bytes
 
     from .heads import class_reward_values
@@ -990,13 +1007,8 @@ def verify_auxiliary(
 
     def load(member: Any) -> dict[str, Any]:
         if member.segment_id not in loaded:
-            reader = _worker["reader"]
-            segment = (
-                reader(_worker["exchange"], member.payload, scratch=_worker["scratch"])
-                if reader is not None
-                else _worker["exchange"].read_hot_segment(member.payload)
-            )
-            validate_training_source(segment, _worker["excluded_seeds"])
+            segment = read_source(member)
+            validate_training_source(segment, excluded_seeds)
             if (
                 segment["segment_id"] != member.segment_id
                 or segment["run_id"] != member.run_id
@@ -1033,7 +1045,7 @@ def verify_auxiliary(
     def snapshot(member: Any, segment: dict[str, Any], index: int) -> AuxiliaryInput:
         key = member.segment_id, index
         if key not in inputs:
-            inputs[key] = _snapshot_auxiliary_input(member, segment, index)
+            inputs[key] = snapshot_row(member, segment, index)
         return inputs[key]
 
     terminal = request.get("terminal")
@@ -1055,7 +1067,8 @@ def verify_auxiliary(
         if "payload" in final_ref:
             final_member = by_slot[final_ref["payload"]["slot"]]
         else:
-            final_member = by_slot[final_ref["segment_artifact_id"].removeprefix("hot:")]
+            slot = final_ref["segment_artifact_id"].removeprefix("hot:").removeprefix("tensor:")
+            final_member = by_slot[slot]
         final = load(final_member)
         if (
             final["terminal"] != terminal
@@ -1101,17 +1114,19 @@ def verify_auxiliary(
             )
             if boundary_source is None:
                 raise ValueError("battle_hp_boundary_changed")
-            boundary = next(
+            boundary_step = next(
                 step
                 for step in boundary_source["steps"]
                 if step["step_index"] == battle["boundary_step_index"]
-            )["successor"]
+            )
+            boundary = boundary_step["successor"]
             observation = boundary["observation"]
             if (
                 boundary["acquisition_id"] != battle["boundary_acquisition_id"]
                 or (
                     battle.get("boundary_input_sha256") is not None
-                    and battle["boundary_input_sha256"] != digest(json_bytes(boundary))
+                    and battle["boundary_input_sha256"] != (successor_digest(boundary_step)
+                        if successor_digest else digest(json_bytes(boundary)))
                 )
                 or not str((observation.get("scene") or {}).get("native_kind", "")).startswith(
                     "reward"

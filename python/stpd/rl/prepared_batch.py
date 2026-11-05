@@ -13,6 +13,7 @@ from typing import Any, Literal
 from torch import Tensor
 
 from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
+from spireagent.rl_dataplane_ports import BinaryRef
 from stpd.p1.tensor_input import JointNodes, TensorFrame
 
 
@@ -20,7 +21,7 @@ from stpd.p1.tensor_input import JointNodes, TensorFrame
 @dataclass(frozen=True)
 class BatchMember:
     segment_id: str
-    payload: HotPayloadRef
+    payload: HotPayloadRef | BinaryRef
     run_id: str
     rows: int
     mu_snapshot_sha256: str
