@@ -629,6 +629,7 @@ def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails
         pool=SimpleNamespace(close=pool_close),
         archive=Archive(),
         publisher=SimpleNamespace(shutdown=lambda **kw: called.append("publisher")),
+        header_checks=SimpleNamespace(shutdown=lambda **kw: called.append("header_checks")),
         telemetry=SimpleNamespace(shutdown=lambda **kw: called.append("telemetry")),
         checkpoint_encoder=SimpleNamespace(shutdown=lambda **kw: called.append("encoder")),
         checkpoints=SimpleNamespace(__exit__=lambda *args: called.append("checkpoints")),
@@ -644,6 +645,7 @@ def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails
         "encoder",
         "telemetry",
         "publisher",
+        "header_checks",
     }
 
 

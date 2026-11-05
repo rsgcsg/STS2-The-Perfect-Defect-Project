@@ -397,6 +397,11 @@ class BinarySources:
                 state["borrows"] -= 1
                 self._reclaim(ref.slot)
 
+    def path(self, ref: BinaryRef) -> Path:
+        """The immutable spool file; callers hold borrow(ref) while another reader uses it."""
+        with self.condition:
+            return cast(Path, self._entry(ref)["path"])
+
     def retain(self, ref: BinaryRef, owner: str) -> None:
         with self.condition:
             self._entry(ref)["owners"].add(owner)

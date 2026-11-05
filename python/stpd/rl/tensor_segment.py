@@ -296,6 +296,18 @@ def packet_header(raw: bytes | memoryview) -> dict[str, Any]:
     return header
 
 
+def packet_header_fields(path: str, size: int, fields: tuple[str, ...]) -> dict[str, Any]:
+    """Worker-side packet_header of an immutable spool file; returns only named fields."""
+    import mmap
+
+    with open(path, "rb") as stream, mmap.mmap(
+            stream.fileno(), 0, access=mmap.ACCESS_READ) as body:
+        if len(body) != size:
+            raise ValueError("binary_magic_or_size_changed")
+        header = packet_header(body)
+    return {name: header[name] for name in fields}
+
+
 def decode_packet(
     raw: bytes | memoryview,
     *,

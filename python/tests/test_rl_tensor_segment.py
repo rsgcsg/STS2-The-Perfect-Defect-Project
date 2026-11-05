@@ -16,7 +16,12 @@ from test_rl41_w1 import request, segment, source
 from spireagent.rl_dataplane_ports import TENSOR_SEGMENT_MAGIC
 from stpd.p1.data import json_bytes
 from stpd.rl import batch_preparation as bp
-from stpd.rl.tensor_segment import TensorSegmentEncoder, decode_packet
+from stpd.rl.tensor_segment import (
+    TensorSegmentEncoder,
+    decode_packet,
+    packet_header,
+    packet_header_fields,
+)
 
 
 def encoder(model, tmp_path):
@@ -185,3 +190,14 @@ def test_spool_bound_and_immutable_identity(model, tmp_path):
     with pytest.raises(ValueError, match="spool_byte_limit"):
         enc.encode(value)
     assert not list(tmp_path.glob("*.stseg"))
+
+
+def test_worker_header_fields_match_in_process_header_and_reject_size_change(model, tmp_path):
+    encoded = encoder(model, tmp_path).encode(segment(model))
+    path = tmp_path / "packet.bin"
+    path.write_bytes(encoded.packet)
+    header = packet_header(encoded.packet)
+    assert packet_header_fields(str(path), len(encoded.packet), ("envelope",)) == {
+        "envelope": header["envelope"]}
+    with pytest.raises(ValueError, match="size_changed"):
+        packet_header_fields(str(path), len(encoded.packet) + 1, ("envelope",))

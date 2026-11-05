@@ -644,6 +644,10 @@ class SegmentLearner:
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_publisher_initialize,
         )
+        # Commit-time header checks decode ~7 MB of JSON per packet; in this
+        # process that held the GIL ~0.2 s per commit and starved the GPU step.
+        self.header_checks = ProcessPoolExecutor(
+            max_workers=4, mp_context=multiprocessing.get_context("spawn"))
         self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
         self.telemetry_futures: deque[Future[Any]] = deque()
         self.checkpoint_encoder = ThreadPoolExecutor(
@@ -1437,11 +1441,9 @@ class SegmentLearner:
         # workers perform complete read/decoding/target checks before ready.
         if self.wal is not None:
             from spireagent.rl_socket_transport import binary_ref
-            from stpd.rl.tensor_segment import packet_header
 
             ref = binary_ref(request["payload"])
-            with self.binary_sources.borrow(ref) as raw:
-                header = packet_header(raw)
+            header = self._packet_header_fields(ref, ("envelope",))
             if {**header["envelope"], "packet_size": ref.size,
                     "packet_sha256": ref.sha256} != request.get("envelope"):
                 raise BoundaryError("rl_learner", "IDENTITY_MISMATCH")
@@ -1521,10 +1523,19 @@ class SegmentLearner:
                     self.source_prefetch_changed.set()
             return result
 
+    def _packet_header_fields(self, ref: BinaryRef, fields: tuple[str, ...]) -> dict[str, Any]:
+        from stpd.rl.tensor_segment import packet_header_fields
+
+        # The borrow keeps the hash-checked immutable spool file alive while a
+        # worker parses it; this thread waits without holding the GIL.
+        with self.binary_sources.borrow(ref):
+            path = self.binary_sources.path(ref)
+            return cast(dict[str, Any], self.header_checks.submit(
+                packet_header_fields, str(path), ref.size, fields).result())
+
     def _binary_auxiliary_members(self, request: dict[str, Any],
                                   originals: tuple[BatchMember, ...]) -> tuple[BatchMember, ...]:
         from spireagent.rl_socket_transport import binary_ref
-        from stpd.rl.tensor_segment import packet_header
 
         by_segment = {m.segment_id: m for m in originals}
         result = []
@@ -1537,8 +1548,7 @@ class SegmentLearner:
                         "run", "training_generation", "actor", "episode", "run_id"))
                     or item["segment_id"] in seen or item["segment_id"] not in by_segment):
                 raise ValueError("binary_auxiliary_owner_or_envelope_changed")
-            with self.binary_sources.borrow(ref) as raw:
-                header = packet_header(raw)
+            header = self._packet_header_fields(ref, ("envelope", "witness"))
             original = by_segment[item["segment_id"]]
             witness = header["witness"]
             if ({**header["envelope"], "packet_size": ref.size,
@@ -2337,6 +2347,7 @@ class SegmentLearner:
             if self.wal is not None and not keep_journal:
                 cleanup.callback(self._close_journal)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.header_checks.shutdown, wait=True, cancel_futures=True)
             cleanup.callback(self.telemetry.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoint_encoder.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
