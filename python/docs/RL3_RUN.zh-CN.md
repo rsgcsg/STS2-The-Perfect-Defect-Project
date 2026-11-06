@@ -233,7 +233,8 @@ unknown的种子；旧轮原件和失败分母保留，新轮unknown一律不重
 仅此类已明确批准的继续采集，可在原evaluate prepare CLI增加
 `--unknown-policy continue_cleaned`（对应计划字段`unknown_policy`）；默认省略仍在首个
 unknown停止。该选项只允许清理已确认的unknown继续新槽，不重新提供旧unknown；
-未清理的world、save_failed或typed_original_verification_failed仍停止。原Pipeline、Ledger
+未清理的world或typed_original_verification_failed仍停止；已关闭局的save_failed（11-07起，
+两种策略都）只排除该局、继续新槽，批末重试一次保存（见MANAGED_PRESERVATION）。原Pipeline、Ledger
 审计、保存、来源与历史score_admitted字段不变，这个选项本身不赋予科学计分资格。
 
 本卡新轮按用户固定的研究配对规则单独报告：任一侧unknown，剔除该seed整对并列种子号、

@@ -5,6 +5,9 @@ Example: python -m stpd.evaluation.rl_observation --current result.json \
 Details are optional saved episode reports (``episodes``) or trajectory analysis
 (``rows``). They join by run_id, never by array position. Original ledgers own
 qualification; this projection cannot admit scores or infer Boss clearance.
+
+``--excluded-facts FACTS.json`` ({"games": {run_id: {"floor", "bosses"}}}) supplies
+public progress read from excluded originals for the reward lower bound only.
 """
 from __future__ import annotations
 
@@ -110,6 +113,13 @@ def load_cohort(path: Path, selection: str | None = None, *,
         if floor is not None and (type(floor) is not int or floor < 0):
             raise ValueError('nonnegative_integer_floor_required')
         lower_bound = floor
+        public_floor = slot.get('public_max_observed_floor')
+        if (public_floor is not None and floor is None
+                and slot['status'] in {'unknown', 'censored', 'save_failed'}):
+            if type(public_floor) is not int or public_floor < 0:
+                raise ValueError('nonnegative_integer_floor_required')
+            # Verified public progress before the error: a bound, never an endpoint.
+            lower_bound = public_floor
         detail_floor = outcome.get('max_observed_floor', floor)
         if detail_floor is not None and (type(detail_floor) is not int or detail_floor < 0):
             raise ValueError('nonnegative_integer_floor_required')
@@ -118,7 +128,7 @@ def load_cohort(path: Path, selection: str | None = None, *,
                     detail_floor is None or floor is not None and detail_floor < floor):
                 raise ValueError('detail_floor_mismatch')
             # A verified unresolved prefix adds observations, never a scored endpoint.
-            lower_bound = detail_floor
+            lower_bound = max(detail_floor, lower_bound or 0)
         scored = (ledger.get('score_admitted') is True and slot['status'] == 'finished'
                   and slot.get('score_eligible', True) is True
                   and slot.get('natural_result') in {'win', 'loss'})
@@ -289,18 +299,145 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         'rows': rows}
 
 
+def _reward_spec() -> dict[str, Any]:
+    from stpd.rl.reward import REWARD_SPEC
+
+    return REWARD_SPEC
+
+
+def _loss_reward(floor: int, bosses: int, ascension: Any) -> float | None:
+    spec = _reward_spec()
+    finish = spec['finish_floors'].get(str(ascension))
+    if not finish:
+        return None
+    return float(spec['loss_floor_scale'] * min(floor / finish, 1.0)
+                 ** spec['loss_progress_exponent'] + spec['boss_bonus'] * bosses)
+
+
+def _row_bosses(row: dict[str, Any]) -> int:
+    # Same public witness as training: outcome.boss_clearance; missing adds nothing.
+    count = row.get('boss_count')
+    return count if type(count) is int else len(row.get('boss_cleared_acts') or [])
+
+
+def official_reward(row: dict[str, Any], ascension: Any) -> float | None:
+    """Episode reward v2 of one admitted natural row; None means excluded."""
+    if not row.get('scored') or row.get('status') != 'finished':
+        return None
+    if row.get('result') == 'win':
+        return float(_reward_spec()['win'])
+    floor = row.get('floor')
+    if row.get('result') != 'loss' or type(floor) is not int or floor < 0:
+        return None
+    return _loss_reward(floor, _row_bosses(row), ascension)
+
+
+def reward_summary(cohort: dict[str, Any],
+                   excluded_facts: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Official reward-v2 mean plus the diagnostic bound [L, U] over every planned row.
+
+    L scores each excluded row (unknown, save_failed, censored, not_started, missing
+    floor) as a loss at its highest public floor and witnessed Bosses before the
+    error (``excluded_facts`` by run_id, else the row's verified lower bound, else
+    0); U scores it as a win (the reward maximum). Neither is a natural endpoint
+    and neither changes the official score or its denominator.
+    """
+    ascension = cohort.get('ascension')
+    official: dict[str, float] = {}
+    lower: dict[str, float] = {}
+    excluded = []
+    for row in cohort['rows']:
+        value = official_reward(row, ascension)
+        if value is not None:
+            official[row['seed']] = lower[row['seed']] = value
+            continue
+        fact = (excluded_facts or {}).get(row.get('run_id') or '')
+        if fact is not None:
+            floor, bosses, source = fact['floor'], fact['bosses'], 'excluded_facts'
+        else:
+            bound = row.get('observed_floor_lower_bound')
+            floor = bound if type(bound) is int else 0
+            bosses = len(row.get('boss_cleared_acts') or [])
+            source = 'row_lower_bound' if type(bound) is int else 'unobserved_zero'
+        if type(floor) is not int or floor < 0 or type(bosses) is not int or bosses < 0:
+            raise ValueError('nonnegative_integer_excluded_fact_required')
+        value = _loss_reward(floor, bosses, ascension)
+        lower[row['seed']] = value if value is not None else 0.0
+        excluded.append({'seed': row['seed'], 'run_id': row.get('run_id'),
+                         'status': row.get('status'), 'public_floor_lower_bound': floor,
+                         'bosses_witnessed': bosses, 'source': source})
+    planned = len(cohort['rows'])
+    win = float(_reward_spec()['win'])
+    total = sum(official.values())
+    return {'reward_spec': {k: _reward_spec()[k] for k in ('id', 'version')},
+        'ascension': ascension, 'planned': planned, 'scored': len(official),
+        'excluded': len(excluded),
+        'mean': total / len(official) if official else None,
+        'lower_bound': {
+            'L': sum(lower.values()) / planned if planned else None,
+            'U': (total + win * len(excluded)) / planned if planned else None,
+            'meaning': 'Diagnostic only: excluded rows as public-progress losses (L) or '
+                       'wins (U); not natural endpoints, not the official score.'},
+        'excluded_rows': excluded, 'by_seed': official, 'lower_by_seed': lower}
+
+
+def _paired_reward_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, Any]:
+    seeds = sorted(before.keys() & after.keys())
+    differences = [after[s] - before[s] for s in seeds]
+    interval = None
+    if len(differences) >= 2:
+        rng = random.Random(20261029)
+        samples = sorted(statistics.mean(rng.choices(differences, k=len(differences)))
+                         for _ in range(10000))
+        interval = [samples[250], samples[9749]]
+    return {'paired_n': len(differences),
+            'better': sum(d > 0 for d in differences), 'same': sum(d == 0 for d in differences),
+            'worse': sum(d < 0 for d in differences),
+            'mean_delta': statistics.mean(differences) if differences else None,
+            'paired_delta_standard_error': (statistics.stdev(differences) / math.sqrt(
+                len(differences)) if len(differences) >= 2 else None),
+            'bootstrap95_fixed_seed_sensitivity': interval}
+
+
+def compare_rewards(before: dict[str, Any], after: dict[str, Any], *,
+                    before_facts: dict[str, dict[str, Any]] | None = None,
+                    after_facts: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    if before.get('ascension') != after.get('ascension'):
+        raise ValueError('different_host_character_or_ascension')
+    old, new = reward_summary(before, before_facts), reward_summary(after, after_facts)
+    official = _paired_reward_delta(old['by_seed'], new['by_seed'])
+    bound = None
+    if old['planned'] and new['planned']:
+        bound = [new['lower_bound']['L'] - old['lower_bound']['U'],
+                 new['lower_bound']['U'] - old['lower_bound']['L']]
+    return {'official': official,
+            'mean_difference_bound': bound,
+            'lower_bound_paired': _paired_reward_delta(old['lower_by_seed'],
+                                                       new['lower_by_seed']),
+            'meaning': 'official = paired reward-v2 delta on seeds scored on both sides. '
+                       'mean_difference_bound = [L_new-U_old, U_new-L_old]. A difference of '
+                       'lower bounds is NOT a lower bound on improvement.'}
+
+
 def write_report(
     cohorts: dict[str, dict[str, Any]], output: Path, *, through_floor: int | None = None,
     scope_note: str | None = None,
+    excluded_facts: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     comparisons = {name: compare(cohort, cohorts['current'])
                    for name, cohort in cohorts.items() if name != 'current'}
+    rewards = {name: reward_summary(c, excluded_facts) for name, c in cohorts.items()}
+    reward_comparisons = {name: compare_rewards(cohort, cohorts['current'],
+                                                before_facts=excluded_facts,
+                                                after_facts=excluded_facts)
+                          for name, cohort in cohorts.items() if name != 'current'}
     output.mkdir(parents=True, exist_ok=False)
     progress = {name: progress_summary(c['rows'], through_floor=through_floor)
                 for name, c in cohorts.items()}
     report: dict[str, Any] = {'progress': progress, 'schema': 'stpd/rl-observation-report-1',
               'cohorts': cohorts,
               'comparisons': comparisons,
+              'rewards': rewards, 'reward_comparisons': reward_comparisons,
               'non_claims': ['Missing Boss witnesses are not zero clearances.',
                   'A floor threshold is not a Boss encounter.',
                   'No gameplay, storage mutation, training admission or model qualification.']}
@@ -340,6 +477,7 @@ def write_report(
     for name, c in cohorts.items():
         lines.append(f"| {name} | {c['planned']} | {c['floor_n']} | {c['wins']} / {c['losses']} | "
                      f"{c['mean_floor']} | {c['median_floor']} | {c['max_floor']} |")
+    lines += reward_lines(rewards, reward_comparisons)
     lines += ['', '![Loss histogram and observed reach](distribution.svg)', '',
         'bosses.csv counts positive witnesses for all three acts and the scored subset.',
         'reach.csv gives lower/possible upper bounds, retaining every planned slot.',
@@ -349,6 +487,44 @@ def write_report(
         'Verify exact producer/game/seed/selection protocol before interpreting changes.', '']
     (output / 'README.md').write_text('\n'.join(lines), encoding='utf-8')
     return report
+
+
+def _number(value: float | None, sign: bool = False) -> str:
+    return '—' if value is None else f'{value:+.4f}' if sign else f'{value:.4f}'
+
+
+def reward_lines(rewards: dict[str, dict[str, Any]],
+                 comparisons: dict[str, dict[str, Any]]) -> list[str]:
+    lines = ['', '## Mean reward score (reward v2, per difficulty)', '',
+             '| Cohort | Ascension | Planned | Scored | Excluded | Official mean | '
+             'Lower bound [L, U] (diagnostic) |', '|---|---:|---:|---:|---:|---:|---|']
+    for name, r in rewards.items():
+        bound = r['lower_bound']
+        lines.append(f"| {name} | {r['ascension']} | {r['planned']} | {r['scored']} | "
+                     f"{r['excluded']} | {_number(r['mean'])} | "
+                     f"[{_number(bound['L'])}, {_number(bound['U'])}] |")
+    if comparisons:
+        lines += ['', '| current vs | Pairs | Better / same / worse | Official paired delta | '
+                  'Bootstrap 95% | Mean-difference bound |', '|---|---:|---|---:|---|---|']
+        for name, c in comparisons.items():
+            o, bound = c['official'], c['mean_difference_bound']
+            interval = o['bootstrap95_fixed_seed_sensitivity']
+            lines.append(
+                f"| {name} | {o['paired_n']} | {o['better']} / {o['same']} / {o['worse']} | "
+                f"{_number(o['mean_delta'], True)} | "
+                + (f"[{_number(interval[0], True)}, {_number(interval[1], True)}]"
+                   if interval else '—') + ' | '
+                + (f"[{_number(bound[0], True)}, {_number(bound[1], True)}]" if bound else '—')
+                + ' |')
+    excluded = [(name, row) for name, r in rewards.items() for row in r['excluded_rows']]
+    if excluded:
+        lines += ['', 'Excluded games (never scored; their pairs are dropped):', '']
+        lines += [f"- {name} {row['seed']}: {row['status']}, public floor >= "
+                  f"{row['public_floor_lower_bound']} ({row['source']}), "
+                  f"Bosses witnessed {row['bosses_witnessed']}" for name, row in excluded]
+    lines += ['', 'The lower-bound interval is a diagnostic, not a natural endpoint; '
+              'a difference of lower bounds is not a lower bound on improvement.']
+    return lines
 
 
 def distribution_svg(
@@ -427,11 +603,16 @@ def main() -> None:
         parser.add_argument('--' + name + '-detail-cohort')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--through-floor', type=int, help='Extend observed progress axis, e.g. 49')
+    parser.add_argument('--excluded-facts', type=Path,
+                        help='Public progress of excluded games for the reward lower bound')
     args = vars(parser.parse_args())
     cohorts = {name: load_cohort(args[name], args[name + '_selection'],
         details=args[name + '_details'], detail_cohort=args[name + '_detail_cohort'])
         for name in ('baseline', 'previous', 'current') if args[name] is not None}
-    write_report(cohorts, args['output'], through_floor=args['through_floor'])
+    facts = (json.loads(args['excluded_facts'].read_bytes())['games']
+             if args['excluded_facts'] else None)
+    write_report(cohorts, args['output'], through_floor=args['through_floor'],
+                 excluded_facts=facts)
 
 
 if __name__ == '__main__':

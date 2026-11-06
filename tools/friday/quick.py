@@ -130,10 +130,12 @@ def read_batch(bundle: dict[str, Any], expected_model: dict[str, Any],
                  or cohort['protocol_observed']['behavior_policy']['mode'] != 'argmax')):
         raise ValueError('complete_argmax_observation_protocol_required')
     slots = original['ledger_report']['slots']
+    # A save that still failed after the ledger's one batch-end retry is one
+    # excluded pair like a cleaned unknown (card RL5 3E); its seed is never re-offered.
     closed = (original.get('error_type') is None and not any(
         s.get('execution_reason') == 'typed_original_verification_failed' for s in slots) and all(
-        s['status'] in {'finished', 'unknown'} and s.get('cleanup_accepted') is True
-        and (s['status'] == 'unknown' or type(s.get('max_observed_floor')) is int
+        s['status'] in {'finished', 'unknown', 'save_failed'} and s.get('cleanup_accepted') is True
+        and (s['status'] != 'finished' or type(s.get('max_observed_floor')) is int
              and s.get('natural_result') in {'win', 'loss'}) for s in slots))
     return {'reference': bundle, 'cohort': cohort, 'closed': closed, 'producers': producers,
             'raw_score_admitted': original['ledger_report']['score_admitted'],

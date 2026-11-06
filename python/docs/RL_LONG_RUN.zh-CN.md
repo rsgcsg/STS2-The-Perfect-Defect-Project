@@ -281,6 +281,11 @@ baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/resul
 所有点必须完全同题，核完整Host/Runtime/Input/初始进度/argmax协议，分别对CP16和上一点评估。
 报每层分布、最大层、Act1 Boss正见证、胜局、配对差区间；unknown或未获资格的那一对排除并单计，
 不补题。评估准备、排队后运行和在途停止都受同一绝对截止。
+默认报告（`rl_observation.write_report` 的 report.json/README）另报每种难度的正式 reward-v2
+平均奖励分、有效对数、配对差和 bootstrap 区间，以及只作诊断的下界 [L, U]（排除局按出错前
+公开最高层/已见 Boss 计输局分为 L、计通关为 U）；两模型平均差区间为 `[L新−U旧, U新−L旧]`，
+下界之差不是提升的下界。`--excluded-facts` 可补排除局的公开进度。一局保存失败只排除该局，
+批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）。
 
 首批技术停止只可用新批填原not_started、无offer且无run_id的题；fixed_baseline由原每行资格
 投影，保固定分母，拒绝重投任何已尝试seed，原失败status不升级。旧full_peer批没有轨迹时，

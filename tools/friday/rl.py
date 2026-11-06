@@ -278,14 +278,25 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
         result = read_published(result_path)
         if result is None:
             return None
-        summary = result.get('original_summary') or {}
+        summary = result.get('original_summary')
+        # rl.run seals original_summary=None when the Actor failed before writing
+        # actor-summary.json (for example a startup BoundaryError). That is a
+        # finished failed Actor, not a foreign result: the result binding still
+        # applies in full; only the absent summary has nothing to bind.
+        failed_before_summary = summary is None and (
+            result.get('exit_code') != 0 or result.get('error_type') is not None)
         if (result.get('schema') != 'spireagent/friday-RL-result-v1'
                 or result.get('actor') != ref['actor'] or result.get('run') != plan['run']
                 or result.get('actor_config_sha256') != ref['sha256']
                 or result.get('scratch_retained') != str(scratch)
-                or summary.get('schema') != 'spireagent/rl-actor-summary-1'
-                or summary.get('actor') != ref['actor'] or summary.get('run') != plan['run']):
+                or not failed_before_summary and (
+                    not isinstance(summary, dict)
+                    or summary.get('schema') != 'spireagent/rl-actor-summary-1'
+                    or summary.get('actor') != ref['actor']
+                    or summary.get('run') != plan['run'])):
             raise ValueError('finished_actor_result_binding_changed')
+        if failed_before_summary:
+            return None
         if (result.get('exit_code') != 0 or result.get('error_type') is not None
                 or summary.get('status') not in {
                     'completed', 'stopped_signal', 'stopped_before_offer'}):

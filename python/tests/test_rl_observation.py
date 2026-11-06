@@ -287,3 +287,104 @@ def test_save_failed_terminal_witness_uses_prefix_bound_without_score_upgrade(tm
     details.write_text(details.read_text().replace('"floor": 12', '"floor": 13'))
     with pytest.raises(ValueError, match='detail_terminal_floor_mismatch'):
         load_cohort(saved(tmp_path, status='save_failed', floor=8, result=None), details=details)
+
+
+def u3_cohorts():
+    """Minimal public facts of the five U3 (11-07) evaluations, no raw game data."""
+    from pathlib import Path
+
+    value = json.loads((Path(__file__).parent / 'fixtures/u3_reward_public_facts.json')
+                       .read_bytes())
+    cohorts = {}
+    for name, rows in value['cohorts'].items():
+        projected = []
+        for seed, status, result, floor, bosses, *run in rows:
+            projected.append({'seed': seed, 'run_id': run[0] if run else f'{name}-{seed}',
+                'status': status, 'result': result, 'scored': status == 'finished',
+                'floor': floor, 'observed_floor_lower_bound': floor,
+                'boss_cleared_acts': list(range(1, bosses + 1)), 'boss_count': bosses})
+        cohorts[name] = {'ascension': value['ascension'], 'rows': projected}
+    return cohorts, value['excluded_facts']
+
+
+def test_reward_score_and_lower_bound_reproduce_the_U3_table():
+    from stpd.evaluation.rl_observation import compare_rewards, reward_summary
+
+    cohorts, facts = u3_cohorts()
+    expected = {'cp522': (49, .1669, .1775), '4h': (50, .1903, .1903),
+                '6h': (49, .2717, .2802), '8h': (49, .2833, .2901), '10h': (48, .3071, .3216)}
+    for name, (scored, official, lower) in expected.items():
+        summary = reward_summary(cohorts[name], facts)
+        assert summary['planned'] == 50 and summary['scored'] == scored
+        assert summary['excluded'] == 50 - scored
+        assert round(summary['mean'], 4) == official
+        assert round(summary['lower_bound']['L'], 4) == lower
+        # U scores each excluded game as a win: the reward maximum.
+        assert summary['lower_bound']['U'] == pytest.approx(
+            (summary['mean'] * scored + (50 - scored)) / 50)
+    # Paired official deltas against CP522 (U3: +.0205/+.0987/+.1052/+.1367).
+    for name, pairs, delta, lower_delta in (('4h', 49, .0205, .0128), ('6h', 48, .0987, .1027),
+                                            ('8h', 48, .1052, .1125), ('10h', 47, .1367, .1441)):
+        result = compare_rewards(cohorts['cp522'], cohorts[name],
+                                 before_facts=facts, after_facts=facts)
+        assert result['official']['paired_n'] == pairs
+        assert round(result['official']['mean_delta'], 4) == delta
+        assert round(result['lower_bound_paired']['mean_delta'], 4) == lower_delta
+    last = compare_rewards(cohorts['8h'], cohorts['10h'], before_facts=facts, after_facts=facts)
+    official, lower = last['official'], last['lower_bound_paired']
+    assert (official['paired_n'], official['better'], official['same'], official['worse']) == (
+        47, 14, 17, 16)
+    assert round(official['mean_delta'], 4) == .0077
+    assert (lower['paired_n'], lower['better'], lower['same'], lower['worse']) == (50, 16, 18, 16)
+    assert round(lower['mean_delta'], 4) == .0315
+    low, high = official['bootstrap95_fixed_seed_sensitivity']
+    assert low < official['mean_delta'] < high
+    # [L_new - U_old, U_new - L_old]
+    new, old = reward_summary(cohorts['10h'], facts), reward_summary(cohorts['8h'], facts)
+    assert last['mean_difference_bound'] == pytest.approx(
+        [new['lower_bound']['L'] - old['lower_bound']['U'],
+         new['lower_bound']['U'] - old['lower_bound']['L']])
+
+
+def test_reward_lower_bound_without_facts_uses_row_bound_or_zero_and_never_scores():
+    from stpd.evaluation.rl_observation import reward_summary
+
+    cohorts, _facts = u3_cohorts()
+    summary = reward_summary(cohorts['10h'])
+    assert round(summary['mean'], 4) == .3071 and summary['scored'] == 48
+    assert {row['source'] for row in summary['excluded_rows']} == {'unobserved_zero'}
+    assert summary['lower_bound']['L'] < .3071
+
+
+def test_default_report_writes_reward_table_and_excluded_floors(tmp_path):
+    cohorts, facts = u3_cohorts()
+    full = {}
+    for name, c in (('baseline', cohorts['8h']), ('current', cohorts['10h'])):
+        full[name] = {**c, 'selection': name, 'protocol_observed': {}, 'host_kind': 'managed',
+                      'character': 'Defect', 'planned': 50, 'floor_n': 0, 'wins': 0,
+                      'losses': 0, 'mean_floor': None, 'median_floor': None, 'max_floor': None,
+                      'loss_floor_counts': {}, 'death_floor_observed_n': 0,
+                      'rows': [{**r, 'death_floor': None, 'boss_reached_acts': [],
+                                'last_combat_floor': None, 'last_combat_act': None,
+                                'last_combat': None, 'last_combat_type': None,
+                                'last_combat_enemies': None} for r in c['rows']]}
+    report = write_report(full, tmp_path / 'report', excluded_facts=facts)
+    assert round(report['rewards']['current']['mean'], 4) == .3071
+    assert report['reward_comparisons']['baseline']['official']['paired_n'] == 47
+    readme = (tmp_path / 'report/README.md').read_text()
+    assert 'Mean reward score (reward v2, per difficulty)' in readme
+    assert '| current | 0 | 50 | 48 | 2 | 0.3071 | [0.3216, ' in readme
+    assert 'public floor >= 48 (excluded_facts)' in readme
+    saved_report = json.loads((tmp_path / 'report/report.json').read_bytes())
+    assert saved_report['rewards']['baseline']['excluded'] == 1
+
+
+def test_ledger_public_floor_is_an_excluded_lower_bound_not_a_score(tmp_path):
+    path = saved(tmp_path, status='save_failed', floor=None, result=None)
+    value = json.loads(path.read_bytes())
+    value['ledger_report']['slots'][0]['public_max_observed_floor'] = 45
+    path.write_text(json.dumps(value))
+    cohort = load_cohort(path)
+    row = cohort['rows'][0]
+    assert row['floor'] is None and row['observed_floor_lower_bound'] == 45
+    assert not row['scored'] and cohort['floor_n'] == 0
