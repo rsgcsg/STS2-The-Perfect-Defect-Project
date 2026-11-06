@@ -34,6 +34,11 @@ def serve_session(
         raise ValueError("a keyed chooser must commit its draw on ACK")
     unit = consumption = committed = pending = None
     version = 0
+    # The RL score callback is a bound SegmentInferenceClient.consume. Its
+    # wait_ready blocks on the original begin Future; generic deferred scorers
+    # without this capability keep the existing await protocol.
+    score_owner = getattr(score_input, "__self__", score_input)
+    wait_score_ready = getattr(score_owner, "wait_ready", None)
 
     def send(value):
         destination.write(
@@ -151,6 +156,8 @@ def serve_session(
             directive: dict[str, Any]
             if scores is None:
                 assert score_input is not None
+                if wait_score_ready is not None:
+                    wait_score_ready()
                 scores = score_input(value)
                 if scores is not None:
                     if len(scores) != len(value["catalog"]):

@@ -11,7 +11,11 @@ from spireagent.storage.blobs import MAX_BLOB_BYTES, StoreError, bounded, safe_k
 
 
 class LocalBlobStore:
-    def __init__(self, root: Path, *, create: bool = True, readonly: bool = False) -> None:
+    def __init__(self, root: Path, *, create: bool = True, readonly: bool = False,
+                 maximum: int = MAX_BLOB_BYTES) -> None:
+        if type(maximum) is not int or maximum < 1:
+            raise StoreError("positive_local_transport_bound_required")
+        self.maximum = maximum
         self.root = root.expanduser().resolve()
         self.readonly = readonly
         if create:
@@ -40,7 +44,7 @@ class LocalBlobStore:
     def put_if_absent(self, key: str, data: bytes) -> bool:
         if self.readonly:
             raise StoreError("read_only_store")
-        bounded(data)
+        bounded(data, maximum=self.maximum)
         path = self._path(key)
         # Repeated immutable publication must still compare the actual bounded
         # bytes. Keep first publication independent of readback hooks; a
@@ -87,10 +91,10 @@ class LocalBlobStore:
         path = self._path(key)
         try:
             with path.open("rb") as handle:
-                value = handle.read(MAX_BLOB_BYTES + 1)
+                value = handle.read(self.maximum + 1)
         except FileNotFoundError as error:
             raise StoreError("object_not_found") from error
-        bounded(value)
+        bounded(value, maximum=self.maximum)
         return value
 
     def keys(self, prefix: str) -> tuple[str, ...]:

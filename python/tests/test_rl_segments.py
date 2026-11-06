@@ -65,45 +65,41 @@ def test_single_game_share_and_resume_keep_undelivered_reservations():
     assert restored.rows == 64
 
 
-def test_auxiliary_counts_are_successful_steps_and_survive_checkpoint():
+def test_terminal_two_uses_two_datasets_and_HP_one_use():
+    terminal = AuxiliaryPool(groups=2, uses=2)
+    terminal.add("game-a", [{"key": "a", "label": 49}])
+    rows = terminal.sample(128, random.Random(1))
+    assert rows[0]["uses"] == 0  # reserving or a KL stop does not consume it
+    terminal.used(rows, 1)
+    assert rows[0]["uses"] == 1 and rows[0]["datasets"] == [1]
+    terminal.used(terminal.sample(128, random.Random(2)), 2)
+    assert rows[0]["uses"] == 2 and rows[0]["datasets"] == [1, 2]
+    assert terminal.sample(128, random.Random(3)) == []
+    assert terminal.retire_exhausted()["game-a"][0]["label"] == 49
+    assert not terminal.groups
+    hp = AuxiliaryPool(groups=128, uses=1)
+    hp.add("battle", [{"key": "hp", "label": .37}])
+    selected = hp.sample(128, random.Random(1))
+    hp.used(selected, 1)
+    assert hp.sample(128, random.Random(2)) == []
+    assert selected[0]["label"] == .37 and selected[0]["uses"] == 1
+
+
+def test_aux_reservation_excludes_current_dataset_without_charging_it():
+    pool = AuxiliaryPool(groups=2, uses=1)
+    pool.add("battle", [{"key": "a"}, {"key": "b"}])
+    assert [row["key"] for row in pool.sample(128, random.Random(1), exclude={"a"})] == ["b"]
+    assert all(row["uses"] == 0 for row in pool.groups["battle"])
+
+
+def test_archival_pool_reader_preserves_recorded_uses_and_labels():
     pool = AuxiliaryPool(groups=2, uses=4)
-    pool.add("game-a", [{"key": "a"}, {"key": "b"}])
-    rows = pool.sample(256, random.Random(1))
-    assert all(row["uses"] == 0 for row in rows)  # selection or KL stop is not use.
-    pool.used(rows, 0)
-    pool.used(rows, 0)
-    assert all(row["uses"] == 2 for row in rows)
-    next_dataset = pool.sample(256, random.Random(1))
-    pool.used(next_dataset, 1)
-    pool.used(next_dataset, 1)
-    assert pool.sample(256, random.Random(1)) == []
+    pool.add("old-game", [{"key": "a", "outcome": 18}])
+    rows = pool.sample(128, random.Random(1), epochs=2)
+    pool.used(rows, 1, epochs=2)
+    historical = pool.state()
     restored = AuxiliaryPool(groups=2, uses=4)
-    restored.restore(pool.state())
-    assert restored.state() == pool.state()
-    pool.add("game-b", [{"key": "c"}])
-    pool.add("game-c", [{"key": "d"}])
-    assert list(pool.groups) == ["game-b", "game-c"]
-
-
-def test_hp_is_used_at_most_twice_without_replacing_original_labels():
-    pool = AuxiliaryPool(groups=128, uses=2)
-    pool.add("battle-a", [{"key": "one", "label": 0.37}])
-    rows = pool.sample(256, random.Random(1))
-    pool.used(rows, 0)
-    pool.used(rows, 0)
-    assert pool.sample(256, random.Random(1)) == []
-    assert pool.groups["battle-a"][0]["label"] == 0.37
-
-
-def test_kl_partial_epochs_do_not_extend_terminal_or_hp_dataset_lifetimes():
-    terminal = AuxiliaryPool(groups=256, uses=4)
-    terminal.add("one", [{"key": "state"}])
-    rows = terminal.sample(1, random.Random(1))
-    terminal.used(rows, 0)  # only epoch one succeeded; the rest hit the KL stop.
-    terminal.used(terminal.sample(1, random.Random(1)), 1)
-    assert rows[0]["uses"] == 2 and rows[0]["datasets"] == [0, 1]
-    assert terminal.sample(1, random.Random(1)) == []
-    hp = AuxiliaryPool(groups=128, uses=2)
-    hp.add("battle", [{"key": "state"}])
-    hp.used(hp.sample(1, random.Random(1)), 0)
-    assert hp.sample(1, random.Random(1)) == []
+    restored.restore(historical)
+    assert restored.groups["old-game"][0]["uses"] == 1
+    assert restored.groups["old-game"][0]["datasets"] == [1]
+    assert restored.groups["old-game"][0]["outcome"] == 18

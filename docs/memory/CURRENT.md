@@ -2,7 +2,8 @@
 
 RL4-PREP 已收口；RL4.1（数据面、中央推理、短段学习）与 RL4.2（热路径离开共享盘）后，
 11-06 10:28 起在 Friday 跑 RL4.2 长训，负责人运维。用户 11-06 批补到 24 h 训练。
-代码在 [PR #382](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/382)，head 即长训 release 源码，**尚未合入 develop**。
+长训源码经 [PR #382](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/382) 于 11-06 合入 develop（用户批）；在跑 release `rl42-p5-af57b882` 不热换。
+操作走 [RL 接口与 SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md) 与 [长训指南](../../python/docs/RL_LONG_RUN.zh-CN.md)。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
@@ -21,9 +22,8 @@ unknown 排除那一对、单独计数；watcher 的 against_baseline 对的是 
 ## 在跑与下一步
 
 - 长训：单 A100 学习 + 约 260 路 CPU 打局，30–45 万新决策/h；每 2 h 一次评估；9.2 h 时按计划换卡续跑。窗口 1 硬截止写在 CP 里不可改，
-  到截止约 17.7 h；之后按 #382 中 RL_LONG_RUN 的"新运营窗口"续到 24 h。GPU 同时 ≤2 张。
+  到截止约 17.7 h；之后按长训指南"新运营窗口"续到 24 h。GPU 同时 ≤2 张。
 - 停训/续跑/评估逐条记在共享交付目录 `replies/RL4.1/LONG-RUN-LOG-20261106.md`。
-- PR #382：已可合入（精确 head 全量 CI、closeout、模板齐），合并等用户批。
 - RL5（游戏/推理/学习分开、原生存档任务票、无人值守）：草稿在共享交付目录 `replies/RL5/`，待批；先 OPS 与实测 S0。
 
 ## 不做
@@ -32,7 +32,7 @@ unknown 排除那一对、单独计数；watcher 的 against_baseline 对的是 
 
 ## 其他已派工作入口
 
-CARD-1A 仍待用户试局与原件/入库；[STATUS](../STATUS.md) 路由原安装证据。RL3 原 unknown 分母保留，#373 不重开。
+CARD-1A 仍待用户试局与原件/入库；[STATUS](../STATUS.md) 路由原安装证据。RL3 原 unknown 分母保留，#373 不重开；U1 原件看 [U1](../evidence/UNKNOWN_FIX_U1_20261101.md)；RL4-PREP 失败与恢复缺口归[原任务](../plans/RL_CRITIC_20261101.md)。
 
 ## Remaining Platform non-claims（运行与证据边界）
 

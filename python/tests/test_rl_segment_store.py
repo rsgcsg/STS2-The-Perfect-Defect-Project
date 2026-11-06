@@ -1,23 +1,142 @@
-"""Durable segment production through the real CAS, exchange and cold reader."""
+"""Read-only historical segment encodings through the real CAS and cold reader."""
 
 from __future__ import annotations
 
 import base64
 import copy
+import gzip
 import hashlib
+import io
+import json
+import tempfile
+from pathlib import Path
+from typing import Any
 
 import pytest
 from test_rl_loop import PRODUCER, _model_artifact
 
-from spireagent.artifact_contracts import Manifest, Parent
-from spireagent.json_boundary import BoundaryError, json_bytes
-from spireagent.rl_exchange import Exchange
-from spireagent.storage.archives import _extract
-from spireagent.storage.store import copy_artifact
-from spireagent.workbench.managed_segment_store import publish_segment, read_segment
-from spireagent.workbench.rl_segment_producer import OriginalBarrier, SegmentAssembler
+from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.rl_exchange import SEGMENT_SCHEMA, Exchange, _sealed
+from spireagent.storage.archives import _extract, archive_bundle
+from spireagent.storage.store import ManifestArtifactStore, copy_artifact
+from spireagent.workbench.managed_segment_store import (
+    COMPILED_SCHEMA,
+    MAX_BYTES,
+    SCHEMA,
+    _parents,
+    read_segment,
+    validate_segment,
+)
+from spireagent.workbench.rl_segment_producer import OriginalBarrier as HotOriginalBarrier
 from stpd.p1.data import digest
 from stpd.p1.data import json_bytes as p1_json_bytes
+from stpd.rl.segment_inputs import segment_body
+
+
+# Frozen historical fixture writers live only in tests.
+def historical_segment(run, trace, rows):
+    """Construct one frozen old encoding to exercise the historical reader."""
+    behaviors = [json.loads(raw) for raw in trace.read_bytes().splitlines()]
+    for row, behavior in zip(rows, behaviors, strict=True):
+        probabilities = [1 / len(behavior["scores"])] * len(behavior["scores"])
+        row.update(behavior=behavior, sampling={"mode": "temperature_uniform",
+            "temperature": 1.0, "uniform_mix": 0.0, "probabilities": probabilities,
+            "model_probabilities": probabilities, "model_logits": behavior["scores"],
+            "selected_probability": probabilities[0]})
+    barrier = HotOriginalBarrier(run, trace)
+    try:
+        original, _ = barrier.commit(rows, trace_through_bytes=trace.stat().st_size)
+    finally:
+        barrier.close()
+    original.pop("representation")
+    original["schema"] = "stpd/segment-original-commit-1"
+    with tempfile.TemporaryDirectory() as directory:
+        stage = Path(directory)
+        (stage / "originals").mkdir()
+        for ref in original["artifacts"]:
+            (stage / "originals" / ref["path"]).write_bytes((run / ref["path"]).read_bytes())
+        (stage / "events-delta.jsonl").write_bytes((run / "events.jsonl").read_bytes())
+        (stage / "behavior-delta.jsonl").write_bytes(trace.read_bytes())
+        (stage / "commit.json").write_bytes(json_bytes(original))
+        raw = archive_bundle(stage)
+    original.update(archive_bytes=len(raw), archive_sha256=hashlib.sha256(raw).hexdigest())
+    value = {"schema": SCHEMA, "training_split": "TRAIN", "identity": {},
+        "run_id": rows[0]["run_id"], "rows": len(rows),
+        "segment_id": behaviors[0]["lease"], "mu": behaviors[0]["mu"], "steps": rows,
+        "terminal": None, "hp_battles": [], "original_commit": original,
+        "previous_segment_artifact_id": None}
+    return value, raw
+
+
+def publish_historical_record(exchange, actor, sequence, record):
+    raw = _sealed({**record, "schema": SEGMENT_SCHEMA, "run": exchange.run,
+                   "actor": actor, "sequence": sequence})
+    exchange.blobs.put_if_absent(f"{exchange.prefix}shards/{actor}/{sequence:08d}.json", raw)
+    return json.loads(raw)
+
+
+def publish_segment(
+    store: ManifestArtifactStore, segment: dict[str, Any], producer: Producer, *, originals: bytes
+) -> Manifest:
+    validate_segment(segment)
+    trajectory = segment
+    compiled_payload = None
+    if segment["schema"] == COMPILED_SCHEMA:
+        compiled = json_bytes(segment_body(segment))
+        if len(compiled) > MAX_BYTES:
+            raise BoundaryError("trajectory_segment", "compiled_segment_byte_limit")
+        compiled_payload = store.put_bytes("compiled_inputs", gzip.compress(
+            compiled, compresslevel=1, mtime=0), "application/gzip")
+        trajectory = copy.deepcopy(segment)
+        for step in trajectory["steps"]:
+            step["behavior"].pop("compiled_input")
+        trajectory.pop("compiled_boundary")
+    raw = json_bytes(trajectory)
+    if len(raw) > MAX_BYTES:
+        raise BoundaryError("trajectory_segment", "segment_byte_limit")
+    parents = _parents(store, segment)
+    expected = segment["original_commit"]
+    if (
+        len(originals) != expected["archive_bytes"]
+        or hashlib.sha256(originals).hexdigest() != expected["archive_sha256"]
+    ):
+        raise BoundaryError("trajectory_segment", "original_block_integrity_failure")
+    original_payload = store.put_payload("originals", io.BytesIO(originals), "application/gzip")
+    # The existing observer may continue to trail the game while this bounded
+    # upload/readback completes. Its lease stays charged, providing backpressure.
+    observed = hashlib.sha256()
+    for chunk in store.read_payload(original_payload):
+        observed.update(chunk)
+    if observed.hexdigest() != expected["archive_sha256"]:
+        raise BoundaryError("trajectory_segment", "original_block_peer_readback_failure")
+    payload = store.put_payload(
+        "trajectory", io.BytesIO(gzip.compress(raw, compresslevel=1, mtime=0)), "application/gzip"
+    )
+    manifest = Manifest(
+        "analysis",
+        producer,
+        parents=parents,
+        payloads=tuple(sorted((payload, original_payload) + (
+            (compiled_payload,) if compiled_payload is not None else ()))),
+        parameters=FrozenObject.of(
+            {
+                "schema": segment["schema"],
+                "run_id": segment["run_id"],
+                "segment_id": segment["segment_id"],
+                "rows": len(segment["steps"]),
+                "start_step": segment["steps"][0]["step_index"],
+                "end_step": segment["steps"][-1]["step_index"],
+                "decoded_bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "mu": segment["mu"],
+            }
+        ),
+    )
+    store.publish(manifest)
+    return manifest
+
+
 
 
 def fixture(tmp_path, count, *, terminal=False):
@@ -104,31 +223,18 @@ def fixture(tmp_path, count, *, terminal=False):
 @pytest.mark.parametrize("count", [1, 64])
 def test_whole_verified_segment_survives_store_exchange_cold_read(tmp_path, count):
     exchange, mu, run, trace, rows = fixture(tmp_path, count)
-    delivered = []
-
-    def commit(segment, originals):
-        manifest = publish_segment(exchange.store, segment, PRODUCER, originals=originals)
-        record = {key: segment[key] for key in ("segment_id", "run_id", "rows", "mu")}
-        record["segment_artifact_id"] = manifest.artifact_id
-        exchange.publish_segment("actor", len(delivered), record)
-        delivered.append(segment)
-        return {"segment_artifact_id": manifest.artifact_id}
-
-    assembler = SegmentAssembler(
-        {"behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
-        OriginalBarrier(run, trace),
-        commit,
-    )
-    for row in rows:
-        assembler.transition(row)
-    assembler.finish(None)
-    assembler.close()
+    segment, originals = historical_segment(run, trace, rows)
+    manifest = publish_segment(exchange.store, segment, PRODUCER, originals=originals)
+    record = {key: segment[key] for key in ("segment_id", "run_id", "rows", "mu")}
+    record["segment_artifact_id"] = manifest.artifact_id
+    publish_historical_record(exchange, "actor", 0, record)
+    delivered = [segment]
     record = exchange.segment_record(exchange.shard_keys()[0])
     cold = Exchange({"kind": "local", "directory": str(tmp_path/"empty-peer")}, "segments")
     copied_id = copy_artifact(exchange.store, cold.store, record["segment_artifact_id"],
                               scratch=tmp_path)
     manifest = cold.store.get_manifest(copied_id)
-    cold.publish_segment("actor", 0, {key: record[key] for key in (
+    publish_historical_record(cold, "actor", 0, {key: record[key] for key in (
         "segment_id", "run_id", "rows", "mu", "segment_artifact_id")})
     restored = read_segment(cold.store, record["segment_artifact_id"], scratch=tmp_path)
     assert restored == delivered[0] and restored["rows"] == count and restored["mu"] == mu
@@ -156,47 +262,7 @@ def test_whole_verified_segment_survives_store_exchange_cold_read(tmp_path, coun
     with pytest.raises(BoundaryError, match="transition_behavior_binding_changed"):
         publish_segment(cold.store, bad, PRODUCER, originals=b"invalid; not reached")
     with pytest.raises(BoundaryError, match="immutable_key_collision"):
-        cold.publish_segment("actor", 0, {**record, "published_at": 1})
-
-
-def test_terminal_tail_waits_for_normal_typed_label_and_unknown_is_not_a_loss(tmp_path):
-    _, _, run, trace, rows = fixture(tmp_path, 1, terminal=True)
-    delivered = []
-    assembler = SegmentAssembler(
-        {"behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
-        OriginalBarrier(run, trace),
-        lambda segment, _originals: delivered.append(segment),
-    )
-    assembler.transition(rows[0])
-    assembler.finish(None)
-    assert not delivered
-    label = {"class": 4, "reward": 0.5 * (4 / 48) ** 2, "typed_original": "original-id"}
-    assembler.finish(label)
-    assert delivered[0]["terminal"] == label and delivered[0]["rows"] == 1
-    assembler.close()
-
-
-def test_lost_segment_admission_receipt_does_not_repeat_the_original_offer(tmp_path):
-    _, _, run, trace, rows = fixture(tmp_path, 64)
-    calls = []
-
-    def commit(segment, originals):
-        calls.append(segment["segment_id"])
-        raise TimeoutError("accepted remotely, reply unavailable")
-
-    assembler = SegmentAssembler(
-        {"behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
-        OriginalBarrier(run, trace),
-        commit,
-    )
-    with pytest.raises(TimeoutError):
-        for row in rows:
-            assembler.transition(row)
-    with pytest.raises(BoundaryError, match="requires_reconciliation"):
-        assembler.finish(None)
-    assert calls == ["actor/0"]
-    assert len(assembler.steps) == 64
-    assembler.close()
+        publish_historical_record(cold, "actor", 0, {**record, "published_at": 1})
 
 
 def test_terminal_battle_hp_uses_public_terminal_even_if_combat_span_remains_open():
@@ -218,7 +284,8 @@ def test_terminal_battle_hp_uses_public_terminal_even_if_combat_span_remains_ope
         "combat_spans": [{"start_observation_index": 0, "end_observation_index": None}],
         "steps": [{"index": i, "observation_index": i} for i in range(2)],
     }
-    segments = [{"start_step": 0, "rows": 2, "segment_artifact_id": "original-segment"}]
+    segments = [{"start_step": 0, "rows": 2, "segment_id": "actor/0",
+                 "training_generation": "g-unit"}]
     result = completed_auxiliary(episode, segments, {"class": 3, "reward": 0.01})
     assert [row["hp"] for row in result["hp_battles"][0]["states"]] == [0.0, 0.0]
     observations[-1]["observation"]["player"]["content"]["hp"] = None

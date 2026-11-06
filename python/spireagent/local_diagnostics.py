@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -24,6 +25,83 @@ BACKUPS = 2
 _write_lock = threading.Lock()
 
 
+class TimedRLock:
+    """Opt-in bounded lock timings; Condition sleep is excluded from hold time."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.local = threading.local()
+        self.rows: dict[tuple[str, str], dict[str, float]] = {}
+
+    def _caller(self) -> str:
+        frame = sys._getframe(2)
+        while frame.f_back and frame.f_code.co_filename in {__file__, threading.__file__}:
+            frame = frame.f_back
+        return f"{frame.f_code.co_name}:{frame.f_lineno}"
+
+    def _record(self, caller: str, field: str, seconds: float) -> None:
+        key = threading.current_thread().name, caller
+        # Every writer already owns self.lock. A second mutex here adds a
+        # scheduling boundary inside every measured critical section.
+        if key not in self.rows and len(self.rows) >= 128:
+            key = "other", "other"
+        row = self.rows.setdefault(key, {"wait_seconds": 0., "hold_seconds": 0.,
+                                          "acquires": 0.})
+        row[field] += seconds
+        if field == "wait_seconds":
+            row["acquires"] += 1
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        caller, began = self._caller(), time.perf_counter()
+        acquired = self.lock.acquire(blocking, timeout)
+        if acquired:
+            arrived = time.perf_counter()
+            if not getattr(self.local, "depth", 0):
+                self.local.started, self.local.caller = arrived, caller
+            self.local.depth = getattr(self.local, "depth", 0) + 1
+            self._record(caller, "wait_seconds", arrived - began)
+        return acquired
+
+    def release(self) -> None:
+        if self.local.depth == 1:
+            self._record(self.local.caller, "hold_seconds",
+                         time.perf_counter() - self.local.started)
+        self.local.depth -= 1
+        self.lock.release()
+
+    def _release_save(self) -> Any:
+        depth, caller = self.local.depth, self.local.caller
+        self._record(caller, "hold_seconds", time.perf_counter() - self.local.started)
+        self.local.depth = 0
+        return self.lock._release_save(), depth, caller  # type: ignore[attr-defined]
+
+    def _acquire_restore(self, state: Any) -> None:
+        raw, depth, caller = state
+        began = time.perf_counter()
+        self.lock._acquire_restore(raw)  # type: ignore[attr-defined]
+        arrived = time.perf_counter()
+        self.local.depth, self.local.caller = depth, caller
+        self.local.started = arrived
+        self._record(caller, "wait_seconds", arrived - began)
+
+    def _is_owned(self) -> bool:
+        return self.lock._is_owned()  # type: ignore[attr-defined, no-any-return]
+
+    def __enter__(self) -> TimedRLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *_error: Any) -> None:
+        self.release()
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        # Read under the same uninstrumented RLock; no second lock order and no
+        # recursive diagnostic acquire is introduced by observing the counters.
+        with self.lock:
+            return [{"thread": thread, "caller": caller, **row}
+                    for (thread, caller), row in self.rows.items()]
+
+
 @dataclass
 class _Trace:
     log: LocalDiagnostics
@@ -37,6 +115,20 @@ class _Trace:
 
 
 _current: ContextVar[_Trace | None] = ContextVar("local_diagnostic_trace", default=None)
+
+
+def exception_facts(error: BaseException) -> dict[str, Any]:
+    """Bounded stack locations for durable failures, without messages or locals."""
+    result: dict[str, Any] = {
+        "exception_type": type(error).__name__,
+        "stack": [{"file": frame.filename[-512:], "line": frame.lineno,
+                   "function": frame.name[:128]}
+                  for frame in traceback.extract_tb(error.__traceback__, limit=32)],
+    }
+    remote = getattr(error, "remote_diagnostic", None)
+    if remote is not None:
+        result["remote"] = remote
+    return result
 
 
 class LocalDiagnostics:
@@ -89,14 +181,12 @@ class LocalDiagnostics:
             return previous[1]
         error_id = uuid.uuid4().hex
         trace.errors[id(error)] = (error, error_id)
-        frames = [{"file": frame.filename[-512:], "line": frame.lineno,
-                   "function": frame.name[:128]}
-                  for frame in traceback.extract_tb(error.__traceback__, limit=32)]
+        facts = exception_facts(error)
         self._write("errors.jsonl", {
             **_facts(trace), "event": "exception", "error_id": error_id,
             "path": path or trace.path, "action": action or trace.action,
             "stage": stage or (trace.phases[-1] if trace.phases else "request"),
-            "exception_type": type(error).__name__, "stack": frames,
+            **facts,
         })
         return error_id
 

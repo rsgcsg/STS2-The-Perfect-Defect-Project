@@ -22,6 +22,10 @@ import { canonicalJson } from "../src/evidence.js";
 import { POLICY_RUNTIME_VERSION } from "../src/contracts.js";
 // @ts-expect-error Original Host synthetic native DTO, no game mutation.
 import { combatState } from "../../host-runtime/test/fixtures/managed-fair-combat.mjs";
+it("advertises the installed package version in Runtime receipts", async () => {
+ const metadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+ expect(POLICY_RUNTIME_VERSION).toBe(metadata.version);
+});
 async function managedSource(stall = false) {
  let terminal=false, actions=0;
  const enemy = combatState(); enemy.turn_owner = "enemy"; enemy.is_play_phase = false;

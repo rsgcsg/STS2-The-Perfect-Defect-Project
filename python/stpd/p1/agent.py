@@ -139,7 +139,8 @@ def main() -> None:
     parser.add_argument("--local-inference", type=Path)
     args = parser.parse_args()
     # The CLI owns its dedicated process; the reusable serve() does not.
-    torch.set_num_threads(2)
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
     serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve(),
           local_inference=args.local_inference.resolve() if args.local_inference else None)
 

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from test_runtime_install import bundled_release as bundled_release
 
 pytest.importorskip('fcntl', reason='Friday RL actors target POSIX Slurm')
 FRIDAY = Path(__file__).resolve().parents[2] / 'tools/friday'
@@ -49,7 +50,7 @@ def inputs(tmp_path):
     execution = root / 'execution.json'
     execution.write_text(json.dumps({'schema': 'spireagent/managed-evaluation-execution-v1',
         'candidate_directory': str(candidate), 'peer': peer, 'store': 's3',
-        'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}}),
+        'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 20}}),
         encoding='utf-8')
     learner = root / 'learner.json'
     learner.write_text(json.dumps({'schema': 'stpd/rl-run-1', 'run': 'rl1-real-1',
@@ -97,9 +98,17 @@ def test_peer_drift_and_candidate_symlink_are_rejected(rl, inputs, tmp_path):
         rl.prepare(execution, learner, output)
 
 
-def test_explicit_learner_driven_scale_can_prepare_forty_actors(rl, inputs):
-    plan, _ = prepared(rl, inputs, actors=40)
-    assert len({ref['actor'] for ref in plan['actors']}) == 40
+@pytest.mark.parametrize("actors,audit_every", [(56, 20), (128, 100)])
+def test_explicit_scale_preserves_declared_training_audit_interval(rl, inputs, actors, audit_every):
+    execution, _, _ = inputs
+    configuration = json.loads(execution.read_bytes())
+    configuration['retention']['audit_every'] = audit_every
+    execution.write_text(json.dumps(configuration))
+    plan, _ = prepared(rl, inputs, actors=actors)
+    assert len({ref['actor'] for ref in plan['actors']}) == actors
+    actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
+    frozen = json.loads(Path(actor['execution']).read_bytes())
+    assert frozen['retention']['audit_every'] == audit_every
 
 
 def test_missing_or_foreign_RL1_modules_are_explicitly_refused_before_allocation(rl, inputs):
@@ -129,12 +138,199 @@ def test_module_binding_uses_the_current_project_exchange_owner(rl, tmp_path):
         rl.require_modules(source)
 
 
+def test_actor_runtime_materializes_full_pinned_bundle_and_rechecks_cache(
+        rl, tmp_path, bundled_release):
+    from spireagent.package_identity import PackageIdentityError
+
+    _, package, pin = bundled_release
+    execution = tmp_path.resolve()/'execution-runtime.json'
+    original = {'runtime_directory': str(package/'dist'), 'runtime_pin': pin,
+                'peer': {'kind': 'local', 'directory': str(tmp_path/'store')}}
+    execution.write_text(json.dumps(original))
+    actor = tmp_path.resolve()/'runtime-actor-source.json'
+    configuration = {'actor': 'a', 'execution': str(execution), 'run': 'bounded-test'}
+    actor.write_text(json.dumps(configuration))
+    reference = {'path': str(actor), 'sha256': rl.hashed(actor)}
+    source_bytes = actor.read_bytes(), execution.read_bytes()
+    cache = tmp_path.resolve()/'node-cache'
+    for number in range(2):
+        scratch = tmp_path.resolve()/f'worker-{number}'
+        scratch.mkdir()
+        derived, receipt = rl.materialize_actor_runtime(reference, scratch, cache)
+        actual = json.loads(derived.read_bytes())
+        actual_execution = json.loads(Path(actual['execution']).read_bytes())
+        assert {k: v for k, v in actual.items() if k != 'execution'} == {
+            k: v for k, v in configuration.items() if k != 'execution'}
+        assert {k: v for k, v in actual_execution.items() if k != 'runtime_directory'} == {
+            k: v for k, v in original.items() if k != 'runtime_directory'}
+        assert receipt['cache_hit'] is bool(number)
+        assert (receipt['verified_package']['package_content_sha256']
+                == pin['package_content_sha256'])
+        assert receipt['derived_actor_sha256'] == rl.hashed(derived)
+        assert receipt['World_calls_during_materialization'] == 0
+    assert (actor.read_bytes(), execution.read_bytes()) == source_bytes
+    target = Path(actual_execution['runtime_directory']).parent
+    assert (target/'node_modules/zod/package.json').is_file()
+    (target/'dist/cli.js').write_text('modified cache')
+    scratch = tmp_path.resolve()/'worker-bad'
+    scratch.mkdir()
+    with pytest.raises(PackageIdentityError, match='content differs'):
+        rl.materialize_actor_runtime(reference, scratch, cache)
+    assert not (scratch/'runtime-actor.json').exists()
+
+
+@pytest.mark.parametrize('disposition', [None, 'unknown', 'save_failed'])
+def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
+        rl, inputs, tmp_path, bundled_release, host_startup_release, monkeypatch, disposition):
+    _, package, pin = bundled_release
+    execution, _, _ = inputs
+    base = json.loads(execution.read_bytes())
+    base.update(runtime_directory=str(package/'dist'), runtime_pin=pin,
+                **host_startup_release)
+    execution.write_text(json.dumps(base))
+    plan, path = prepared(rl, inputs, actors=1)
+    inference = {'schema': 'synthetic-inference'}
+    attachment = path.parent/'inference.json'
+    attachment.write_text(json.dumps(inference))
+    plan.update(trajectory_encoding='short-segment-1',
+        inference={'path': str(attachment), 'sha256': rl.hashed(attachment)})
+    ref = plan['actors'][0]
+    actor_path = Path(ref['path'])
+    actor = json.loads(actor_path.read_bytes())
+    actor['segments'] = {'inference': inference}
+    actor_path.write_text(json.dumps(actor))
+    ref['sha256'] = rl.hashed(actor_path)
+    path.write_text(json.dumps(plan))
+    monkeypatch.setattr(rl, 'require_modules', lambda _: None)
+    monkeypatch.setattr(rl.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'synthetic')
+    monkeypatch.setenv('SLURM_CPUS_PER_TASK', '1')
+    monkeypatch.setenv('SLURM_ARRAY_TASK_ID', '0')
+    materialize = rl.materialize_actor_runtime
+    monkeypatch.setattr(rl, 'materialize_actor_runtime',
+        lambda reference, scratch, _cache: materialize(
+            reference, scratch, tmp_path.resolve()/'isolated-cache'))
+    materialize_host = rl.materialize_actor_host
+    monkeypatch.setattr(rl, 'materialize_actor_host',
+        lambda reference, scratch, _cache: materialize_host(
+            reference, scratch, tmp_path.resolve()/'isolated-host-cache'))
+    observed = []
+    real_popen = rl.subprocess.Popen
+
+    def start(command, **options):
+        if 'spireagent.workbench.rl_actor' not in command:
+            return real_popen(command, **options)
+        actual = Path(command[command.index('--config')+1])
+        assert actual != actor_path
+        private = json.loads(actual.read_bytes())
+        local = json.loads(Path(private['execution']).read_bytes())
+        assert local['runtime_directory'] != str(package/'dist')
+        assert local['host_directory'] != base['host_directory']
+        assert local['candidate_directory'] != base['candidate_directory']
+        assert options['env']['DOTNET'].startswith(str(tmp_path/'isolated-host-cache'))
+        assert options['env']['STS2_GAME_DIR'] != os.environ['STS2_GAME_DIR']
+        assert options['env']['DOTNET_NOLOGO'] == '1'
+        observed.append(actual)
+        work = Path(command[command.index('--work')+1])
+        (work/'actor-summary.json').write_text(json.dumps({
+            'schema': 'spireagent/rl-actor-summary-1', 'actor': ref['actor'],
+            'run': plan['run'], 'status': 'stopped_before_offer',
+            'games': [] if disposition is None else [{'status': disposition, 'shard': None}]}))
+        return SimpleNamespace(wait=lambda: 0, poll=lambda: 0)
+
+    monkeypatch.setattr(rl.subprocess, 'Popen', start)
+    result = rl.run(path)
+    assert len(observed) == 1
+    assert not (path.parent/'STOP').exists()
+    assert result['runtime_materialization']['verified_package']['package_content_sha256'] == pin[
+        'package_content_sha256']
+    assert result['actor_config_sha256'] == ref['sha256']
+    assert result['host_materialization']['candidate_audit_cached'] is False
+
+
+@pytest.fixture
+def host_startup_release(tmp_path, monkeypatch):
+    from test_local_environment import fixture
+
+    host_fixture = tmp_path/'host-fixture'
+    host_fixture.mkdir()
+    _config, host, candidate, pin, _audit, _checked = fixture(host_fixture)
+    (candidate/'source.txt').write_text('synthetic stopped candidate; no Native claim')
+    subprocess.run(['git', 'init', '--quiet', str(candidate)], check=True)
+    subprocess.run(['git', 'add', 'source.txt'], cwd=candidate, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '--quiet', '-m', 'synthetic stopped fixture'],
+                   cwd=candidate, check=True)
+    native = tmp_path/'native-libraries'
+    native.mkdir()
+    (native/'sts2.dll').write_bytes(b'synthetic game input')
+    (candidate/'lib').symlink_to(native, target_is_directory=True)
+    game = tmp_path/'game'
+    game.mkdir()
+    (game/'release_info.json').write_text('{}')
+    sdk = tmp_path/'dotnet-sdk'
+    sdk.mkdir()
+    (sdk/'dotnet').write_text('#!/bin/sh\nexit 0\n')
+    (sdk/'dotnet').chmod(0o755)
+    monkeypatch.setenv('STS2_GAME_DIR', str(game))
+    monkeypatch.setenv('DOTNET', str(sdk/'dotnet'))
+    return {'host_directory': str(host), 'host_pin': pin,
+            'candidate_directory': str(candidate), 'game_assembly_sha256': 'a'*64}
+
+
+def test_Host_startup_copy_is_complete_concurrent_and_immutable(
+        rl, host_startup_release, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    execution = tmp_path/'execution-host.json'
+    execution.write_text(json.dumps(host_startup_release))
+    actor = tmp_path/'actor-host.json'
+    actor.write_text(json.dumps({'execution': str(execution), 'actor': 'test'}))
+    ref = {'path': str(actor), 'sha256': rl.hashed(actor)}
+    cache = tmp_path/'host-cache'
+
+    def materialize(number):
+        scratch = tmp_path/f'host-worker-{number}'
+        scratch.mkdir()
+        return rl.materialize_actor_host(ref, scratch, cache)
+
+    before = execution.read_bytes(), actor.read_bytes()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(materialize, (0, 1)))
+    assert sorted(item[1]['cache_hit'] for item in results) == [False, True]
+    derived, receipt, environment = results[-1]
+    configuration = json.loads(Path(json.loads(derived.read_bytes())['execution']).read_bytes())
+    candidate = Path(configuration['candidate_directory'])
+    assert not (candidate/'lib').is_symlink()
+    assert (candidate/'lib/sts2.dll').read_bytes() == b'synthetic game input'
+    assert (candidate/'.git/HEAD').read_bytes() == (
+        Path(host_startup_release['candidate_directory'])/'.git/HEAD').read_bytes()
+    assert receipt['World_calls_during_materialization'] == 0
+    assert receipt['candidate_audit_cached'] is False
+    assert Path(environment['DOTNET']).is_file()
+    assert (execution.read_bytes(), actor.read_bytes()) == before
+    index_before = (candidate/'.git/index').read_bytes()
+    subprocess.run(['git', 'update-index', '--refresh'], cwd=candidate, check=True)
+    assert (candidate/'.git/index').read_bytes() != index_before
+    assert materialize(2)[1]['cache_hit']  # Legitimate Git stat-cache refresh is allowed.
+    subprocess.run(['git', 'update-index', '--assume-unchanged', 'source.txt'],
+                   cwd=candidate, check=True)
+    with pytest.raises(ValueError, match='Host_startup_cache_changed'):
+        materialize(3)
+    subprocess.run(['git', 'update-index', '--no-assume-unchanged', 'source.txt'],
+                   cwd=candidate, check=True)
+    (candidate/'lib/sts2.dll').write_bytes(b'changed cached input')
+    with pytest.raises(ValueError, match='Host_startup_cache_changed'):
+        materialize(4)
+
+
 def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path):
     _plan, file = prepared(rl, inputs)
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output',
+                       side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True)
     assert '--array=0-7%8' in result['command']
     assert '--signal=B:USR1@1980' in result['command']
@@ -348,7 +544,7 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
                   patch.object(rl.scheduler, 'submission_lock_path',
                                return_value=tmp_path / 'submit.lock'),
                   patch.object(rl.scheduler, 'output',
-                               side_effect=['123_[0-0]', '0/400/0/400', ''])):
+                               side_effect=['123_[0-0]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
                 submitted = rl.submit(next_plan / 'plan.json', additional_to=[file], dry_run=True)
             assert submitted['cores'] == 32
             previous = submitted['additional_to'][0]
@@ -429,17 +625,18 @@ def test_preservation_handoff_does_not_waive_unknown_cleanup_or_foreign_result(
 
 def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
         rl, inputs, tmp_path):
-    _plan, parent = prepared(rl, inputs, actors=12)
+    _plan, parent = prepared(rl, inputs, actors=32)
     (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
     original = parent.read_bytes()
     execution, learner, _ = inputs
     extra = tmp_path.resolve() / 'extra'
-    plan = rl.prepare(execution, learner, extra, actors=12)
+    plan = rl.prepare(execution, learner, extra, actors=24)
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
-          patch.object(rl.scheduler, 'output', side_effect=['123_[0-11]', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output', side_effect=[
+              '123_[0-31]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
-    assert '--array=0-11%12' in result['command'] and '--cpus-per-task=1' in result['command']
+    assert '--array=0-23%24' in result['command'] and '--cpus-per-task=1' in result['command']
     assert result['additional_to'][0]['job_id'] == '123'
     assert parent.read_bytes() == original
     assert not {a['actor'] for a in _plan['actors']} & {a['actor'] for a in plan['actors']}
@@ -447,8 +644,8 @@ def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
 
 
 @pytest.mark.parametrize('existing,count,error', [
-    ('999_[0-11]', 12, 'must_drain'), ('123_[0-23]', 16, 'limit_36')])
-def test_additional_array_rejects_unlisted_owner_or_total_over36(
+    ('999_[0-11]', 12, 'must_drain')])
+def test_additional_array_rejects_unlisted_owner(
         rl, inputs, tmp_path, existing, count, error):
     _plan, parent = prepared(rl, inputs, actors=24)
     (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
@@ -477,7 +674,7 @@ def test_additional_submission_uncertain_outcome_is_not_offered_again(rl, inputs
             commands.append(command)
             raise RuntimeError('injected_unknown_scheduler_response')
         if command[0] == 'sinfo':
-            return '0/400/0/400'
+            return 'fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400'
         return '123_[0-11]' if '-n' in command else ''
 
     with (patch.object(rl, 'require_modules'),
@@ -498,7 +695,8 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output',
+                       side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True, memory_gb=6, exclude_nodes=['smp-9-0'])
     assert '--mem=6G' in result['command'] and '--mem=4G' not in result['command']
     assert '--exclude=smp-9-0' in result['command']
@@ -508,7 +706,9 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
         rl.submit(file, dry_run=True, memory_gb=True)
 
 
-def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inputs):
+@pytest.mark.parametrize('count', [40, 256, 500])
+def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
+        rl, inputs, tmp_path, count):
     from stpd.p1.export import adapter_identity
     from stpd.p1.local_inference import SEGMENT_SCHEMA
 
@@ -520,16 +720,64 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inp
     attachment = learner.parent/'inference.json'
     attachment.write_text(json.dumps({'schema': SEGMENT_SCHEMA, 'adapter': adapter_identity(),
         'pool_id': 'fixture', 'address': ['127.0.0.1', 1234], 'segment_steps': 64}))
-    plan = rl.prepare(execution, learner, output, actors=40, wall_seconds=4500,
+    plan = rl.prepare(execution, learner, output, actors=count, wall_seconds=4500,
         episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
     assert plan['trajectory_encoding'] == 'short-segment-1'
     actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
     assert actor['segments']['inference'] == json.loads(attachment.read_bytes())
     assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
+    assert actor['segments']['rendezvous'] == str(attachment)
     assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
     assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
-    attachment.write_text('{}')
-    with pytest.raises(ValueError):
+    with patch.object(rl, 'read_pinned', wraps=rl.read_pinned) as pinned:
+        rl.load_plan(output/'plan.json', actor_index=count - 1)
+    assert pinned.call_count == 3  # execution, shared inference, selected actor; independent of N
+    assert [call.args[0]['path'] for call in pinned.call_args_list
+            if call.args[0]['path'].startswith(str(output/'friday-'))] == [
+                plan['actors'][-1]['path']]
+    first_actor = Path(plan['actors'][0]['path'])
+    original = first_actor.read_bytes()
+    first_actor.write_bytes(b'{}')
+    rl.load_plan(output/'plan.json', actor_index=count - 1)
+    with pytest.raises(ValueError, match='pinned_input_changed'):
+        rl.load_plan(output/'plan.json', actor_index=0)
+    with pytest.raises(ValueError, match='pinned_input_changed'):
+        rl.load_plan(output/'plan.json')  # supervisor still checks the entire plan
+    first_actor.write_bytes(original)
+    with pytest.raises(ValueError, match='frozen_actor_array_index'):
+        rl.load_plan(output/'plan.json', actor_index=count)
+    def scheduler(command):
+        if command[0] == 'sinfo':
+            return 'fc430|0/654/0/654' if '%f|%C' in command else '0/654/0/654'
+        return ''
+
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
+          patch.object(rl.scheduler, 'output', side_effect=scheduler)):
+        submitted = rl.submit(output/'plan.json', dry_run=True)
+    assert submitted['cores'] == count
+    assert f'--array=0-{count - 1}%{count}' in submitted['command']
+    (output/'STOP').touch()
+    with (patch.object(rl.sys, 'argv', ['rl.py', 'run', '--plan', str(output/'plan.json')]),
+          patch.object(rl.sys, 'platform', 'linux'),
+          patch.dict(rl.os.environ, {'SLURM_JOB_ID': 'synthetic', 'SLURM_CPUS_PER_TASK': '1',
+                                    'SLURM_ARRAY_TASK_ID': str(count - 1)}),
+          patch.object(rl, 'require_modules'),
+          patch.object(rl, 'read_pinned', wraps=rl.read_pinned) as pinned):
+        rl.main()  # actual CLI gate -> actual run -> original before-offer Stop
+    assert pinned.call_count == 6  # both CLI gate and child verify only this actor
+    (output/'STOP').unlink()
+    original_attachment = actor['segments']['inference']
+    attachment.write_text(json.dumps({**original_attachment, 'pool_id': 'replacement',
+                                     'address': ['127.0.0.1', 5678]}))
+    replacement = output.with_name('replacement-plan')
+    new_plan = rl.prepare(execution, learner, replacement, actors=1, wall_seconds=4500,
+        episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
+    assert rl.read_pinned(rl.load_plan(output/'plan.json')['inference']) == original_attachment
+    assert rl.read_pinned(rl.load_plan(replacement/'plan.json')['inference']) != original_attachment
+    assert plan['inference']['path'] != new_plan['inference']['path']
+    Path(plan['inference']['path']).write_text('{}')
+    with pytest.raises(ValueError, match='pinned_input_changed'):
         rl.load_plan(output/'plan.json')
 
 
@@ -541,7 +789,9 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
         if command[0] == 'sbatch':
             commands.append(command)
             raise RuntimeError('injected_unknown_scheduler_response')
-        return '0/400/0/400' if command[0] == 'sinfo' else ''
+        if command[0] == 'sinfo':
+            return 'fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400'
+        return ''
 
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
@@ -555,11 +805,13 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
 
 
 @pytest.mark.parametrize(
-    "external, stop_at_creation, actor_count",
-    [(False, False, 32), (True, False, 32), (True, False, 8), (True, False, 7), (True, True, 32)]
+    "external, stop_at_creation, actor_count, steps",
+    [(False, False, 56, 64), (True, False, 48, 64), (True, False, 8, 64),
+     (True, False, 7, 64), (True, True, 32, 64), (True, False, 8, 48),
+     (True, False, 11, 48), (True, False, 256, 64), (True, False, 500, 64)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
+    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count, steps
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -569,11 +821,13 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     execution, configuration, actors = inputs
     learning = json.loads(configuration.read_bytes())
-    learning['segments'] = {'steps': 64, 'inference_batch': 32}
+    learning['segments'] = {'steps': steps, 'inference_batch': 32}
     learning['actor_defaults']['behavior']['uniform_mix'] = 0
     configuration.write_text(json.dumps(learning))
-    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(
-        inference_batch=32, dataset_rows=1024, episode_rows=128), wall_seconds=3600)
+    from stpd.rl.segments import SegmentConfig
+
+    config = LearnerConfig(run=learning['run'], peer=learning['peer'], device='cuda',
+        segments=SegmentConfig(steps=steps), wall_seconds=3600)
     monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
     monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
     monkeypatch.setattr(rl, 'require_modules', lambda _: None)
@@ -589,9 +843,9 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
         def __init__(self, config, work, io):
             self.pool = SimpleNamespace(environment=lambda: {AUTH_ENV: capability})
             (work/'inference.json').write_text(json.dumps({'schema': SEGMENT_SCHEMA,
-                'segment_steps': 64, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
+                'segment_steps': steps, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
 
-        def run(self):
+        def run(self, *, on_tick=None):
             calls.append('run')
             return {'updates': 0}
 
@@ -605,7 +859,8 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
-    if actor_count < 8:
+    episode_capacity = 128 // steps * steps
+    if actor_count * episode_capacity < 1024:
         with pytest.raises(ValueError, match='bounded_segment_actor_count'):
             rl.learn(configuration, work, execution, actors, actors=actor_count,
                      seed_namespace='synthetic-new-seeds', external_submit=external)
@@ -629,13 +884,22 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     assert rl.learn(configuration, work, execution, actors, actors=actor_count,
                     seed_namespace='synthetic-new-seeds',
                     external_submit=external) == {'updates': 0}
+    effective = json.loads((work/'learner-config.json').read_bytes())
+    assert effective['segments']['capacity_rows'] == 1024 + actor_count * steps
+    assert not set(effective['performance'] or {}) & {'packed', 'tensor_cache', 'joint_nodes'}
+    plan = rl.load_plan(actors/'plan.json')
+    assert plan['learner_origin'] == {'path': str(work/'learner-config.json'),
+                                      'sha256': rl.hashed(work/'learner-config.json')}
+    assert plan['learner_request'] == {'path': str(configuration),
+                                       'sha256': rl.hashed(configuration)}
     assert calls == (['run'] if external else ['submit', 'run'])
     assert os.environ[AUTH_ENV] == 'prior-capability'
 
 
+@pytest.mark.parametrize('retain_capability', [False, True])
 @pytest.mark.parametrize('unknown_cpu', [False, True])
 def test_login_launch_submits_original_plan_with_same_environment(
-    rl, inputs, tmp_path, monkeypatch, unknown_cpu
+    rl, inputs, tmp_path, monkeypatch, unknown_cpu, retain_capability
 ):
     from stpd.p1.local_inference import AUTH_ENV
 
@@ -653,6 +917,8 @@ def test_login_launch_submits_original_plan_with_same_environment(
             capabilities.append(os.environ[AUTH_ENV])
             rl.prepare(execution, config, actors)
             return 'synthetic-GPU'
+        if command[0] == 'squeue' and '-j' in command:
+            return 'RUNNING'
         return ''
 
     def submit(plan, **options):
@@ -667,23 +933,25 @@ def test_login_launch_submits_original_plan_with_same_environment(
     monkeypatch.setattr(rl, 'submit', submit)
     if unknown_cpu:
         with pytest.raises(RuntimeError, match='unknown CPU'):
-            rl.launch(script, config, work, actors, output)
+            rl.launch(script, config, work, actors, output, retain_capability=retain_capability)
         assert (actors/'STOP').exists()
         assert (output/'STOP').exists()
     else:
-        receipt = rl.launch(script, config, work, actors, output)
+        receipt = rl.launch(script, config, work, actors, output,
+                            retain_capability=retain_capability)
         assert receipt['GPU_job_id'] == 'synthetic-GPU'
         assert (output/'launch-receipt.json').exists()
     assert len(capabilities) == 2 and capabilities[0] == capabilities[1]
     assert len(bytes.fromhex(capabilities[0])) == 32
-    assert os.environ[AUTH_ENV] == 'prior'
+    assert os.environ[AUTH_ENV] == (capabilities[0]
+        if retain_capability and not unknown_cpu else 'prior')
     assert all(capabilities[0] not in f.read_text() for f in tmp_path.rglob('*.json'))
     with pytest.raises(ValueError, match='fresh_login'):
-        rl.launch(script, config, work, actors, output)
+        rl.launch(script, config, work, actors, output, retain_capability=retain_capability)
     assert sum(command[0] == 'sbatch' for command in commands) == 1
 
 
-def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
+def test_running_gpu_plan_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
     from stpd.p1.local_inference import AUTH_ENV
     script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
     script.write_text('#!/bin/sh\n')
@@ -696,6 +964,8 @@ def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, 
         if command[0] == 'sbatch':
             inherited['stop'] = os.environ[rl.LAUNCH_STOP_ENV]
             return 'queued-original'
+        if command[0] == 'squeue' and '-j' in command:
+            return 'RUNNING'
         return ''
 
     monkeypatch.setattr(rl.scheduler, 'output', schedule)
@@ -728,3 +998,339 @@ def test_additional_active_parent_accepts_invisible_node_local_scratch(rl, input
     finished = rl.finished_actor_results(path, plan)
     assert finished[0]['result_path'] == str(persistent/'result.json')
     assert finished[0]['result_sha256'] == rl.hashed(persistent/'result.json')
+
+
+def test_gpu_queue_time_does_not_consume_running_readiness_or_48h_limit(
+    rl, inputs, tmp_path, monkeypatch
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    clock, observations, running = [0.0], [], [False]
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    monkeypatch.setattr(rl.time, 'monotonic', lambda: clock[0])
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            assert '--time=2880' in command
+            return '81'
+        if command[0] == 'squeue' and '-j' in command:
+            observations.append(True)
+            if len(observations) < 3:
+                clock[0] += 1200  # Twenty queue minutes exceed the ready window.
+                return 'PENDING'
+            running[0] = True
+            return 'RUNNING'
+        return ''
+
+    def sleep(seconds):
+        clock[0] += seconds
+        if running[0]:
+            rl.prepare(execution, config, actors)
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl.time, 'sleep', sleep)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': 'CPU'})
+    result = rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                       minutes=2880, ready_seconds=120)
+    assert result['GPU_job_id'] == '81' and len(observations) == 4
+    assert (tmp_path/'login/GPU-started.json').exists()
+    assert not (tmp_path/'login/STOP').exists()
+
+
+@pytest.mark.parametrize('existing,detail,allowed', [
+    ('79', 'PENDING|gres/gpu:a100:1|rl4-learner', True),
+    ('79', 'RUNNING|gres/gpu:a100:1|rl4-learner', True),
+    ('79', 'RUNNING|gres/gpu:a30:1|rl4-learner', False),
+    ('79', 'PENDING|gres/gpu:a100:2|rl4-learner', False),
+    ('79', 'PENDING|gres/gpu:a100:1|foreign-job', False),
+    ('79\n80', 'PENDING|gres/gpu:a100:1|rl4-learner', False),
+])
+def test_explicit_opposite_gpu_queue_keeps_one_job_per_card(
+    rl, inputs, tmp_path, monkeypatch, existing, detail, allowed
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    offers = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            offers.append(command)
+            rl.prepare(execution, config, actors)
+            return '80'
+        if command[0] == 'squeue':
+            if command[-1] == '%T':
+                return 'RUNNING'
+            return detail if '-j' in command else existing
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': 'CPU'})
+    if allowed:
+        result = rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                           gpu='a30', alongside_job='79')
+        assert result['GPU_job_id'] == '80' and len(offers) == 1
+    else:
+        with pytest.raises(ValueError, match='GPU.*owner|GPU.*scheduling'):
+            rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                      gpu='a30', alongside_job='79')
+        assert not offers
+
+
+@pytest.mark.parametrize('state', ['PENDING', 'FAILED'])
+def test_existing_plan_cannot_offer_actors_before_live_gpu(
+    rl, inputs, tmp_path, monkeypatch, state
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    observed = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            rl.prepare(execution, config, actors)
+            return '81'
+        if command[0] == 'squeue' and '-j' in command:
+            observed.append(state)
+            return state
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: pytest.fail('GPU not RUNNING'))
+    if state == 'PENDING':
+        monkeypatch.setattr(rl.time, 'sleep', lambda *_: (_ for _ in ()).throw(
+            InterruptedError('operator ends read-only queue wait')))
+        error = InterruptedError
+    else:
+        error = RuntimeError
+    with pytest.raises(error):
+        rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login')
+    assert observed == [state] and (tmp_path/'login/STOP').exists()
+
+
+def test_reserve_only_never_offers_cpu_or_needs_actor_readiness(rl, tmp_path, monkeypatch):
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    monkeypatch.setattr(rl.scheduler, 'output', lambda cmd: '91' if cmd[0] == 'sbatch' else '')
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: pytest.fail('reservation has no actors'))
+    receipt = rl.launch(script, config, tmp_path/'work', tmp_path/'actors', tmp_path/'login',
+                        reserve_only=True, minutes=2880)
+    assert receipt == {'GPU_job_id': '91', 'reservation_only': True, 'CPU_actors_offered': 0}
+    assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()
+
+
+def test_allocation_holder_exits_at_explicit_execution_budget(tmp_path, monkeypatch):
+    # Process/clock behavior only; this fixture does not qualify GPU allocation.
+    monkeypatch.setenv('SLURM_JOB_ID', '123456')
+    budget = tmp_path/'budget.json'
+    budget.write_text(json.dumps({'seconds': 1}))
+    root = tmp_path/'held'
+    subprocess.run([sys.executable, str(FRIDAY/'gpu_session.py'), '--root', str(root),
+                    '--budget-file', str(budget)], check=True, timeout=5)
+    assert json.loads((root/'allocation.json').read_bytes())['initial_budget_seconds'] == 1
+    assert json.loads((root/'released.json').read_bytes())['signals'] == []
+
+
+def test_long_actor_entry_accepts_500_and_keeps_fair_share(rl, inputs):
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segments import SegmentConfig
+
+    plan, _ = prepared(rl, inputs, actors=500, wall_seconds=72000, max_games=100000)
+    assert len({a["actor"] for a in plan["actors"]}) == 500
+    assert json.loads(Path(plan["actors"][-1]["path"]).read_bytes())["max_games"] == 100000
+    config = LearnerConfig(run="capacity", peer={}, segments=SegmentConfig()).bind_actors(500)
+    assert config.segments.capacity_rows == 1024 + 500 * 64
+    with pytest.raises(ValueError, match="segment_actor_count_required"):
+        config.bind_actors(501)
+    assert rl.capacity(1999, 0, 500, maximum=500) == 499
+    assert rl.capacity(2000, 301, 500, maximum=500) == 32
+
+
+def test_general_segment_submission_keeps_300_second_advance(rl, tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {
+        "source_root": str(tmp_path),
+        "actors": [{"actor": "one"}],
+        "wall_seconds": 3600,
+        "episode_seconds": 14400,
+        "games_per_ledger": 10,
+        "trajectory_encoding": "short-segment-1",
+    }
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl, "launcher", lambda *args: "#!/bin/bash\nexit 0\n")
+    monkeypatch.setattr(rl.scheduler, "user_submission_lock", nullcontext)
+    monkeypatch.setattr(
+        rl.scheduler, "output", lambda command: ("fc430|0/100/0/100" if "%f|%C" in command
+                         else "0/100/0/100") if command[0] == "sinfo" else ""
+    )
+    result = rl.submit(path, dry_run=True, partition="general")
+    assert "--signal=B:USR1@300" in result["command"]
+    assert "--partition=general" in result["command"]
+
+
+@pytest.mark.parametrize("partition", ["general", "debug"])
+def test_other_partition_RL_array_still_blocks_submission(rl, inputs, tmp_path, monkeypatch,
+                                                         partition):
+    _, plan = prepared(rl, inputs)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl.scheduler, "submission_lock_path", lambda: tmp_path / "submit.lock")
+
+    def scheduler(command):
+        if command[0] == "squeue":
+            # The existing allocation is in smp; a partition filter would hide
+            # it from this general/debug request and wrongly reach sbatch.
+            if "-p" in command and command[command.index("-p") + 1] != "smp":
+                return ""
+            return "other-array_0"
+        if command[0] == "sinfo":
+            return "0/1000/0/1000"
+        pytest.fail("must reject the foreign RL array before any sbatch")
+
+    monkeypatch.setattr(rl.scheduler, "output", scheduler)
+    with pytest.raises(ValueError, match="existing_friday_array_must_drain"):
+        rl.submit(plan, partition=partition)
+    assert not (plan.parent / "submission-intent.json").exists()
+
+
+def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, monkeypatch):
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {"actors": [{"actor": "a"}, {"actor": "b"}]}
+    (tmp_path / "submission.json").write_text(json.dumps({"job_id": "77"}))
+    owner = tmp_path / "actors/a/owner.json"
+    owner.parent.mkdir(parents=True)
+    owner.write_text(json.dumps({"actor": "a", "job_id": "101", "plan_sha256": rl.hashed(path)}))
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(
+        rl.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (
+            "101|77_0|FAILED|1:0\n101.batch|77_0.batch|FAILED|1:0\n102|77_1|RUNNING|0:0\n"
+        ),
+    )
+    rows = rl.actor_accounting(path)
+    assert rows[0]["actor"] == "a" and rows[0]["terminal"] is True
+    assert rows[1]["actor"] == "b" and rows[1]["terminal"] is False
+    owner.write_text(json.dumps({"actor": "a", "job_id": "77_0", "plan_sha256": rl.hashed(path)}))
+    with pytest.raises(ValueError, match="terminal_actor_owner_or_submission_binding_changed"):
+        rl.actor_accounting(path)
+
+
+def test_explicit_capacity_limit_survives_repeated_actor_binding():
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segments import SegmentConfig
+    config = LearnerConfig(run='capacity', peer={},
+        segments=SegmentConfig(capacity_limit_rows=6400))
+    assert config.bind_actors(256).bind_actors(256).segments.capacity_rows == 6400
+    assert config.bind_actors(32).segments.capacity_rows == 3072
+    for invalid in (True, 0, 3071, 6400.0):
+        with pytest.raises(ValueError, match='invalid_segment'):
+            SegmentConfig(capacity_limit_rows=invalid)
+
+
+@pytest.mark.parametrize('other_jobs', ['', '\n80'])
+def test_held_gpu_launch_offers_one_step_and_never_sbatch(
+    rl, inputs, tmp_path, monkeypatch, other_jobs
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    root = tmp_path/'held-login'
+    commands = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    def schedule(command):
+        commands.append(command)
+        if '--steps' in command:
+            return '79.batch\n79.extern'
+        if '-j' in command:
+            return 'RUNNING|gres/gpu:a100:1|rl4-learner'
+        return '79' + other_jobs
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    def process(command, **kwargs):
+        commands.append(command)
+        (root/'GPU-step-id').write_text('79.17\n')
+        rl.prepare(execution, config, actors)
+        return SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(rl.subprocess, 'Popen', process)
+    submitted_options = []
+    def submit(*args, **options):
+        submitted_options.append(options)
+        return {'job_id': '80'}
+    monkeypatch.setattr(rl, 'submit', submit)
+    result = rl.launch(script, config, tmp_path/'learner', actors, root,
+                       gpu='a100', held_job_id='79', actor_node_types=['fc430'],
+                       actor_exclude_nodes=['smp-9-3'])
+    assert result['GPU_job_id'] == '79.17'
+    assert sum(c[0] == 'srun' for c in commands) == 1
+    assert all(c[0] != 'sbatch' for c in commands)
+
+    assert submitted_options == [{'memory_gb': 4, 'node_types': ['fc430'],
+                                  'exclude_nodes': ['smp-9-3']}]
+
+
+def test_held_gpu_active_step_rejected_without_submission(rl, tmp_path, monkeypatch):
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    def schedule(command):
+        if '--steps' in command:
+            return '79.9'
+        if '-j' in command:
+            return 'RUNNING|gres/gpu:a100:1|rl4-learner'
+        return '79'
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl.subprocess, 'Popen', lambda *a, **kw: pytest.fail('must not offer'))
+    with pytest.raises(ValueError, match='active_step'):
+        rl.launch(script, config, tmp_path/'learner', tmp_path/'actors', tmp_path/'login',
+                  gpu='a100', held_job_id='79')
+
+
+@pytest.mark.parametrize('node_types,allowed', [(None, False), (['fc430', 'c6220'], True)])
+def test_explicit_node_types_never_silently_mix_slow_nodes(rl, inputs, tmp_path,
+                                                          monkeypatch, node_types, allowed):
+    _, path = prepared(rl, inputs)
+    from contextlib import nullcontext
+
+    def scheduler(command):
+        if command[0] == 'sinfo':
+            return ('fc430|0/0/0/16\nc6220|0/400/0/400'
+                    if '%f|%C' in command else '0/400/0/416')
+        return ''
+
+    monkeypatch.setattr(rl, 'require_modules', lambda _: None)
+    monkeypatch.setattr(rl.scheduler, 'user_submission_lock', nullcontext)
+    monkeypatch.setattr(rl.scheduler, 'output', scheduler)
+    if allowed:
+        result = rl.submit(path, dry_run=True, node_types=node_types)
+        assert '--constraint=fc430|c6220' in result['command']
+    else:
+        with pytest.raises(ValueError, match='explicit_node_type_capacity'):
+            rl.submit(path, dry_run=True)
+        assert not (path.parent / 'submission-intent.json').exists()
+
+
+def test_actor_monitor_preserves_expected_pending_until_terminal_observation(
+        rl, tmp_path, monkeypatch):
+    monkeypatch.setattr(rl, 'load_plan', lambda path: {'actors': [{'actor': 'a'}, {'actor': 'b'}]})
+    monitor = rl.ActorAllocationMonitor(tmp_path / 'plan.json')
+    retired = set()
+    owner = SimpleNamespace(retired_actors=retired,
+        retire_actor=lambda actor, row: retired.add(actor))
+    monitor.poll(owner)
+    assert owner.actor_allocation_pending == {'a', 'b'}
+    monitor.observations.put({'actor': 'a', 'terminal': True})
+    monitor.poll(owner)
+    assert owner.actor_allocation_pending == {'b'}
+    monitor.observations.put({'actor': 'b', 'terminal': True})
+    monitor.poll(owner)
+    assert not owner.actor_allocation_pending

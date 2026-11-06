@@ -115,7 +115,7 @@ def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *
     """
     p = probabilities.detach().float()
     if (p.ndim != 2 or p.shape[1] != OUTCOME_CLASSES or not 1 <= len(p) <= 64
-            or not math.isfinite(gae_lambda) or not 0 < gae_lambda <= 1):
+            or not math.isfinite(gae_lambda) or not 0 <= gae_lambda <= 1):
         raise ValueError("invalid_segment_distribution_or_lambda")
     if terminal_class is not None:
         if type(terminal_class) is not int or not 0 <= terminal_class < OUTCOME_CLASSES:

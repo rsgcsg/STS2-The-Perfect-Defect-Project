@@ -102,7 +102,7 @@ CPU不能代存成无CUDA RNG的新CP。先seed原Exchange，再按需取CP及�
 | 学校分配结束、主机丢失、SSH断线 | SSH断线先核真实进程，不重复启动；分配确实结束才接段 | 从R2完整读回CP并核哈希、源码、run、起点，再显式`resume_checkpoint`。同代码续训保留optimizer/计数；改学习者源码按原换代规则用新run热启动，不冒称无损续训 |
 | R2暂不可用，保存尚未确认 | 不把本地结束当已保存；停新准入、保留本地待保存/失败前缀 | 按原保存/读回入口核原请求结果，避免重复发布或重打。恢复后核原immutable对象，不盲重试有副作用操作 |
 | 磁盘不足或内存压力 | 按容量SOP停新准入；不删原件求继续 | 内存先分anon/filecache、OOM事件和进程RSS，不能把cgroup缓存占满直接叫泄漏。核实际写入卷、保全双副本峰值和剩余空间；有依据再改资源申请 |
-| 固定评估变差或停滞 | 连续两次平均最高层低于11.75按本轮规则停；连续三次没改善只报告 | 用原固定种子/独立账本和完整分母比较；评估unknown不算胜负，不换种子求好看。KL最近10次均值>0.1报告用户，不把0.02损失系数当自停阈值 |
+| 固定评估变差或停滞 | 历史RL3才采用连续两次平均最高层低于11.75的规则；RL4.x采用下文配对区间与具名rollback CP规则。连续三次没改善只报告 | 用原固定种子/独立账本和完整分母比较；评估unknown不算胜负，不换种子求好看。KL最近10次均值>0.1报告用户，不把0.02损失系数当自停阈值 |
 | 看守退出/状态过旧 | 游戏与训练进程可能仍活着，先核；补回监督不能重复开训练 | 新版支持`SIGUSR2`仅请求看守维修退出：不再开评估，等已有评估收齐且无全局停止原因后退出，不写训练STOP。USR1/TERM/INT仍是全局停止请求，含义不同 |
 
 ### 每次维修的固定顺序
@@ -206,3 +206,129 @@ wall/GPU预算、版本/更新数，以及Adam/RNG/buffer/baseline重置方式�
 采用前200步核loss/KL/clip/ratio/梯度；第一小时先保持12路、按逐条账本再定供数。
 下一次可比评估平均层数比上一代低超过1层时，按已批准运行卡回退到保留模型；
 回退/调整发生在完整存档边界，原失败分母、旧版本及原STOP不改不删。
+
+## RL4.1 长训运营入口（OPS 候选，集成后使用）
+
+原 `watch.py` 的 `mode=segments` 仍消费原 `rl.py launch/learn/prepare/submit`、
+`evaluate.py` 和 Store；不直接开 World。GPU launcher 保留48 h、显式异卡1运行+1排队门，
+`retain_capability`仅在成功交接后把同一capability留在登录owner环境中供新actor补位；异常恢复原环境。
+CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
+原任务验收；这里不授予开训、GPU 或模型质量资格。
+
+- 冻结完整 learner JSON、原执行 JSON、peer、源码、CP、actor数和排除节点。prepare、learn、
+  bind_actors支持1–500路；短段RL采用idle_divisor=1，普通打局/评估保持四分之一，
+  排队超过300项仍降至32路。配置500不等于已取得500核。
+  rl41 profile版本上限为900000，正常learn显式冻结每actor最多100000局。
+- watcher配置使用 `schema=spireagent/friday-rl-watch-config-1`、`mode=segments`，必填
+  `run/peer/budget_id/deadline_at/training_seconds/actors/learner_config/execution/
+  runtime_source/learner_python`。deadline是UTC epoch；training_seconds≤72000。
+  `operating_budget={id,total_seconds,consumed_seconds}`随完整CP保存，恢复继承已耗时间和截止，
+  不重给20小时。具名运营窗口与CP16学习run分开，诊断不会占用/污染后续长训窗口。
+- 已有获准GPU holder时可显式指定`held_job_id`：正常launcher在同一用户的唯一RUNNING、
+  同型号`rl4-learner`分配内开一个srun step，拒绝已有数字step；不另申请GPU。
+  watcher只核账和停止准确job.step，不释放holder。未知step提交保留原intent，不重投。
+  有限故障资格化可给`learner_supervisor={path,sha256}`：固定脚本在原E2内包住原learn命令，
+  只换learner时用`learner_replacement_started`事件连接原/新generation与已耗秒数；
+  watcher合并两代分母并对全部owned generation Stop。该脚本不拥有游戏或新的提交权限。
+- 登录owner运行 `python tools/friday/watch.py --config <frozen-watch.json> --work <private-work>`。
+  capability只在内存/继承环境中，不写文件、命令参数或日志。`cpu_only=true`要求learner为cpu，
+  仅用于获批CPU证明。CPU分区、constraint与exclude_nodes明确冻结；GPU只用I1正常launcher。
+- learner allocation终态后，先排空并核每个原actor的Slurm raw/array ID。选最新完整CP；若它
+  还在共享盘pending，先完成同ID保全，再空目录正常reader读回。新allocation/generation、
+  actor名字和seed namespace继续；只丢旧热代，不重offer旧World。actor终态由learner owner
+  释放lease/delayed引用，原ACK保持，不能补造terminal或训练标签。
+- 未知sbatch回复保留原intent，禁止自动再投。owner重启复用原work；新目录继续需pinned
+  previous_watch_state。原state带原watch-config.json pin，run/peer/预算/截止/总时长必须相同。
+  旧job仍须对账；只有CP不能复活交付账本。CP-only恢复指学习状态和预算。
+
+计时是learner就绪后的服务/更新窗口，不是CUDA kernel秒；排队、初始化和退出排空另计。
+恢复用原owner保守时间与CP对账，原失败和回滚掉的更新不升级成有效训练。
+真实offer/close/actor终态按唯一intent归并，迟到/乱序不增分母；未offer准入单列。
+`watch.py mode=segments` 的全局5%门用已结束或已证失联尝试，在途不当成功；
+恰好5%不停、超过才停。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
+进程异常仍阻止待启动worker。单局ledger停止和保存义务不变，未知局不重投。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
+直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
+learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
+
+审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
+`acknowledged_integrity_events={原event key:原record_sha256}`具名确认已经诊断的finding；
+原finding、失败和unknown保留。连续两次配对区间全负时停止并写具名rollback CP，先诊断再恢复。
+
+archive健康消费磁盘可用量、站点usage配额、inode、积压及观察新鲜度；不足暂停新lease/新局。
+未报告某挂载配额不等于无限配额；陈旧/错误观察不当通过。storage_inventory分物理路径种类和
+model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即删；成功μ发布仅释放本次临时导出
+副本，规范Store不变。完整CP全入R2，本地仅冷却已远端逐字读回的旧payload，保最近3份及评估/
+回滚引用；共享chunk、活reader、未保全数据不删。结束走原archive drain，不靠人工cron。
+
+### 每两小时固定 Managed 评估
+
+`evaluate.py export-checkpoint --learner-config ... --checkpoint ... --output ...` 直接导出raw θ；
+CP16另给原构造包。prepare-checkpoint绑定CP→动作包→原evaluate/ledger，0学习/0私有开局。
+正常评估保全部完整原件，也保原P1轨迹供Boss/协议报告；unknown只保原件、不评分。
+submit支持general/debug及排除G1节点，仍用原容量门、E2和分区时限。
+
+watch的evaluation配置固定seconds=7200、seeds=50..100、canonical manifest pin、
+baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/result/snapshot pin）及执行JSON。
+配方切换可显式设置`rollback_reference="initial_checkpoint"`，绑定已有`initial_checkpoint`的
+0秒评估作固定参照；连续两个后续2h点的配对区间全负即停止。部分回升但仍显著低于切换点
+也触发，不再只看相邻两点。默认仍比较上一点评估。`rollback_recipe`可记录已批准回退参数，
+随具名CP写入原`rollback-checkpoint.json`，诊断后另代恢复；不会热改在用配方或自动重投。
+所有点必须完全同题，核完整Host/Runtime/Input/初始进度/argmax协议，分别对CP16和上一点评估。
+报每层分布、最大层、Act1 Boss正见证、胜局、配对差区间；unknown或未获资格的那一对排除并单计，
+不补题。评估准备、排队后运行和在途停止都受同一绝对截止。
+
+首批技术停止只可用新批填原not_started、无offer且无run_id的题；fixed_baseline由原每行资格
+投影，保固定分母，拒绝重投任何已尝试seed，原失败status不升级。旧full_peer批没有轨迹时，
+`evaluate.py project-report --result ... --plan ... --output ...` 用原by-ID typed reader及P1 extractor
+只读补独立投影，绑定原result hash，不改原report/ledger。把精确observation_projection pin放进
+对应baseline batch。读回失败保持未证，不能重开该局。
+
+### 完整发布与新运营窗口
+
+Friday worker/evaluation owner以完整fsync临时字节原子不覆盖发布，既有owner永久排他；
+读者遇空、截断JSON或截断UTF-8视为尚未发布，后续观察，不据此重开旧局或停整链。
+完整但身份/哈希/schema错误仍拒绝。STOP只看存在，空STOP仍生效；mutable state/result沿原fsync原子save。
+step-id完整且指向另一job即拒绝，半成品在原ready窗口等待。
+
+H1通过后用户可明确开一个新的72000秒运营窗口，并继续同一学习状态。
+新watch配置用`previous_window_state={path,sha256}`绑定已结束的原watch state，run/peer相同、预算id不同；
+指定`learner_config.resume_checkpoint`必须属于原窗口的budget id/total/deadline和owned generation。
+原learner接收`operating_budget_parent={checkpoint_artifact_id,operating_budget,deadline_at}`明确父链接，
+完整继承θ/Adam/EMA/RNG/训练计数，μ按普通恢复重新发布，旧CP和旧窗口耗时不改。
+这只用于明确授权的新运营窗口；同窗口故障恢复仍继承已耗时间，禁止重置预算或deadline。
+
+评估manifest先用`evaluate.py prepare-manifest --game-directory <已部署游戏> --output <manifest.json>`
+读取原`release_info.json`的精确`version`（当前为`v0.111.0`），再交原prepare-checkpoint。
+不自行去掉/添加版本前缀，也不替换固定种子。
+`evaluation.initial_checkpoint`可指定本次长训起点CP作为首个2h周期的anchor：入场先安排其50槽，
+后续仍在7200/14400/...秒评估当前CP；首个当前点同时对CP16和该H1 anchor逐seed比较。
+这复用同一个pending/ledger/evaluation owner，不增加并行业务链；每个计划最多16workers，合计不超过已批CPU上限。
+
+
+抽样整局重放由 Actor 的单线程后台审计执行，不阻塞保存/下一局；重放预算600秒、
+低优先级。超时、子进程不可用或审计执行异常追加 `audit_inconclusive`，原typed结果
+和数据保留，原件不释放；真实字节/身份/语义不一致才追加integrity finding并STOP。
+审计结果使用独立控制连接请求STOP，避免与Actor正在进行的控制请求串读。
+watch health分别报告pending、完成和inconclusive；最近50次已完成审计内，至少5次
+inconclusive且占比严格超过20%时告警，只暂停当前budget的新World准入和补位，
+已有World继续正常收口，不作废已有数据。每次审计的不可变request/result留在原attempt，
+inconclusive不自动重放，后续诊断保留原失败身份。
+
+
+正常STOP先封新准入，继续让inflight World通过原 `episode_end` 和receipt收口。
+held allocation中的数字learner step使用原generation Stop、`login-launch/STOP`及
+`learner/STOP`协作通知，不发step-wide USR1；绝对deadline仍按原owner取消step。
+自定义learner supervisor的普通signal relay必须只 `child.send_signal(SIGUSR1)`，
+不能 `killpg`：preparer/publisher及Python resource tracker需要存活到排空结束；
+显式崩溃注入或硬超时的整组KILL仍是原故障路径。更换外部supervisor时更新其hash pin，
+旧脚本和旧run不覆盖。CPU反例不证明旧200次失败的内层异常；原失败分母不重写。
+后处理失败会保存 `processing-error.json`，并把异常类型、栈位置及跨RPC/worker的
+原诊断纳入failure artifact；不保存异常message、源码行或locals，避免泄露请求/凭据。
+
+
+learner收尾先排空既有episode，再完成标签/最后μ发布，最后完整CP完成后才关闭进程池。
+最后μ发布或标签worker失败不会跳过非fenced学习状态的 `checkpoint(final=True)`；
+失败继续抛出并记录typed `failed`，带安全诊断和finalization阶段，不产生finished假成功。
+CP保留实际 `updates` 与 `published_updates` 的差异；恢复从CP内theta重新发布，不把失败μ
+当成功。`input_fenced`仍只允许恢复上一完整CP，不能借此规则保存未确认输入状态。
+这项保障以CP存储可写/可读为条件；CPU故障注入和本地冷恢复不构成R2或GPU运行资格。

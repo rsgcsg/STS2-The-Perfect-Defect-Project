@@ -33,7 +33,17 @@ NVML采样及这些区间不能拆出准确GPU训练/推理/重叠/空闲比例�
 有界真实steady work的CUDA activity证据，离线分析，不在正式Actor线程导出重profile。
 缓存首次填充、相同成员热读、连续不同dataset和完整在线循环分别计时；辅助HP/终局uses
 上限会改变后续成员，不能把同512引用重复热测倍率作全链收益。配置有旧字段不代表新
-segment_update实际消费，旧能力要核到本次路径/开关。
+prepared_update实际消费，旧能力要核到本次路径/开关。
+
+prepared 路径已有 current+next：下一批准备与当前批 SGD 重叠，不代表多批准备彼此并行。
+`request_wall_seconds` 是请求返回墙钟；`sources_ready_wall_seconds`、
+`auxiliary_ready_wait_seconds`、`assemble_roundtrip_seconds`、`batch_unpack_seconds`
+定位收集和 IPC。`assemble_queue_seconds`、`assemble_unpack_seconds`、
+`assemble_cpu_seconds` 是 roundtrip 内的 worker 区间。`source_queue_seconds`、
+`source_pack_seconds`、`hot_read_wall_seconds`、`hot_json_seconds`、`hot_validate_seconds`
+为各 source 累加；pack 不含进程间 pickle/传输，read 含 Hot owner/锁和完整性读回。
+这些桶不能相加成墙钟。正常 Exchange 已验证原文后可复用其 hash 进入 FrameCompiler，
+仍查 wire/frame/tensor/动作顺序；直接 prepare_source 和自定义 reader 继续验证原文。
 
 系统速度是冻结工作量的完成墙钟；学习效果是相同预算下的固定评估差值。
 两者分别报告。更快、吞吐更高、loss更低，都不自动等于策略变强。
@@ -42,7 +52,7 @@ segment_update实际消费，旧能力要核到本次路径/开关。
 固定TRAIN计算诊断可复用原工具：`python tools/benchmark_rl.py --package /ABS/policy \
 --heads-checkpoint /ABS/normal-warmup-cp --input /ABS/train-states.jsonl \
 --plan /ABS/cases.json --output /ABS/new-profile --source-revision FROZEN_SHA`。
-该模式调用真实 `segment_update`，真实TRAIN状态/标签之外的概率和TD为诊断构造；不发布模型，
+该历史模式已随按行 `segment_update` 退役，不再用于当前prepared训练资格；真实TRAIN状态/标签之外的概率和TD原为诊断构造；不发布模型，
 不进first-use或训练资格。各配置同起点，记录完整工作哈希、成功SGD数、概率差和实际墙钟。
 
 ## 唯一单位表
@@ -186,3 +196,20 @@ TensorBoard将训练态模型熵及按候选数归一的熵，与原实际抽样
 首次概率门用相同acting权重、官方投影/完整动作目录、eval模式核记录概率/logits。
 训练态有dropout与identity mask，ratio不机械要求1、KL不机械要求0；
 起点与KL参考不同的eval KL本来也可非零。诊断门不静默关闭训练随机化。
+
+## RL4.1 预算表与新增观测
+
+整链报告首屏沿[接口SOP的E1–E8预算表](RL_ACTOR_LEARNER.zh-CN.md#进程线程和质量预算)，每条边都填
+吞吐、延迟、host峰RSS/显存和**长期磁盘增长MB/h**；没有实测写未测，不用“热集有界”代替CAS/账本/μ/CP增长。
+G0只代表局部固定工作，G1走正式profile、真实段、正常CLI，并验证CP保存和只换learner后的SGD。
+
+正常progress的`memory`是该learner进程的高水位RSS及CUDA allocator allocated/reserved峰值；
+summary保留实际learning_configuration；model_published另报后台发布进程RSS和发布耗时。
+checkpoint_captured/published分别记录CPU快照、编码/Store发布耗时、字节、该进程RSS高水位。
+CP节点数从原tensor-tree header的树数出，和codec `MAX_NODES=100000`对比，不能用CP字节数代替节点数。
+OS外部采样给各spawn worker/actor/Host的RSS、保存阶段的瞬时峰和nvidia-smi忙闲；累计高水位不是某阶段独占开销。
+
+LocalMuScorer的评分分位数仅含forward+结果取回，排除compiler.decode和段边界容量等待。
+≤4096次时保留全部评分耗时；超过时用独立RNG的4096项均匀reservoir，并报告population/sampled，
+不影响policy/训练RNG。多actor的全窗分位数要合并原样本且说明抽样权重；不能平均各actor的P95。
+文字缓存命中按实际lookup的hit/miss聚合。估路数用完整R/h、多选比例、实测首用率，评分P50的倒数不能直接当actor产能。

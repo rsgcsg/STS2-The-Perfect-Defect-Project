@@ -276,6 +276,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.61",
             "0.1.0-rc.62",
             "0.1.0-rc.63",
+            "0.1.0-rc.64",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -291,6 +292,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.61",
             "0.1.0-rc.62",
             "0.1.0-rc.63",
+            "0.1.0-rc.64",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -307,6 +309,7 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.61",
                 "0.1.0-rc.62",
                 "0.1.0-rc.63",
+                "0.1.0-rc.64",
             }
             else "event",
         )
@@ -322,6 +325,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.61",
             "0.1.0-rc.62",
             "0.1.0-rc.63",
+            "0.1.0-rc.64",
         }:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
@@ -401,6 +405,10 @@ class ManagedEpisodeExecutor:
     def _before_world_offer(self, row: dict[str, Any]) -> None:
         return None
 
+    def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
+        """Observe the existing durable offer, before its possibly unknown effect."""
+        return None
+
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
@@ -445,6 +453,7 @@ class ManagedEpisodeExecutor:
                 self._before_world_offer(row)
                 row["world_mutation_offered"] = True
                 checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
+                self._world_offer_checkpointed(row)
                 with _phase(row, "host_reset", detail=True):
                     reset = manager.reset(
                         row["seed"],

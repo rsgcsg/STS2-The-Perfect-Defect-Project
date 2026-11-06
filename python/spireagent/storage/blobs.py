@@ -50,6 +50,6 @@ def safe_key(key: str, *, prefix: bool = False) -> str:
     return key
 
 
-def bounded(data: bytes) -> None:
-    if not isinstance(data, bytes) or len(data) > MAX_BLOB_BYTES:
+def bounded(data: bytes, *, maximum: int = MAX_BLOB_BYTES) -> None:
+    if not isinstance(data, bytes) or len(data) > maximum:
         raise StoreError("blob_exceeds_bounded_transport")

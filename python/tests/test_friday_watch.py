@@ -37,6 +37,15 @@ def test_stops_keep_unknown_denominator_strict_and_baseline_strict(watch):
     config = {"started_at": 100, "wall_seconds": 72000}
     games = [{"status": "unknown"}] + [{"status": "finished"}] * 19
     assert watch.stop_reason(1000, config, games, None, []) is None
+    # Before 100 completed games one occasional unknown cannot stop the round.
+    assert watch.stop_reason(1000, config, games[:-1], None, []) is None
+    games = [{"status": "unknown"}] * 6 + [{"status": "finished"}] * 13
+    assert (
+        watch.stop_reason(1000, config, games, None, [])
+        == "training_unknown_fraction_above_5_percent"
+    )
+    games = [{"status": "unknown"}] * 11 + [{"status": "finished"}] * 209
+    assert watch.stop_reason(1000, config, games, None, []) is None
     assert (
         watch.stop_reason(1000, config, games[:-1], None, [])
         == "training_unknown_fraction_above_5_percent"
@@ -109,7 +118,7 @@ def test_20_hour_actor_prepare_pins_old_runtime_and_single_core(watch, tmp_path)
                 "candidate_directory": str(tmp_path),
                 "peer": peer,
                 "store": "s3",
-                "retention": rl.RETENTION,
+                "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 20},
             }
         )
     )
@@ -207,7 +216,7 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
                 "candidate_directory": str(tmp_path),
                 "peer": peer,
                 "store": "s3",
-                "retention": rl.RETENTION,
+                "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 20},
             }
         )
     )
@@ -233,7 +242,11 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
         # Only site-specific scheduler IO/lock path are replaced, as in other Friday tests.
         lock_path = Path(sys.argv[2])
         rl.scheduler.submission_lock_path = lambda: lock_path
-        rl.scheduler.output = lambda args: '0/400/0/400' if args[0] == 'sinfo' else ''
+        def scheduler_output(args):
+            if args[0] == 'sinfo':
+                return 'fc430|0/400/0/400' if '%f|%C' in args else '0/400/0/400'
+            return ''
+        rl.scheduler.output = scheduler_output
         sys.argv = ['rl.py', 'submit', '--plan', sys.argv[3], '--dry-run']
         rl.main()
         """)
@@ -259,7 +272,7 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
     assert "--array=0-11%12" in submission["command"]
     launcher = (output / "launch.sh").read_text()
     assert f"source_root={frozen}" in launcher
-    assert 'export PYTHONPATH="$source_root/python"' in launcher
+    assert 'export PYTHONPATH="$source_root/python:$source_root/components/evidence"' in launcher
     assert not (output / "submission.json").exists()
 
 

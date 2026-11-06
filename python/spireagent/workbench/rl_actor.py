@@ -51,8 +51,10 @@ def _cpu_seconds() -> float:
 class ModelPrefetch:
     """Background: notice newer versions and materialize them; play never waits on this."""
 
-    def __init__(self, exchange: Exchange, cache: Path, poll_seconds: float) -> None:
+    def __init__(self, exchange: Exchange, cache: Path, poll_seconds: float, *,
+                 training_generation: str | None = None) -> None:
         self.exchange, self.cache, self.poll_seconds = exchange, cache, poll_seconds
+        self.training_generation = training_generation
         self.ready: dict[int, tuple[dict[str, Any], Path]] = {}
         self.fetch_seconds: list[float] = []
         self.error: dict[str, Any] | None = None
@@ -70,7 +72,8 @@ class ModelPrefetch:
 
     def refresh(self) -> None:
         self.operation = "latest_model"
-        latest = self.exchange.latest_model()
+        latest = (self.exchange.latest_model(training_generation=self.training_generation)
+                  if self.training_generation is not None else self.exchange.latest_model())
         if latest is None:
             return
         with self.lock:
@@ -137,15 +140,22 @@ class Actor:
         self.base = json.loads(Path(configuration["execution"]).read_bytes())
         if self.base.get("peer") != configuration["peer"]:
             reject("actor_exchange_must_use_execution_peer")
-        if self.base.get("retention") != {"tier": "trajectory", "purpose": "training",
-                                          "audit_every": 50}:
+        from .managed_retention import retention_configuration
+
+        retention = retention_configuration(self.base)
+        if (retention["tier"] != "trajectory" or retention.get("purpose") != "training"
+                or retention["score_eligible"]):
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
         self.name = configuration["actor"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.name):
             reject("invalid_actor_name")
+        generation = (configuration["segments"]["inference"].get("training_generation")
+                      if self.segment_mode else None)
+        if self.segment_mode and not isinstance(generation, str):
+            reject("explicit_segment_training_generation_required")
         self.prefetch = ModelPrefetch(self.exchange, work / "models",
-                                      configuration.get("model_poll_seconds", 5))
+            configuration.get("model_poll_seconds", 5), training_generation=generation)
         self.executor: Any = None
         self.executor_version: int | None = None
         self.sequence = len(self.exchange.blobs.keys(
@@ -164,8 +174,21 @@ class Actor:
         self.service = None
         if self.segment_mode:
             from stpd.p1.local_inference import SegmentConnection
+            from stpd.p1.local_mu import (
+                ActorControlConnection,
+                ActorInferencePool,
+                LocalMuScorer,
+                RemoteMuScorer,
+            )
 
-            self.service = SegmentConnection(self.config["segments"]["inference"])
+            remote = dict(self.config["segments"]["inference"])
+            if "rendezvous" in self.config["segments"]:
+                remote["rendezvous"] = self.config["segments"]["rendezvous"]
+            scorer = (RemoteMuScorer(remote) if remote.get("role") == "learner_central"
+                      else LocalMuScorer(self.exchange, work / "mu"))
+            self.actor_pool = ActorInferencePool(SegmentConnection(remote), scorer)
+            self.local_attachment = self.actor_pool.attachment()
+            self.service = ActorControlConnection(self.actor_pool)
 
     def _stop_before_offer(self) -> bool:
         while True:
@@ -183,6 +206,9 @@ class Actor:
         if self.signalled is not None or (self.work/"STOP").exists():
             return True
         if self.segment_stop_reason:
+            return True
+        if self.exchange.admission_pause(self.config.get("budget_id")) is not None:
+            self.segment_stop_reason = "sampling_audit_inconclusive_admission_paused"
             return True
         if self.service is not None:
             try:
@@ -206,8 +232,8 @@ class Actor:
 
         selection = f"rl-v{record['version']:06d}"
         if self.segment_mode and self.executor is not None:
-            # Registration/package/lifecycle stay stable; the central inference
-            # owner adopts new immutable weights only at segment boundaries.
+            # Registration/package/lifecycle stay stable; this actor's CPU scorer
+            # adopts new immutable weights only at segment boundaries.
             return f"rl-v{self.executor_version:06d}"
         if self.executor_version == record["version"]:
             return selection
@@ -229,7 +255,8 @@ class Actor:
             self.executor = SegmentManagedExecutor(execution,
                 episode_seconds=self.config["episode_seconds"], cleanup_seconds=120,
                 exchange=self.exchange, actor=self.name,
-                attachment=self.config["segments"]["inference"], admission=self.service)
+                attachment=self.local_attachment, admission=self.service,
+                budget_id=self.config.get("budget_id"))
         else:
             self.executor = PipelinedManagedExecutor(
                 execution, episode_seconds=self.config["episode_seconds"], cleanup_seconds=120)
@@ -286,7 +313,11 @@ class Actor:
                     "phase_seconds": row.get("phase_seconds"),
                     "behavior_policy": row.get("behavior_policy")}
             if self.segment_mode:
-                game.update(segment_budget_close=row.get("segment_budget_close") is True,
+                game.update(intent_id=row.get("intent_id"),
+                            training_generation=(row.get("segment_admission_owner") or {}).get(
+                                "training_generation"),
+                            world_mutation_offered=slot.get("world_mutation_offered") is True,
+                            segment_budget_close=row.get("segment_budget_close") is True,
                             cleanup_accepted=row.get("cleanup_accepted") is True,
                             segment_prefix_close=bool(row.get("segment_delivery")))
             self.games.append(game)
@@ -294,6 +325,7 @@ class Actor:
             shards[game["shard"]].append(game)
         if self.segment_mode:
             self.exchange.publish_event("actor_games_closed", actor=self.name,
+                budget_id=self.config.get("budget_id"),
                 games=[game for group in shards.values() for game in group],
                 trajectory_encoding="short-segment-1")
             return
@@ -313,6 +345,10 @@ class Actor:
         began = time.monotonic()
         cpu_began = _cpu_seconds()
         deadline = began + self.config["wall_seconds"]
+        absolute = self.exchange.run_deadline(self.config.get("deadline_at"),
+                                              budget_id=self.config.get("budget_id"))
+        if absolute is not None:
+            deadline = min(deadline, began + max(0, absolute - time.time() - 600))
         self.run_deadline = deadline
         episode_seconds = self.config["episode_seconds"]
         if self.segment_mode:
@@ -370,6 +406,7 @@ class Actor:
                 self.executor.close()
             if self.service is not None:
                 self.service.close()
+                self.actor_pool.close()
         summary = {"schema": "spireagent/rl-actor-summary-1", "actor": self.name,
                    "run": self.config["run"],
                    "status": "stopped_signal" if self.signalled and status == "completed"
@@ -380,6 +417,9 @@ class Actor:
                    "timing": dict(self.timing),
                    "model_fetch_seconds": self.prefetch.fetch_seconds,
                    "model_prefetch_events": self.prefetch.events, "games": self.games}
+        if self.segment_mode:
+            summary["local_mu"] = self.actor_pool.scorer.report()
+            summary["segment_timing"] = self.actor_pool.timing_report()
         try:
             archive = self.exchange.drain_archive()
         except StoreError as error:
@@ -391,14 +431,15 @@ class Actor:
         return summary
 
     def _unknown_limit(self) -> bool:
-        """Only an explicitly configured segment Actor stops for an unknown count.
+        """Only an explicitly configured segment Actor stops for a local count.
 
         Unknown games still end once; verified prefixes remain usable. Native
         cleanup and preservation failures keep their original owner stops.
         """
+        # SegmentWatcher owns the run-wide 5% gate and its complete denominator.
         if self.segment_mode and "unknown_stop" not in self.config:
             return False
-        limit = self.config.get("unknown_stop", {"consecutive": 3, "fraction": 0.25,
+        limit = self.config.get("unknown_stop", {"consecutive": 3, "fraction": 0.05,
                                                  "after": 8})
         statuses = [g["status"] for g in self.games]
         tail = statuses[-limit["consecutive"]:]
