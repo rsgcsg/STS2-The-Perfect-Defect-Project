@@ -511,3 +511,24 @@ def test_closed_training_window_stops_replacement_while_learner_still_drains(
     monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": False})
     owner.tick_segment()
     assert value["window_closed"] and stops == ["learner_draining"]
+
+
+def test_restart_resumes_newest_archived_checkpoint_across_attempts(owner, watch, monkeypatch, tmp_path):
+    # Segment CP records live only in the archive; sequences restart per attempt.
+    archive = {"kind": "local", "directory": str(tmp_path / "archive")}
+    owner.config.update(learner_config=str(tmp_path / "learner.json"))
+    owner.config["peer"] = {**owner.config["peer"], "archive": archive}
+    records = {"local": [], "archive": [
+        {"checkpoint_artifact_id": "old-attempt-seq40", "checkpoint_sequence": 40, "published_at": 100.0},
+        {"checkpoint_artifact_id": "new-attempt-seq39", "checkpoint_sequence": 39, "published_at": 200.0},
+    ]}
+    monkeypatch.setattr(watch, "Exchange", lambda peer, run: SimpleNamespace(
+        checkpoint_records=lambda: records["archive"] if peer == archive else records["local"]))
+    owner.exchange = SimpleNamespace(checkpoint_records=lambda: records["local"])
+    from stpd.rl import learner
+    monkeypatch.setattr(learner.LearnerConfig, "read",
+                        staticmethod(lambda path: SimpleNamespace(resume_checkpoint="initial")))
+    tried = []
+    owner.cold_checkpoint = lambda identity: tried.append(identity) or {"id": identity}
+    assert owner.select_checkpoint() == {"id": "new-attempt-seq39"}
+    assert tried == ["new-attempt-seq39"]

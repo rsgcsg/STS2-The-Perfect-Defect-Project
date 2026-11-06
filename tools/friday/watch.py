@@ -1370,6 +1370,13 @@ class SegmentWatcher(Watcher):
             assert base.resume_checkpoint is not None
             return self.cold_checkpoint(base.resume_checkpoint)
         records = self.exchange.checkpoint_records()
+        archive = self.config['peer'].get('archive')
+        if archive is not None:
+            # Segment learners publish CP records to their node-local hot store and
+            # preserve them asynchronously to the archive; the shared exchange may
+            # hold none. Sequences restart per attempt, so newest publication wins.
+            records = records + Exchange(archive, self.config['run']).checkpoint_records()
+        records = sorted(records, key=lambda r: r['published_at'])
         identities = list(dict.fromkeys(r['checkpoint_artifact_id'] for r in reversed(records)))
         fallback = LearnerConfig.read(Path(self.config['learner_config'])).resume_checkpoint
         if fallback not in identities:
