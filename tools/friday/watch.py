@@ -1266,6 +1266,9 @@ class SegmentWatcher(Watcher):
                     if fact.get('closed') and fact['status'] != game['status']:
                         raise ValueError('immutable_actor_close_changed')
                     fact.update(actor=event['actor'], closed=True, status=game['status'])
+                    if game['status'] in {'unknown', 'save_failed'}:
+                        # Diagnostic only (U3): classify without the node-local summary.
+                        fact.update(reason=game.get('reason'), failure=game.get('failure'))
                     if not fact.get('generation') and game.get('training_generation'):
                         fact['generation'] = game['training_generation']
                     if game.get('world_mutation_offered'):

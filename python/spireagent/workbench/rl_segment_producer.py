@@ -32,6 +32,57 @@ from stpd.p1.sampling import distribution
 from stpd.p1.trajectory import validate_behavior
 
 
+FAILURE_STATUSES = frozenset({"unknown", "save_failed"})
+_FAILURE_TAIL_BYTES = 1024**2
+
+
+def failure_facts(attempt: Path, row: dict[str, Any]) -> dict[str, Any]:
+    """Classified last-receipt facts of one non-natural close (U3 recording gap).
+
+    Read-only and bounded: the Runtime final status plus the last MiB of the
+    original journal. Codes, labels and a short public detail only; never a
+    retry, label or training input. Missing files give ``None`` fields.
+    """
+    import re
+
+    facts: dict[str, Any] = {"execution_reason": row.get("execution_reason"),
+        "save_error": row.get("save_error"),
+        "max_observed_floor": (row.get("game_metrics") or {}).get("max_observed_floor"),
+        "last_result": None, "taint_reason": None, "last_unknown_receipt": None,
+        "handoff_reason": None}
+    with suppress(OSError, ValueError, KeyError, TypeError):
+        status = json.loads((attempt / row["runtime_final_status"]["path"]).read_bytes())
+        last = status.get("last_result") or {}
+        facts["last_result"] = {k: last.get(k) for k in ("delivery", "reason", "action_id")}
+        facts["taint_reason"] = status.get("taint_reason")
+    with suppress(OSError, ValueError, KeyError, TypeError):
+        journal = attempt / "runs" / row["run_id"] / "events.jsonl"
+        with journal.open("rb") as stream:
+            offset = max(0, journal.stat().st_size - _FAILURE_TAIL_BYTES)
+            stream.seek(offset)
+            lines = stream.read().splitlines()[1 if offset else 0:]  # skip a cut line
+        labels: dict[str, Any] = {}
+        for raw in lines:
+            event = json.loads(raw)
+            payload = event.get("payload") or {}
+            if event.get("kind") == "global_dispatch":
+                labels[payload.get("request_id")] = (payload.get("bound_action") or {}).get(
+                    "label")
+            elif event.get("kind") == "global_receipt":
+                receipt = payload.get("receipt") or {}
+                if receipt.get("delivery") != "delivered":
+                    facts["last_unknown_receipt"] = {
+                        "reason_code": receipt.get("reason_code"),
+                        "delivery": receipt.get("delivery"),
+                        "label": labels.get(receipt.get("request_id")),
+                        "detail": re.sub(r"https?://\S+", "<url>",
+                                         str(receipt.get("detail")))[:200]}
+            elif (event.get("kind") in {"handoff_to_human", "fail_closed"}
+                  and facts["handoff_reason"] is None):
+                facts["handoff_reason"] = payload.get("reason")
+    return facts
+
+
 class OriginalBarrier:
     """Fsync originals once per segment and bind the exact verified journal prefix."""
 
@@ -695,11 +746,16 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         if observer is None:
             return report
         try:
+            if observer.end_started:
+                # The verified close already sent its one End and lost the ACK
+                # (post_verification_processing_failed). That End stays unknown
+                # and is never resent; the preserved failure is not a save
+                # failure, so the row keeps its own unknown status (U3).
+                row["segment_episode_end"] = "attempted_before_preservation_unknown"
+                return report
             # Typed failure/technical close has no terminal label. Deliver only
             # the earlier verified tail that has never attempted admission.
             observer.finish(None)
-            if observer.end_started:
-                raise BoundaryError("rl_segment", "original_episode_end_requires_reconciliation")
             observer.end_started = True
             self._end_episode(
                 self.connections[run_id],
@@ -750,6 +806,9 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             self.observers.pop(run_id)
             from .reference_suite import _Artifacts
 
+            if row.get("status") in FAILURE_STATUSES:
+                # Read before the local original is released; diagnostic only.
+                row["failure_facts"] = failure_facts(path.parent, row)
             artifacts = _Artifacts.reopen(path.parent)
             if row.get("stored_failure_id") or row.get("stored_evidence_id"):
                 try:
