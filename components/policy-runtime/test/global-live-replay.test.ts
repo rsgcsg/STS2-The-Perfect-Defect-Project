@@ -113,7 +113,8 @@ for value in live.events():
 real=owner.subprocess.run
 with patch.object(owner.subprocess,'run',wraps=real) as calls:
  typed=live.verify(expected); assert typed.passed,typed.findings
- semantic=lambda: sum('replayGlobalAgentRun' in call.args[0][3] for call in calls.call_args_list)
+ # Count the semantic invocation even when the audit is prefixed by nice.
+ semantic=lambda: sum(any('replayGlobalAgentRun' in arg for arg in call.args[0]) for call in calls.call_args_list)
  assert semantic()==0,semantic()
  wrong=live.verify({**expected,'autonomy_budget':{'mode':'bounded','deadlineMs':10000,'maxSubmissions':999,'maxPolicyCalls':40},'schema':'sts2.policy-runtime/agent-session-startup-2'})
  assert not wrong.passed,wrong

@@ -86,8 +86,13 @@ def test_original_empty_end_after_stop_and_real_auxiliary_worker_failure(
         assert pid != os.getpid()
         fields = {key: value for key, value in request.items() if key != "operation"}
         if kill:
+            manager = preparer.pool._executor_manager_thread
+            assert manager is not None
             os.kill(pid, signal.SIGUSR1)
-            process.join(timeout=5)
+            # The executor manager owns waitpid/reaping. A competing Process.join
+            # can return before that thread publishes the actual exit status.
+            manager.join(timeout=5)
+            assert not manager.is_alive()
             assert not process.is_alive() and process.exitcode == -signal.SIGUSR1
             with pytest.raises(ValueError) as caught:
                 connection.request("episode_end", **fields)
