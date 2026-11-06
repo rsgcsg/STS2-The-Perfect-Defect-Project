@@ -64,16 +64,20 @@ def failure_facts(attempt: Path, row: dict[str, Any]) -> dict[str, Any]:
         for raw in lines:
             event = json.loads(raw)
             payload = event.get("payload") or {}
+            request_id = payload.get("request_id")
+            if not isinstance(request_id, str):
+                request_id = ""  # an absent id cannot pair a dispatch with a receipt
             if event.get("kind") == "global_dispatch":
-                labels[payload.get("request_id")] = (payload.get("bound_action") or {}).get(
-                    "label")
+                if request_id:
+                    labels[request_id] = (payload.get("bound_action") or {}).get("label")
             elif event.get("kind") == "global_receipt":
                 receipt = payload.get("receipt") or {}
                 if receipt.get("delivery") != "delivered":
                     facts["last_unknown_receipt"] = {
                         "reason_code": receipt.get("reason_code"),
                         "delivery": receipt.get("delivery"),
-                        "label": labels.get(receipt.get("request_id")),
+                        "label": labels.get(rid) if isinstance(
+                            rid := receipt.get("request_id"), str) else None,
                         "detail": re.sub(r"https?://\S+", "<url>",
                                          str(receipt.get("detail")))[:200]}
             elif (event.get("kind") in {"handoff_to_human", "fail_closed"}
