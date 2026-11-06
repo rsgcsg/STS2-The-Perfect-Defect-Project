@@ -104,35 +104,112 @@ def test_exact_game_version_is_taken_from_shipped_release(rl, tmp_path):
         rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'bad.json')
 
 
-def test_completed_window_reference_cannot_authorize_other_window_CP(tmp_path, monkeypatch):
+def completed_window(tmp_path, watch, **state):
     import hashlib
-    import sys
-    watch = original_watch.__wrapped__()
     prior_cfg = {'run': 'continuation',
                  'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
                  'budget_id': 'h1-good', 'training_seconds': 3600, 'deadline_at': 9999990000}
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config_file = tmp_path/'prior-config.json'
     config_file.write_text(json.dumps(prior_cfg))
-    previous = {'active': None, 'stop': 'run_budget_complete',
+    previous = {'active': None, 'stop': 'run_budget_complete', 'pending': None,
                 'configuration': {'path': str(config_file),
                                   'sha256': hashlib.sha256(config_file.read_bytes()).hexdigest()},
-                'attempts': [{'generation': 'g-good'}]}
+                'attempts': [{'generation': 'g-good', 'terminal_accounting': {'terminal': True}}],
+                **state}
     state_file = tmp_path/'prior-state.json'
     state_file.write_text(json.dumps(previous))
     config = {**prior_cfg, 'budget_id': 'long', 'training_seconds': 72000,
               'deadline_at': 9999999999, 'actors': 1, 'cpu_only': True,
+              'learner_config': str(tmp_path/'learner.json'),
               'previous_window_state': {'path': str(state_file),
                 'sha256': hashlib.sha256(state_file.read_bytes()).hexdigest()}}
-    owner = watch.SegmentWatcher(config, tmp_path/'watch')
-    owner.select_checkpoint = lambda: {
+    return prior_cfg, previous, watch.SegmentWatcher(config, tmp_path/'watch')
+
+
+def previous_window_CP(prior_cfg, generation='g-good', budget_id='h1-good'):
+    return lambda: {
         'checkpoint_artifact_id': 'b'*64, 'deadline_at': prior_cfg['deadline_at'],
-        'training_generation': 'g-failed',
-        'operating_budget': {'id': 'failed-window', 'total_seconds': 3600,
-                             'consumed_seconds': 80}}
+        'training_generation': generation, 'producer': 'learner',
+        'operating_budget': {'id': budget_id, 'total_seconds': 3600, 'consumed_seconds': 3600}}
+
+
+def test_completed_window_reference_cannot_authorize_other_window_CP(tmp_path, monkeypatch):
+    import sys
+    watch = original_watch.__wrapped__()
+    for stop in ('run_budget_complete', 'absolute_deadline'):
+        prior_cfg, _, owner = completed_window(tmp_path/stop, watch, stop=stop)
+        owner.select_checkpoint = previous_window_CP(prior_cfg, 'g-failed', 'failed-window')
+        monkeypatch.setitem(sys.modules, 'rl', SimpleNamespace())
+        with pytest.raises(ValueError, match='does_not_belong'):
+            owner.start_attempt()
+        assert not owner.state['attempts']
+
+
+@pytest.mark.parametrize('stop', ['run_budget_complete', 'absolute_deadline'])
+def test_window_ended_by_budget_or_absolute_deadline_links_its_own_CP(tmp_path, monkeypatch,
+                                                                      stop):
+    import sys
+
+    from stpd.rl.learner import LearnerConfig
+    watch = original_watch.__wrapped__()
+    prior_cfg, previous, owner = completed_window(tmp_path, watch, stop=stop)
+    watch.require_completed_previous_window(previous, prior_cfg, owner.config)
+    owner.select_checkpoint = previous_window_CP(prior_cfg)
     monkeypatch.setitem(sys.modules, 'rl', SimpleNamespace())
-    with pytest.raises(ValueError, match='does_not_belong'):
+    def linked(_):
+        raise LookupError('previous_window_link_accepted')
+    monkeypatch.setattr(LearnerConfig, 'read', staticmethod(linked))
+    with pytest.raises(LookupError, match='previous_window_link_accepted'):
+        owner.start_attempt()
+
+
+@pytest.mark.parametrize('state', [
+    {'stop': 'training_unknown_fraction_above_limit'},
+    {'stop': 'watcher_failure_requires_reconciliation'},
+    {'stop': 'watcher_signal'},
+    {'stop': None},
+    {'stop': 'absolute_deadline', 'active': 0},
+    {'stop': 'absolute_deadline', 'pending': {'stage': 'running', 'job_id': '81'}},
+    {'stop': 'absolute_deadline', 'attempts': [{'generation': 'g-good'}]},
+])
+def test_only_completed_previous_window_can_be_linked(tmp_path, monkeypatch, state):
+    import sys
+    watch = original_watch.__wrapped__()
+    prior_cfg, previous, owner = completed_window(tmp_path, watch, **state)
+    with pytest.raises(ValueError, match='completed_distinct_previous_operating_window'):
+        watch.require_completed_previous_window(previous, prior_cfg, owner.config)
+    owner.select_checkpoint = previous_window_CP(prior_cfg)
+    monkeypatch.setitem(sys.modules, 'rl', SimpleNamespace())
+    with pytest.raises(ValueError, match='completed_distinct_previous_operating_window'):
         owner.start_attempt()
     assert not owner.state['attempts']
+    for changed in ({'run': 'other'}, {'budget_id': prior_cfg['budget_id']}):
+        with pytest.raises(ValueError, match='completed_distinct_previous_operating_window'):
+            watch.require_completed_previous_window(
+                {**previous, 'stop': 'absolute_deadline', 'active': None, 'pending': None,
+                 'attempts': [{'terminal_accounting': {'terminal': True}}]},
+                prior_cfg, {**owner.config, **changed})
+
+
+@pytest.mark.parametrize('earlier,final', [
+    (None, 'absolute_deadline'),
+    ('training_unknown_fraction_above_limit', 'training_unknown_fraction_above_limit'),
+])
+def test_watcher_started_after_deadline_ends_with_typed_stop_never_relabelled(
+    tmp_path, earlier, final
+):
+    import time
+    watch = original_watch.__wrapped__()
+    owner = watch.SegmentWatcher({
+        'run': 'late', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+        'budget_id': 'late-budget', 'deadline_at': time.time() + 3600,
+        'training_seconds': 72000, 'actors': 1}, tmp_path/'watch')
+    owner.config['deadline_at'] = time.time() - 1
+    owner.state['stop'] = earlier
+    owner.start_attempt = lambda: pytest.fail('no offer after the absolute deadline')
+    owner.tick_segment()
+    assert owner.state['stop'] == final and owner.state['active'] is None
 
 
 def test_H1_anchor_is_first_cycle_point_without_moving_two_hour_cadence(tmp_path):

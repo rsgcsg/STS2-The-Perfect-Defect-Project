@@ -1004,11 +1004,8 @@ def read_segment_config(path: Path) -> dict[str, Any]:
             raise ValueError('pinned_diagnosed_integrity_findings_required')
     if value.get('previous_window_state') is not None:
         previous = evaluate.read_pinned(value['previous_window_state'])
-        prior = evaluate.read_pinned(previous['configuration'])
-        if (previous['active'] is not None or previous['stop'] != 'run_budget_complete'
-                or prior['run'] != value['run'] or prior['peer'] != value['peer']
-                or prior['budget_id'] == value['budget_id']):
-            raise ValueError('completed_distinct_previous_operating_window_required')
+        require_completed_previous_window(
+            previous, evaluate.read_pinned(previous['configuration']), value)
     if value.get('evaluation') is not None:
         evaluation = value['evaluation']
         if (not 50 <= evaluation.get('seeds', 50) <= 100
@@ -1031,6 +1028,22 @@ def read_segment_config(path: Path) -> dict[str, Any]:
         if not projection['offers_accounted']:
             raise ValueError('frozen_baseline_attempts_must_be_accounted_before_training')
     return value
+
+
+# Its frozen budget used up or its absolute deadline reached completes a window. Any
+# other stop (unknown fraction, watcher failure, signal) keeps its own recovery path.
+COMPLETED_WINDOW_STOPS = frozenset({'run_budget_complete', 'absolute_deadline'})
+
+
+def require_completed_previous_window(previous: dict[str, Any], prior: dict[str, Any],
+                                      config: dict[str, Any]) -> None:
+    if (previous['active'] is not None or previous.get('pending') is not None
+            or previous['stop'] not in COMPLETED_WINDOW_STOPS
+            or not all((a.get('terminal_accounting') or {}).get('terminal') is True
+                       for a in previous['attempts'])
+            or prior['run'] != config['run'] or prior['peer'] != config['peer']
+            or prior['budget_id'] == config['budget_id']):
+        raise ValueError('completed_distinct_previous_operating_window_required')
 
 
 class SegmentWatcher(Watcher):
@@ -1446,6 +1459,7 @@ class SegmentWatcher(Watcher):
         if new_window:
             previous = evaluate.read_pinned(self.config['previous_window_state'])
             prior = evaluate.read_pinned(previous['configuration'])
+            require_completed_previous_window(previous, prior, self.config)
             generations = {g for a in previous['attempts']
                            for g in a.get('generations', [a['generation']])}
             budget = cp.get('operating_budget') or {}
@@ -1871,7 +1885,8 @@ class SegmentWatcher(Watcher):
         now = time.time()
         self.collect_events()
         if now >= self.config['deadline_at']:
-            self.state['stop'] = 'absolute_deadline'
+            # An earlier typed stop keeps its recovery path; the deadline never launders it.
+            self.state['stop'] = self.state['stop'] or 'absolute_deadline'
             self.cancel_at_deadline()
         self.collect_segment_evaluation()
         self.schedule_segment_evaluation()
