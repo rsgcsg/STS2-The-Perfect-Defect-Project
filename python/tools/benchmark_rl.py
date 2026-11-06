@@ -87,6 +87,7 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
             break
         seed_number += 1
     members, selections = [], []
+    payloads = []
     for start in range(0, len(records), 64):
         corpus = records[start:start + 64]
         run_id = f"diagnostic-{start}"
@@ -136,6 +137,7 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
                 "representation": "live-prefix", "journal_prefix_sha256": "d" * 64,
                 "behavior_trace_prefix_sha256": "e" * 64}}
         payload = exchange.put_hot_segment(segment, owner="diagnostic")
+        payloads.append(payload)
         members.append(BatchMember(segment_id, payload, run_id, len(steps),
                                    mu["snapshot_sha256"], run_id))
         for local, row in enumerate(corpus):
@@ -162,8 +164,8 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
         return preparer.submit(request).result()
     finally:
         preparer.shutdown(wait=True)
-        for member in members:
-            exchange.release_hot_payload(member.payload, "diagnostic")
+        for payload in payloads:
+            exchange.release_hot_payload(payload, "diagnostic")
 
 
 def segment_benchmark(args: Any) -> None:

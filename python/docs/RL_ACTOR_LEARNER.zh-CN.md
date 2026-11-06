@@ -245,6 +245,8 @@ pinned槽也按同一数量配置，防止晚完成的队头被后续批占满�
 标签校验使用独立`label_workers`进程/协调队列（默认1），不占拼批队列。
 同代CP不调用preparer barrier、不取消pending、不重启池或重置选择RNG。
 新写CP为`stpd/rl-segment-checkpoint-3`，显式记录committed/speculative选择RNG、pending请求和标签请求；
+自包含CP由`stpd.rl.checkpoint_codec`读写，沿用32MiB header/400000节点/512MiB总量及全部完整性检查。
+`stpd.workers.checkpoint_codec`保留旧M2绑定的精确源码与8MiB/100000节点边界；不修改历史身份来接纳RL容量。
 v2只读兼容。新generation恢复仍只恢复已提交学习状态/RNG并丢弃热输入，pending记录不是重放授权，
 旧v2源码不能读v3，回滚代码时须选择原v2 CP。close先停并join source预取，
 排完dispatch后再关闭preparer，最后释放热输入所有者；

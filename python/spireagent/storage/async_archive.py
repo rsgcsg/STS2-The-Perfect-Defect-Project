@@ -26,7 +26,7 @@ from typing import Any
 from spireagent.artifact_contracts import Manifest
 from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, json_bytes
-from spireagent.rl_contracts import exchange_prefix
+from spireagent.rl_namespace import exchange_prefix
 
 from .blobs import StoreError, safe_key
 from .local import LocalBlobStore

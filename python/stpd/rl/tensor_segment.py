@@ -304,7 +304,8 @@ def packet_header_fields(path: str, size: int, fields: tuple[str, ...]) -> dict[
             stream.fileno(), 0, access=mmap.ACCESS_READ) as body:
         if len(body) != size:
             raise ValueError("binary_magic_or_size_changed")
-        header = packet_header(body)
+        with memoryview(body) as raw:
+            header = packet_header(raw)
     return {name: header[name] for name in fields}
 
 
@@ -538,8 +539,8 @@ class TensorSegmentEncoder:
 
     def encode(self, verified_segment: dict[str, Any]) -> EncodedSegment:
         # Original live verification/OriginalBarrier precede this call. This is
-        # the same production typed verifier, not another legality engine.
-        from spireagent.workbench.managed_segment_store import validate_hot_segment
+        # the same shared input validator, not another legality engine.
+        from stpd.rl.segment_validation import validate_hot_segment
 
         validate_hot_segment(verified_segment)
         s = verified_segment

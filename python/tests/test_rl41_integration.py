@@ -118,7 +118,7 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
             tmp_path / "learner-2", io)
         assert_tree(replacement.optimizer.state_dict(), previous.optimizer)
         assert_tree(replacement.ema, previous.ema)
-        executor = SimpleNamespace(exchange=exchange, actor="live",
+        executor = SimpleNamespace(exchange=exchange, actor="live", attachment=remote,
             admission=ActorControlConnection(actor))
         executor._discard_hot_segment = lambda value: SegmentManagedExecutor._discard_hot_segment(
             executor, value)

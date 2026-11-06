@@ -8,22 +8,14 @@ adapter, original-commit and typed-Evidence records; they confer no authority.
 from __future__ import annotations
 
 import hashlib
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import json_bytes
 from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
-
-RL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-
-
-def exchange_prefix(run: str) -> str:
-    """The existing immutable run namespace, without constructing an Exchange."""
-    if not RL_NAME.fullmatch(run):
-        raise BoundaryError("rl_exchange", "invalid_run_name")
-    return f"exchange/rl/{run}/"
+from spireagent.rl_namespace import RL_NAME as RL_NAME
+from spireagent.rl_namespace import exchange_prefix as exchange_prefix
 
 JsonObject = dict[str, Any]
 

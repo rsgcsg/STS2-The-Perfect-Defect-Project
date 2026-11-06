@@ -12,9 +12,8 @@ import signal
 import threading
 from pathlib import Path
 
-from stpd.rl.learner import LearnerConfig, LearnerIO
-
 from spireagent.json_boundary import BoundaryError
+from stpd.rl.learner import LearnerConfig, LearnerIO
 
 from .global_evidence_store import publish_detached_p1_model
 from .managed_segment_store import read_segment
@@ -34,6 +33,10 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     """
     from dataclasses import asdict, replace
 
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.rl_exchange import Exchange
+    from spireagent.source import source_identity
     from stpd.p1.export import adapter_identity, input_spec, load_model, runtime_projection
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.rl.checkpoint_state import (
@@ -46,11 +49,6 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     )
     from stpd.rl.learner import ROOT
     from stpd.workers.checkpoint_codec import decode_checkpoint
-
-    from spireagent.artifact_contracts import Manifest
-    from spireagent.json_boundary import FrozenObject
-    from spireagent.rl_exchange import Exchange
-    from spireagent.source import source_identity
 
     if (config.segments is None or not config.resume_checkpoint
             or not config.segments.training_generation

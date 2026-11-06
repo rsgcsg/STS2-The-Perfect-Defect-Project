@@ -28,9 +28,9 @@
     },
     "evidence": {
       "version": "0.1.0-rc.37",
-      "source_revision": "fc9783c8345d09a854042efc90b6f168b14704cf",
-      "component_tree_revision": "c6216abea5437bc370786f179ccd254b04f6dea9",
-      "component_source_digest_sha256": "86072cd9b5f7840f07547b4c109a95790d717ed580feadbf75e7d3b23dd30e61"
+      "source_revision": "0284114c7e94eae6d843d88fd8c44dde28f2bf7f",
+      "component_tree_revision": "89e847906005ad19c89af8550cdf06c126905e78",
+      "component_source_digest_sha256": "db325d5843cbe26f290b309e3a06807bb068e9af7f01f62d2d993676c5627945"
     },
     "policy_runtime": {
       "version": "0.1.0-rc.64",

@@ -231,7 +231,7 @@ def validate_optimizer_order(
 
 
 def encode_state(checkpoint: SelfContainedCheckpoint) -> bytes:
-    from stpd.workers.checkpoint_codec import encode_checkpoint
+    from stpd.rl.checkpoint_codec import encode_checkpoint
 
     # _learning_state already owns immutable snapshot bytes. asdict() deepcopies
     # every Tensor view independently, cloning the entire shared slab once per
@@ -246,7 +246,7 @@ def encode_state(checkpoint: SelfContainedCheckpoint) -> bytes:
 
 
 def decode_state(raw: bytes, *, expected_schema: str | None = None) -> SelfContainedCheckpoint:
-    from stpd.workers.checkpoint_codec import decode_checkpoint
+    from stpd.rl.checkpoint_codec import decode_checkpoint
 
     value = decode_checkpoint(raw)
     schema = value.pop("schema", None)

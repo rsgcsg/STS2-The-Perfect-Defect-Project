@@ -6,8 +6,9 @@ belongs in this module. Historical JSON/HotPayloadRef schemas are unchanged.
 """
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, ContextManager, Protocol
+from typing import Any, Protocol
 
 TENSOR_SEGMENT_FORMAT = "stpd/rl-tensor-segment-1"
 TENSOR_SEGMENT_SCHEMA = TENSOR_SEGMENT_FORMAT
@@ -49,6 +50,6 @@ class BinarySourceProvider(Protocol):
     P1-owned shared-slot descriptors, never this provider or a borrowed view.
     """
 
-    def borrow(self, ref: BinaryRef) -> ContextManager[memoryview]: ...
+    def borrow(self, ref: BinaryRef) -> AbstractContextManager[memoryview]: ...
     def retain(self, ref: BinaryRef, owner: str) -> None: ...
     def release(self, ref: BinaryRef, owner: str) -> None: ...

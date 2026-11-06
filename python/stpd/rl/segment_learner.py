@@ -1530,8 +1530,8 @@ class SegmentLearner:
         # worker parses it; this thread waits without holding the GIL.
         with self.binary_sources.borrow(ref):
             path = self.binary_sources.path(ref)
-            return cast(dict[str, Any], self.header_checks.submit(
-                packet_header_fields, str(path), ref.size, fields).result())
+            return self.header_checks.submit(
+                packet_header_fields, str(path), ref.size, fields).result()
 
     def _binary_auxiliary_members(self, request: dict[str, Any],
                                   originals: tuple[BatchMember, ...]) -> tuple[BatchMember, ...]:

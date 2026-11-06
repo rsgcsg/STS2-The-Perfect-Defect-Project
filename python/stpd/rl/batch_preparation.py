@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 import torch
-from spireagent.rl_contracts import HotPayloadRef, RowRef
-from spireagent.rl_dataplane_ports import BinaryRef
 from torch import Tensor
 
+from spireagent.rl_contracts import HotPayloadRef, RowRef
+from spireagent.rl_dataplane_ports import BinaryRef
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.tensor_input import TensorFrame, joint_nodes, text_batch

@@ -927,8 +927,9 @@ def test_integrity_finding_survives_unavailable_control_status(tmp_path, monkeyp
 
 def test_audit_stop_uses_separate_control_without_touching_actor_socket(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from stpd.p1 import local_inference
+
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
+    from stpd.p1 import local_inference
 
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "audit-control")
     attachment = {"test": "actor-attachment"}
@@ -954,4 +955,5 @@ def test_audit_stop_uses_separate_control_without_touching_actor_socket(tmp_path
         attachment=attachment, request=actor_request))
     SegmentManagedExecutor._request_training_stop(owner, "sampled_original_audit_failed")
     assert calls == ["new", "status", "close"]
-    assert exchange.stop_request(training_generation="g-audit")["reason"] == "sampled_original_audit_failed"
+    assert (exchange.stop_request(training_generation="g-audit")["reason"]
+            == "sampled_original_audit_failed")

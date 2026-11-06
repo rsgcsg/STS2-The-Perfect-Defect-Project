@@ -10,12 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
+from test_rl41_w1 import assert_tree, configuration, deliver
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.rl_exchange import Exchange
 from spireagent.storage.store import copy_artifact
 from stpd.rl.checkpoint_state import decode_state
 from stpd.rl.segment_learner import SegmentLearner
-from test_rl41_w1 import assert_tree, configuration, deliver
 
 
 def cleanup(learner):
@@ -56,6 +57,7 @@ def test_first_use_bias_pairs_rows_and_pools_histograms_without_pooling_quantile
     from types import SimpleNamespace
 
     import torch
+
     from stpd.rl.segment_learner import _first_use_policy_bias
 
     batch = SimpleNamespace(policy_mask=torch.tensor([True, False, True, True, True]),
@@ -262,10 +264,11 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
 def test_reward_HP_backfills_consumed_rows_across_episode_close(tmp_path, monkeypatch, closure):
     import copy
 
+    from test_rl41_w1 import segment
+
     from stpd.p1.data import digest, json_bytes
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.p1.local_mu import LocalMuScorer
-    from test_rl41_w1 import segment
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(
@@ -427,8 +430,9 @@ def test_fast_episode_backpressure_keeps_first_dataset_reachable(tmp_path, monke
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    from spireagent.rl_exchange import control_input
     from test_rl41_w1 import segment
+
+    from spireagent.rl_exchange import control_input
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(config, segments=dataclasses.replace(config.segments,

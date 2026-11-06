@@ -142,7 +142,7 @@ TRAINING_PATHS = tuple(
             "spireagent/instance_lock.py",
             # Archive seeding uses only the run namespace contract. Keep the
             # RL hot-segment/Actor implementation outside structured training.
-            "spireagent/rl_contracts.py",
+            "spireagent/rl_namespace.py",
             "spireagent/storage/archives.py",
             "spireagent/storage/async_archive.py",
             "stpd/structured_profiles.py",

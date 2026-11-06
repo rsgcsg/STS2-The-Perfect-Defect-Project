@@ -329,7 +329,8 @@ def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path)
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
+          patch.object(rl.scheduler, 'output',
+                       side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True)
     assert '--array=0-7%8' in result['command']
     assert '--signal=B:USR1@1980' in result['command']
@@ -632,7 +633,8 @@ def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
     plan = rl.prepare(execution, learner, extra, actors=24)
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
-          patch.object(rl.scheduler, 'output', side_effect=['123_[0-31]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
+          patch.object(rl.scheduler, 'output', side_effect=[
+              '123_[0-31]', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
     assert '--array=0-23%24' in result['command'] and '--cpus-per-task=1' in result['command']
     assert result['additional_to'][0]['job_id'] == '123'
@@ -693,7 +695,8 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
     lock = tmp_path.resolve() / 'settings/submit.lock'
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
-          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
+          patch.object(rl.scheduler, 'output',
+                       side_effect=['', '0/400/0/400', '', 'fc430|0/400/0/400'])):
         result = rl.submit(file, dry_run=True, memory_gb=6, exclude_nodes=['smp-9-0'])
     assert '--mem=6G' in result['command'] and '--mem=4G' not in result['command']
     assert '--exclude=smp-9-0' in result['command']
@@ -786,7 +789,9 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
         if command[0] == 'sbatch':
             commands.append(command)
             raise RuntimeError('injected_unknown_scheduler_response')
-        return ('fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400') if command[0] == 'sinfo' else ''
+        if command[0] == 'sinfo':
+            return 'fc430|0/400/0/400' if '%f' in str(command) else '0/400/0/400'
+        return ''
 
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
@@ -1314,7 +1319,8 @@ def test_explicit_node_types_never_silently_mix_slow_nodes(rl, inputs, tmp_path,
         assert not (path.parent / 'submission-intent.json').exists()
 
 
-def test_actor_monitor_preserves_expected_pending_until_terminal_observation(rl, tmp_path, monkeypatch):
+def test_actor_monitor_preserves_expected_pending_until_terminal_observation(
+        rl, tmp_path, monkeypatch):
     monkeypatch.setattr(rl, 'load_plan', lambda path: {'actors': [{'actor': 'a'}, {'actor': 'b'}]})
     monitor = rl.ActorAllocationMonitor(tmp_path / 'plan.json')
     retired = set()
