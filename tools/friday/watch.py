@@ -157,6 +157,12 @@ def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool
     return unknown > config.get('unknown_stop_fraction', .05) * max(total, 100)
 
 
+def stop_denominator(health: dict[str, Any]) -> int:
+    """Actors report closes in batches at segment/actor end, so closed games lag far
+    behind offered ones; one actor's batch of cut games must not read as a fleet rate."""
+    return max(health.get('completed_for_stop', 0), health.get('offered', 0))
+
+
 def stop_reason(now: float, config: dict[str, Any], games: list[dict[str, Any]],
                 event: dict[str, Any] | None, evaluations: list[dict[str, Any]]) -> str | None:
     if now >= config['started_at'] + config['wall_seconds']:
@@ -1563,7 +1569,7 @@ class SegmentWatcher(Watcher):
         self.refresh_world_health()
         health = self.state['health']
         if unknown_over_limit(health['known_unknown'] + health['lost_offers'],
-                              health['completed_for_stop'], self.config):
+                              stop_denominator(health), self.config):
             self.state['stop'] = 'training_unknown_fraction_above_limit'
             self.state.setdefault('stop_detail', {'at': time.time(), 'site': 'replace_actors',
                                                   'health': dict(health)})
@@ -1874,7 +1880,7 @@ class SegmentWatcher(Watcher):
             self.state['stop'] = self.state['stop'] or 'run_budget_complete'
         health = self.state['health']
         unknown = health.get('known_unknown', 0) + health.get('lost_offers', 0)
-        total = health.get('completed_for_stop', 0)
+        total = stop_denominator(health)
         if unknown_over_limit(unknown, total, self.config):
             if not self.state['stop']:
                 self.state['stop_detail'] = {'at': time.time(), 'site': 'loop',

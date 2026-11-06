@@ -245,12 +245,22 @@ def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
 @pytest.mark.parametrize('row', [
     {'status': 'unknown', 'cleanup_accepted': False, 'world_mutation_offered': True},
     {'status': 'save_failed', 'cleanup_accepted': True},
-    {'status': 'unknown', 'cleanup_accepted': True,
+    {'status': 'unknown', 'cleanup_accepted': False,
      'execution_reason': 'typed_original_verification_failed'},
 ])
 def test_clean_unknown_option_preserves_cleanup_save_and_integrity_stops(evaluate, tmp_path, row):
     stop = tmp_path / 'STOP'
     evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
+    assert stop.exists()
+
+
+def test_cleaned_typed_verification_failure_is_one_excluded_pair(evaluate, tmp_path):
+    row = {'status': 'unknown', 'cleanup_accepted': True,
+           'execution_reason': 'typed_original_verification_failed'}
+    stop = tmp_path / 'STOP'
+    evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
+    assert not stop.exists()
+    evaluate.StopOnUncertain(None, stop).inspect(row)
     assert stop.exists()
 
 

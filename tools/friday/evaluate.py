@@ -349,9 +349,13 @@ class StopOnUncertain:
         self.delegate, self.stop, self.unknown_policy = delegate, stop, unknown_policy
 
     def inspect(self, row: dict[str, Any]) -> None:
-        # Cleanup is not a proof of data integrity: keep the actual typed-failure stop.
+        # Cleanup is not a proof of data integrity: under the strict policy a typed
+        # failure stops admission. A cleaned one under continue_cleaned is one
+        # excluded pair, recorded as unknown and never scored (user 11-06).
         integrity_failed = row.get('execution_reason') == 'typed_original_verification_failed'
-        if integrity_failed:
+        if integrity_failed and not (self.unknown_policy == 'continue_cleaned'
+                                     and row.get('status') == 'unknown'
+                                     and row.get('cleanup_accepted') is True):
             self.stop.touch()
             return
         if (self.unknown_policy == 'continue_cleaned'

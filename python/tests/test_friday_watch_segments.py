@@ -262,9 +262,11 @@ def test_previous_watch_state_must_bind_the_same_run_peer_and_budget(owner, watc
     assert resumed.state["configuration"]["path"] == str(resumed.work / "watch-config.json")
 
 
+# Closes arrive in actor batches long after offers, so the gate counts offered
+# worlds (5 in flight here) rather than only the closes reported so far.
 @pytest.mark.parametrize("closed,unknown,stopped",
-                         [(20, 5, False), (20, 6, True), (220, 11, False), (218, 11, True)])
-def test_global_five_percent_gate_excludes_inflight_worlds(owner, watch, monkeypatch,
+                         [(20, 5, False), (20, 6, True), (220, 11, False), (218, 12, True)])
+def test_global_five_percent_gate_counts_offered_worlds(owner, watch, monkeypatch,
                                                           closed, unknown, stopped):
     value = attempt(owner)
     value["actor_plans"] = []
@@ -532,3 +534,11 @@ def test_restart_resumes_newest_archived_checkpoint_across_attempts(owner, watch
     owner.cold_checkpoint = lambda identity: tried.append(identity) or {"id": identity}
     assert owner.select_checkpoint() == {"id": "new-attempt-seq39"}
     assert tried == ["new-attempt-seq39"]
+
+
+def test_one_actor_batch_of_cut_games_is_measured_against_offered_worlds(watch):
+    # 43 min in: no closes reported yet, then one actor reports 7 cut games of 10.
+    health = {"completed_for_stop": 10, "offered": 1500, "known_unknown": 7, "lost_offers": 0}
+    config = {"unknown_stop_fraction": 0.05}
+    assert not watch.unknown_over_limit(7, watch.stop_denominator(health), config)
+    assert watch.unknown_over_limit(80, watch.stop_denominator(health), config)
