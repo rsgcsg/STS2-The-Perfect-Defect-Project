@@ -438,3 +438,9 @@ work is not included; existing unsupported follow-ups still refuse explicitly.
 Run the `managed-u1-native.test.mjs` component fixture only against the normal
 prepared candidate with locked Python model dependencies, retaining its frozen
 artifact hashes. Native failure or missing end is never converted to a result.
+
+Host rc64 (U2) remaps only the single scene-node lookup in the native
+SoulNexus death handler, so an original lethal play on the Act 3 Soul Nexus
+elite is witnessed instead of failing on the absent combat-room scene. Native
+death, combat end, rewards and RNG are unchanged; the old build reproduces the
+unwitnessed play in the `soul-nexus-play` fixture. Model input is unchanged.

@@ -29,7 +29,7 @@ test("U1 native child inputs and terminal tasks cross SDK, frozen P1 and Input-v
   assert.deepEqual(hashes(), before, "fixture build retains the admitted artifact bytes");
   const observations = [];
   const cases = { bundle: 9, "rest-mailbox": 5, "rest-dream": 5, simple: 6,
-    "kaiser-left": 6, "kaiser-right": 6, "terminal-sync": 6, "terminal-pending": 6,
+    "kaiser-left": 6, "kaiser-right": 6, "soul-nexus-play": 5, "soul-nexus-survives": 5, "terminal-sync": 6, "terminal-pending": 6,
     "terminal-committing": 6, "terminal-win": 6, "terminal-failed": 4, "terminal-unwitnessed": 2 };
   for (const [name, count] of Object.entries(cases)) {
     const { stdout } = await run(dotnet.command,
@@ -75,11 +75,11 @@ with torch.inference_mode():
         if frame.choices:
             scores = model(frame)
             assert len(scores) == len(frame.choices) and torch.isfinite(scores).all()
-assert len(rows) == 12
-print('12 native serialized observations consumed by frozen Input-v2')
+assert len(rows) == 14
+print('14 native serialized observations consumed by frozen Input-v2')
 `], { encoding: "utf8", input: JSON.stringify(observations), timeout: 60000,
     cwd: path.resolve(import.meta.dirname, "../../.."), maxBuffer: 4 * 1024 * 1024 });
   assert.equal(consumer.status, 0, consumer.error?.message ?? consumer.stderr);
-  assert.match(consumer.stdout, /12 native serialized observations consumed by frozen Input-v2/u);
+  assert.match(consumer.stdout, /14 native serialized observations consumed by frozen Input-v2/u);
   assert.deepEqual(hashes(), before, "native and model consumers retain candidate artifacts");
 });

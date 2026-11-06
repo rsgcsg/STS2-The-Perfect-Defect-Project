@@ -7134,6 +7134,63 @@ index 0000000..d42b8bb
 +        return new(relic.Id.Entry, rule, display, logical);
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeSoulNexusDeathPresentation.cs b/src/Sts2Headless/NativeSoulNexusDeathPresentation.cs
+new file mode 100644
+index 0000000..64218bb
+--- /dev/null
++++ b/src/Sts2Headless/NativeSoulNexusDeathPresentation.cs
+@@ -0,0 +1,51 @@
++using System.Reflection;
++using System.Reflection.Emit;
++using HarmonyLib;
++using MegaCrit.Sts2.Core.Entities.Creatures;
++using MegaCrit.Sts2.Core.Models.Monsters;
++using MegaCrit.Sts2.Core.Nodes.Combat;
++using MegaCrit.Sts2.Core.Nodes.Rooms;
++using MegaCrit.Sts2.Core.TestSupport;
++
++namespace Sts2Headless;
++
++// Exact v0.111.0 SoulNexus.AfterDeath (its Died handler) reads the scene-only
++// NCombatRoom singleton without a null check, only to reset a spine animation.
++// Replace that one node lookup; native death, removal, combat end and RNG remain native.
++internal static class NativeSoulNexusDeathPresentation
++{
++    private static readonly MethodInfo Native = AccessTools.Method(typeof(NCombatRoom), nameof(NCombatRoom.GetCreatureNode),
++        new[] { typeof(Creature) }) ?? throw new MissingMethodException("Exact native creature node lookup changed");
++    internal static bool HookReady { get; private set; }
++
++    internal static void Install(Harmony harmony)
++    {
++        if (HookReady) return;
++        var method = AccessTools.DeclaredMethod(typeof(SoulNexus), "AfterDeath", new[] { typeof(Creature) })
++            ?? throw new MissingMethodException(typeof(SoulNexus).FullName, "AfterDeath");
++        if (PatchProcessor.GetOriginalInstructions(method).Count(instruction => instruction.Calls(Native)) != 1)
++            throw new MissingMethodException("Exact SoulNexus.AfterDeath node lookup count changed");
++        harmony.Patch(method, transpiler: new HarmonyMethod(typeof(NativeSoulNexusDeathPresentation), nameof(Remap)));
++        HookReady = true;
++    }
++
++    private static IEnumerable<CodeInstruction> Remap(IEnumerable<CodeInstruction> instructions)
++    {
++        var replacement = AccessTools.Method(typeof(NativeSoulNexusDeathPresentation), nameof(Node));
++        foreach (var instruction in instructions)
++        {
++            if (instruction.Calls(Native))
++            {
++                instruction.opcode = OpCodes.Call;
++                instruction.operand = replacement;
++            }
++            yield return instruction;
++        }
++    }
++
++    internal static NCreature? Node(NCombatRoom? room, Creature? creature)
++    {
++        if (room is null && TestMode.IsOn) return null;
++        return room!.GetCreatureNode(creature);
++    }
++}
 diff --git a/src/Sts2Headless/NativeTreasureChestAdmission.cs b/src/Sts2Headless/NativeTreasureChestAdmission.cs
 new file mode 100644
 index 0000000..c06fe31
@@ -8622,7 +8679,7 @@ index 800f139..32ce83c 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..7469fa0 100644
+index 6b9de4a..5b46c1d 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -13895,7 +13952,7 @@ index 6b9de4a..7469fa0 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4932,107 @@ public class RunSimulator
+@@ -3447,178 +4932,108 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -13933,6 +13990,7 @@ index 6b9de4a..7469fa0 100644
 +            NativeDebugAudioPresentation.Install(harmony);
 +            NativeDenseVegetationPresentation.Install(harmony);
 +            NativeKaiserDeathPresentation.Install(harmony);
++            NativeSoulNexusDeathPresentation.Install(harmony);
 +            NativeTrialScenePresentation.Install(harmony);
 +            NativeTrialAbandonPresentation.Install(harmony);
 +            ManagedCrystalSpherePresentation.Install(harmony);
@@ -14165,7 +14223,7 @@ index 6b9de4a..7469fa0 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +5048,6 @@ public class RunSimulator
+@@ -3634,42 +5049,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -14208,7 +14266,7 @@ index 6b9de4a..7469fa0 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +5055,79 @@ public class RunSimulator
+@@ -3677,85 +5056,79 @@ public class RunSimulator
          }
      }
  
@@ -14357,7 +14415,7 @@ index 6b9de4a..7469fa0 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3774,11 +5146,12 @@ public class RunSimulator
+@@ -3774,11 +5147,12 @@ public class RunSimulator
              var sim = _bundleSimRef;
              if (sim != null)
              {
@@ -14373,7 +14431,7 @@ index 6b9de4a..7469fa0 100644
                  return false;
              }
  
-@@ -3789,16 +5162,12 @@ public class RunSimulator
+@@ -3789,16 +5163,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -14392,7 +14450,7 @@ index 6b9de4a..7469fa0 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5195,54 @@ public class RunSimulator
+@@ -3826,36 +5196,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -14466,7 +14524,7 @@ index 6b9de4a..7469fa0 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5254,12 @@ public class RunSimulator
+@@ -3867,13 +5255,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -14483,7 +14541,7 @@ index 6b9de4a..7469fa0 100644
              }
          }
          catch { }
-@@ -3896,15 +5282,126 @@ public class RunSimulator
+@@ -3896,15 +5283,126 @@ public class RunSimulator
      {
          try
          {
@@ -15151,10 +15209,10 @@ index 0000000..f121a08
 +}
 diff --git a/u1-native-tests/Program.cs b/u1-native-tests/Program.cs
 new file mode 100644
-index 0000000..189b080
+index 0000000..bb5d393
 --- /dev/null
 +++ b/u1-native-tests/Program.cs
-@@ -0,0 +1,938 @@
+@@ -0,0 +1,963 @@
 +using MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent;
 +using MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereItems;
 +using MegaCrit.Sts2.Core.Models.Enchantments;
@@ -15252,6 +15310,8 @@ index 0000000..189b080
 +                case "simple": Simple(); break;
 +                case "kaiser-left": Kaiser("CRUSHER"); break;
 +                case "kaiser-right": Kaiser("ROCKET"); break;
++                case "soul-nexus-play": SoulNexus(true); break;
++                case "soul-nexus-survives": SoulNexus(false); break;
 +                case "terminal-pending": Terminal(true); break;
 +                case "terminal-sync": Terminal(true, true); break;
 +                case "terminal-win": Terminal(true, false, true); break;
@@ -15440,6 +15500,29 @@ index 0000000..189b080
 +        var after = Action("confirm_native_selection", args);
 +        Check(original.IsCompletedSuccessfully && !original.GetAwaiter().GetResult().Any(), "empty set completes only at an explicit native confirmation");
 +        Check(after.GetValueOrDefault("type") as string != "error", "confirmed original selector resumes normally");
++    }
++    static void SoulNexus(bool lethal)
++    {
++        var entered = (Dictionary<string, object?>)Call("EnterRoom", "elite", "SOUL_NEXUS_ELITE", null)!;
++        Check(entered.GetValueOrDefault("decision") as string == "combat_play", "native Soul Nexus elite starts: " + JsonSerializer.Serialize(entered));
++        var nexus = CombatManager.Instance.DebugOnlyGetState()!.Enemies.Single(x => x.Monster!.Id.Entry == "SOUL_NEXUS");
++        // Privileged component setup: a low-HP original nexus and one original Strike in hand.
++        if (lethal) nexus.SetCurrentHpInternal(1);
++        var card = player.Creature.CombatState!.CreateCard<StrikeDefect>(player);
++        CardPileCmd.AddGeneratedCardToCombat(card, PileType.Hand, player).WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
++        var after = Action("play_card", new() { ["card_ref"] = Ref(card), ["target_ref"] = Ref(nexus) });
++        Emit("soul-nexus-" + (lethal ? "play" : "survives"), after);
++        string text = JsonSerializer.Serialize(after);
++        if (baseline && lethal)
++        {
++            Check(after.GetValueOrDefault("type") as string == "error" && text.Contains("not witnessed"),
++                "old native Died handler dereferences the absent combat room scene: " + text);
++            return;
++        }
++        Check(after.GetValueOrDefault("type") as string != "error", "original lethal or ordinary play on Soul Nexus is witnessed: " + text);
++        Check(nexus.IsDead == lethal, "original native HP result is preserved");
++        if (lethal) Check(!CombatManager.Instance.IsInProgress, "original lethal play ends the native combat");
++        else Check(CombatManager.Instance.History.CardPlaysStarted.Any(entry => ReferenceEquals(entry.CardPlay.Card, card)), "native history records the exact play");
 +    }
 +    static void Kaiser(string monster)
 +    {

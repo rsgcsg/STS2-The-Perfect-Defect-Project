@@ -44,8 +44,10 @@ EXTRA = {"checksums.sha256", "evidence-manifest.json"}
 ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin(?:\.gz)?\Z")
 
 # A measured 33-floor original needs ~58s after decoded-payload retention is
-# bounded. This is a finite verification budget, not a gameplay or validity rule.
-GLOBAL_REPLAY_TIMEOUT_SECONDS = 120
+# bounded; 48-floor final-boss originals (14.9k-16.7k events) measured 105-121s
+# on an idle node and longer under evaluation load (U2). This is a finite
+# verification budget, not a gameplay or validity rule; it equals the audit budget.
+GLOBAL_REPLAY_TIMEOUT_SECONDS = 600
 AUDIT_REPLAY_TIMEOUT_SECONDS = 600
 _SEMANTIC_REPLAY_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _SEMANTIC_REPLAY_CACHE_LOCK = Lock()
