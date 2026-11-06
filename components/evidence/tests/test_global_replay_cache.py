@@ -81,7 +81,7 @@ class GlobalReplayCacheTests(unittest.TestCase):
             self.assertEqual(first.content_id, second.content_id)
             self.assertEqual(self.semantic_calls, 1)
             self.assertEqual(next(c.kwargs["timeout"] for c in replay.call_args_list
-                                  if "globalReplaySemanticIdentity" not in c.args[0][3]), 120)
+                                  if "globalReplaySemanticIdentity" not in c.args[0][3]), 600)
             with self.assertRaises(AgentRunEvidenceError):
                 owner.verify_global_session(restored, {**self.expected, "run_id": "foreign-run"})
             (restored / "events.jsonl").write_bytes(b"changed after cached proof\n")
