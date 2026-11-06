@@ -1,34 +1,39 @@
-# 当前：RL4-PREP已按未达标收口
+# 当前：RL4.2 长训进行中，RL5 待批
 
-用户要求的既定流程、历史/实际链路审核和单份完整报告已完成；root负责本轮交付。
-已运行组合source2d77049e/Runtime63/r1.9；源码交付#378/#379/#380已正常合并。
-新cache033a48ed仅有CPU真实同引用/数值/容量和CI证据，未热换进已结束的小时。
-本轮任务、实物与未达标原因见[RL4任务](../plans/RL_CRITIC_20261101.md)。
-RL2/RL3已结束，原unknown不重投；原卡/原评估分母不被本轮新证据升级。
+RL4-PREP 已收口；RL4.1（数据面、中央推理、短段学习）与 RL4.2（热路径离开共享盘）后，
+11-06 10:28 起在 Friday 跑 RL4.2 长训，负责人运维。用户 11-06 批补到 24 h 训练。
+代码在 [PR #382](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/382)，head 即长训 release 源码，**尚未合入 develop**。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
-## 本轮结果与后续边界
+## 分数板
 
-最后小时189→362SGD、19,980新多选首用，约1.98万/h；91saved/31censored/8unknown。
-在途与活动局0证明owner排空；可复现的原件replay超时及低吞吐意味着完整健康验收未过。
-完整CP15→16的CPU空Store/CUDA替换与R2逐项复核通过，0额外SGD/World；
-前后16均自然saved16/unknown0，正常评分与R2读回完成；不是配对实力检验。
-固定TRAIN后点已完成，概率变化不作实力结论；D早CP后322项重放/原收据恢复事实保留。
-本卡不再自动派工。后续建议先修正常原件replay超时、验动态全循环性能，再决定长训。
-报告为共享交付目录replies/RL4-PREP-REPORT-20261103.md；当前不派生新正式训练。
+Managed、argmax、50 个固定开发种子（用于挑模型，是开发评估，不是独立测试）；对本轮起点 H1 CP522 逐种子配对。
+unknown 排除那一对、单独计数；watcher 的 against_baseline 对的是 CP16，不混用。
 
-用户已批单A100、GPU累计5小时；12个原GPU作业累计10911秒，余7089秒；排队不计使用。
-含评估仍≤45游戏位；首小时外正式长训未批。T0与原72小时目标不重置。
-本卡不删除资产、不碰Mac安装或真人录制，固定评估/永久heldout不训练。
+| 模型 | 完成/unknown | 胜 | 均层 | 过 Act1 Boss | 过 Act2 Boss | 对 CP522 |
+|---|---|---|---|---|---|---|
+| H1 CP522（起点） | 49/1 | 0 | 21.7 | 23 | 1 | — |
+| 训练 4 h | 50/0 | 0 | 22.9 | 30 | 0 | 49 对 +1.1（18 好/13 平/18 差） |
+| 训练 6 h | 49/1 | 1 | 27.5 | 38 | 4 | 48 对 +5.9（26/10/12；同组 bootstrap 约 +2.7～+9.2） |
+
+## 在跑与下一步
+
+- 长训：单 A100 学习 + 约 260 路 CPU 打局，30–45 万新决策/h；每 2 h 一次评估。窗口 1 硬截止写在 CP 里不可改，
+  到截止约 17.7 h；之后按 #382 中 RL_LONG_RUN 的"新运营窗口"续到 24 h。GPU 同时 ≤2 张。
+- 停训/续跑/评估逐条记在共享交付目录 `replies/RL4.1/LONG-RUN-LOG-20261106.md`。
+- PR #382：在可合入收尾（全量 CI、closeout、模板），合并等用户批。
+- RL5（游戏/推理/学习分开、原生存档任务票、无人值守）：草稿在共享交付目录 `replies/RL5/`，待批；先 OPS 与实测 S0。
+
+## 不做
+
+长训期间不改方法与配方，只做运维修复并记录；不热换未验证代码；不新增 GPU、不开新长训，除非用户批。
 
 ## 其他已派工作入口
 
-CARD-1A仍待用户试1–2局与原件/入库；[STATUS](../STATUS.md)路由原安装证据，本卡不安装。
-原RL3最终12unknown的9同因覆盖/3根因未证及原分母保留，#373不重开。
-U1的Host63/Runtime62/SDK19/r1.9沿正常冻结采用，原件看[U1](../evidence/UNKNOWN_FIX_U1_20261101.md)。
+CARD-1A 仍待用户试局与原件/入库；[STATUS](../STATUS.md) 路由原安装证据。RL3 原 unknown 分母保留，#373 不重开。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
-unknown不重试、不当负局；CI/合并、owner排空、R2可读、数据资格和模型效果各看原收据。
-平台其他未完归[STATUS](../STATUS.md)、[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)及原Issues，不在本卡自动扩范围。
+unknown 不重试、不当负局；CI/合并、owner 排空、R2 可读、数据资格和模型效果各看原收据。
+推理超时与学习端单进程瓶颈未修（归 RL5）。平台其他未完归 [STATUS](../STATUS.md) 及原 Issues。
