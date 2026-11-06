@@ -31,7 +31,6 @@ from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.sampling import distribution
 from stpd.p1.trajectory import validate_behavior
 
-
 FAILURE_STATUSES = frozenset({"unknown", "save_failed"})
 _FAILURE_TAIL_BYTES = 1024**2
 
