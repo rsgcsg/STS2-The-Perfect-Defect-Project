@@ -47,6 +47,8 @@ ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin(?:\.gz)?\Z")
 # bounded; 48-floor final-boss originals (14.9k-16.7k events) measured 105-121s
 # on an idle node and longer under evaluation load (U2). This is a finite
 # verification budget, not a gameplay or validity rule; it equals the audit budget.
+# The semantic-identity probe (one module import) shares it: a fixed 10 s probe
+# timed out on a 16-lane evaluation node and failed a passed original's save (U3).
 GLOBAL_REPLAY_TIMEOUT_SECONDS = 600
 AUDIT_REPLAY_TIMEOUT_SECONDS = 600
 _SEMANTIC_REPLAY_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
@@ -204,11 +206,13 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
     try:
         checked = subprocess.run(["node", "--input-type=module", "-e", identity_script,
                                   str(runtime / "global-replay.js")], capture_output=True,
-                                 text=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        _require(False, "global_shared_replay_identity_unavailable")
+                                 text=True, timeout=GLOBAL_REPLAY_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        _require(False, "global_shared_replay_identity_unavailable", "timeout")
+    except (OSError, subprocess.SubprocessError) as error:
+        _require(False, "global_shared_replay_identity_unavailable", type(error).__name__)
     _require(checked.returncode == 0 and len(checked.stdout) <= 65536,
-             "global_shared_replay_identity_unavailable")
+             "global_shared_replay_identity_unavailable", f"exit={checked.returncode}")
     parsed_identity = json.loads(checked.stdout)
     semantic_identity = _object(parsed_identity) if parsed_identity is not None else None
     replay_key = None

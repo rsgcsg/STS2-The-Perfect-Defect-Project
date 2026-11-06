@@ -191,7 +191,9 @@ def _verified(directory: Path, expected: Mapping[str, object]) -> AgentSessionRu
         raise BoundaryError(
             "global_store",
             "typed_global_verification_failed",
-            ",".join(f.code for f in result.findings),
+            # Classified detail (e.g. timeout, exit=N) names an unavailable check.
+            ",".join(f.code if getattr(f, "detail", "") in {"", f.code}
+                     else f"{f.code}({f.detail[:80]})" for f in result.findings),
         )
     if result.value.agent_manifest.get("input", {}).get("profile") != PROFILE:
         raise BoundaryError("global_store", "global_profile_required")

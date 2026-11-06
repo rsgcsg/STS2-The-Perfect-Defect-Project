@@ -292,6 +292,24 @@ def test_global_five_percent_gate_counts_offered_worlds(owner, watch, monkeypatc
     assert stops == (["training_unknown_fraction_above_limit"] if stopped else [])
 
 
+def test_unknown_close_keeps_reason_and_last_receipt_in_watch_state(owner):
+    attempt(owner)
+    failure = {"execution_reason": "runtime_execution_or_release_unknown",
+               "last_unknown_receipt": {"reason_code": "managed_execution_unknown"}}
+    event(owner, 'actor_games_closed', actor='actor', games=[
+        {'intent_id': 'u', 'seed': 's1', 'status': 'unknown', 'failure': failure,
+         'reason': 'runtime_execution_or_release_unknown',
+         'world_mutation_offered': True, 'training_generation': 'g-one'},
+        {'intent_id': 'n', 'seed': 's2', 'status': 'finished', 'reason': 'natural_terminal',
+         'world_mutation_offered': True, 'training_generation': 'g-one'}])
+    owner.collect_events()
+    worlds = owner.state['worlds']
+    assert worlds['u']['failure'] == failure
+    assert worlds['u']['reason'] == 'runtime_execution_or_release_unknown'
+    assert 'failure' not in worlds['n'] and 'reason' not in worlds['n']
+    assert owner.state['unknown_intents'] == ['u']
+
+
 def test_step_accounting_and_signal_never_select_holder(watch, owner, monkeypatch):
     commands = []
     monkeypatch.setattr(watch.subprocess, 'check_output', lambda *a, **kw:

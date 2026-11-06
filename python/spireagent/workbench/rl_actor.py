@@ -320,6 +320,13 @@ class Actor:
                             segment_budget_close=row.get("segment_budget_close") is True,
                             cleanup_accepted=row.get("cleanup_accepted") is True,
                             segment_prefix_close=bool(row.get("segment_delivery")))
+            if slot["status"] in {"unknown", "save_failed"}:
+                # Diagnostic close facts only (U3): reason + last receipt reach
+                # the durable learner event/WAL and the watcher even when this
+                # node-local summary is never copied. No training field changes.
+                game["failure"] = row.get("failure_facts") or {
+                    "execution_reason": row.get("execution_reason"),
+                    "save_error": row.get("save_error")}
             self.games.append(game)
             self.counts["games_" + str(slot["status"])] += 1
             shards[game["shard"]].append(game)

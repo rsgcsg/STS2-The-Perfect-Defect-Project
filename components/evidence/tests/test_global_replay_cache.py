@@ -125,7 +125,8 @@ class GlobalReplayCacheTests(unittest.TestCase):
         try:
             with patch.object(owner.subprocess, "run", side_effect=self.execute) as calls:
                 owner.verify_global_session(self.directory, self.expected)
-            replay = [c for c in calls.call_args_list if c.kwargs["timeout"] == 600]
+            replay = [c for c in calls.call_args_list if c.kwargs["timeout"] == 600
+                      and "globalReplaySemanticIdentity" not in c.args[0][-2]]
             self.assertEqual(len(replay), 1)
             if owner.os.name == "posix":
                 self.assertEqual(replay[0].args[0][:4], ["nice", "-n", "10", "node"])
@@ -145,16 +146,33 @@ class GlobalReplayCacheTests(unittest.TestCase):
                 self.assertFalse(audited.passed)
                 self.assertEqual([f.code for f in audited.findings], [code])
 
+    def test_identity_probe_shares_the_replay_budget_under_load(self):
+        # U3: a fixed 10 s probe timed out on a loaded 16-lane node after the
+        # same original had passed; the probe is one import, not a rule.
+        with patch.object(owner.subprocess, "run", side_effect=self.execute) as calls:
+            owner.verify_global_session(self.directory, self.expected)
+        probe = [c for c in calls.call_args_list if "globalReplaySemanticIdentity" in c.args[0][3]]
+        self.assertEqual([c.kwargs["timeout"] for c in probe], [600])
+
     def test_identity_process_exit_is_inconclusive(self):
         with patch.object(owner.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
             audited = owner.audit_global_session(self.directory, self.expected)
         self.assertFalse(audited.passed)
         self.assertEqual([f.code for f in audited.findings], ["global_shared_replay_identity_unavailable"])
+        self.assertEqual([f.detail for f in audited.findings], ["exit=1"])
+
+    def test_identity_timeout_is_named_in_the_finding(self):
+        with patch.object(owner.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(["node"], 600)):
+            audited = owner.audit_global_session(self.directory, self.expected)
+        self.assertEqual([(f.code, f.detail) for f in audited.findings],
+                         [("global_shared_replay_identity_unavailable", "timeout")])
 
     def test_real_wrapper_distinguishes_sdk_rejection_from_execution_error(self):
         with patch.object(owner.subprocess, "run", side_effect=self.execute) as calls:
             owner.audit_global_session(self.directory, self.expected)
-        command = next(c.args[0] for c in calls.call_args_list if c.kwargs["timeout"] == 600)
+        command = next(c.args[0] for c in calls.call_args_list if c.kwargs["timeout"] == 600
+                       and "globalReplaySemanticIdentity" not in c.args[0][3])
         script = next(arg for arg in command if "m.replayGlobalAgentRun" in arg)
         module = self.root / "replay.mjs"
         for body, rejected in [

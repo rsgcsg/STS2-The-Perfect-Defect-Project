@@ -737,6 +737,86 @@ def test_explicit_restore_discards_old_tail_before_any_bootstrap_score(tmp_path,
         assembler.close()
 
 
+@pytest.mark.parametrize("end_started", [True, False])
+def test_lost_end_ack_stays_unknown_not_save_failed_and_end_is_not_resent(
+        tmp_path, monkeypatch, end_started):
+    """U3 c5: 26 preserved post_verification_processing_failed originals were
+    relabelled save_failed and stopped their actors; the one End stays unknown."""
+    from types import SimpleNamespace
+
+    from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
+    from spireagent.workbench.reference_suite import _Artifacts
+    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
+
+    artifacts = _Artifacts(tmp_path / "attempt")
+    row = {"run_id": "run-lost-ack", "status": "unknown",
+           "reason": "post_verification_processing_failed", "stored_failure_id": "f" * 64}
+    report = {"episodes": [row], "status": "stopped",
+              "stop_reason": "post_verification_processing_failed"}
+    artifacts.save(report)
+    monkeypatch.setattr(PipelinedManagedExecutor, "preserve_report", lambda *_: report)
+    ends, finishes, released, closed = [], [], [], []
+    observer = SimpleNamespace(
+        end_started=end_started, error_record=None, interruption=None, after_interruption=0,
+        finish=finishes.append, close=lambda: closed.append("observer"),
+        assembler=SimpleNamespace(identity={"intent_id": "episode"}, committed=[],
+                                  commit_started=False))
+    executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
+    executor.actor = "actor"
+    executor.observers = {"run-lost-ack": observer}
+    executor.connections = {"run-lost-ack": SimpleNamespace(close=lambda: closed.append("conn"))}
+    executor.admission = SimpleNamespace(
+        release_closed_episode=lambda actor, episode: released.append(episode))
+    executor.new_originals = {"run-lost-ack": (tmp_path / "new", tmp_path / "x")}
+    monkeypatch.setattr(executor, "_end_episode", lambda *a, **kw: ends.append(kw),
+                        raising=False)
+    monkeypatch.setattr(executor, "_release_episode_payloads", lambda _: None, raising=False)
+    monkeypatch.setattr(executor, "_preserve_behavior", lambda *a: None, raising=False)
+    monkeypatch.setattr(executor, "_release_new_originals", lambda *a: None, raising=False)
+    result = executor.preserve_report(artifacts.root / "report.json")["episodes"][0]
+    assert result["status"] == "unknown" and "save_error" not in result
+    assert released == ["episode"] and "conn" in closed and not executor.observers
+    if end_started:
+        assert ends == [] and finishes == []  # the lost End is never resent
+        assert result["segment_episode_end"] == "attempted_before_preservation_unknown"
+    else:
+        # Counterexample: a technical close that never sent End still sends one.
+        assert len(ends) == 1 and ends[0]["terminal"] is None and finishes == [None]
+
+
+def test_failure_facts_read_last_unknown_receipt_and_runtime_status(tmp_path):
+    from spireagent.workbench.rl_segment_producer import failure_facts
+
+    run = tmp_path / "runs" / "run-a"
+    run.mkdir(parents=True)
+    events = [
+        {"kind": "global_dispatch", "payload": {"request_id": "r1",
+            "bound_action": {"label": "Play Tesla Coil -> Soul Nexus"}}},
+        {"kind": "global_receipt", "payload": {"receipt": {"request_id": "r1",
+            "delivery": "unknown", "reason_code": "managed_execution_unknown",
+            "detail": "not witnessed https://example.invalid/private CARD.TESLA_COIL"}}},
+        {"kind": "handoff_to_human", "payload": {"reason": "agent_call_timeout"}},
+    ]
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    (tmp_path / "0006-runtime-final-status.json").write_text(json.dumps({
+        "last_result": {"delivery": "unknown", "reason": "managed_execution_unknown",
+                        "action_id": "c4", "snapshot_id": "s"}, "taint_reason": None}))
+    row = {"run_id": "run-a", "execution_reason": "runtime_execution_or_release_unknown",
+           "runtime_final_status": {"path": "0006-runtime-final-status.json"},
+           "game_metrics": {"max_observed_floor": 45}}
+    facts = failure_facts(tmp_path, row)
+    assert facts["last_unknown_receipt"]["reason_code"] == "managed_execution_unknown"
+    assert facts["last_unknown_receipt"]["label"] == "Play Tesla Coil -> Soul Nexus"
+    assert "example.invalid" not in json.dumps(facts)
+    assert facts["last_result"] == {"delivery": "unknown",
+        "reason": "managed_execution_unknown", "action_id": "c4"}
+    assert facts["handoff_reason"] == "agent_call_timeout"
+    assert facts["max_observed_floor"] == 45
+    # Released or missing originals give empty facts, never an exception.
+    empty = failure_facts(tmp_path / "missing", {"run_id": "gone"})
+    assert empty["last_unknown_receipt"] is None and empty["last_result"] is None
+
+
 def test_original_observer_error_survives_finish_reconciliation_failure(tmp_path):
     from types import SimpleNamespace
 
