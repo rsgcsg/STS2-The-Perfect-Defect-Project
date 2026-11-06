@@ -5,16 +5,39 @@ installed Runtime directory; its exact compiled digest must match the producer.
 This verifies recorded facts, not native coverage, Human origin or research use.
 """
 from __future__ import annotations
+
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 from collections import OrderedDict
+from collections.abc import Iterator, Mapping
+from contextvars import ContextVar
 from pathlib import Path
 from threading import Lock
-from typing import Any, Mapping
-from .agent_run_evidence import _canonical_json, _file_entry, _read_checksums, _autonomy_config_limits, _recorded_budget_limits, _verify_autonomy_budget
-from .agent_session_run_evidence import AgentSessionRunEvidence, _object, _json, _require, _sha, _digest, _time, _integer
+from typing import Any
+
+from .agent_run_evidence import (
+    _autonomy_config_limits,
+    _canonical_json,
+    _file_entry,
+    _read_checksums,
+    _recorded_budget_limits,
+    _verify_autonomy_budget,
+)
+from .agent_session_run_evidence import (
+    AgentSessionRunEvidence,
+    _digest,
+    _integer,
+    _json,
+    _object,
+    _require,
+    _sha,
+    _time,
+)
+from .core import VerificationResult
 
 BASE = {"manifest.json", "agent-manifest.json", "adapter-attestation.json", "events.jsonl"}
 EXTRA = {"checksums.sha256", "evidence-manifest.json"}
@@ -23,8 +46,83 @@ ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin(?:\.gz)?\Z")
 # A measured 33-floor original needs ~58s after decoded-payload retention is
 # bounded. This is a finite verification budget, not a gameplay or validity rule.
 GLOBAL_REPLAY_TIMEOUT_SECONDS = 120
+AUDIT_REPLAY_TIMEOUT_SECONDS = 600
 _SEMANTIC_REPLAY_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _SEMANTIC_REPLAY_CACHE_LOCK = Lock()
+_LIVE_REPLAY: ContextVar[LiveGlobalReplay | None] = ContextVar("global_live_replay", default=None)
+_FORCE_REPLAY: ContextVar[bool] = ContextVar("global_force_replay", default=False)
+
+
+class LiveGlobalReplay:
+    """Evidence owns the trusted child and its proof, never an observer verdict.
+
+    The application consumes transitions from this same process. At close the
+    ordinary typed entry still checks physical inventory/seal, current code and
+    requested budgets. Only its semantic pass can reuse these actual live reads.
+    """
+
+    def __init__(self, directory: Path, runtime: Path, *, stderr: Any) -> None:
+        self.directory = directory.resolve()
+        self.runtime = runtime.resolve()
+        self.process = subprocess.Popen(
+            ["node", str(self.runtime / "global-live-replay.js"), "--run", str(self.directory)],
+            stdout=subprocess.PIPE, stderr=stderr)
+        self._end: dict[str, Any] | None = None
+
+    def events(self) -> Iterator[dict[str, Any]]:
+        assert self.process.stdout is not None
+        for raw in self.process.stdout:
+            value = json.loads(raw)
+            _require(self._end is None, "global_live_output_after_end")
+            if value.get("schema") == "sts2.policy-runtime/verified-global-end-1":
+                self._end = json.loads(raw)  # The observer cannot mutate Evidence's copy.
+            yield value
+        _require(self.process.wait() == 0 and self._end is not None, "global_live_verifier_failed")
+
+    def verify(self, expected: Mapping[str, object]) -> VerificationResult[AgentSessionRunEvidence]:
+        from .agent_session_run_evidence import verify_agent_session_run_evidence
+
+        token = _LIVE_REPLAY.set(self)
+        try:
+            return verify_agent_session_run_evidence(self.directory, expected)
+        finally:
+            _LIVE_REPLAY.reset(token)
+
+    def _report(self, directory: Path, runtime: Path, identity: dict[str, Any],
+                files: list[dict[str, Any]]) -> dict[str, Any]:
+        from .global_artifact_storage import read_global_artifact
+
+        _require(directory == self.directory and runtime == self.runtime
+                 and self.process.poll() == 0 and self._end is not None, "global_live_process_binding")
+        assert self._end is not None
+        proof = _object(self._end.get("proof"))
+        _require(proof.get("identity") == identity, "global_live_code_binding")
+        reads = _object(proof.get("reads"))
+        journal = _object(proof.get("journal"))
+        _require(set(reads) == BASE - {"events.jsonl"}, "global_live_read_inventory")
+        observed = {entry["path"]: {k: entry[k] for k in ("bytes", "sha256")} for entry in files}
+        _require(all(observed.get(name) == entry for name, entry in reads.items())
+                 and observed.get("events.jsonl") == journal, "global_live_original_changed")
+        refs = proof.get("artifacts")
+        _require(isinstance(refs, list) and len(refs) == len(observed) - len(BASE),
+                 "global_live_artifact_inventory")
+        _require({ref["path"] for ref in refs} == set(observed) - BASE,
+                 "global_live_artifact_inventory")
+        for ref in refs:
+            # Shared reader binds decoded original bytes even for compressed storage.
+            read_global_artifact(directory, ref)
+        return _object(self._end.get("report"))
+
+
+def audit_global_session(directory: Path, expected: Mapping[str, object]) -> VerificationResult[AgentSessionRunEvidence]:
+    """Bounded save workers use the normal typed entry with a fresh full replay."""
+    from .agent_session_run_evidence import verify_agent_session_run_evidence
+
+    token = _FORCE_REPLAY.set(True)
+    try:
+        return verify_agent_session_run_evidence(directory, expected)
+    finally:
+        _FORCE_REPLAY.reset(token)
 
 
 def _verify_global_budget_facts(events: bytes, requested: Mapping[str, object], version: int) -> None:
@@ -108,7 +206,7 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
     except (OSError, subprocess.SubprocessError):
         _require(False, "global_shared_replay_identity_unavailable")
     _require(checked.returncode == 0 and len(checked.stdout) <= 65536,
-             "global_shared_replay_identity_failed")
+             "global_shared_replay_identity_unavailable")
     parsed_identity = json.loads(checked.stdout)
     semantic_identity = _object(parsed_identity) if parsed_identity is not None else None
     replay_key = None
@@ -123,30 +221,52 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
         dependencies = semantic_identity.get("semantic_dependencies_sha256")
         _digest(dependencies)
         replay_key = (content_id, dependencies)
-        with _SEMANTIC_REPLAY_CACHE_LOCK:
-            report = _SEMANTIC_REPLAY_CACHE.get(replay_key)
+        live = _LIVE_REPLAY.get()
+        if live is not None:
+            report = live._report(directory, runtime, semantic_identity, files)
+        elif not _FORCE_REPLAY.get():
+            with _SEMANTIC_REPLAY_CACHE_LOCK:
+                report = _SEMANTIC_REPLAY_CACHE.get(replay_key)
+    _require(_LIVE_REPLAY.get() is None or report is not None, "global_live_proof_required")
     if report is None:
-        script = "import{pathToFileURL}from'node:url';const m=await import(pathToFileURL(process.argv[1]));console.log(JSON.stringify(await m.replayGlobalAgentRun(process.argv[2])));"
+        script = (
+            "import{pathToFileURL}from'node:url';"
+            "const m=await import(pathToFileURL(process.argv[1]));"
+            "try{console.log(JSON.stringify(await m.replayGlobalAgentRun(process.argv[2])))}"
+            "catch(e){if((e?.name==='Error'&&!e.code)||"
+            "['AgentSessionError','ZodError','SyntaxError'].includes(e?.name))"
+            "console.log(JSON.stringify({replay_rejected:e.message}));else throw e}"
+        )
         try:
-            result = subprocess.run(["node", "--input-type=module", "-e", script, str(runtime / "global-replay.js"), str(directory)],
-                                    capture_output=True, text=True, timeout=GLOBAL_REPLAY_TIMEOUT_SECONDS, check=False)
+            command = ["node", "--input-type=module", "-e", script,
+                       str(runtime / "global-replay.js"), str(directory)]
+            options: dict[str, Any] = {}
+            if _FORCE_REPLAY.get():
+                if os.name == "posix":
+                    command = ["nice", "-n", "10", *command]
+                elif sys.platform == "win32":
+                    options["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            result = subprocess.run(command, capture_output=True, text=True,
+                timeout=(AUDIT_REPLAY_TIMEOUT_SECONDS if _FORCE_REPLAY.get()
+                         else GLOBAL_REPLAY_TIMEOUT_SECONDS), check=False, **options)
         except (OSError, subprocess.SubprocessError):
             _require(False, "global_shared_replay_unavailable")
-        _require(result.returncode == 0 and len(result.stdout) <= 65536, "global_shared_replay_failed")
+        _require(result.returncode == 0 and len(result.stdout) <= 65536, "global_shared_replay_unavailable")
         report = _object(json.loads(result.stdout))
+        _require("replay_rejected" not in report, "global_shared_replay_failed")
     _require(report.get("schema") == "sts2.policy-runtime/global-replay-1" and report.get("run_id") == run["run_id"]
              and report.get("verdict") == "verified" and report.get("native_qualification") is False
              and report.get("human_origin") is False and report.get("research_admission") is False, "global_shared_replay_report")
-    if replay_key is not None:
-        with _SEMANTIC_REPLAY_CACHE_LOCK:
-            _SEMANTIC_REPLAY_CACHE[replay_key] = report
-            _SEMANTIC_REPLAY_CACHE.move_to_end(replay_key)
-            while len(_SEMANTIC_REPLAY_CACHE) > 16:
-                _SEMANTIC_REPLAY_CACHE.popitem(last=False)
     events = (directory / "events.jsonl").read_bytes()
     first = json.loads(events.splitlines()[0])
     version = 2 if first.get("schema") == "sts2.policy-runtime/agent-session-event-2" else 1
     _verify_global_budget_facts(events, requested, version)
     _require(events.endswith(b"\n"), "global_journal_truncated")
     count = len(events.splitlines()); _integer(count, positive=True, maximum=65536)
+    if replay_key is not None:
+        with _SEMANTIC_REPLAY_CACHE_LOCK:
+            _SEMANTIC_REPLAY_CACHE[replay_key] = report
+            _SEMANTIC_REPLAY_CACHE.move_to_end(replay_key)
+            while len(_SEMANTIC_REPLAY_CACHE) > 16:
+                _SEMANTIC_REPLAY_CACHE.popitem(last=False)
     return AgentSessionRunEvidence(directory, run, agent, immutable, count, content_id)

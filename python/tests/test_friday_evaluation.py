@@ -245,12 +245,22 @@ def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
 @pytest.mark.parametrize('row', [
     {'status': 'unknown', 'cleanup_accepted': False, 'world_mutation_offered': True},
     {'status': 'save_failed', 'cleanup_accepted': True},
-    {'status': 'unknown', 'cleanup_accepted': True,
+    {'status': 'unknown', 'cleanup_accepted': False,
      'execution_reason': 'typed_original_verification_failed'},
 ])
 def test_clean_unknown_option_preserves_cleanup_save_and_integrity_stops(evaluate, tmp_path, row):
     stop = tmp_path / 'STOP'
     evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
+    assert stop.exists()
+
+
+def test_cleaned_typed_verification_failure_is_one_excluded_pair(evaluate, tmp_path):
+    row = {'status': 'unknown', 'cleanup_accepted': True,
+           'execution_reason': 'typed_original_verification_failed'}
+    stop = tmp_path / 'STOP'
+    evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
+    assert not stop.exists()
+    evaluate.StopOnUncertain(None, stop).inspect(row)
     assert stop.exists()
 
 
@@ -469,3 +479,16 @@ def test_evaluation_allocation_owns_trajectory_detail_preparation(evaluate, tmp_
     assert opened == [{'kind': 's3'}]
     assert metadata['files']['cohort']['sha256'] == evaluate.hashed(scratch / 'report-cohort.json')
     assert metadata['files']['source']['sha256'] == evaluate.hashed(scratch / 'report-source.json')
+
+
+def test_evaluation_general_partition_preserves_fair_share_and_excludes_G1(
+        evaluate, execution, tmp_path):
+    _, directory = prepared(evaluate, execution, tmp_path)
+    lock = tmp_path / 'submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', '']) as calls):
+        result = evaluate.submit(directory / 'plan.json', dry_run=True,
+                                 partition='general', exclude_nodes=['gpu-1', 'actor-1'])
+    assert '--partition=general' in result['command']
+    assert '--exclude=gpu-1,actor-1' in result['command']
+    assert all('general' in call.args[0] for call in calls.call_args_list[1:])

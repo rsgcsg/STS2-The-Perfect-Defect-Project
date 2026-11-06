@@ -1,4 +1,4 @@
-"""Freeze short-segment mu targets once; rebuild inputs without refitting them.
+"""Recorded-mu targets for RL4.1 and read-only historical RL4 reconstruction.
 
 Only immutable tensor input metadata is reusable across theta updates. Stored
 acting distributions are preserved; forced-state and boundary values are filled
@@ -24,6 +24,69 @@ from .loss import SegmentSample
 from .segment_inputs import frame_key
 
 
+def recorded_targets(
+    segment: dict[str, Any], *, gae_lambda: float = 0.99,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """CPU only. Every current/forced/tail value belongs to this segment's mu.
+
+    Unlike the historical reader below this never receives a learned model and
+    cannot fill a missing value from theta or a newer behavior snapshot.
+    """
+    from stpd.p1.data import digest, json_bytes
+
+    from .heads import outcome_mask
+
+    mu = segment["mu"]
+    steps = segment["steps"]
+    if not steps or len(steps) != segment["rows"]:
+        raise ValueError("segment_row_membership_changed")
+    if any(step["behavior"]["mu"] != mu for step in steps):
+        raise ValueError("segment_behavior_mu_changed")
+    try:
+        probabilities = torch.tensor(
+            [step["behavior"]["outcome_probabilities"] for step in steps], dtype=torch.float32
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("every_mu_value_required_including_forced") from error
+    floors = [step["behavior"]["floor"] for step in steps]
+    valid = outcome_mask(floors)
+    if probabilities.shape != valid.shape or bool(probabilities.masked_select(~valid).ne(0).any()):
+        raise ValueError("behavior_outcome_floor_support_changed")
+    boundary = segment.get("bootstrap")
+    terminal = segment["terminal"]
+    if terminal is None:
+        if boundary is None:
+            raise ValueError("nonterminal_requires_confirmed_bootstrap")
+        final = steps[-1]
+        successor = final["successor"]
+        public_floor = ((successor["observation"].get("run") or {}).get("content") or {}).get(
+            "floor"
+        )
+        expected_floor = max(*floors, public_floor if type(public_floor) is int else 0)
+        if (
+            boundary["mu_snapshot_sha256"] != mu["snapshot_sha256"]
+            or boundary["successor_input_sha256"] != digest(json_bytes(successor))
+            or boundary["floor"] != expected_floor
+        ):
+            raise ValueError("bootstrap_mu_or_successor_changed")
+        tail = torch.tensor(boundary["outcome_probabilities"], dtype=torch.float32)
+        if tail.shape != (OUTCOME_CLASSES,) or bool(
+            tail[~outcome_mask([expected_floor])[0]].ne(0).any()
+        ):
+            raise ValueError("bootstrap_floor_support_changed")
+    else:
+        if boundary is not None:
+            raise ValueError("terminal_has_no_bootstrap")
+        tail = None
+        if not bool(valid[:, terminal["class"]].all()):
+            raise ValueError("terminal_before_observed_floor")
+    targets, advantages = categorical_lambda_targets(
+        probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
+        gae_lambda=gae_lambda
+    )
+    return probabilities, targets, advantages
+
+
 def _frame(value: dict[str, Any], model: MStd, *,
            frames: Mapping[str, TensorFrame] | None = None) -> TensorFrame:
     projection = runtime_projection(model.vocabulary)
@@ -42,6 +105,7 @@ def freeze_targets(
     segments: list[dict[str, Any]], models: Mapping[str, MStd], *, gpu_lock: Any = None,
     frames: Mapping[str, TensorFrame] | None = None,
 ) -> dict[str, Any]:
+    """Historical RL4 reconstruction only; the live learner never calls this."""
     current: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
     raw_advantages: list[torch.Tensor] = []

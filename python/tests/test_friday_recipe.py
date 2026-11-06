@@ -36,7 +36,8 @@ def inputs(recipe, tmp_path, monkeypatch):
     peer = {'kind': 's3', 'bucket': 'test', 'endpoint': 'https://example.invalid',
             'prefix': 'test', 'region': 'auto'}
     base = {'schema': 'spireagent/managed-evaluation-execution-v1', 'store': 's3', 'peer': peer,
-            'candidate_directory': str(tmp_path), 'retention': recipe.rl.RETENTION}
+            'candidate_directory': str(tmp_path),
+            'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 20}}
     execution = tmp_path / 'execution.json'
     execution.write_text(json.dumps(base))
     evaluation = tmp_path / 'evaluation.json'

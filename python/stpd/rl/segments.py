@@ -8,28 +8,35 @@ from __future__ import annotations
 
 import collections
 import copy
+import math
 import random
 import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
+                      "archive_min_free_inodes",
                       "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
-                      "prepare_ahead", "inference_stream")
+                      "prepare_ahead", "inference_stream", "preparation_workers",
+                      "preparation_threads", "prepared_bytes", "training_generation",
+                      "rendezvous_path", "central_scoring", "checkpoint_seconds", "capacity_rows",
+                      "capacity_limit_rows")
 
 @dataclass(frozen=True)
 class SegmentConfig:
     steps: int = 64
     dataset_rows: int = 1024
     minibatches: int = 4
-    epochs: int = 2
+    epochs: int = 1
+    gae_lambda: float = 0.99
     episode_rows: int = 128
     capacity_rows: int = 4608
+    capacity_limit_rows: int | None = None
     terminal_games: int = 256
     hp_battles: int = 128
-    auxiliary_rows: int = 256
-    terminal_uses: int = 4
-    hp_uses: int = 2
+    auxiliary_rows: int = 128
+    terminal_uses: int = 2
+    hp_uses: int = 1
     target_kl: float = 0.03
     ema_decay: float = 0.999
     head_lr: float = 1e-4
@@ -41,27 +48,53 @@ class SegmentConfig:
     warmup_artifact_id: str | None = None
     archive_pending_bytes: int = 4 * 1024**3
     archive_min_free_bytes: int = 20 * 1024**3
+    archive_min_free_inodes: int = 10000
     archive_poll_seconds: float = 2
     input_compiler_identity: dict[str, Any] | None = None
     input_pack_artifact_id: str | None = None
-    prepare_ahead: bool = False
+    prepare_ahead: bool = True
     inference_stream: bool = False
+    preparation_workers: int = 4
+    preparation_threads: int = 1
+    prepared_bytes: int = 1024 * 1024**2  # current + next; no unbounded ready queue
+    training_generation: str | None = None
+    # Original shared inference.json, atomically replaced on restore.
+    rendezvous_path: str | None = None
+    central_scoring: bool = False
 
     def __post_init__(self) -> None:
         positive = (self.steps, self.dataset_rows, self.minibatches, self.epochs,
             self.episode_rows, self.capacity_rows, self.terminal_games,
-            self.hp_battles, self.auxiliary_rows, self.terminal_uses, self.hp_uses,
-            self.inference_batch, self.diagnostics_every, self.archive_pending_bytes)
+            self.hp_battles, self.terminal_uses, self.hp_uses,
+            self.inference_batch, self.diagnostics_every, self.archive_pending_bytes,
+            self.preparation_workers, self.preparation_threads, self.prepared_bytes)
         if (any(type(v) is not int or v < 1 for v in positive)
                 or self.steps > 64 or self.episode_rows < self.steps
+                or self.dataset_rows < self.minibatches
+                or type(self.auxiliary_rows) is not int or self.auxiliary_rows < 0
+                or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
+                or any(type(v) not in (int, float) or not math.isfinite(v)
+                       for v in (self.target_kl, self.ema_decay, self.head_lr,
+                                 self.inference_window_ms, self.checkpoint_seconds,
+                                 self.archive_poll_seconds))
+                or (self.capacity_limit_rows is not None and (
+                    type(self.capacity_limit_rows) is not int
+                    or self.capacity_limit_rows < 3 * self.dataset_rows))
                 or self.capacity_rows < self.dataset_rows + self.steps
                 or not 0 < self.target_kl < 1 or not 0 < self.ema_decay < 1
-                or not 0 < self.head_lr < 1 or not 1 <= self.inference_batch <= 40
+                or not 0 < self.head_lr < 1
                 or not 0 <= self.inference_window_ms <= 100
                 or not 0 < self.checkpoint_seconds <= 3600
                 or type(self.archive_min_free_bytes) is not int or self.archive_min_free_bytes < 0
+                or type(self.archive_min_free_inodes) is not int or self.archive_min_free_inodes < 0
                 or not 0.01 <= self.archive_poll_seconds <= 30
                 or type(self.prepare_ahead) is not bool or type(self.inference_stream) is not bool
+                or type(self.central_scoring) is not bool
+                or self.preparation_workers * self.preparation_threads > 16
+                or (self.training_generation is not None and (
+                    not isinstance(self.training_generation, str) or not self.training_generation))
+                or (self.rendezvous_path is not None and (
+                    not isinstance(self.rendezvous_path, str) or not self.rendezvous_path))
                 or (self.input_compiler_identity is not None
                     and not isinstance(self.input_compiler_identity, dict))
                 or (self.input_pack_artifact_id is not None and (
@@ -91,7 +124,7 @@ class SegmentQueue:
 
     The learner removes a frozen dataset before training it. New reservations
     pause at capacity; committing an existing lease always remains possible.
-    Checkpoints preserve queue/lease identities, rather than re-offering actions.
+    The live queue is discarded on CP-only restore, never replayed or re-offered.
     """
 
     def __init__(self, config: SegmentConfig) -> None:
@@ -146,12 +179,15 @@ class SegmentQueue:
             self.leases.pop(lease)
             self.condition.notify_all()
 
-    def dataset(self, *, take: bool = True) -> list[dict[str, Any]] | None:
+    def dataset(self, *, take: bool = True,
+                exclude: frozenset[str] = frozenset()) -> list[dict[str, Any]] | None:
         with self.condition:
             totals: dict[str, int] = collections.defaultdict(int)
             chosen: list[dict[str, Any]] = []
             count = 0
             for segment in self.pending:
+                if segment["segment_id"] in exclude:
+                    continue
                 run, size = segment["run_id"], segment["rows"]
                 if totals[run] + size > self.config.episode_rows:
                     continue
@@ -215,13 +251,15 @@ class AuxiliaryPool:
         while len(self.groups) > self.limit:
             self.groups.popitem(last=False)
 
-    def sample(self, count: int, rng: random.Random, *, epochs: int = 2) -> list[dict[str, Any]]:
+    def sample(self, count: int, rng: random.Random, *, epochs: int = 1,
+               exclude: set[str] | None = None) -> list[dict[str, Any]]:
         values = [r for rows in self.groups.values() for r in rows
                   if r["uses"] + epochs <= self.max_uses
-                  and len(r["datasets"]) < self.max_uses // epochs]
+                  and len(r["datasets"]) < self.max_uses // epochs
+                  and (exclude is None or r["key"] not in exclude)]
         return rng.sample(values, min(count, len(values)))
 
-    def used(self, rows: list[dict[str, Any]], dataset: int, *, epochs: int = 2) -> None:
+    def used(self, rows: list[dict[str, Any]], dataset: int, *, epochs: int = 1) -> None:
         # Call only after a successful optimizer.step, never for discarded KL work.
         for row in rows:
             if row["uses"] >= self.max_uses:
@@ -233,6 +271,18 @@ class AuxiliaryPool:
             row["uses"] += 1
             if dataset not in row["datasets"]:
                 row["datasets"].append(dataset)
+
+    def retire_exhausted(self) -> dict[str, list[dict[str, Any]]]:
+        retired = {}
+        for identity, rows in list(self.groups.items()):
+            kept = [row for row in rows if row["uses"] < self.max_uses]
+            if len(kept) != len(rows):
+                retired[identity] = [row for row in rows if row["uses"] >= self.max_uses]
+                if kept:
+                    self.groups[identity] = kept
+                else:
+                    self.groups.pop(identity)
+        return retired
 
     def state(self) -> dict[str, Any]:
         return copy.deepcopy({"limit": self.limit, "max_uses": self.max_uses,

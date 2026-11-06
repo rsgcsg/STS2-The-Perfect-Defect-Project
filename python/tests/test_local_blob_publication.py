@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from spireagent.storage import blobs, local
+from spireagent.storage import local
 from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 
@@ -146,8 +146,9 @@ def test_observation_error_is_not_treated_as_a_missing_object(tmp_path, monkeypa
 def test_existing_path_retains_incoming_and_observed_size_bounds(tmp_path, monkeypatch):
     store = LocalBlobStore(tmp_path)
     assert store.put_if_absent("objects/item", b"1234")
-    monkeypatch.setattr(blobs, "MAX_BLOB_BYTES", 3)
-    monkeypatch.setattr(local, "MAX_BLOB_BYTES", 3)
+    # The configured transport now owns its bound, including existing-object
+    # observations. Exercise that bound rather than a captured module default.
+    monkeypatch.setattr(store, "maximum", 3)
     for value in (b"1234", bytearray(b"12"), b"12"):
         with pytest.raises(StoreError, match="blob_exceeds_bounded_transport"):
             store.put_if_absent("objects/item", value)

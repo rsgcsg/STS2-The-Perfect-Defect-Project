@@ -35,6 +35,8 @@ def historical_operational_source(tmp_path: Path) -> Path:
         raw = (
             (fixtures / "evidence_rc27_structured_code_scope.py.txt").read_bytes()
             if relative == "stpd/structured_code_scope.py"
+            else (fixtures / "evidence_rc27_blobs.py.txt").read_bytes()
+            if relative == "spireagent/storage/blobs.py"
             else operational_target_lock().encode()
             if relative == "uv.lock"
             else (current / relative).read_bytes()

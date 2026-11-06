@@ -4,6 +4,7 @@
 
 | 问题 / 链路位置 | 原版本与事实 | 当时怎么处理 / 证据入口 | 现在是否适用、这次用不用 |
 |---|---|---|---|
+| **Actor 测试串扰旧训练恢复和评分**；⑦训练/测试进程 | RL4.1 的 W1 在测试收集时不可逆修改 PyTorch interop 线程数；同进程 Actor 又关闭 MHA fastpath。父子进程运行身份和数值路径因此不同，旧 memory/token 实现及依赖并未变化。 | [测试隔离 fixture](../python/tests/rl_actor_test_runtime.py)仅隔离嵌入 Actor 的测试，恢复可恢复设置；[完整 mu 测试](../python/tests/test_rl41_w2_actor.py)在独立进程保留实际单线程、加载和评分断言。 | 不改生产 Actor、恢复身份或浮点容差；旧训练精确恢复与独立进程评分断言继续有效。单项通过不能替代同进程组合验证。 |
 | **投影递归闭包拖住临时实体图**；⑥研究输入→⑦训练 | RL3正常reader的CPU诊断复现输入组装受后台读取干扰；原`project.visit`引用自己的closure cell，同时保留entities等临时图，返回后仍依赖循环GC回收。 | [投影owner](../python/stpd/p1/input.py)把递归函数作为显式参数传入，不再形成自引用闭包；[lifetime回归](../python/tests/test_p1_projection_lifetime.py)在GC关闭时检查三种输入版本的正常/异常路径及时释放。原实体、排序、choices/roles与InputSpec保持。 | 修复对象生命周期，不关闭GC、不改训练目标或跳过轨迹资格。代码身份随新source变化；冻结actor/eval继续按原pin，真实固定输入比较和learner上线吞吐分别验收，不能借CPU诊断宣称全链提速。 |
 | **已准版本 Model 的自然终局保全被旧投影拒绝**；⑩评估→⑤Store/Evidence | T2c 四局已自然终局并关闭，Model descriptor、注册参数和 Runtime 都是既定 V2；保存入口却只认 V1，报 `trusted_model_binding_mismatch`。11-03的r1.9起点又在两条正式审计原件上复现：旧二分选择器将r1.8/r1.9误选为V1。 | [保存 owner](../python/spireagent/workbench/global_evidence_store.py)复用模型owner已有的已准包InputSpec解析及`bound_projection`，选择完整canonical投影，再核三方compact spec、完整投影、权重及Runtime；[回归](../python/tests/test_four_agent_consumers.py)保 V2 正例与缺失/V1/篡改投影拒绝。 | 复用原 typed 发布和 peer 完整读回；旧失败、job、plan 和执行 producer 保留，恢复使用真实新 publisher 身份。不重打已执行局，不放宽绑定，也不凭源码回归宣称旧证据已保存。 |
 | **普通启动选牌原件缺目录、局部issue扩成整局屏障**；⑤采集→⑥派生 | P1网格曾误用执行许可；原issue有event/sequence却无accepted decision时，旧派生退到全run。旧缺失仍保留。 | [只读网格owner](../components/connector/host/PlayerEnvironment/TextMenu/NativeLogicalGridCapture.cs)按观察/Read许可采PB；[issue范围owner](../tools/p1-native-issue-spans.mjs)沿原event到已有完整无commitment恢复边界定位，未定位仍全run；原始问题见[日常录制guide](../components/annotator/README.md#p1-native-semantic-recording)。 | **复用原PB/原生bindings及既有segment恢复判定**；不改执行资格、不补旧缺失、不重写旧派生。源码/测试不替正常安装后的选牌→PB→派生→reader实证。 |
@@ -23,6 +24,20 @@
 | **恢复成功但raw-score/weight不一致仍报通过**；数值实现→产物验收 | 历史J-min q07两次CUDA更新后raw-weight FAIL；obs08同设备恢复/CPU导出exact，但24 raw-score仍FAIL。恢复一项成功不能覆盖另一项失败。 | 原J-min报告 `/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/J-min-2026-10-15.md`保原比较对象/失败；当前恢复合同见[workload](../python/docs/STRUCTURED_WORKLOAD.md)。 | **复用分项验收方法，保留原失败**；当前图另定事前比较对象/容差，不改名、换argmax或放宽断言求绿。旧失败不自动否决另一图，也不授其资格。 |
 | **修复/审查总在换Agent后重新调查**；工程协作 | 已有当前任务、原解法和非作者review机制；新窗口不会带来新授权或重新获得时间预算。 | 先查本表原件，按[任务与恢复](AI_COLLABORATION.md#resuming-without-selecting-an-obsolete-task)、[复用/新开规则](AI_COLLABORATION.md#reuse-or-start-a-worker)继续同一有界结果。 | **原执行者处理修复/补证/返工**；独立问题或必要非作者审查才另开。先亲核差异与证据，再集成；不因换上下文重跑全库/重置截止。 摘要仅线索，恢复走CURRENT唯一任务及AI原五项核查；父任务未验收/未到截止，主管不以派发或恢复报告结束职责。 |
 | **复用环境仍漏全门前置**；执行环境→所选门 | root工作区Node与Python独立公开Node consumer不同；TMP放进Git树会改变非Git fixture的寻根结果。 | 复用[原doctor](../python/tools/doctor.py)、[Python锁](../python/package-lock.json)及[governance fixture](../tools/check-governance.test.mjs)，分别核root/consumer pins、实际installed内容和非Git TMP。 | **保两次环境失败原件，按12入口盘清requires/provides再选完整门**；不以能import ML证明全部环境齐，不改断言/路由求绿，不重建整套依赖。当前证据只从[CURRENT](memory/CURRENT.md)进入。 |
+
+## RL4.1：旧加速选项在 prepared 训练上的去向（2026-11-04）
+
+G0真实批表明组大小受attention area先限制；不是把旧开关全部打开就会更快。
+当前默认由[原RL接口SOP](../python/docs/RL_ACTOR_LEARNER.zh-CN.md#一个正式配置和生效开关)和`python/configs/rl41.json`负责。
+下面仍按原四种实现状态；退役代码从Git取回，不新增平行状态登记。
+
+| 旧选项 / 原问题 | prepared路径实际状态及复用边界 |
+|---|---|
+| packed、tensor_cache、joint_nodes | **只读**旧row实现配置。prepared固定CPU构造完整joint/tensor元数据，不把三个旧bool当训练加速按钮 |
+| device_cache、reference_device_cache、async_transfer、precompile_inputs | **只读**旧row/reference缓存配置。新路径完整PreparedBatch按dtype slab一次stage；每批owned CPU输入与next共限1GiB |
+| bucket、defer_sync | **只读**旧row重排与同步配置；prepared用冻结partition、整minibatch分母和一次pre-step决定 |
+| deduplicate_text、组行数、scene/text area、precision、tf32 | **默认**由唯一profile的六个实际字段选择；小显存缩组是同一逐组梯度累加实现的参数，FP32只作不支持BF16的已授权检查等明确备选 |
+| compile_loss、checkpoint重算 | G0已选BF16 eager、无checkpoint；compile稳态无收益且冷编约31s，live true明确拒绝，额外实现已退役；G0历史收据保留 |
 
 ## 10-25 至 10-27 收口增量：按原问题复用，不扩大资格
 

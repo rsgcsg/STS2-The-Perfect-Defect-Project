@@ -34,7 +34,8 @@ def adapter_identity() -> dict[str, str]:
     root = Path(__file__).parent
     closure = {
         name: digest((root / name).read_bytes())
-        for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
+        for name in ("agent.py", "agent_driver.py", "local_inference.py", "local_mu.py",
+                     "export.py", "input.py",
                      "model.py", "input_encoding.py", "frame_compiler.py", "tensor_input.py",
                      "text_cache.py",
                      "data.py", "execution.py",

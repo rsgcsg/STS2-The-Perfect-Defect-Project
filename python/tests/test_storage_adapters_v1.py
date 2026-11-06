@@ -240,7 +240,7 @@ def test_model_prefetch_retries_sdk_stream_failure_and_closes_response(tmp_path,
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "stream")
     remote = S3BlobStore(S3Config("bucket"), client)
     monkeypatch.setattr(exchange.blobs, "get", remote.get)
-    monkeypatch.setattr(exchange, "model_versions", lambda: [0])
+    monkeypatch.setattr(exchange, "model_versions", lambda **_kwargs: [0])
     prefetch = ModelPrefetch(exchange, tmp_path / "cache", 0.01)
     prefetch._refresh_once()
     assert interrupted.closed

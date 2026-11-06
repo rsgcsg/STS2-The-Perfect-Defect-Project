@@ -13,7 +13,7 @@ from test_p1_input_v2 import public_state
 from stpd.p1.execution import MStdExecution
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.input import V2_INPUT_SPEC
-from stpd.p1.local_inference import SegmentConnection, SegmentInferencePool
+from stpd.p1.local_inference import CentralInferencePool, SegmentConnection, SegmentInferencePool
 from stpd.p1.model import MStd
 from stpd.p1.text_cache import TextVectorCache
 from stpd.p1.vocabulary import public_vocabulary
@@ -43,18 +43,10 @@ class CountedLock:
         self.lock.release()
 
 
-class NoTrainingLock:
-    def __enter__(self):
-        raise AssertionError("side-stream scorer acquired the training GPU lock")
-
-    def __exit__(self, *args):
-        pass
-
-
-def pool_for(model, gpu_lock, monkeypatch, *, inference_stream=False):
+def pool_for(model, monkeypatch):
     identity = {"snapshot_sha256": "a" * 64}
-    pool = SegmentInferencePool(model, identity, control=lambda request: {}, gpu_lock=gpu_lock,
-        address=("127.0.0.1", 0), max_batch=2, window_ms=0, inference_stream=inference_stream)
+    pool = CentralInferencePool(model, identity, control=lambda request: {},
+        address=("127.0.0.1", 0), max_batch=2, window_ms=0)
     for key, value in pool.environment().items():
         monkeypatch.setenv(key, value)
     return pool, identity
@@ -66,26 +58,29 @@ def request(client, model, identity, observation):
         compiled_input=FrameCompiler(model.vocabulary).encode(observation))
 
 
-def test_cpu_explicit_stream_request_is_rejected_before_any_service_or_cuda(monkeypatch):
+def test_control_and_central_owners_reject_external_training_lock_before_service(monkeypatch):
     model = member()
 
     def unexpected(*args, **kwargs):
-        raise AssertionError("CPU stream rejection attempted CUDA/service allocation")
+        raise AssertionError("rejected operands attempted CUDA/service allocation")
 
     monkeypatch.setattr(torch.cuda, "Stream", unexpected)
     monkeypatch.setattr("stpd.p1.local_inference.Listener", unexpected)
-    with pytest.raises(ValueError, match="inference_stream_requires_CUDA"):
-        SegmentInferencePool(model, {"snapshot_sha256": "a" * 64}, control=lambda _: {},
-            gpu_lock=threading.RLock(), inference_stream=True)
-    with pytest.raises(ValueError, match="flag_must_be_bool"):
-        SegmentInferencePool(model, {"snapshot_sha256": "a" * 64}, control=lambda _: {},
-            gpu_lock=threading.RLock(), inference_stream=1)
+    for owner, value in ((SegmentInferencePool, model.vocabulary), (CentralInferencePool, model)):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'gpu_lock'"):
+            owner(value, {"snapshot_sha256": "a" * 64}, control=lambda _: {},
+                  gpu_lock=threading.RLock())
+        with pytest.raises(TypeError, match="unexpected keyword argument 'inference_stream'"):
+            owner(value, {"snapshot_sha256": "a" * 64}, control=lambda _: {},
+                  inference_stream=True)
 
 
-def test_default_cpu_tcp_scoring_keeps_original_lock_and_outputs(monkeypatch):
+def test_default_cpu_central_scoring_uses_owned_lock_and_keeps_outputs(monkeypatch):
     model = member()
     lock = CountedLock()
-    pool, identity = pool_for(model, lock, monkeypatch)
+    pool, identity = pool_for(model, monkeypatch)
+    monkeypatch.setattr(pool, "execution_lock", lock)
+    monkeypatch.setattr(torch.cuda, "Stream", lambda *a, **kw: pytest.fail("CPU allocated CUDA"))
     client = SegmentConnection(pool.attachment())
     observation = public_state()
     frame = FrameCompiler(model.vocabulary).compile(observation)
@@ -140,7 +135,7 @@ def test_real_cuda_publication_is_ready_and_scoring_uses_only_owned_stream(monke
     with torch.cuda.stream(publication):
         model.to("cuda", non_blocking=True)
         model.ids.weight.add_(.125)
-        pool, identity = pool_for(model, NoTrainingLock(), monkeypatch, inference_stream=True)
+        pool, identity = pool_for(model, monkeypatch)
     client = SegmentConnection(pool.attachment())
     observed = []
     hook = model.ids.register_forward_pre_hook(
@@ -204,7 +199,7 @@ def test_real_cuda_cached_storage_survives_cross_stream_borrow_and_eviction():
 @CUDA
 def test_real_cuda_exception_drains_only_inference_before_retire_and_next_request(monkeypatch):
     model = member().to("cuda")
-    pool, identity = pool_for(model, NoTrainingLock(), monkeypatch, inference_stream=True)
+    pool, identity = pool_for(model, monkeypatch)
     client = SegmentConnection(pool.attachment())
     forward = model.forward_rl4
     fail = True

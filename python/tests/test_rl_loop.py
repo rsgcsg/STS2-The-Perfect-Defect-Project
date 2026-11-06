@@ -413,7 +413,7 @@ def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, 
                      "model_artifact_id": manifest.artifact_id, "model_sha256": sha}
     execution = tmp_path / "execution.json"
     execution.write_text(json.dumps({"peer": peer, "retention": {
-        "tier": "trajectory", "purpose": "training", "audit_every": 50}}))
+        "tier": "trajectory", "purpose": "training", "audit_every": 20}}))
     built = []
 
     class Executor:

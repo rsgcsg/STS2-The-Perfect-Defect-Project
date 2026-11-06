@@ -49,6 +49,11 @@ class FridayBatchTests(unittest.TestCase):
         self.assertEqual(batch.capacity(3, 0, 32), 0)
         with self.assertRaises(ValueError):
             batch.capacity(1000, 0, 201)
+        self.assertEqual(batch.capacity(654, 0, 500, maximum=500, idle_divisor=1), 500)
+        self.assertEqual(batch.capacity(255, 0, 256, maximum=500, idle_divisor=1), 255)
+        self.assertEqual(batch.capacity(654, 301, 500, maximum=500, idle_divisor=1), 32)
+        with self.assertRaises(ValueError):
+            batch.capacity(654, 0, 501, maximum=500, idle_divisor=1)
 
     def test_pool_rejects_reserved_evaluation_and_duplicates(self):
         value = pool()

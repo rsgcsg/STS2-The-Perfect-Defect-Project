@@ -10,17 +10,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
-from contextlib import suppress
+from collections import OrderedDict
+from collections.abc import Callable
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.rl_namespace import exchange_prefix
 
 from .blobs import StoreError, safe_key
 from .local import LocalBlobStore
@@ -29,6 +35,80 @@ from .store import ManifestArtifactStore, copy_artifact
 SCHEMA = "spireagent/shared-store-archive-1"
 _services: dict[tuple[str, bytes], Archive] = {}
 _guard = threading.Lock()
+
+
+def filesystem_capacity(root: Path) -> dict[str, Any]:
+    """Filesystem, inode and (where installed) the site's per-user quota facts."""
+    space = shutil.disk_usage(root)
+    inodes = os.statvfs(root).f_favail if hasattr(os, "statvfs") else None
+    result: dict[str, Any] = {"filesystem_free_bytes": space.free, "free_bytes": space.free,
+        "free_inodes": inodes, "quota_status": "not_reported_for_path"}
+    usage = shutil.which("usage")
+    if usage is None:
+        result["quota_status"] = "command_unavailable"
+        return result
+    try:
+        raw = subprocess.check_output([usage], text=True, timeout=10)
+        matches: list[tuple[int, Path, int, int]] = []
+        for line in raw.splitlines():
+            fields = line.split()
+            if len(fields) != 3 or not fields[0].startswith('/'):
+                continue
+            mount = Path(fields[0])
+            if not root.is_relative_to(mount):
+                continue
+            sizes = []
+            for word in fields[1:]:
+                value = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMGTPE]?)B?", word)
+                if value is None:
+                    raise ValueError("unrecognized_quota_size")
+                sizes.append(int(float(value[1]) * 1024 ** (" KMGTPE".index(value[2])
+                             if value[2] else 0)))
+            matches.append((len(mount.parts), mount, sizes[0], sizes[1]))
+        if matches:
+            _, mount, used, quota = max(matches)
+            result.update(quota_status="measured", quota_path=str(mount),
+                          quota_used_bytes=used, quota_limit_bytes=quota,
+                          free_bytes=min(space.free, max(0, quota - used)))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        result.update(quota_status="observation_failed", quota_error=type(error).__name__)
+    return result
+
+
+def storage_inventory(root: Path, *, stop: threading.Event | None = None) -> dict[str, Any]:
+    """Owned Store only: physical categories and logical artifact payloads, no raw reads."""
+    physical: dict[str, dict[str, int]] = {}
+    for directory, _, files in os.walk(root):
+        if stop is not None and stop.is_set():
+            return {"at": time.time(), "cancelled": True}
+        relative = Path(directory).relative_to(root)
+        category = relative.parts[0] if relative.parts else "root"
+        counts = physical.setdefault(category, {"bytes": 0, "files": 0})
+        for name in files:
+            path = Path(directory) / name
+            try:
+                counts["bytes"] += path.stat().st_size
+                counts["files"] += 1
+            except FileNotFoundError:
+                pass  # Reference release/archiving can remove a live hot/pending leaf.
+    logical: dict[str, dict[str, int]] = {}
+    seen: set[tuple[str, str]] = set()
+    for path in (root / "manifests").glob("*.json"):
+        if stop is not None and stop.is_set():
+            return {"at": time.time(), "cancelled": True}
+        manifest = Manifest.from_bytes(path.read_bytes())
+        schema = manifest.parameters.value().get("schema", "")
+        category = ("CP" if schema in {"stpd/rl-segment-checkpoint-2",
+                                       "stpd/rl-segment-checkpoint-3"} else
+                    "heads" if schema == "stpd/rl-behavior-heads-1" else manifest.kind)
+        counts = logical.setdefault(category, {"payload_bytes": 0, "artifacts": 0})
+        counts["artifacts"] += 1
+        for payload in manifest.payloads:
+            if (category, payload.sha256) not in seen:
+                counts["payload_bytes"] += payload.size
+                seen.add((category, payload.sha256))
+    return {"at": time.time(), "physical": physical, "logical": logical,
+            "physical_bytes": sum(c["bytes"] for c in physical.values())}
 
 
 class Archive:
@@ -47,12 +127,19 @@ class Archive:
         self.lock = threading.Lock()
         self.owned: set[str] = set()
         self.owned_done: set[str] = set()
+        # Immutable pending intent key/size metadata. Completion, payload bytes and
+        # readback remain uncached and are rechecked by _copy.
+        self.order_keys: OrderedDict[str, tuple[str, int | None]] = OrderedDict()
         self.verified_at: float | None = None
         self.last_error: dict[str, Any] | None = None
         self.capacity_snapshot: dict[str, Any] | None = None
         self.capacity_stop = threading.Event()
         self.capacity_thread: threading.Thread | None = None
         self.capacity_interval = 2.0
+        self.capacity_changed: Callable[[], None] | None = None
+        self.filesystem_snapshot: dict[str, Any] = {}
+        self.filesystem_checked = 0.0
+        self.inventory_snapshot: dict[str, Any] = {}
 
     def offer(self, key: str, raw: bytes, *, start: bool = True) -> str:
         safe_key(key)
@@ -67,6 +154,7 @@ class Archive:
             if completed:
                 self.owned_done.add(identity)
             if start and self.thread is None:
+                (self.queue.root / "publisher.lock").touch(exist_ok=True)
                 self.thread = threading.Thread(target=self._loop,
                     name="shared-store-archive", daemon=True)
                 self.thread.start()
@@ -76,27 +164,34 @@ class Archive:
     def _refresh_capacity(self) -> None:
         """Local outbox metadata only; never wait for R2 or recurse model ancestry."""
         try:
+            if time.monotonic() - self.filesystem_checked >= 60 or not self.filesystem_snapshot:
+                self.filesystem_snapshot = filesystem_capacity(self.root)
+                self.filesystem_checked = time.monotonic()
+                self.inventory_snapshot = storage_inventory(self.root, stop=self.capacity_stop)
+            # Filesystem/inodes may fill between the slower site-quota observations.
+            inodes = os.statvfs(self.root).f_favail if hasattr(os, "statvfs") else None
+            free = shutil.disk_usage(self.root).free
             count = size = 0
+            completed = {Path(key).stem for key in self.queue.keys("completed/")}
             for key in self.queue.keys("pending/"):
+                if self.capacity_stop.is_set():
+                    return
                 identity = Path(key).stem
-                if (self.queue.root / "completed" / f"{identity}.json").is_file():
+                if identity in completed:
                     continue
                 try:
-                    task = json.loads(self.queue.get(key))
+                    _key, estimated = self._intent_metadata(identity, measure=True)
                 except StoreError as error:
                     if error.code == "object_not_found":
                         continue  # Another archive worker completed this intent.
                     raise
-                raw = self.source.blobs.get(task["key"])
-                size += len(raw)
-                if task["key"].startswith("manifests/"):
-                    manifest = Manifest.from_bytes(raw)
-                    # Conservative CAS/temporary-copy allowance. Parents have
-                    # their own intents; don't repeatedly count warmup ancestry.
-                    size += 2 * sum(payload.size for payload in manifest.payloads)
+                assert estimated is not None
+                size += estimated
                 count += 1
             snapshot: dict[str, Any] = {"pending": count, "pending_bytes_estimate": size,
-                        "free_bytes": shutil.disk_usage(self.root).free,
+                        **self.filesystem_snapshot,
+                        "free_bytes": min(free, self.filesystem_snapshot["free_bytes"]),
+                        "free_inodes": inodes, "inventory": self.inventory_snapshot,
                         "verified_at": time.time(), "checked_monotonic": time.monotonic(),
                         "error": None}
         except Exception as error:  # noqa: BLE001 -- stale/error state pauses new leases
@@ -104,13 +199,17 @@ class Archive:
                         "error": type(error).__name__}
         with self.lock:
             self.capacity_snapshot = snapshot
+        if self.capacity_changed is not None:
+            self.capacity_changed()
 
-    def start_capacity_monitor(self, interval: float = 2) -> None:
+    def start_capacity_monitor(self, interval: float = 2, *,
+                               on_change: Callable[[], None] | None = None) -> None:
         if not 0.01 <= interval <= 30:
             raise ValueError("invalid_archive_capacity_interval")
         if self.capacity_thread is not None:
             raise StoreError("archive_capacity_monitor_already_owned")
         self.capacity_interval = interval
+        self.capacity_changed = on_change
         self.capacity_stop.clear()
         self._refresh_capacity()
 
@@ -125,7 +224,7 @@ class Archive:
     def stop_capacity_monitor(self) -> None:
         self.capacity_stop.set()
         if self.capacity_thread:
-            self.capacity_thread.join(timeout=self.capacity_interval + 1)
+            self.capacity_thread.join(timeout=max(15, self.capacity_interval + 1))
             if self.capacity_thread.is_alive():
                 raise StoreError("archive_capacity_monitor_close_pending")
             self.capacity_thread = None
@@ -161,7 +260,7 @@ class Archive:
                 artifacts.extend(value[name] for name in (
                     "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id",
                     "segment_artifact_id", "heads_artifact_id", "input_artifact_id")
-                    if value.get(name) is not None)
+                    if value.get(name) is not None and not value[name].startswith("hot:"))
             for artifact in artifacts:
                 if key.startswith("manifests/"):
                     copy_artifact(self.source, self.target, artifact, scratch=self.root,
@@ -189,12 +288,80 @@ class Archive:
         with suppress(OSError):
             print(json.dumps(self.last_error), file=sys.stderr, flush=True)
 
-    def step(self, *, deadline: float | None = None) -> int:
-        completed = 0
-        for key in self.queue.keys("pending/"):
+    def _record_error(self, error: BoundaryError, identity: str) -> None:
+        self.last_error = {"stage": error.stage, "code": error.code,
+                           "at": time.time(), "pending": identity}
+        failure = {"stage": error.stage, "code": error.code, "pending": identity,
+                   "archive": self.binding}
+        failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
+        self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
+
+    def _intent_metadata(self, identity: str, *, measure: bool = False) -> tuple[str, int | None]:
+        """Bounded immutable key/size facts, shared by ordering and capacity observation."""
+        with self.lock:
+            entry = self.order_keys.get(identity)
+            if entry is not None:
+                self.order_keys.move_to_end(identity)
+        if entry is None:
+            task = json.loads(self.queue.get(f"pending/{identity}.json"))
+            key = task["key"]
+            safe_key(key)
+            entry = key, None
+        key, size = entry
+        if measure and size is None:
+            raw = self.source.blobs.get(key)
+            size = len(raw)
+            if key.startswith("manifests/"):
+                manifest = Manifest.from_bytes(raw)
+                size += 2 * sum(payload.size for payload in manifest.payloads)
+        with self.lock:
+            # An overlapping observer may already have measured this immutable
+            # intent. A sorter must not replace its size with an unknown value.
+            current = self.order_keys.get(identity)
+            if size is None and current is not None:
+                size = current[1]
+            self.order_keys[identity] = key, size
+            if len(self.order_keys) > 16384:
+                self.order_keys.popitem(last=False)
+        return key, size
+
+    def _ordered_pending(self, identities: list[str],
+                         deadline: float | None) -> list[str] | None:
+        ranked = []
+        for identity in identities:
             if deadline is not None and time.monotonic() >= deadline:
                 break
-            identity = Path(key).stem
+            receipt = self.queue.root / "completed" / f"{identity}.json"
+            try:
+                key, _size = self._intent_metadata(identity)
+            except BoundaryError as error:
+                if error.code == "object_not_found" and receipt.is_file():
+                    continue  # Another publisher finished after our first check.
+                self._record_error(error, identity)
+                return None
+            except Exception as error:  # noqa: BLE001 -- retain malformed/IO-failed intent
+                self._unexpected_error(error, identity)
+                return None
+            # Input indices already encode generation and zero-padded sequence.
+            # Their previous_input DAG must be copied bottom-up, rather than
+            # repeatedly discovering a long absent prefix from random SHA roots.
+            rank = (0, key, identity) if "/inputs/" in key else (1, identity, identity)
+            ranked.append(rank)
+        return [identity for _, _, identity in sorted(ranked)]
+
+    def step(self, *, deadline: float | None = None, owned: bool = False) -> int:
+        if owned:
+            with self.lock:
+                identities = sorted(self.owned - self.owned_done)
+        else:
+            identities = [Path(key).stem for key in self.queue.keys("pending/")]
+        ordered = self._ordered_pending(identities, deadline)
+        if ordered is None:
+            return 0
+        completed = 0
+        for identity in ordered:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             if (self.queue.root / "completed" / f"{identity}.json").is_file():
                 continue
             try:
@@ -202,12 +369,7 @@ class Archive:
             except BoundaryError as error:
                 if error.code == "already_running":
                     continue
-                self.last_error = {"stage": error.stage, "code": error.code,
-                                   "at": time.time(), "pending": identity}
-                failure = {"stage": error.stage, "code": error.code, "pending": identity,
-                           "archive": self.binding}
-                failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
-                self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
+                self._record_error(error, identity)
                 return completed
             except Exception as error:  # noqa: BLE001 -- local quota/IO failures retain their intent
                 self._unexpected_error(error, identity)
@@ -217,15 +379,29 @@ class Archive:
         return completed
 
     def _loop(self) -> None:
-        while True:
-            self.wake.wait(2)
-            self.wake.clear()
-            try:
-                self.step()
-            except Exception as error:  # noqa: BLE001 -- preserve pending, expose classified failure
-                self._unexpected_error(error)
-            finally:
-                self._refresh_owned()
+        # One existing publisher also services orphan intents. Keep its OS lock
+        # for the thread lifetime; releasing it each round recreates N global
+        # scans. Other producers serve their own IDs without listing the outbox.
+        with ExitStack() as leadership:
+            global_scan = False
+            while True:
+                self.wake.wait(2)
+                self.wake.clear()
+                try:
+                    if not global_scan:
+                        try:
+                            leadership.enter_context(instance_lock(
+                                self.queue.root / "publisher.lock", create=False))
+                        except BoundaryError as error:
+                            if error.code != "already_running":
+                                raise
+                        else:
+                            global_scan = True
+                    self.step(owned=not global_scan)
+                except Exception as error:  # noqa: BLE001 -- retain pending and classified failure
+                    self._unexpected_error(error)
+                finally:
+                    self._refresh_owned()
 
     def _refresh_owned(self) -> None:
         # Other processes can fulfill our intents. Only the background/drain
@@ -262,7 +438,7 @@ class Archive:
     def drain(self, *, timeout: float = 120, owned: bool = True) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
-            self.step(deadline=deadline)
+            self.step(deadline=deadline, owned=owned)
             self._refresh_owned()
             status = self.status(owned=owned)
             if status["full_readback"]:
@@ -278,9 +454,7 @@ class Archive:
         Artifact reads remain the existing verified Store read-through. This
         imports no other run, changes no records and never reoffers a game.
         """
-        from spireagent.rl_exchange import Exchange
-
-        prefix = Exchange({"kind": "local", "directory": str(self.root)}, run).prefix
+        prefix = exchange_prefix(run)
         keys = self.target.blobs.keys(prefix)
         for key in keys:
             raw = self.target.blobs.get(key)

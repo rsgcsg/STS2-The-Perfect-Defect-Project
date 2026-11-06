@@ -56,6 +56,118 @@ def phase_ranges(model: Any, reference: Any, optimizer: Any) -> Any:
             setattr(owner, name, original)
 
 
+def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, performance):
+    """Construct an explicitly synthetic hot workload from authorized TRAIN inputs.
+
+    The constructed successor sequence/probabilities is never offered to a live
+    learner. Labels are the observed corpus labels, with no new research claim.
+    """
+    from spireagent.rl_contracts import RowRef, RunSequence
+    from spireagent.rl_exchange import Exchange
+    from stpd.evaluation.suites import derive_game_seed, seed_membership
+    from stpd.p1.data import digest, json_bytes
+    from stpd.p1.export import input_spec
+    from stpd.p1.frame_compiler import FrameCompiler
+    from stpd.rl.batch_preparation import BatchPreparer
+    from stpd.rl.critic import held_out
+    from stpd.rl.prepared_batch import AuxiliarySelection, BatchMember, PrepareRequest
+    from stpd.rl.segments import minibatch_members
+
+    root.mkdir(parents=True)
+    peer = {"kind": "local", "directory": str(root / "peer")}
+    exchange = Exchange(peer, "compute-diagnostic")
+    compiler = FrameCompiler(model.vocabulary)
+    generation = "g-diagnostic"
+    mu: dict[str, Any] = {"run": exchange.run, "training_generation": generation,
+          "version": 0, "updates": 0, "snapshot_sha256": "a" * 64}
+    seed_number = 1
+    while True:
+        seed = derive_game_seed("rl41-compute-diagnostic", seed_number)
+        if not seed_membership(seed) and not held_out(seed):
+            break
+        seed_number += 1
+    members, selections = [], []
+    payloads = []
+    for start in range(0, len(records), 64):
+        corpus = records[start:start + 64]
+        run_id = f"diagnostic-{start}"
+        segment_id = f"diagnostic-{start}/0"
+        inputs = [{"observation": row["observation"], "catalog": row["observation"]["catalog"],
+                   "input_spec": input_spec(model.vocabulary, runtime_projection(model.vocabulary)),
+                   "acquisition_id": f"{run_id}:{i}", "consumption_unit": {"id": str(i)}}
+                  for i, row in enumerate(corpus)]
+        steps: list[dict[str, Any]] = []
+        for local, (row, value) in enumerate(zip(corpus, inputs, strict=True)):
+            index = start + local
+            mass = probabilities[index]
+            scores = [math.log(max(p, 1e-30)) for p in mass]
+            chosen = row["reference"]["chosen"]
+            action = [choice["choice_id"] for choice in value["catalog"]].index(chosen)
+            successor = inputs[local + 1] if local + 1 < len(inputs) else value
+            steps.append({"schema": "sts2.policy-runtime/verified-global-transition-1",
+                "run_id": run_id, "step_index": local, "input": value, "successor": successor,
+                "result": {"status": "completed"}, "directive": {"directive": {
+                    "selection": {"action_id": chosen}, "scores": {"values": scores}}},
+                "sampling": {"mode": "temperature_uniform", "temperature": 1.0,
+                    "uniform_mix": 0.0, "probabilities": mass, "model_probabilities": mass,
+                    "model_logits": scores, "selected_probability": mass[action]},
+                "behavior": {"mu": mu, "lease": segment_id, "scores": scores,
+                    "floor": row["floor"], "outcome_probabilities": outcomes[index],
+                    "compiled_input": compiler.encode(row["observation"]),
+                    "acquisition_id": value["acquisition_id"],
+                    "input_sha256": digest(json_bytes(value)),
+                    "observation_sha256": digest(json_bytes(value["observation"])),
+                    "catalog_sha256": digest(json_bytes(value["catalog"])),
+                    "consumption_unit": value["consumption_unit"]["id"]}})
+        tail = steps[-1]["successor"]
+        tail_floor = max(row["floor"] for row in corpus)
+        with torch.inference_mode():
+            _, logits, _ = model.forward_rl4([compiler.compile(tail["observation"])],
+                                              [tail_floor], policy=False)
+        segment = {"run": exchange.run, "training_generation": generation,
+            "training_split": "TRAIN", "identity": {"intent_id": run_id, "seed": seed},
+            "run_id": run_id, "segment_id": segment_id, "rows": len(steps), "mu": mu,
+            "steps": steps, "terminal": None, "hp_battles": [],
+            "compiler_identity": compiler.identity,
+            "compiled_boundary": compiler.encode(tail["observation"]),
+            "bootstrap": {"mu_snapshot_sha256": mu["snapshot_sha256"],
+                "successor_input_sha256": digest(json_bytes(tail)), "floor": tail_floor,
+                "outcome_probabilities": logits.softmax(-1)[0].cpu().tolist()},
+            "original_commit": {"run_id": run_id, "segment_id": segment_id,
+                "representation": "live-prefix", "journal_prefix_sha256": "d" * 64,
+                "behavior_trace_prefix_sha256": "e" * 64}}
+        payload = exchange.put_hot_segment(segment, owner="diagnostic")
+        payloads.append(payload)
+        members.append(BatchMember(segment_id, payload, run_id, len(steps),
+                                   mu["snapshot_sha256"], run_id))
+        for local, row in enumerate(corpus):
+            ref: RowRef = {"run_id": run_id, "segment_id": segment_id,
+                   "training_generation": generation,
+                   "row": local, "key": f"{run_id}:{local}"}
+            if start + local < 64 and row.get("outcome_class") is not None:
+                selections.append(AuxiliarySelection(ref, "terminal", row["outcome_class"], 0, 2))
+            if row.get("hp") is not None and sum(s.kind == "hp" for s in selections) < 64:
+                selections.append(AuxiliarySelection(ref, "hp", row["hp"], 0, 1))
+    order = list(range(len(records)))
+    random.Random(37).shuffle(order)
+    request = PrepareRequest(RunSequence(exchange.run, generation, 1), tuple(members),
+        tuple(selections), tuple(tuple(order[i] for i in group)
+                                for group in minibatch_members(len(order))),
+        tuple(i % 4 for i in range(len(selections))), compiler.identity,
+        random.Random(37).getstate(), 1024 * 1024**2)
+    preparer = BatchPreparer(model.vocabulary, workers=4, threads=1, peer=peer,
+        run=exchange.run, scratch=root, microbatch_size=performance.microbatch_size,
+        deduplicate_text=performance.deduplicate_text,
+        scene_attention_area=performance.scene_attention_area,
+        text_attention_area=performance.text_attention_area)
+    try:
+        return preparer.submit(request).result()
+    finally:
+        preparer.shutdown(wait=True)
+        for payload in payloads:
+            exchange.release_hot_payload(payload, "diagnostic")
+
+
 def segment_benchmark(args: Any) -> None:
     """Same diagnostic owner, now calling the production short-segment SGD.
 
@@ -67,9 +179,9 @@ def segment_benchmark(args: Any) -> None:
 
     from stpd.p1.execution import microbatches
     from stpd.p1.tensor_input import compile_frame
-    from stpd.rl.heads import OUTCOME_CLASSES
-    from stpd.rl.loss import AuxiliarySample, SegmentSample, segment_update
-    from stpd.rl.performance import PerformanceConfig, prepare_models
+    from stpd.rl.batch_preparation import stage_batch
+    from stpd.rl.loss import prepared_update
+    from stpd.rl.performance import PerformanceConfig
     from stpd.workers.checkpoint_codec import decode_checkpoint
 
     if args.output.exists():
@@ -105,40 +217,18 @@ def segment_benchmark(args: Any) -> None:
         text_attention_area=67108864,
     )
     probabilities: list[list[float]] = []
+    outcomes: list[list[float]] = []
     with torch.inference_mode():
         for indices in microbatches(frames, list(range(len(frames))), base):
-            scores, _, _ = base.forward_rl4(
+            scores, logits, _ = base.forward_rl4(
                 [frames[i] for i in indices], [floors[i] for i in indices]
             )
             probabilities.extend(score.float().softmax(-1).cpu().tolist() for score in scores)
-    rows: list[SegmentSample] = []
-    terminal: list[AuxiliarySample] = []
-    hp: list[AuxiliarySample] = []
-    for index, (record, frame, probability) in enumerate(
-        zip(records, frames, probabilities, strict=True)
-    ):
-        action = frame.choices.index(record["reference"]["chosen"])
-        label = record["outcome_class"]
-        target = torch.nn.functional.one_hot(torch.tensor(label), OUTCOME_CLASSES).float()
-        rows.append(
-            SegmentSample(
-                frame,
-                floors[index],
-                f"profile:{index}",
-                action,
-                probability[action],
-                probability,
-                math.sin(index),
-                target,
-            )
-        )
-        if len(terminal) < 64:
-            terminal.append(
-                AuxiliarySample(frame, floors[index], f"terminal:{index}", outcome=label)
-            )
-        if record.get("hp") is not None and len(hp) < 64:
-            hp.append(AuxiliarySample(frame, floors[index], f"hp:{index}", hp=record["hp"]))
-    # A smaller observed HP pool remains smaller; do not fabricate labels.
+            outcomes.extend(logits.softmax(-1).cpu().tolist())
+    rows = list(range(len(records)))
+    terminal = [i for i, row in enumerate(records) if row.get("outcome_class") is not None][:64]
+    hp = [i for i, row in enumerate(records) if row.get("hp") is not None][:64]
+    # Diagnostic labels remain disclosed constructions; no World or live admission.
 
     def sync():
         if device.type == "cuda":
@@ -155,12 +245,13 @@ def segment_benchmark(args: Any) -> None:
         "hp_rows": len(hp),
         "device": str(device),
         "workload": "real TRAIN states; constructed diagnostic PPO/TD",
+        "pipeline": "BatchPreparer -> stage_batch -> prepared_update",
+        "timing_unit": "one four-minibatch dataset",
         "plan_sha256": hashlib.sha256(args.plan.read_bytes()).hexdigest(),
     }
     (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
     plans = json.loads(args.plan.read_bytes())
     results = []
-    reference_scores = None
     for plan in plans:
         if time.monotonic() >= deadline:
             break
@@ -196,22 +287,32 @@ def segment_benchmark(args: Any) -> None:
             torch.cuda.reset_peak_memory_stats()
         result = {"name": plan["name"], "configuration": asdict(performance)}
         try:
+            preparation_started = time.perf_counter()
+            batch = prepare_segment_diagnostic(
+                base, records, probabilities, outcomes, args.output / plan["name"], performance)
+            result["preparation_seconds"] = time.perf_counter() - preparation_started
+            batch, copies = stage_batch(batch, device)
+            result["stage_copies"] = copies
+
+            def update(diagnostics=False, *, batch=batch, model=model,
+                       optimizer=optimizer, performance=performance):
+                values = []
+                for minibatch in batch.minibatches:
+                    value = prepared_update(model, optimizer, minibatch,
+                        config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
+                        performance=performance, target_kl=0.03, diagnostics=diagnostics)
+                    values.append(value)
+                    if not value["stepped"]:
+                        break
+                return {"stepped": all(value["stepped"] for value in values),
+                        "minibatches": values}
+
             for step in range(args.warmup + args.steps):
                 if time.monotonic() >= deadline:
                     break
                 sync()
                 start = time.perf_counter()
-                value = segment_update(
-                    model,
-                    optimizer,
-                    rows,
-                    terminal,
-                    hp,
-                    config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
-                    performance=performance,
-                    target_kl=0.03,
-                    diagnostics=step == args.warmup,
-                )
+                value = update(diagnostics=step == args.warmup)
                 sync()
                 if step >= args.warmup:
                     updates.append(value)
@@ -219,45 +320,12 @@ def segment_benchmark(args: Any) -> None:
                         durations.append(time.perf_counter() - start)
                 if not value["stepped"]:
                     break
-            probe = copy.deepcopy(base).requires_grad_(True)
-            with (
-                prepare_models(probe, probe, performance),
-                torch.no_grad(),
-                torch.autocast(
-                    device_type=device.type,
-                    dtype=torch.bfloat16,
-                    enabled=performance.precision == "bf16",
-                ),
-            ):
-                scores = []
-                for indices in microbatches(frames[:64], list(range(64)), probe):
-                    output, _, _ = probe.forward_rl4(
-                        [frames[i] for i in indices], [floors[i] for i in indices]
-                    )
-                    scores.extend(value.float().softmax(-1).cpu() for value in output)
-            if reference_scores is None:
-                reference_scores = scores
-            result["probability_max_abs_difference"] = max(
-                float((p - q).abs().max()) for p, q in zip(scores, reference_scores, strict=True)
-            )
-            result["argmax_matches"] = sum(
-                int(p.argmax() == q.argmax()) for p, q in zip(scores, reference_scores, strict=True)
-            )
             if plan.get("profile") and time.monotonic() < deadline:
                 activities = [torch.profiler.ProfilerActivity.CPU]
                 if device.type == "cuda":
                     activities.append(torch.profiler.ProfilerActivity.CUDA)
                 with torch.profiler.profile(activities=activities, record_shapes=True) as prof:
-                    segment_update(
-                        model,
-                        optimizer,
-                        rows,
-                        terminal,
-                        hp,
-                        config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
-                        performance=performance,
-                        target_kl=0.03,
-                    )
+                    update()
                     sync()
                 prof.export_chrome_trace(str(args.output / f"{plan['name']}-trace.json"))
                 (args.output / f"{plan['name']}-profile.txt").write_text(
@@ -270,8 +338,11 @@ def segment_benchmark(args: Any) -> None:
                 )
             result.update(
                 status="ok" if len(durations) == args.steps else "incomplete",
-                requested_SGD=args.steps,
-                successful_timed_SGD=len(durations),
+                requested_datasets=args.steps,
+                successful_timed_datasets=len(durations),
+                requested_SGD=4 * args.steps,
+                successful_timed_SGD=sum(int(mb["stepped"]) for value in updates
+                                         for mb in value["minibatches"]),
                 seconds=durations,
                 updates=updates,
                 median_seconds=statistics.median(durations) if durations else None,

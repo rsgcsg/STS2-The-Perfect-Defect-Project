@@ -2,6 +2,7 @@
 import hashlib
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,3 +119,54 @@ class GlobalReplayCacheTests(unittest.TestCase):
             owner.verify_global_session(self.directory, self.expected)
             owner.verify_global_session(self.directory, self.expected)
             self.assertEqual(self.semantic_calls, 2)
+
+    def test_forced_sample_audit_has_600_second_low_priority_replay(self):
+        token = owner._FORCE_REPLAY.set(True)
+        try:
+            with patch.object(owner.subprocess, "run", side_effect=self.execute) as calls:
+                owner.verify_global_session(self.directory, self.expected)
+            replay = [c for c in calls.call_args_list if c.kwargs["timeout"] == 600]
+            self.assertEqual(len(replay), 1)
+            if owner.os.name == "posix":
+                self.assertEqual(replay[0].args[0][:4], ["nice", "-n", "10", "node"])
+        finally:
+            owner._FORCE_REPLAY.reset(token)
+
+    def test_process_exit_is_inconclusive_but_explicit_semantic_rejection_is_failure(self):
+        for returned, code in [
+            (SimpleNamespace(returncode=-9, stdout=""), "global_shared_replay_unavailable"),
+            (SimpleNamespace(returncode=0, stdout=json.dumps({"replay_rejected": "global_transition_successor_missing"})),
+             "global_shared_replay_failed"),
+        ]:
+            with self.subTest(code=code):
+                self.completed = returned
+                with patch.object(owner.subprocess, "run", side_effect=self.execute):
+                    audited = owner.audit_global_session(self.directory, self.expected)
+                self.assertFalse(audited.passed)
+                self.assertEqual([f.code for f in audited.findings], [code])
+
+    def test_identity_process_exit_is_inconclusive(self):
+        with patch.object(owner.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
+            audited = owner.audit_global_session(self.directory, self.expected)
+        self.assertFalse(audited.passed)
+        self.assertEqual([f.code for f in audited.findings], ["global_shared_replay_identity_unavailable"])
+
+    def test_real_wrapper_distinguishes_sdk_rejection_from_execution_error(self):
+        with patch.object(owner.subprocess, "run", side_effect=self.execute) as calls:
+            owner.audit_global_session(self.directory, self.expected)
+        command = next(c.args[0] for c in calls.call_args_list if c.kwargs["timeout"] == 600)
+        script = next(arg for arg in command if "m.replayGlobalAgentRun" in arg)
+        module = self.root / "replay.mjs"
+        for body, rejected in [
+            ("throw new Error('public source bytes do not match retained identity')", True),
+            ("const e=new Error('consumption_prefix_binding');e.name='AgentSessionError';e.code=e.message;throw e", True),
+            ("const e=new Error('disk unavailable');e.code='EIO';throw e", False),
+            ("throw new TypeError('unexpected implementation error')", False),
+        ]:
+            with self.subTest(body=body):
+                module.write_text("export async function replayGlobalAgentRun(){" + body + "}")
+                result = subprocess.run(["node", "--input-type=module", "-e", script,
+                    str(module), str(self.directory)], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, rejected)
+                if rejected:
+                    self.assertIn("replay_rejected", json.loads(result.stdout))

@@ -1,34 +1,30 @@
-# 当前：RL4-PREP已按未达标收口
+# RL4.2 长训进行中；RL4.1/4.2 集成等待检查和合并批准
 
-用户要求的既定流程、历史/实际链路审核和单份完整报告已完成；root负责本轮交付。
-已运行组合source2d77049e/Runtime63/r1.9；源码交付#378/#379/#380已正常合并。
-新cache033a48ed仅有CPU真实同引用/数值/容量和CI证据，未热换进已结束的小时。
-本轮任务、实物与未达标原因见[RL4任务](../plans/RL_CRITIC_20261101.md)。
-RL2/RL3已结束，原unknown不重投；原卡/原评估分母不被本轮新证据升级。
+本轮任务是把长训源码收成可合入 develop 的 [PR #382](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/382)。
+11-06 派工确认运行 release 为 `rl42-p5-af57b882`；集成修复不热换进长训。
+集成负责人为 MERGE382/Codex，Claude 审查并推送，合并仍由用户批准。
+准确候选、全量 CI、修复与剩余条件只看共享交付目录 `replies/RL4.1/MERGE382-REPORT.md`。
+操作仍走[RL 接口与 SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)和[长训指南](../../python/docs/RL_LONG_RUN.zh-CN.md)。
 
-<!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
+## 当前边界与下一步
 
-## 本轮结果与后续边界
+RL4.2 长训由 Claude 运维；本卡不接管作业、不调整预算、方法或配方。
+长训尚未结束，6 h 固定种子评估属于开发结果，不是独立 TEST、稳定胜率或真游戏资格。
+尚未解决的推理超时和学习端瓶颈留给 RL5；本卡不启动下一项研究或训练。
+下一步由 Claude 核精确 head 的完整 CI 和本卡报告，再交用户决定是否正常 merge。
+源码、测试、安装、真实运行、数据资格和模型效果分别看各自证据；合并不升级运行或质量声明。
 
-最后小时189→362SGD、19,980新多选首用，约1.98万/h；91saved/31censored/8unknown。
-在途与活动局0证明owner排空；可复现的原件replay超时及低吞吐意味着完整健康验收未过。
-完整CP15→16的CPU空Store/CUDA替换与R2逐项复核通过，0额外SGD/World；
-前后16均自然saved16/unknown0，正常评分与R2读回完成；不是配对实力检验。
-固定TRAIN后点已完成，概率变化不作实力结论；D早CP后322项重放/原收据恢复事实保留。
-本卡不再自动派工。后续建议先修正常原件replay超时、验动态全循环性能，再决定长训。
-报告为共享交付目录replies/RL4-PREP-REPORT-20261103.md；当前不派生新正式训练。
-
-用户已批单A100、GPU累计5小时；12个原GPU作业累计10911秒，余7089秒；排队不计使用。
-含评估仍≤45游戏位；首小时外正式长训未批。T0与原72小时目标不重置。
-本卡不删除资产、不碰Mac安装或真人录制，固定评估/永久heldout不训练。
-
-## 其他已派工作入口
+## 其他在册义务
 
 CARD-1A仍待用户试1–2局与原件/入库；[STATUS](../STATUS.md)路由原安装证据，本卡不安装。
 原RL3最终12unknown的9同因覆盖/3根因未证及原分母保留，#373不重开。
 U1的Host63/Runtime62/SDK19/r1.9沿正常冻结采用，原件看[U1](../evidence/UNKNOWN_FIX_U1_20261101.md)。
+RL4-PREP 原失败与恢复缺口仍归[原任务](../plans/RL_CRITIC_20261101.md)及原收据，
+I1/G2/H1 与 RL4.2 各轮结果留在共享交付目录各自报告；后续源码和结果不改写旧失败。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
 unknown不重试、不当负局；CI/合并、owner排空、R2可读、数据资格和模型效果各看原收据。
 平台其他未完归[STATUS](../STATUS.md)、[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)及原Issues，不在本卡自动扩范围。
+
+<!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->

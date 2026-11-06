@@ -24,13 +24,127 @@ from .managed_trajectory_store import read_shard
 IO = LearnerIO(read_shard=read_shard, publish_model=publish_detached_p1_model)
 
 
+def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, *,
+                              source_generation: str, conversion_generation: str) -> dict:
+    """Explicit zero-SGD CP16 migration through the ordinary Store/model codecs.
+
+    The operator supplies CP16, its construction package and both generation
+    names. No queue/input ancestry or old mu is restored, and no World is opened.
+    """
+    from dataclasses import asdict, replace
+
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.rl_exchange import Exchange
+    from spireagent.source import source_identity
+    from stpd.p1.export import adapter_identity, input_spec, load_model, runtime_projection
+    from stpd.p1.frame_compiler import FrameCompiler
+    from stpd.rl.checkpoint_state import (
+        SCHEMA,
+        CP16ConversionInput,
+        ModelConstruction,
+        convert_cp16,
+        encode_state,
+        text_digest,
+    )
+    from stpd.rl.learner import ROOT
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    if (config.segments is None or not config.resume_checkpoint
+            or not config.segments.training_generation
+            or config.segments.training_generation in {source_generation, conversion_generation}):
+        raise ValueError("explicit_CP16_and_distinct_conversion_and_learner_generations_required")
+    target = work / "converted-learner.json"
+    if target.exists():
+        raise ValueError("fresh_conversion_output_required")
+    exchange = Exchange(config.peer, config.run)
+    original = exchange.store.get_manifest(config.resume_checkpoint)
+    payload = original.payload("checkpoint")
+    state = decode_checkpoint(exchange.store.bytes(payload, maximum=payload.size))
+    metadata = json.loads(state["metadata"].cpu().numpy().tobytes())
+    previous = metadata["config"]
+    descriptor = json.loads((package / "model.json").read_bytes())
+    if (not previous.get("start_model_sha256")
+            or descriptor["package_sha256"] != previous["start_model_sha256"]):
+        raise ValueError("CP16_original_construction_package_changed")
+    model, _ = load_model(package / "model.tensor-tree", descriptor["package_sha256"])
+    model.enable_rl4_heads(0)
+    model.load_state_dict(state["weights"], strict=True)
+    from stpd.p1.execution import MStdExecution
+
+    model.execution = MStdExecution(implementation="experimental-packed-v1",
+        microbatch_size=min(64, config.segments.inference_batch),
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1)
+    # The legacy segment optimizer inserts all action/text parameters first and
+    # all RL heads second, preserving named_parameters iteration inside a group.
+    names = (tuple(name for name, _ in model.named_parameters()
+                   if not name.startswith("rl4_heads.")),
+             tuple(name for name, _ in model.named_parameters() if name.startswith("rl4_heads.")))
+    compiler = FrameCompiler(model.vocabulary)
+    original_compiler = previous.get("segments", {}).get("input_compiler_identity")
+    if (not isinstance(original_compiler, dict)
+            or any(original_compiler.get(key) != compiler.identity[key]
+                   for key in ("input_spec", "vocabulary_sha256"))):
+        raise ValueError("CP16_original_vocabulary_or_input_spec_changed")
+    # The new producer/codec is explicit; retain original semantic input binding,
+    # and bind the continuation to this candidate's actual compiler bytes.
+    config = replace(config, segments=replace(config.segments,
+        input_compiler_identity=compiler.identity, input_pack_artifact_id=None))
+    construction = ModelConstruction(model.architecture, model.vocabulary,
+        input_spec(model.vocabulary, runtime_projection(model.vocabulary)), compiler.identity,
+        adapter_identity(), {"execution": asdict(model.execution), "model_size": model.model_size,
+                             "precision": "fp32"}, text_digest(state["weights"]))
+    producer = source_identity(ROOT)
+    cp = convert_cp16(CP16ConversionInput(state, construction, names,
+        original.artifact_id, source_generation, conversion_generation, asdict(config),
+        producer.to_dict()))
+    converted = Manifest("checkpoint", producer,
+        payloads=(exchange.store.put_bytes("checkpoint", encode_state(cp)),),
+        parameters=FrozenObject.of({"schema": SCHEMA, "run": config.run,
+            "training_generation": conversion_generation, "sequence": 16}))
+    exchange.store.publish(converted)
+    continuation = replace(config, start_package=None, start_artifact_id=None,
+        start_model_sha256=None, resume_checkpoint=converted.artifact_id,
+        resume_source=producer.to_dict())
+    work.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(continuation.frozen(), indent=2) + "\n")
+    result = {"original_checkpoint": original.artifact_id, "original_sha256": payload.sha256,
+        "converted_checkpoint": converted.artifact_id, "config": str(target),
+        "counters": asdict(cp.counters), "optimizer_calls": 0, "World_calls": 0,
+        "optimizer_param_groups": [
+            {key: value for key, value in group.items() if key != "params"}
+            for group in cp.optimizer["param_groups"]]}
+    (work / "conversion-receipt.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--actors", type=int,
+                        help="bind dataset + actors*steps capacity for CP16 conversion")
     parser.add_argument("--initialize-only", action="store_true",
                         help="publish the exact warmed start and full CP; no actors or SGD")
+    parser.add_argument("--dataplane-profile", type=Path,
+                        help="explicit binary socket/WAL and node mu cache profile")
+    parser.add_argument("--convert-cp16-package", type=Path,
+                        help="explicit construction package; convert only, zero SGD/World")
+    parser.add_argument("--source-generation")
+    parser.add_argument("--conversion-generation")
     args = parser.parse_args()
+    if args.convert_cp16_package:
+        if not args.source_generation or not args.conversion_generation:
+            parser.error("conversion requires --source-generation and --conversion-generation")
+        os.umask(0o077)
+        conversion_config = LearnerConfig.read(args.config)
+        if args.actors is not None:
+            conversion_config = conversion_config.bind_actors(args.actors)
+        print(json.dumps(convert_legacy_checkpoint(conversion_config,
+            args.convert_cp16_package, args.work.resolve(),
+            source_generation=args.source_generation,
+            conversion_generation=args.conversion_generation)))
+        return
     os.umask(0o077)
     threading.current_thread().name = "rl-learner"
     work = args.work.resolve()
@@ -50,12 +164,14 @@ def main() -> None:
 
         summary = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment=read_segment,
-                             publish_model=publish_detached_p1_model)).run(
+                             publish_model=publish_detached_p1_model,
+                             dataplane=(json.loads(args.dataplane_profile.read_bytes())
+                                        if args.dataplane_profile else None))).run(
                                  initialize_only=args.initialize_only)
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
-    print(json.dumps({k: summary[k] for k in ("updates", "versions", "counts")}))
+    print(json.dumps(summary))
 
 
 if __name__ == "__main__":

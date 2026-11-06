@@ -1,8 +1,10 @@
-"""Compiled public inputs on the original Store and segment membership.
+"""Compiled input row bytes, with historical RL4 artifact/input-pack readers.
 
 New segments carry their actor-produced frames. A frozen input pack can supply
 the same derived representation for an older checkpoint's original segments.
-Neither representation selects training rows, labels or uses.
+Neither representation selects training rows, labels or uses. RL4.1 reads hot
+segments in batch_preparation and retains verified auxiliary row bytes in the
+existing AuxPool. Its live path never uses the legacy artifact cache/input pack.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import sys
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -142,6 +145,7 @@ class SegmentInputs:
         self._limit = cache_bytes
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, _VerifiedInputs] = OrderedDict()
+        self._fills: dict[str, Future[_VerifiedInputs]] = {}
         self._empty_cache_bytes = sys.getsizeof(self._cache)
         self._bytes = self._hits = self._misses = self._evictions = 0
         self.compiler = FrameCompiler(vocabulary)
@@ -170,7 +174,8 @@ class SegmentInputs:
                 raise BoundaryError("rl_inputs", "frozen_input_pack_parents_changed")
 
     def body(self, artifact_id: str, segment: dict[str, Any]) -> dict[str, Any]:
-        if segment.get("schema") == TRAJECTORY_SCHEMA:
+        if segment.get("schema") == TRAJECTORY_SCHEMA or (
+                "schema" not in segment and "training_generation" in segment):
             body = segment_body(segment)
         else:
             if artifact_id not in self.entries:
@@ -195,40 +200,53 @@ class SegmentInputs:
 
     def _verified(self, artifact_id: str,
                   load: Callable[[], dict[str, Any]]) -> _VerifiedInputs:
-        # Main auxiliary reads and the single prepare-ahead reader share this
-        # lifecycle. Serialize cold fills so the same immutable artifact is not
-        # simultaneously read/validated twice; decode happens outside the lock.
+        # One owner fills each key; all IO/hash/validation and waits happen
+        # outside the shared LRU lock, so other hits and keys remain available.
         with self._lock:
             found = self._cache.get(artifact_id)
             if found is not None:
                 self._cache.move_to_end(artifact_id)
                 self._hits += 1
                 return found
-            self._misses += 1
-            segment = load()  # The normal reader validates the complete source.
+            pending = self._fills.get(artifact_id)
+            owner = pending is None
+            if pending is None:
+                pending = Future()
+                self._fills[artifact_id] = pending
+                self._misses += 1
+        if not owner:
+            return pending.result()
+        try:
+            segment = load()
             body = self.body(artifact_id, segment)
             current = tuple(_verified_row(step["input"], wire, step["behavior"]["floor"])
                 for step, wire in zip(segment["steps"], body["current"], strict=True))
             boundary = (_verified_row(segment["steps"][-1]["successor"], body["boundary"], None)
                         if segment["terminal"] is None else None)
-            # Count actual retained bytes and tuples, plus a conservative bound
-            # for the key and entry object, as in the existing text cache. The
-            # OrderedDict's actual allocated table is counted separately below.
-            # No views can retain an uncounted large owner.
             size = (sum(sys.getsizeof(raw) for raw in current) + sys.getsizeof(current)
                     + (sys.getsizeof(boundary) if boundary is not None else 0)
                     + sys.getsizeof(artifact_id) + 512)
             found = _VerifiedInputs(current, boundary, size)
-            if size <= self._limit:
-                self._cache[artifact_id] = found
-                self._bytes += size
-                while self._cache and self._accounted_bytes() > self._limit:
-                    _, removed = self._cache.popitem(last=False)
-                    self._bytes -= removed.size
-                    self._evictions += 1
-                if not self._cache:
-                    self._cache.clear()  # Release any retained high-water table.
+            with self._lock:
+                if self._fills.get(artifact_id) is not pending:
+                    raise BoundaryError("rl_inputs", "cold_fill_owner_changed")
+                if size <= self._limit:
+                    self._cache[artifact_id] = found
+                    self._bytes += size
+                    while self._cache and self._accounted_bytes() > self._limit:
+                        _, removed = self._cache.popitem(last=False)
+                        self._bytes -= removed.size
+                        self._evictions += 1
+                    if not self._cache:
+                        self._cache.clear()
+                del self._fills[artifact_id]
+                pending.set_result(found)
             return found
+        except BaseException as error:
+            with self._lock:
+                self._fills.pop(artifact_id, None)
+                pending.set_exception(error)
+            raise
 
     def _accounted_bytes(self) -> int:
         # The reader's fixed empty container exists even when caching is off.
@@ -277,3 +295,26 @@ def _verified_row(value: dict[str, Any], wire: dict[str, Any], floor: int | None
     return json_bytes({"wire": wire, "hashes": observation_hashes(value["observation"]),
         "choices": [choice.get("choice_id") for choice in value["observation"]["catalog"]],
         "input_key": frame_key(value), "floor": floor})
+
+
+def verified_auxiliary_bytes(step: dict[str, Any]) -> bytes:
+    """Snapshot only an already verified source row; no repeated full-body hash.
+
+    The normal HotSegment reader has checked wire hashes against the public
+    observation/catalog. Retain those exact bindings; the decoder still verifies
+    wire/tensor integrity and compiler/vocabulary before numerical consumption.
+    """
+    wire = step["behavior"]["compiled_input"]
+    return json_bytes({"wire": wire,
+        "hashes": {key: wire[key] for key in ("observation_sha256", "catalog_sha256")},
+        "choices": [choice["choice_id"] for choice in step["input"]["catalog"]],
+        "floor": step["behavior"]["floor"]})
+
+
+def decode_auxiliary_bytes(compiler: FrameCompiler, body: bytes,
+                           identity: dict[str, Any]) -> tuple[TensorFrame, int]:
+    row = json.loads(body)
+    frame = compiler.decode(row["wire"], expected_identity=identity, **row["hashes"])
+    if frame.choices != tuple(row["choices"]):
+        raise BoundaryError("rl_inputs", "auxiliary_catalog_binding_changed")
+    return frame, row["floor"]

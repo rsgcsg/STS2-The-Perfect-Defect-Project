@@ -71,6 +71,6 @@ def test_trajectory_evaluation_intent_is_explicit_and_legacy_stays_unscored():
     value["formal_audit_selected"] = True
     assert preservation_route(current, value) == "trajectory_and_full_peer"
     value["formal_audit_selected"] = False
-    assert preservation_route(current, value) == "trajectory"
-    value["execution_status"] = "unknown"
     assert preservation_route(current, value) == "trajectory_and_full_peer"
+    value["execution_status"] = "unknown"
+    assert preservation_route(current, value) == "full_peer"

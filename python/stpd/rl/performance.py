@@ -21,6 +21,14 @@ if TYPE_CHECKING:
     from stpd.p1.tensor_input import ModelFrame, TensorFrame
 
 
+# Only these values select execution on the prepared live path. Other fields
+# below remain read-only historical row/inference configuration.
+PREPARED_PERFORMANCE_FIELDS = (
+    "microbatch_size", "scene_attention_area", "text_attention_area",
+    "deduplicate_text", "precision", "tf32",
+)
+
+
 @dataclass(frozen=True)
 class PerformanceConfig:
     packed: bool = False
@@ -40,6 +48,7 @@ class PerformanceConfig:
     precision: str = "fp32"
     tf32: bool = False
     deduplicate_text: bool = False
+    compile_loss: bool = False  # read-only historical G0 configs; live prepared compile retired
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -47,10 +56,10 @@ class PerformanceConfig:
                 self.reference_device_cache, self.joint_nodes,
                 self.async_transfer, self.precompile_inputs,
                 self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches,
-                self.deduplicate_text)):
+                self.deduplicate_text, self.compile_loss)):
             raise BoundaryError("rl_performance", "invalid_boolean")
-        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
-                or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
+        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 1280
+                or any(type(value) is not int or not 1 <= value <= 2**40 for value in (
                     self.scene_attention_area, self.text_attention_area))
                 or self.precision not in {"fp32", "bf16"}):
             raise BoundaryError("rl_performance", "invalid_execution_configuration")
@@ -158,6 +167,28 @@ def prepare_models(model: MStd, reference: MStd,
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = old_tf32
 
+
+
+
+@contextmanager
+def prepared_precision(model: MStd, config: PerformanceConfig) -> Iterator[None]:
+    """Prepared metadata is already staged; only numerical execution is selected."""
+    device = model.ids.weight.device
+    if config.precision == "bf16" and (
+            device.type != "cuda" or not torch.cuda.is_bf16_supported()):
+        raise BoundaryError("rl_performance", "bf16_requires_supported_cuda")
+    if config.tf32 and device.type != "cuda":
+        raise BoundaryError("rl_performance", "tf32_requires_cuda")
+    old_tf32 = torch.backends.cuda.matmul.allow_tf32 if device.type == "cuda" else None
+    try:
+        if old_tf32 is not None:
+            torch.backends.cuda.matmul.allow_tf32 = config.tf32
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                            enabled=config.precision == "bf16"):
+            yield
+    finally:
+        if old_tf32 is not None:
+            torch.backends.cuda.matmul.allow_tf32 = old_tf32
 
 
 def probe_inference_microbatches(model: MStd, reference: MStd, frames: list[ModelFrame],
