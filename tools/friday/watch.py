@@ -1565,6 +1565,8 @@ class SegmentWatcher(Watcher):
         if unknown_over_limit(health['known_unknown'] + health['lost_offers'],
                               health['completed_for_stop'], self.config):
             self.state['stop'] = 'training_unknown_fraction_above_limit'
+            self.state.setdefault('stop_detail', {'at': time.time(), 'site': 'replace_actors',
+                                                  'health': dict(health)})
             self.stop_attempt(attempt, self.state['stop'])
             return
         if time.time() + 900 >= self.config['deadline_at']:
@@ -1599,7 +1601,9 @@ class SegmentWatcher(Watcher):
             for generation in attempt.get('generations', [attempt['generation']]):
                 self.exchange.request_stop(reason, training_generation=generation)
         root = Path(attempt['root'])
-        save(root / 'login-launch/STOP', {'reason': reason})
+        # The first Stop reason is the diagnosis; later drain reasons never replace it.
+        if not (root / 'login-launch/STOP').exists():
+            save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():
             (root / 'learner/STOP').touch()
         # Numeric steps share the held allocation. Cooperative generation/file
@@ -1613,6 +1617,7 @@ class SegmentWatcher(Watcher):
             save(path.parent / 'STOP', {'reason': reason})
             job = json.loads((path.parent / 'submission.json').read_bytes())['job_id']
             self.signal_once(str(job).split(';')[0])
+        attempt.setdefault('first_stopping', reason)
         attempt['stopping'] = reason
         self.persist()
         if (self.config.get('dataplane') is not None and not learner_terminal
@@ -1871,6 +1876,9 @@ class SegmentWatcher(Watcher):
         unknown = health.get('known_unknown', 0) + health.get('lost_offers', 0)
         total = health.get('completed_for_stop', 0)
         if unknown_over_limit(unknown, total, self.config):
+            if not self.state['stop']:
+                self.state['stop_detail'] = {'at': time.time(), 'site': 'loop',
+                                             'health': dict(health)}
             self.state['stop'] = self.state['stop'] or 'training_unknown_fraction_above_limit'
         uncertain = health.get('unresolved_admissions', 0)
         if unknown_over_limit(uncertain, total + uncertain, self.config):
