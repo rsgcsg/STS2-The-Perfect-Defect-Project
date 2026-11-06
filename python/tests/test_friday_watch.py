@@ -109,6 +109,25 @@ def test_save_failed_after_retry_is_an_excluded_pair_not_a_voided_evaluation(wat
     assert watch.evaluate_result(path, 2, 16)["complete"] is False
 
 
+def test_audit_slot_save_failure_closes_the_cohort_unscored_with_its_own_alarm(watch, tmp_path):
+    """Review R2: the formal-audit slot is not 'one excluded pair'."""
+    slots = ([{"status": "finished", "max_observed_floor": 20,
+               "formal_audit_selected": False}] * 19
+             + [{"status": "save_failed", "formal_audit_selected": True}])
+    report = {"score_admitted": False, "planned": 20, "not_started": 0, "reserved": 0,
+              "save_pending": 0, "save_failed": 1, "saved_unscored": 0,
+              "trajectory_pending": 0, "censored": 0, "win": 0, "loss": 0, "unknown": 0,
+              "groups": [{"scored": 0}], "slots": slots}
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps({"ledger_report": report}))
+    result = watch.evaluate_result(path, 2, 16)
+    assert result["complete"] is False and result["scored"] == 0
+    assert result["save_failed_alarm"] == "evaluation_audit_save_failed_cohort_not_scored"
+    slots[-1] = {"status": "save_failed", "formal_audit_selected": False}
+    assert watch.save_failed_alarm(slots) == "evaluation_save_failed_after_retry_pair_excluded"
+    assert watch.save_failed_alarm(slots[:-1]) is None
+
+
 def test_20_hour_actor_prepare_pins_old_runtime_and_single_core(watch, tmp_path):
     with patch.dict(
         sys.modules,

@@ -343,6 +343,16 @@ def reward_summary(cohort: dict[str, Any],
     and neither changes the official score or its denominator.
     """
     ascension = cohort.get('ascension')
+    planned = len(cohort['rows'])
+    spec = _reward_spec()
+    if str(ascension) not in spec['finish_floors']:
+        # Never a partial mean (wins alone): this difficulty has no declared loss scale.
+        return {'reward_spec': {k: spec[k] for k in ('id', 'version')},
+            'ascension': ascension, 'planned': planned, 'scored': None, 'excluded': None,
+            'mean': None, 'reason': 'reward_spec_missing_ascension',
+            'lower_bound': {'L': None, 'U': None,
+                            'meaning': 'Not computed: reward_spec_missing_ascension.'},
+            'excluded_rows': [], 'by_seed': {}, 'lower_by_seed': {}}
     official: dict[str, float] = {}
     lower: dict[str, float] = {}
     excluded = []
@@ -366,13 +376,13 @@ def reward_summary(cohort: dict[str, Any],
         excluded.append({'seed': row['seed'], 'run_id': row.get('run_id'),
                          'status': row.get('status'), 'public_floor_lower_bound': floor,
                          'bosses_witnessed': bosses, 'source': source})
-    planned = len(cohort['rows'])
-    win = float(_reward_spec()['win'])
+    win = float(spec['win'])
     total = sum(official.values())
-    return {'reward_spec': {k: _reward_spec()[k] for k in ('id', 'version')},
+    return {'reward_spec': {k: spec[k] for k in ('id', 'version')},
         'ascension': ascension, 'planned': planned, 'scored': len(official),
         'excluded': len(excluded),
         'mean': total / len(official) if official else None,
+        'reason': None if official else 'no_scored_rows',
         'lower_bound': {
             'L': sum(lower.values()) / planned if planned else None,
             'U': (total + win * len(excluded)) / planned if planned else None,
@@ -407,10 +417,11 @@ def compare_rewards(before: dict[str, Any], after: dict[str, Any], *,
     old, new = reward_summary(before, before_facts), reward_summary(after, after_facts)
     official = _paired_reward_delta(old['by_seed'], new['by_seed'])
     bound = None
-    if old['planned'] and new['planned']:
+    if (old['planned'] and new['planned'] and old['lower_bound']['L'] is not None
+            and new['lower_bound']['L'] is not None):
         bound = [new['lower_bound']['L'] - old['lower_bound']['U'],
                  new['lower_bound']['U'] - old['lower_bound']['L']]
-    return {'official': official,
+    return {'official': official, 'reason': new['reason'] or old['reason'],
             'mean_difference_bound': bound,
             'lower_bound_paired': _paired_reward_delta(old['lower_by_seed'],
                                                        new['lower_by_seed']),
@@ -500,6 +511,10 @@ def reward_lines(rewards: dict[str, dict[str, Any]],
              'Lower bound [L, U] (diagnostic) |', '|---|---:|---:|---:|---:|---:|---|']
     for name, r in rewards.items():
         bound = r['lower_bound']
+        if r['reason'] == 'reward_spec_missing_ascension':
+            lines.append(f"| {name} | {r['ascension']} | {r['planned']} | — | — | "
+                         f"not computed: {r['reason']} | — |")
+            continue
         lines.append(f"| {name} | {r['ascension']} | {r['planned']} | {r['scored']} | "
                      f"{r['excluded']} | {_number(r['mean'])} | "
                      f"[{_number(bound['L'])}, {_number(bound['U'])}] |")

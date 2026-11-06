@@ -183,6 +183,35 @@ def test_save_failed_after_retry_is_an_excluded_pair_and_refills(quick, tmp_path
     assert statuses.count('save_failed') == 1
 
 
+def test_audit_slot_save_failed_leaves_the_batch_unscored_not_one_pair(
+        quick, tmp_path, monkeypatch):
+    """Review R2: like an unknown audit, a failed audit save qualifies no row of its batch."""
+    path, _ = configured(quick, tmp_path, monkeypatch)
+    offers = []
+
+    def execute(batch_path, *, on_stop=None):
+        plan = quick.evaluate.load_plan(batch_path)
+        role = next(iter(plan['selections']))
+        offers.append((role, plan['seed_ordinals']))
+
+        def scenario(_role, slots):
+            if role == 'current' and plan['seed_ordinals'][0] == 1:
+                next(s for s in slots if s['formal_audit_selected'])[
+                    'fixture_status'] = 'save_failed'
+                return set(), False, False
+            return set(), True, False
+        normal_result(quick, batch_path, scenario)
+
+    monkeypatch.setattr(quick.evaluate, 'run', execute)
+    result = quick.run(path)
+    assert result['complete'] and result['paired_n'] == 20
+    assert offers == [('current', list(range(1, 21))), ('current', list(range(21, 41))),
+                      ('baseline', list(range(21, 41)))]
+    batch = result['batches'][1]
+    assert batch['closed'] and batch['raw_score_admitted'] is False
+    assert not quick.qualified(batch)
+
+
 def test_unknown_audit_never_qualifies_other_natural_rows(quick, tmp_path, monkeypatch):
     path, _ = configured(quick, tmp_path, monkeypatch)
     offers = []

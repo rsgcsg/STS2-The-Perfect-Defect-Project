@@ -137,7 +137,8 @@ def evaluate_result(path: Path, version: int, updates: int, *,
               if row['status'] == 'finished' and row.get('max_observed_floor') is not None]
     planned = expected_planned or (40 if confirmation else 20)
     # save_failed is the ledger's state AFTER its one batch-end resume-save retry:
-    # one excluded pair like an unknown, reported with that pair excluded (RL5 3E).
+    # one excluded pair like an unknown (RL5 3E). On the formal-audit slot it leaves
+    # score_admitted False, so the cohort stays incomplete and unscored (fail closed).
     complete = (report['score_admitted'] is True and report['planned'] == planned
                 and report['not_started'] == report['reserved'] == report['save_pending'] == 0
                 and report['saved_unscored'] == 0
@@ -148,11 +149,27 @@ def evaluate_result(path: Path, version: int, updates: int, *,
             'evaluation_kind': kind or ('confirmation' if confirmation else 'fixed20'),
             'losses': report['loss'], 'unknown': report['unknown'],
             'save_failed': report['save_failed'], 'not_started': report['not_started'],
+            'save_failed_alarm': save_failed_alarm(report['slots']),
             'mean_max_floor': sum(floors) / len(floors) if floors else None,
             'evaluated_at': time.time(), 'complete': complete,
             'score_admitted': report['score_admitted'], 'planned': report['planned'],
             'scored': sum(group['scored'] for group in groups),
             'result_path': str(path), 'result_sha256': hashed(path)}
+
+
+def save_failed_alarm(slots: list[dict[str, Any]]) -> str | None:
+    """Typed alarm for saves that still failed after the ledger's one batch-end retry.
+
+    A non-audit game is one excluded pair. The formal-audit slot's failure leaves the
+    ledger's score_admitted False, so the whole cohort is closed as unscored (fail
+    closed, like an unknown audit slot) rather than one pair being excluded.
+    """
+    failed = [slot for slot in slots if slot.get('status') == 'save_failed']
+    if not failed:
+        return None
+    if any(slot.get('formal_audit_selected') for slot in failed):
+        return 'evaluation_audit_save_failed_cohort_not_scored'
+    return 'evaluation_save_failed_after_retry_pair_excluded'
 
 
 def reward_overview(cohort: dict[str, Any]) -> dict[str, Any]:
@@ -555,9 +572,9 @@ class Watcher:
             self.state['pending'] = None
             self.persist()
             self.publish('evaluation_finished', evaluation=result)
-            if result['save_failed']:
+            if result['save_failed_alarm']:
                 # Typed alarm only: originals stay retained, training continues.
-                self.publish('attention', reason='evaluation_save_failed_after_retry_pair_excluded',
+                self.publish('attention', reason=result['save_failed_alarm'],
                              evaluation={k: result[k] for k in (
                                  'version', 'planned', 'save_failed', 'unknown', 'not_started',
                                  'complete', 'result_path')})
@@ -1838,7 +1855,8 @@ class SegmentWatcher(Watcher):
         # A cleaned unknown whose typed verification failed is still one excluded pair
         # (its failure original is preserved); only too many of them void the cohort.
         # A save still failed after the ledger's one batch-end retry is likewise one
-        # excluded pair with its originals retained (card RL5 3E).
+        # excluded pair with its originals retained (card RL5 3E); on the audit slot
+        # score_admitted is False and the cohort is not closed (unscored, fail closed).
         unknown = sum(row['status'] in {'unknown', 'save_failed'} for row in ledger['slots'])
         closed = (not result.get('error_type') and ledger['score_admitted'] is True
             and not any(row.get('execution_reason') == 'typed_original_verification_failed'
@@ -1896,9 +1914,10 @@ class SegmentWatcher(Watcher):
             'unknown': sum(r['status'] == 'unknown' for r in result['ledger_report']['slots']),
             'save_failed': sum(r['status'] == 'save_failed'
                                for r in result['ledger_report']['slots'])}
-        if report['save_failed']:
-            # Typed alarm only: the pair is excluded, originals retained, training continues.
-            self.telemetry('attention', reason='evaluation_save_failed_after_retry_pair_excluded',
+        alarm = save_failed_alarm(result['ledger_report']['slots'])
+        if alarm:
+            # Typed alarm only: originals retained, training continues.
+            self.telemetry('attention', reason=alarm,
                            evaluation=pending['root'], save_failed=report['save_failed'])
         if closed:
             from stpd.evaluation.rl_observation import compare, compare_rewards, write_report

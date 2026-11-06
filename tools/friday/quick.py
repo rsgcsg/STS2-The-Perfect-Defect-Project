@@ -132,6 +132,7 @@ def read_batch(bundle: dict[str, Any], expected_model: dict[str, Any],
     slots = original['ledger_report']['slots']
     # A save that still failed after the ledger's one batch-end retry is one
     # excluded pair like a cleaned unknown (card RL5 3E); its seed is never re-offered.
+    # On the audit slot raw_score_admitted is False and no row of the batch qualifies.
     closed = (original.get('error_type') is None and not any(
         s.get('execution_reason') == 'typed_original_verification_failed' for s in slots) and all(
         s['status'] in {'finished', 'unknown', 'save_failed'} and s.get('cleanup_accepted') is True

@@ -59,6 +59,10 @@ typed 失败完整保留失败原件，记录 unknown；只恢复保存，不重
 `preserve_report` 只重试一次保存（同样的 plan/save-job/封印/包身份核对），从不重新执行该局。
 成功则正常计分并恢复配对；仍失败保持 `save_failed`、原件全留，结果事件带
 `resume_save_retry`，调用返回 `save_failed_after_retry`，按排除一对报告（RL5 卡 §3E）。
+例外：若失败的是正式审计槽，账本 `score_admitted` 为 False，整批按不计分关闭（与审计槽
+unknown 同样从严），告警为 `evaluation_audit_save_failed_cohort_not_scored`，不是排除一对。
+本规则只覆盖 `preserve_report` 的保存失败；轨迹分片上传失败（`trajectory_shard_save_failed`）
+仍照旧停新准入，成员保持 `trajectory_pending`，靠下次显式恢复。
 整批墙钟包含冷准备、所有失败/unknown 和最后封片/读回尾巴。
 
 在同一冻结源码、配置、Runtime 与模型环境下，再运行原 `run --host managed --ledger /ABS/ledger`

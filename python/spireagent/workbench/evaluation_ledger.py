@@ -374,7 +374,10 @@ class EvaluationLedger:
         A closed game whose save fails is excluded and admission continues. When no
         work is left, each such save is retried once through ``preserve_report`` (the
         same resume-save path and identity checks); the game is never re-executed.
-        A retry that fails again stays ``save_failed`` with its originals retained.
+        A retry that fails again stays ``save_failed`` with its originals retained;
+        on the formal-audit slot ``report()`` then leaves the whole cohort unscored.
+        Only ``preserve_report`` failures are deferred: a trajectory-shard upload
+        failure still stops admission (its members stay ``trajectory_pending``).
         """
         if (
             self.plan.get("host_kind") != "managed"
@@ -586,7 +589,8 @@ class EvaluationLedger:
                     if not value.get("cleanup_accepted"):
                         stop_reason = "unknown_cleanup_requires_owner_read"
                     elif value["status"] == "save_failed":
-                        # One excluded pair, never a stopped batch (card RL5 3E).
+                        # Never a stopped batch (card RL5 3E): one excluded pair, or
+                        # on the formal-audit slot an unscored cohort via report().
                         if slot["slot_id"] in save_retried:
                             save_failed_after_retry.append(slot["slot_id"])
                         else:

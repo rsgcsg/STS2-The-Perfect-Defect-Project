@@ -388,3 +388,25 @@ def test_ledger_public_floor_is_an_excluded_lower_bound_not_a_score(tmp_path):
     row = cohort['rows'][0]
     assert row['floor'] is None and row['observed_floor_lower_bound'] == 45
     assert not row['scored'] and cohort['floor_n'] == 0
+
+
+def test_reward_for_undeclared_ascension_is_typed_none_never_a_partial_mean(tmp_path):
+    """Review R1: A5 with 2 wins and 18 losses must not report mean=1.0."""
+    from stpd.evaluation.rl_observation import compare_rewards, reward_summary
+
+    rows = [{'seed': f's{i:02d}', 'run_id': f'r{i}', 'status': 'finished', 'scored': True,
+             'result': 'win' if i < 2 else 'loss', 'floor': 49 if i < 2 else 20,
+             'observed_floor_lower_bound': 49 if i < 2 else 20,
+             'boss_cleared_acts': [1], 'boss_count': 1} for i in range(20)]
+    cohort = {'ascension': 5, 'rows': rows}
+    summary = reward_summary(cohort)
+    assert summary['mean'] is None and summary['reason'] == 'reward_spec_missing_ascension'
+    assert summary['excluded_rows'] == [] and summary['lower_bound']['L'] is None
+    comparison = compare_rewards(cohort, cohort)
+    assert comparison['official']['paired_n'] == 0
+    assert comparison['mean_difference_bound'] is None
+    assert comparison['reason'] == 'reward_spec_missing_ascension'
+    from stpd.evaluation.rl_observation import reward_lines
+    text = '\n'.join(reward_lines({'current': summary}, {}))
+    assert 'not computed: reward_spec_missing_ascension' in text
+    assert 'Excluded games' not in text
