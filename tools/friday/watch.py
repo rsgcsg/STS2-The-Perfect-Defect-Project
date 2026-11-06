@@ -1651,9 +1651,13 @@ class SegmentWatcher(Watcher):
             raise ValueError('evaluation_full_snapshot_readback_required')
         plan, result, files = evaluate.read_observation_report(result_path, plan_path)
         ledger = result['ledger_report']
+        # A cleaned unknown whose typed verification failed is still one excluded pair
+        # (its failure original is preserved); only too many of them void the cohort.
+        unknown = sum(row['status'] == 'unknown' for row in ledger['slots'])
         closed = (not result.get('error_type') and ledger['score_admitted'] is True
             and not any(row.get('execution_reason') == 'typed_original_verification_failed'
-                        for row in ledger['slots'])
+                        and row['status'] != 'unknown' for row in ledger['slots'])
+            and not unknown_over_limit(unknown, len(ledger['slots']), self.config)
             and all(row['status'] in {'finished', 'unknown'} and row.get('cleanup_accepted') is True
                     for row in ledger['slots']))
         return plan, result, files['cohort'], closed
@@ -1722,8 +1726,8 @@ class SegmentWatcher(Watcher):
                     raise ValueError('complete_argmax_evaluation_protocol_required')
             if {r['seed'] for r in baseline['rows']} != {r['seed'] for r in cohort['rows']}:
                 raise ValueError('exact_same_frozen_paired_seed_set_required')
-            previous = (self.state['evaluations'][-1]['cohort']
-                        if self.state['evaluations'] else baseline)
+            compared = [row for row in self.state['evaluations'] if not row.get('skipped')]
+            previous = compared[-1]['cohort'] if compared else baseline
             report['against_baseline'] = compare(baseline, cohort)
             report['against_previous'] = compare(previous, cohort)
             report['report_directory'] = str(root / 'comparison')
@@ -1747,7 +1751,7 @@ class SegmentWatcher(Watcher):
             reference = cfg.get('rollback_reference', 'previous')
             regression_comparison: dict[str, Any] | None = report['against_previous']
             if reference == 'initial_checkpoint':
-                anchor = next((row for row in self.state['evaluations']
+                anchor = next((row for row in compared
                                if row['at_training_seconds'] == 0), None)
                 if anchor is None:
                     if pending['due_seconds'] != 0:
@@ -1775,7 +1779,10 @@ class SegmentWatcher(Watcher):
                     'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
         else:
-            self.state['stop'] = 'evaluation_audit_or_originals_incomplete'
+            # An incomplete evaluation is recorded and skipped, never a training stop:
+            # its originals stay preserved and the next scheduled evaluation compares.
+            report['skipped'] = 'evaluation_audit_or_originals_incomplete'
+            self.telemetry('attention', reason=report['skipped'], evaluation=pending['root'])
         # Full original result is retained by evaluate. This record never upgrades it.
         self.state['evaluations'].append(report)
         self.state['pending'] = None
