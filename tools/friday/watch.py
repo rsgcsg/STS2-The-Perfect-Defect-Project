@@ -273,6 +273,7 @@ UNKNOWN_WINDOW_DEFAULTS: dict[str, Any] = {
     'window_seconds': 1800, 'attention_fraction': .10, 'stop_fraction': .20,
     'min_denominator': 100}
 EVALUATION_EPISODE_SECONDS = 1800  # evaluate.py's maximum; 900 s cut deep games (U4-1).
+EVALUATION_RESULT_GRACE_SECONDS = 900  # terminal job, result not yet visible on NFS
 SELECTION_SCORES = ('conservative', 'finished_mean', 'paired_max_floor')
 UNKNOWN_STATUSES = frozenset({'unknown', 'save_failed'})
 
@@ -2300,6 +2301,23 @@ class SegmentWatcher(Watcher):
         result_path = path.parent / 'result.json'
         if (read_published(result_path) is None
                 or read_published(path.parent / 'snapshot.json') is None):
+            # A terminal job may still be publishing, so wait. A job that ended without
+            # publishing (e.g. cancelled on a bad node) is one skipped evaluation with its
+            # originals kept; it must not stay pending, which blocks exit and later evals.
+            if 'terminal_seen_at' not in pending:
+                pending['terminal_seen_at'] = time.time()
+                self.persist()
+            grace = (self.config.get('evaluation') or {}).get(
+                'result_grace_seconds', EVALUATION_RESULT_GRACE_SECONDS)
+            if time.time() - pending['terminal_seen_at'] < grace:
+                return
+            self.state['evaluations'].append({**pending, 'stage': 'terminal_without_result',
+                'at_training_seconds': pending['due_seconds'],
+                'skipped': 'evaluation_job_terminal_without_result'})
+            self.state['pending'] = None
+            self.telemetry('attention', reason='evaluation_job_terminal_without_result',
+                           evaluation=pending['root'], job_id=pending['job_id'])
+            self.persist()
             return
         plan, result, cohort, closed = self.evaluation_cohort(path, result_path)
         binding = evaluate.read_pinned(plan['checkpoint_binding'])
