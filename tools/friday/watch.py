@@ -1534,6 +1534,7 @@ class SegmentWatcher(Watcher):
             self.state['config_sha256'] = hashlib.sha256(json_bytes(config)).hexdigest()
             self.state['configuration'] = config_reference
             self.state['stop'] = None  # Explicit continuation; original state remains pinned above.
+            self.close_inherited_failed_evaluation()
             self.apply_readmissions()
         if self.state['config_sha256'] != hashlib.sha256(json_bytes(config)).hexdigest():
             raise ValueError('watch_resume_configuration_changed')
@@ -1543,6 +1544,31 @@ class SegmentWatcher(Watcher):
         self.state['incarnation'] = self.incarnation
         self.seen_events = set(self.state.get('seen_event_keys', []))
         self.compatible_fixes = read_compatible_fixes()
+
+    def close_inherited_failed_evaluation(self) -> None:
+        """A continuation inherits the predecessor's sticky ``failed`` pending evaluation.
+
+        That stage means preparation produced no plan, so no World was offered and nothing
+        can still be running; left pending it blocks every later evaluation of the new
+        watcher (c13e 11-08). It becomes one skipped record; its originals stay where they
+        are. ``submission_intent`` stays sticky: its job may exist and is never resubmitted.
+        """
+        pending = self.state.get('pending')
+        if pending is None or pending.get('stage') != 'failed':
+            return
+        self.state['evaluations'].append({
+            **pending, 'stage': 'preparation_failed', 'at_training_seconds': pending['due_seconds'],
+            'skipped': 'evaluation_preparation_failed_no_World_offer'})
+        self.state['pending'] = None
+        # Resume the 2 h grid at the latest point already passed: one evaluation of the
+        # current CP now, not a back-to-back catch-up over every missed point.
+        behind = self.state['next_evaluation_seconds']
+        latest = int(self.state.get('training_seconds', 0)) // 7200 * 7200
+        self.state['next_evaluation_seconds'] = max(behind, latest)
+        print(json.dumps({'kind': 'inherited_failed_evaluation_closed',
+                          'evaluation': pending.get('root'), 'next_was': behind,
+                          'next': self.state['next_evaluation_seconds']}),
+              file=sys.stderr, flush=True)
 
     def _socket_attachment(self, attempt):
         import rl
