@@ -574,3 +574,42 @@ def test_stop_mid_dataset_finishes_only_the_started_dataset(tmp_path, monkeypatc
     assert summary["sgd_process"]["exit"]["exitcode"] == 0
     assert not summary["sgd_process"]["exit"]["shutdown_killed"]
     assert not list(owner.live_work.glob("rl-ready-*"))
+
+
+def test_empty_tensor_sharing_a_file_offset_never_aliases_the_next_array(tmp_path,
+                                                                         monkeypatch):
+    """Found by the GPU replay (job 1444102): an empty array sits at the same file
+    offset as the next same-dtype array; pinning re-packs the mapped batch by
+    storage pointer and must not alias that array to 0 bytes."""
+    import dataclasses
+    import mmap
+
+    import torch
+
+    from stpd.rl import batch_preparation as bp
+    from stpd.rl.binary_preparation import _PinnedBuffers, _write_batch
+    from stpd.rl.sgd_process import mapped_arrays
+
+    @dataclasses.dataclass(frozen=True)
+    class Batch:
+        tensors: dict
+
+    batch = Batch({"empty": torch.zeros(0, dtype=torch.int64), "full": torch.arange(5)})
+    path = tmp_path / "ready.bin"
+    with path.open("wb") as stream:
+        stream.truncate(1 << 16)
+    packed = _write_batch(batch, str(path))
+    offsets = [view.offset for view in packed.arrays]
+    assert offsets[0] == offsets[1]  # the layout that used to collide
+    with path.open("rb") as stream:
+        mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    arrays = mapped_arrays(mapping, [(v.offset, v.count, v.dtype) for v in packed.arrays])
+    mapped = bp.unpack_transport((packed.tree, arrays))
+    empty = torch.empty
+    monkeypatch.setattr(torch, "empty", lambda *a, **k: empty(
+        *a, **{key: value for key, value in k.items() if key != "pin_memory"}))
+    pinned = _PinnedBuffers(1 << 20, slots=2)._copy(mapped, 0, None)
+    assert pinned.tensors["full"].tolist() == [0, 1, 2, 3, 4]
+    assert pinned.tensors["empty"].shape == (0,)
+    del mapped, arrays, pinned
+    mapping.close()

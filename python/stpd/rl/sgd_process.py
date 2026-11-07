@@ -259,6 +259,18 @@ def memory_budget(*, options: SgdOptions, device: str, model_bytes: int,
                     "nothing is shrunk automatically"}
 
 
+def mapped_arrays(mapping: Any, specs: Any) -> tuple[Any, ...]:
+    """Views of one prepared file's slabs.
+
+    An empty array shares its file offset with the next same-dtype array. Pinning
+    re-packs by storage pointer and would alias that array to a zero-length slab,
+    so empty arrays get their own (empty) buffer.
+    """
+    return tuple(np.frombuffer(mapping, dtype=np.dtype(dtype), count=count, offset=offset)
+                 if count else np.empty(0, dtype=np.dtype(dtype))
+                 for offset, count, dtype in specs)
+
+
 # --- controller handle -----------------------------------------------------
 
 
@@ -743,9 +755,7 @@ class _SgdWorker:
             verified = time.perf_counter()
 
             def load() -> Any:
-                arrays = tuple(np.frombuffer(mapping, dtype=np.dtype(dtype), count=count,
-                                             offset=offset)
-                               for offset, count, dtype in plan["arrays"])
+                arrays = mapped_arrays(mapping, plan["arrays"])
                 if self.device.type == "cuda":
                     batch = bp.unpack_transport((pickle.loads(plan["tree"]), arrays))
                     return self.pinned.pin(batch, self.pinned.epoch)
