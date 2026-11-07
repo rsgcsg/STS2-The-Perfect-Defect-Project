@@ -262,16 +262,12 @@ def test_previous_watch_state_must_bind_the_same_run_peer_and_budget(owner, watc
     assert resumed.state["configuration"]["path"] == str(resumed.work / "watch-config.json")
 
 
-# Closes arrive in actor batches long after offers, so the gate counts offered
-# worlds (5 in flight here) rather than only the closes reported so far.
-@pytest.mark.parametrize("closed,unknown,stopped",
-                         [(20, 5, False), (20, 6, True), (220, 11, False), (218, 12, True)])
-def test_global_five_percent_gate_counts_offered_worlds(owner, watch, monkeypatch,
-                                                          closed, unknown, stopped):
+def _tick_with_closes(owner, watch, monkeypatch, closed, unknown, *, age=0.0):
     value = attempt(owner)
     value["actor_plans"] = []
     games = [{"intent_id": f"done-{i}", "seed": f"seed-{i}",
               "status": "unknown" if i < unknown else "finished",
+              "reason": "runtime_execution_or_release_unknown" if i < unknown else None,
               "world_mutation_offered": True, "training_generation": "g-one"}
              for i in range(closed)]
     event(owner, "actor_games_closed", actor="actor", games=games)
@@ -282,14 +278,99 @@ def test_global_five_percent_gate_counts_offered_worlds(owner, watch, monkeypatc
     owner.schedule_segment_evaluation = lambda: None
     owner.retain_segment_checkpoints = lambda: None
     owner.offer_initial_actors = lambda _: None
-    stops = []
+    stops, alarms = [], []
     owner.stop_attempt = lambda _, reason: stops.append(reason)
+    owner.telemetry = lambda kind, **f: alarms.append((kind, f))
     monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": False})
+    if age:
+        owner.collect_events()
+        for fact in owner.state["worlds"].values():
+            if "closed_at" in fact:
+                fact["closed_at"] -= age
     owner.tick_segment()
-    assert owner.state["health"]["completed_for_stop"] == closed
-    assert owner.state["health"]["known_unknown"] == unknown
-    assert owner.state["stop"] == ("training_unknown_fraction_above_limit" if stopped else None)
-    assert stops == (["training_unknown_fraction_above_limit"] if stopped else [])
+    return stops, alarms
+
+
+# Card U4 C: rolling 30-minute window of global closes, denominator >= 100 closes.
+# >= 10% is a typed attention alarm (training continues); >= 20% stops.
+@pytest.mark.parametrize("closed,unknown,level", [
+    (20, 6, None), (100, 9, None), (100, 10, "attention"), (100, 19, "attention"),
+    (100, 20, "stop"), (500, 60, "attention"), (500, 99, "attention"), (500, 100, "stop")])
+def test_rolling_unknown_window_attention_and_stop(owner, watch, monkeypatch,
+                                                   closed, unknown, level):
+    stops, alarms = _tick_with_closes(owner, watch, monkeypatch, closed, unknown)
+    window = owner.state["unknown_window"]
+    assert (window["closes"], window["unknown"], window["level"]) == (closed, unknown, level)
+    assert owner.state["stop"] == ("training_unknown_fraction_above_limit"
+                                   if level == "stop" else None)
+    assert stops == (["training_unknown_fraction_above_limit"] if level == "stop" else [])
+    reasons = [f["reason"] for kind, f in alarms if kind == "attention"]
+    if level is None:
+        assert reasons == []
+    else:
+        assert reasons == ["training_unknown_window_at_or_above_stop_fraction" if level == "stop"
+                           else "training_unknown_window_at_or_above_attention_fraction_"
+                                "lead_investigates"]
+        assert owner.state["unknown_alarms"][-1]["unknown"] == unknown
+    if level == "stop":
+        assert owner.state["stop_detail"]["rule"] == "rolling_unknown_window"
+        assert owner.state["stop_detail"]["window"]["fraction"] >= .2
+    # Every unknown was typed at close; none of these has a classifying fact.
+    assert window["by_category"] == ({"unclassified": unknown} if unknown else {})
+    assert owner.state["unknown_overview"]["unknown"] == unknown
+
+
+def test_unknowns_older_than_the_window_never_stop(owner, watch, monkeypatch):
+    stops, alarms = _tick_with_closes(owner, watch, monkeypatch, 100, 50, age=1801)
+    assert owner.state["unknown_window"]["closes"] == 0 and owner.state["stop"] is None
+    assert stops == [] and alarms == []
+    assert owner.state["unknown_overview"]["unknown"] == 50  # still counted in totals
+
+
+def test_attention_alarm_repeats_at_most_once_per_window(owner, watch, monkeypatch):
+    _, alarms = _tick_with_closes(owner, watch, monkeypatch, 100, 12)
+    owner.tick_segment()
+    owner.tick_segment()
+    assert [kind for kind, _ in alarms].count("attention") == 1
+    assert owner.state["stop"] is None and len(owner.state["unknown_alarms"]) == 1
+
+
+def test_unknown_window_settings_are_explicit_and_bounded(watch):
+    assert watch.unknown_window_settings({}) == watch.UNKNOWN_WINDOW_DEFAULTS
+    for bad in ({"stop_fraction": .05}, {"window_seconds": 60}, {"other": 1},
+                {"attention_fraction": True}):
+        with pytest.raises(ValueError, match="explicit_unknown_window_settings_required"):
+            watch.unknown_window_settings({"unknown_window": bad})
+
+
+def test_c11_replay_rolling_window_alarms_before_it_stops(watch):
+    """c11 (no node exclusion) crossed 10% about 27 min before its 03:42 5% stop and 20%
+    about 19 min before; without the two bad nodes the window stays below 3%."""
+    import json
+    from pathlib import Path
+
+    fixture = json.loads((Path(__file__).parent
+                          / "fixtures/friday_c11_node_unknown_replay.json").read_bytes())
+    stop_at = fixture["global_stop"]["epoch"] - fixture["t0_epoch"]
+    settings = watch.unknown_window_settings({})
+    first: dict[str, float] = {}
+    healthy_peak = 0.0
+    batches = fixture["batches"]
+    for at, *_ in batches:
+        window = [b for b in batches if at - 1800 < b[0] <= at]
+        closes = sum(b[2] + b[3] for b in window)
+        _, level = watch.unknown_window_level(sum(b[3] for b in window), closes, settings)
+        if level:
+            first.setdefault(level, at)
+            if level == "stop":
+                first.setdefault("attention", at)
+        healthy = [b for b in window if b[1] not in {"smp-9-20", "smp-9-7"}]
+        fraction, _ = watch.unknown_window_level(sum(b[3] for b in healthy),
+                                                 sum(b[2] + b[3] for b in healthy), settings)
+        healthy_peak = max(healthy_peak, fraction)
+    assert first["attention"] < first["stop"] < stop_at
+    assert stop_at - first["attention"] >= 20 * 60
+    assert healthy_peak < .03
 
 
 def test_unknown_close_keeps_reason_and_last_receipt_in_watch_state(owner):
@@ -468,8 +549,8 @@ def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
     def cohort(floor):
         return {"host_kind": "managed", "character": "Defect", "ascension": 0,
                 "planned": 2, "protocol_observed": protocol,
-                "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished"}
-                         for seed in ("seed-a", "seed-b")]}
+                "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished",
+                          "result": "loss"} for seed in ("seed-a", "seed-b")]}
 
     recipe = {"performance": {"microbatch_size": 640},
               "segments": {"minibatches": 2, "auxiliary_rows": 128}}
@@ -527,7 +608,8 @@ def _protocol(host):
 def _cohort(host, floors, character="Defect"):
     return {"host_kind": "managed", "character": character, "ascension": 0,
             "planned": 2, "protocol_observed": _protocol(host),
-            "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished"}
+            "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished",
+                      "result": "loss"}
                      for seed, floor in zip(("seed-a", "seed-b"), floors, strict=True)]}
 
 
@@ -771,3 +853,354 @@ def test_one_actor_batch_of_cut_games_is_measured_against_offered_worlds(watch):
     config = {"unknown_stop_fraction": 0.05}
     assert not watch.unknown_over_limit(7, watch.stop_denominator(health), config)
     assert watch.unknown_over_limit(80, watch.stop_denominator(health), config)
+
+
+# ---- Card U4 A/B/D: typed unknowns, both headline scores, compatible fixes ----
+
+def _u4_rows(floors, statuses):
+    return [{"seed": f"s{i:03d}", "run_id": f"run-{i}", "status": status,
+             "scored": status == "finished", "result": "loss" if status == "finished" else None,
+             "floor": floor if status == "finished" else None,
+             "observed_floor_lower_bound": floor, "boss_cleared_acts": []}
+            for i, (floor, status) in enumerate(zip(floors, statuses, strict=True))]
+
+
+def _u4_cohort(host, floors, statuses):
+    return {"host_kind": "managed", "character": "Defect", "ascension": 0,
+            "planned": len(floors), "protocol_observed": _protocol(host),
+            "rows": _u4_rows(floors, statuses)}
+
+
+def _u4_attempt(tmp_path, seed, **row):
+    """A retained attempt original: report + Runtime final status, as evaluate keeps it."""
+    import json
+
+    root = tmp_path / "attempts" / seed
+    (root / "runs" / row["run_id"]).mkdir(parents=True)
+    (root / "runtime-final-status.json").write_text(json.dumps(
+        {"last_result": None, "taint_reason": None}))
+    (root / "runs" / row["run_id"] / "events.jsonl").write_text("")
+    path = root / "attempt-report.json"
+    path.write_text(json.dumps({"episodes": [{
+        "runtime_final_status": {"path": "runtime-final-status.json"}, **row}]}))
+    import hashlib
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def _u4_evaluate(owner, watch, tmp_path, monkeypatch, steps, **evaluation):
+    """steps: (due, checkpoint, host, floors, statuses, slot extras by index)."""
+    from stpd.evaluation import rl_observation
+
+    n = len(steps[0][3])
+    owner.config['evaluation'] = {
+        'baseline_binding': {'id': 'baseline'}, 'baseline_batches': [],
+        'baseline_checkpoint': 'baseline', 'manifest': {'sha256': 'fixed'},
+        'baseline_resume_checkpoint': 'window-1-start', **evaluation}
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    monkeypatch.setattr(watch, 'job_node', lambda _: 'smp-9-1')
+    monkeypatch.setattr(watch.evaluate, 'fixed_baseline', lambda *a, **kw: {
+        'offers_accounted': True,
+        'cohort': _u4_cohort('1.1.0-rc.64', [20] * n, ['finished'] * n)})
+    monkeypatch.setattr(watch.evaluate, 'read_pinned', lambda ref: ref)
+    monkeypatch.setattr(rl_observation, 'write_report', lambda *a, **kw: None)
+    alarms = []
+    monkeypatch.setattr(owner, 'telemetry', lambda kind, **f: alarms.append((kind, f)))
+    for index, (due, checkpoint, host, floors, statuses, extras) in enumerate(steps):
+        root = tmp_path / f'eval-{index}'
+        root.mkdir(parents=True)
+        (root / 'result.json').write_text('{}')
+        (root / 'snapshot.json').write_text('{}')
+        plan = {'checkpoint_binding': {'checkpoint_artifact_id': checkpoint},
+                'manifest': {'sha256': 'fixed'}}
+        slots = [{'seed': f's{i:03d}', 'run_id': f'run-{i}', 'status': status,
+                  'cleanup_accepted': status != 'not_started',
+                  'reason': None if status == 'finished' else
+                  'runtime_execution_or_release_unknown',
+                  'public_max_observed_floor': floor, **extras.get(i, {})}
+                 for i, (floor, status) in enumerate(zip(floors, statuses, strict=True))]
+        result = {'ledger_report': {'slots': slots, 'score_admitted': True}}
+        group = _u4_cohort(host, floors, statuses)
+        owner.evaluation_cohort = lambda *a, plan=plan, result=result, group=group: (
+            plan, result, group, not watch.evaluation_incomplete(result))
+        owner.state['pending'] = {'root': str(root), 'plan': str(root / 'plan.json'),
+                                  'stage': 'running', 'job_id': '80', 'due_seconds': due}
+        owner.collect_segment_evaluation()
+    return alarms
+
+
+def test_c13_eval_0001_shape_wall_limited_deep_games_are_scored_conservatively(
+        owner, watch, tmp_path, monkeypatch):
+    """Window-2 eval-0001: 45 finished + 5 unknown at floors 44-47, all stopped by the
+    900 s per-game wall limit. Typed wall_limit, both scores reported, cohort closed."""
+    floors = [20] * 45 + [44, 45, 46, 47, 47]
+    statuses = ['finished'] * 45 + ['unknown'] * 5
+    extras = {i: {'report': _u4_attempt(tmp_path, f's{i:03d}', run_id=f'run-{i}',
+                                        wall_limit_reached=True,
+                                        execution_reason='runtime_execution_or_release_unknown',
+                                        game_metrics={'max_observed_floor': floors[i]})}
+              for i in range(45, 50)}
+    alarms = _u4_evaluate(owner, watch, tmp_path, monkeypatch,
+                          [(0, 'cp-a', '1.1.0-rc.64', floors, statuses, extras)])
+    record, = owner.state['evaluations']
+    assert record['closed'] is True and 'skipped' not in record
+    assert record['unknown_by_category'] == {'wall_limit': 5}
+    assert {d['facts_source'] for d in record['unknown_details']} == {'attempt_original'}
+    assert record['unknown_details'][0]['detail']['node'] == 'smp-9-1'
+    assert record['unknown_details'][0]['detail']['floor'] == 44
+    scores = record['scores']
+    assert scores['finished_n'] == 45 and scores['conservative_n'] == 50
+    assert scores['conservative'] > scores['finished_mean']  # deep games no longer dropped
+    assert scores['conservative'] == pytest.approx(record['reward']['lower_bound']['L'])
+    assert scores['selection_score'] == 'conservative' and scores['complete'] is True
+    assert record['best_comparison']['score'] == 'conservative'
+    assert record['regression_score'] == 'conservative'
+    assert owner.state['best_selection_score'] == 'conservative'
+    assert ('evaluation_scores', {'evaluation': record['root'], **scores}) in alarms
+
+
+def test_many_unknowns_no_longer_void_an_evaluation(owner, watch, tmp_path, monkeypatch):
+    """Window 1 eval-0008: 9 unknowns of 50 were skipped as incomplete; now reported."""
+    floors = [30] * 41 + [12] * 9
+    statuses = ['finished'] * 41 + ['unknown'] * 9
+    _u4_evaluate(owner, watch, tmp_path, monkeypatch,
+                 [(0, 'cp-a', '1.1.0-rc.64', floors, statuses, {})])
+    record, = owner.state['evaluations']
+    assert record['closed'] is True and 'skipped' not in record
+    # No attempt original and no classifying code: unclassified, with the reason.
+    assert record['unknown_by_category'] == {'unclassified': 9}
+    assert record['unknown_details'][0]['rule'] == 'no_classifying_fact'
+    assert record['unknown_details'][0]['facts_source'] == 'slot_only:no_attempt_report'
+
+
+def test_missing_originals_label_incomplete_but_still_report_scores(
+        owner, watch, tmp_path, monkeypatch):
+    """eval-0007 shape: the batch stopped, 11 games never played. Labelled, scored, and
+    not used as a comparison reference; an infrastructure unknown leaves the conservative
+    score."""
+    floors = [29] * 38 + [5] + [0] * 11
+    statuses = ['finished'] * 38 + ['unknown'] + ['not_started'] * 11
+    extras = {38: {'reason': 'runtime_exited_before_startup'}}
+    alarms = _u4_evaluate(owner, watch, tmp_path, monkeypatch,
+                          [(0, 'cp-a', '1.1.0-rc.64', floors, statuses, extras)])
+    record, = owner.state['evaluations']
+    assert record['closed'] is False
+    assert record['skipped'] == 'evaluation_audit_or_originals_incomplete'
+    assert record['incomplete'] == [{'reason': 'originals_missing',
+                                     'statuses': {'not_started': 11}}]
+    assert record['scores']['incomplete'] == ['originals_missing']
+    assert record['unknown_by_category'] == {'infrastructure': 1}
+    assert record['scores']['conservative_n'] == 38
+    assert record['scores']['conservative'] == pytest.approx(record['scores']['finished_mean'])
+    assert owner.state.get('best_checkpoint') is None  # never a decision reference
+    assert [f['reason'] for kind, f in alarms if kind == 'attention'] == [
+        'evaluation_audit_or_originals_incomplete']
+
+
+def test_audit_mismatch_is_the_other_incomplete_reason(watch):
+    result = {'ledger_report': {'score_admitted': False, 'slots': [
+        {'seed': 'a', 'status': 'finished', 'cleanup_accepted': True,
+         'execution_reason': 'typed_original_verification_failed'}]}}
+    assert watch.evaluation_incomplete(result) == [{
+        'reason': 'audit_mismatch', 'score_admitted': False,
+        'typed_verification_failed_on_scored_status': ['a']}]
+    clean = {'ledger_report': {'score_admitted': True, 'slots': [
+        {'seed': s, 'status': s, 'cleanup_accepted': True}
+        for s in ('finished', 'unknown', 'save_failed', 'censored')]}}
+    assert watch.evaluation_incomplete(clean) == []
+
+
+def test_training_closes_are_typed_and_bad_node_closes_count_as_infrastructure(
+        owner, watch):
+    attempt(owner)
+    owner.config['node_unknown_exclusion'] = {}
+    games = [
+        {'intent_id': 'gap', 'seed': 's1', 'status': 'unknown',
+         'reason': 'runtime_execution_or_release_unknown', 'world_mutation_offered': True,
+         'failure': {'last_unknown_receipt': {'reason_code': 'managed_execution_unknown',
+                                              'label': 'Play Tesla Coil -> Soul Nexus'}}},
+        {'intent_id': 'timeout', 'seed': 's2', 'status': 'unknown',
+         'reason': 'runtime_execution_or_release_unknown', 'world_mutation_offered': True,
+         'failure': {'handoff_reason': 'agent_call_timeout'}},
+        {'intent_id': 'save', 'seed': 's3', 'status': 'save_failed',
+         'reason': 'segment_delivery_incomplete', 'world_mutation_offered': True},
+        {'intent_id': 'bare', 'seed': 's4', 'status': 'unknown',
+         'reason': 'runtime_execution_or_release_unknown', 'world_mutation_offered': True}]
+    event(owner, 'actor_games_closed', actor='bad-actor', games=games[3:])
+    event(owner, 'actor_games_closed', actor='actor', games=games[:3])
+    owner.collect_events()
+    worlds = owner.state['worlds']
+    assert worlds['gap']['unknown_class']['category'] == 'environment_gap'
+    assert worlds['timeout']['unknown_class']['category'] == 'infrastructure'
+    assert worlds['save']['unknown_class']['category'] == 'save_ledger'
+    assert worlds['bare']['unknown_class']['category'] == 'unclassified'
+    assert all('closed_at' in worlds[k] for k in ('gap', 'timeout', 'save', 'bare'))
+    owner.state['node_exclusion'] = {'actor_nodes': {'bad-actor': 'smp-9-20'},
+                                     'excluded': {'smp-9-20': {}}}
+    owner.unknown_window_gate()
+    effective = owner.unknown_class('bare', worlds['bare'])
+    assert (effective['category'], effective['rule']) == ('infrastructure', 'node_auto_excluded')
+    assert effective['close_category'] == 'unclassified'
+    assert worlds['bare']['unknown_class']['category'] == 'unclassified'  # original kept
+    overview = owner.state['unknown_overview']
+    assert overview['by_category'] == {'environment_gap': 1, 'infrastructure': 2,
+                                       'save_ledger': 1}
+    # Model statistics leave infrastructure out: 2 of 2 remaining closes.
+    assert overview['model_unknown_fraction'] == 1.0
+
+
+def test_resume_from_a_c13b_shaped_state_keeps_every_persisted_key(
+        owner, watch, tmp_path, monkeypatch):
+    """A state written before U4 (no closed_at/unknown_class, floor-rule best and
+    regression) resumes through previous_watch_state; old keys keep their meaning."""
+    attempt(owner)
+    old = _u4_cohort('1.1.0-rc.64', [24] * 50, ['finished'] * 50)
+    owner.state['worlds'] = {f'w{i}': {'actor': 'actor', 'generation': 'g-one',
+                                       'offered': True, 'closed': True,
+                                       'status': 'unknown' if i < 30 else 'finished',
+                                       **({'reason': 'runtime_execution_or_release_unknown',
+                                           'failure': {'handoff_reason': 'agent_call_timeout'}}
+                                          if i < 30 else {})}
+                             for i in range(100)}
+    # Review H1: c13 crashed with its actors gone, so its state holds lost offers.
+    owner.state['worlds'].update({f'lost{i}': {'actor': 'gone', 'generation': 'g-one',
+                                               'offered': True} for i in range(25)})
+    owner.state['terminal_actors'] = ['gone']
+    owner.state['lost_world_offers'] = sorted(f'lost{i}' for i in range(25))
+    owner.state['evaluations'] = [{'root': 'c13/evaluation-0001', 'cohort': old,
+                                   'closed': True, 'at_training_seconds': 0,
+                                   'paired_regression': True,
+                                   'regression_reference': 'previous',
+                                   'checkpoint': {'checkpoint_artifact_id': 'cp-6787'}}]
+    owner.state.update(best_checkpoint='cp-6787', best_cohort=old, active=None)
+    owner.persist()
+    before = __import__('json').loads(owner.state_path.read_bytes())
+    reference = {'path': str(owner.state_path), 'sha256': watch.hashed(owner.state_path)}
+    resumed = watch.SegmentWatcher({**owner.config, 'previous_watch_state': reference},
+                                   tmp_path / 'watch-c13c')
+    for key, value in before.items():
+        if key not in {'config_sha256', 'configuration', 'incarnation', 'stop'}:
+            assert resumed.state[key] == value, key
+    # Old closes and old lost offers carry no time: they never enter the rolling window.
+    resumed.refresh_world_health()
+    assert resumed.state['worlds']['lost0']['lost_at'] is None
+    assert resumed.unknown_window_gate() is None
+    assert resumed.state['unknown_window']['closes'] == 0
+    assert resumed.state['unknown_overview']['by_category'] == {'infrastructure': 55}
+    # The next evaluation names its score; the floor-rule regression never chains into it.
+    floors = [10] * 50
+    _u4_evaluate(resumed, watch, tmp_path / 'next', monkeypatch,
+                 [(7200, 'cp-next', '1.1.0-rc.64', floors, ['finished'] * 50, {})])
+    record = resumed.state['evaluations'][-1]
+    assert record['previous_reference'] == 'c13/evaluation-0001'
+    assert record['paired_regression'] is True and record['regression_score'] == 'conservative'
+    assert resumed.state['stop'] is None
+    assert resumed.state['best_checkpoint'] == 'cp-6787'
+
+
+def test_registered_compatible_host_fix_keeps_cohorts_comparable_with_a_note(
+        owner, watch, tmp_path, monkeypatch):
+    floors = [20] * 4
+    statuses = ['finished'] * 4
+    owner.compatible_fixes = [{'id': 'u4-1-rc64-rc65', 'key': 'host_pin',
+                               'from': {'version': '1.1.0-rc.64'},
+                               'to': {'version': '1.1.0-rc.65'},
+                               'proof': {'artifact': 'r2://proof/u4-1.json', 'sha256': 'a' * 64}}]
+    _u4_evaluate(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.64', floors, statuses, {}),
+        (7200, 'cp-b', '1.1.0-rc.65', [22] * 4, statuses, {}),
+        (14400, 'cp-c', '1.1.0-rc.63', [25] * 4, statuses, {})])
+    first, second, third = owner.state['evaluations']
+    assert 'protocol_skipped' not in second
+    assert second['against_previous']['mean_delta'] == 2
+    assert second['against_previous']['compatible_protocol_keys'] == ['host_pin']
+    assert second['compatible_fixes']['previous'][0]['compatible_fix'] == 'u4-1-rc64-rc65'
+    assert second['compatible_fixes']['baseline'][0]['direction'] == 'forward'
+    # rc.63 is not registered against rc.64/rc.65: still skipped as before, and the
+    # rc.65 best (chosen across the registered fix, never superseded by it) is kept.
+    assert third['against_previous']['skipped'] == 'different_observed_protocol'
+    assert third['protocol_skipped']['best'] == ['host_pin']
+    assert [row['best_checkpoint'] for row in owner.state['superseded_best']] == ['cp-b']
+
+
+def test_compatible_fix_registry_file_and_validation(watch, tmp_path):
+    import json
+
+    assert watch.read_compatible_fixes() == []  # the repo file is valid
+    entry = {'id': 'x', 'key': 'host_pin', 'from': {'version': 'a'}, 'to': {'version': 'b'},
+             'proof': {'artifact': 'proof.json', 'sha256': 'b' * 64}}
+    path = tmp_path / 'fixes.json'
+
+    def check(entries):
+        path.write_text(json.dumps({'schema': watch.COMPATIBLE_FIXES_SCHEMA,
+                                    'entries': entries}))
+        return watch.read_compatible_fixes(path)
+
+    assert check([entry]) == [entry]
+    for bad in ({**entry, 'key': 'runtime_pin'}, {**entry, 'to': entry['from']},
+                {**entry, 'proof': {'artifact': 'p'}}, {**entry, 'extra': 1}):
+        with pytest.raises(ValueError, match='compatible_fix_registry_invalid'):
+            check([bad])
+    with pytest.raises(ValueError, match='compatible_fix_registry_duplicate'):
+        check([entry, {**entry, 'id': 'y', 'from': entry['to'], 'to': entry['from']}])
+
+
+def test_evaluation_defaults_to_1800s_games_and_can_avoid_actor_nodes(owner, watch):
+    assert watch.EVALUATION_EPISODE_SECONDS == 1800
+    owner.config['exclude_nodes'] = ['smp-9-8']
+    owner.state['node_exclusion'] = {'actor_nodes': {'a': 'smp-9-1', 'b': 'smp-9-2',
+                                                     'done': 'smp-9-3'}}
+    owner.state['terminal_actors'] = ['done']
+    owner.config['evaluation'] = {}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-8']
+    owner.config['evaluation'] = {'avoid_actor_nodes': True}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-1', 'smp-9-2']
+
+
+def test_newly_lost_offer_enters_the_window_and_unoffered_closes_never_do(owner):
+    attempt(owner)
+    event(owner, 'actor_world_offered', actor='dead', intent_id='lost', seed='s',
+          training_generation='g-one')
+    event(owner, 'actor_games_closed', actor='a', games=[
+        {'intent_id': 'never', 'seed': 's2', 'status': 'unknown',
+         'reason': 'runtime_exited_before_startup', 'world_mutation_offered': False}])
+    owner.collect_events()
+    owner.state['terminal_actors'] = ['dead']
+    owner.refresh_world_health()
+    assert owner.state['worlds']['lost']['lost_at'] is not None
+    owner.unknown_window_gate()
+    window = owner.state['unknown_window']
+    assert (window['closes'], window['unknown']) == (1, 1)
+    assert window['by_category'] == {'infrastructure': 1}
+
+
+def test_stop_alarm_is_announced_even_after_an_attention_alarm(owner, watch, monkeypatch):
+    stops, alarms = _tick_with_closes(owner, watch, monkeypatch, 100, 12)
+    event(owner, 'actor_games_closed', actor='actor', games=[
+        {'intent_id': f'late-{i}', 'seed': f'late-{i}', 'status': 'unknown',
+         'world_mutation_offered': True, 'training_generation': 'g-one'} for i in range(10)])
+    owner.tick_segment()
+    assert [f['reason'] for kind, f in alarms if kind == 'attention'] == [
+        'training_unknown_window_at_or_above_attention_fraction_lead_investigates',
+        'training_unknown_window_at_or_above_stop_fraction']
+    assert owner.state['stop'] == 'training_unknown_fraction_above_limit'
+    assert [a['level'] for a in owner.state['unknown_alarms']] == ['attention', 'stop']
+
+
+def test_unscored_evaluation_is_neither_a_regression_verdict_nor_a_reference(
+        owner, watch, tmp_path, monkeypatch):
+    """Review M1: 50/50 infrastructure unknowns count no game conservatively."""
+    n = 50
+    infra = {i: {'reason': 'runtime_exited_before_startup'} for i in range(n)}
+    _u4_evaluate(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.64', [30] * n, ['finished'] * n, {}),
+        (7200, 'cp-b', '1.1.0-rc.64', [0] * n, ['unknown'] * n, infra),
+        (14400, 'cp-c', '1.1.0-rc.64', [10] * n, ['finished'] * n, {})])
+    first, second, third = owner.state['evaluations']
+    assert second['scores']['conservative_n'] == 0
+    assert second['paired_regression'] is None
+    assert second['paired_regression_skipped'] == 'no_paired_interval'
+    assert third['previous_reference'] == first['root']  # the unscored one is passed over
+    assert third['previous_passed_over'] == {'root': second['root'],
+                                             'reason': 'no_counted_games'}
+    assert 'protocol_skipped' not in third
+    assert third['paired_regression'] is True and owner.state['stop'] is None

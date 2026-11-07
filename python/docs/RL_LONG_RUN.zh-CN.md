@@ -244,17 +244,24 @@ CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
 计时是learner就绪后的服务/更新窗口，不是CUDA kernel秒；排队、初始化和退出排空另计。
 恢复用原owner保守时间与CP对账，原失败和回滚掉的更新不升级成有效训练。
 真实offer/close/actor终态按唯一intent归并，迟到/乱序不增分母；未offer准入单列。
-`watch.py mode=segments` 的全局5%门用已结束或已证失联尝试，在途不当成功；
-恰好5%不停、超过才停。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
+`watch.py mode=segments` 的全局unknown门（卡U4 C，替换原来按attempt累计的5%门）：按结束时间取
+最近30分钟全部已结束和已证失联的局，分母至少100局；≥10%发typed `attention`请负责人查，训练继续；
+≥20%自动停（`training_unknown_fraction_above_limit`，`stop_detail.rule=rolling_unknown_window`），
+原件全留。可用`unknown_window={window_seconds,attention_fraction,stop_fraction,min_denominator}`显式改；
+`unknown_stop_fraction`在segments模式只再管未决准入比例。c11回放：10%比原5%停早约27分钟。
+每个unknown/save_failed在收局时按已记事实分为`environment_gap`/`infrastructure`/`save_ledger`/
+`wall_limit`（单局墙钟到点，截断局），带层数、步、动作、节点、原生错误；对不上或两类都有记
+`unclassified`并写原因，不猜。#386自动排除节点上的未分类/环境类按`node_auto_excluded`计基础设施；
+基础设施类不进模型统计（`unknown_overview.model_unknown_fraction`），按节点隔离照旧。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
 进程异常仍阻止待启动worker。单局ledger停止和保存义务不变，未知局不重投。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
 直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
 可选 `node_unknown_exclusion={}`（默认 window_attempts=30、min_attempts=20、node_fraction=0.25、
 fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点：某节点最近窗口达阈值、
 其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
 之后补位与新attempt的actor `--exclude` = 配置exclude_nodes + 自动排除节点。原unknown照计入全局门，
-不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局5%门。阈值来自c11回放。
+不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
 限制：排除在本watch内永久，不自动重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
-新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job只用配置的`exclude_nodes`。
+新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job用配置的`exclude_nodes`（另见`avoid_actor_nodes`）。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
@@ -286,7 +293,16 @@ baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/resul
 默认报告（`rl_observation.write_report` 的 report.json/README）另报每种难度的正式 reward-v2
 平均奖励分、有效对数、配对差和 bootstrap 区间，以及只作诊断的下界 [L, U]（排除局按出错前
 公开最高层/已见 Boss 计输局分为 L、计通关为 U）；两模型平均差区间为 `[L新−U旧, U新−L旧]`，
-下界之差不是提升的下界。`--excluded-facts` 可补排除局的公开进度。一局保存失败只排除该局，
+下界之差不是提升的下界。`--excluded-facts` 可补排除局的公开进度。
+每次评估并排报两个主分（卡U4 B，watch记录`scores`）：正式分=只算正常打完局的平均奖励分；
+保守分=全部计划局，unknown按打到的层计输局分（即该局L值），只去掉基础设施类unknown和没开的局。
+unknown再多也不作废；只有原件缺失（没开、待保存、清理未确认、job报错）或抽查不一致才标
+`incomplete`，分数照报，但不作比较参照和选best。选best和回归判断默认用保守分
+（`evaluation.selection_score`可选`conservative`/`finished_mean`/`paired_max_floor`，记录里写
+`selection_score`/`regression_score`；旧记录按`paired_max_floor`，换分口径时不跨口径连成两次回归）。
+单局默认墙钟1800 s（`evaluation.episode_seconds`）；`evaluation.avoid_actor_nodes=true`时评估job排除
+本watch在跑actor的节点。兼容修复登记在`tools/friday/compatible-fixes.json`（host_pin X→Y + 固定种子
+证明sha256）：只差已登记host_pin的两批照常比较并记`compatible_fixes`注记，未登记的差异照旧跳过。一局保存失败只排除该局，
 批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）；正式审计槽
 的保存仍失败则整批不计分（`evaluation_audit_save_failed_cohort_not_scored`）。只覆盖
 `preserve_report` 失败，轨迹分片上传失败照旧停批。待重试的保存继续占用pending额度与磁盘余量，
