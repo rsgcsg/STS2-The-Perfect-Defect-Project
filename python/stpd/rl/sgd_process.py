@@ -607,8 +607,11 @@ def _child_main(connection: Any, parent: int) -> None:
                                  "error_code": getattr(error, "code", None),
                                  "diagnostic": exception_facts(error)}
         if worker is not None:
-            facts.update(updates=worker.updates, datasets=worker.datasets,
-                         memory=worker.memory(allocator=True))
+            facts.update(updates=worker.updates, datasets=worker.datasets)
+            try:
+                facts["memory"] = worker.memory(allocator=True)
+            except Exception as memory_error:  # a broken CUDA context still reports the failure
+                facts["memory_error"] = type(memory_error).__name__
         with suppress(BaseException):
             send("failed", **facts)
         state["closing"] = True

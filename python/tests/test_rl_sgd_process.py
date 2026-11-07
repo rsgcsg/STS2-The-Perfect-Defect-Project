@@ -482,6 +482,15 @@ class _RaiseAtAttempt:
                     raise torch.cuda.OutOfMemoryError("CUDA out of memory (test injection)")
                 return inner(*args, **kwargs)
             module.prepared_update = prepared_update
+            child = sys.modules.get("stpd.rl.sgd_process")  # absent in preparation workers
+            if os.environ.get("RL_TEST_SGD_BROKEN_ALLOCATOR") and child is not None:
+                worker = child._SgdWorker
+                plain = worker.memory
+                def memory(self, *, allocator=False):
+                    if allocator:
+                        raise RuntimeError("CUDA error: an illegal memory access (test injection)")
+                    return plain(self)
+                worker.memory = memory
         spec.loader.exec_module = exec_module
         return spec
 if os.environ.get("RL_TEST_SGD_OOM_AT_ATTEMPT"):
@@ -489,13 +498,15 @@ if os.environ.get("RL_TEST_SGD_OOM_AT_ATTEMPT"):
 """
 
 
+@pytest.mark.parametrize("broken_allocator", [False, True])
 def test_child_reported_cuda_oom_fences_without_charging_the_failed_attempt(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, broken_allocator):
     """F4 on CPU: the child's own `failed` (OOM type, stage) fences the generation.
 
     Nothing is retried or run in-process; the failed attempt charges no update,
     first use or aux use; no new CP; OPS restores the last verified CP. The real
-    CUDA allocator failure is the GPU check in the S3 report.
+    CUDA allocator failure is the GPU check in the S3 report. A broken CUDA
+    context (allocator stats raise) still reports the failure facts.
     """
     hook = tmp_path / "hook"
     hook.mkdir()
@@ -503,6 +514,8 @@ def test_child_reported_cuda_oom_fences_without_charging_the_failed_attempt(
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
         [str(hook), *filter(None, [os.environ.get("PYTHONPATH")])]))
     monkeypatch.setenv("RL_TEST_SGD_OOM_AT_ATTEMPT", "2")
+    if broken_allocator:
+        monkeypatch.setenv("RL_TEST_SGD_BROKEN_ALLOCATOR", "1")
     owner, _, _ = terminal_owner(tmp_path / "run", monkeypatch, episodes=2)
     owner.checkpoint()
     owner._collect_checkpoint(wait=True)
@@ -521,6 +534,8 @@ def test_child_reported_cuda_oom_fences_without_charging_the_failed_attempt(
     assert facts["code"] == "sgd_process_failed" and facts["last_update"] == 1
     assert facts["child"]["error_type"] == "OutOfMemoryError"
     assert facts["child"]["stage"] == "update" and facts["child"]["updates"] == 1
+    assert (facts["child"].get("memory_error") == "RuntimeError") is broken_allocator
+    assert ("memory" in facts["child"]) is not broken_allocator
     assert facts["exitcode"] == 1 and not owner.sgd.process.is_alive()
     latest, cp = read_cp(owner)
     assert latest["checkpoint_artifact_id"] == record["checkpoint_artifact_id"]
