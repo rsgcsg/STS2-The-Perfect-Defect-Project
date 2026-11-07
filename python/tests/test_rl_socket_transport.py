@@ -9,6 +9,7 @@ from dataclasses import asdict
 from multiprocessing.connection import Client
 
 import pytest
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 
 from spireagent.json_boundary import json_bytes
 from spireagent.rl_dataplane_ports import (
