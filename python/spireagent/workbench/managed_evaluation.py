@@ -215,10 +215,13 @@ def require_prepared_identity(
     if not isinstance(identity, Mapping):
         reject("prepared_identity_invalid")
     provenance = identity.get("episode_provenance")
-    if (not isinstance(provenance, Mapping)
-            or provenance.get("verdict") != "provenance_pass"
-            or provenance.get("actual_seed") != seed):
+    if not isinstance(provenance, Mapping):
+        reject("prepared_provenance_not_passed")
+    if provenance.get("actual_seed") != seed:
         reject("prepared_seed_changed")
+    if provenance.get("verdict") != "provenance_pass":
+        # Same seed, but the Host could not prove provenance (inactive run, wrong type).
+        reject("prepared_provenance_not_passed")
     proof = identity.get("initial_progress")
     if not isinstance(proof, Mapping):
         reject("prepared_initial_progress_missing")
@@ -490,7 +493,14 @@ class ManagedEpisodeExecutor:
                     )
                 row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
                 ready = client.ready()
-                identity = manager.request({"command": "episode_identity"})["result"]["identity"]
+                reply = manager.request({"command": "episode_identity"})
+                result = reply.get("result") if isinstance(reply, Mapping) else None
+                if not isinstance(result, Mapping) or "identity" not in result:
+                    # Keep the malformed original; never an untyped KeyError/TypeError.
+                    row["episode_identity_reply"] = artifacts.put(
+                        "episode-identity-reply.json", json_bytes(reply))
+                    reject("prepared_identity_reply_invalid")
+                identity = result["identity"]
                 # Preserve the Host's identity before judging it, so a rejected
                 # world keeps its original proof next to the typed reason.
                 row["episode_identity"] = artifacts.put(

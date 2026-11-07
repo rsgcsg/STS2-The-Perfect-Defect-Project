@@ -350,6 +350,7 @@ def reward_summary(cohort: dict[str, Any],
         return {'reward_spec': {k: spec[k] for k in ('id', 'version')},
             'ascension': ascension, 'planned': planned, 'scored': None, 'excluded': None,
             'mean': None, 'reason': 'reward_spec_missing_ascension',
+            'scored_loss_boss_witness_missing': None,
             'lower_bound': {'L': None, 'U': None,
                             'meaning': 'Not computed: reward_spec_missing_ascension.'},
             'excluded_rows': [], 'by_seed': {}, 'lower_by_seed': {}}
@@ -378,11 +379,17 @@ def reward_summary(cohort: dict[str, Any],
                          'bosses_witnessed': bosses, 'source': source})
     win = float(spec['win'])
     total = sum(official.values())
+    # A scored loss without a Boss witness adds no Boss bonus (same as training), so
+    # the official mean can be low by 0.1 per uncounted Boss: report the count with it.
+    witness_missing = sum(row['seed'] in official and row.get('result') == 'loss'
+                          and type(row.get('boss_count')) is not int
+                          and not row.get('boss_cleared_acts') for row in cohort['rows'])
     return {'reward_spec': {k: spec[k] for k in ('id', 'version')},
         'ascension': ascension, 'planned': planned, 'scored': len(official),
         'excluded': len(excluded),
         'mean': total / len(official) if official else None,
         'reason': None if official else 'no_scored_rows',
+        'scored_loss_boss_witness_missing': witness_missing,
         'lower_bound': {
             'L': sum(lower.values()) / planned if planned else None,
             'U': (total + win * len(excluded)) / planned if planned else None,
@@ -422,12 +429,17 @@ def compare_rewards(before: dict[str, Any], after: dict[str, Any], *,
     old, new = reward_summary(before, before_facts), reward_summary(after, after_facts)
     official = _paired_reward_delta(old['by_seed'], new['by_seed'])
     bound = None
-    if (old['planned'] and new['planned'] and old['lower_bound']['L'] is not None
+    # Each side's [L, U] bounds the mean over its own planned seeds; their difference
+    # is like-for-like only when both cohorts planned exactly the same seeds.
+    same_seeds = {r['seed'] for r in before['rows']} == {r['seed'] for r in after['rows']}
+    if (same_seeds and old['planned'] and new['planned'] and old['lower_bound']['L'] is not None
             and new['lower_bound']['L'] is not None):
         bound = [new['lower_bound']['L'] - old['lower_bound']['U'],
                  new['lower_bound']['U'] - old['lower_bound']['L']]
     return {'official': official, 'reason': new['reason'] or old['reason'],
             'mean_difference_bound': bound,
+            'mean_difference_bound_reason': (None if same_seeds
+                                             else 'different_planned_seed_set'),
             'lower_bound_paired': _paired_reward_delta(old['lower_by_seed'],
                                                        new['lower_by_seed']),
             'meaning': 'official = paired reward-v2 delta on seeds scored on both sides. '
@@ -542,6 +554,12 @@ def reward_lines(rewards: dict[str, dict[str, Any]],
         lines += [f"- {name} {row['seed']}: {row['status']}, public floor >= "
                   f"{row['public_floor_lower_bound']} ({row['source']}), "
                   f"Bosses witnessed {row['bosses_witnessed']}" for name, row in excluded]
+    missing = [(name, r['scored_loss_boss_witness_missing']) for name, r in rewards.items()
+               if r.get('scored_loss_boss_witness_missing')]
+    if missing:
+        lines += ['', 'Scored losses without a Boss witness (counted as 0 Bosses, so the '
+                  'official mean can be low by 0.1 per uncounted Boss): '
+                  + ', '.join(f'{name} {count}' for name, count in missing) + '.']
     lines += ['', 'The lower-bound interval is a diagnostic, not a natural endpoint; '
               'a difference of lower bounds is not a lower bound on improvement.']
     lines.append('The official mean is over scored rows and [L, U] over all planned rows, so '

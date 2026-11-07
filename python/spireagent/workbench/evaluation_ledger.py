@@ -495,8 +495,11 @@ class EvaluationLedger:
             exhausted = False
 
             def unsettled():
-                return len(trajectory_wait) + sum(len(slot.get("shard_slots", [slot]))
-                                                for slot, _, _ in active.values())
+                # A deferred save still owns its original and the scratch its one retry
+                # needs, so it keeps its pending credit and disk allowance until retried.
+                return (len(trajectory_wait) + len(deferred_saves)
+                        + sum(len(slot.get("shard_slots", [slot]))
+                              for slot, _, _ in active.values()))
 
             while (active or trajectory_wait or deferred_saves
                    or not exhausted and stop_reason is None):
