@@ -306,7 +306,7 @@ unknown再多也不作废；只有原件缺失（没开、待保存、清理未�
 `selection_score`/`regression_score`；旧记录按`paired_max_floor`，换分口径时不跨口径连成两次回归）。
 单局默认墙钟1800 s（`evaluation.episode_seconds`）；`evaluation.avoid_actor_nodes=true`时评估job排除
 本watch在跑actor的节点。兼容修复登记在`tools/friday/compatible-fixes.json`（host_pin X→Y + 固定种子
-证明sha256）：只差已登记host_pin的两批照常比较并记`compatible_fixes`注记，未登记的差异照旧跳过。一局保存失败只排除该局，
+证明sha256）：只差已登记host_pin的两批照常比较并记`compatible_fixes`注记，未登记的差异照旧跳过。已登记：Host rc.63→rc.64（U4-1固定种子复跑，原卡住局前536步相同后自然获胜），所以窗口1（rc.63）与窗口2（rc.64）的评估从下一个release起可以带注记比较。每局墙钟上限900→1800 s不进观测协议，不需要登记。一局保存失败只排除该局，
 批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）；正式审计槽
 的保存仍失败则整批不计分（`evaluation_audit_save_failed_cohort_not_scored`）。只覆盖
 `preserve_report` 失败，轨迹分片上传失败照旧停批。待重试的保存继续占用pending额度与磁盘余量，
@@ -340,14 +340,62 @@ unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。de
 
 ### 换 release 续训
 
-同窗口恢复和新窗口一样：换release就按新代码字节重冻结全部身份，不能只改报错的那个字段——
-执行文件的`agent_adapter`与producer `source_revision`，learner的`segments.input_compiler_identity`/compiler_sha256。
-input_spec和词表不变时这些身份也会变：11-07 c12、c12b都因无关文件的字节变化在启动时失败。
-开跑前用新release+CP经Runtime打一局真游戏，并核agent子进程接受新身份、拒绝旧身份。
-只过构造器检查或pe-probe不够，因为Host driver不经过Python adapter检查。
-续训watch须在当前窗口`deadline_at`前启动，否则立即以`absolute_deadline`结束。
-自#388起这样结束的窗口仍可作新窗口父链接：经`previous_window_state`，按`require_completed_previous_window`接续，条件见上节。
-续训一律用新work目录加对账过的state（`previous_watch_state`或`previous_window_state`），不在原目录改写。
+换release续训（同窗口恢复、新窗口或只关窗）一律用一条命令准备，它只准备，不启动：
+
+```bash
+# Mac：把含目标SHA的develop打成bundle，拷到Friday
+git -C <repo> fetch origin && git -C <repo> bundle create /tmp/swap.bundle origin/develop ^<上一release的HEAD>
+scp /tmp/swap.bundle friday:<scratch>/
+# Friday登录节点（先 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0）
+python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
+  --sha <40位develop SHA> --bundle <scratch>/swap.bundle \
+  --predecessor <long-run>/watch-c13 --name c13b \
+  [--total-training-seconds 129600] [--exclude-node smp-9-12] [--expect-mode same_window]
+```
+
+`tools/friday/release_swap.py prepare`按顺序做下面6步，任一步失败就停在该步，打印
+`release_swap FAILED at <步>: <typed code> (<说明>)`：
+
+1. **建release**（照DEPLOY-795622dc/R14）：从上一release的source克隆，取bundle，detached干净HEAD，
+   复用env/env-gpu/game/node/dotnet链接，写`ENV-<short>.sh`（只换release路径，内容不打印）。
+   `components/contracts/apps`或锁文件有变化就拒绝（`host_stage_rebuild_required`）：本工具只复用
+   Host/Runtime stage。release已存在时核HEAD、干净、链接一致后复用。
+2. **重冻结身份**：在actor解释器里（执行文件的`python_executable`，`env -i`，同Runtime起子进程）
+   重算执行文件`agent_adapter`、producer，learner `input_compiler_identity`；打印新旧对照表和每项变化原因。
+   input_spec或词表变了就拒绝（`model_input_changed`，那是新学习run）。
+3. **执行文件和learner文件**：续训CP用前任watcher自己的`select_checkpoint`选（最新完整CP，含archive）。
+4. **watch配置**：按前任的stop、预算和截止自动选：
+   - 前任以`run_budget_complete`/`absolute_deadline`结束 → 新窗口（`previous_window_state`）。
+     预算id默认递增，截止默认holder结束−30 min，训练秒 = min(72000, `--total-training-seconds` − 各窗口已用)。
+   - 其它stop、预算和截止都还有余 → 同窗口（`previous_watch_state`，保留`previous_window_state`）。
+     须在`deadline_at`−600 s−`--launch-margin`（默认1800 s）前启动，清单写明时刻。
+   - 其它stop但截止或预算已用完 → 只关窗：同窗口配置、旧release，启动后立即以
+     `absolute_deadline`/`run_budget_complete`结束、不开actor；然后对它再跑一次本命令开新窗口（c12c→c12d→c13）。
+   前任仍在跑、learner job未终态、死attempt缺`control-wal-final.json`（c10）、有未确认integrity finding时拒绝。
+5. **验证**：`read_segment_config`；同窗口`require_watch_continuation`，新窗口`require_completed_previous_window`；
+   `checkpoint_link`（即`start_attempt`的CP规则）；`compatible-fixes.json`能读；agent子进程用新身份启动成功、
+   错编译器身份被拒（`RL_producer_compiler_identity_differs`，负对照）；新release+CP经`evaluate.py
+   prepare-checkpoint/prepare/submit`打一局真游戏，必须自然结束、0 unknown。
+6. **就位**：在`.swap-<name>.staging-*`里写完并验完才改名为`swap-<name>/`，再核一次，最后写`READY.json`。
+   失败的staging改名为`.swap-<name>.FAILED-*`，不像有效输出。验证原件在`swap-<name>.evidence/`。
+
+规则全用release里watcher自己的函数，不另写一套。同输入重跑得到同样的文件和hash（`READY.json`对比），
+不重打真游戏；输入变了报`prepared_output_differs`。`--dry-run --release-dir <已有release>`跳过建release
+和真游戏，可在scratch里对前任state的拷贝演练。
+
+`swap-<name>/CHECKLIST.txt`列出模式和原因、身份变化、CP、各项验证结果、启动截止和人工核对项，
+最后是启动命令（负责人执行）：
+
+```bash
+cd <release>/source && source ENV-<short>.sh && source "${FRIDAY_R2_ENV:-…/friday-r2.env}" && \
+  nohup python tools/friday/watch.py --config <long-run>/swap-<name>/watch.json \
+  --work <long-run>/watch-<name> > <long-run>/watch-driver-<name>.out 2>&1 < /dev/null &
+```
+
+为什么要这样：11-06/07三次换release失败都出在手工重冻结：c12漏了`agent_adapter`，c12b漏了learner编译器身份
+（构造器检查和pe-probe都没发现，Host driver不经过Python adapter检查），c12d在截止后启动，窗口接不上。
+11-07 dry run：对c13 state拷贝准备出的c13b配置，和手工版`watch-c13b.json`/`learner-c13b.json`只差路径和更新的CP，
+执行文件逐键相同。
 
 评估manifest先用`evaluate.py prepare-manifest --game-directory <已部署游戏> --output <manifest.json>`
 读取原`release_info.json`的精确`version`（当前为`v0.111.0`），再交原prepare-checkpoint。

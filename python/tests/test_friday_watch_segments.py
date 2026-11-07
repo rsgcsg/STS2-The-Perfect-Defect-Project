@@ -1125,7 +1125,16 @@ def test_registered_compatible_host_fix_keeps_cohorts_comparable_with_a_note(
 def test_compatible_fix_registry_file_and_validation(watch, tmp_path):
     import json
 
-    assert watch.read_compatible_fixes() == []  # the repo file is valid
+    registered = watch.read_compatible_fixes()  # the repo file is valid
+    assert [(e['id'], e['from']['version'], e['to']['version']) for e in registered] == [
+        ('u4-1-host-rc63-to-rc64-soul-nexus', '1.1.0-rc.63', '1.1.0-rc.64')]
+    # The c13 crash pair (window-1 rc.63 baseline vs window-2 rc.64) is now comparable.
+    before = {'protocol_observed': {'host_pin': registered[0]['from'], 'input_spec': 's'}}
+    after = {'protocol_observed': {'host_pin': registered[0]['to'], 'input_spec': 's'}}
+    blocking, notes = watch.protocol_blocking(before, after, registered)
+    assert blocking == [] and notes[0]['compatible_fix'] == registered[0]['id']
+    changed = {'protocol_observed': {**after['protocol_observed'], 'input_spec': 't'}}
+    assert watch.protocol_blocking(before, changed, registered)[0] == ['input_spec']
     entry = {'id': 'x', 'key': 'host_pin', 'from': {'version': 'a'}, 'to': {'version': 'b'},
              'proof': {'artifact': 'proof.json', 'sha256': 'b' * 64}}
     path = tmp_path / 'fixes.json'
