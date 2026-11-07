@@ -2006,15 +2006,35 @@ class SegmentWatcher(Watcher):
             best = self.state.get('best_checkpoint')
             best_cohort = self.state.get('best_cohort', baseline)
             best_keys = protocol_differences(best_cohort, cohort)
+            if best_keys:
+                skipped['best'] = best_keys
+            reference = cfg.get('rollback_reference', 'previous')
+            anchor = (next((row for row in compared if row['at_training_seconds'] == 0), None)
+                      if reference == 'initial_checkpoint' else None)
+            anchor_keys = protocol_differences(anchor['cohort'], cohort) if anchor else []
+            if anchor_keys:
+                skipped['recipe_switch'] = anchor_keys
+            # Report from pure inputs before any state change: if it fails, the watch state
+            # (best, superseded_best, stop) is untouched and pending stays the original.
+            report['report_directory'] = str(root / 'comparison')
+            cohorts = {name: group for name, group in (
+                ('baseline', None if 'baseline' in skipped else baseline),
+                ('previous', None if 'previous' in skipped else previous),
+                ('current', cohort)) if group is not None}
+            write_report(cohorts, root / 'comparison',
+                         scope_note='Managed fixed pool; unknown pairs excluded, '
+                         'no retries. Selection uses raw CP theta, never training returns.'
+                         + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
+                            if skipped else ''))
             first_of_protocol = False
             if best_keys:
                 # The best is chosen only within one protocol. The current best is kept in
                 # superseded_best (never compared across protocols); a returning protocol
                 # resumes its own stored best, else this cohort is the new protocol's first.
-                skipped['best'] = best_keys
                 superseded = self.state.setdefault('superseded_best', [])
                 restored = next((row for row in reversed(superseded)
-                                 if not protocol_differences(row['cohort'], cohort)), None)
+                                 if row.get('cohort') is not None
+                                 and not protocol_differences(row['cohort'], cohort)), None)
                 superseded.append({
                     'best_checkpoint': best, 'cohort': best_cohort,
                     'best_cohort_source': ('frozen_baseline' if best_cohort == baseline
@@ -2047,11 +2067,8 @@ class SegmentWatcher(Watcher):
                         Path(self.config['learner_config'])).resume_checkpoint
                 self.state['best_checkpoint'] = resume
                 self.state['best_cohort'] = baseline
-            reference = cfg.get('rollback_reference', 'previous')
             regression_comparison: dict[str, Any] | None = report['against_previous']
             if reference == 'initial_checkpoint':
-                anchor = next((row for row in compared
-                               if row['at_training_seconds'] == 0), None)
                 if anchor is None:
                     if pending['due_seconds'] != 0:
                         raise ValueError('initial_checkpoint_evaluation_missing')
@@ -2060,9 +2077,7 @@ class SegmentWatcher(Watcher):
                     if (anchor['checkpoint']['checkpoint_artifact_id']
                             != cfg['initial_checkpoint']):
                         raise ValueError('initial_checkpoint_evaluation_binding_changed')
-                    anchor_keys = protocol_differences(anchor['cohort'], cohort)
                     if anchor_keys:
-                        skipped['recipe_switch'] = anchor_keys
                         regression_comparison = protocol_skip(anchor['cohort'], cohort,
                                                               anchor['root'])
                     else:
@@ -2088,16 +2103,6 @@ class SegmentWatcher(Watcher):
                     'regression_reference': reference,
                     'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
-            report['report_directory'] = str(root / 'comparison')
-            cohorts = {name: group for name, group in (
-                ('baseline', None if 'baseline' in skipped else baseline),
-                ('previous', None if 'previous' in skipped else previous),
-                ('current', cohort)) if group is not None}
-            write_report(cohorts, root / 'comparison',
-                         scope_note='Managed fixed pool; unknown pairs excluded, '
-                         'no retries. Selection uses raw CP theta, never training returns.'
-                         + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
-                            if skipped else ''))
             if skipped:
                 # Typed alarm only: the cohort and its originals are kept, training continues.
                 report['protocol_skipped'] = skipped

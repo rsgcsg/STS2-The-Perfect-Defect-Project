@@ -551,7 +551,7 @@ def _run_evaluations(owner, watch, tmp_path, monkeypatch, steps, *, reference='p
     monkeypatch.setattr(owner, 'telemetry', lambda kind, **f: alarms.append((kind, f)))
     for index, (due, checkpoint, host, floors, *character) in enumerate(steps):
         root = tmp_path / f'eval-{index}'
-        root.mkdir()
+        root.mkdir(parents=True)
         (root / 'result.json').write_text('{}')
         (root / 'snapshot.json').write_text('{}')
         plan = {'checkpoint_binding': {'checkpoint_artifact_id': checkpoint},
@@ -666,6 +666,39 @@ def test_resumed_window_with_old_protocol_evaluations_is_the_c13_incident_shape(
     assert owner.state['superseded_best'][0]['best_cohort_source'] == 'evaluation'
     assert owner.state['best_checkpoint'] == 'cp-6787'
     assert owner.state['stop'] is None  # rc.63's regression never chains into rc.64's
+
+
+def test_report_failure_leaves_best_and_superseded_state_untouched(
+        owner, watch, tmp_path, monkeypatch):
+    """Re-review R2: write_report runs before any state change."""
+    from stpd.evaluation import rl_observation
+
+    _run_evaluations(owner, watch, tmp_path / 'one', monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.63', (30, 30))])
+    before = {k: owner.state.get(k) for k in ('best_checkpoint', 'best_cohort', 'superseded_best')}
+
+    def failing(*a, **kw):
+        raise OSError('disk')
+    original = watch.SegmentWatcher.collect_segment_evaluation
+    def collect(self):
+        monkeypatch.setattr(rl_observation, 'write_report', failing)
+        return original(self)
+    monkeypatch.setattr(watch.SegmentWatcher, 'collect_segment_evaluation', collect)
+    with pytest.raises(OSError):
+        _run_evaluations(owner, watch, tmp_path / 'two', monkeypatch, [
+            (0, 'cp-b', '1.1.0-rc.64', (10, 10))])
+    assert {k: owner.state.get(k) for k in before} == before
+    assert owner.state['pending'] is not None and len(owner.state['evaluations']) == 1
+
+
+def test_superseded_best_without_cohort_is_never_restored(owner, watch, tmp_path, monkeypatch):
+    """Re-review R1: an entry written without its cohort is skipped, not a KeyError."""
+    owner.state['superseded_best'] = [{'best_checkpoint': 'old', 'differing_keys': ['host_pin']}]
+    _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.64', (20, 20))])
+    assert owner.state['best_checkpoint'] == 'cp-a'
+    assert owner.state['superseded_best'][0] == {'best_checkpoint': 'old',
+                                                 'differing_keys': ['host_pin']}
 
 
 @pytest.mark.parametrize('host', ['1.1.0-rc.63', '1.1.0-rc.64'])

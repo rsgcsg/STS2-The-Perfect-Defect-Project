@@ -386,8 +386,12 @@ def reward_summary(cohort: dict[str, Any],
         'lower_bound': {
             'L': sum(lower.values()) / planned if planned else None,
             'U': (total + win * len(excluded)) / planned if planned else None,
-            'meaning': 'Diagnostic only: excluded rows as public-progress losses (L) or '
-                       'wins (U); not natural endpoints, not the official score.'},
+            'meaning': f'Diagnostic only. L and U are means over all {planned} planned rows, '
+                       f'with the {len(excluded)} excluded rows scored as public-progress '
+                       'losses (L) or wins (U); the official mean is over the '
+                       f'{len(official)} scored rows only, so it is not bracketed by [L, U] '
+                       '(it is below L when excluded games stopped deeper than the scored '
+                       'average). Not natural endpoints, not the official score.'},
         'excluded_rows': excluded, 'by_seed': official, 'lower_by_seed': lower}
 
 
@@ -507,8 +511,8 @@ def _number(value: float | None, sign: bool = False) -> str:
 def reward_lines(rewards: dict[str, dict[str, Any]],
                  comparisons: dict[str, dict[str, Any]]) -> list[str]:
     lines = ['', '## Mean reward score (reward v2, per difficulty)', '',
-             '| Cohort | Ascension | Planned | Scored | Excluded | Official mean | '
-             'Lower bound [L, U] (diagnostic) |', '|---|---:|---:|---:|---:|---:|---|']
+             '| Cohort | Ascension | Planned | Scored | Excluded | Official mean (scored rows) | '
+             'Bound [L, U] (all planned rows, diagnostic) |', '|---|---:|---:|---:|---:|---:|---|']
     for name, r in rewards.items():
         bound = r['lower_bound']
         if r['reason'] == 'reward_spec_missing_ascension':
@@ -539,6 +543,8 @@ def reward_lines(rewards: dict[str, dict[str, Any]],
                   f"Bosses witnessed {row['bosses_witnessed']}" for name, row in excluded]
     lines += ['', 'The lower-bound interval is a diagnostic, not a natural endpoint; '
               'a difference of lower bounds is not a lower bound on improvement.']
+    lines.append('The official mean is over scored rows and [L, U] over all planned rows, so '
+                 'the mean can lie outside [L, U] (below L when excluded games stopped deeper).')
     return lines
 
 
