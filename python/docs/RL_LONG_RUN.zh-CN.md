@@ -311,6 +311,17 @@ unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。de
 完整继承θ/Adam/EMA/RNG/训练计数，μ按普通恢复重新发布，旧CP和旧窗口耗时不改。
 这只用于明确授权的新运营窗口；同窗口故障恢复仍继承已耗时间，禁止重置预算或deadline。
 
+### 换 release 续训
+
+同窗口恢复和新窗口一样：换release就按新代码字节重冻结全部身份，不能只改报错的那个字段——
+执行文件的`agent_adapter`与producer `source_revision`，learner的`segments.input_compiler_identity`/compiler_sha256。
+input_spec和词表不变时这些身份也会变：11-07 c12、c12b都因无关文件的字节变化在启动时失败。
+开跑前用新release+CP经Runtime打一局真游戏，并核agent子进程接受新身份、拒绝旧身份。
+只过构造器检查或pe-probe不够，因为Host driver不经过Python adapter检查。
+续训watch须在当前窗口`deadline_at`前启动，否则立即以`absolute_deadline`结束。
+自#388起这样结束的窗口仍可作新窗口父链接：经`previous_window_state`，按`require_completed_previous_window`接续，条件见上节。
+续训一律用新work目录加对账过的state（`previous_watch_state`或`previous_window_state`），不在原目录改写。
+
 评估manifest先用`evaluate.py prepare-manifest --game-directory <已部署游戏> --output <manifest.json>`
 读取原`release_info.json`的精确`version`（当前为`v0.111.0`），再交原prepare-checkpoint。
 不自行去掉/添加版本前缀，也不替换固定种子。
