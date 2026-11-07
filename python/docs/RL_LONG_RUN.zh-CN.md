@@ -248,6 +248,11 @@ CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
 恰好5%不停、超过才停。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
 进程异常仍阻止待启动worker。单局ledger停止和保存义务不变，未知局不重投。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
 直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
+可选 `node_unknown_exclusion={}`（默认 window_attempts=30、min_attempts=20、node_fraction=0.25、
+fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点：某节点最近窗口达阈值、
+其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
+之后补位与新attempt的actor `--exclude` = 配置exclude_nodes + 自动排除节点。原unknown照计入全局门，
+不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局5%门。阈值来自c11回放。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用

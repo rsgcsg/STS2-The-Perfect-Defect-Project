@@ -157,6 +157,74 @@ def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool
     return unknown > config.get('unknown_stop_fraction', .05) * max(total, 100)
 
 
+# Chosen from the RL4.2 c11 replay (python/tests/fixtures/friday_c11_node_unknown_replay.json):
+# before the 03:42 global stop healthy nodes peak at 2/30 unknown in any window,
+# while the two bad nodes cross 25% about 32 and 15 minutes earlier.
+NODE_EXCLUSION_DEFAULTS: dict[str, Any] = {
+    'window_attempts': 30, 'min_attempts': 20, 'node_fraction': .25,
+    'fleet_median_max': .10, 'max_nodes': 4}
+
+
+def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Explicit opt-in (``node_unknown_exclusion``); absent keeps the old behaviour."""
+    raw = config.get('node_unknown_exclusion')
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - NODE_EXCLUSION_DEFAULTS.keys():
+        raise ValueError('explicit_node_unknown_exclusion_settings_required')
+    value = {**NODE_EXCLUSION_DEFAULTS, **raw}
+    ints = ('window_attempts', 'min_attempts', 'max_nodes')
+    fractions = ('node_fraction', 'fleet_median_max')
+    if (any(type(value[k]) is not int for k in ints)
+            or any(type(value[k]) not in (int, float) or not math.isfinite(value[k])
+                   for k in fractions)
+            or not 10 <= value['window_attempts'] <= 1000
+            or not 1 <= value['min_attempts'] <= value['window_attempts']
+            or not 0 < value['node_fraction'] <= 1
+            or not 0 <= value['fleet_median_max'] < value['node_fraction']
+            or not 0 <= value['max_nodes'] <= 16):
+        raise ValueError('explicit_node_unknown_exclusion_settings_required')
+    return value
+
+
+def node_exclusion_decisions(windows: dict[str, list[int]], excluded: Any,
+                             settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-node rolling unknown windows -> typed decisions; no scheduler effect here.
+
+    A node qualifies with >= min_attempts closes in its last window_attempts and an
+    unknown fraction >= node_fraction. It is excluded only while the median window
+    of the other qualifying nodes is <= fleet_median_max (a fleet-wide fault is the
+    global stop's to judge) and fewer than max_nodes are already auto-excluded.
+    """
+    def fraction(window: list[int]) -> float:
+        return sum(window) / len(window)
+
+    excluded = set(excluded)
+    decisions = []
+    for node in sorted(windows):
+        window = windows[node]
+        if node in excluded or len(window) < settings['min_attempts']:
+            continue
+        if fraction(window) < settings['node_fraction']:
+            continue
+        others = sorted(fraction(w) for n, w in windows.items()
+                        if n != node and n not in excluded and len(w) >= settings['min_attempts'])
+        median = (others[len(others) // 2] if len(others) % 2 else
+                  (others[len(others) // 2 - 1] + others[len(others) // 2]) / 2) if others else None
+        fact = {'node': node, 'window_attempts': len(window), 'window_unknown': sum(window),
+                'window_fraction': fraction(window), 'fleet_median_fraction': median,
+                'fleet_nodes': len(others)}
+        if median is None or median > settings['fleet_median_max']:
+            decisions.append({'kind': 'node_exclusion_withheld_fleet_wide', **fact})
+        elif len(excluded) >= settings['max_nodes']:
+            decisions.append({'kind': 'node_exclusion_cap_reached', **fact,
+                              'auto_excluded': sorted(excluded)})
+        else:
+            decisions.append({'kind': 'node_unknown_exclusion', **fact})
+            excluded.add(node)
+    return decisions
+
+
 def stop_denominator(health: dict[str, Any]) -> int:
     """Actors report closes in batches at segment/actor end, so closed games lag far
     behind offered ones; one actor's batch of cut games must not read as a fleet rate."""
@@ -977,6 +1045,7 @@ def read_segment_config(path: Path) -> dict[str, Any]:
         raise ValueError('bounded_segment_run_watch_configuration_required')
     if value.get('dataplane') is not None and not isinstance(value['dataplane'], dict):
         raise ValueError('explicit_binary_dataplane_profile_required')
+    node_exclusion_settings(value)
     if value.get('dataplane') is not None:
         learner_cpus = value.get('cpus', 32)
         if value['actors'] + learner_cpus > value.get('cpu_budget', 500):
@@ -1278,6 +1347,11 @@ class SegmentWatcher(Watcher):
                         raise ValueError('world_intent_actor_changed')
                     if fact.get('closed') and fact['status'] != game['status']:
                         raise ValueError('immutable_actor_close_changed')
+                    if not fact.get('closed') and node_exclusion_settings(self.config):
+                        # Node attribution waits for the actor's scheduler placement.
+                        self.state.setdefault('node_exclusion', {}).setdefault(
+                            'pending', []).append([event['actor'], int(
+                                game['status'] in {'unknown', 'save_failed'})])
                     fact.update(actor=event['actor'], closed=True, status=game['status'])
                     if game['status'] in {'unknown', 'save_failed'}:
                         # Diagnostic only (U3): classify without the node-local summary.
@@ -1548,7 +1622,7 @@ class SegmentWatcher(Watcher):
                 ready_seconds=self.config.get('ready_seconds', 3600), retain_capability=True,
                 held_job_id=self.config.get('held_job_id'),
                 actor_node_types=self.config.get('actor_node_types'),
-                actor_exclude_nodes=self.config.get('exclude_nodes'))
+                actor_exclude_nodes=self.actor_exclude_nodes())
             attempt['job_id'] = receipt['GPU_job_id']
             attempt['actor_plans'] = [str(root / 'actors/plan.json')]
         self.capability_lost = False
@@ -1567,17 +1641,87 @@ class SegmentWatcher(Watcher):
             rl.submit(path, partition=self.config.get('actor_partition', 'smp'),
                 constraint=self.config.get('actor_constraint'),
                 memory_gb=self.config.get('actor_memory_gb', 4),
-                exclude_nodes=self.config.get('exclude_nodes'))
+                exclude_nodes=self.actor_exclude_nodes())
             attempt['actor_plans'] = [str(path)]
         self.persist()
+
+    def actor_exclude_nodes(self) -> list[str] | None:
+        """Configured exclusions plus this run's typed automatic node exclusions."""
+        nodes = [*(self.config.get('exclude_nodes') or []),
+                 *self.state.get('node_exclusion', {}).get('excluded', {})]
+        return list(dict.fromkeys(nodes)) or None
+
+    def account_nodes(self, rows: list[dict[str, Any]], settings: dict[str, Any]) -> None:
+        """Per-node unknown accounting over original closes; changes only future placement.
+
+        Closed attempts and the global gate are untouched; no attempt is retried.
+        An excluded node's running actors get the existing cooperative USR1
+        (finish the current game, offer no more); their capacity returns through
+        the normal replacement boundary with the node in ``--exclude``.
+        """
+        import rl
+
+        nodes = self.state.setdefault('node_exclusion', {})
+        actor_nodes = nodes.setdefault('actor_nodes', {})
+        for row in rows:
+            if row.get('node') and rl.NAME.fullmatch(row['node']):
+                actor_nodes.setdefault(row['actor'], row['node'])
+        windows = nodes.setdefault('windows', {})
+        totals = nodes.setdefault('totals', {})
+        waiting = []
+        for actor, unknown in nodes.get('pending', []):
+            node = actor_nodes.get(actor)
+            if node is None:
+                waiting.append([actor, unknown])
+                continue
+            windows[node] = (windows.get(node, []) + [unknown])[-settings['window_attempts']:]
+            total = totals.setdefault(node, [0, 0])
+            total[0] += 1
+            total[1] += unknown
+        # Closes whose actor never shows a placement stay unattributed, counted once.
+        overflow = max(0, len(waiting) - 10000)
+        nodes['unattributed'] = nodes.get('unattributed', 0) + overflow
+        nodes['pending'] = waiting[overflow:]
+        excluded = nodes.setdefault('excluded', {})
+        logged = nodes.setdefault('logged', {})
+        for decision in node_exclusion_decisions(windows, excluded, settings):
+            node = decision['node']
+            record = {**decision, 'at': time.time(), 'total_attempts': totals[node][0],
+                      'total_unknown': totals[node][1], 'settings': settings,
+                      'configured_exclude_nodes': self.config.get('exclude_nodes') or []}
+            if decision['kind'] == 'node_unknown_exclusion':
+                excluded[node] = {**record, 'signalled_actors': []}
+            elif logged.get(node) == decision['kind']:
+                continue  # one typed record per node and outcome, not one per tick
+            logged[node] = decision['kind']
+            nodes.setdefault('events', []).append(record)
+            self.persist()
+            print(json.dumps({'kind': decision['kind'], 'node': node,
+                              'window_unknown': record['window_unknown'],
+                              'window_attempts': record['window_attempts']}),
+                  file=sys.stderr, flush=True)
+            self.telemetry('attention' if decision['kind'] != 'node_unknown_exclusion'
+                           else 'node_excluded', reason=decision['kind'], **{
+                               k: v for k, v in record.items() if k != 'kind'})
+        for node, record in excluded.items():
+            for row in rows:
+                if (row.get('node') == node and not row['terminal']
+                        and row['actor'] not in record['signalled_actors']):
+                    self.signal_once(row['array_job_id'])
+                    record['signalled_actors'].append(row['actor'])
+                    self.persist()
 
     def replace_actors(self, attempt: dict[str, Any]) -> None:
         import rl
 
         if self.state.get('audit_admission_paused'):
             return
-        terminal = [row for plan in attempt['actor_plans']
-                    for row in rl.actor_accounting(Path(plan)) if row['terminal']
+        settings = node_exclusion_settings(self.config)
+        rows = [row for plan in attempt['actor_plans']
+                for row in rl.actor_accounting(Path(plan), with_node=settings is not None)]
+        if settings is not None:
+            self.account_nodes(rows, settings)
+        terminal = [row for row in rows if row['terminal']
                     and row['actor'] not in attempt['replaced']]
         if not terminal:
             return
@@ -1612,7 +1756,7 @@ class SegmentWatcher(Watcher):
             constraint=self.config.get('actor_constraint'),
             node_types=self.config.get('actor_node_types'),
             memory_gb=self.config.get('actor_memory_gb', 4),
-            exclude_nodes=self.config.get('exclude_nodes'))
+            exclude_nodes=self.actor_exclude_nodes())
         attempt['actor_plans'].append(str(root / 'plan.json'))
         refs = [{'path': p, 'sha256': hashed(Path(p))} for p in attempt['actor_plans'][1:]]
         save(Path(attempt['root']) / 'actor-allocations.json', {'plans': refs})

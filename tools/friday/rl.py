@@ -596,15 +596,20 @@ def materialize_actor_runtime(reference: dict[str, str], scratch: Path,
     return derived_actor, receipt
 
 
-def actor_accounting(path: Path) -> list[dict[str, Any]]:
-    """Bind each array element to its frozen actor; don't confuse Slurm raw/display IDs."""
+def actor_accounting(path: Path, *, with_node: bool = False) -> list[dict[str, Any]]:
+    """Bind each array element to its frozen actor; don't confuse Slurm raw/display IDs.
+
+    ``with_node`` adds the scheduler NodeList for watcher node accounting only;
+    the learner's retirement rows keep their original fields.
+    """
     plan = load_plan(path)
     submission = read_published(path.parent / 'submission.json')
     if submission is None:
         return []
     job = str(submission['job_id']).split(';')[0]
     raw = subprocess.check_output(['sacct', '-n', '-P', '-j', job,
-        '--format=JobIDRaw,JobID,State,ExitCode'], text=True, timeout=15)
+        '--format=JobIDRaw,JobID,State,ExitCode' + (',NodeList' if with_node else '')],
+        text=True, timeout=15)
     rows = {}
     terminal = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY',
                 'NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'}
@@ -624,8 +629,13 @@ def actor_accounting(path: Path) -> list[dict[str, Any]]:
         if owner is not None and (owner.get('actor') != ref['actor']
                 or owner.get('job_id') != raw_id or owner.get('plan_sha256') != hashed(path)):
             raise ValueError('terminal_actor_owner_or_submission_binding_changed')
-        results.append({'actor': ref['actor'], 'job_id': raw_id, 'array_job_id': display,
-                        'state': state, 'exit_code': exit_code, 'terminal': state in terminal})
+        row = {'actor': ref['actor'], 'job_id': raw_id, 'array_job_id': display,
+               'state': state, 'exit_code': exit_code, 'terminal': state in terminal}
+        if with_node:
+            # A one-CPU array element has one node name, or none before placement.
+            node = entry[4].strip() if len(entry) > 4 else ''
+            row['node'] = node if NAME.fullmatch(node) else None
+        results.append(row)
     return results
 
 
