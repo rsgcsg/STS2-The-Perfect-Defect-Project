@@ -533,6 +533,9 @@ class BinaryBatchPreparer:
         # files until the SGD process reports them staged; this process never pins.
         self.handoff = handoff
         self.handoffs: dict[str, PreparedHandoff] = {}
+        # path -> its collector Future (filled under the condition by _enqueue).
+        # A hand-off registered before its Future completes is one batch, not two.
+        self.handoff_owners: dict[str, list[Future]] = {}
         self.source_wait_seconds = source_wait_seconds
         self.source_wait_seconds_total = 0.0
         self.main_source_wait_seconds = 0.0
@@ -895,6 +898,7 @@ class BinaryBatchPreparer:
         *args: Any,
     ) -> Future:
         epoch = self.pinned.epoch
+        owner: list[Future] = []
 
         def collect() -> Any:
             began = time.perf_counter()
@@ -922,7 +926,8 @@ class BinaryBatchPreparer:
                     if output is None:
                         raise RuntimeError("binary_output_descriptor_missing")
                     if self.handoff:
-                        handoff = self._handoff(result, output, began, sources_at, epoch)
+                        handoff = self._handoff(result, output, began, sources_at, epoch,
+                                                owner)
                         handed_off = True
                         return handoff
                     with output.open("rb") as input_stream:
@@ -967,6 +972,7 @@ class BinaryBatchPreparer:
 
         coordinator = self.coordinator if function is _assemble else self.label_coordinator
         result = coordinator.submit(collect)
+        owner.append(result)  # caller holds the condition; _handoff waits for it
 
         # A cancelled collector has never dispatched assembly. Decode jobs
         # independently retain their arenas, so only this reservation is released.
@@ -981,7 +987,7 @@ class BinaryBatchPreparer:
         return result
 
     def _handoff(self, result: _PackedBatch, output: Path, began: float,
-                 sources_at: float, epoch: int) -> PreparedHandoff:
+                 sources_at: float, epoch: int, owner: list[Future]) -> PreparedHandoff:
         summary = result.summary
         if summary is None or not isinstance(result.tree, bytes):
             raise RuntimeError("binary_handoff_summary_missing")
@@ -998,13 +1004,20 @@ class BinaryBatchPreparer:
                 summary["payload_bytes"], summary["minibatch_count"], str(output),
                 result.tree, result.arrays, summary["used_bytes"], summary["sha256"])
             self.handoffs[handoff.path] = handoff
+            self.handoff_owners[handoff.path] = owner
         return handoff
+
+    def _handed_off(self) -> int:
+        """Hand-offs whose collector Future already left `preparing` (held lock)."""
+        return sum(1 for path in self.handoffs
+                   if not any(f in self.preparing for f in self.handoff_owners.get(path, ())))
 
     def release_handoff(self, handoff: PreparedHandoff) -> None:
         """The SGD process owns pinned/device copies; remove the derived file."""
         with self.condition:
             if self.handoffs.pop(handoff.path, None) is not handoff:
                 raise ValueError("binary_handoff_not_owned")
+            self.handoff_owners.pop(handoff.path, None)
             self.condition.notify_all()
         Path(handoff.path).unlink()
 
@@ -1016,7 +1029,7 @@ class BinaryBatchPreparer:
             self.preparing = {f for f in self.preparing if not f.done()}
             if self.closed or self.fenced:
                 raise RuntimeError("binary_preparer_fenced_or_closed")
-            if len(self.preparing) + len(self.handoffs) >= self.prepared_batches:
+            if len(self.preparing) + self._handed_off() >= self.prepared_batches:
                 raise ValueError("binary_current_plus_next_limit")
             if (
                 type(request.max_output_bytes) is not int
@@ -1124,6 +1137,7 @@ class BinaryBatchPreparer:
             for path in self.handoffs:
                 Path(path).unlink(missing_ok=True)
             self.handoffs.clear()
+            self.handoff_owners.clear()
             self.next_arena = 0
             self.sources.clear()
             self.source_jobs.clear()

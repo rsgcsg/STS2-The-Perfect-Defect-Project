@@ -17,6 +17,7 @@ for this generation: no in-process fallback, no same-generation child restart.
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import gc
 import hashlib
@@ -210,7 +211,7 @@ def _cgroup_limit() -> tuple[int | None, str]:
 
 def memory_budget(*, options: SgdOptions, device: str, model_bytes: int,
                   source_bytes: int, prepare_source_bytes: int, prepared_bytes: int,
-                  per_batch_bytes: int, wal_bytes: int, workers: int,
+                  pinned_bytes: int, wal_bytes: int, workers: int,
                   paths: dict[str, Path]) -> dict[str, Any]:
     """Itemized upper bounds for the controller and SGD process in one cgroup.
 
@@ -235,8 +236,9 @@ def memory_budget(*, options: SgdOptions, device: str, model_bytes: int,
         ("controller", "wal", wal_bytes, filesystems["wal"], "configured"),
         ("sgd", "sgd_base", declared["sgd_base_cuda" if cuda else "sgd_base_cpu"], "anonymous",
          "declared"),
-        ("sgd", "pinned_slots" if cuda else "owned_batches", 2 * per_batch_bytes,
-         "pinned" if cuda else "anonymous", "derived: 2 x per-request output bound"),
+        ("sgd", "pinned_slots" if cuda else "owned_batches", pinned_bytes,
+         "pinned" if cuda else "anonymous",
+         "configured: two-slot cap = prepared_bytes, same cap as the in-process pinned slots"),
         ("sgd", "state_capture", 8 * model_bytes, "anonymous",
          "derived: CPU state 4x + encoded file 4x model bytes"),
     ]
@@ -306,6 +308,9 @@ class SgdProcess:
 
     def start(self, init: dict[str, Any]) -> dict[str, Any]:
         self.process.start()
+        # Last resort for any controller exit path that skips close(): the child
+        # ignores SIGTERM and is non-daemon, so interpreter exit would wait on it.
+        atexit.register(self.kill)
         self._child_end.close()
         self.reader = threading.Thread(target=self._read, name="rl-sgd-reader", daemon=True)
         self.reader.start()
@@ -509,6 +514,7 @@ class SgdProcess:
         for thread in (self.sender, self.reader):
             if thread is not None:
                 thread.join(5)
+        atexit.unregister(self.kill)
         self.exit = self._facts(shutdown_killed=killed,
                                 failure=self.failure.facts if self.failure else None)
         return self.exit

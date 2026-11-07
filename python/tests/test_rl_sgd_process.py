@@ -261,7 +261,7 @@ def test_memory_budget_counts_tmpfs_and_pinned_and_refuses_without_shrinking(tmp
     budget = memory_budget(
         options=SgdOptions(memory_limit_bytes=64 * GiB), device="cuda", model_bytes=10**8,
         source_bytes=20 * GiB, prepare_source_bytes=30 * GiB, prepared_bytes=8 * GiB,
-        per_batch_bytes=8 * GiB // 5, wal_bytes=4 * GiB, workers=15,
+        pinned_bytes=8 * GiB, wal_bytes=4 * GiB, workers=15,
         paths={"sources": Path("sources"), "arenas": Path("arenas"), "wal": Path("wal")})
     rows = {row["item"]: row for row in budget["items"]}
     assert rows["source_spool"]["counted"] and rows["prepare_arenas"]["counted"]
@@ -489,6 +489,68 @@ def test_child_start_failure_refuses_learner_before_listener(tmp_path, monkeypat
     final = json.loads((tmp_path / "owner" / "control-wal-final.json").read_bytes())
     assert final["events"][-1]["request"]["kind"] == "failed"
     assert final["events"][-1]["request"]["sgd_failure"]["code"] == "sgd_process_failed"
+    assert not list((tmp_path / "live").rglob("init.tree"))
+
+
+def test_failure_after_child_start_kills_the_child_before_raising(tmp_path, monkeypatch):
+    """Review H1: a listener/attachment failure must not leave a non-daemon child."""
+    import stpd.rl.segment_learner as module
+    from stpd.rl.sgd_process import SgdProcess
+
+    started = []
+    original = SgdProcess.start
+
+    def record(self, init):
+        started.append(self)
+        return original(self, init)
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("injected_listener_failure")
+
+    monkeypatch.setattr(SgdProcess, "start", record)
+    monkeypatch.setattr(module, "create_segment_inference_pool", refuse)
+    with pytest.raises(OSError, match="injected_listener_failure"):
+        terminal_owner(tmp_path, monkeypatch, episodes=0)
+    assert len(started) == 1 and not started[0].process.is_alive()
+    assert started[0].exit is not None
+
+
+def test_final_state_capture_failure_reports_sgd_failure(tmp_path, monkeypatch):
+    """Review M3: outside the loop fence the failed event still carries the child facts."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=2)
+    original = owner.sgd.expect
+
+    def die_on_state(kind, **kwargs):
+        if kind == "state":
+            os.kill(owner.sgd.pid, signal.SIGKILL)
+        return original(kind, **kwargs)
+
+    def stop(learner):
+        (learner.work / "STOP").touch()
+
+    monkeypatch.setattr(owner.sgd, "expect", die_on_state)
+    _run_with(owner, stop)
+    with pytest.raises(SgdProcessFailed):
+        owner.run()
+    final = json.loads((owner.work / "control-wal-final.json").read_bytes())
+    failed = [e["request"] for e in final["events"] if e["request"]["kind"] == "failed"]
+    assert len(failed) == 1 and failed[0]["sgd_failure"]["code"] == "sgd_process_exited"
+    assert failed[0]["sgd_failure"]["signal"] == "SIGKILL"
+
+
+def test_handoff_registered_before_its_future_completes_counts_once():
+    """Review M1: one batch is never counted in both `preparing` and `handoffs`."""
+    from stpd.rl.binary_preparation import BinaryBatchPreparer
+
+    preparer = BinaryBatchPreparer.__new__(BinaryBatchPreparer)
+    running, finished = Future(), Future()
+    finished.set_result(None)
+    preparer.preparing = {running}
+    preparer.handoffs = {"a": object(), "b": object()}
+    preparer.handoff_owners = {"a": [running], "b": [finished]}
+    assert preparer._handed_off() == 1  # "a" is still counted by `preparing`
+    preparer.preparing = set()
+    assert preparer._handed_off() == 2
 
 
 def test_stop_mid_dataset_finishes_only_the_started_dataset(tmp_path, monkeypatch):

@@ -733,81 +733,92 @@ class SegmentLearner:
             except BaseException as error:
                 self._abort_before_listener(error)
                 raise
-        self.pool = create_segment_inference_pool(
-            self.model.vocabulary,
-            initial["identity"],
-            control=self.control,
-            central_scoring=settings.central_scoring,
-            model=initial.get("model"),
-            max_batch=settings.inference_batch,
-            window_ms=settings.inference_window_ms,
-            segment_steps=settings.steps,
-            compiler_identity=self.compiler_identity,
-            dataplane={"sources": self.binary_sources, "upload_check": self._check_upload,
-                       "model_files": self._model_files, "on_failure": self._transport_failure}
-                       if self.dataplane is not None else None,
-        )
-        if self.dataplane is not None:
-            recipe = _resume_config(asdict(self.config))
-            cast(SegmentInferencePool, self.pool).binary_profile = {"binary_recipe": {
-                "producer": self.producer.to_dict(),
-                "recipe_digest": hashlib.sha256(json_bytes(recipe)).hexdigest(),
-                "use_and_seed_digest": hashlib.sha256(json_bytes({"training_split": "TRAIN",
-                    "excluded_seeds": settings.excluded_seeds})).hexdigest(),
-                "excluded_seeds": settings.excluded_seeds, "gae_lambda": settings.gae_lambda},
-                "mu_pull_interval_seconds": self.dataplane.get("mu_pull_interval_seconds", 15),
-                "mu_cache_bytes": self.dataplane.get("mu_cache_bytes", 512 * 1024**2)}
-            (work / "dataplane-profile.json").write_bytes(json_bytes({
-                **self.dataplane, "root": str(self.live_work),
-                "capacity_rows": settings.capacity_rows,
-                "episode_rows": settings.episode_rows, "fd_limits": self.fd_limits,
-                "local_scratch_probe": self.local_scratch_probe}))
-        for destination in {
-            work / "inference.json",
-            Path(settings.rendezvous_path) if settings.rendezvous_path else work / "inference.json",
-        }:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name("." + destination.name + "." + self.generation)
-            temporary.write_bytes(json_bytes(self.pool.attachment()))
-            temporary.replace(destination)
-        if restored is not None:
-            # Constructors/publication workers must not alter the resumed RNG.
-            torch.set_rng_state(restored.rng.torch_rng)
-            if restored.rng.python_random is not None:
-                random.setstate(restored.rng.python_random)
-            if self.device.type == "cuda":
-                torch.cuda.set_rng_state_all(list(restored.rng.cuda_rng))
-        from spireagent.storage.async_archive import ArchivedStore
+        try:
+            self.pool = create_segment_inference_pool(
+                self.model.vocabulary,
+                initial["identity"],
+                control=self.control,
+                central_scoring=settings.central_scoring,
+                model=initial.get("model"),
+                max_batch=settings.inference_batch,
+                window_ms=settings.inference_window_ms,
+                segment_steps=settings.steps,
+                compiler_identity=self.compiler_identity,
+                dataplane={"sources": self.binary_sources, "upload_check": self._check_upload,
+                           "model_files": self._model_files, "on_failure": self._transport_failure}
+                           if self.dataplane is not None else None,
+            )
+            if self.dataplane is not None:
+                recipe = _resume_config(asdict(self.config))
+                cast(SegmentInferencePool, self.pool).binary_profile = {"binary_recipe": {
+                    "producer": self.producer.to_dict(),
+                    "recipe_digest": hashlib.sha256(json_bytes(recipe)).hexdigest(),
+                    "use_and_seed_digest": hashlib.sha256(json_bytes({"training_split": "TRAIN",
+                        "excluded_seeds": settings.excluded_seeds})).hexdigest(),
+                    "excluded_seeds": settings.excluded_seeds, "gae_lambda": settings.gae_lambda},
+                    "mu_pull_interval_seconds": self.dataplane.get("mu_pull_interval_seconds", 15),
+                    "mu_cache_bytes": self.dataplane.get("mu_cache_bytes", 512 * 1024**2)}
+                (work / "dataplane-profile.json").write_bytes(json_bytes({
+                    **self.dataplane, "root": str(self.live_work),
+                    "capacity_rows": settings.capacity_rows,
+                    "episode_rows": settings.episode_rows, "fd_limits": self.fd_limits,
+                    "local_scratch_probe": self.local_scratch_probe}))
+            for destination in {
+                work / "inference.json",
+                (Path(settings.rendezvous_path) if settings.rendezvous_path
+                 else work / "inference.json"),
+            }:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_name("." + destination.name + "." + self.generation)
+                temporary.write_bytes(json_bytes(self.pool.attachment()))
+                temporary.replace(destination)
+            if restored is not None:
+                # Constructors/publication workers must not alter the resumed RNG.
+                torch.set_rng_state(restored.rng.torch_rng)
+                if restored.rng.python_random is not None:
+                    random.setstate(restored.rng.python_random)
+                if self.device.type == "cuda":
+                    torch.cuda.set_rng_state_all(list(restored.rng.cuda_rng))
+            from spireagent.storage.async_archive import ArchivedStore
 
-        self.archive = self.exchange.store.archive if isinstance(
-            self.exchange.store, ArchivedStore) else None
-        if self.archive is not None:
+            self.archive = self.exchange.store.archive if isinstance(
+                self.exchange.store, ArchivedStore) else None
+            if self.archive is not None:
+                if self.wal is not None:
+                    self.archive.start_capacity_monitor(settings.archive_poll_seconds,
+                                                         on_change=self._notify_capacity)
+                else:
+                    self.archive.start_capacity_monitor(settings.archive_poll_seconds)
             if self.wal is not None:
-                self.archive.start_capacity_monitor(settings.archive_poll_seconds,
-                                                     on_change=self._notify_capacity)
-            else:
-                self.archive.start_capacity_monitor(settings.archive_poll_seconds)
-        if self.wal is not None:
-            self.source_prefetch_thread = threading.Thread(
-                target=self._source_prefetch_loop, name="rl-source-prefetch", daemon=True)
-            self.source_prefetch_thread.start()
-        if self.sgd is not None:
-            # theta/Adam/EMA now exist only in the SGD process.
-            del self.model, self.optimizer, self.ema
-            self.sgd_owns_theta = True
+                self.source_prefetch_thread = threading.Thread(
+                    target=self._source_prefetch_loop, name="rl-source-prefetch", daemon=True)
+                self.source_prefetch_thread.start()
+            if self.sgd is not None:
+                # theta/Adam/EMA now exist only in the SGD process.
+                del self.model, self.optimizer, self.ema
+                self.sgd_owns_theta = True
+        except BaseException:
+            # A live SGD child must never outlive a learner that failed to come up
+            # (it is non-daemon; interpreter exit would wait on it).
+            if self.sgd is not None:
+                self.sgd.kill()
+                self.sgd.close()
+            raise
 
     def _start_sgd_process(self, restored: SelfContainedCheckpoint | None) -> None:
         assert self.sgd_options is not None and self.wal is not None and self.dataplane
         options, settings = self.sgd_options, self.settings
         model_bytes = sum(value.numel() * value.element_size()
                           for value in self.model.state_dict().values())
-        per_batch = settings.prepared_bytes // (self.prepared_batches + 1)
+        # Same retained-allocation cap as the in-process pinned slots (growth-only
+        # per-dtype buffers across two slots); counted in full by the budget.
+        pinned_bytes = settings.prepared_bytes
         preparer = cast("BinaryBatchPreparer", self.input_preparer)
         budget = memory_budget(
             options=options, device=self.config.device, model_bytes=model_bytes,
             source_bytes=self.binary_sources.max_bytes,
             prepare_source_bytes=preparer.maximum, prepared_bytes=settings.prepared_bytes,
-            per_batch_bytes=per_batch,
+            pinned_bytes=pinned_bytes,
             wal_bytes=self.dataplane.get("wal_max_bytes", 4 * 1024**3),
             workers=(preparer.workers + preparer.assembly_workers + preparer.label_workers + 4),
             paths={"sources": self.live_work / "sources", "arenas": self.live_work,
@@ -846,7 +857,7 @@ class SegmentLearner:
             "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
             "performance": asdict(self.performance), "target_kl": settings.target_kl,
             "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
-            "pinned_bytes": 2 * per_batch})
+            "pinned_bytes": pinned_bytes})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
@@ -878,6 +889,8 @@ class SegmentLearner:
             cleanup.callback(self.binary_sources.stop)
             if self.sgd is not None:
                 cleanup.callback(self.sgd.close)
+            # The derived init copy of theta/Adam never outlives a refused start.
+            cleanup.callback((self.live_work / "sgd" / "init.tree").unlink, missing_ok=True)
             with suppress(Exception):
                 self.exchange.publish_event(
                     "failed", training_generation=self.generation, updates=self.updates,
@@ -2701,6 +2714,14 @@ class SegmentLearner:
             }
             if getattr(self, "finalization_failure", None) is not None:
                 fields["finalization_failure"] = self.finalization_failure
+            if self.sgd_failure is None:
+                # A failure outside the training-loop fence (final publication,
+                # final CP state capture) still reports the child's facts.
+                cause: BaseException | None = error
+                while cause is not None and not isinstance(cause, SgdProcessFailed):
+                    cause = cause.__cause__ or cause.__context__
+                if cause is not None:
+                    self.sgd_failure = cause.facts
             if self.sgd_failure is not None:
                 fields["sgd_failure"] = self.sgd_failure
             try:
