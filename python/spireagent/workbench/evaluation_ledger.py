@@ -337,6 +337,10 @@ class EvaluationLedger:
                                     .get("terminal_observation") or {}).get("result"),
                 "trajectory_shard_id": row.get("trajectory_shard_id"),
                 "preservation_route": row.get("preservation_route"),
+                # Verified public progress before the error; a diagnostic lower
+                # bound only, never a natural endpoint or a score.
+                "public_max_observed_floor": (row.get("game_metrics") or {}).get(
+                    "max_observed_floor"),
             }
         return {
             **value,
@@ -366,6 +370,14 @@ class EvaluationLedger:
         Unknown/censored results belong to their own slots; other isolated workers
         continue. Unconfirmed cleanup stops admission because a process may still
         consume the bounded worker capacity. No unknown slot is offered again.
+
+        A closed game whose save fails is excluded and admission continues. When no
+        work is left, each such save is retried once through ``preserve_report`` (the
+        same resume-save path and identity checks); the game is never re-executed.
+        A retry that fails again stays ``save_failed`` with its originals retained;
+        on the formal-audit slot ``report()`` then leaves the whole cohort unscored.
+        Only ``preserve_report`` failures are deferred: a trajectory-shard upload
+        failure still stops admission (its members stay ``trajectory_pending``).
         """
         if (
             self.plan.get("host_kind") != "managed"
@@ -419,6 +431,10 @@ class EvaluationLedger:
         active: dict[Any, tuple[dict[str, Any], Path, str]] = {}
         pipeline = pipeline_configuration(configuration)
         trajectory_wait: list[tuple[dict[str, Any], Path]] = []
+        # Closed games whose save failed during this call: one batch-end retry each.
+        deferred_saves: list[tuple[dict[str, Any], Path]] = []
+        save_retried: set[str] = set()
+        save_failed_after_retry: list[str] = []
         stop_reason = None
         began = time.monotonic()
         dispatched = 0
@@ -469,6 +485,11 @@ class EvaluationLedger:
                 path = Path(slot["attempt_report"])
                 if slot["status"] == "trajectory_pending":
                     trajectory_wait.append((slot, path))
+                elif slot["status"] == "save_failed":
+                    # An explicit resume of a failed save is that save's retry.
+                    save_retried.add(slot["slot_id"])
+                    active[saves.submit(executor.preserve_report, path)] = (
+                        slot, path, "save_retry")
                 else:
                     active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
             exhausted = False
@@ -477,7 +498,8 @@ class EvaluationLedger:
                 return len(trajectory_wait) + sum(len(slot.get("shard_slots", [slot]))
                                                 for slot, _, _ in active.values())
 
-            while active or trajectory_wait or not exhausted and stop_reason is None:
+            while (active or trajectory_wait or deferred_saves
+                   or not exhausted and stop_reason is None):
                 executing = sum(stage == "execute" for _, _, stage in active.values())
                 # Free bounded save credits under pressure rather than waiting
                 # for an unrelated slow game to fill the eight-episode shard.
@@ -518,6 +540,14 @@ class EvaluationLedger:
                         slot, attempt / "report.json", "execute")
                     dispatched += 1
                     executing += 1
+                if not active and deferred_saves and not trajectory_wait:
+                    # Batch end: no game executes and no shard waits. Retry the
+                    # save only; the closed World is never offered again.
+                    for slot, path in deferred_saves:
+                        save_retried.add(slot["slot_id"])
+                        active[saves.submit(executor.preserve_report, path)] = (
+                            slot, path, "save_retry")
+                    deferred_saves.clear()
                 if not active:
                     break
                 done, _ = wait(active, return_when=FIRST_COMPLETED)
@@ -540,10 +570,14 @@ class EvaluationLedger:
                         result = future.result()
                         value = self._managed_result(result["episodes"][0], path)
                     except Exception as error:
-                        value = {"status": "save_failed" if stage == "save" else "unknown",
+                        saving = stage in {"save", "save_retry"}
+                        value = {"status": "save_failed" if saving else "unknown",
                             "reason": error.code if isinstance(error, BoundaryError)
                             else type(error).__name__, "report": reference(path) if path.exists()
-                            else None, "cleanup_accepted": stage == "save"}
+                            else None, "cleanup_accepted": saving}
+                    if stage == "save_retry":
+                        value["resume_save_retry"] = (
+                            "failed" if value["status"] == "save_failed" else "recovered")
                     self.event(slot["slot_id"], "result", result=value)
                     if value["status"] == "save_pending" and value.get("cleanup_accepted"):
                         active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
@@ -555,7 +589,12 @@ class EvaluationLedger:
                     if not value.get("cleanup_accepted"):
                         stop_reason = "unknown_cleanup_requires_owner_read"
                     elif value["status"] == "save_failed":
-                        stop_reason = "save_failed_resume_save_only"
+                        # Never a stopped batch (card RL5 3E): one excluded pair, or
+                        # on the formal-audit slot an unscored cohort via report().
+                        if slot["slot_id"] in save_retried:
+                            save_failed_after_retry.append(slot["slot_id"])
+                        else:
+                            deferred_saves.append((slot, path))
         return {
             "status": "stopped" if stop_reason else "completed",
             "stop_reason": stop_reason,
@@ -564,6 +603,8 @@ class EvaluationLedger:
             "pipeline": pipeline,
             "dispatched": dispatched,
             "new_finished": finished,
+            "save_retried": sorted(save_retried),
+            "save_failed_after_retry": save_failed_after_retry,
             "elapsed_seconds": time.monotonic() - began,
         }
 

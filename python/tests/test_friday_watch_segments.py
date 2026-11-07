@@ -503,6 +503,8 @@ def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
             assert owner.state['stop'] is None
     assert owner.state['evaluations'][0]['paired_regression'] is False
     assert owner.state['evaluations'][-1]['against_previous']['mean_delta'] == 1
+    assert owner.state['evaluations'][-1]['reward']['planned'] == 2
+    assert 'mean_difference_bound' in owner.state['evaluations'][-1]['reward_against_previous']
     if reference == 'previous':
         assert owner.state['stop'] is None
         assert owner.state['evaluations'][-1]['paired_regression'] is False
@@ -514,6 +516,18 @@ def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
     assert rollback['checkpoint_artifact_id'] == 'anchor'
     assert rollback['recipe_after_diagnosis'] == recipe
     assert rollback['automatic_training_resume'] is False
+
+
+@pytest.mark.parametrize('status, closed', [('save_failed', True), ('save_pending', False)])
+def test_save_failed_after_retry_is_one_excluded_pair_in_the_segment_evaluation(
+        owner, watch, tmp_path, monkeypatch, status, closed):
+    (tmp_path / 'snapshot.json').write_text('{"full_readback": true}')
+    slots = ([{'status': 'finished', 'cleanup_accepted': True}] * 49
+             + [{'status': status, 'cleanup_accepted': True}])
+    result = {'ledger_report': {'slots': slots, 'score_admitted': True}}
+    monkeypatch.setattr(watch.evaluate, 'read_observation_report',
+                        lambda *a: ({}, result, {'cohort': {'rows': []}}))
+    assert owner.evaluation_cohort(tmp_path / 'plan.json', tmp_path / 'result.json')[3] is closed
 
 
 def test_closed_training_window_stops_replacement_while_learner_still_drains(

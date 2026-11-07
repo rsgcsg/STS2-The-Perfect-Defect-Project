@@ -51,15 +51,15 @@ def normal_result(quick, plan_path, scenario):
     episodes = []
     for slot in slots:
         n = slot['seed_ordinal']
-        status = 'unknown' if n in unknown else 'finished'
+        status = slot.pop('fixture_status', 'unknown' if n in unknown else 'finished')
         if unsettled and n != slots[0]['seed_ordinal']:
             slot.update(status='not_started', world_mutation_offered=False)
             continue
         floor = slot.pop('fixture_floor',
-                         None if status == 'unknown' else 12 if role == 'current' else 10)
+                         None if status != 'finished' else 12 if role == 'current' else 10)
         run_id = role + '-' + str(n)
         slot.update(status=status, run_id=run_id,
-                    natural_result=None if status == 'unknown' else 'loss',
+                    natural_result=None if status != 'finished' else 'loss',
                     max_observed_floor=floor, cleanup_accepted=not unsettled,
                     world_mutation_offered=True)
         episodes.append({'seed': slot['seed'], 'run_id': run_id, 'observations': [],
@@ -156,6 +156,60 @@ def test_unknown_on_either_side_refills_new_ordinals_without_replay(quick, tmp_p
     assert result['new_baseline_world_offers'] == 2
     assert len(result['baseline_cache']) == len(plan['baseline_cache']) + 2
     assert result['raw_ledger_flags_unchanged']
+
+
+def test_save_failed_after_retry_is_an_excluded_pair_and_refills(quick, tmp_path, monkeypatch):
+    """Card RL5 3E: the round continues; the failed seed is never offered again."""
+    path, _plan = configured(quick, tmp_path, monkeypatch)
+    offers = []
+
+    def execute(batch_path, *, on_stop=None):
+        batch = quick.evaluate.load_plan(batch_path)
+        role = next(iter(batch['selections']))
+        offers.append((role, batch['seed_ordinals']))
+
+        def scenario(_role, slots):
+            if role == 'current' and batch['seed_ordinals'][0] == 1:
+                next(s for s in slots if not s['formal_audit_selected'])[
+                    'fixture_status'] = 'save_failed'
+            return set(), True, False
+        normal_result(quick, batch_path, scenario)
+
+    monkeypatch.setattr(quick.evaluate, 'run', execute)
+    result = quick.run(path)
+    assert result['complete'] and result['paired_n'] == 20
+    assert offers == [('current', list(range(1, 21))), ('current', [21]), ('baseline', [21])]
+    statuses = [r['status'] for r in result['batches'][1]['cohort']['rows']]
+    assert statuses.count('save_failed') == 1
+
+
+def test_audit_slot_save_failed_leaves_the_batch_unscored_not_one_pair(
+        quick, tmp_path, monkeypatch):
+    """Review R2: like an unknown audit, a failed audit save qualifies no row of its batch."""
+    path, _ = configured(quick, tmp_path, monkeypatch)
+    offers = []
+
+    def execute(batch_path, *, on_stop=None):
+        plan = quick.evaluate.load_plan(batch_path)
+        role = next(iter(plan['selections']))
+        offers.append((role, plan['seed_ordinals']))
+
+        def scenario(_role, slots):
+            if role == 'current' and plan['seed_ordinals'][0] == 1:
+                next(s for s in slots if s['formal_audit_selected'])[
+                    'fixture_status'] = 'save_failed'
+                return set(), False, False
+            return set(), True, False
+        normal_result(quick, batch_path, scenario)
+
+    monkeypatch.setattr(quick.evaluate, 'run', execute)
+    result = quick.run(path)
+    assert result['complete'] and result['paired_n'] == 20
+    assert offers == [('current', list(range(1, 21))), ('current', list(range(21, 41))),
+                      ('baseline', list(range(21, 41)))]
+    batch = result['batches'][1]
+    assert batch['closed'] and batch['raw_score_admitted'] is False
+    assert not quick.qualified(batch)
 
 
 def test_unknown_audit_never_qualifies_other_natural_rows(quick, tmp_path, monkeypatch):

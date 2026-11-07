@@ -623,6 +623,41 @@ def test_preservation_handoff_does_not_waive_unknown_cleanup_or_foreign_result(
             rl.finished_actor_results(path, plan)
 
 
+@pytest.mark.parametrize('variant', ['startup_failure', 'exception_before_process',
+                                     'foreign_run', 'exit_zero_without_summary'])
+def test_failed_actor_without_summary_is_finished_failure_not_foreign(
+        rl, inputs, tmp_path, variant):
+    """11-07 c12: an Actor exiting 1 at startup seals original_summary=None."""
+    plan, path = prepared(rl, inputs, actors=1)
+    ref = plan['actors'][0]
+    persistent = path.parent / 'actors' / ref['actor']
+    persistent.mkdir(parents=True)
+    scratch = tmp_path.resolve() / 'startup-failure'
+    scratch.mkdir()
+    (persistent / 'owner.json').write_text(json.dumps({'actor': ref['actor'], 'job_id': '42',
+        'scratch': str(scratch), 'plan_sha256': rl.hashed(path)}))
+    # Real shape of attempt-0012 friday-ce148a5bbc4c-00/result.json (materialization elided).
+    result = {'schema': 'spireagent/friday-RL-result-v1', 'actor': ref['actor'],
+        'run': plan['run'], 'actor_config_sha256': ref['sha256'],
+        'scratch_retained': str(scratch), 'exit_code': 1, 'error_type': None,
+        'error_code': None, 'original_summary': None, 'retry_unknown': False,
+        'cross_actor_immediate_unknown_stop': False, 'forwarded_actor_signals': [],
+        'runtime_materialization': {'cache_hit': True}, 'host_materialization': {},
+        'wall_seconds': 37.9}
+    if variant == 'exception_before_process':
+        result.update(exit_code=None, error_type='BoundaryError')
+    elif variant == 'foreign_run':
+        result['run'] = 'another-run'
+    elif variant == 'exit_zero_without_summary':
+        result['exit_code'] = 0
+    (persistent / 'result.json').write_text(json.dumps(result))
+    if variant in {'foreign_run', 'exit_zero_without_summary'}:
+        with pytest.raises(ValueError, match='result_binding_changed'):
+            rl.finished_actor_results(path, plan)
+    else:
+        assert rl.finished_actor_results(path, plan) is None
+
+
 def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
         rl, inputs, tmp_path):
     _plan, parent = prepared(rl, inputs, actors=32)
