@@ -271,11 +271,16 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 每个actor结果带`node_nfs_events`：分配开始和结束时节点内核日志里NFS lost locks、state manager失败、
 server not responding的计数差（读不到内核日志记`kernel_log_unavailable`），供节点诊断用，不影响门和排除。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
-learner的`failed`按`watch.learner_failure_class`的闭表分类（OPS设计§2 (a)）。可恢复的只有两类：
-SGD子进程级死亡（`sgd_process_exited`/`sgd_process_stalled`，不含协议违例），以及CUDA OOM（`OutOfMemoryError`）。
-这两类不停run：本attempt以`learner_crash_recoverable`停下，写一条`recoveries`记录，发一次`attention`；
-learner和actor都到终态后，照常从最新完整CP开新attempt，次数受`max_recoveries`限制。本窗口还没写出CP时，
-从窗口起点CP重进（#388）。表外的一律按不可恢复处理，仍停在`learner_failed_requires_diagnosis`。
+learner的`failed`按`watch.learner_failure_class`的闭表分类（OPS设计§2 (a)），由事件自己的终止错误决定：
+只有终止错误就是SGD fence/abort结果（`error_code=input_owner_fenced_restore_last_checkpoint`或
+`error_type=SgdProcessFailed`，且没有`finalization_failure`）时，才看`sgd_failure`。可恢复的只有两类：
+SGD子进程级死亡（`sgd_process_stalled`，或带信号的`sgd_process_exited`；无信号的exitcode 1算不明错误，
+不含协议违例），以及CUDA OOM（`OutOfMemoryError`）。
+这两类不停run：本attempt以`learner_crash_recoverable`停下，写一条`recoveries`记录（错误类型/代码、
+起点CP，开新attempt时补上恢复的CP id、CP年龄和丢掉的updates），发一次`attention`；
+learner和actor都到终态后，照常从最新完整CP开新attempt。最近2条恢复规则相同且恢复的是同一个CP
+（中间没写出新CP）时，停在`learner_recovery_limit_requires_diagnosis`；`max_recoveries`仍是总上限。
+本窗口还没写出CP时，从窗口起点CP重进（#388）。表外的一律按不可恢复处理，仍停在`learner_failed_requires_diagnosis`。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
 `acknowledged_integrity_events={原event key:原record_sha256}`具名确认已经诊断的finding；
@@ -416,8 +421,10 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
   清单按来源、按节点类型计数，并点名actor类型（如fc430）里被排除的节点。
 - `--readmit NODE`（可多次，必须是当前排除的节点，必须带`--readmit-evidence`）：从`exclude_nodes`去掉，
   写`readmit_nodes`（watch在同窗口续跑时移出继承的自动排除）和累积的`node_readmissions`记录
-  （节点、原排除来源、证据、哪次swap）。每个`--readmit`节点先跑一个1核只读探查（`srun --immediate=120 dmesg`），
-  最近6 h内有`kthread_run: -4`（NFS客户端state manager失败，每次坏节点停训都有），或者探查读不到，就拒绝
+  （节点、原排除来源、证据、哪次swap）。每个`--readmit`节点先跑一个1核只读探查（`srun --immediate=120
+  --chdir=/tmp`，读`/proc/uptime`和`dmesg`；`--dry-run`不提交探查，记`skipped_dry_run`），
+  最近6 h内有`kthread_run: -4`（NFS客户端state manager失败，每次坏节点停训都有），或者探查读不到、
+  内核日志为空或没覆盖满6 h（`kernel_log_window_incomplete`，ring buffer已回卷），就拒绝
   （`readmit_node_recent_nfs_state_loss`/`readmit_node_nfs_check_unavailable`）。确实要放回时，
   传`--acknowledge nfs_state_loss:NODE=理由`；结果和理由都写进该节点的`node_readmissions`记录。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
 - `--eval-node NODE`：评估池，加进actor的`exclude_nodes`，写`evaluation.pool_nodes`，`evaluation.exclude_nodes` =

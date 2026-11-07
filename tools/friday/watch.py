@@ -1417,25 +1417,45 @@ def require_acknowledged_findings(previous: dict[str, Any], config: dict[str, An
 # closed): semantic, integrity, identity, CP or budget failures need diagnosis.
 RECOVERABLE_SGD_CODES = frozenset({'sgd_process_exited', 'sgd_process_stalled'})
 RECOVERABLE_ERROR_TYPES = frozenset({'OutOfMemoryError'})  # torch CUDA OOM, child or parent
+# The terminal error a learner raises when it fences on its SGD child's failure.
+SGD_FENCE_CODE = 'input_owner_fenced_restore_last_checkpoint'
+SAME_CAUSE_RECOVERY_LIMIT = 2
 
 
 def learner_failure_class(event: dict[str, Any]) -> dict[str, Any]:
-    """Typed class of one learner ``failed`` event; ``recoverable`` only from the table."""
+    """Typed class of one learner ``failed`` event; ``recoverable`` only from the table.
+
+    The event's own terminal error decides. ``sgd_failure`` is sticky for the generation
+    once the fence ran, so it only refines a terminal error that is the fence/abort
+    outcome itself; a later different error (for example in ``close``) needs diagnosis.
+    """
     raw = event.get('sgd_failure') or {}
     if not isinstance(raw, dict) or raw.get('protocol_violation') or event.get('failure'):
         return {'recoverable': False, 'rule': 'protocol_or_transport_failure'}
+    terminal = {'error_type': event.get('error_type'), 'error_code': event.get('error_code')}
+    if event.get('finalization_failure') is not None:
+        return {'recoverable': False, 'rule': 'finalization_failure', **terminal}
     sgd: dict[str, Any] = raw
     child: dict[str, Any] = sgd['child'] if isinstance(sgd.get('child'), dict) else {}
-    if sgd.get('code') in RECOVERABLE_SGD_CODES:
-        return {'recoverable': True, 'rule': 'sgd_process_level', 'code': sgd['code'],
-                'signal': sgd.get('signal'), 'exitcode': sgd.get('exitcode')}
-    if (sgd.get('code') == 'sgd_process_failed'
-            and child.get('error_type') in RECOVERABLE_ERROR_TYPES) or (
-            not sgd and event.get('error_type') in RECOVERABLE_ERROR_TYPES):
-        return {'recoverable': True, 'rule': 'out_of_memory',
-                'error_type': child.get('error_type') or event.get('error_type')}
+    if sgd:
+        if not (event.get('error_code') == SGD_FENCE_CODE
+                or event.get('error_type') == 'SgdProcessFailed'):
+            return {'recoverable': False, 'rule': 'terminal_error_not_sgd_fence',
+                    'sgd_code': sgd.get('code'), **terminal}
+        # An exit without a signal (exitcode 1) is an unexplained child error, not a
+        # process-level death; stalled stays recoverable.
+        if sgd.get('code') == 'sgd_process_stalled' or (
+                sgd.get('code') == 'sgd_process_exited' and sgd.get('signal') is not None):
+            return {'recoverable': True, 'rule': 'sgd_process_level', 'code': sgd['code'],
+                    'signal': sgd.get('signal'), 'exitcode': sgd.get('exitcode'), **terminal}
+        if sgd.get('code') == 'sgd_process_failed' and child.get('error_type') in \
+                RECOVERABLE_ERROR_TYPES:
+            return {'recoverable': True, 'rule': 'out_of_memory',
+                    'child_error_type': child['error_type'], **terminal}
+    elif event.get('error_type') in RECOVERABLE_ERROR_TYPES:
+        return {'recoverable': True, 'rule': 'out_of_memory', **terminal}
     return {'recoverable': False, 'rule': 'not_in_recoverable_table',
-            'error_type': event.get('error_type'), 'sgd_code': sgd.get('code')}
+            'sgd_code': sgd.get('code'), 'signal': sgd.get('signal'), **terminal}
 
 
 def checkpoint_link(cp: dict[str, Any], config: dict[str, Any], *, has_history: bool) -> bool:
@@ -1988,6 +2008,7 @@ class SegmentWatcher(Watcher):
         from spireagent.storage.store import copy_artifact
         from stpd.rl.learner import LearnerConfig
         base = LearnerConfig.read(Path(self.config['learner_config']))
+        self.selected_checkpoint_published_at: float | None = None
         linked = bool(self.config.get('previous_window_state'))
         if linked and not self.state['attempts']:
             assert base.resume_checkpoint is not None
@@ -2026,6 +2047,10 @@ class SegmentWatcher(Watcher):
                                parent_checkpoint_artifact_id=base.resume_checkpoint)
                 return (cp if identity == base.resume_checkpoint
                         else self.cold_checkpoint(base.resume_checkpoint))
+            # Publication time of the restored CP, for the recovery record's CP age.
+            self.selected_checkpoint_published_at = next(
+                (r['published_at'] for r in reversed(records)
+                 if r['checkpoint_artifact_id'] == identity), None)
             return cp
         raise ValueError('no_independently_recoverable_checkpoint')
 
@@ -2073,6 +2098,10 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
+        if self.restored_after_recovery(cp):
+            self.state['stop'] = 'learner_recovery_limit_requires_diagnosis'
+            self.persist()
+            return
         new_window = checkpoint_link(cp, self.config, has_history=bool(
             self.state['attempts'] or self.config.get('previous_watch_state')))
         if cp.get('operating_budget') is not None and not new_window:
@@ -2318,14 +2347,49 @@ class SegmentWatcher(Watcher):
         if attempt.get('recovery_recorded'):
             return
         attempt['recovery_recorded'] = True
+        failed = attempt['failed']
         record = {'at': time.time(), 'attempt': self.state['active'],
-                  'generation': attempt.get('generation'),
-                  'updates': attempt['failed'].get('updates'),
+                  'generation': attempt.get('generation'), 'failed_at': failed.get('at'),
+                  'updates': failed.get('updates'), 'error_type': failed.get('error_type'),
+                  'error_code': failed.get('error_code'),
+                  'from_checkpoint_artifact_id': (attempt.get('checkpoint') or {}).get(
+                      'checkpoint_artifact_id'),
                   'class': attempt['failure_class']}
         self.state.setdefault('recoveries', []).append(record)
         self.telemetry('attention', reason='learner_crash_recoverable_new_attempt',
                        **{k: v for k, v in record.items() if k != 'at'})
         self.persist()
+
+    def restored_after_recovery(self, cp: dict[str, Any]) -> bool:
+        """Complete the newest recovery row with the CP the next attempt restores (id,
+        age at the crash, updates lost) and report a same-cause loop: the last
+        ``SAME_CAUSE_RECOVERY_LIMIT`` recoveries had one rule and restored one CP, so no
+        newer CP was written in between. ``max_recoveries`` stays the outer bound."""
+        rows = self.state.get('recoveries') or []
+        if not rows or 'restored_checkpoint_artifact_id' in rows[-1]:
+            return False
+        row = rows[-1]
+        published = getattr(self, 'selected_checkpoint_published_at', None)
+        failed_at = row.get('failed_at')
+        updates = row.get('updates')
+        row.update(restored_checkpoint_artifact_id=cp['checkpoint_artifact_id'],
+                   restored_checkpoint_updates=cp.get('updates'),
+                   checkpoint_age_seconds=(failed_at - published
+                                           if failed_at is not None and published is not None
+                                           else None),
+                   updates_lost=(updates - cp['updates']
+                                 if updates is not None and cp.get('updates') is not None
+                                 else None))
+        last = [r for r in rows if 'restored_checkpoint_artifact_id' in r][
+            -SAME_CAUSE_RECOVERY_LIMIT:]
+        same = len(last) == SAME_CAUSE_RECOVERY_LIMIT and len(
+            {(r['class'].get('rule'), r['restored_checkpoint_artifact_id']) for r in last}) == 1
+        self.persist()
+        if same:
+            self.telemetry('attention', reason='learner_recovery_limit_requires_diagnosis',
+                           rule=row['class'].get('rule'),
+                           restored_checkpoint_artifact_id=cp['checkpoint_artifact_id'])
+        return same
 
     def stop_attempt(self, attempt: dict[str, Any], reason: str, *,
                      learner_terminal: bool = False) -> None:

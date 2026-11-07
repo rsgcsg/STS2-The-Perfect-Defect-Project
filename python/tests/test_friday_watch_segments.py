@@ -196,23 +196,35 @@ def test_failed_event_stops_before_live_or_terminal_allocation_can_recover(
 
 
 def test_learner_failure_classes_are_a_closed_table(watch):
-    """OPS design §2 (a): only process-level SGD deaths and CUDA OOM are recoverable."""
+    """OPS design §2 (a): only process-level SGD deaths and CUDA OOM are recoverable, and
+    only when the event's own terminal error is the SGD fence/abort outcome."""
     cls = watch.learner_failure_class
+    fence = {'error_type': 'BoundaryError', 'error_code': watch.SGD_FENCE_CODE}
     exited = {'error_type': 'SgdProcessFailed',
               'sgd_failure': {'code': 'sgd_process_exited', 'signal': 'SIGKILL', 'exitcode': -9}}
     assert cls(exited)['recoverable'] is True and cls(exited)['signal'] == 'SIGKILL'
-    assert cls({'sgd_failure': {'code': 'sgd_process_stalled'}})['recoverable'] is True
-    oom = {'sgd_failure': {'code': 'sgd_process_failed',
-                           'child': {'error_type': 'OutOfMemoryError'}}}
+    assert cls({**fence, 'sgd_failure': {'code': 'sgd_process_stalled'}})['recoverable'] is True
+    oom = {'error_type': 'SgdProcessFailed', 'sgd_failure': {
+        'code': 'sgd_process_failed', 'child': {'error_type': 'OutOfMemoryError'}}}
     assert cls(oom)['rule'] == 'out_of_memory'
     assert cls({'error_type': 'OutOfMemoryError'})['recoverable'] is True
     for bad in ({'error_type': 'KeyError'}, {'error_type': 'IntegrityError'},
-                {'sgd_failure': {'code': 'sgd_process_failed',
-                                 'child': {'error_type': 'ValueError'}}},
-                {'sgd_failure': {'code': 'sgd_process_exited', 'protocol_violation': True}},
+                {**fence, 'sgd_failure': {'code': 'sgd_process_failed',
+                                          'child': {'error_type': 'ValueError'}}},
+                {**fence, 'sgd_failure': {'code': 'sgd_process_exited',
+                                          'protocol_violation': True}},
+                # exitcode 1 without a signal: an unexplained child error, not a death
+                {**fence, 'sgd_failure': {'code': 'sgd_process_exited', 'signal': None,
+                                          'exitcode': 1}},
+                # sticky sgd_failure behind a different terminal error (e.g. in close)
+                {**exited, 'error_type': 'ValueError', 'error_code': None},
+                {**exited, 'finalization_failure': {'error_type': 'OSError'}},
+                {'error_type': 'OutOfMemoryError', 'finalization_failure': {'stage': 'cp'}},
+                {'sgd_failure': {'code': 'sgd_process_stalled'}},
                 {'failure': {'fatal': True}, 'error_type': 'OutOfMemoryError'},
                 {'sgd_failure': 'garbled'}, {}):
         assert cls(bad)['recoverable'] is False, bad
+    assert cls({**exited, 'error_type': 'ValueError'})['rule'] == 'terminal_error_not_sgd_fence'
 
 
 def test_recoverable_learner_crash_starts_a_new_attempt_after_terminal(owner, watch,
@@ -260,6 +272,65 @@ def test_recoverable_learner_crash_starts_a_new_attempt_after_terminal(owner, wa
     assert owner.state["active"] is None and len(owner.state["recoveries"]) == 2
     assert owner.state["recoveries"][1]["class"]["rule"] == "out_of_memory"
     assert owner.state["stop"] is None
+
+
+def test_same_cause_recoveries_from_one_checkpoint_stop_for_diagnosis(owner, watch,
+                                                                      monkeypatch):
+    """A deterministic OOM after the newest CP must not loop on GPU-hours: two recoveries
+    with one rule that restored one CP stop the run (max_recoveries is only the outer
+    bound). The real start_attempt runs up to the launch, which a sentinel replaces."""
+    owner.config.update(max_recoveries=14, cpu_only=True)
+    for name in ("collect_segment_evaluation", "schedule_segment_evaluation",
+                 "retain_segment_checkpoints"):
+        setattr(owner, name, lambda: None)
+    owner.stop_attempt = lambda *a, **k: None
+    alarms = []
+    owner.telemetry = lambda kind, **f: alarms.append(f.get('reason'))
+    monkeypatch.setitem(watch.sys.modules, "rl", SimpleNamespace())
+    monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": True})
+    restores = iter([("cp-a", 362, 100.0), ("cp-b", 380, 200.0), ("cp-b", 380, 200.0)])
+
+    def select():
+        identity, updates, published = next(restores)
+        owner.selected_checkpoint_published_at = published
+        return {"checkpoint_artifact_id": identity, "updates": updates}
+    owner.select_checkpoint = select
+
+    class Launched(Exception):
+        pass
+
+    def no_launch(cp, *_, **__):
+        raise Launched(cp["checkpoint_artifact_id"])
+    monkeypatch.setattr(watch, "checkpoint_link", no_launch)
+    real, launched = owner.start_attempt, []
+
+    def start():  # the real cap checks; stop at the launch and record a new attempt
+        try:
+            real()
+        except Launched as cp:
+            new = attempt(owner)
+            new.update(actor_plans=[], generation=f"g-{len(launched)}",
+                       checkpoint={"checkpoint_artifact_id": str(cp), "updates": 0})
+            owner.state["active"] = len(owner.state["attempts"]) - 1
+            launched.append(str(cp))
+    owner.start_attempt = start
+    first = attempt(owner)
+    first.update(actor_plans=[], checkpoint={"checkpoint_artifact_id": "cp-a", "updates": 362})
+    for generation, updates in (("g-one", 390), ("g-0", 395), ("g-1", 396)):
+        event(owner, "failed", training_generation=generation, error_type="OutOfMemoryError",
+              updates=updates)
+        owner.tick_segment()  # terminal: one recovery row, attempt closes
+        owner.tick_segment()  # next attempt, or the same-cause stop
+    assert launched == ["cp-a", "cp-b"]
+    assert owner.state["stop"] == "learner_recovery_limit_requires_diagnosis"
+    assert len(owner.state["attempts"]) == 3
+    rows = owner.state["recoveries"]
+    assert [r["restored_checkpoint_artifact_id"] for r in rows] == ["cp-a", "cp-b", "cp-b"]
+    assert rows[0]["updates_lost"] == 28 and rows[0]["error_type"] == "OutOfMemoryError"
+    assert rows[0]["from_checkpoint_artifact_id"] == "cp-a"
+    assert rows[0]["checkpoint_age_seconds"] == rows[0]["failed_at"] - 100.0
+    assert alarms.count("learner_crash_recoverable_new_attempt") == 3
+    assert alarms[-1] == "learner_recovery_limit_requires_diagnosis"
 
 
 def test_named_diagnosed_finding_allows_new_owner_without_deleting_history(owner, watch, tmp_path):
