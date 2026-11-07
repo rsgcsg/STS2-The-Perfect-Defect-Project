@@ -466,6 +466,42 @@ def test_live_http_runtime_is_stopped_once_after_handoff_not_waited_to_deadline(
     assert "runtime_stop" in row and "wall_limit_reached" not in row
 
 
+@pytest.mark.parametrize("exhausted_reason,marked",
+                         [("deadline", True), ("submission_attempt_limit", False)])
+def test_runtime_deadline_exhaustion_marks_the_wall_limit(tmp_path, monkeypatch,
+                                                         exhausted_reason, marked):
+    # Runtime gets the same absolute per-game limit and may exhaust it before our poll.
+    from spireagent.workbench import managed_evaluation
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    artifacts = _Artifacts(tmp_path / "attempt")
+    stdout = tmp_path / "stdout"
+    startup = {"schema": "sts2.policy-runtime/agent-session-startup-2",
+               "run_id": "owned-run", "address": "http://127.0.0.1:12345"}
+    stdout.write_bytes(json_bytes(startup))
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            self.returncode = 0
+
+    class Client:
+        def request(self, route, body=None):
+            return {"status": {"lifecycle": "running", "mode": "auto", "tainted": False,
+                               "autonomy_budget": {"state": "exhausted",
+                                                   "exhausted_reason": exhausted_reason}}}
+
+    monkeypatch.setattr(managed_evaluation, "RuntimeClient", lambda address, original: Client())
+    row = {}
+    managed_evaluation._finish_runtime(
+        Process(), stdout, row, artifacts, managed_evaluation.time.monotonic() + 1800, 3)
+    assert ("wall_limit_reached" in row) is marked and "runtime_stop" in row
+
+
 @pytest.mark.parametrize("failed_route", ["/status", "/stop"])
 def test_original_runtime_exit_racing_http_is_read_without_reposting_stop(
     tmp_path, monkeypatch, failed_route
@@ -616,6 +652,27 @@ def test_optional_host_measurement_failure_does_not_abort_preservation(failure):
                                           "game_continuity_id": "owned-episode"})
     assert result == {"type": "performance_unavailable", "status": "unavailable", "error":
                       failure.code if isinstance(failure, BoundaryError) else "TimeoutError"}
+
+
+def test_wall_limit_stop_keeps_unknown_status_with_its_own_reason():
+    from spireagent.workbench.managed_evaluation import _outcome_status
+
+    # Shape of the 11-07 window-2 deep games: our wall Stop left the agent uncertain.
+    outcome = {"terminal_observation": {"status": "not_observed"},
+               "operation_end": {"status": "stopped", "controller": "released", "tainted": False}}
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "unknown", "reason": "episode_wall_limit_reached"}
+    assert _outcome_status(outcome, settling_stalled=False) == {
+        "status": "unknown", "reason": "runtime_execution_or_release_unknown"}
+    assert _outcome_status(outcome, settling_stalled=True, wall_limit_reached=True) == {
+        "status": "unknown", "reason": "managed_settling_stalled"}
+    outcome["operation_end"]["status"] = "censored"
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "censored", "reason": "runtime_censored"}
+    outcome["terminal_observation"] = {"status": "observed", "result": "loss"}
+    outcome["operation_end"]["status"] = "task_ended"
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "finished", "reason": "natural_terminal"}
 
 
 def test_original_settling_reason_survives_a_missing_final_http_status():

@@ -135,7 +135,9 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
                     or expired or interrupted):
                 row["runtime_final_status"] = artifacts.put(
                     "runtime-final-status.json", json_bytes(state))
-                if expired:
+                # The Runtime deadline is this same per-game limit; it can fire
+                # between two of our polls.
+                if expired or state["autonomy_budget"].get("exhausted_reason") == "deadline":
                     row["wall_limit_reached"] = True
                 if state["lifecycle"] != "stopped":
                     operation = "stop"
@@ -172,19 +174,24 @@ def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
                 "error": error.code if isinstance(error, BoundaryError) else type(error).__name__}
 
 
-def _outcome_status(outcome: Mapping[str, Any], *, settling_stalled: bool) -> dict[str, str]:
+def _outcome_status(outcome: Mapping[str, Any], *, settling_stalled: bool,
+                    wall_limit_reached: bool = False) -> dict[str, str]:
     recorded_reason = outcome["operation_end"].get("recorded_reason") or ""
     if settling_stalled or "managed_settling_stalled" in recorded_reason:
         return {"status": "unknown", "reason": "managed_settling_stalled"}
     terminal, end = outcome["terminal_observation"], outcome["operation_end"]
     clean = (end.get("status") in {"task_ended", "censored"}
              and end.get("controller") == "released" and end.get("tainted") is False)
+    # Our own per-game wall Stop cut the run; the status stays unknown, only the
+    # reason names the cause instead of the generic runtime bucket.
     return {
         "status": "finished" if clean and terminal.get("status") == "observed"
         and terminal.get("result") in {"win", "loss"}
         else "censored" if clean else "unknown",
         "reason": "natural_terminal" if clean and terminal.get("status") == "observed"
-        else "runtime_censored" if clean else "runtime_execution_or_release_unknown",
+        else "runtime_censored" if clean
+        else "episode_wall_limit_reached" if wall_limit_reached
+        else "runtime_execution_or_release_unknown",
     }
 
 
@@ -743,7 +750,8 @@ class ManagedEpisodeExecutor:
             "run_id": expected["run_id"], "evidence_content_id": result.value.content_id},
             {"binding": {"runtime_instance_id": runtime_instance_id}})
         row.update(_outcome_status(outcome,
-            settling_stalled=row.get("settling_stalled") is True))
+            settling_stalled=row.get("settling_stalled") is True,
+            wall_limit_reached=row.get("wall_limit_reached") is True))
 
     def _preserve(self, row: dict[str, Any], artifacts: Any, checkpoint: Any,
                   run: Path, expected: dict[str, Any], model: dict[str, Any],
