@@ -2203,7 +2203,8 @@ class SegmentWatcher(Watcher):
                         channel.request('stop', run=self.config['run'],
                             training_generation=attachment['training_generation'],
                             reason=reason, epoch=attempt['stop_epoch'])
-                except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, EOFError) as error:
+                except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError,
+                        EOFError) as error:
                     # The learner already closed its socket while draining; the file
                     # Stop and signal above stand, and the next tick sees it terminal.
                     if 'stop_channel_unavailable' not in attempt:
