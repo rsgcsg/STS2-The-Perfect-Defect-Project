@@ -1,13 +1,32 @@
 import { P1G_NONCOMBAT_POTION_SCENES, P1G_REVISION, type P1Revision } from "./contracts.js";
 import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
+import type { PublicPath } from "./publicPath.js";
 
 /** Paths are relative to the P1 model view. Unknown extension properties are
  * literal facts, even when their names look like native identity fields. */
 export const normalizePublicPath = (path: string): string => path
   .replace(/^\$\.observation\./u, "").replace(/^\./u, "").replace(/\[\d+\]/gu, "[]");
-export const publicFieldPath = (path: string, key: string): string => /^[A-Za-z0-9_]+$/u.test(key)
-  ? (path ? `${path}.${key}` : key) : `${path}[${JSON.stringify(key)}]`;
+// Pure helpers are memoized by their exact input; results are unchanged.
+const MEMO_LIMIT = 1 << 16;
+const plainKeys = new Map<string, boolean>();
+// Relation memos: at most 64 path-set signatures x 16k answers each (by path and by node).
+const POLICY_LIMIT = 64;
+const RELATION_LIMIT = 1 << 14;
+interface RelationMemo {
+  byPath: Map<string, PublicEntityRelation | null>;
+  byNode: WeakMap<PublicPath, PublicEntityRelation | null>; nodes: number;
+}
+const POLICY_RELATIONS = new Map<string, RelationMemo>();
+export const publicFieldPath = (path: string, key: string): string => {
+  let plain = plainKeys.get(key);
+  if (plain === undefined) {
+    plain = /^[A-Za-z0-9_]+$/u.test(key);
+    if (plainKeys.size >= MEMO_LIMIT) plainKeys.clear();
+    plainKeys.set(key, plain);
+  }
+  return plain ? (path ? `${path}.${key}` : key) : `${path}[${JSON.stringify(key)}]`;
+};
 export type PublicEntityRelation = "declared" | "reference";
 const BASE_PATHS = [
   "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
@@ -105,18 +124,48 @@ export function createPublicIdentityPolicy(nativeKind: string,
   if (detailCards.size > 0) references.add("extra_reads[].content.display_owner_entity_id");
   const cardIdentity = (path: string, root: string) => path.startsWith(root)
     && /^(?:\.card_previews\[\])*\.entity_id$/u.test(path.slice(root.length).replace(/\[\d+\]/gu, "[]"));
-  return {
-    relation(path: string): PublicEntityRelation | null {
+  const eventRoots = [...eventCards]; const detailRoots = [...detailCards, ...shopCards];
+  // relation() depends only on these path sets, so equal sets share one memo across steps.
+  const signature = JSON.stringify([declared, references, cards, eventRoots, shopDeclarations, detailRoots]
+    .map(paths => [...paths].sort()));
+  let memo = POLICY_RELATIONS.get(signature);
+  if (memo === undefined) {
+    if (POLICY_RELATIONS.size >= POLICY_LIMIT) POLICY_RELATIONS.clear();
+    POLICY_RELATIONS.set(signature, memo = { byPath: new Map(), byNode: new WeakMap(), nodes: 0 });
+  }
+  const relations = memo; const byPath = relations.byPath;
+  const relation = (path: string): PublicEntityRelation | null => {
+    let found = byPath.get(path);
+    if (found === undefined) {
+      found = resolve(path);
+      if (byPath.size >= RELATION_LIMIT) byPath.clear();
+      byPath.set(path, found);
+    }
+    return found;
+  };
+  const resolve = (path: string): PublicEntityRelation | null => {
       const normalized = normalizePublicPath(path);
       if (references.has(normalized)) return "reference";
       const literalPath = path.replace(/^\$\.observation\./u, "").replace(/^\./u, "");
       const detailPath = literalPath
         .replace(/^(extra_reads\[\d+\])(.*)$/u, (_, root: string, tail: string) => root + tail.replace(/\[\d+\]/gu, "[]"));
       if (declared.has(normalized) || cards.some(root => cardIdentity(normalized, root))
-          || [...eventCards].some(root => cardIdentity(literalPath, root))
+          || eventRoots.some(root => cardIdentity(literalPath, root))
           || shopDeclarations.has(detailPath)
-          || [...detailCards, ...shopCards].some(root => cardIdentity(detailPath, root))) return "declared";
+          || detailRoots.some(root => cardIdentity(detailPath, root))) return "declared";
       return null;
+  };
+  return {
+    relation,
+    /** @internal The same answer as relation(node.path), for the reducer's interned paths. */
+    relationAt(node: PublicPath): PublicEntityRelation | null {
+      let found = relations.byNode.get(node);
+      if (found === undefined) {
+        found = relation(node.path);
+        if (relations.nodes >= RELATION_LIMIT) { relations.byNode = new WeakMap(); relations.nodes = 0; }
+        relations.byNode.set(node, found); relations.nodes++;
+      }
+      return found;
     }
   };
 }

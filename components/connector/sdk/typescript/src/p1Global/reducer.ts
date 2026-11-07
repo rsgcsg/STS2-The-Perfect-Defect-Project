@@ -6,7 +6,8 @@ import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
-import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
+import { createPublicIdentityPolicy } from "./publicIdentity.js";
+import { publicPath, type PublicPath } from "./publicPath.js";
 import { completeSelectorFacts, selectorOperation, selectorIntention, matchesSelectorIntention,
   type SelectorIntention } from "./selectorForward.js";
 import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
@@ -255,35 +256,37 @@ function aliasFor(work: AliasWork, id: string, path = ""): string {
   return alias;
 }
 
-function collectIds(value: unknown, ids: Set<string>, policy: AliasWork["policy"], path = "", declarationsOnly = false): void {
+function collectIds(value: unknown, ids: Set<string>, policy: AliasWork["policy"], path: PublicPath, declarationsOnly = false): void {
   if (typeof value === "string") {
-    const relation = policy.relation(path);
+    const relation = policy.relationAt(path);
     if (relation && (!declarationsOnly || relation === "declared")) ids.add(value);
     return;
   }
-  if (Array.isArray(value)) { value.forEach((item, index) => collectIds(item, ids, policy, `${path}[${index}]`, declarationsOnly)); return; }
+  if (Array.isArray(value)) { value.forEach((item, index) => collectIds(item, ids, policy, path.item(index), declarationsOnly)); return; }
   if (isObject(value)) for (const key of Object.keys(value).sort())
-    collectIds(value[key], ids, policy, publicFieldPath(path, key), declarationsOnly);
+    collectIds(value[key], ids, policy, path.field(key), declarationsOnly);
 }
 
 /** Alias only paths owned by the public schema; all other facts remain literal. */
-function aliasTree(value: unknown, work: AliasWork, path: string): unknown {
-  if (typeof value === "string") return work.policy.relation(path) ? aliasFor(work, value, path) : value;
-  if (Array.isArray(value)) return value.map((item, index) => aliasTree(item, work, `${path}[${index}]`));
+function aliasTree(value: unknown, work: AliasWork, path: string | PublicPath): unknown {
+  const node = typeof path === "string" ? publicPath(path) : path;
+  if (typeof value === "string") return work.policy.relationAt(node) ? aliasFor(work, value, node.path) : value;
+  if (Array.isArray(value)) return value.map((item, index) => aliasTree(item, work, node.item(index)));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work, publicFieldPath(path, key));
+    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work, node.field(key));
     return out;
   }
   return value;
 }
 
-function stripIds(value: unknown, policy: AliasWork["policy"], path: string): unknown {
-  if (typeof value === "string") return policy.relation(path) ? "" : value;
-  if (Array.isArray(value)) return value.map((item, index) => stripIds(item, policy, `${path}[${index}]`));
+function stripIds(value: unknown, policy: AliasWork["policy"], path: string | PublicPath): unknown {
+  const node = typeof path === "string" ? publicPath(path) : path;
+  if (typeof value === "string") return policy.relationAt(node) ? "" : value;
+  if (Array.isArray(value)) return value.map((item, index) => stripIds(item, policy, node.item(index)));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], policy, publicFieldPath(path, key));
+    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], policy, node.field(key));
     return out;
   }
   return value;
@@ -299,7 +302,10 @@ function canonicalMultiset(cards: readonly unknown[], work: AliasWork, path: str
     const alias = work.anonymous.has(entity) ? "" : work.aliases[entity] ?? "";
     return `${canonicalJson(stripIds(card, work.policy, `${path}[0]`))}\u0000${alias.padStart(12, "0")}`;
   };
-  return [...cards].sort((a, b) => { const left = key(a); const right = key(b); return left < right ? -1 : left > right ? 1 : 0; });
+  // Each card's key is computed once; aliases do not change while sorting.
+  const keys = new Map<unknown, string>();
+  const keyOf = (card: unknown) => { let value = keys.get(card); if (value === undefined) keys.set(card, value = key(card)); return value; };
+  return [...cards].sort((a, b) => { const left = keyOf(a); const right = keyOf(b); return left < right ? -1 : left > right ? 1 : 0; });
 }
 
 function part<T>(availability: Availability, content: T | null, source: string | null): P1Part<T> {
@@ -525,9 +531,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // choose their aliases. Reference-only lists and unknown extensions are not witnesses.
   const distinguished = new Set<string>();
   const { extra_reads: detailWitnesses, ...orderedWitnesses } = rawFacts;
-  collectIds(orderedWitnesses, distinguished, policy, "", true);
+  collectIds(orderedWitnesses, distinguished, policy, publicPath(""), true);
   // Detail inventory order must not preempt the card's ordered owner presentation.
-  collectIds(detailWitnesses, distinguished, policy, "extra_reads", true);
+  collectIds(detailWitnesses, distinguished, policy, publicPath("extra_reads"), true);
   const anonymous = new Set<string>();
   const unorderedViews = [
     { root: "deck.content", path: "deck.content.cards", label: "deck", cards: deckRead?.content?.cards },
@@ -548,7 +554,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // Child preview identities of an anonymous occurrence are view-local as well.
   for (const view of unorderedViews) if (Array.isArray(view.cards))
     for (const card of view.cards) if (isObject(card) && anonymous.has(String(card.entity_id))) {
-      const children = new Set<string>(); collectIds(card, children, policy, `${view.path}[0]`);
+      const children = new Set<string>(); collectIds(card, children, policy, publicPath(`${view.path}[0]`));
       for (const id of children) if (!distinguished.has(id)) anonymous.add(id);
     }
   const work: AliasWork = { aliases: Object.assign(Object.create(null) as Record<string, string>, state.aliases),

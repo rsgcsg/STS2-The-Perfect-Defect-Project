@@ -517,6 +517,11 @@ def configuration(tmp_path, monkeypatch, *, generation="g-source"):
             episode_rows=2,
             capacity_rows=16,
             training_generation=generation,
+            # The production free-space gate (20 GiB) pauses new leases; on a full
+            # developer disk `begin` would then wait forever. Tests that exercise the
+            # gate set their own thresholds.
+            archive_min_free_bytes=0,
+            archive_min_free_inodes=0,
         ),
     )
     return config, SegmentLearnerIO(None, publish_detached_p1_model)
