@@ -267,6 +267,8 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 重新准入只在自然重启点、由负责人按节点体检证据决定（`release_swap.py --readmit`，见“换 release 续训”）：
 配置`readmit_nodes`里的节点在同窗口续跑首次启动时移出继承的自动排除（排除期间那段原局仍隔离、仍不进门），
 之后它的局照常计数，并开一个新的#386窗口，坏了会再被排除。
+每个actor结果带`node_nfs_events`：分配开始和结束时节点内核日志里NFS lost locks、state manager失败、
+server not responding的计数差（读不到内核日志记`kernel_log_unavailable`），供节点诊断用，不影响门和排除。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
