@@ -290,10 +290,10 @@ baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/resul
 所有点必须完全同题，核完整Host/Runtime/Input/初始进度/argmax协议，分别对CP16和上一点评估。
 报每层分布、最大层、Act1 Boss正见证、胜局、配对差区间；unknown或未获资格的那一对排除并单计，
 不补题。评估准备、排队后运行和在途停止都受同一绝对截止。
-每局还有墙钟上限 `evaluation.episode_seconds`（默认900，`prepare`最多1800）。撞上限的局照旧记
+每局还有墙钟上限 `evaluation.episode_seconds`：watch 默认 1800（#394）；`evaluate.py prepare` 默认 900，最多 1800。撞上限的局照旧记
 unknown、不重投，理由写 `episode_wall_limit_reached`（以前混在 `runtime_execution_or_release_unknown`
-里）。上限不进协议身份，调高不断开可比性，对局内每一步也没有影响。但它同时决定开新局的窗口（剩余wall需大于上限+180 s）和watch排评估要的截止余量（上限+780 s）：1800配wall 7200时，开新局只剩约5220 s，慢节点上50局可能开不完，要同时调大wall或增加路数。11-07 窗口2首个评估所在节点同时跑着
-actor，每步比窗口1慢约1.5倍（原因未单独证），打到第44–47层的5局都撞了900 s；模型打得深以后用1800。
+里）。上限不进协议身份，调高不断开可比性，对局内每一步也没有影响。但它同时决定开新局的窗口（剩余wall需大于上限+180 s）和watch排评估要的截止余量（上限+780 s）。这两条现在对默认配置就生效：默认1800配wall 7200时，评估要离截止至少约43分钟才排，开新局只剩约5220 s，慢节点上50局可能开不完，要同时调大wall或增加路数。11-07 窗口2首个评估所在节点同时跑着
+actor，每步比窗口1慢约1.5倍（原因未单独证），打到第44–47层的5局都撞了当时的900 s。
 默认报告（`rl_observation.write_report` 的 report.json/README）另报每种难度的正式 reward-v2
 平均奖励分、有效对数、配对差和 bootstrap 区间，以及只作诊断的下界 [L, U]（排除局按出错前
 公开最高层/已见 Boss 计输局分为 L、计通关为 U）；两模型平均差区间为 `[L新−U旧, U新−L旧]`，

@@ -467,7 +467,7 @@ def test_live_http_runtime_is_stopped_once_after_handoff_not_waited_to_deadline(
 
 
 @pytest.mark.parametrize("exhausted_reason,marked",
-                         [("deadline", True), ("max_submissions", False)])
+                         [("deadline", True), ("submission_attempt_limit", False)])
 def test_runtime_deadline_exhaustion_marks_the_wall_limit(tmp_path, monkeypatch,
                                                          exhausted_reason, marked):
     # Runtime gets the same absolute per-game limit and may exhaust it before our poll.
