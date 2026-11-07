@@ -466,6 +466,41 @@ def test_live_http_runtime_is_stopped_once_after_handoff_not_waited_to_deadline(
     assert "runtime_stop" in row and "wall_limit_reached" not in row
 
 
+@pytest.mark.parametrize("exhausted_reason,marked", [("deadline", True), ("max_submissions", False)])
+def test_runtime_deadline_exhaustion_marks_the_wall_limit(tmp_path, monkeypatch,
+                                                         exhausted_reason, marked):
+    # Runtime gets the same absolute per-game limit and may exhaust it before our poll.
+    from spireagent.workbench import managed_evaluation
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    artifacts = _Artifacts(tmp_path / "attempt")
+    stdout = tmp_path / "stdout"
+    startup = {"schema": "sts2.policy-runtime/agent-session-startup-2",
+               "run_id": "owned-run", "address": "http://127.0.0.1:12345"}
+    stdout.write_bytes(json_bytes(startup))
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            self.returncode = 0
+
+    class Client:
+        def request(self, route, body=None):
+            return {"status": {"lifecycle": "running", "mode": "auto", "tainted": False,
+                               "autonomy_budget": {"state": "exhausted",
+                                                   "exhausted_reason": exhausted_reason}}}
+
+    monkeypatch.setattr(managed_evaluation, "RuntimeClient", lambda address, original: Client())
+    row = {}
+    managed_evaluation._finish_runtime(
+        Process(), stdout, row, artifacts, managed_evaluation.time.monotonic() + 1800, 3)
+    assert ("wall_limit_reached" in row) is marked and "runtime_stop" in row
+
+
 @pytest.mark.parametrize("failed_route", ["/status", "/stop"])
 def test_original_runtime_exit_racing_http_is_read_without_reposting_stop(
     tmp_path, monkeypatch, failed_route

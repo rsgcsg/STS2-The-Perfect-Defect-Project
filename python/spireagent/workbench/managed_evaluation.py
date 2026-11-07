@@ -135,7 +135,9 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
                     or expired or interrupted):
                 row["runtime_final_status"] = artifacts.put(
                     "runtime-final-status.json", json_bytes(state))
-                if expired:
+                # The Runtime deadline is this same per-game limit; it can fire
+                # between two of our polls.
+                if expired or state["autonomy_budget"].get("exhausted_reason") == "deadline":
                     row["wall_limit_reached"] = True
                 if state["lifecycle"] != "stopped":
                     operation = "stop"
