@@ -144,30 +144,34 @@ test("a failed-only rerun is proven by each shard's newest attempt in the same r
   const data = fixture();
   try {
     const expected = {...data.expected, run_attempt: "2"};
-    // The stale attempt-1 shard 5 stays downloaded next to its attempt-2 rerun.
-    for (const leaf of data.leaves.filter(leaf => leaf.report.shard.index === 5)) rerun(data, leaf, 2);
+    // As in run 42335990256: the stale FAILED attempt-1 shard 5 stays downloaded
+    // next to its passing attempt-2 rerun, and must be ignored, not verified.
+    for (const leaf of data.leaves.filter(leaf => leaf.report.shard.index === 5)) {
+      rerun(data, leaf, 2);
+      leaf.report.invocation.exit_code = 1; write(leaf.manifest, leaf.report);
+    }
     const result = verifyPytestShards(data.directory, expected, {profileRoot: data.profileRoot});
     assert.deepEqual(result.leaves.map(leaf => `${leaf.os}/${leaf.index}@${leaf.run_attempt}`),
       ["Linux", "Windows"].flatMap(os => PYTEST_SHARD_INDEXES.map(index => `${os}/${index}@${index === 5 ? 2 : 1}`)));
     // Attempt 1 results alone are still attempt 1's proof, not a later attempt's.
     assert.throws(() => verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot}), /missing_or_extra_artifact/);
   } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
-  for (const [label, arrange, attempt] of [
+  for (const [label, arrange, attempt, reason] of [
     // A newer failed rerun is never hidden behind the older passing attempt.
-    ["newer failure", data => rerun(data, data.leaves[4], 2, report => { report.invocation.exit_code = 1; }), "2"],
+    ["newer failure", data => rerun(data, data.leaves[4], 2, report => { report.invocation.exit_code = 1; }), "2", /invocation/u],
     // The rerun directory must carry the attempt its name claims.
-    ["renamed attempt", data => rerun(data, data.leaves[4], 2, report => { report.run.run_attempt = "1"; }), "2"],
+    ["renamed attempt", data => rerun(data, data.leaves[4], 2, report => { report.run.run_attempt = "1"; }), "2", /leaf_identity_or_result/u],
     // No artifact from a later attempt than the aggregate's own.
-    ["future attempt", data => rerun(data, data.leaves[4], 3), "2"],
-    ["zero attempt", data => fs.renameSync(data.leaves[4].root, data.leaves[4].root.replace(/-1$/u, "-0")), "2"],
-    ["missing shard", data => fs.rmSync(data.leaves[4].root, {recursive: true}), "2"],
-    ["foreign OS", data => fs.cpSync(data.leaves[0].root, path.join(data.directory, "pytest-Darwin-shard-1-1"), {recursive: true}), "1"],
+    ["future attempt", data => rerun(data, data.leaves[4], 3), "2", /missing_or_extra_artifact/u],
+    ["zero attempt", data => fs.renameSync(data.leaves[4].root, data.leaves[4].root.replace(/-1$/u, "-0")), "2", /missing_or_extra_artifact/u],
+    ["missing shard", data => fs.rmSync(data.leaves[4].root, {recursive: true}), "2", /missing_or_extra_artifact/u],
+    ["foreign OS", data => fs.cpSync(data.leaves[0].root, path.join(data.directory, "pytest-Darwin-shard-1-1"), {recursive: true}), "1", /missing_or_extra_artifact/u],
   ]) {
     const data = fixture();
     try {
       arrange(data);
       assert.throws(() => verifyPytestShards(data.directory, {...data.expected, run_attempt: attempt},
-        {profileRoot: data.profileRoot}), undefined, label);
+        {profileRoot: data.profileRoot}), reason, label);
     } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
   }
 });
