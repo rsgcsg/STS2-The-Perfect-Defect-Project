@@ -411,6 +411,10 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             # when the node-local attempt/report is no longer available.
             facts["typed_verification"] = json.loads(
                 _referenced(artifacts.root, row["typed_verification"]))
+        for key in ("episode_identity", "episode_identity_reply"):
+            if key in row:
+                # The Host identity a world was judged on outlives the node-local attempt.
+                facts[key] = json.loads(_referenced(artifacts.root, row[key]))
         if "processing_error" in row:
             facts["processing_error"] = row["processing_error"]
         if "processing_diagnostic" in row:

@@ -1498,7 +1498,8 @@ class SegmentWatcher(Watcher):
         from spireagent.storage.store import copy_artifact
         from stpd.rl.learner import LearnerConfig
         base = LearnerConfig.read(Path(self.config['learner_config']))
-        if self.config.get('previous_window_state') and not self.state['attempts']:
+        linked = bool(self.config.get('previous_window_state'))
+        if linked and not self.state['attempts']:
             assert base.resume_checkpoint is not None
             return self.cold_checkpoint(base.resume_checkpoint)
         records = self.exchange.checkpoint_records()
@@ -1515,7 +1516,7 @@ class SegmentWatcher(Watcher):
             identities.append(fallback)
         for identity in identities:
             try:
-                return self.cold_checkpoint(identity)
+                cp = self.cold_checkpoint(identity)
             except StoreError as error:
                 if error.code != 'object_not_found':
                     raise
@@ -1524,7 +1525,18 @@ class SegmentWatcher(Watcher):
                 # preservation. Finish that same immutable upload before restore.
                 copy_artifact(self.exchange.store, open_peer(self.config['peer']['archive']),
                               identity, scratch=self.work)
-                return self.cold_checkpoint(identity)
+                cp = self.cold_checkpoint(identity)
+            if linked and (cp.get('operating_budget') or {}).get('id') != self.config['budget_id']:
+                # This window has no CP of its own budget yet (its attempts died before
+                # the first one), so the newest CP is the previous window's: re-enter
+                # from the pinned parent through the same validated new-window link.
+                assert base.resume_checkpoint is not None
+                self.telemetry('window_first_checkpoint_pending',
+                               newest_checkpoint_artifact_id=identity,
+                               parent_checkpoint_artifact_id=base.resume_checkpoint)
+                return (cp if identity == base.resume_checkpoint
+                        else self.cold_checkpoint(base.resume_checkpoint))
+            return cp
         raise ValueError('no_independently_recoverable_checkpoint')
 
     def submit_cpu_step(self, script: Path, root: Path, *, name: str, cpus: int,
@@ -1565,7 +1577,11 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
-        new_window = bool(self.config.get('previous_window_state') and not self.state['attempts'])
+        # The link stays in force until this window publishes its own first CP; a
+        # first attempt that dies earlier re-enters from the same pinned parent.
+        new_window = bool(self.config.get('previous_window_state')
+                          and (cp.get('operating_budget') or {}).get('id')
+                          != self.config['budget_id'])
         if new_window:
             previous = evaluate.read_pinned(self.config['previous_window_state'])
             prior = evaluate.read_pinned(previous['configuration'])
@@ -1886,12 +1902,27 @@ class SegmentWatcher(Watcher):
         if pending is None:
             return
         root = Path(pending['root'])
+        if (pending['stage'] == 'preparation_abandoned'
+                or pending['stage'] == 'failed'
+                and pending.get('reason') == 'absolute_deadline_no_World_offer'):
+            # Preparation only builds a plan; the watcher never submitted it, so no
+            # World was offered. Once its job is terminal the original is recorded as
+            # a skipped evaluation and no longer blocks a completed window's link.
+            if not job_accounting(pending['job_id'])['terminal']:
+                return
+            self.state['evaluations'].append({**pending, 'stage': 'preparation_abandoned',
+                'at_training_seconds': pending['due_seconds'],
+                'skipped': 'absolute_deadline_no_World_offer'})
+            self.state['pending'] = None
+            self.persist()
+            return
         if pending['stage'] == 'preparation':
             if time.time() >= self.config['deadline_at'] - 900:
                 self.signal_once(pending['job_id'])
-                pending['stage'] = 'failed'
+                pending['stage'] = 'preparation_abandoned'
                 pending['reason'] = 'absolute_deadline_no_World_offer'
-                self.state['stop'] = 'absolute_deadline'
+                # Same rule as tick_segment: the deadline never relabels an earlier stop.
+                self.state['stop'] = self.state['stop'] or 'absolute_deadline'
                 self.persist()
                 return
             if not job_accounting(pending['job_id'])['terminal']:
