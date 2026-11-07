@@ -504,3 +504,17 @@ def test_evaluation_general_partition_preserves_fair_share_and_excludes_G1(
     assert '--partition=general' in result['command']
     assert '--exclude=gpu-1,actor-1' in result['command']
     assert all('general' in call.args[0] for call in calls.call_args_list[1:])
+
+
+def test_node_probe_submission_names_exactly_one_node(evaluate, execution, tmp_path):
+    """OPS node probe: one real game pinned to one excluded node; a range or set is refused."""
+    _, directory = prepared(evaluate, execution, tmp_path)
+    lock = tmp_path / 'submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', ''])):
+        result = evaluate.submit(directory / 'plan.json', dry_run=True, partition='general',
+                                 nodelist='smp-9-7')
+    assert '--nodelist=smp-9-7' in result['command']
+    for bad in ('smp-9-[7-8]', 'smp-9-7,smp-9-8', ''):
+        with pytest.raises(ValueError, match='single_node_name_required'):
+            evaluate.submit(directory / 'plan.json', dry_run=True, nodelist=bad)
