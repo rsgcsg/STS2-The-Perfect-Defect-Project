@@ -458,6 +458,75 @@ def test_child_kill_or_hang_fences_reports_failed_and_keeps_last_CP(
     assert not owner.sgd.process.is_alive()
 
 
+# Spawned children run this before any test code: it wraps the child's first
+# import of `stpd.rl.loss` so attempt N raises a CUDA OOM, the way a real
+# allocator failure surfaces from `prepared_update`. Only the SGD child calls
+# `prepared_update` on this path; the test process itself never imports this.
+_RAISE_IN_CHILD = """
+import importlib.machinery, os, sys
+class _RaiseAtAttempt:
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name != "stpd.rl.loss":
+            return None
+        sys.meta_path.remove(_RaiseAtAttempt)
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        original = spec.loader.exec_module
+        def exec_module(module):
+            original(module)
+            inner, calls = module.prepared_update, [0]
+            def prepared_update(*args, **kwargs):
+                calls[0] += 1
+                if calls[0] == int(os.environ["RL_TEST_SGD_OOM_AT_ATTEMPT"]):
+                    import torch
+                    raise torch.cuda.OutOfMemoryError("CUDA out of memory (test injection)")
+                return inner(*args, **kwargs)
+            module.prepared_update = prepared_update
+        spec.loader.exec_module = exec_module
+        return spec
+if os.environ.get("RL_TEST_SGD_OOM_AT_ATTEMPT"):
+    sys.meta_path.insert(0, _RaiseAtAttempt)
+"""
+
+
+def test_child_reported_cuda_oom_fences_without_charging_the_failed_attempt(
+        tmp_path, monkeypatch):
+    """F4 on CPU: the child's own `failed` (OOM type, stage) fences the generation.
+
+    Nothing is retried or run in-process; the failed attempt charges no update,
+    first use or aux use; no new CP; OPS restores the last verified CP. The real
+    CUDA allocator failure is the GPU check in the S3 report.
+    """
+    hook = tmp_path / "hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(_RAISE_IN_CHILD)
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        [str(hook), *filter(None, [os.environ.get("PYTHONPATH")])]))
+    monkeypatch.setenv("RL_TEST_SGD_OOM_AT_ATTEMPT", "2")
+    owner, _, _ = terminal_owner(tmp_path / "run", monkeypatch, episodes=2)
+    owner.checkpoint()
+    owner._collect_checkpoint(wait=True)
+    record, _ = read_cp(owner)
+    charged = []
+    _run_with(owner, lambda learner: charged.append(
+        (learner.updates, learner.first_use, aux_uses(learner))))
+    with pytest.raises(BoundaryError, match="input_owner_fenced_restore_last_checkpoint"):
+        owner.run()
+    assert owner.input_fenced and len(charged) == 1
+    assert (owner.updates, owner.first_use, aux_uses(owner)) == charged[0]
+    final = json.loads((owner.work / "control-wal-final.json").read_bytes())
+    failed = [e["request"] for e in final["events"] if e["request"]["kind"] == "failed"]
+    assert len(failed) == 1 and failed[0]["updates"] == 1
+    facts = failed[0]["sgd_failure"]
+    assert facts["code"] == "sgd_process_failed" and facts["last_update"] == 1
+    assert facts["child"]["error_type"] == "OutOfMemoryError"
+    assert facts["child"]["stage"] == "update" and facts["child"]["updates"] == 1
+    assert facts["exitcode"] == 1 and not owner.sgd.process.is_alive()
+    latest, cp = read_cp(owner)
+    assert latest["checkpoint_artifact_id"] == record["checkpoint_artifact_id"]
+    assert cp.counters.updates == 0
+
+
 def test_controller_end_closed_makes_child_exit_without_writing(tmp_path, monkeypatch):
     owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=0)
     try:
