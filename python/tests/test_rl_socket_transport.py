@@ -300,11 +300,17 @@ def test_disconnected_half_body_cancels_credit(tmp_path, monkeypatch):
             )
             assert json_bytes  # response framing is real, no pickle
             connection.recv_bytes()
+            with server.lock:
+                (worker,) = server.workers  # this connection's server thread, mid-body
             connection.send_bytes(b"half")
-        until = time.monotonic() + 2
-        while sources.status()["upload_credits"] and time.monotonic() < until:
-            threading.Event().wait(0.01)
-        assert sources.status()["spool_bytes"] == 0
+        # cancel() drops the credit before it closes/unlinks the spool file and
+        # returns its bytes, so "no credits" is not yet "no spool bytes". The
+        # connection's server thread runs that whole cancel in its finally;
+        # joining it is the exact point both are released.
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        status = sources.status()
+        assert status["upload_credits"] == 0 and status["spool_bytes"] == 0
     finally:
         server.close()
 
