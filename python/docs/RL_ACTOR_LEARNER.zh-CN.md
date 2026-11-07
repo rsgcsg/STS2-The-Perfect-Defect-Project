@@ -123,7 +123,25 @@ lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功�
 | **只读**：device_cache/reference_device_cache/async_transfer/precompile_inputs | 历史row/reference输入缓存；prepared统一stage完整slab一次，无这些训练开关 |
 | **只读**：bucket/defer_sync | 历史row重排/同步选项；prepared已固定整批partition和一次pre-step决定，不读取它们 |
 | **只读**：inference_microbatch_size/probe_inference_microbatches | 历史推理诊断；actor执行由μ construction及central_scoring决定，不是prepared训练参数 |
+| **备选**：`prepared_forward="rows-v2"`（`prepared_compile` 仅此时可开） | 准备进程给每组加 CPU `RowLayout`，训练前向走去补齐实现（下节）；默认 `padded-v1` 不导出这两项，生效文件和 binary recipe digest 不变；选中时导出并写入 CP 配置；不是恢复比较项，新 generation 可从原 CP 切换 |
 | 已退役：compile_loss=true、activation checkpoint重算 | G0 compile热0.515s对eager0.514s，冷编30.79s；live明确拒绝true。checkpoint只保留历史配置/收据，源码只有逐组累加一种实现 |
+
+## 训练前向 rows-v2（RL5 S3 0 级，备选）
+
+同一组参数、同一函数，只去掉补齐上的工作（S0-GPU 0 级，单 A100 离线实测）。显式 `performance.prepared_forward="rows-v2"`
+在新 generation 开跑时选定，不热换；浮点累加次序与 `padded-v1` 不同（BF16 容差内一致，不逐位），所以切换后是新轨迹。
+- 准备进程（CPU）：`row_layout(group)` 只重排组内已有张量——去重后被引用的真实文字按长度进 2 的幂宽度桶；场面真实行按
+  长度排序，256 行一桶、宽度取 64 的倍数；角色只留非零项（行内槽位）；每个 joint reduction 合成一条下标。丢掉的位置都
+  先核实是补齐，不能证明就报错。没有 θ 值、不改成员、均值长度和 loss 分母。
+- 学习端：`stpd.p1.rows_forward.forward_rows`：index_copy/index_add 代替补齐 gather；每个 reduction 一次 gather；唯一文字
+  向量 fp32 直接给节点项；batch-first 注意力（同 in/out 投影）；CUDA sm80+ 且 BF16/FP16 autocast 时场面编码器走 varlen flash，
+  其他设备同一数学走按桶带掩码注意力（按设备确定，不是失败回退）。`prepared_compile=true` 编译每桶的场面/头/动作块。
+- 守门：`prepared_update` 在组的布局与选择不一致时报 `prepared_layout_does_not_match_selected_forward`；训练模式（dropout）
+  下拒绝；推理、actor 包和 μ 结构不变。
+- CPU 证据：`tests/test_rl_rows_forward.py`，fp32 下输出和每个参数梯度与 `padded-v1` 在浮点容差内一致（多桶、长度不一、
+  policy/非 policy），布局经 transport 不变，一步 Adam 和 binary learner 两个 dataset 都与 `padded-v1` 接近。
+- 采用规则：提速后的步对同进程 GIL 护航更敏感（S0-GPU I0：0.48 s 步同进程 ×1.0 负载慢 7.15 倍），所以与
+  `dataplane.sgd_process=true`（显式 SGD 进程）同一 release 上线，不单独进同进程学习端。
 
 ## 冻结身份和 μ
 

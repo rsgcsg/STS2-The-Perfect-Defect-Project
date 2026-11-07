@@ -856,7 +856,7 @@ class BatchPreparer:
         self.coordinator = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-ready-coordinator"
         )
-        self.options = dict(
+        self.options: dict[str, Any] = dict(
             microbatch_size=microbatch_size,
             deduplicate_text=deduplicate_text,
             scene_attention_area=scene_attention_area,

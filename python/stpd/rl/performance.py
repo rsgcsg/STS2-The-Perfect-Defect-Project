@@ -27,6 +27,10 @@ PREPARED_PERFORMANCE_FIELDS = (
     "microbatch_size", "scene_attention_area", "text_attention_area",
     "deduplicate_text", "precision", "tf32",
 )
+# Training-forward implementation (S3 rows-v2): exported only when selected, so a
+# default config, its effective file and the binary recipe digest stay byte-equal.
+# Not a resume-compared objective field: a new generation may switch it from a CP.
+FORWARD_IMPLEMENTATION_DEFAULTS = {"prepared_forward": "padded-v1", "prepared_compile": False}
 
 
 @dataclass(frozen=True)

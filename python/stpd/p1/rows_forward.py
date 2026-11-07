@@ -20,7 +20,7 @@ forward refuses training mode instead of silently skipping dropout.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import Tensor
@@ -82,7 +82,7 @@ def _check_encoder(encoder: torch.nn.TransformerEncoder) -> None:
 
 def _layer_tail(layer: Any, x: Tensor, attended: Tensor) -> Tensor:
     x = layer.norm1(x + attended)
-    return layer.norm2(x + layer.linear2(F.relu(layer.linear1(x))))
+    return cast(Tensor, layer.norm2(x + layer.linear2(F.relu(layer.linear1(x)))))
 
 
 def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor) -> Tensor:
@@ -119,7 +119,7 @@ def varlen_supported(device: torch.device) -> bool:
 def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
     """AttentionValueResidual.forward with batch-first attention."""
     pooled = attention(module.attention, module.query.expand(scene.shape[0], -1, -1), scene, mask)
-    return module.mlp(torch.cat((pooled[:, 0], mean), dim=1))
+    return cast(Tensor, module.mlp(torch.cat((pooled[:, 0], mean), dim=1)))
 
 
 def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, offsets: Tensor,
@@ -224,16 +224,16 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False) -> tuple[
     scores, logits, hp = [], [], []
     for index, (count, width, longest, _slots) in enumerate(buckets):
         member = members[index]
-        s, l, h = block(
+        score, logit, value = block(
             model, tokens[index], positions[index], lengths[index], offsets[index], count, width,
             longest, varlen, t["outcome_valid"].index_select(0, member),
             t["action_types"].index_select(0, member) if group.policy else None,
             t["catalog_mask"].index_select(0, member) if group.policy else None,
             role_parts[index])
-        logits.append(l)
-        hp.append(h)
-        if s is not None:
-            scores.append(s)
+        logits.append(logit)
+        hp.append(value)
+        if score is not None:
+            scores.append(score)
     inverse = move(layout.scene_inverse)
     all_logits = torch.cat(logits).index_select(0, inverse)
     all_hp = torch.cat(hp).index_select(0, inverse)

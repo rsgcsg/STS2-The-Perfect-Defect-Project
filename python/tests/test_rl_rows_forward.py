@@ -11,8 +11,8 @@ import dataclasses as dc
 import itertools
 
 import pytest
-import torch
 import test_rl41_w1 as w1
+import torch
 from test_rl41_w1 import model as model  # noqa: F401  (fixture)
 
 from spireagent.json_boundary import BoundaryError
@@ -194,3 +194,18 @@ def test_binary_learner_trains_rows_v2_end_to_end_close_to_padded(tmp_path, monk
     for name, value in trained["padded-v1"].items():
         torch.testing.assert_close(value, trained["rows-v2"][name], rtol=1e-4, atol=1e-5,
                                    msg=name)
+
+
+def test_effective_config_records_rows_v2_only_when_selected_and_resume_ignores_it():
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segment_learner import _resume_config
+    from stpd.rl.segments import SegmentConfig
+
+    base = LearnerConfig(run="rows-unit", peer={"kind": "local", "directory": "/nonexistent"},
+                         performance=PerformanceConfig(), segments=SegmentConfig())
+    selected = dc.replace(base, performance=PerformanceConfig(prepared_forward="rows-v2"))
+    assert "prepared_forward" not in base.frozen()["performance"]
+    assert selected.frozen()["performance"]["prepared_forward"] == "rows-v2"
+    assert "prepared_compile" not in selected.frozen()["performance"]
+    # The binary recipe digest and the CP resume comparison see the same objectives.
+    assert _resume_config(dc.asdict(base)) == _resume_config(dc.asdict(selected))
