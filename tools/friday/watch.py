@@ -177,7 +177,8 @@ def reward_overview(cohort: dict[str, Any]) -> dict[str, Any]:
     from stpd.evaluation.rl_observation import reward_summary
 
     value = reward_summary(cohort)
-    return {k: v for k, v in value.items() if k not in {'by_seed', 'lower_by_seed'}}
+    return {k: v for k, v in value.items()
+            if k not in {'by_seed', 'lower_by_seed', 'conservative_by_seed'}}
 
 
 def protocol_differences(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
@@ -196,6 +197,157 @@ def protocol_skip(before: dict[str, Any], after: dict[str, Any], reference: str)
             'reference': reference, 'values': {
                 key: {'reference': before['protocol_observed'][key],
                       'current': after['protocol_observed'][key]} for key in keys}}
+
+
+COMPATIBLE_FIXES_PATH = Path(__file__).with_name('compatible-fixes.json')
+COMPATIBLE_FIXES_SCHEMA = 'spireagent/friday-compatible-fixes-1'
+COMPATIBLE_FIX_KEYS = frozenset({'id', 'key', 'from', 'to', 'proof', 'approved', 'note'})
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def read_compatible_fixes(path: Path = COMPATIBLE_FIXES_PATH) -> list[dict[str, Any]]:
+    """Declared compatible Host fixes (card U4 D); each entry pins its fixed-seed proof.
+
+    Only ``host_pin`` changes can be registered. A pair is matched exactly, in either
+    direction (the proof shows the same games on both pins); chains are not composed.
+    """
+    value = json.loads(path.read_bytes())
+    entries = value.get('entries') if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or value.get('schema') != COMPATIBLE_FIXES_SCHEMA
+            or not isinstance(entries, list)):
+        raise ValueError('compatible_fix_registry_invalid')
+    ids: set[str] = set()
+    pairs: set[frozenset[str]] = set()
+    for entry in entries:
+        proof = entry.get('proof') if isinstance(entry, dict) else None
+        if (not isinstance(entry, dict) or not {'id', 'key', 'from', 'to', 'proof'} <= entry.keys()
+                or entry.keys() - COMPATIBLE_FIX_KEYS
+                or not isinstance(entry['id'], str) or not entry['id']
+                or entry['key'] != 'host_pin'
+                or not isinstance(entry['from'], dict) or not isinstance(entry['to'], dict)
+                or _canonical(entry['from']) == _canonical(entry['to'])
+                or not isinstance(proof, dict)
+                or not isinstance(proof.get('artifact'), str) or not proof['artifact']
+                or not isinstance(proof.get('sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', proof['sha256'])):
+            raise ValueError('compatible_fix_registry_invalid')
+        pair = frozenset({_canonical(entry['from']), _canonical(entry['to'])})
+        if entry['id'] in ids or pair in pairs:
+            raise ValueError('compatible_fix_registry_duplicate')
+        ids.add(entry['id'])
+        pairs.add(pair)
+    return entries
+
+
+def protocol_blocking(before: dict[str, Any], after: dict[str, Any],
+                      fixes: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
+    """(differing keys that refuse a comparison, notes for registered compatible fixes)."""
+    blocking, notes = [], []
+    for key in protocol_differences(before, after):
+        old = _canonical(before['protocol_observed'][key])
+        new = _canonical(after['protocol_observed'][key])
+        entry = next((e for e in fixes if e['key'] == key
+                      and {_canonical(e['from']), _canonical(e['to'])} == {old, new}), None)
+        if entry is None:
+            blocking.append(key)
+            continue
+        notes.append({'key': key, 'compatible_fix': entry['id'], 'proof': entry['proof'],
+                      'direction': 'forward' if _canonical(entry['from']) == old else 'reverse',
+                      'reference': before['protocol_observed'][key],
+                      'current': after['protocol_observed'][key]})
+    return blocking, notes
+
+
+# Card U4 C (user 11-07): over a rolling window of global closes, >= 10% unknown is a
+# typed attention alarm (lead investigates, training continues), >= 20% stops with all
+# originals kept. The denominator is at least 100 closes, so a few early closes never
+# trip it. Replaces the per-attempt cumulative 5% gate (unknown_stop_fraction) of
+# segment runs; that key now only bounds unresolved admissions.
+UNKNOWN_WINDOW_DEFAULTS: dict[str, Any] = {
+    'window_seconds': 1800, 'attention_fraction': .10, 'stop_fraction': .20,
+    'min_denominator': 100}
+EVALUATION_EPISODE_SECONDS = 1800  # evaluate.py's maximum; 900 s cut deep games (U4-1).
+SELECTION_SCORES = ('conservative', 'finished_mean', 'paired_max_floor')
+UNKNOWN_STATUSES = frozenset({'unknown', 'save_failed'})
+
+
+def unknown_window_settings(config: dict[str, Any]) -> dict[str, Any]:
+    raw = config.get('unknown_window', {})
+    if not isinstance(raw, dict) or raw.keys() - UNKNOWN_WINDOW_DEFAULTS.keys():
+        raise ValueError('explicit_unknown_window_settings_required')
+    value = {**UNKNOWN_WINDOW_DEFAULTS, **raw}
+    if (any(type(value[k]) is not int for k in ('window_seconds', 'min_denominator'))
+            or any(type(value[k]) not in (int, float) or not math.isfinite(value[k])
+                   for k in ('attention_fraction', 'stop_fraction'))
+            or not 300 <= value['window_seconds'] <= 7200
+            or not 1 <= value['min_denominator'] <= 10000
+            or not 0 < value['attention_fraction'] < value['stop_fraction'] <= 1):
+        raise ValueError('explicit_unknown_window_settings_required')
+    return value
+
+
+def unknown_window_level(unknown: int, closes: int,
+                         settings: dict[str, Any]) -> tuple[float, str | None]:
+    fraction = unknown / max(closes, settings['min_denominator'])
+    if fraction >= settings['stop_fraction']:
+        return fraction, 'stop'
+    return fraction, 'attention' if fraction >= settings['attention_fraction'] else None
+
+
+def job_node(job_id: str) -> str | None:
+    """Scheduler NodeList of one job for unknown details; None if unavailable."""
+    try:
+        raw = subprocess.check_output(['sacct', '-n', '-P', '-X', '-j', str(job_id),
+                                       '--format=NodeList'], text=True, timeout=30)
+    except Exception:  # noqa: BLE001 -- a diagnostic detail only
+        return None
+    nodes = sorted({line.strip() for line in raw.splitlines()
+                    if line.strip() and line.strip() != 'None assigned'})
+    return ','.join(nodes) or None
+
+
+EVALUATION_PLAYED_STATUSES = frozenset({'finished', 'unknown', 'save_failed', 'censored'})
+
+
+def evaluation_incomplete(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Typed reasons an evaluation is incomplete; empty means it is used for decisions.
+
+    ``audit_mismatch``: the ledger did not admit scores (formal audit not satisfied) or a
+    scored-status row failed typed verification. ``originals_missing``: the job failed,
+    a planned game was not played or its original is still pending, or its cleanup was
+    not accepted. Scores are reported either way; unknown/save_failed/censored games are
+    excluded pairs, never a reason here.
+    """
+    ledger = result['ledger_report']
+    slots = ledger['slots']
+    reasons = []
+    audit: dict[str, Any] = {}
+    if ledger.get('score_admitted') is not True:
+        audit['score_admitted'] = ledger.get('score_admitted')
+    failed = [row.get('seed') for row in slots
+              if row.get('execution_reason') == 'typed_original_verification_failed'
+              and row['status'] not in UNKNOWN_STATUSES]
+    if failed:
+        audit['typed_verification_failed_on_scored_status'] = failed
+    if audit:
+        reasons.append({'reason': 'audit_mismatch', **audit})
+    missing: dict[str, Any] = {}
+    if result.get('error_type'):
+        missing['job_error'] = {'type': result['error_type'], 'code': result.get('error_code')}
+    statuses = collections.Counter(row['status'] for row in slots
+                                   if row['status'] not in EVALUATION_PLAYED_STATUSES)
+    if statuses:
+        missing['statuses'] = dict(statuses)
+    unclean = [row.get('seed') for row in slots if row['status'] in EVALUATION_PLAYED_STATUSES
+               and row.get('cleanup_accepted') is not True]
+    if unclean:
+        missing['cleanup_not_accepted'] = unclean
+    if missing:
+        reasons.append({'reason': 'originals_missing', **missing})
+    return reasons
 
 
 def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool:
@@ -1100,6 +1252,8 @@ def read_segment_config(path: Path) -> dict[str, Any]:
     if value.get('dataplane') is not None and not isinstance(value['dataplane'], dict):
         raise ValueError('explicit_binary_dataplane_profile_required')
     node_exclusion_settings(value)
+    unknown_window_settings(value)
+    read_compatible_fixes()
     if value.get('dataplane') is not None:
         learner_cpus = value.get('cpus', 32)
         if value['actors'] + learner_cpus > value.get('cpu_budget', 500):
@@ -1133,7 +1287,11 @@ def read_segment_config(path: Path) -> dict[str, Any]:
         evaluation = value['evaluation']
         if (not 50 <= evaluation.get('seeds', 50) <= 100
                 or evaluation.get('seconds', 7200) != 7200
-                or evaluation.get('partition', 'general') not in {'general', 'debug', 'smp'}):
+                or evaluation.get('partition', 'general') not in {'general', 'debug', 'smp'}
+                or type(evaluation.get('episode_seconds', EVALUATION_EPISODE_SECONDS)) is not int
+                or not 10 <= evaluation.get('episode_seconds', EVALUATION_EPISODE_SECONDS) <= 1800
+                or evaluation.get('selection_score', 'conservative') not in SELECTION_SCORES
+                or type(evaluation.get('avoid_actor_nodes', False)) is not bool):
             raise ValueError('fixed_two_hour_paired_evaluation_required')
         if (evaluation.get('initial_checkpoint') is not None
                 and evaluation['initial_checkpoint'] != base.resume_checkpoint):
@@ -1223,6 +1381,7 @@ class SegmentWatcher(Watcher):
         self.capability_lost = self.state['active'] is not None
         self.state['incarnation'] = self.incarnation
         self.seen_events = set(self.state.get('seen_event_keys', []))
+        self.compatible_fixes = read_compatible_fixes()
 
     def _socket_attachment(self, attempt):
         import rl
@@ -1401,6 +1560,10 @@ class SegmentWatcher(Watcher):
                         raise ValueError('world_intent_actor_changed')
                     if fact.get('closed') and fact['status'] != game['status']:
                         raise ValueError('immutable_actor_close_changed')
+                    if not fact.get('closed'):
+                        at = event.get('at')
+                        fact['closed_at'] = (at if type(at) in (int, float) and math.isfinite(at)
+                                             else time.time())
                     if not fact.get('closed') and node_exclusion_settings(self.config):
                         # Node attribution waits for the actor's scheduler placement.
                         self.state.setdefault('node_exclusion', {}).setdefault(
@@ -1410,6 +1573,11 @@ class SegmentWatcher(Watcher):
                     if game['status'] in {'unknown', 'save_failed'}:
                         # Diagnostic only (U3): classify without the node-local summary.
                         fact.update(reason=game.get('reason'), failure=game.get('failure'))
+                        from stpd.evaluation.unknown_category import classify_unknown
+
+                        # Typed at close from the recorded facts (card U4 A); never a retry.
+                        fact['unknown_class'] = classify_unknown(
+                            game['status'], game.get('reason'), game.get('failure'))
                     if not fact.get('generation') and game.get('training_generation'):
                         fact['generation'] = game['training_generation']
                     if game.get('world_mutation_offered'):
@@ -1442,6 +1610,8 @@ class SegmentWatcher(Watcher):
         offered = {k for k, v in worlds.items() if v.get('offered')}
         unknown = {k for k in offered if worlds[k].get('status') in {'unknown', 'save_failed'}}
         lost = {k for k in offered if not worlds[k].get('closed') and worlds[k]['actor'] in terminal}
+        for intent in lost:
+            worlds[intent].setdefault('lost_at', time.time())  # rolling-window time only
         self.state['games_total'] = len(offered)
         self.state['unknown_intents'] = sorted(unknown)
         self.state['lost_world_offers'] = sorted(lost)
@@ -1481,6 +1651,93 @@ class SegmentWatcher(Watcher):
             'window_size': 50, 'window_completed': len(window),
             'window_inconclusive': inconclusive, 'window_fraction': fraction,
             'admission_paused': paused}
+
+    def unknown_class(self, intent: str, fact: dict[str, Any]) -> dict[str, Any]:
+        """Close-time typed category, plus the node; a #386 auto-excluded node's
+        unclassified or environment-gap closes count as infrastructure (kept as close_*)."""
+        from stpd.evaluation.unknown_category import classify_unknown
+
+        if fact.get('closed'):
+            value = fact.get('unknown_class') or classify_unknown(
+                fact.get('status', 'unknown'), fact.get('reason'), fact.get('failure'))
+        else:
+            value = classify_unknown('unknown', 'actor_terminal_before_close')
+        nodes = self.state.get('node_exclusion', {})
+        node = nodes.get('actor_nodes', {}).get(fact.get('actor'))
+        value = {**value, 'detail': {**value['detail'], 'node': node}}
+        if (node in nodes.get('excluded', {})
+                and value['category'] in {'environment_gap', 'unclassified'}):
+            value = {**value, 'category': 'infrastructure', 'rule': 'node_auto_excluded',
+                     'close_category': value['category'], 'close_rule': value['rule']}
+        return value
+
+    def unknown_window_gate(self) -> str | None:
+        """Rolling global unknown window (card U4 C): 'stop', 'attention' or None.
+
+        Counts original closes and derived lost offers by close time across every
+        generation of this watch. Records a typed overview; never retries a game.
+        """
+        now = time.time()
+        settings = unknown_window_settings(self.config)
+        since = now - settings['window_seconds']
+        lost = set(self.state.get('lost_world_offers', []))
+        closes = unknown = 0
+        window: collections.Counter[str] = collections.Counter()
+        totals: collections.Counter[str] = collections.Counter()
+        nodes: collections.Counter[str] = collections.Counter()
+        closed_total = 0
+        recent = []
+        for intent, fact in self.state['worlds'].items():
+            if fact.get('closed'):
+                at, bad = fact.get('closed_at'), fact.get('status') in UNKNOWN_STATUSES
+            elif intent in lost:
+                at, bad = fact.get('lost_at'), True
+            else:
+                continue
+            closed_total += 1
+            value = self.unknown_class(intent, fact) if bad else None
+            if value is not None:
+                totals[value['category']] += 1
+            if at is None or at <= since:
+                continue
+            closes += 1
+            if value is not None:
+                unknown += 1
+                window[value['category']] += 1
+                nodes[str(value['detail'].get('node'))] += 1
+                recent.append((at, intent, value))
+        fraction, level = unknown_window_level(unknown, closes, settings)
+        infra = totals.get('infrastructure', 0)
+        self.state['unknown_overview'] = {
+            'closes': closed_total, 'unknown': sum(totals.values()),
+            'by_category': dict(totals),
+            # Model statistics leave infrastructure out of numerator and denominator.
+            'model_unknown_fraction': ((sum(totals.values()) - infra)
+                                       / max(closed_total - infra, 1)) if closed_total else None}
+        record = {'at': now, 'window_seconds': settings['window_seconds'], 'closes': closes,
+                  'unknown': unknown, 'fraction': fraction, 'level': level,
+                  'by_category': dict(window), 'top_nodes': nodes.most_common(5),
+                  'recent': [{'intent': i, 'category': v['category'], 'rule': v['rule'],
+                              'detail': v['detail']}
+                             for _, i, v in sorted(recent, key=lambda r: r[0])[-5:]],
+                  'settings': settings}
+        self.state['unknown_window'] = record
+        last = self.state.get('unknown_attention_at')
+        if level is not None and (last is None or now - last >= settings['window_seconds']):
+            self.state['unknown_attention_at'] = now
+            alarms = self.state.setdefault('unknown_alarms', [])
+            alarms.append({k: v for k, v in record.items() if k != 'recent'})
+            del alarms[:-50]
+            self.persist()
+            print(json.dumps({'kind': 'unknown_window_' + level, 'fraction': fraction,
+                              'unknown': unknown, 'closes': closes,
+                              'by_category': dict(window)}), file=sys.stderr, flush=True)
+            self.telemetry('attention', reason=(
+                'training_unknown_window_at_or_above_stop_fraction' if level == 'stop' else
+                'training_unknown_window_at_or_above_attention_fraction_lead_investigates'),
+                action='stop_originals_kept' if level == 'stop' else 'training_continues',
+                **{k: v for k, v in record.items() if k not in {'at', 'level'}})
+        return level
 
     def cold_checkpoint(self, artifact_id: str) -> dict[str, Any]:
         import tempfile
@@ -1721,6 +1978,17 @@ class SegmentWatcher(Watcher):
                  *self.state.get('node_exclusion', {}).get('excluded', {})]
         return list(dict.fromkeys(nodes)) or None
 
+    def evaluation_exclude_nodes(self) -> list[str] | None:
+        """Configured exclusions; with ``evaluation.avoid_actor_nodes`` also the nodes of
+        this watch's running actors (#386 placement facts), so an evaluation does not
+        share a node with actors. Opt-in: excluding many nodes can delay the job."""
+        nodes = list(self.config.get('exclude_nodes') or [])
+        if (self.config.get('evaluation') or {}).get('avoid_actor_nodes'):
+            terminal = set(self.state['terminal_actors'])
+            placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
+            nodes += sorted({node for actor, node in placed.items() if actor not in terminal})
+        return list(dict.fromkeys(nodes)) or None
+
     def account_nodes(self, rows: list[dict[str, Any]], settings: dict[str, Any]) -> None:
         """Per-node unknown accounting over original closes; changes only future placement.
 
@@ -1799,11 +2067,12 @@ class SegmentWatcher(Watcher):
                                                | {row['actor'] for row in terminal})
         self.refresh_world_health()
         health = self.state['health']
-        if unknown_over_limit(health['known_unknown'] + health['lost_offers'],
-                              stop_denominator(health), self.config):
+        if self.unknown_window_gate() == 'stop':
             self.state['stop'] = 'training_unknown_fraction_above_limit'
             self.state.setdefault('stop_detail', {'at': time.time(), 'site': 'replace_actors',
-                                                  'health': dict(health)})
+                                                  'health': dict(health),
+                                                  'rule': 'rolling_unknown_window',
+                                                  'window': self.state['unknown_window']})
             self.stop_attempt(attempt, self.state['stop'])
             return
         if time.time() + 900 >= self.config['deadline_at']:
@@ -1899,21 +2168,51 @@ class SegmentWatcher(Watcher):
         if snapshot.get('full_readback') is not True:
             raise ValueError('evaluation_full_snapshot_readback_required')
         plan, result, files = evaluate.read_observation_report(result_path, plan_path)
-        ledger = result['ledger_report']
-        # A cleaned unknown whose typed verification failed is still one excluded pair
-        # (its failure original is preserved); only too many of them void the cohort.
-        # A save still failed after the ledger's one batch-end retry is likewise one
-        # excluded pair with its originals retained (card RL5 3E); on the audit slot
-        # score_admitted is False and the cohort is not closed (unscored, fail closed).
-        unknown = sum(row['status'] in {'unknown', 'save_failed'} for row in ledger['slots'])
-        closed = (not result.get('error_type') and ledger['score_admitted'] is True
-            and not any(row.get('execution_reason') == 'typed_original_verification_failed'
-                        and row['status'] not in {'unknown', 'save_failed'}
-                        for row in ledger['slots'])
-            and not unknown_over_limit(unknown, len(ledger['slots']), self.config)
-            and all(row['status'] in {'finished', 'unknown', 'save_failed'}
-                    and row.get('cleanup_accepted') is True for row in ledger['slots']))
-        return plan, result, files['cohort'], closed
+        # Card U4 B: unknowns and save failures never void a cohort; each is one excluded
+        # pair with its originals kept. Only missing originals or an audit mismatch do.
+        return plan, result, files['cohort'], not evaluation_incomplete(result)
+
+    def evaluation_failure_facts(self, slot: dict[str, Any], result: dict[str, Any],
+                                 plan_path: Path) -> tuple[dict[str, Any] | None, str]:
+        """U3 failure facts of one unknown slot from its retained attempt original."""
+        reference = slot.get('report')
+        if not isinstance(reference, dict) or not reference.get('path'):
+            return None, 'slot_only:no_attempt_report'
+        path = Path(reference['path'])
+        try:
+            if not path.exists() and result.get('scratch_retained'):
+                path = (plan_path.parent / 'evidence'
+                        / path.relative_to(result['scratch_retained']))
+            if hashed(path) != reference.get('sha256'):
+                return None, 'slot_only:attempt_report_changed'
+            row = json.loads(path.read_bytes())['episodes'][0]
+            from spireagent.workbench.rl_segment_producer import failure_facts
+
+            facts = failure_facts(path.parent, row)
+            facts['wall_limit_reached'] = row.get('wall_limit_reached') is True
+            return facts, 'attempt_original'
+        except Exception as error:  # noqa: BLE001 -- a diagnostic detail only
+            return None, 'slot_only:' + type(error).__name__
+
+    def evaluation_unknown_details(self, result: dict[str, Any], plan_path: Path,
+                                   job_id: str | None) -> list[dict[str, Any]]:
+        from stpd.evaluation.unknown_category import classify_unknown
+
+        slots = [s for s in result['ledger_report']['slots'] if s.get('status') in UNKNOWN_STATUSES]
+        node = job_node(job_id) if slots and job_id else None
+        details = []
+        for slot in slots:
+            facts, source = self.evaluation_failure_facts(slot, result, plan_path)
+            failure = {**(facts or {}), 'execution_reason': (
+                (facts or {}).get('execution_reason') or slot.get('execution_reason'))}
+            value = classify_unknown(slot['status'], slot.get('reason'), failure)
+            if value['detail']['floor'] is None:
+                value['detail']['floor'] = slot.get('public_max_observed_floor')
+            details.append({'seed': slot.get('seed'), 'run_id': slot.get('run_id'),
+                            'status': slot['status'], **value,
+                            'detail': {**value['detail'], 'node': node},
+                            'facts_source': source})
+        return details
 
     def collect_segment_evaluation(self):
         pending = self.state['pending']
@@ -1956,7 +2255,7 @@ class SegmentWatcher(Watcher):
             self.persist()
             cfg = self.config['evaluation']
             receipt = evaluate.submit(plan_path, partition=cfg.get('partition', 'general'),
-                constraint=cfg.get('constraint'), exclude_nodes=self.config.get('exclude_nodes'))
+                constraint=cfg.get('constraint'), exclude_nodes=self.evaluation_exclude_nodes())
             pending.update(stage='running', job_id=str(receipt['job_id']).split(';')[0])
             self.persist()
             return
@@ -1971,20 +2270,43 @@ class SegmentWatcher(Watcher):
             return
         plan, result, cohort, closed = self.evaluation_cohort(path, result_path)
         binding = evaluate.read_pinned(plan['checkpoint_binding'])
+        cfg = self.config['evaluation']
+        score = cfg.get('selection_score', 'conservative')
+        # Card U4 A: every unknown typed from its recorded facts; the cohort projection
+        # (never the original) carries the category so the conservative score can leave
+        # infrastructure unknowns out and list wall-limited games on their own.
+        details = self.evaluation_unknown_details(result, path, pending.get('job_id'))
+        categories = {d['seed']: d['category'] for d in details}
+        for row in cohort['rows']:
+            if row['seed'] in categories:
+                row['unknown_category'] = categories[row['seed']]
+        incomplete = [] if closed else (evaluation_incomplete(result)
+                                        or [{'reason': 'audit_or_originals_incomplete'}])
         report = {'root': pending['root'], 'plan': str(path), 'result': str(result_path),
             'checkpoint': binding, 'closed': closed, 'cohort': cohort,
             'at_training_seconds': pending['due_seconds'], 'job_id': pending['job_id'],
             'unknown': sum(r['status'] == 'unknown' for r in result['ledger_report']['slots']),
             'save_failed': sum(r['status'] == 'save_failed'
-                               for r in result['ledger_report']['slots'])}
+                               for r in result['ledger_report']['slots']),
+            'unknown_details': details,
+            'unknown_by_category': dict(collections.Counter(d['category'] for d in details))}
         alarm = save_failed_alarm(result['ledger_report']['slots'])
         if alarm:
             # Typed alarm only: originals retained, training continues.
             self.telemetry('attention', reason=alarm,
                            evaluation=pending['root'], save_failed=report['save_failed'])
+        # Both headline scores on every evaluation (card U4 B): the official mean over
+        # finished games, and the conservative score over all planned games.
+        report['reward'] = reward_overview(cohort)
+        report['scores'] = {
+            'finished_mean': report['reward']['mean'], 'finished_n': report['reward']['scored'],
+            'conservative': report['reward']['conservative']['score'],
+            'conservative_n': report['reward']['conservative']['counted'],
+            'planned': report['reward']['planned'], 'unknown_by_category':
+                report['unknown_by_category'], 'complete': closed,
+            'incomplete': [r['reason'] for r in incomplete], 'selection_score': score}
         if closed:
             from stpd.evaluation.rl_observation import compare, compare_rewards, write_report
-            cfg = self.config['evaluation']
             baseline_projection = evaluate.fixed_baseline(cfg['baseline_batches'],
                 evaluate.read_pinned(cfg['baseline_binding']), cfg['manifest'],
                 seeds=cfg.get('seeds', 50))
@@ -2005,19 +2327,43 @@ class SegmentWatcher(Watcher):
             if any(baseline[k] != cohort[k] for k in ('host_kind', 'character', 'ascension')):
                 raise ValueError('different_host_character_or_ascension')
             compared = [row for row in self.state['evaluations'] if not row.get('skipped')]
-            # Default mean reward score (reward v2) and the diagnostic [L, U] bound. Standalone,
-            # so they are reported even when no reference shares this cohort's protocol.
-            report['reward'] = reward_overview(cohort)
             # Paired deltas only within one observed protocol (Host/Runtime/input/progress
-            # pins): a different protocol is recorded as skipped with its keys, not a crash.
+            # pins), or across a registered compatible host_pin fix (card U4 D, with a
+            # note): any other difference is recorded as skipped with its keys.
             skipped: dict[str, list[str]] = {}
+            compatible: dict[str, list[dict[str, Any]]] = {}
+
+            def blocking(group: dict[str, Any]) -> list[str]:
+                return protocol_blocking(group, cohort, self.compatible_fixes)[0]
+
+            def allowed(group: dict[str, Any]) -> set[str]:
+                return {n['key'] for n in protocol_blocking(
+                    group, cohort, self.compatible_fixes)[1]}
+
+            def note(label: str, group: dict[str, Any]) -> None:
+                notes = protocol_blocking(group, cohort, self.compatible_fixes)[1]
+                if notes:
+                    compatible[label] = notes
+
+            def score_delta(group: dict[str, Any]) -> dict[str, Any]:
+                """The selection/regression score's paired delta (card U4 B)."""
+                if score == 'paired_max_floor':
+                    value = compare(group, cohort, compatible_keys=allowed(group))
+                else:
+                    rewards = compare_rewards(group, cohort)
+                    value = rewards['conservative_paired' if score == 'conservative'
+                                    else 'official']
+                return {'score': score, **{k: value.get(k) for k in (
+                    'paired_n', 'mean_delta', 'bootstrap95_fixed_seed_sensitivity')}}
 
             def against(label: str, name: str, group: dict[str, Any]) -> tuple[Any, Any]:
-                keys = protocol_differences(group, cohort)
+                keys = blocking(group)
                 if keys:
                     skipped[label] = keys
                     return protocol_skip(group, cohort, name), protocol_skip(group, cohort, name)
-                return compare(group, cohort), compare_rewards(group, cohort)
+                note(label, group)
+                return (compare(group, cohort, compatible_keys=allowed(group)),
+                        compare_rewards(group, cohort))
 
             report['against_baseline'], report['reward_against_baseline'] = against(
                 'baseline', 'baseline', baseline)
@@ -2027,18 +2373,20 @@ class SegmentWatcher(Watcher):
             # matches; with neither, the latest closed cohort is recorded as skipped.
             previous_name, previous = next(
                 ((row['root'], row['cohort']) for row in reversed(compared)
-                 if not protocol_differences(row['cohort'], cohort)),
+                 if not blocking(row['cohort'])),
                 ('baseline', baseline) if 'baseline' not in skipped else (latest_name, latest))
             if previous_name != latest_name:
-                skipped['latest_closed'] = protocol_differences(latest, cohort)
+                skipped['latest_closed'] = blocking(latest)
             report['previous_reference'] = previous_name
             report['against_previous'], report['reward_against_previous'] = against(
                 'previous', previous_name, previous)
             best = self.state.get('best_checkpoint')
             best_cohort = self.state.get('best_cohort', baseline)
-            best_keys = protocol_differences(best_cohort, cohort)
+            best_keys = blocking(best_cohort)
             if best_keys:
                 skipped['best'] = best_keys
+            else:
+                note('best', best_cohort)
             reference = cfg.get('rollback_reference', 'previous')
             anchor = (next((row for row in compared if row['at_training_seconds'] == 0), None)
                       if reference == 'initial_checkpoint' else None)
@@ -2049,9 +2397,11 @@ class SegmentWatcher(Watcher):
                 if (anchor is not None and anchor['checkpoint']['checkpoint_artifact_id']
                         != cfg['initial_checkpoint']):
                     raise ValueError('initial_checkpoint_evaluation_binding_changed')
-            anchor_keys = protocol_differences(anchor['cohort'], cohort) if anchor else []
+            anchor_keys = blocking(anchor['cohort']) if anchor else []
             if anchor_keys:
                 skipped['recipe_switch'] = anchor_keys
+            elif anchor:
+                note('recipe_switch', anchor['cohort'])
             # Report from pure inputs before any state change: if it fails, the watch state
             # (best, superseded_best, stop) is untouched and pending stays the original.
             report['report_directory'] = str(root / 'comparison')
@@ -2063,7 +2413,12 @@ class SegmentWatcher(Watcher):
                          scope_note='Managed fixed pool; unknown pairs excluded, '
                          'no retries. Selection uses raw CP theta, never training returns.'
                          + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
-                            if skipped else ''))
+                            if skipped else '')
+                         + (' Compatible fixes: ' + json.dumps(
+                             {k: [n['compatible_fix'] for n in v] for k, v in compatible.items()},
+                             sort_keys=True) if compatible else ''),
+                         compatible_keys={name: allowed(group) for name, group in cohorts.items()
+                                          if name != 'current'})
             first_of_protocol = False
             if best_keys:
                 # The best is chosen only within one protocol. The current best is kept in
@@ -2072,7 +2427,7 @@ class SegmentWatcher(Watcher):
                 superseded = self.state.setdefault('superseded_best', [])
                 restored = next((row for row in reversed(superseded)
                                  if row.get('cohort') is not None
-                                 and not protocol_differences(row['cohort'], cohort)), None)
+                                 and not blocking(row['cohort'])), None)
                 superseded.append({
                     'best_checkpoint': best, 'cohort': best_cohort,
                     'best_cohort_source': ('frozen_baseline' if best_cohort == baseline
@@ -2082,6 +2437,7 @@ class SegmentWatcher(Watcher):
                     first_of_protocol = True
                     self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
                     self.state['best_cohort'] = cohort
+                    self.state['best_selection_score'] = score
                     report['best_selection'] = {
                         'reason': 'first_cohort_of_new_observed_protocol',
                         'differing_keys': best_keys}
@@ -2091,12 +2447,16 @@ class SegmentWatcher(Watcher):
                     report['best_selection'] = {
                         'reason': 'restored_best_of_returning_observed_protocol',
                         'restored_checkpoint': best, 'differing_keys': best_keys}
-            comparison = None if first_of_protocol else compare(best_cohort, cohort)
+            # Best-CP selection and the regression check name their score (default:
+            # conservative, which is less biased against deep runs than the finished mean).
+            comparison = None if first_of_protocol else score_delta(best_cohort)
+            report['best_comparison'] = comparison
             if comparison is None:
                 pass  # This cohort already is its new protocol's best reference.
             elif comparison['mean_delta'] is not None and comparison['mean_delta'] > 0:
                 self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
                 self.state['best_cohort'] = cohort
+                self.state['best_selection_score'] = score
             elif best is None:
                 resume = cfg.get('baseline_resume_checkpoint')
                 if resume is None:
@@ -2105,17 +2465,22 @@ class SegmentWatcher(Watcher):
                         Path(self.config['learner_config'])).resume_checkpoint
                 self.state['best_checkpoint'] = resume
                 self.state['best_cohort'] = baseline
-            regression_comparison: dict[str, Any] | None = report['against_previous']
+                self.state['best_selection_score'] = score
+            regression_comparison: dict[str, Any] | None = (
+                report['against_previous'] if 'previous' in skipped else score_delta(previous))
             if reference == 'initial_checkpoint':
                 if anchor is None:
                     regression_comparison = None  # The anchor is not a post-switch evaluation.
+                    report['against_recipe_switch'] = None
+                elif anchor_keys:
+                    regression_comparison = protocol_skip(anchor['cohort'], cohort,
+                                                          anchor['root'])
+                    report['against_recipe_switch'] = regression_comparison
                 else:
-                    if anchor_keys:
-                        regression_comparison = protocol_skip(anchor['cohort'], cohort,
-                                                              anchor['root'])
-                    else:
-                        regression_comparison = compare(anchor['cohort'], cohort)
-                report['against_recipe_switch'] = regression_comparison
+                    report['against_recipe_switch'] = compare(
+                        anchor['cohort'], cohort, compatible_keys=allowed(anchor['cohort']))
+                    regression_comparison = score_delta(anchor['cohort'])
+            report['regression_delta'] = regression_comparison
             interval = (regression_comparison.get('bootstrap95_fixed_seed_sensitivity')
                         if regression_comparison is not None else None)
             regression: bool | None = bool(interval and interval[1] < 0)
@@ -2127,29 +2492,40 @@ class SegmentWatcher(Watcher):
             prior = self.state['evaluations'][-1] if self.state['evaluations'] else {}
             report['paired_regression'] = regression
             report['regression_reference'] = reference
+            report['regression_score'] = score
+            # Records before card U4 judged regressions by the paired max-floor delta.
             if (regression and prior.get('paired_regression')
-                    and prior.get('regression_reference', 'previous') == reference):
+                    and prior.get('regression_reference', 'previous') == reference
+                    and prior.get('regression_score', 'paired_max_floor') == score):
                 self.state['stop'] = 'two_paired_regressions_restore_best_after_diagnosis'
                 save(self.work / 'rollback-checkpoint.json', {
                     'checkpoint_artifact_id': self.state['best_checkpoint'],
                     'selection': 'highest_fixed_pool_paired_point_estimate',
+                    'selection_score': score,
                     'regression_reference': reference,
                     'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
+            if compatible:
+                report['compatible_fixes'] = compatible
             if skipped:
                 # Typed alarm only: the cohort and its originals are kept, training continues.
                 report['protocol_skipped'] = skipped
                 self.telemetry('attention', reason='different_observed_protocol',
                                evaluation=pending['root'], protocol_skipped=skipped)
         else:
-            # An incomplete evaluation is recorded and skipped, never a training stop:
-            # its originals stay preserved and the next scheduled evaluation compares.
+            # Incomplete (originals missing or an audit mismatch): scores are reported with
+            # the label, the record is not a comparison reference, training continues.
+            report['incomplete'] = incomplete
             report['skipped'] = 'evaluation_audit_or_originals_incomplete'
-            self.telemetry('attention', reason=report['skipped'], evaluation=pending['root'])
+            self.telemetry('attention', reason=report['skipped'], evaluation=pending['root'],
+                           incomplete=incomplete)
         # Full original result is retained by evaluate. This record never upgrades it.
         self.state['evaluations'].append(report)
         self.state['pending'] = None
         self.persist()
+        print(json.dumps({'kind': 'evaluation_scores', 'evaluation': pending['root'],
+                          **report['scores']}), file=sys.stderr, flush=True)
+        self.telemetry('evaluation_scores', evaluation=pending['root'], **report['scores'])
 
     def schedule_segment_evaluation(self):
         import shlex
@@ -2160,7 +2536,7 @@ class SegmentWatcher(Watcher):
                 or time.time() >= self.config['deadline_at'] - 900
                 or self.state['stop'] not in {None, 'run_budget_complete'}):
             return
-        required_window = cfg.get('episode_seconds', 900) + 180 + 600
+        required_window = cfg.get('episode_seconds', EVALUATION_EPISODE_SECONDS) + 180 + 600
         if self.config['deadline_at'] - time.time() <= required_window:
             self.telemetry('evaluation_not_started', reason='absolute_deadline_headroom',
                            due_training_seconds=due)
@@ -2181,7 +2557,7 @@ class SegmentWatcher(Watcher):
             shlex.quote(cfg['execution']), '--manifest', shlex.quote(cfg['manifest']['path']),
             '--output', shlex.quote(str(root / 'round')), '--workers', str(cfg.get('workers', 4)),
             '--seeds', str(cfg.get('seeds', 50)), '--wall-seconds', str(cfg.get('wall_seconds', 7200)),
-            '--episode-seconds', str(cfg.get('episode_seconds', 900))]
+            '--episode-seconds', str(cfg.get('episode_seconds', EVALUATION_EPISODE_SECONDS))]
         command.extend(['--deadline-at', str(self.config['deadline_at'])])
         script.write_text(prefix + 'exec ' + ' '.join(command) + '\n')
         script.chmod(0o700)
@@ -2225,12 +2601,13 @@ class SegmentWatcher(Watcher):
                 or self.state['training_seconds'] >= self.config['training_seconds']):
             self.state['stop'] = self.state['stop'] or 'run_budget_complete'
         health = self.state['health']
-        unknown = health.get('known_unknown', 0) + health.get('lost_offers', 0)
         total = stop_denominator(health)
-        if unknown_over_limit(unknown, total, self.config):
+        if self.unknown_window_gate() == 'stop':
             if not self.state['stop']:
                 self.state['stop_detail'] = {'at': time.time(), 'site': 'loop',
-                                             'health': dict(health)}
+                                             'health': dict(health),
+                                             'rule': 'rolling_unknown_window',
+                                             'window': self.state['unknown_window']}
             self.state['stop'] = self.state['stop'] or 'training_unknown_fraction_above_limit'
         uncertain = health.get('unresolved_admissions', 0)
         if unknown_over_limit(uncertain, total + uncertain, self.config):

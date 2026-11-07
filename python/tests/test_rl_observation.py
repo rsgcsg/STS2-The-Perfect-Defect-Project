@@ -386,8 +386,13 @@ def test_default_report_writes_reward_table_and_excluded_floors(tmp_path):
     assert report['reward_comparisons']['baseline']['official']['paired_n'] == 47
     readme = (tmp_path / 'report/README.md').read_text()
     assert 'Mean reward score (reward v2, per difficulty)' in readme
-    assert '| current | 0 | 50 | 48 | 2 | 0.3071 | [0.3216, ' in readme
-    assert 'Official mean (scored rows) | Bound [L, U] (all planned rows, diagnostic)' in readme
+    # Both headline scores side by side (card U4 B); with no infrastructure unknown the
+    # conservative score is exactly L.
+    assert '| current | 0 | 50 | 48 | 2 | 0.3071 | 0.3216 | [0.3216, ' in readme
+    assert ('Official mean (scored rows) | Conservative score (all planned, unknown at '
+            'reached floor) | Bound [L, U] (all planned rows, diagnostic)') in readme
+    assert (report['rewards']['current']['conservative']['score']
+            == report['rewards']['current']['lower_bound']['L'])
     assert 'the mean can lie below L (never above U)' in readme
     assert 'public floor >= 48 (excluded_facts)' in readme
     saved_report = json.loads((tmp_path / 'report/report.json').read_bytes())
@@ -450,3 +455,71 @@ def test_reward_for_undeclared_ascension_is_typed_none_never_a_partial_mean(tmp_
     text = '\n'.join(reward_lines({'current': summary}, {}))
     assert 'not computed: reward_spec_missing_ascension' in text
     assert 'Excluded games' not in text
+
+
+@pytest.mark.parametrize('status, reason, failure, category, rule', [
+    # U2 class A: the Soul Nexus kill was not witnessed by the Managed engine.
+    ('unknown', 'runtime_execution_or_release_unknown',
+     {'last_unknown_receipt': {'reason_code': 'managed_execution_unknown',
+                               'label': 'Play Tesla Coil -> Soul Nexus'},
+      'max_observed_floor': 45}, 'environment_gap', 'managed_execution_not_witnessed'),
+    ('unknown', 'managed_settling_stalled', {}, 'environment_gap', 'managed_settling_stalled'),
+    # U3 incident class: inference timeout hands the game to a human.
+    ('unknown', 'runtime_execution_or_release_unknown', {'handoff_reason': 'agent_call_timeout'},
+     'infrastructure', 'agent_call_timeout'),
+    ('unknown', 'runtime_exited_before_startup', {}, 'infrastructure',
+     'runtime_exited_before_startup'),
+    ('save_failed', 'segment_delivery_incomplete', {'save_error': 'OSError'}, 'save_ledger',
+     'save_failed_after_retry'),
+    ('unknown', 'runtime_execution_or_release_unknown',
+     {'execution_reason': 'typed_original_verification_failed'}, 'save_ledger',
+     'typed_original_verification_failed'),
+    # U4-1: eval-0001's five deep unknowns were the 900 s per-game wall limit.
+    ('unknown', 'runtime_execution_or_release_unknown', {'wall_limit_reached': True},
+     'wall_limit', 'episode_wall_limit_reached'),
+    # No classifying fact, or facts of two categories: unclassified with the reason.
+    ('unknown', 'runtime_execution_or_release_unknown', None, 'unclassified',
+     'no_classifying_fact'),
+    ('unknown', 'runtime_execution_or_release_unknown',
+     {'handoff_reason': 'agent_call_timeout',
+      'last_unknown_receipt': {'reason_code': 'managed_execution_unknown'}},
+     'unclassified', 'conflicting_facts:environment_gap,infrastructure'),
+])
+def test_unknown_close_is_typed_from_recorded_facts_never_guessed(
+        status, reason, failure, category, rule):
+    from stpd.evaluation.unknown_category import CATEGORIES, classify_unknown
+
+    value = classify_unknown(status, reason, failure)
+    assert (value['category'], value['rule']) == (category, rule)
+    assert value['category'] in CATEGORIES
+    if failure and 'last_unknown_receipt' in failure and category == 'environment_gap':
+        assert value['detail']['action'] == 'Play Tesla Coil -> Soul Nexus'
+        assert value['detail']['floor'] == 45
+        assert value['detail']['native_error'] == 'managed_execution_unknown'
+
+
+def test_conservative_score_keeps_unknowns_at_their_floor_and_drops_infrastructure():
+    from stpd.evaluation.rl_observation import compare_rewards, reward_summary
+
+    def row(seed, status, floor, category=None):
+        value = {'seed': seed, 'status': status, 'scored': status == 'finished',
+                 'result': 'loss' if status == 'finished' else None,
+                 'floor': floor if status == 'finished' else None,
+                 'observed_floor_lower_bound': floor, 'boss_cleared_acts': []}
+        if category:
+            value['unknown_category'] = category
+        return value
+
+    rows = [row('a', 'finished', 24), row('b', 'unknown', 48, 'wall_limit'),
+            row('c', 'unknown', 3, 'infrastructure'), row('d', 'not_started', None)]
+    summary = reward_summary({'ascension': 0, 'rows': rows})
+    loss = lambda floor: .5 * (floor / 48) ** 2  # noqa: E731
+    assert summary['mean'] == pytest.approx(loss(24))  # finished games only
+    assert summary['conservative']['score'] == pytest.approx((loss(24) + loss(48)) / 2)
+    assert summary['conservative']['not_counted'] == {'infrastructure_unknown': 1,
+                                                      'not_played': 1}
+    assert summary['lower_bound']['L'] == pytest.approx((loss(24) + loss(48) + loss(3)) / 4)
+    assert [r['unknown_category'] for r in summary['excluded_rows']] == [
+        'wall_limit', 'infrastructure', None]
+    paired = compare_rewards({'ascension': 0, 'rows': rows}, {'ascension': 0, 'rows': rows})
+    assert paired['conservative_paired']['paired_n'] == 2
