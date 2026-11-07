@@ -24,6 +24,7 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 | E3 历史输入 | 原 artifact/compiled input pack → 不可变 wire | **只读**：有界 SegmentInputs LRU；同 key 只有一个冷填充 owner，读验/等待均在共享锁外 | `SegmentInputs`；新热段不依赖 pack/cache 恢复 |
 | E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；每组 forward→整 minibatch 分母的 loss→backward 累加，全部组后只作一次 finite/KL/clip/Adam 决定；默认1轮，配置可调整，KL刹车结束剩余轮次；benchmark 与 application 同接口 |
 | E4 执行选择 | 同上 | **默认**：整组 BF16 eager、无 checkpoint；**备选**：显存不足时只缩小同一实现的物理组，或不支持 BF16 的已授权 CPU 语义检查显式选 FP32 | 正式 profile 的 cap512、scene area `2^32`、text area `2^36`；G0真实320行一组峰10.44GiB，FP32峰17.60GiB；compile无稳态收益，live `compile_loss=true`明确拒绝，checkpoint重算实现已退役 |
+| E4 SGD进程实现 | 同上；θ/Adam/EMA/torch-CUDA RNG 归 SGD 进程，uses/选择RNG/CP装配仍归控制进程 | **备选**：RL5 S3 I1，显式 `dataplane.sgd_process=true`；I0 测得同进程 GIL 拖慢 7.15×，独立进程 1.000–1.006×；GPU 在线门未过前不转默认；没有自动回退 | 下节“显式 SGD 进程”；`stpd.rl.sgd_process.SgdProcess`；CPU 上 CP 学习状态与默认实现逐位相等 |
 | E5 发布/采用 | 更新后完整 θ 快照 → 完整 model+heads μ；段边界采用，旧尾值仍用旧 μ | **默认**：CPU 后台导出/哈希/Store 发布，跳过未发送中间版；默认 actor 按 grant 按需装载 | `_schedule_publication`；`SegmentGrant.mu`；当前/旧尾值显式 retain/release；临时中央实现在后台复制冻结模板和装载设备 |
 | E6 标签 | Evidence 验证的真实终局或稳定 reward 的公开 HP → typed 标签及 exact RowRef | **默认**：Evidence-owned live verifier+绑定；全量二次 replay 仅抽样审计/评估 | `LiveGlobalReplay.verify(expected)` → 原 typed 入口；不是 observer 副本授权；审计失败追加 finding+Stop |
 | E7 CP | 构造、θ/heads/text、完整 Adam/参数组次序、EMA、计数、Python/Torch/CUDA RNG → 自包含 CP | **默认**：`checkpoint_state.SCHEMA`；无恢复 parent，不读旧 queue/aux/输入日志；mid-epoch重放恢复已移除 | 配置 `resume_checkpoint`；新 `training_generation`；只恢复学习状态，旧热代追加丢弃处置 |
@@ -123,7 +124,35 @@ lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功�
 | **只读**：device_cache/reference_device_cache/async_transfer/precompile_inputs | 历史row/reference输入缓存；prepared统一stage完整slab一次，无这些训练开关 |
 | **只读**：bucket/defer_sync | 历史row重排/同步选项；prepared已固定整批partition和一次pre-step决定，不读取它们 |
 | **只读**：inference_microbatch_size/probe_inference_microbatches | 历史推理诊断；actor执行由μ construction及central_scoring决定，不是prepared训练参数 |
+| **备选**：`prepared_forward="rows-v2"`（`prepared_compile` 仅此时可开） | 准备进程给每组加 CPU `RowLayout`，训练前向走去补齐实现（下节）；默认 `padded-v1` 不导出这两项，生效文件和 binary recipe digest 不变；选中时导出并写入 CP 配置；不是恢复比较项，新 generation 可从原 CP 切换 |
 | 已退役：compile_loss=true、activation checkpoint重算 | G0 compile热0.515s对eager0.514s，冷编30.79s；live明确拒绝true。checkpoint只保留历史配置/收据，源码只有逐组累加一种实现 |
+
+## 训练前向 rows-v2（RL5 S3 0 级，备选）
+
+同一组参数、同一函数，只去掉补齐上的工作（S0-GPU 0 级，单 A100 离线实测）。显式 `performance.prepared_forward="rows-v2"`
+在新 generation 开跑时选定，不热换；浮点累加次序与 `padded-v1` 不同（BF16 容差内一致，不逐位），所以切换后是新轨迹。
+- 准备进程（CPU）：`row_layout(group)` 只重排组内已有张量——去重后被引用的真实文字按长度进 2 的幂宽度桶；场面真实行按
+  长度排序，256 行一桶、宽度取 64 的倍数；角色只留非零项（行内槽位）；每个 joint reduction 合成一条下标。丢掉的位置都
+  先核实是补齐，不能证明就报错。没有 θ 值、不改成员、均值长度和 loss 分母。
+- 学习端：`stpd.p1.rows_forward.forward_rows`：index_copy/index_add 代替补齐 gather；每个 reduction 一次 gather；唯一文字
+  向量 fp32 直接给节点项；batch-first 注意力（同 in/out 投影）；CUDA sm80+ 且 BF16/FP16 autocast 时场面编码器走 varlen flash，
+  其他设备同一数学走按桶带掩码注意力（按设备确定，不是失败回退）。`prepared_compile=true` 编译每桶的场面/头/动作块。
+- 守门：`prepared_update` 在组的布局与选择不一致时报 `prepared_layout_does_not_match_selected_forward`；训练模式（dropout）
+  下拒绝；推理、actor 包和 μ 结构不变。
+- CPU 证据：`tests/test_rl_rows_forward.py`，fp32 下输出和每个参数梯度与 `padded-v1` 在浮点容差内一致（多桶、长度不一、
+  policy/非 policy），布局经 transport 不变，一步 Adam 和 binary learner 两个 dataset 都与 `padded-v1` 接近。
+- GPU 实测（单 A100 80GB PCIe，S0-GPU 同卡，3 个快照 ~850 决策/批，BF16，7 次取暖后中位数）：`padded-v1` 1.60–1.68 s/批、
+  显存分配峰值 28–29 GiB；rows-v2 eager 0.316–0.332 s、13–15 GiB；rows-v2 + compile 0.260–0.274 s、12.5–13.9 GiB（5.8–6.5×）。
+  TF32 对 rows-v2 无可见变化。对 fp32 补齐参考的梯度相对 L2：rows-v2 与 `padded-v1` BF16 同量级（2.4–9.7% 对 2.6–9.7%）；
+  rows-v2 对 `padded-v1` BF16 的差（2–5%）大于 `padded-v1` 自身两次之差（0.4–0.5%），因累加次序和 flash 核不同，属 BF16 误差带内。
+  布局构建 CPU 0.03–0.05 s/组（准备进程内）。
+- compile：每桶块按形状编译（`dynamic=None`），每进程首见形状要编译；逐头梯度诊断步（`retain_graph`）与编译后向的 donated buffer
+  不兼容，诊断步走同一块的 eager。生产形状更多样时的重编译次数和缓存上限未在真实运行里测，默认不开。
+- 采用规则：提速后的步对同进程 GIL 护航更敏感（S0-GPU I0：0.48 s 步同进程 ×1.0 负载慢 7.15 倍），所以与
+  `dataplane.sgd_process=true`（显式 SGD 进程）同一 release 上线，不单独进同进程学习端：`SegmentLearner` 在
+  `prepared_forward!="padded-v1"` 而没有选 SGD 进程时报 `rows_v2_requires_sgd_process`（compile 只能配 rows-v2，同样被拦）。
+- 上报：每次更新的 `progress` 事件带 `rows_forward={path: varlen|masked, compiled}`；开 compile 时再带本进程 dynamo 计数
+  （`dynamo_frames_ok` 含重编译，`dynamo_frames_total - dynamo_frames_ok` 是没编译、走 eager 的帧，如超过 cache_size_limit）。
 
 ## 冻结身份和 μ
 
@@ -264,6 +293,43 @@ FD耗尽会计数/告警并退避，其它accept错误发typed failure；准备/
 
 CPU合成合流、loopback连接及配对hash只证明接线与所测反例；真实跨节点吞吐、World、CP替换恢复、GPU和模型效果
 各需原阶段实测。本实现仍是一个learner控制/WAL/选批owner与单数值更新owner，多GPU不由该profile自动获得。
+
+## 显式 SGD 进程（RL5 S3 I1，备选）
+
+同一 learner 拆成两个进程，学习规则、CP schema v3、uses 和 μ 发布语义不变；只在 binary socket profile 的
+dataplane 对象里显式加 `"sgd_process": true` 才启用，不加时默认同进程 E4 逐字节不变。
+- 控制进程：WAL、socket、queue/lease、选择 RNG、aux 池与 uses、首用计数、CP 装配与发布；不建 CUDA context（启动核查，已建则拒绝）。
+- SGD 进程（spawn）：θ/Adam/EMA、torch/CUDA RNG 和 GPU；读控制进程交来的 init 文件，自身不改 torch 全局 RNG。
+- 批交接复用 `BinaryBatchPreparer` 原 prepared 输出 mmap 文件：worker 记 sha256，SGD 进程映射、核验、
+  放入 2 个 pinned 槽（CPU 上为自有副本）后 `stage_batch`，回 `staged` 时控制进程删文件。至多提前计划 1 个 dataset。
+- 每步 `step` 消息带 dataset/minibatch/epoch/update；与控制进程期望（`updates+stepped`）不等即双方 fatal，
+  不计 uses。CP 只在 dataset 边界、计数一致时装配；`state` 计数不一致拒绝写 CP。
+- μ：每个 dataset 结束 SGD 进程写一份 θ 文件，沿原“跳过未发送中间版”发布；发布进程读文件，控制进程不持 θ。
+- 失败：子进程退出/被杀、`failed`、消息身份或序号变化、超过 `max(sgd_stall_seconds, 10×近200步P95)` 无回复
+  （含发送阻塞）都走原 input fence：不发新 lease、不写新 CP、发 `failed` 带 `sgd_failure`；OPS 从最新 CP 以新
+  generation 恢复。没有同进程回退，也不在同 generation 重启子进程。子进程忽略 SIGINT/SIGTERM，Linux 设
+  PDEATHSIG，管道 EOF 即退出 70。Stop 只完成已开始的 dataset，预计划的下一批不训练。
+- 原生分步计时：progress 事件 `sgd_timing` 含 optimizer/EMA/CUDA event/单步墙钟/等待 start/边界/传输与消息滞后，
+  配 `sgd_offline_step_seconds` 时另报 `online_offline_ratio`。
+
+内存预算（启动前，拒绝而不缩小）：控制进程与 SGD 进程逐项上界写入 `work/sgd-memory-budget.json`。
+匿名内存/pinned 全计；spool、arena、prepared 输出、WAL 只在 tmpfs/ramfs/未知文件系统上计入。
+上限取 `memory_limit_bytes`，否则 cgroup 路径上最小限制，否则物理内存；计入总量须 ≤ `(1-memory_headroom_fraction)`×上限
+（默认 0.20），否则 `sgd_process_memory_budget_exceeded`。`memory_budget` 只能覆盖声明项
+`controller_base/worker_process/publisher_process/sgd_base_cuda/sgd_base_cpu`。默认值按实测取：SGD 进程 2.5GiB
+（S3 I1 GPU 回放 1.97GiB 不含 pinned）、worker 1.5GiB（RL4.1 I1 单进程峰 1.30GiB）、publisher 1GiB（947MiB）；
+控制进程 6GiB 仍是声明值，首次真实运行按进程量后替换。pinned 槽按配置上限 `prepared_bytes` 计（回放实际约 0.21GiB）。
+Friday 现 profile 的 dataplane root 在节点本地 `/tmp`（xfs），spool/arena/prepared/WAL 是可回收页缓存，不计入；
+按 c11 配置（19 个辅助进程、prepared 8GiB）计入约 46GiB。RL5 运行学习端申请 ≥96GiB（A100 节点给得出时 128GiB），
+因为 cgroup 也计页缓存，c11 同进程峰 63.87GiB 已贴 64GiB。
+
+其他键：`sgd_start_seconds`（默认600）、`sgd_shutdown_seconds`（60）、`sgd_cpus`（仅 Linux 亲和性）。
+CPU 证据：`tests/test_rl_sgd_process.py` 证明 CP 逐位相等、双向恢复和各故障注入（含子进程自报 CUDA OOM：fence，
+失败那次不计 update/首用/aux use，不出新 CP）。GPU 证据（单 A100-40GB，同一快照）：BF16 与 BF16+TF32 下，
+1 步和 4 步后 θ/Adam/EMA 与同进程之差落在同进程自身两次之差的同一量级（4 步后 θ 全局相对 L2 约 1–3e-6）；
+真 CUDA OOM 时子进程发 `failed`（`OutOfMemoryError`、阶段 `update`、分配器 `num_ooms`），启动时显存不足为
+`AcceleratorError`/阶段 `init`，两者都是 `sgd_process_failed`、子进程退出 1、显存释放。在线速度门（真实运行 ≥1 h、
+≥400 次更新，在线÷离线 ≤1.10）在第一次真实运行验收，见 RL5 S3-I1 GPU 验收计划。
 
 ## 启动、CPU 短测和只替换 learner
 

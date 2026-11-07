@@ -437,6 +437,36 @@ def augment_actor_summary(work: Path, summary: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+NFS_STATE_PATTERNS = {'lost_locks': re.compile(r'NFS: \S+: lost \d+ locks'),
+                      'state_manager_failed': re.compile(
+                          r'nfs4_schedule_state_manager: kthread_run: -\d+'),
+                      'server_not_responding': re.compile(r'nfs: server \S+ not responding')}
+
+
+def node_nfs_counts() -> dict[str, int] | None:
+    """Kernel NFS client state-loss lines seen so far on this node (OPS 11-07: every bad-node
+    stop matched lost locks + kthread_run -4 in that minute). Read-only; None when the kernel
+    log is not readable. A diagnostic fact for the result, never a decision here: any
+    failure (including undecodable bytes) is None, and the short timeout keeps the final
+    read inside Slurm's KillWait so result.json is always saved."""
+    try:
+        text = subprocess.run(['dmesg'], capture_output=True, text=True, errors='replace',
+                              timeout=5, check=True).stdout
+        return {key: len(pattern.findall(text)) for key, pattern in NFS_STATE_PATTERNS.items()}
+    except Exception:  # noqa: BLE001 - diagnostics must never cost the actor its result
+        return None
+
+
+def nfs_events(before: dict[str, int] | None, after: dict[str, int] | None
+               ) -> dict[str, Any]:
+    if before is None or after is None:
+        return {'status': 'kernel_log_unavailable'}
+    # A wrapped ring buffer can only lower a count; never report a negative delta.
+    delta = {key: max(0, after[key] - before[key]) for key in NFS_STATE_PATTERNS}
+    return {'status': 'state_lost' if delta['lost_locks'] or delta['state_manager_failed']
+            else 'clean', 'during_allocation': delta}
+
+
 def run(path: Path) -> dict[str, Any]:
     index = int(os.environ.get('SLURM_ARRAY_TASK_ID', '-1'))
     plan = load_plan(path, actor_index=index if index >= 0 else None)
@@ -481,6 +511,7 @@ def run(path: Path) -> dict[str, Any]:
     previous = {number: signal.signal(number, stop)
                 for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
     began = time.monotonic()
+    nfs_before = node_nfs_counts()
     code = None
     error_type = error_code = None
     summary = None
@@ -537,7 +568,8 @@ def run(path: Path) -> dict[str, Any]:
             'cross_actor_immediate_unknown_stop': False,
             'runtime_materialization': materialization,
             'host_materialization': host_materialization,
-            'forwarded_actor_signals': forwarded_actor_signals}
+            'forwarded_actor_signals': forwarded_actor_signals,
+            'node_nfs_events': nfs_events(nfs_before, node_nfs_counts())}
         save(scratch / 'result.json', result)
         try:
             receipt = snapshot(scratch, persistent / 'evidence')
@@ -961,6 +993,15 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
             signal.signal(number, handler)
 
 
+HELD_JOB_NAME = 'rl4-learner'
+
+
+def held_allocation_detail(gpu: str) -> list[str]:
+    """``squeue -o '%T|%b|%j'`` of a held allocation ``launch(held_job_id=...)`` accepts;
+    gpu_successor builds its successor holder to match exactly this."""
+    return ['RUNNING', f'gres/gpu:{gpu}:1', HELD_JOB_NAME]
+
+
 def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Path,
            output: Path, *, gpu: str = 'a30', minutes: int = 85,
            cpus: int = 32, memory_gb: int = 64,
@@ -1017,7 +1058,7 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
                     raise ValueError('owned_held_GPU_allocation_required')
                 detail = scheduler.output(['squeue', '-h', '-j', held_job_id,
                     '-o', '%T|%b|%j']).split('|')
-                if detail != ['RUNNING', f'gres/gpu:{gpu}:1', 'rl4-learner']:
+                if detail != held_allocation_detail(gpu):
                     raise ValueError('running_owned_held_GPU_allocation_required')
                 steps = scheduler.output(['squeue', '--steps', '-h', '-j', held_job_id,
                                           '-o', '%i']).splitlines()

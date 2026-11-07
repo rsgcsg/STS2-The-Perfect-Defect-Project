@@ -82,6 +82,39 @@ class AdvantageNormalization:
 
 
 @dataclass(frozen=True)
+class RowLayout:
+    """S3 rows-v2: a padding-free forward layout of one PreparedGroup, built on CPU.
+
+    Only re-indexes what the group's own tensors already say (real text rows and
+    lengths, real scene slots, role terms and weights, reduction buckets): no
+    theta value, no membership, mean length or loss-denominator change. Python
+    ints carry every split size, so the GPU step never reads a device tensor back.
+    """
+
+    # Unique real texts (padding text rows dropped), sorted by length into
+    # power-of-two width buckets: (texts, width) in concatenation order.
+    text_buckets: tuple[tuple[int, int], ...]
+    text_order: Tensor  # long [texts]: unique text row of each bucket slot
+    text_inverse: Tensor  # long [texts]: unique text -> its bucket slot
+    node_text_indices: Tensor  # long: each node text term -> unique text (composed)
+    # Joint reductions as one index list each: (indices, ((width, owners), ...), inverse).
+    reductions: dict[str, tuple[Tensor, tuple[tuple[int, int], ...], Tensor]]
+    # Real rows sorted by scene length, cut into buckets: (rows, width, max_len, slots).
+    scene_buckets: tuple[tuple[int, int, int, int], ...]
+    scene_rows: Tensor  # long [rows]: group row of each bucket row
+    scene_inverse: Tensor  # long [rows]: group row -> bucket order
+    scene_nodes: Tensor  # long [slots]: node of each real slot, bucket order
+    scene_positions: Tensor  # long [slots]: row * width + slot inside its bucket
+    scene_lengths: Tensor  # long [rows]: real slots of each bucket row
+    scene_offsets: Tensor  # int32 [rows + buckets]: per-bucket cumulative lengths
+    # Policy only, per role: (candidate, bucket slot, weight) of every nonzero term
+    # and the per-bucket term counts; plus each candidate's "has a term" flag.
+    roles: dict[str, tuple[Tensor, Tensor, Tensor, tuple[int, ...]]] = field(
+        default_factory=dict)
+    role_present: dict[str, Tensor] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class PreparedGroup:
     rows: tuple[int, ...]  # indices into PreparedBatch.frames (PPO first, aux after)
     policy: bool
@@ -89,6 +122,8 @@ class PreparedGroup:
     # All padding, text deduplication, scene/role gathers and masks are built on
     # CPU. Never contains text embeddings or any other theta-dependent value.
     tensors: dict[str, Tensor] = field(default_factory=dict)
+    # Present only when the learner explicitly selected `prepared_forward: rows-v2`.
+    layout: RowLayout | None = None
 
 
 @dataclass(frozen=True)
