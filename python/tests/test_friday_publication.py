@@ -93,6 +93,40 @@ def test_terminal_evaluation_waits_for_result_and_snapshot_publication(tmp_path,
     assert owner.state['stop'] is None and owner.state['pending']['stage'] == 'running'
 
 
+def test_terminal_evaluation_without_result_is_skipped_after_grace(tmp_path, monkeypatch):
+    """c13b 11-07: eval job 1444165 was cancelled on a bad node and never published a
+    result; the pending evaluation stayed 'running', so the stopped watcher never exited
+    and a same-window continuation would never evaluate again."""
+    import time
+    watch = original_watch.__wrapped__()
+    config = {'run': 'publication', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+              'budget_id': 'publication-budget', 'deadline_at': 9999999999,
+              'training_seconds': 3600, 'actors': 1}
+    owner = watch.SegmentWatcher(config, tmp_path/'watch')
+    root = tmp_path/'eval'
+    root.mkdir()
+    (root/'partial-original.json').write_text('{}')
+    owner.state['pending'] = {'root': str(root), 'plan': str(root/'plan.json'),
+                              'stage': 'running', 'job_id': '81', 'due_seconds': 14400}
+    alarms = []
+    owner.telemetry = lambda kind, **fields: alarms.append((kind, fields))
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    owner.evaluation_cohort = lambda *a: pytest.fail('no result to read')
+    owner.collect_segment_evaluation()
+    seen = owner.state['pending']['terminal_seen_at']
+    owner.collect_segment_evaluation()  # still inside the grace window: keeps waiting
+    assert owner.state['pending']['terminal_seen_at'] == seen and not alarms
+    owner.state['pending']['terminal_seen_at'] = time.time() - watch.EVALUATION_RESULT_GRACE_SECONDS
+    owner.collect_segment_evaluation()
+    assert owner.state['pending'] is None and owner.state['stop'] is None
+    record = owner.state['evaluations'][-1]
+    assert record['skipped'] == 'evaluation_job_terminal_without_result'
+    assert record['job_id'] == '81' and record['at_training_seconds'] == 14400
+    assert alarms == [('attention', {'reason': 'evaluation_job_terminal_without_result',
+                                     'evaluation': str(root), 'job_id': '81'})]
+    assert (root/'partial-original.json').exists()  # originals kept
+
+
 def test_exact_game_version_is_taken_from_shipped_release(rl, tmp_path):
     game = tmp_path/'game'
     game.mkdir()
