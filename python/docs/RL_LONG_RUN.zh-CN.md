@@ -304,6 +304,8 @@ step-id完整且指向另一job即拒绝，半成品在原ready窗口等待。
 
 H1通过后用户可明确开一个新的72000秒运营窗口，并继续同一学习状态。
 新watch配置用`previous_window_state={path,sha256}`绑定已结束的原watch state，run/peer相同、预算id不同；
+原窗口须以`run_budget_complete`或`absolute_deadline`结束，且无active attempt、无pending评估、各attempt终态已记账；
+unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。deadline后启动的watch保留更早的typed stop，不改标为`absolute_deadline`。
 指定`learner_config.resume_checkpoint`必须属于原窗口的budget id/total/deadline和owned generation。
 原learner接收`operating_budget_parent={checkpoint_artifact_id,operating_budget,deadline_at}`明确父链接，
 完整继承θ/Adam/EMA/RNG/训练计数，μ按普通恢复重新发布，旧CP和旧窗口耗时不改。
