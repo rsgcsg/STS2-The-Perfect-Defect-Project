@@ -296,8 +296,12 @@ Friday 现 profile 的 dataplane root 在节点本地 `/tmp`（xfs），spool/ar
 因为 cgroup 也计页缓存，c11 同进程峰 63.87GiB 已贴 64GiB。
 
 其他键：`sgd_start_seconds`（默认600）、`sgd_shutdown_seconds`（60）、`sgd_cpus`（仅 Linux 亲和性）。
-CPU 证据：`tests/test_rl_sgd_process.py` 证明 CP 逐位相等、双向恢复和各故障注入；GPU BF16/TF32 下只能声明容差内一致，
-在线速度门见 RL5 S3-I1 GPU 验收计划。
+CPU 证据：`tests/test_rl_sgd_process.py` 证明 CP 逐位相等、双向恢复和各故障注入（含子进程自报 CUDA OOM：fence，
+失败那次不计 update/首用/aux use，不出新 CP）。GPU 证据（单 A100-40GB，同一快照）：BF16 与 BF16+TF32 下，
+1 步和 4 步后 θ/Adam/EMA 与同进程之差落在同进程自身两次之差的同一量级（4 步后 θ 全局相对 L2 约 1–3e-6）；
+真 CUDA OOM 时子进程发 `failed`（`OutOfMemoryError`、阶段 `update`、分配器 `num_ooms`），启动时显存不足为
+`AcceleratorError`/阶段 `init`，两者都是 `sgd_process_failed`、子进程退出 1、显存释放。在线速度门（真实运行 ≥1 h、
+≥400 次更新，在线÷离线 ≤1.10）在第一次真实运行验收，见 RL5 S3-I1 GPU 验收计划。
 
 ## 启动、CPU 短测和只替换 learner
 
