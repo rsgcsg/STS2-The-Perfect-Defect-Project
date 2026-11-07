@@ -618,6 +618,27 @@ def test_optional_host_measurement_failure_does_not_abort_preservation(failure):
                       failure.code if isinstance(failure, BoundaryError) else "TimeoutError"}
 
 
+def test_wall_limit_stop_keeps_unknown_status_with_its_own_reason():
+    from spireagent.workbench.managed_evaluation import _outcome_status
+
+    # Shape of the 11-07 window-2 deep games: our wall Stop left the agent uncertain.
+    outcome = {"terminal_observation": {"status": "not_observed"},
+               "operation_end": {"status": "stopped", "controller": "released", "tainted": False}}
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "unknown", "reason": "episode_wall_limit_reached"}
+    assert _outcome_status(outcome, settling_stalled=False) == {
+        "status": "unknown", "reason": "runtime_execution_or_release_unknown"}
+    assert _outcome_status(outcome, settling_stalled=True, wall_limit_reached=True) == {
+        "status": "unknown", "reason": "managed_settling_stalled"}
+    outcome["operation_end"]["status"] = "censored"
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "censored", "reason": "runtime_censored"}
+    outcome["terminal_observation"] = {"status": "observed", "result": "loss"}
+    outcome["operation_end"]["status"] = "task_ended"
+    assert _outcome_status(outcome, settling_stalled=False, wall_limit_reached=True) == {
+        "status": "finished", "reason": "natural_terminal"}
+
+
 def test_original_settling_reason_survives_a_missing_final_http_status():
     from spireagent.workbench.managed_evaluation import _outcome_status
 
