@@ -153,7 +153,7 @@ jobs:
             python/.local/fixture-diagnostics/**
             .local/checks/workspace-*.json
           include-hidden-files: true
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
       - name: Check patch hygiene
         run: git diff --check
@@ -254,7 +254,9 @@ jobs:
         if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: pytest-Linux-shard-*-${{ github.run_attempt }}
+          # Every attempt of this run: a failed-only rerun keeps earlier passing
+          # shards. The verifier proves each shard by its newest attempt.
+          pattern: pytest-Linux-shard-*
           path: .local/ci/pytest-shards
           merge-multiple: false
       - name: Require every selected check; skipped is not a full PASS
