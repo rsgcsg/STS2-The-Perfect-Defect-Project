@@ -749,10 +749,12 @@ def test_cli_forwards_slot_ids_and_rejects_non_managed_actions(ledger, monkeypat
 
 class QueuedSaveExecutor:
     """Replace Host/Runtime IO only; real suite/report/ledger coordination stays live."""
-    def __init__(self, *, fail_once=False):
+    def __init__(self, *, fail_once=False, failures=None):
         self.offers = 0
         self.saves = 0
-        self.fail_once = fail_once
+        # failures: how many save attempts of the FIRST saved game fail (fail_once = 1).
+        self.failures = failures if failures is not None else int(fail_once)
+        self.saved_paths = []
 
     def __call__(self, row, manifest, artifacts, checkpoint):
         self.offers += 1
@@ -771,8 +773,9 @@ class QueuedSaveExecutor:
         row = report["episodes"][0]
         assert row["cleanup_accepted"] is True
         self.saves += 1
-        if self.fail_once:
-            self.fail_once = False
+        self.saved_paths.append(path)
+        if self.failures and path == self.saved_paths[0]:
+            self.failures -= 1
             row.update(status="save_failed", reason="injected_save_failure")
         else:
             row.update(status="finished", reason="natural_terminal")
@@ -823,9 +826,10 @@ def test_closed_execution_releases_worker_but_queue_is_bounded_until_save(ledger
 def test_restart_after_mutable_save_checkpoint_recovers_save_without_an_offer(ledger):
     from spireagent.workbench.reference_suite import _Artifacts
 
-    executor = QueuedSaveExecutor(fail_once=True)
+    executor = QueuedSaveExecutor(failures=2)
     first = ledger.run_managed(workers=1, max_episodes=1, executor=executor)
-    assert first["stop_reason"] == "save_failed_resume_save_only"
+    assert first["stop_reason"] is None and first["save_failed_after_retry"] == [
+        ledger.slots()[0]["slot_id"]]
     slot = next(s for s in ledger.slots() if s["status"] == "save_failed")
     path = Path(slot["attempt_report"])
     report = json.loads(path.read_bytes())
@@ -837,12 +841,43 @@ def test_restart_after_mutable_save_checkpoint_recovers_save_without_an_offer(le
     second = EvaluationLedger(ledger.directory).run_managed(
         workers=1, max_episodes=5, executor=executor)
     assert second["dispatched"] == 0
-    assert executor.offers == 1 and executor.saves == 2
+    assert executor.offers == 1 and executor.saves == 3
     assert EvaluationLedger(ledger.directory).report()["loss"] == 1
     slot = next(r for r in EvaluationLedger(ledger.directory).slots()
                 if r["status"] == "finished")
     assert slot["reason"] == "natural_terminal"
     assert slot["execution_status"] == "finished"
+
+
+def test_save_failed_keeps_dispatching_and_batch_end_retry_recovers_score(ledger):
+    """Card RL5 3E: one failed save no longer stops the batch or loses later games."""
+    executor = QueuedSaveExecutor(fail_once=True)
+    result = ledger.run_managed(workers=1, max_episodes=4, executor=executor)
+    first = ledger.slots()[0]
+    assert result["status"] == "completed" and result["stop_reason"] is None
+    assert result["dispatched"] == 4 and executor.offers == 4
+    # Four first saves plus exactly one save-only retry; no game was offered twice.
+    assert executor.saves == 5 and executor.saved_paths[-1] == Path(first["attempt_report"])
+    assert result["save_retried"] == [first["slot_id"]]
+    assert result["save_failed_after_retry"] == [] and result["new_finished"] == 4
+    assert first["status"] == "finished" and first["resume_save_retry"] == "recovered"
+    report = EvaluationLedger(ledger.directory).report()
+    assert report["loss"] == 4 and report["save_failed"] == 0
+
+
+def test_save_failed_twice_stays_excluded_with_originals_and_typed_record(ledger):
+    executor = QueuedSaveExecutor(failures=2)
+    result = ledger.run_managed(workers=1, max_episodes=3, executor=executor)
+    failed = ledger.slots()[0]
+    assert result["status"] == "completed" and result["dispatched"] == 3
+    assert executor.offers == 3 and executor.saves == 4
+    assert result["save_failed_after_retry"] == [failed["slot_id"]]
+    assert failed["status"] == "save_failed" and failed["resume_save_retry"] == "failed"
+    assert failed["cleanup_accepted"] is True
+    assert Path(failed["attempt_report"]).is_file()  # Original attempt retained.
+    report = EvaluationLedger(ledger.directory).report()
+    assert report["save_failed"] == 1 and report["loss"] == 2
+    assert report["not_started"] == report["planned"] - 3
 
 
 def reference_digest(path):
@@ -852,7 +887,7 @@ def reference_digest(path):
 def test_restart_between_base_close_and_wrapper_checkpoint_keeps_save_job(ledger):
     from spireagent.workbench.reference_suite import _Artifacts
 
-    executor = QueuedSaveExecutor(fail_once=True)
+    executor = QueuedSaveExecutor(failures=2)
     ledger.run_managed(workers=1, max_episodes=1, executor=executor)
     slot = next(s for s in ledger.slots() if s["status"] == "save_failed")
     path = Path(slot["attempt_report"])
@@ -866,14 +901,14 @@ def test_restart_between_base_close_and_wrapper_checkpoint_keeps_save_job(ledger
     result = EvaluationLedger(ledger.directory).run_managed(
         workers=1, max_episodes=1, executor=executor)
     assert result["dispatched"] == 0
-    assert executor.offers == 1 and executor.saves == 2
+    assert executor.offers == 1 and executor.saves == 3
     assert EvaluationLedger(ledger.directory).report()["loss"] == 1
 
 
 def test_save_only_recovery_does_not_reserve_another_game_peak(ledger, monkeypatch):
     from spireagent.workbench import evaluation_ledger as module
 
-    executor = QueuedSaveExecutor(fail_once=True)
+    executor = QueuedSaveExecutor(failures=2)
     ledger.run_managed(workers=1, max_episodes=1, executor=executor)
     usage = shutil.disk_usage(ledger.directory)
     monkeypatch.setattr(module, "workspace_reserve_bytes", lambda: 15*1024**3)

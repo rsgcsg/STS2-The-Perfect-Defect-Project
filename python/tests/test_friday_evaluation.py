@@ -244,14 +244,26 @@ def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
 
 @pytest.mark.parametrize('row', [
     {'status': 'unknown', 'cleanup_accepted': False, 'world_mutation_offered': True},
-    {'status': 'save_failed', 'cleanup_accepted': True},
     {'status': 'unknown', 'cleanup_accepted': False,
      'execution_reason': 'typed_original_verification_failed'},
 ])
-def test_clean_unknown_option_preserves_cleanup_save_and_integrity_stops(evaluate, tmp_path, row):
+def test_clean_unknown_option_preserves_cleanup_and_integrity_stops(evaluate, tmp_path, row):
     stop = tmp_path / 'STOP'
     evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
     assert stop.exists()
+
+
+@pytest.mark.parametrize('policy', ['stop', 'continue_cleaned'])
+def test_closed_save_failure_is_an_excluded_pair_not_a_stopped_batch(evaluate, tmp_path, policy):
+    stop = tmp_path / 'STOP'
+    row = {'status': 'save_failed', 'cleanup_accepted': True,
+           'execution_status': 'finished', 'reason': 'preservation_failed'}
+    evaluate.StopOnUncertain(None, stop, unknown_policy=policy).inspect(row)
+    assert not stop.exists()
+    # The strict policy still stops when the game itself was uncertain.
+    uncertain = {**row, 'execution_status': 'unknown'}
+    evaluate.StopOnUncertain(None, stop, unknown_policy=policy).inspect(uncertain)
+    assert stop.exists() is (policy == 'stop')
 
 
 def test_cleaned_typed_verification_failure_is_one_excluded_pair(evaluate, tmp_path):

@@ -358,8 +358,15 @@ class StopOnUncertain:
                                      and row.get('cleanup_accepted') is True):
             self.stop.touch()
             return
+        # A closed game whose save failed is one excluded pair (on the audit slot,
+        # an unscored cohort); the ledger retries that save once at batch end
+        # (card RL5 3E). Admission continues under either policy unless the game
+        # itself was uncertain.
+        if (row.get('status') == 'save_failed' and row.get('cleanup_accepted') is True
+                and (self.unknown_policy == 'continue_cleaned'
+                     or row.get('execution_status') != 'unknown')):
+            return
         if (self.unknown_policy == 'continue_cleaned'
-                and row.get('status') != 'save_failed'
                 and row.get('cleanup_accepted') is True):
             return
         if (row.get('status') in {'unknown', 'save_failed'}
