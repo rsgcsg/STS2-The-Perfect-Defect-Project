@@ -1259,7 +1259,8 @@ def read_segment_config(path: Path) -> dict[str, Any]:
     if value.get('gpu_successor') is not None:
         import gpu_successor
 
-        gpu_successor.settings(value['gpu_successor'])
+        # Template and record root are checked now, not in the last hours before expiry.
+        gpu_successor.settings(value['gpu_successor'], value.get('gpu', 'a100'))
         if not value.get('held_job_id'):
             raise ValueError('gpu_successor_requires_held_job_id')
     unknown_window_settings(value)
@@ -2689,7 +2690,8 @@ class SegmentWatcher(Watcher):
         import gpu_successor
 
         try:
-            result = gpu_successor.tick(gpu_successor.settings(raw), held, now=now)
+            result = gpu_successor.tick(
+                gpu_successor.settings(raw, self.config.get('gpu', 'a100')), held, now=now)
         except Exception as error:  # noqa: BLE001 -- alarm, never a silent fallback
             result = {'action': 'alarm', 'reason': 'gpu_successor_check_failed',
                       'error_type': type(error).__name__}

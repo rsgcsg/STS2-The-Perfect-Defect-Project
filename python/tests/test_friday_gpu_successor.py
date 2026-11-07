@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 import test_friday_watch_segments as segments
+from test_friday_rl import rl  # noqa: F401 -- the rl.py module fixture
 from test_friday_watch import FRIDAY, module
 
 HOUR = 3600.0
@@ -39,7 +40,8 @@ def cfg(gs, tmp_path):
     template.write_text(TEMPLATE)
     root = tmp_path.resolve() / 'successors'
     return gs.settings({'template': str(template), 'root': str(root),
-                        'authority': 'user 11-07 23:5x: bounded auto successor, <= 2 GPUs'})
+                        'authority': 'user 11-07 23:5x: bounded auto successor, <= 2 GPUs'},
+                       'a100')
 
 
 def stamp(at: float) -> str:
@@ -47,19 +49,23 @@ def stamp(at: float) -> str:
 
 
 class Slurm:
-    """squeue rows for our jobs; sbatch appends a pending successor."""
+    """squeue rows for our jobs; sbatch appends a pending successor as Slurm shows it."""
 
     def __init__(self, rows, fail=False):
         self.rows, self.fail, self.submitted = list(rows), fail, []
+        self.on_squeue = None
 
     def __call__(self, command):
         if command[0] == 'squeue':
+            if self.on_squeue:
+                self.on_squeue(self)
             return '\n'.join(self.rows)
         assert command[0] == 'sbatch'
         if self.fail:
             raise subprocess.CalledProcessError(1, 'sbatch')
         self.submitted.append(command)
-        self.rows.append(f'9{len(self.submitted)}|PENDING|gres/gpu:a100:1|Unknown')
+        gres = next(c for c in command if c.startswith('--gres=')).split('=', 1)[1]
+        self.rows.append(f'9{len(self.submitted)}|PENDING|gres/{gres}|Unknown')
         return f'9{len(self.submitted)};friday'
 
 
@@ -68,9 +74,46 @@ def test_settings_are_bounded_and_explicit(gs, cfg):
     base = {k: cfg[k] for k in ('template', 'root', 'authority')}
     for bad in ({**base, 'max_gpus': 3}, {**base, 'authority': ' '}, {**base, 'extra': 1},
                 {**base, 'root': 'relative'}, {**base, 'time_seconds': 172801},
+                {**base, 'gres': 'gpu:a100:2'}, {**base, 'job_name': 'x'},
                 {k: v for k, v in base.items() if k != 'authority'}):
         with pytest.raises(ValueError, match='explicit_gpu_successor_settings_required'):
             gs.settings(bad)
+    with pytest.raises(ValueError, match='explicit_gpu_successor_settings_required'):
+        gs.settings(base, 'h100')
+    assert gs.settings(base, 'a30')['gres'] == 'gpu:a30:1'  # from the watch's gpu, one card
+
+
+def test_template_and_root_are_checked_when_the_config_is_read(gs, cfg, tmp_path):
+    base = {k: cfg[k] for k in ('template', 'root', 'authority')}
+    Path(cfg['template']).write_text('#!/bin/bash\nexec python gpu_session.py\n')
+    with pytest.raises(ValueError, match='gpu_successor_template_tokens_required'):
+        gs.settings(base)
+    with pytest.raises(ValueError, match='gpu_successor_template_unreadable'):
+        gs.settings({**base, 'template': str(tmp_path / 'missing.sh')})
+    Path(cfg['template']).write_text(TEMPLATE)
+    link = tmp_path.resolve() / 'link'
+    link.symlink_to(tmp_path.resolve())
+    with pytest.raises(ValueError, match='gpu_successor_root_must_be_canonical'):
+        gs.settings({**base, 'root': str(link / 'successors')})
+    loose = tmp_path.resolve() / 'loose'
+    loose.mkdir(mode=0o755)
+    loose.chmod(0o755)
+    with pytest.raises(ValueError, match='gpu_successor_root_must_be_owned_private'):
+        gs.settings({**base, 'root': str(loose)})
+    assert gs.settings({**base, 'template': '/nonexistent'}, check_paths=False)
+
+
+def test_successor_matches_the_held_launch_check(gs, cfg, rl):  # noqa: F811
+    """Review H1: the successor must be what rl.launch(held_job_id=...) accepts, or the
+    handover is refused and the card sits idle."""
+    slurm = Slurm([f'1441467|RUNNING|gres/gpu:a100:1|{stamp(END)}'])
+    gs.tick(cfg, '1441467', now=NOW, output=slurm)
+    [command] = slurm.submitted
+    option = {c.split('=', 1)[0]: c.split('=', 1)[1] for c in command if '=' in c}
+    # squeue '%T|%b|%j' of the successor once it runs, as Slurm prints it.
+    shown = ['RUNNING', 'gres/' + option['--gres'], option['--job-name']]
+    assert shown == rl.held_allocation_detail('a100')
+    assert option['--partition'] == 'smp_gpu' and gs.JOB_NAME == rl.HELD_JOB_NAME
 
 
 def test_one_successor_near_expiry_with_typed_record_then_nothing_more(gs, cfg):
@@ -83,6 +126,7 @@ def test_one_successor_near_expiry_with_typed_record_then_nothing_more(gs, cfg):
     [command] = slurm.submitted
     assert '--begin=' + stamp(END - 1800) in command and '--gres=gpu:a100:1' in command
     assert '--time=2880' in command and '--no-requeue' in command
+    assert '--job-name=rl4-learner' in command
     record = json.loads(Path(result['record']).read_bytes())
     assert record['outcome'] == 'submitted' and record['predecessor'] == '1441467'
     assert record['authority'].startswith('user 11-07') and record['max_gpus'] == 2
@@ -103,12 +147,26 @@ def test_cap_and_pending_rule_refuse_with_typed_alarms(gs, cfg):
     other = Slurm([near, '1450000|RUNNING|gres/gpu:a100:1|Unknown'])  # e.g. a GPU test
     assert gs.tick(cfg, '1441467', now=NOW, output=other)['reason'] == \
         'gpu_cap_reached_no_successor'
+    # Cards, not jobs (review M1): one two-card holder is already at the cap; an unreadable
+    # count and a non-whitelisted live state (review L2) count too.
+    for rows in ([f'1441467|RUNNING|gres/gpu:a100:2|{stamp(END)}'],
+                 [near, '1450002|RUNNING|gres/gpu|Unknown'],
+                 [near, '1450003|STOPPED|gres/gpu:a30:1|Unknown']):
+        slurm = Slurm(rows)
+        result = gs.tick(cfg, '1441467', now=NOW, output=slurm)
+        assert result['reason'] in {'gpu_cap_reached_no_successor',
+                                    'gpu_job_already_pending_no_second_successor'}
+        assert slurm.submitted == []
+    assert gs.our_gpu_jobs(Slurm(['1|COMPLETED|gres/gpu:a100:1|Unknown'])) == []
     pending = Slurm([near, '1450001|PENDING|gres/gpu:a30:1|Unknown'])
     assert gs.tick(cfg, '1441467', now=NOW, output=pending)['reason'] == \
         'gpu_job_already_pending_no_second_successor'
     assert other.submitted == pending.submitted == []
-    gone = Slurm([])
-    assert gs.tick(cfg, '1441467', now=NOW, output=gone)['reason'] == 'holder_not_running'
+    gone = Slurm([])  # review M2: a holder gone before any successor alarms, no submission
+    assert gs.tick(cfg, '1441467', now=NOW, output=gone)['reason'] == \
+        'gpu_holder_gone_without_successor'
+    queued = Slurm([f'1441467|PENDING|gres/gpu:a100:1|{stamp(END)}'])
+    assert gs.tick(cfg, '1441467', now=NOW, output=queued)['reason'] == 'holder_not_running_yet'
     unknown_end = Slurm(['1441467|RUNNING|gres/gpu:a100:1|Unknown'])
     assert gs.tick(cfg, '1441467', now=NOW, output=unknown_end)['reason'] == \
         'gpu_holder_end_unknown'
@@ -123,10 +181,58 @@ def test_uncertain_submission_is_never_retried(gs, cfg):
     slurm.fail = False
     again = gs.tick(cfg, '1441467', now=NOW + 300, output=slurm)
     assert again['reason'] == 'gpu_successor_submission_outcome_unknown_no_retry'
-    assert slurm.submitted == []
+    assert again['holder'] == '1441467' and slurm.submitted == []
 
 
-def test_template_must_carry_both_tokens(gs, cfg):
+def test_receipt_write_failure_stays_unknown_and_unreadable_records_block(gs, cfg,
+                                                                         monkeypatch):
+    slurm = Slurm([f'1441467|RUNNING|gres/gpu:a100:1|{stamp(END)}'])
+    original = gs.save
+    writes = []
+
+    def save(path, value):
+        writes.append(value.get('outcome'))
+        if value.get('outcome') == 'submitted':
+            raise OSError('disk full')
+        original(path, value)
+    monkeypatch.setattr(gs, 'save', save)
+    with pytest.raises(OSError):
+        gs.tick(cfg, '1441467', now=NOW, output=slurm)
+    monkeypatch.setattr(gs, 'save', original)
+    assert len(slurm.submitted) == 1 and writes[-1] == 'submitted'
+    assert gs.tick(cfg, '1441467', now=NOW + 60, output=slurm)['reason'] == \
+        'gpu_successor_submission_outcome_unknown_no_retry'
+    (Path(cfg['root']) / 'records/1441467.json').write_text('{not json')
+    assert gs.tick(cfg, '1441467', now=NOW + 120, output=slurm)['reason'] == \
+        'gpu_successor_record_unreadable_no_submission'
+    assert len(slurm.submitted) == 1
+
+
+def test_lock_reread_sees_a_pending_job_that_appeared_meanwhile(gs, cfg):
+    slurm = Slurm([f'1441467|RUNNING|gres/gpu:a100:1|{stamp(END)}'])
+    seen = []
+
+    def appear(fake):  # second squeue (under the lock) sees another writer's pending job
+        seen.append(1)
+        if len(seen) == 2:
+            fake.rows.append('1450009|PENDING|gres/gpu:a100:1|Unknown')
+    slurm.on_squeue = appear
+    result = gs.tick(cfg, '1441467', now=NOW, output=slurm)
+    assert result['reason'] == 'gpu_job_already_pending_no_second_successor'
+    assert slurm.submitted == [] and not (Path(cfg['root']) / 'records').exists()
+
+
+def test_successor_still_queued_after_begin_alarms_without_resubmitting(gs, cfg):
+    slurm = Slurm([f'1441467|RUNNING|gres/gpu:a100:1|{stamp(END)}'])
+    gs.tick(cfg, '1441467', now=NOW, output=slurm)
+    begin = END - 1800
+    assert gs.tick(cfg, '1441467', now=begin + 300, output=slurm)['action'] == 'none'
+    late = gs.tick(cfg, '1441467', now=begin + 900, output=slurm)
+    assert late['reason'] == 'gpu_successor_pending_past_begin' and late['job_id'] == '91'
+    assert len(slurm.submitted) == 1
+
+
+def test_template_changed_after_the_config_read_still_refuses_at_submission(gs, cfg):
     Path(cfg['template']).write_text('#!/bin/bash\nexec python gpu_session.py\n')
     slurm = Slurm([f'1441467|RUNNING|gres/gpu:a100:1|{stamp(END)}'])
     with pytest.raises(ValueError, match='gpu_successor_template_tokens_required'):
@@ -143,7 +249,7 @@ def test_watcher_checks_at_most_every_five_minutes_and_alarms_once(watch, tmp_pa
                     {'action': 'none', 'reason': 'successor_already_submitted_for_this_holder'}])
     calls = []
     fake = type(sys)('gpu_successor')
-    fake.settings = lambda raw: raw
+    fake.settings = lambda raw, gpu: raw
     fake.tick = lambda cfg, held, now: calls.append(held) or next(results)
     monkeypatch.setitem(sys.modules, 'gpu_successor', fake)
     alarms = []
@@ -169,3 +275,25 @@ def test_watcher_checks_at_most_every_five_minutes_and_alarms_once(watch, tmp_pa
 @pytest.fixture
 def watch():
     return segments.original_watch_fixture.__wrapped__()
+
+
+def test_read_segment_config_checks_the_successor_settings(watch, gs, tmp_path):
+    """Absent key: the read goes on as before; present: settings and held_job_id now."""
+    base = {'schema': watch.SCHEMA, 'mode': 'segments', 'deadline_at': time.time() + 3600,
+            'training_seconds': 3600, 'actors': 1, 'budget_id': 'b'}
+    path = tmp_path / 'watch.json'
+    path.write_text(json.dumps(base))
+    with pytest.raises(KeyError, match='runtime_source'):  # past the new block
+        watch.read_segment_config(path)
+    template = tmp_path / 't.sh'
+    template.write_text(TEMPLATE)
+    successor = {'template': str(template), 'root': str(tmp_path.resolve() / 's'),
+                 'authority': 'user 11-07'}
+    path.write_text(json.dumps({**base, 'gpu_successor': successor}))
+    with patch.dict(sys.modules, {'gpu_successor': gs}):
+        with pytest.raises(ValueError, match='gpu_successor_requires_held_job_id'):
+            watch.read_segment_config(path)
+        path.write_text(json.dumps({**base, 'gpu_successor': {**successor, 'max_gpus': 3},
+                                    'held_job_id': '1'}))
+        with pytest.raises(ValueError, match='explicit_gpu_successor_settings_required'):
+            watch.read_segment_config(path)

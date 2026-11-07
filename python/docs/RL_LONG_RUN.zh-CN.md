@@ -345,19 +345,36 @@ unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。de
 用户 11-07 批准自动续卡，条件是有界。watch 配置写了 `gpu_successor`（同时要有 `held_job_id`）后，
 watcher 每 5 min 调一次 `tools/friday/gpu_successor.py`。当前 holder 离 Slurm 结束不到
 `lead_seconds`（默认 4 h）时，提交**一个**后继 holder，`--begin` 定在当前 holder 结束前
-`overlap_seconds`（默认 30 min）。后继 holder 的 `allocation.sh` 由运营模板生成，模板里必须有
-`@HOLDER_ROOT@` 和 `@BUDGET_FILE@` 两个占位符。
+`overlap_seconds`（默认 30 min）。
+
+后继就是 `rl.launch(held_job_id=...)` 认的那种卡（`rl.held_allocation_detail`）：`smp_gpu` 分区、
+watch 的 `gpu` 型号一张（`gres/gpu:<gpu>:1`）、作业名 `rl4-learner`，这三项都不可配置。
+`allocation.sh` 由运营模板生成，模板里必须有 `@HOLDER_ROOT@` 和 `@BUDGET_FILE@` 两个占位符。
+读配置时（以及 `--check-only`）就检查模板和记录根目录：规范路径、不经过符号链接、自己拥有、权限 700。
 
 硬上限：
-- 我们的 GPU 作业（运行中和排队中都算，后继自己也算）不超过 `max_gpus`（不超过 2）；
+- 我们所有未终止的 GPU 作业的卡数（后继自己也算）不超过 `max_gpus`（不超过 2）；读不出卡数的作业按超限算；
 - 已有任何一个排队中的 GPU 作业，就不再提交；
 - 每个 holder 只有一个后继；
-- `sbatch` 之前先写 `records/<holder>.json`。结果不确定（有意图、没有回执，或 `sbatch` 失败）时
-  记 `outcome_unknown`，之后每次检查都报警，永不重试。
+- `sbatch` 之前先写 `records/<holder>.json`。结果不确定（有意图、没有回执，`sbatch` 失败或超时）时
+  记 `outcome_unknown`；记录读不出也一样。之后每次检查都报警，永不重试。
+
+只报警、不提交的情况：
+- 后继过了 begin 10 min 还在排队：`gpu_successor_pending_past_begin`；
+- holder 在提交后继之前就没了：`gpu_holder_gone_without_successor`。
 
 提交和每种拒绝都发一次带类型的 `attention`。交接本身不在这里做：新窗口仍然用
-`release_swap.py prepare --held-job <后继>` 换上。`gpu_successor.py --config watch.json --check-only`
-只打印判断，不提交。
+`release_swap.py prepare --held-job <后继>` 换上。在 supervisor 上线前，**开这个功能就必须有人在后继
+开始后 2 h 内接手**（续跑换上），否则 `scancel` 后继，不让它按 48 h 预算空占一张卡。
+`gpu_successor.py --config watch.json --check-only` 只做检查、打印判断，不提交。
+
+`outcome_unknown` 的人工处置：
+1. 用 `squeue -u $USER -o '%i|%T|%j|%S'` 和 `sacct -S <intent_at> -n -o JobID,JobName,State,Submit`，
+   按作业名 `rl4-learner` 和记录里的 `begin` 查这次提交有没有成功。
+2. 查到了：把记录改成 `outcome: submitted`，并填上 `job_id`。
+   确定没有：改成 `outcome: not_submitted`，附上证据（查询时间和命令）。
+   原记录先复制一份留档。
+3. `not_submitted` 不会自动重交这个 holder 的后继，要续卡由人提交。
 
 ### 换 release 续训
 
