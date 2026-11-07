@@ -518,6 +518,114 @@ def test_recipe_rollback_compares_two_post_switch_points_to_the_initial_CP(
     assert rollback['automatic_training_resume'] is False
 
 
+def _protocol(host):
+    return {"host_pin": {"version": host}, "runtime_pin": {"version": "0.1.0-rc.64"},
+            "input_spec": "fixed", "initial_progress_sha256": "fixed",
+            "behavior_policy": {"mode": "argmax"}}
+
+
+def _cohort(host, floors, character="Defect"):
+    return {"host_kind": "managed", "character": character, "ascension": 0,
+            "planned": 2, "protocol_observed": _protocol(host),
+            "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished"}
+                     for seed, floor in zip(("seed-a", "seed-b"), floors)]}
+
+
+def _run_evaluations(owner, watch, tmp_path, monkeypatch, steps, *, reference='previous'):
+    """steps: (due_seconds, checkpoint, Host version, floors); baseline is Host rc.63."""
+    from stpd.evaluation import rl_observation
+
+    owner.config['evaluation'] = {
+        'baseline_binding': {'id': 'baseline'}, 'baseline_batches': [],
+        'baseline_checkpoint': 'baseline', 'manifest': {'sha256': 'fixed'},
+        'initial_checkpoint': steps[0][1], 'baseline_resume_checkpoint': 'window-1-start',
+        'rollback_reference': reference,
+    }
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    monkeypatch.setattr(watch.evaluate, 'fixed_baseline', lambda *a, **kw: {
+        'offers_accounted': True, 'cohort': _cohort('1.1.0-rc.63', (20, 20))})
+    monkeypatch.setattr(watch.evaluate, 'read_pinned', lambda ref: ref)
+    reports, alarms = [], []
+    monkeypatch.setattr(rl_observation, 'write_report',
+                        lambda cohorts, *a, **kw: reports.append(sorted(cohorts)))
+    monkeypatch.setattr(owner, 'telemetry', lambda kind, **f: alarms.append((kind, f)))
+    for index, (due, checkpoint, host, floors, *character) in enumerate(steps):
+        root = tmp_path / f'eval-{index}'
+        root.mkdir()
+        (root / 'result.json').write_text('{}')
+        (root / 'snapshot.json').write_text('{}')
+        plan = {'checkpoint_binding': {'checkpoint_artifact_id': checkpoint},
+                'manifest': {'sha256': 'fixed'}}
+        result = {'ledger_report': {'slots': [{'status': 'finished'}] * 2}}
+        group = _cohort(host, floors, *character)
+        owner.evaluation_cohort = lambda *a, plan=plan, result=result, group=group: (
+            plan, result, group, True)
+        owner.state['pending'] = {'root': str(root), 'plan': str(root / 'plan.json'),
+                                  'stage': 'running', 'job_id': '80', 'due_seconds': due}
+        owner.collect_segment_evaluation()
+    return reports, alarms
+
+
+@pytest.mark.parametrize('reference', ['previous', 'initial_checkpoint'])
+def test_new_host_pin_evaluation_is_protocol_skipped_not_a_watcher_crash(
+        owner, watch, tmp_path, monkeypatch, reference):
+    """R14: window-2 eval-0001 (Host rc.64) vs the frozen rc.63 baseline crashed the watcher
+    with different_observed_protocol and stopped training."""
+    reports, alarms = _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-6787', '1.1.0-rc.64', (24, 30)),
+        (7200, 'cp-lower', '1.1.0-rc.64', (20, 26)),
+        (14400, 'cp-higher', '1.1.0-rc.64', (30, 34))], reference=reference)
+    first, second, third = owner.state['evaluations']
+    assert owner.state['stop'] is None
+    skip = {'skipped': 'different_observed_protocol', 'differing_keys': ['host_pin'],
+            'reference': 'baseline'}
+    assert first['against_baseline'] == first['reward_against_baseline'] == skip
+    assert first['against_previous'] == skip and first['previous_reference'] == 'baseline'
+    assert first['protocol_skipped'] == {'baseline': ['host_pin'], 'previous': ['host_pin'],
+                                         'best': ['host_pin']}
+    assert first['reward']['planned'] == 2 and 'lower_bound' in first['reward']
+    assert first['best_selection']['reason'] == 'first_cohort_of_new_observed_protocol'
+    assert owner.state['superseded_best'][0]['best_cohort_source'] == 'frozen_baseline'
+    assert 'skipped' not in first  # A closed cohort: the new protocol's reference.
+    # Later rc.64 cohorts compare with the most recent rc.64 cohort, never the rc.63 baseline.
+    assert second['previous_reference'] == first['root']
+    assert second['against_previous']['mean_delta'] == -4
+    assert second['against_baseline']['skipped'] == 'different_observed_protocol'
+    assert 'mean_difference_bound' in second['reward_against_previous']
+    assert third['against_previous']['mean_delta'] == 9
+    assert owner.state['best_checkpoint'] == 'cp-higher'
+    assert len(owner.state['superseded_best']) == 1
+    assert reports == [['current'], ['current', 'previous'], ['current', 'previous']]
+    assert [f['reason'] for kind, f in alarms if kind == 'attention'] == [
+        'different_observed_protocol'] * 3
+    if reference == 'initial_checkpoint':
+        assert third['against_recipe_switch']['mean_delta'] == 5
+
+
+def test_protocol_skip_prefers_latest_same_protocol_reference(
+        owner, watch, tmp_path, monkeypatch):
+    _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.63', (20, 20)),
+        (7200, 'cp-b', '1.1.0-rc.64', (21, 21)),
+        (14400, 'cp-c', '1.1.0-rc.63', (23, 25))])
+    first, second, third = owner.state['evaluations']
+    assert 'protocol_skipped' not in first and first['against_baseline']['mean_delta'] == 0
+    assert second['against_previous']['skipped'] == 'different_observed_protocol'
+    assert second['against_previous']['reference'] == first['root']
+    assert third['previous_reference'] == first['root']
+    assert third['against_previous']['mean_delta'] == 4
+    assert third['against_baseline']['mean_delta'] == 4
+    assert third['protocol_skipped'] == {'latest_closed': ['host_pin'], 'best': ['host_pin']}
+    assert owner.state['stop'] is None
+
+
+def test_host_character_or_ascension_change_is_still_refused(owner, watch, tmp_path, monkeypatch):
+    """Only the observed-protocol pin check is skipped; a different character still raises."""
+    with pytest.raises(ValueError, match='different_host_character_or_ascension'):
+        _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+            (0, 'cp-a', '1.1.0-rc.63', (20, 20), 'Ironclad')])
+
+
 @pytest.mark.parametrize('status, closed', [('save_failed', True), ('save_pending', False)])
 def test_save_failed_after_retry_is_one_excluded_pair_in_the_segment_evaluation(
         owner, watch, tmp_path, monkeypatch, status, closed):
