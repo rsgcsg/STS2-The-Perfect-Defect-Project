@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson, createPublicIdentityPolicy, publicFieldPath } from "../src/p1Global/index.js";
 import { publicPath } from "../src/p1Global/publicPath.js";
+import { createPublicIdentityPolicy as referencePolicy } from "./p1GlobalReferenceIdentity.js";
 
 // The pre-optimization canonical form, kept verbatim as the byte reference.
 function referenceSortKeys(value: unknown): unknown {
@@ -53,6 +54,27 @@ describe("P1 hot-path optimizations keep exact bytes and answers", () => {
     for (const value of cases) expect(canonicalJson(value)).toBe(referenceCanonicalJson(value));
   });
 
+  it("canonicalJson copies arrays with toJSON or a non-standard prototype and reads getters once", () => {
+    class Plain { a = 1; b = 2; }
+    class Own { toJSON() { return "class"; } a = 1; }
+    class List<T> extends Array<T> {}
+    const getter = (target: object, key: string) => {
+      let calls = 0; return Object.defineProperty(target, key, { enumerable: true, get: () => ++calls });
+    };
+    const makers: (() => unknown)[] = [
+      () => Object.assign([1, 2], { toJSON: () => "own" }), () => ({ a: Object.assign([1, 2], { toJSON: () => "own" }) }),
+      () => Object.setPrototypeOf([1], { toJSON: () => "proto", length: 1 }), () => List.from([1, { b: 2, a: 1 }]),
+      () => { const list = new List<unknown>(); list.push(1, 2); return { x: list }; }, () => Object.setPrototypeOf([1, 2], null),
+      () => new Plain(), () => new Own(), () => new String("ab"), () => getter({}, "a"), () => getter({ a: 0 }, "b"),
+      () => ({ nested: getter({}, "a") }), () => getter([1, 2], "0"), () => ({ list: getter([0, 1], "1") }),
+      () => { const array: unknown[] = []; array[5] = { a: 1 }; return array; },
+      () => ({ "1": 1, "01": 2, "4294967295": 3, "4294967294": 4, "-1": 5, a: 6 })
+    ];
+    // Same bytes, or the same error type where develop threw (a null-prototype array has no map).
+    const outcome = (run: () => string) => { try { return run(); } catch (error) { return `throws ${(error as Error).name}`; } };
+    for (const make of makers) expect(outcome(() => canonicalJson(make()))).toBe(outcome(() => referenceCanonicalJson(make())));
+  });
+
   it("canonicalJson matches the reference serialization on random trees", () => {
     const next = random(20261108);
     for (let index = 0; index < 5000; index++) {
@@ -70,31 +92,78 @@ describe("P1 hot-path optimizations keep exact bytes and answers", () => {
     expect(root.field("cards")).toBe(root.field("cards"));
   });
 
-  it("memoized relations equal fresh answers and never leak between different path sets", () => {
-    const tooltip = { options: [{ tooltips: [{ kind: "card", card: { entity_id: "x", definition_id: "STRIKE", name: "Strike", cost: "1",
-      type: "attack", rarity: "basic", is_upgraded: false, is_selected: false } }] }] };
-    const paths = [
-      "scene.content.surface.options[0].entity_id", "scene.content.surface.options[0].tooltips[0].card.entity_id",
-      "scene.content.surface.options[1].tooltips[0].card.entity_id", "deck.content.cards[4].entity_id",
-      "deck.content.cards[4].card_previews[0].entity_id", "catalog[2].subject", "player.content.relics[1].entity_id",
-      "map.content.nodes[7].entity_id", "scene.content.surface.room_entity_id", "scene.content.surface.label"
-    ];
-    const plain = () => createPublicIdentityPolicy("event_option", [], { surface: { options: [{}] } });
-    const withCard = () => createPublicIdentityPolicy("event_option", [], { surface: tooltip });
-    const first = paths.map(path => plain().relation(path));
-    const second = paths.map(path => withCard().relation(path));
-    // Same nativeKind, different visible card tooltip: only the tooltip identity changes.
-    expect(first[1]).toBeNull();
-    expect(second[1]).toBe("declared");
-    expect(second.filter((value, index) => value !== first[index])).toEqual(["declared"]);
-    for (const make of [plain, withCard, plain]) {
-      const policy = make();
-      for (const path of paths) {
-        expect(policy.relationAt(publicPath(path))).toBe(policy.relation(path));
-        expect(policy.relation(path)).toBe((make === withCard ? second : first)[paths.indexOf(path)]);
+  // Random oracle against develop's relation() kept verbatim in p1GlobalReferenceIdentity.ts.
+  const KINDS = ["card_selection", "combat_turn", "map_navigation", "reward_claim", "card_reward_selection",
+    "card_bundle_selection", "event_option", "event_dialogue", "rest_site", "treasure_room", "shop_inventory", "shop_room",
+    "game_over", "abandon_run_confirmation", "crystal_sphere", "deck_upgrade_selection", "unknown_kind"];
+  const REVISIONS = ["r1.7", "r1.8", "r1.9"] as const;
+  const card = { entity_id: "x", definition_id: "STRIKE", name: "Strike", cost: "1", type: "attack", rarity: "basic",
+    is_upgraded: false, is_selected: false };
+  const shop = { kind: "shop_catalog", content: { kind: "shop_catalog", cards: [], relics: [], potions: [] } };
+  const SEGMENTS = ["scene", "content", "surface", "cards", "entity_id", "card_previews", "options", "tooltips", "card",
+    "extra_reads", "relics", "relic", "slot_entity_id", "deck", "player", "catalog", "subject", "target", "commitments", "map",
+    "nodes", "combat", "enemies", "playable_cards", "target_entity_ids", "selected_card_entity_ids", "display_owner_entity_id",
+    "rewards", "card_options", "potions", "card_removal", "bundles", "abandon_confirmation", "event_entity_id", "cells", "piles",
+    "zones", "hand", "odd key", "$", "observation"];
+  const pick = <T>(next: () => number, items: readonly T[]) => items[Math.floor(next() * items.length)]!;
+  function randomPath(next: () => number): string {
+    let path = next() < 0.1 ? "$.observation." : next() < 0.05 ? "." : "";
+    const length = 1 + Math.floor(next() * 8);
+    for (let index = 0; index < length; index++) {
+      path += (index === 0 && path !== "" && !path.endsWith(".") ? "." : index === 0 ? "" : ".") + pick(next, SEGMENTS);
+      if (next() < 0.4) path += `[${Math.floor(next() * 4)}]`;
+    }
+    return path;
+  }
+  const randomReads = (next: () => number) => Array.from({ length: Math.floor(next() * 4) }, () => {
+    const roll = next(); return roll < 0.33 ? { kind: "surface_card", content: card } : roll < 0.66 ? shop : { kind: "other", content: {} };
+  });
+  const randomScene = (next: () => number) => ({ surface: { options: Array.from({ length: Math.floor(next() * 3) }, () => ({
+    tooltips: Array.from({ length: Math.floor(next() * 3) }, () => next() < 0.5 ? { kind: "card", card } : { kind: "text" }) })) } });
+
+  it("relation() and relationAt() equal develop's relation() on random policies and paths", () => {
+    const next = random(4242);
+    for (let round = 0; round < 3000; round++) {
+      const kind = pick(next, KINDS); const revision = pick(next, REVISIONS);
+      const reads = randomReads(next); const scene = next() < 0.7 ? randomScene(next) : undefined;
+      const reference = referencePolicy(kind, reads, scene, revision);
+      const policy = createPublicIdentityPolicy(kind, reads, scene, revision);
+      for (let index = 0; index < 60; index++) {
+        const path = randomPath(next); const expected = reference.relation(path);
+        expect(policy.relation(path)).toBe(expected);
+        expect(policy.relationAt(publicPath(path))).toBe(expected);
       }
     }
-    expect(createPublicIdentityPolicy("combat_turn").relation("scene.content.surface.playable_cards[2].target_entity_ids[0]")).toBe("reference");
-    expect(createPublicIdentityPolicy("map_navigation").relation("scene.content.surface.playable_cards[2].target_entity_ids[0]")).toBeNull();
+  });
+
+  it("relation() equals develop's on targeted event, detail and shop paths for every kind and revision", () => {
+    const scene = { surface: { options: [{ tooltips: [{ kind: "card", card }] }, { tooltips: [{ kind: "text" }, { kind: "card", card }] }] } };
+    const reads = [{ kind: "surface_card", content: card }, shop];
+    const paths = ["scene.content.surface.options[0].tooltips[0].card.entity_id",
+      "scene.content.surface.options[1].tooltips[1].card.card_previews[2].entity_id", "extra_reads[0].content.entity_id",
+      "extra_reads[0].content.card_previews[1].entity_id", "extra_reads[1].content.cards[3].card.entity_id",
+      "extra_reads[1].content.relics[0].relic.card_previews[0].entity_id", "extra_reads[1].content.card_removal.slot_entity_id",
+      "extra_reads[2].content.display_owner_entity_id", "$.observation.deck.content.cards[3].card_previews[0].entity_id",
+      "commitments.declined_reward_groups[0]", "scene.content.surface.playable_cards[2].target_entity_ids[0]"];
+    for (const kind of KINDS) for (const revision of REVISIONS) {
+      const reference = referencePolicy(kind, reads, scene, revision); const policy = createPublicIdentityPolicy(kind, reads, scene, revision);
+      for (const path of paths) {
+        expect(policy.relation(path)).toBe(reference.relation(path));
+        expect(policy.relationAt(publicPath(path))).toBe(reference.relation(path));
+      }
+    }
+  });
+
+  it("answers survive memo eviction", () => {
+    const reference = referencePolicy("combat_turn"); const policy = createPublicIdentityPolicy("combat_turn");
+    for (let index = 0; index < 40000; index++) {
+      const path = `scene.content.surface.playable_cards[${index}].target_entity_ids[0]`;
+      expect(policy.relation(path)).toBe(reference.relation(path));
+      expect(policy.relationAt(publicPath(path))).toBe(reference.relation(path));
+    }
+    for (let index = 0; index < 300; index++) {
+      const path = `combat.content.enemies[${index}].entity_id`;
+      expect(policy.relationAt(publicPath(path))).toBe(reference.relation(path));
+    }
   });
 });

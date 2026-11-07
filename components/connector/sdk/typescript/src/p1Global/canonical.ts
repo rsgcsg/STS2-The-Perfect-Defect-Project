@@ -5,13 +5,23 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortKeys(value));
 }
 
-/* sortKeys returns `value` itself when a copy would serialize to the same bytes:
- * a plain-prototype object whose own keys are already in sorted order, with no
- * undefined value, no own toJSON and no own __proto__ key (a copy drops it), and
- * whose children are unchanged (arrays likewise). JSON.stringify then emits
- * exactly what the sorted copy would. */
+/* sortKeys returns `value` itself only when a copy would serialize to the same
+ * bytes: a plain array (Array.prototype, no own toJSON) or a plain-prototype
+ * object whose own keys are already in sorted order, with no undefined value, no
+ * own toJSON or __proto__ key (a copy drops them), no accessor property (a copy
+ * reads it once, JSON.stringify of the original would read it again), and whose
+ * children are all unchanged. Anything else is copied exactly as before. */
+const hasOwn = Object.prototype.hasOwnProperty;
+const accessor = (value: object, key: PropertyKey) => Object.getOwnPropertyDescriptor(value, key)?.get !== undefined;
+function plainArray(value: unknown[]): boolean {
+  if (Object.getPrototypeOf(value) !== Array.prototype || hasOwn.call(value, "toJSON")) return false;
+  for (let index = 0; index < value.length; index++) if (accessor(value, index)) return false;
+  return true;
+}
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
+    // Checked before any read, so the fallback reads every element exactly once.
+    if (!plainArray(value)) return value.map(sortKeys);
     let out: unknown[] | null = null;
     for (let index = 0; index < value.length; index++) {
       if (!(index in value)) { if (out) out.length = index + 1; continue; }
@@ -36,7 +46,8 @@ function sortKeys(value: unknown): unknown {
       if (sorted !== item) reuse = false;
       children[index] = sorted;
     }
-    if (reuse) return record;
+    // Values were read once above; a copy is built from them, as before.
+    if (reuse && !keys.some(key => accessor(record, key))) return record;
     const out: Record<string, unknown> = {};
     for (let index = 0; index < sortedKeys.length; index++)
       if (children[index] !== undefined) out[sortedKeys[index]!] = children[index];

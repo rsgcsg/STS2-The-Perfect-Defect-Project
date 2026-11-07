@@ -10,8 +10,13 @@ export const normalizePublicPath = (path: string): string => path
 // Pure helpers are memoized by their exact input; results are unchanged.
 const MEMO_LIMIT = 1 << 16;
 const plainKeys = new Map<string, boolean>();
-const POLICY_LIMIT = 256;
-interface RelationMemo { byPath: Map<string, PublicEntityRelation | null>; byNode: WeakMap<PublicPath, PublicEntityRelation | null> }
+// Relation memos: at most 64 path-set signatures x 16k answers each (by path and by node).
+const POLICY_LIMIT = 64;
+const RELATION_LIMIT = 1 << 14;
+interface RelationMemo {
+  byPath: Map<string, PublicEntityRelation | null>;
+  byNode: WeakMap<PublicPath, PublicEntityRelation | null>; nodes: number;
+}
 const POLICY_RELATIONS = new Map<string, RelationMemo>();
 export const publicFieldPath = (path: string, key: string): string => {
   let plain = plainKeys.get(key);
@@ -126,14 +131,14 @@ export function createPublicIdentityPolicy(nativeKind: string,
   let memo = POLICY_RELATIONS.get(signature);
   if (memo === undefined) {
     if (POLICY_RELATIONS.size >= POLICY_LIMIT) POLICY_RELATIONS.clear();
-    POLICY_RELATIONS.set(signature, memo = { byPath: new Map(), byNode: new WeakMap() });
+    POLICY_RELATIONS.set(signature, memo = { byPath: new Map(), byNode: new WeakMap(), nodes: 0 });
   }
-  const { byPath, byNode } = memo;
+  const relations = memo; const byPath = relations.byPath;
   const relation = (path: string): PublicEntityRelation | null => {
     let found = byPath.get(path);
     if (found === undefined) {
       found = resolve(path);
-      if (byPath.size >= MEMO_LIMIT) byPath.clear();
+      if (byPath.size >= RELATION_LIMIT) byPath.clear();
       byPath.set(path, found);
     }
     return found;
@@ -152,10 +157,14 @@ export function createPublicIdentityPolicy(nativeKind: string,
   };
   return {
     relation,
-    /** The same answer as relation(node.path), for interned reducer paths. */
+    /** @internal The same answer as relation(node.path), for the reducer's interned paths. */
     relationAt(node: PublicPath): PublicEntityRelation | null {
-      let found = byNode.get(node);
-      if (found === undefined) { found = relation(node.path); byNode.set(node, found); }
+      let found = relations.byNode.get(node);
+      if (found === undefined) {
+        found = relation(node.path);
+        if (relations.nodes >= RELATION_LIMIT) { relations.byNode = new WeakMap(); relations.nodes = 0; }
+        relations.byNode.set(node, found); relations.nodes++;
+      }
       return found;
     }
   };
