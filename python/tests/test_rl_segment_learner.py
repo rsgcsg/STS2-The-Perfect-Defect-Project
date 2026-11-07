@@ -867,6 +867,7 @@ def test_final_publication_process_failure_preserves_last_complete_SGD_checkpoin
         tmp_path, monkeypatch):
     import signal
     from concurrent.futures.process import BrokenProcessPool
+    from multiprocessing.connection import wait
 
     config, io = configuration(tmp_path, monkeypatch)
     owner = SegmentLearner(config, tmp_path / 'owner', io)
@@ -878,8 +879,12 @@ def test_final_publication_process_failure_preserves_last_complete_SGD_checkpoin
     # Kill only this test's actual CPU publisher, after initialization and SGD.
     process = next(iter(owner.publisher._processes.values()))
     os.kill(process.pid, signal.SIGKILL)
-    process.join(timeout=5)
-    assert not process.is_alive()
+    # Do not reap it here: the pool's manager thread also waitpid()s this pid.
+    # If it reaps first, Process.join/is_alive in this thread get ECHILD, which
+    # multiprocessing reports as "still running" until the manager thread
+    # stores the returncode. The sentinel closes when the child exits and
+    # reaps nothing, so it proves death without racing the pool.
+    assert wait([process.sentinel], timeout=10) == [process.sentinel]
     with pytest.raises(BrokenProcessPool):
         owner.publisher.submit(os.getpid).result(timeout=5)
     (owner.work / 'STOP').touch()
