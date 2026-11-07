@@ -2,7 +2,7 @@
 
 RL4.1 沿原 Actor、Exchange、Runtime、Evidence、Store 和归档入口接线。
 actor 默认在 Friday CPU 本地评分；CPU 进程准备完整批，learner 只负责数值更新、发布 μ 和保存 CP。
-长训运营由 `watch.py mode=segments` 调原 `rl.py launch/learn`，统一预算、故障停止、补位及全局5%门；
+长训运营由 `watch.py mode=segments` 调原 `rl.py launch/learn`，统一预算、故障停止、补位及全局滚动unknown门（30分钟≥10%告警、≥20%停）；
 直接 `launch/learn` 只提供资源/学习接点，不启动全局运营观察者。短段Actor默认不按局部unknown计数停机。
 本页拥有接口和操作方式；实际派工、预算、候选身份和验收由 [CURRENT](../../docs/memory/CURRENT.md)
 指向的当轮任务负责。源码/CPU fixture 通过不代表真实 World、部署、GPU 性能或模型实力通过。
