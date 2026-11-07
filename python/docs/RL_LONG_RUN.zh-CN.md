@@ -340,6 +340,25 @@ unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。de
 评估准备在deadline−900仍未完成时，只发协作信号并记`absolute_deadline_no_World_offer`
 （不改标更早的typed stop）；准备job终态后原pending记为skipped评估并清空，不阻塞本窗口链接。
 
+### GPU 后继 holder（自动，有界）
+
+用户 11-07 批准自动续卡，条件是有界。watch 配置写了 `gpu_successor`（同时要有 `held_job_id`）后，
+watcher 每 5 min 调一次 `tools/friday/gpu_successor.py`。当前 holder 离 Slurm 结束不到
+`lead_seconds`（默认 4 h）时，提交**一个**后继 holder，`--begin` 定在当前 holder 结束前
+`overlap_seconds`（默认 30 min）。后继 holder 的 `allocation.sh` 由运营模板生成，模板里必须有
+`@HOLDER_ROOT@` 和 `@BUDGET_FILE@` 两个占位符。
+
+硬上限：
+- 我们的 GPU 作业（运行中和排队中都算，后继自己也算）不超过 `max_gpus`（不超过 2）；
+- 已有任何一个排队中的 GPU 作业，就不再提交；
+- 每个 holder 只有一个后继；
+- `sbatch` 之前先写 `records/<holder>.json`。结果不确定（有意图、没有回执，或 `sbatch` 失败）时
+  记 `outcome_unknown`，之后每次检查都报警，永不重试。
+
+提交和每种拒绝都发一次带类型的 `attention`。交接本身不在这里做：新窗口仍然用
+`release_swap.py prepare --held-job <后继>` 换上。`gpu_successor.py --config watch.json --check-only`
+只打印判断，不提交。
+
 ### 换 release 续训
 
 换release续训（同窗口恢复、新窗口或只关窗）一律用一条命令准备，它只准备，不启动：
