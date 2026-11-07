@@ -572,8 +572,12 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     asked = []
     monkeypatch.setattr(swap, 'evaluation_partition_nodes', lambda partition: (
         asked.append(partition) or ['smp-9-10', 'smp-9-19', 'smp-9-8', 'smp-c04']))
+    checked = []
+    monkeypatch.setattr(swap, 'node_nfs_state_loss', lambda node, **k: (
+        checked.append((node, k['partition'])) or {'status': 'clean', 'recent': []}))
     friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'OPS-NODE-CHECK',
                    '--eval-node', 'smp-c04', '--max-excluded-nodes', '8')
+    assert checked == []  # a dry run submits no Slurm probe
     final = friday.long_run / 'swap-c13b-dry-run'
     cfg = json.loads((final / 'watch.json').read_bytes())
     assert cfg['exclude_nodes'] == ['smp-9-8', 'smp-c04']
@@ -582,6 +586,84 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     assert cfg['evaluation']['pool_nodes'] == ['smp-c04'] and len(asked) == 1
     assert cfg['node_unknown_exclusion'] == {'max_nodes': 8}
     assert json.loads((final / 'decision.json').read_bytes())['readmitted'] == ['smp-9-10']
+    assert cfg['node_readmissions'][-1]['nfs_check']['status'] == 'skipped_dry_run'
     out = capsys.readouterr().out
     assert '- re-admitted smp-9-10 (evidence OPS-NODE-CHECK)' in out
+    assert 'node NFS check smp-9-10: skipped (dry run, no probe submitted)' in out
     assert '- evaluation pool (no actors): smp-c04' in out
+
+
+def test_readmission_refuses_a_node_with_recent_nfs_state_loss(swap, monkeypatch):
+    """OPS F2: every bad-node stop matched ``kthread_run: -4``; a node that had it in the
+    last 6 h is not re-admitted without a named acknowledgement (c13e: smp-9-10)."""
+    now = 1794200000.0
+
+    def stamp(at):  # dmesg --time-format iso
+        from datetime import UTC, datetime
+        return datetime.fromtimestamp(at, UTC).strftime('%Y-%m-%dT%H:%M:%S,000000+00:00')
+
+    probe = {'uptime': '86400.00 1000.00', 'rc': 0, 'stderr': b''}
+    lines = [f'{stamp(now - 8 * 3600)} NFS: 10.1.2.6: lost 2 locks',
+             f'{stamp(now - 7 * 3600)} nfs4_schedule_state_manager: kthread_run: -4',
+             f'{stamp(now - 600)} NFS: 10.1.2.6: lost 5 locks']
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        body = '\n'.join([probe['uptime'], *lines]).encode() + b'\n\xff\xfe tail\n'
+        return SimpleNamespace(returncode=probe['rc'], stdout=body, stderr=probe['stderr'])
+    monkeypatch.setattr(swap.subprocess, 'run', fake_run)
+
+    def check(node='smp-9-10'):
+        return swap.node_nfs_state_loss(node, partition='smp', now=now)
+    clean = check()
+    assert clean['status'] == 'clean'  # the -4 is older than 6 h; non-UTF-8 is replaced
+    command, kwargs = calls[0]
+    assert '--nodelist=smp-9-10' in command and '--cpus-per-task=1' in command
+    assert '--chdir=/tmp' in command and 'text' not in kwargs
+    lines.append(f'{stamp(now - 3600)} nfs4_schedule_state_manager: kthread_run: -4')
+    lost = check()
+    assert lost['status'] == 'state_loss' and len(lost['recent']) == 1
+    with pytest.raises(swap.SwapError, match='readmit_node_recent_nfs_state_loss'):
+        swap.readmission_nfs_checks(['smp-9-10'], {}, partition='smp', now=now)
+    acked = swap.readmission_nfs_checks(['smp-9-10'], {'smp-9-10': 'admin fixed mount'},
+                                        partition='smp', now=now)
+    assert acked['smp-9-10']['acknowledged'] == 'admin fixed mount'
+    # The ring buffer must reach back 6 h: a wrapped or empty log is not clean.
+    del lines[:2], lines[-1]
+    assert check()['reason'] == 'kernel_log_window_incomplete'
+    probe['uptime'] = '3600.00 10.00'  # booted 1 h ago: the whole log is the window
+    assert check()['status'] == 'clean'
+    lines.clear()
+    assert check()['reason'] == 'kernel_log_window_incomplete'
+    # A check that cannot read the node is refused too, never treated as clean.
+    probe.update(rc=1, stderr=b'srun: error: Unable to allocate resources')
+    with pytest.raises(swap.SwapError, match='readmit_node_nfs_check_unavailable'):
+        swap.readmission_nfs_checks(['smp-9-0'], {}, partition='smp', now=now)
+    # A dry run never submits the probe and says so.
+    calls.clear()
+    skipped = swap.readmission_nfs_checks(['smp-9-0'], {}, partition='smp', now=now,
+                                          dry_run=True)
+    assert skipped['smp-9-0']['status'] == 'skipped_dry_run' and calls == []
+
+    def missing(command, **k):
+        raise FileNotFoundError('srun')
+    monkeypatch.setattr(swap.subprocess, 'run', missing)
+    assert check('smp-9-0')['status'] == 'unavailable'
+
+
+def test_nfs_acknowledgement_stays_out_of_the_integrity_acknowledgements(friday, swap,
+                                                                         monkeypatch):
+    """The prefix routes the reason to the NFS check (the friday fixture is a dry run,
+    so the probe is skipped there; refusal itself is covered above)."""
+    seen = []
+    real = swap.readmission_nfs_checks
+    monkeypatch.setattr(swap, 'readmission_nfs_checks', lambda nodes, acks, **k: (
+        seen.append(dict(acks)) or real(nodes, acks, **k)))
+    friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'node check',
+                   '--acknowledge', 'nfs_state_loss:smp-9-10=remount verified 11-08')
+    assert seen == [{'smp-9-10': 'remount verified 11-08'}]
+    cfg = json.loads((friday.long_run / 'swap-c13b-dry-run/watch.json').read_bytes())
+    assert cfg['node_readmissions'][-1]['nfs_check']['status'] == 'skipped_dry_run'
+    assert not any(k.startswith('nfs_state_loss') for k in
+                   cfg.get('acknowledged_integrity_events', {}))
