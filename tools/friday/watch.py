@@ -1412,6 +1412,32 @@ def require_acknowledged_findings(previous: dict[str, Any], config: dict[str, An
         raise ValueError('diagnosed_integrity_findings_required_for_continuation')
 
 
+# OPS design §2 (a): learner ``failed`` events that are process- or allocation-level and
+# leave the newest complete CP intact. Everything not listed is unrecoverable (fail
+# closed): semantic, integrity, identity, CP or budget failures need diagnosis.
+RECOVERABLE_SGD_CODES = frozenset({'sgd_process_exited', 'sgd_process_stalled'})
+RECOVERABLE_ERROR_TYPES = frozenset({'OutOfMemoryError'})  # torch CUDA OOM, child or parent
+
+
+def learner_failure_class(event: dict[str, Any]) -> dict[str, Any]:
+    """Typed class of one learner ``failed`` event; ``recoverable`` only from the table."""
+    raw = event.get('sgd_failure') or {}
+    if not isinstance(raw, dict) or raw.get('protocol_violation') or event.get('failure'):
+        return {'recoverable': False, 'rule': 'protocol_or_transport_failure'}
+    sgd: dict[str, Any] = raw
+    child: dict[str, Any] = sgd['child'] if isinstance(sgd.get('child'), dict) else {}
+    if sgd.get('code') in RECOVERABLE_SGD_CODES:
+        return {'recoverable': True, 'rule': 'sgd_process_level', 'code': sgd['code'],
+                'signal': sgd.get('signal'), 'exitcode': sgd.get('exitcode')}
+    if (sgd.get('code') == 'sgd_process_failed'
+            and child.get('error_type') in RECOVERABLE_ERROR_TYPES) or (
+            not sgd and event.get('error_type') in RECOVERABLE_ERROR_TYPES):
+        return {'recoverable': True, 'rule': 'out_of_memory',
+                'error_type': child.get('error_type') or event.get('error_type')}
+    return {'recoverable': False, 'rule': 'not_in_recoverable_table',
+            'error_type': event.get('error_type'), 'sgd_code': sgd.get('code')}
+
+
 def checkpoint_link(cp: dict[str, Any], config: dict[str, Any], *, has_history: bool) -> bool:
     """The resume CP rule of start_attempt; True when it enters a new operating window.
 
@@ -1641,7 +1667,10 @@ class SegmentWatcher(Watcher):
                         attempt['window_closed'] = True
                 if event['kind'] == 'failed':
                     attempt['failed'] = event
-                    self.state['stop'] = self.state['stop'] or 'learner_failed_requires_diagnosis'
+                    attempt['failure_class'] = learner_failure_class(event)
+                    if attempt['failure_class']['recoverable'] is not True:
+                        self.state['stop'] = (self.state['stop']
+                                              or 'learner_failed_requires_diagnosis')
                 if event['kind'] == 'finished':
                     attempt['finished'] = True
             if event['kind'] == 'actor_retired':
@@ -2280,6 +2309,22 @@ class SegmentWatcher(Watcher):
         attempt['actor_plans'].append(str(root / 'plan.json'))
         refs = [{'path': p, 'sha256': hashed(Path(p))} for p in attempt['actor_plans'][1:]]
         save(Path(attempt['root']) / 'actor-allocations.json', {'plans': refs})
+        self.persist()
+
+    def record_recovery(self, attempt: dict[str, Any]) -> None:
+        """Process-level learner crash (OPS design §2 (a)): once learner and actors are
+        terminal the normal boundary starts a new attempt from the newest complete CP,
+        bounded by ``max_recoveries``. One typed record and alarm; nothing is retried."""
+        if attempt.get('recovery_recorded'):
+            return
+        attempt['recovery_recorded'] = True
+        record = {'at': time.time(), 'attempt': self.state['active'],
+                  'generation': attempt.get('generation'),
+                  'updates': attempt['failed'].get('updates'),
+                  'class': attempt['failure_class']}
+        self.state.setdefault('recoveries', []).append(record)
+        self.telemetry('attention', reason='learner_crash_recoverable_new_attempt',
+                       **{k: v for k, v in record.items() if k != 'at'})
         self.persist()
 
     def stop_attempt(self, attempt: dict[str, Any], reason: str, *,
@@ -2924,6 +2969,9 @@ class SegmentWatcher(Watcher):
         account = job_accounting(attempt['job_id'])
         if account['terminal']:
             attempt.setdefault('terminal_observed_at', now)
+            if attempt.get('failed') and (attempt.get('failure_class') or {}).get(
+                    'recoverable') is True:
+                self.record_recovery(attempt)
             self.stop_attempt(attempt, 'learner_allocation_terminal', learner_terminal=True)
             import rl
 
@@ -2942,12 +2990,17 @@ class SegmentWatcher(Watcher):
                 self.state['active'] = None
                 self.persist()
             return
+        recoverable = bool(attempt.get('failed')) and (
+            attempt.get('failure_class') or {}).get('recoverable') is True
         if self.state['stop'] or self.capability_lost or attempt.get('failed'):
             reason = self.state['stop'] or ('watcher_capability_lost' if self.capability_lost
+                                           else 'learner_crash_recoverable' if recoverable
                                            else 'learner_failed')
             self.stop_attempt(attempt, reason)
-            if attempt.get('failed'):
+            if attempt.get('failed') and not recoverable:
                 self.state['stop'] = 'learner_failed_requires_diagnosis'
+            elif recoverable:
+                self.record_recovery(attempt)
             return
         if attempt.get('window_closed'):
             # The learner emits its closed training window before draining

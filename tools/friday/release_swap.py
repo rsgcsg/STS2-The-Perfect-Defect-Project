@@ -355,7 +355,8 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                     readmit_evidence: str | None = None, eval_nodes: list[str] = (),
                     max_excluded_nodes: int | None = None, name: str = '',
                     auto_records: dict[str, Any] | None = None,
-                    partition_nodes: list[str] | None = None) -> None:
+                    partition_nodes: list[str] | None = None,
+                    nfs_checks: dict[str, Any] | None = None) -> None:
     """Provenance, re-admission, evaluation pool and the #386 cap, in that order.
 
     With a pool, evaluations run only there: ``evaluation.exclude_nodes`` is every other
@@ -397,6 +398,8 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                             f'{READMISSION_LIMIT} times and excluded again; diagnose first')
         row = {'node': node, 'by': f'release_swap {name}'.strip(), 'evidence': readmit_evidence,
                'excluded_as': before}
+        if nfs_checks and node in nfs_checks:
+            row['nfs_check'] = nfs_checks[node]
         history.append(row)
         requests.append({'node': node, 'evidence': readmit_evidence})
     for node in sorted(set(eval_nodes)):
@@ -437,6 +440,60 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
         cfg['node_unknown_exclusion'] = {**(cfg.get('node_unknown_exclusion') or {}),
                                          'max_nodes': max_excluded_nodes}
     cfg['exclude_node_provenance'] = {n: provenance[n] for n in cfg['exclude_nodes']}
+
+
+NFS_ACK_PREFIX = 'nfs_state_loss:'
+NFS_RECENT_SECONDS = 6 * 3600
+KTHREAD_EINTR = re.compile(r'^(\S+) .*nfs4_schedule_state_manager: kthread_run: -4')
+
+
+def node_nfs_state_loss(node: str, *, partition: str, now: float) -> dict[str, Any]:
+    """OPS F2: a 1-core read-only probe on ``node``; ``kthread_run: -4`` (NFS client state
+    manager failure, seen at every bad-node stop) in the last 6 h. Anything that is not a
+    clean read is reported, never guessed."""
+    command = ['srun', '--partition=' + partition, '--nodelist=' + node, '--nodes=1',
+               '--ntasks=1', '--cpus-per-task=1', '--mem=256M', '--time=2', '--immediate=120',
+               '--job-name=rl4-node-nfs-check', 'dmesg', '--time-format', 'iso']
+    try:
+        out = run(command, check=False, timeout=300)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {'status': 'unavailable', 'reason': type(error).__name__, 'checked_at': now}
+    if out.returncode != 0:
+        return {'status': 'unavailable', 'reason': f'rc={out.returncode}',
+                'detail': safe(out.stderr.strip()[-200:]), 'checked_at': now}
+    recent = []
+    for line in out.stdout.splitlines():
+        match = KTHREAD_EINTR.match(line)
+        if match is None:
+            continue
+        try:
+            at = datetime.fromisoformat(match.group(1).replace(',', '.')).timestamp()
+        except ValueError:
+            return {'status': 'unavailable', 'reason': 'kernel_time_unparsed', 'checked_at': now}
+        if now - at <= NFS_RECENT_SECONDS:
+            recent.append(at)
+    return {'status': 'state_loss' if recent else 'clean', 'recent': recent,
+            'window_seconds': NFS_RECENT_SECONDS, 'checked_at': now}
+
+
+def readmission_nfs_checks(nodes: list[str], acknowledged: dict[str, str], *, partition: str,
+                           now: float) -> dict[str, Any]:
+    """Refuse to re-admit a node with recent NFS state loss (or an unreadable check)
+    unless ``--acknowledge nfs_state_loss:<node>=<reason>`` names it."""
+    checks = {}
+    for node in nodes:
+        check = node_nfs_state_loss(node, partition=partition, now=now)
+        print(f"   node NFS check {node}: {check['status']}"
+              + (f" ({len(check['recent'])} kthread_run -4 in 6 h)" if check.get('recent') else ''))
+        if check['status'] != 'clean':
+            if node not in acknowledged:
+                code = ('readmit_node_recent_nfs_state_loss' if check['status'] == 'state_loss'
+                        else 'readmit_node_nfs_check_unavailable')
+                raise SwapError(code, f'{node}: diagnose, or pass --acknowledge '
+                                f'{NFS_ACK_PREFIX}{node}=<reason>')
+            check = {**check, 'acknowledged': acknowledged[node]}
+        checks[node] = check
+    return checks
 
 
 def refuse_node_plan_on_close(mode: str, args: argparse.Namespace) -> None:
@@ -1031,6 +1088,13 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
             'readmit_evidence': args.readmit_evidence, 'eval_nodes': args.eval_node,
             'max_excluded_nodes': args.max_excluded_nodes, 'name': args.name,
             'auto_records': auto_records}
+    acknowledged = dict(a.split('=', 1) for a in args.acknowledge)
+    nfs_acks = {k.split(':', 1)[1]: v for k, v in acknowledged.items()
+                if k.startswith(NFS_ACK_PREFIX)}
+    if args.readmit and mode != 'close_window':
+        plan['nfs_checks'] = readmission_nfs_checks(
+            sorted(set(args.readmit)), nfs_acks, partition=prior.get('actor_partition', 'smp'),
+            now=now)
     pooled = args.eval_node or any(
         (p or {}).get('source') == 'evaluation_pool'
         for p in (prior.get('exclude_node_provenance') or {}).values())
@@ -1041,7 +1105,8 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
                       exclude=args.exclude_node, auto_excluded=auto, window=window,
-                      acknowledgements=dict(a.split('=', 1) for a in args.acknowledge),
+                      acknowledgements={k: v for k, v in acknowledged.items()
+                                        if not k.startswith(NFS_ACK_PREFIX)},
                       evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS,
                       nodes=plan)
     episodes = [(c.get('evaluation') or {}).get('episode_seconds',
@@ -1208,7 +1273,9 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument('--max-excluded-nodes', type=int, choices=range(0, 17),
                          metavar='0..16', help='node_unknown_exclusion.max_nodes')
     prepare.add_argument('--acknowledge', action='append', default=[],
-                         help='diagnosed integrity finding KEY=RECORD_SHA256')
+                         help='diagnosed integrity finding KEY=RECORD_SHA256, or '
+                              'nfs_state_loss:NODE=REASON to re-admit a node whose 1-core '
+                              'check found kthread_run -4 in the last 6 h (OPS F2)')
     prepare.add_argument('--expect-mode', choices=('same_window', 'new_window', 'close_window'))
     prepare.add_argument('--launch-margin', type=float, default=1800,
                          help='seconds the lead needs to review and launch (default 1800)')

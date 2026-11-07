@@ -572,8 +572,12 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     asked = []
     monkeypatch.setattr(swap, 'evaluation_partition_nodes', lambda partition: (
         asked.append(partition) or ['smp-9-10', 'smp-9-19', 'smp-9-8', 'smp-c04']))
+    checked = []
+    monkeypatch.setattr(swap, 'node_nfs_state_loss', lambda node, **k: (
+        checked.append((node, k['partition'])) or {'status': 'clean', 'recent': []}))
     friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'OPS-NODE-CHECK',
                    '--eval-node', 'smp-c04', '--max-excluded-nodes', '8')
+    assert checked == [('smp-9-10', 'smp')]
     final = friday.long_run / 'swap-c13b-dry-run'
     cfg = json.loads((final / 'watch.json').read_bytes())
     assert cfg['exclude_nodes'] == ['smp-9-8', 'smp-c04']
@@ -582,6 +586,64 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     assert cfg['evaluation']['pool_nodes'] == ['smp-c04'] and len(asked) == 1
     assert cfg['node_unknown_exclusion'] == {'max_nodes': 8}
     assert json.loads((final / 'decision.json').read_bytes())['readmitted'] == ['smp-9-10']
+    assert cfg['node_readmissions'][-1]['nfs_check']['status'] == 'clean'
     out = capsys.readouterr().out
     assert '- re-admitted smp-9-10 (evidence OPS-NODE-CHECK)' in out
+    assert 'node NFS check smp-9-10: clean' in out
     assert '- evaluation pool (no actors): smp-c04' in out
+
+
+def test_readmission_refuses_a_node_with_recent_nfs_state_loss(swap, monkeypatch):
+    """OPS F2: every bad-node stop matched ``kthread_run: -4``; a node that had it in the
+    last 6 h is not re-admitted without a named acknowledgement (c13e: smp-9-10)."""
+    now = 1794200000.0
+
+    def stamp(at):  # dmesg --time-format iso
+        from datetime import UTC, datetime
+        return datetime.fromtimestamp(at, UTC).strftime('%Y-%m-%dT%H:%M:%S,000000+00:00')
+
+    lines = [f'{stamp(now - 7 * 3600)} nfs4_schedule_state_manager: kthread_run: -4',
+             f'{stamp(now - 600)} NFS: 10.1.2.6: lost 5 locks']
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout='\n'.join(lines), stderr='')
+    monkeypatch.setattr(swap, 'run', fake_run)
+    clean = swap.node_nfs_state_loss('smp-9-10', partition='smp', now=now)
+    assert clean['status'] == 'clean'  # the -4 is older than 6 h
+    assert '--nodelist=smp-9-10' in calls[0] and '--cpus-per-task=1' in calls[0]
+    lines.append(f'{stamp(now - 3600)} nfs4_schedule_state_manager: kthread_run: -4')
+    lost = swap.node_nfs_state_loss('smp-9-10', partition='smp', now=now)
+    assert lost['status'] == 'state_loss' and len(lost['recent']) == 1
+    with pytest.raises(swap.SwapError, match='readmit_node_recent_nfs_state_loss'):
+        swap.readmission_nfs_checks(['smp-9-10'], {}, partition='smp', now=now)
+    acked = swap.readmission_nfs_checks(['smp-9-10'], {'smp-9-10': 'admin fixed mount'},
+                                        partition='smp', now=now)
+    assert acked['smp-9-10']['acknowledged'] == 'admin fixed mount'
+    # A check that cannot read the node is refused too, never treated as clean.
+    monkeypatch.setattr(swap, 'run', lambda command, **k: SimpleNamespace(
+        returncode=1, stdout='', stderr='srun: error: Unable to allocate resources'))
+    with pytest.raises(swap.SwapError, match='readmit_node_nfs_check_unavailable'):
+        swap.readmission_nfs_checks(['smp-9-0'], {}, partition='smp', now=now)
+
+    def missing(command, **k):
+        raise FileNotFoundError('srun')
+    monkeypatch.setattr(swap, 'run', missing)
+    assert swap.node_nfs_state_loss('smp-9-0', partition='smp', now=now)['status'] == \
+        'unavailable'
+
+
+def test_nfs_acknowledgement_stays_out_of_the_integrity_acknowledgements(friday, swap,
+                                                                         monkeypatch):
+    monkeypatch.setattr(swap, 'node_nfs_state_loss', lambda node, **k: {
+        'status': 'state_loss', 'recent': [1.0]})
+    with pytest.raises(swap.SwapError, match='readmit_node_recent_nfs_state_loss'):
+        friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'node check')
+    friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'node check',
+                   '--acknowledge', 'nfs_state_loss:smp-9-10=remount verified 11-08')
+    cfg = json.loads((friday.long_run / 'swap-c13b-dry-run/watch.json').read_bytes())
+    assert cfg['node_readmissions'][-1]['nfs_check']['acknowledged'] == \
+        'remount verified 11-08'
+    assert not any(k.startswith('nfs_state_loss') for k in
+                   cfg.get('acknowledged_integrity_events', {}))

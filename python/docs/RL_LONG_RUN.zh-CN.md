@@ -271,6 +271,11 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 每个actor结果带`node_nfs_events`：分配开始和结束时节点内核日志里NFS lost locks、state manager失败、
 server not responding的计数差（读不到内核日志记`kernel_log_unavailable`），供节点诊断用，不影响门和排除。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
+learner的`failed`按`watch.learner_failure_class`的闭表分类（OPS设计§2 (a)）。可恢复的只有两类：
+SGD子进程级死亡（`sgd_process_exited`/`sgd_process_stalled`，不含协议违例），以及CUDA OOM（`OutOfMemoryError`）。
+这两类不停run：本attempt以`learner_crash_recoverable`停下，写一条`recoveries`记录，发一次`attention`；
+learner和actor都到终态后，照常从最新完整CP开新attempt，次数受`max_recoveries`限制。本窗口还没写出CP时，
+从窗口起点CP重进（#388）。表外的一律按不可恢复处理，仍停在`learner_failed_requires_diagnosis`。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
 `acknowledged_integrity_events={原event key:原record_sha256}`具名确认已经诊断的finding；
@@ -411,7 +416,10 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
   清单按来源、按节点类型计数，并点名actor类型（如fc430）里被排除的节点。
 - `--readmit NODE`（可多次，必须是当前排除的节点，必须带`--readmit-evidence`）：从`exclude_nodes`去掉，
   写`readmit_nodes`（watch在同窗口续跑时移出继承的自动排除）和累积的`node_readmissions`记录
-  （节点、原排除来源、证据、哪次swap）。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
+  （节点、原排除来源、证据、哪次swap）。每个`--readmit`节点先跑一个1核只读探查（`srun --immediate=120 dmesg`），
+  最近6 h内有`kthread_run: -4`（NFS客户端state manager失败，每次坏节点停训都有），或者探查读不到，就拒绝
+  （`readmit_node_recent_nfs_state_loss`/`readmit_node_nfs_check_unavailable`）。确实要放回时，
+  传`--acknowledge nfs_state_loss:NODE=理由`；结果和理由都写进该节点的`node_readmissions`记录。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
 - `--eval-node NODE`：评估池，加进actor的`exclude_nodes`，写`evaluation.pool_nodes`，`evaluation.exclude_nodes` =
   评估分区（`sinfo`读取，读不到就拒绝）里池以外的节点 + actor排除节点；准备时的真游戏也按这个列表提交。
   当前被自动排除的节点只能和`--readmit NODE --readmit-evidence`一起进池（否则`eval_node_auto_excluded_needs_readmission`）。

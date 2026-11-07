@@ -195,6 +195,73 @@ def test_failed_event_stops_before_live_or_terminal_allocation_can_recover(
         assert len(owner.state["attempts"]) == 1
 
 
+def test_learner_failure_classes_are_a_closed_table(watch):
+    """OPS design §2 (a): only process-level SGD deaths and CUDA OOM are recoverable."""
+    cls = watch.learner_failure_class
+    exited = {'error_type': 'SgdProcessFailed',
+              'sgd_failure': {'code': 'sgd_process_exited', 'signal': 'SIGKILL', 'exitcode': -9}}
+    assert cls(exited)['recoverable'] is True and cls(exited)['signal'] == 'SIGKILL'
+    assert cls({'sgd_failure': {'code': 'sgd_process_stalled'}})['recoverable'] is True
+    oom = {'sgd_failure': {'code': 'sgd_process_failed',
+                           'child': {'error_type': 'OutOfMemoryError'}}}
+    assert cls(oom)['rule'] == 'out_of_memory'
+    assert cls({'error_type': 'OutOfMemoryError'})['recoverable'] is True
+    for bad in ({'error_type': 'KeyError'}, {'error_type': 'IntegrityError'},
+                {'sgd_failure': {'code': 'sgd_process_failed',
+                                 'child': {'error_type': 'ValueError'}}},
+                {'sgd_failure': {'code': 'sgd_process_exited', 'protocol_violation': True}},
+                {'failure': {'fatal': True}, 'error_type': 'OutOfMemoryError'},
+                {'sgd_failure': 'garbled'}, {}):
+        assert cls(bad)['recoverable'] is False, bad
+
+
+def test_recoverable_learner_crash_starts_a_new_attempt_after_terminal(owner, watch,
+                                                                     monkeypatch):
+    """CPU-only fault injection of a SIGKILLed SGD child: no global stop, one typed
+    recovery record and alarm, and once learner and actors are terminal the normal
+    boundary starts a new attempt (select_checkpoint picks the newest complete CP, or the
+    window's pinned parent before its first CP: #388)."""
+    value = attempt(owner)
+    value["actor_plans"] = []
+    event(owner, "failed", training_generation="g-one", error_type="SgdProcessFailed",
+          updates=380, sgd_failure={"code": "sgd_process_exited", "signal": "SIGKILL",
+                                    "exitcode": -9})
+    owner.collect_segment_evaluation = lambda: None
+    owner.schedule_segment_evaluation = lambda: None
+    owner.retain_segment_checkpoints = lambda: None
+    stops, starts, alarms = [], [], []
+    owner.stop_attempt = lambda _, reason, **kwargs: stops.append(reason)
+    owner.start_attempt = lambda: starts.append(1)
+    owner.telemetry = lambda kind, **f: alarms.append((kind, f.get('reason')))
+    monkeypatch.setitem(watch.sys.modules, "rl", SimpleNamespace())
+    terminal = {"value": False}
+    monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": terminal["value"]})
+    owner.tick_segment()
+    owner.tick_segment()  # still draining: one record, one alarm
+    assert owner.state["stop"] is None
+    assert stops == ["learner_crash_recoverable"] * 2
+    [record] = owner.state["recoveries"]
+    assert record["updates"] == 380 and record["class"]["rule"] == "sgd_process_level"
+    assert ("attention", "learner_crash_recoverable_new_attempt") in alarms
+    assert alarms.count(("attention", "learner_crash_recoverable_new_attempt")) == 1
+    terminal["value"] = True
+    owner.tick_segment()  # learner terminal, no actors: attempt closes
+    assert owner.state["active"] is None and starts == []
+    owner.tick_segment()
+    assert starts == [1]
+
+    # Allocation already terminal when the failure is first seen: same single record.
+    second = attempt(owner)
+    second.update(actor_plans=[], generation="g-two")
+    owner.state["active"] = 1
+    event(owner, "failed", training_generation="g-two", error_type="OutOfMemoryError",
+          updates=390)
+    owner.tick_segment()
+    assert owner.state["active"] is None and len(owner.state["recoveries"]) == 2
+    assert owner.state["recoveries"][1]["class"]["rule"] == "out_of_memory"
+    assert owner.state["stop"] is None
+
+
 def test_named_diagnosed_finding_allows_new_owner_without_deleting_history(owner, watch, tmp_path):
     failed = event(owner, "integrity_failed", reason="sampled_original_audit_failed")
     owner.collect_events()
