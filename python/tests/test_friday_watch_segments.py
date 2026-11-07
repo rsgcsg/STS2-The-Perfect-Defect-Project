@@ -528,7 +528,7 @@ def _cohort(host, floors, character="Defect"):
     return {"host_kind": "managed", "character": character, "ascension": 0,
             "planned": 2, "protocol_observed": _protocol(host),
             "rows": [{"seed": seed, "floor": floor, "scored": True, "status": "finished"}
-                     for seed, floor in zip(("seed-a", "seed-b"), floors)]}
+                     for seed, floor in zip(("seed-a", "seed-b"), floors, strict=True)]}
 
 
 def _run_evaluations(owner, watch, tmp_path, monkeypatch, steps, *, reference='previous'):
