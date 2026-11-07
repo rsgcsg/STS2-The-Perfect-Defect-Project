@@ -2203,7 +2203,7 @@ class SegmentWatcher(Watcher):
                         channel.request('stop', run=self.config['run'],
                             training_generation=attachment['training_generation'],
                             reason=reason, epoch=attempt['stop_epoch'])
-                except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError) as error:
+                except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, EOFError) as error:
                     # The learner already closed its socket while draining; the file
                     # Stop and signal above stand, and the next tick sees it terminal.
                     if 'stop_channel_unavailable' not in attempt:
@@ -2317,21 +2317,25 @@ class SegmentWatcher(Watcher):
                 self.state['stop'] = self.state['stop'] or 'absolute_deadline'
                 self.persist()
                 return
-            if not job_accounting(pending['job_id'])['terminal']:
+            accounting = job_accounting(pending['job_id'])
+            if not accounting['terminal']:
                 return
             plan_path = root / 'round/evaluation/plan.json'
             if not plan_path.exists():
-                # A just-finished preparation job may have written the plan on its
-                # compute node before it is visible here (c13d 11-08: plan.json written
-                # 00:16:30.8, job terminal 00:16:31, read missing). Wait like a result.
-                if 'terminal_seen_at' not in pending:
-                    pending['terminal_seen_at'] = time.time()
-                    self.persist()
-                grace = (self.config.get('evaluation') or {}).get(
-                    'result_grace_seconds', EVALUATION_RESULT_GRACE_SECONDS)
-                if time.time() - pending['terminal_seen_at'] < grace:
-                    return
-                self.state['stop'] = 'evaluation_CP_preparation_failed'
+                # A completed preparation job may have written the plan on its compute
+                # node before it is visible here (c13d 11-08: plan.json written
+                # 00:16:30.8, job terminal 00:16:31, read missing). Wait like a result;
+                # a failed or cancelled job has no plan to wait for. Own key: the result
+                # grace below must start from the evaluation job, not from this one.
+                if accounting.get('all_completed'):
+                    if 'plan_terminal_seen_at' not in pending:
+                        pending['plan_terminal_seen_at'] = time.time()
+                        self.persist()
+                    grace = (self.config.get('evaluation') or {}).get(
+                        'result_grace_seconds', EVALUATION_RESULT_GRACE_SECONDS)
+                    if time.time() - pending['plan_terminal_seen_at'] < grace:
+                        return
+                self.state['stop'] = self.state['stop'] or 'evaluation_CP_preparation_failed'
                 pending['stage'] = 'failed'
                 self.persist()
                 return
