@@ -366,6 +366,33 @@ service and episode; the Managed CLI rejects `--connector-endpoint`. Its
 `startup-2` includes the verified binding digest and selected service/runtime/
 continuity IDs without a token, private path, or seed.
 
+**Same-process Managed transport (rc.65, opt-in).** `dist/managed-inprocess-host.js`
+runs one Host `managed-host-service` tool body and this CLI in one process:
+
+```bash
+node dist/managed-inprocess-host.js --host-package <host> --runtime-stdout <empty 0600 file> \
+  -- <host>/tools/managed-host-service.mjs <the tool's own arguments>
+```
+
+The Host part is unchanged (native child, loopback manager attach point,
+private attachments, close). After the manager reset, the caller writes one
+stdin line `{"schema":"sts2.policy-runtime/inprocess-runtime-request-1","argv":[...]}`
+with the ordinary CLI arguments, including the Managed arguments above. The
+startup-2 line, then `{"schema":"sts2.policy-runtime/inprocess-runtime-exit-1","code":0|1}`,
+go to `--runtime-stdout`. A stop line
+(`sts2.policy-runtime/inprocess-runtime-stop-1`) or end of stdin is the same
+owner Stop a separate Runtime runs on SIGTERM. The process exits after the Host
+close and the Runtime end. Only the socket changes: `ManagedServicePolicyClient`
+still loads and verifies the attachment and binding, and the in-process service
+must be the one the attachment names; ready/identity checks, request IDs,
+result schemas, `verifyPublicBasis`, Receipt decoding and binding, timeouts and
+response bounds are the HTTP path's. The capture/step response bytes handed to
+evidence are byte-identical to HTTP. Abort before the request is offered sends
+nothing (`not_started`); once offered, an abort only stops waiting and the
+kernel classifies it as after-send (`unknown`, mutation fenced, never retried).
+Manager-role requests are refused in-process. `spireagent` selects it with
+`managed_transport: "in_process"` (per-actor inference only).
+
 The command fails before startup when the policy artifact is absent, its
 SHA-256 differs from the Policy Manifest, or the adapter's bounded code digest
 drifts. The child must first attest that exact adapter identity; the loopback

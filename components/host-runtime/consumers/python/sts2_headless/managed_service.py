@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -214,8 +214,18 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
                                 character: str = "Ironclad",
                                 language: str = "en",
                                 timeout_ms: int = 10_000,
-                                startup_timeout: float = 120.0) -> ManagedHostServiceLaunch:
-    """Explicitly start a detached Host. Dropping this object never closes it."""
+                                startup_timeout: float = 120.0,
+                                embedder: Sequence[str] | None = None) -> ManagedHostServiceLaunch:
+    """Explicitly start a detached Host. Dropping this object never closes it.
+
+    ``embedder`` names a same-process launcher that runs this package's exact
+    ``tools/managed-host-service.mjs`` arguments (``node *embedder tool ...``)
+    and takes its own requests on stdin; stdin is then a pipe owned by the
+    caller. The Host attach points, attachments and close are unchanged.
+    """
+    if embedder is not None and (isinstance(embedder, str) or not embedder
+                                 or any(not isinstance(item, str) or not item for item in embedder)):
+        raise ManagedHostServiceError("managed_host_embedder_invalid")
     package = Path(host_package_dir).resolve()
     tool = package / "tools" / "managed-host-service.mjs"
     if not tool.is_file():
@@ -232,7 +242,7 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
     node = shutil.which("node")
     if node is None:
         raise ManagedHostServiceError("managed_host_node_unavailable")
-    args = [node, str(tool), "--candidate", str(Path(candidate_dir).resolve()),
+    args = [node, *(embedder or ()), str(tool), "--candidate", str(Path(candidate_dir).resolve()),
             "--client-attachment", str(client_file),
             "--manager-attachment", str(manager_file),
             "--port", str(port), "--character", character, "--language", language,
@@ -247,7 +257,8 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
             flags = 0
             if os.name == "nt":
                 flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-            process = subprocess.Popen(args, cwd=package, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(args, cwd=package,
+                                       stdin=subprocess.PIPE if embedder else subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT,
                                        start_new_session=os.name != "nt", creationflags=flags)
     except Exception:
