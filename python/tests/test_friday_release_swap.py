@@ -234,7 +234,8 @@ def test_watch_configs_for_same_new_and_close_window(swap, tmp_path):
     same = swap.build_watch('same_window', prior, window=None, **common)
     assert same['previous_watch_state'] == ref
     assert same['previous_window_state'] == prior['previous_window_state']  # #391
-    assert same['exclude_nodes'] == ['smp-9-12', 'smp-9-8']  # state keeps auto-excluded
+    # U4 7b: the predecessor's auto-excluded nodes are written into the config here too.
+    assert same['exclude_nodes'] == ['smp-9-12', 'smp-9-2', 'smp-9-8']
     assert same['evaluation'] == {'execution': '/o/exe.json', 'initial_checkpoint': '8f88caeb'}
     assert (same['runtime_source'], same['learner_python']) == (
         '/r/new/source', '/r/new/env-gpu/bin/python')
@@ -249,6 +250,17 @@ def test_watch_configs_for_same_new_and_close_window(swap, tmp_path):
     assert (new['budget_id'], new['training_seconds']) == ('w3', 4236)
     close = swap.build_watch('close_window', prior, window=None, **common)
     assert close == {**prior, 'previous_watch_state': ref}
+    # An explicit evaluation.episode_seconds below the current default is raised (c13d: 900);
+    # one at or above it, and every other key, is copied as before.
+    for old, expected in ((900, 1800), (1800, 1800)):
+        prior['evaluation']['episode_seconds'] = old
+        for mode, extra in (('same_window', {'window': None}), ('new_window',
+                                                                {'window': window})):
+            value = swap.build_watch(mode, prior, **extra, **common)
+            assert value['evaluation']['episode_seconds'] == expected
+            assert prior['evaluation']['episode_seconds'] == old  # prior not mutated
+    assert swap.build_watch('close_window', prior, window=None, **common)['evaluation'] \
+        == prior['evaluation']
 
 
 def test_dead_attempt_without_final_wal_needs_reconciliation(swap):
@@ -275,10 +287,12 @@ def friday(swap, watch, tmp_path, monkeypatch):
     prior = {**C13[1], 'mode': 'segments', 'execution': str(long_run / 'execution-795622dc.json'),
              'learner_config': str(long_run / 'learner-c13.json'),
              'runtime_source': str(old / 'source'), 'held_job_id': '1441467',
-             'learner_python': str(old / 'env-gpu/bin/python'), 'exclude_nodes': ['smp-9-8']}
+             'learner_python': str(old / 'env-gpu/bin/python'), 'exclude_nodes': ['smp-9-8'],
+             'evaluation': {'episode_seconds': 900}}  # as c13b's config wrote it
     configuration = pin(long_run / 'watch-c13/watch-config.json', prior)
     pin(long_run / 'watch-c13/watch-state.json', {
         **C13[0], 'configuration': configuration,
+        'node_exclusion': {'excluded': {'smp-9-10': {'at': NOW_C13 - 900}}},
         'config_sha256': hashlib.sha256(watch.json_bytes(prior)).hexdigest()})
     calls = {'children': 0}
 
@@ -328,12 +342,19 @@ def test_dry_run_prepares_the_c13b_continuation_and_is_idempotent(friday, capsys
     assert cfg['execution'] == str(final / 'execution.json')
     assert cfg['previous_watch_state']['path'].endswith('watch-c13/watch-state.json')
     assert cfg['runtime_source'] == str(friday.release / 'source')
+    # U4 7b: the same-window config carries the auto-excluded node and the 1800 s default.
+    assert cfg['exclude_nodes'] == ['smp-9-10', 'smp-9-8']
+    assert cfg['evaluation']['episode_seconds'] == 1800
+    decision = json.loads((final / 'decision.json').read_bytes())
+    assert decision['evaluation_episode_seconds_raised'] == [900, 1800]
+    assert decision['auto_excluded_carried'] == ['smp-9-10']
     learner = json.loads((final / 'learner.json').read_bytes())
     assert learner['resume_checkpoint'] == '8f88caeb'
     execution = json.loads((final / 'execution.json').read_bytes())
     assert execution['producer']['source_revision'] == '0752ea89'
     out = capsys.readouterr().out
     assert 'DRY RUN' in out and 'real_game: skipped (dry run)' in out
+    assert 'evaluation.episode_seconds raised 900 -> 1800 (current default)' in out
     assert 'nohup python tools/friday/watch.py' in out and '<url>' not in out
     assert friday.calls['children'] == 2  # new identity + negative control
     assert not list(friday.long_run.glob('.swap-*'))  # no staging or FAILED left behind

@@ -252,16 +252,18 @@ CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
 每个unknown/save_failed在收局时按已记事实分为`environment_gap`/`infrastructure`/`save_ledger`/
 `wall_limit`（单局墙钟到点，截断局），带层数、步、动作、节点、原生错误；对不上或两类都有记
 `unclassified`并写原因，不猜。#386自动排除节点上的未分类/环境类按`node_auto_excluded`计基础设施；
-基础设施类不进模型统计（`unknown_overview.model_unknown_fraction`），按节点隔离照旧。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
+基础设施类不进模型统计（`unknown_overview.model_unknown_fraction`），按节点隔离照旧。
+已被#386自动排除的节点，在排除时刻及以后结束的局不进全局门的分子和分母（用户11-07"不算，只报警"），只单计
+`unknown_window.excluded_node_unknown`并每节点每窗口发一次`attention reason=excluded_node_unknown`；排除前的局照计。短段worker正常退出时不因单局unknown/save_failed写全数组STOP；
 进程异常仍阻止待启动worker。单局ledger停止和保存义务不变，未知局不重投。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
 直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
 可选 `node_unknown_exclusion={}`（默认 window_attempts=30、min_attempts=20、node_fraction=0.25、
 fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点：某节点最近窗口达阈值、
 其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
-之后补位与新attempt的actor `--exclude` = 配置exclude_nodes + 自动排除节点。原unknown照计入全局门，
-不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
+之后补位与新attempt的actor、CPU步和评估job的`--exclude` = 配置exclude_nodes + 自动排除节点。排除前的原unknown照计入全局门，
+不重投；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
 限制：排除在本watch内永久，不自动重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
-新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job用配置的`exclude_nodes`（另见`avoid_actor_nodes`）。
+新运营窗口从新state开始不继承；`release_swap.py`两种续跑都把前任自动排除的节点并进`exclude_nodes`（另见`avoid_actor_nodes`）。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
@@ -373,6 +375,8 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
      第一个tick就以`run_budget_complete`/`absolute_deadline`停、在`start_attempt`之前，所以不开learner和actor（到点的评估可能先跑完再退出）；
      然后对它再跑一次本命令开新窗口（c12c→c12d→c13）。这时第1步建的release用不上，留给新窗口复用。
    - 离`deadline_at`−600 s不到`--launch-margin`：两种都不安全（启动的watch还会开attempt），拒绝并给出可重跑的时刻。
+   同窗口和新窗口都把前任state里自动排除的节点并进`exclude_nodes`；前任配置的`evaluation.episode_seconds`
+   低于watch当前默认（1800）时改写为默认，并在清单和`decision.json`里写明（c13d曾抄来900）。其余照抄。
    前任仍在跑、learner job未终态、死attempt缺`control-wal-final.json`（c10）、有未确认integrity finding
    （`--acknowledge KEY=SHA`）时拒绝。
 5. **验证**：`read_segment_config`；同窗口`require_watch_continuation`，新窗口`require_completed_previous_window`；
