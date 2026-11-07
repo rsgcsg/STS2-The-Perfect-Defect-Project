@@ -1729,15 +1729,22 @@ class SegmentWatcher(Watcher):
 
         Counts original closes and derived lost offers by close time across every
         generation of this watch. Records a typed overview; never retries a game.
+        Closes on a #386 auto-excluded node at or after its exclusion time are left out
+        of numerator and denominator (user 11-07: they only raise an alarm).
         """
         now = time.time()
         settings = unknown_window_settings(self.config)
         since = now - settings['window_seconds']
         lost = set(self.state.get('lost_world_offers', []))
+        placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
+        excluded_at = {node: record.get('at') for node, record in
+                       self.state.get('node_exclusion', {}).get('excluded', {}).items()}
         closes = unknown = 0
         window: collections.Counter[str] = collections.Counter()
         totals: collections.Counter[str] = collections.Counter()
         nodes: collections.Counter[str] = collections.Counter()
+        isolated: collections.Counter[str] = collections.Counter()  # window unknown
+        isolated_closes = isolated_total = 0
         closed_total = 0
         recent = []
         for intent, fact in self.state['worlds'].items():
@@ -1753,6 +1760,15 @@ class SegmentWatcher(Watcher):
             value = self.unknown_class(intent, fact) if bad else None
             if value is not None:
                 totals[value['category']] += 1
+            node = placed.get(fact.get('actor'))
+            cut = excluded_at.get(node)
+            if (type(cut) in (int, float) and type(at) in (int, float) and at >= cut):
+                isolated_total += value is not None
+                if at > since:
+                    isolated_closes += 1
+                    if value is not None:
+                        isolated[node] += 1
+                continue
             if at is None or at <= since:
                 continue
             closes += 1
@@ -1768,15 +1784,26 @@ class SegmentWatcher(Watcher):
             'by_category': dict(totals),
             # Model statistics leave infrastructure out of numerator and denominator.
             'model_unknown_fraction': ((sum(totals.values()) - infra)
-                                       / max(closed_total - infra, 1)) if closed_total else None}
+                                       / max(closed_total - infra, 1)) if closed_total else None,
+            'excluded_node_unknown': isolated_total}
         record = {'at': now, 'window_seconds': settings['window_seconds'], 'closes': closes,
                   'unknown': unknown, 'fraction': fraction, 'level': level,
                   'by_category': dict(window), 'top_nodes': nodes.most_common(5),
+                  'excluded_node_closes': isolated_closes,
+                  'excluded_node_unknown': dict(isolated),
                   'recent': [{'intent': i, 'category': v['category'], 'rule': v['rule'],
                               'detail': v['detail']}
                              for _, i, v in sorted(recent, key=lambda r: r[0])[-5:]],
                   'settings': settings}
         self.state['unknown_window'] = record
+        marks = self.state.setdefault('excluded_node_unknown_alarm_at', {})
+        for node, count in sorted(isolated.items()):
+            if marks.get(node) is None or now - marks[node] >= settings['window_seconds']:
+                marks[node] = now
+                self.persist()
+                self.telemetry('attention', reason='excluded_node_unknown', node=node,
+                               unknown=count, window_seconds=settings['window_seconds'],
+                               action='training_continues_node_already_excluded')
         # Attention and stop alarms are rate-limited separately, so a stop is always
         # announced even right after the attention alarm of the same window.
         mark = 'unknown_stop_alarm_at' if level == 'stop' else 'unknown_attention_at'
@@ -1885,8 +1912,9 @@ class SegmentWatcher(Watcher):
             '--error=' + str(root / '%j.err')]
         if self.config.get('cpu_constraint'):
             command.append('--constraint=' + self.config['cpu_constraint'])
-        if self.config.get('exclude_nodes'):
-            command.append('--exclude=' + ','.join(self.config['exclude_nodes']))
+        excluded = self.actor_exclude_nodes()  # also the eval-prepare step (U4 7b)
+        if excluded:
+            command.append('--exclude=' + ','.join(excluded))
         command.append(str(script))
         with scheduler.user_submission_lock():
             save(intent, {'at': time.time(), 'command': command, 'script_sha256': hashed(script)})
@@ -2007,16 +2035,18 @@ class SegmentWatcher(Watcher):
         self.persist()
 
     def actor_exclude_nodes(self) -> list[str] | None:
-        """Configured exclusions plus this run's typed automatic node exclusions."""
+        """Configured exclusions plus this run's typed automatic node exclusions.
+        Every submission (actors, CPU steps, evaluations) starts from this list."""
         nodes = [*(self.config.get('exclude_nodes') or []),
                  *self.state.get('node_exclusion', {}).get('excluded', {})]
         return list(dict.fromkeys(nodes)) or None
 
     def evaluation_exclude_nodes(self) -> list[str] | None:
-        """Configured exclusions; with ``evaluation.avoid_actor_nodes`` also the nodes of
-        this watch's running actors (#386 placement facts), so an evaluation does not
-        share a node with actors. Opt-in: excluding many nodes can delay the job."""
-        nodes = list(self.config.get('exclude_nodes') or [])
+        """Configured and #386 auto-excluded nodes; with ``evaluation.avoid_actor_nodes``
+        also the nodes of this watch's running actors (#386 placement facts), so an
+        evaluation does not share a node with actors. Opt-in: excluding many nodes can
+        delay the job."""
+        nodes = list(self.actor_exclude_nodes() or [])
         if (self.config.get('evaluation') or {}).get('avoid_actor_nodes'):
             terminal = set(self.state['terminal_actors'])
             placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})

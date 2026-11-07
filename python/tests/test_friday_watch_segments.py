@@ -1165,6 +1165,63 @@ def test_evaluation_defaults_to_1800s_games_and_can_avoid_actor_nodes(owner, wat
     assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-1', 'smp-9-2']
 
 
+def test_evaluation_and_cpu_steps_avoid_auto_excluded_nodes(owner, watch, tmp_path,
+                                                                    monkeypatch):
+    """U4 7b: the 11-07 18:22 evaluation landed on smp-9-10, excluded at 18:07."""
+    owner.config['exclude_nodes'] = ['smp-9-8']
+    owner.config['evaluation'] = {}
+    owner.state['node_exclusion'] = {'actor_nodes': {'a': 'smp-9-1'},
+                                     'excluded': {'smp-9-10': {'at': 1.0}}}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-10']
+    owner.config['evaluation'] = {'avoid_actor_nodes': True}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-10', 'smp-9-1']
+    commands = []
+    monkeypatch.setattr(watch.scheduler, 'user_submission_lock', nullcontext)
+    monkeypatch.setattr(watch.scheduler, 'output', lambda c: commands.append(c) or '77')
+    script = tmp_path / 'prepare.sh'
+    script.write_text('#!/bin/sh\n')
+    assert owner.submit_cpu_step(script, tmp_path / 'prep', name='rl4-eval-prepare', cpus=1,
+                                 minutes=10, memory_gb=6) == '77'
+    assert '--exclude=smp-9-8,smp-9-10' in commands[0]
+
+
+def test_unknowns_of_an_auto_excluded_node_only_alarm(owner, watch):
+    """U4 7a, user 11-07 "不算，只报警": after its exclusion time a node's closes leave the
+    global gate's numerator and denominator; its closes before that still count."""
+    attempt(owner)
+    now = time.time()
+    owner.state['node_exclusion'] = {
+        'actor_nodes': {'good': 'smp-9-1', 'bad': 'smp-9-10'},
+        'excluded': {'smp-9-10': {'kind': 'node_unknown_exclusion', 'at': now - 600}}}
+
+    def close(intent, actor, status, at):
+        owner.state['worlds'][intent] = {'actor': actor, 'generation': 'g-one',
+                                         'offered': True, 'closed': True,
+                                         'status': status, 'closed_at': at}
+
+    for i in range(100):
+        close(f'good-{i}', 'good', 'finished', now - 60)
+    for i in range(5):  # before the exclusion: counted as before
+        close(f'early-{i}', 'bad', 'unknown', now - 900)
+    for i in range(60):  # the c13b wave: 50 unknown + 10 finished after the exclusion
+        close(f'late-{i}', 'bad', 'unknown' if i < 50 else 'finished', now - 300)
+    alarms = []
+    owner.telemetry = lambda kind, **f: alarms.append((kind, f))
+    assert owner.unknown_window_gate() is None  # counted, 55/165 would be a stop
+    window = owner.state['unknown_window']
+    assert (window['closes'], window['unknown']) == (105, 5)
+    assert window['excluded_node_closes'] == 60
+    assert window['excluded_node_unknown'] == {'smp-9-10': 50}
+    overview = owner.state['unknown_overview']
+    assert overview['excluded_node_unknown'] == 50 and overview['unknown'] == 55
+    assert alarms == [('attention', {
+        'reason': 'excluded_node_unknown', 'node': 'smp-9-10', 'unknown': 50,
+        'window_seconds': 1800, 'action': 'training_continues_node_already_excluded'})]
+    owner.unknown_window_gate()
+    assert len(alarms) == 1  # once per node per window
+    assert owner.state['worlds']['late-0']['status'] == 'unknown'  # original kept
+
+
 def test_newly_lost_offer_enters_the_window_and_unoffered_closes_never_do(owner):
     attempt(owner)
     event(owner, 'actor_world_offered', actor='dead', intent_id='lost', seed='s',

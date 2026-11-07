@@ -291,7 +291,8 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
                 release: Path | None, execution: Path | None, learner: Path | None,
                 cp_id: str | None, held_job: str | None, exclude: list[str],
                 auto_excluded: list[str], window: dict[str, Any] | None,
-                acknowledgements: dict[str, str]) -> dict[str, Any]:
+                acknowledgements: dict[str, str],
+                evaluation_episode_seconds: int = 1800) -> dict[str, Any]:
     cfg = copy.deepcopy(prior)
     if held_job:
         cfg['held_job_id'] = held_job
@@ -315,10 +316,15 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
     if cfg.get('evaluation') is not None:
         cfg['evaluation']['execution'] = str(execution)
         cfg['evaluation']['initial_checkpoint'] = cp_id  # read_segment_config: = resume CP
-    extra = set(exclude)
+        # An explicit value below the current default (c13d: 900) would mask U4-1.
+        if cfg['evaluation'].get('episode_seconds', evaluation_episode_seconds) \
+                < evaluation_episode_seconds:
+            cfg['evaluation']['episode_seconds'] = evaluation_episode_seconds
+    # The predecessor's auto-excluded nodes are written into the config in both modes, so
+    # every submission path (and a reader of the config) sees them (U4 7b).
+    extra = set(exclude) | set(auto_excluded)
     if mode == 'same_window':
-        # previous_window_state stays as it is (#391 refuses a continuation that drops it);
-        # the predecessor state keeps its auto-excluded nodes.
+        # previous_window_state stays as it is (#391 refuses a continuation that drops it).
         cfg['previous_watch_state'] = previous_ref
     else:
         assert window is not None
@@ -327,7 +333,6 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
         cfg['budget_id'] = window['budget_id']
         cfg['deadline_at'] = window['deadline_at']
         cfg['training_seconds'] = window['training_seconds']
-        extra |= set(auto_excluded)  # a new window starts with a new state (doc: not inherited)
     cfg['exclude_nodes'] = sorted(set(cfg.get('exclude_nodes', [])) | extra)
     return cfg
 
@@ -353,6 +358,9 @@ def checklist(*, decision: dict[str, Any], rows: list[dict[str, Any]] | None,
     if decision.get('launch_by'):
         out.append(f'- [ ] launch before {stamp(decision["launch_by"])} '
                    '(deadline_at - 600 s - margin); later it only closes the window')
+    if decision.get('evaluation_episode_seconds_raised'):
+        old, new = decision['evaluation_episode_seconds_raised']
+        out.append(f'- evaluation.episode_seconds raised {old} -> {new} (current default)')
     if rows:
         changed = [r['identity'] for r in rows if r['changed']]
         out.append(f'- identities re-frozen; changed: {changed or "none"}')
@@ -838,12 +846,19 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
                       exclude=args.exclude_node, auto_excluded=auto, window=window,
-                      acknowledgements=dict(a.split('=', 1) for a in args.acknowledge))
+                      acknowledgements=dict(a.split('=', 1) for a in args.acknowledge),
+                      evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS)
+    episodes = [(c.get('evaluation') or {}).get('episode_seconds',
+                                                watch.EVALUATION_EPISODE_SECONDS)
+                for c in (prior, cfg)]
+    if episodes[0] != episodes[1]:
+        decision = {**decision, 'evaluation_episode_seconds_raised': episodes}
+        print(f'   evaluation.episode_seconds raised {episodes[0]} -> {episodes[1]}')
     files['watch.json'] = cfg
     files['decision.json'] = {**decision, 'predecessor': str(args.predecessor.resolve()),
                               'predecessor_state': previous_ref, 'window': window,
                               'release': str(release), 'sha': args.resolved_sha,
-                              'auto_excluded_carried': auto if mode == 'new_window' else [],
+                              'auto_excluded_carried': auto if mode != 'close_window' else [],
                               'dry_run': args.dry_run}
     for name, value in files.items():
         write(staging / name, value)
