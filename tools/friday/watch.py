@@ -273,6 +273,7 @@ UNKNOWN_WINDOW_DEFAULTS: dict[str, Any] = {
     'window_seconds': 1800, 'attention_fraction': .10, 'stop_fraction': .20,
     'min_denominator': 100}
 EVALUATION_EPISODE_SECONDS = 1800  # evaluate.py's maximum; 900 s cut deep games (U4-1).
+EVALUATION_RESULT_GRACE_SECONDS = 900  # terminal job, result not yet visible on NFS
 SELECTION_SCORES = ('conservative', 'finished_mean', 'paired_max_floor')
 UNKNOWN_STATUSES = frozenset({'unknown', 'save_failed'})
 
@@ -1330,6 +1331,57 @@ def require_completed_previous_window(previous: dict[str, Any], prior: dict[str,
         raise ValueError('completed_distinct_previous_operating_window_required')
 
 
+def require_watch_continuation(previous: dict[str, Any], prior: dict[str, Any],
+                               config: dict[str, Any]) -> None:
+    """Same-window continuation (previous_watch_state): the pinned original config and its
+    run/peer/budget/deadline/total are unchanged. Also used by release_swap.py."""
+    if (previous['config_sha256'] != hashlib.sha256(json_bytes(prior)).hexdigest()
+            or any(prior[k] != config[k] for k in (
+                'run', 'peer', 'budget_id', 'deadline_at', 'training_seconds'))):
+        raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
+
+
+def require_acknowledged_findings(previous: dict[str, Any], config: dict[str, Any]) -> None:
+    """A continuation names every blocking integrity finding it diagnosed (by record sha)."""
+    if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
+           for key, digest in previous.get('blocking_integrity_findings', {}).items()):
+        raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+
+
+def checkpoint_link(cp: dict[str, Any], config: dict[str, Any], *, has_history: bool) -> bool:
+    """The resume CP rule of start_attempt; True when it enters a new operating window.
+
+    The link stays in force until this window publishes its own first CP; a first
+    attempt that dies earlier re-enters from the same pinned parent. Also used by
+    release_swap.py, so a prepared continuation is checked by this one rule.
+    """
+    new_window = bool(config.get('previous_window_state')
+                      and (cp.get('operating_budget') or {}).get('id') != config['budget_id'])
+    if new_window:
+        previous = evaluate.read_pinned(config['previous_window_state'])
+        prior = evaluate.read_pinned(previous['configuration'])
+        require_completed_previous_window(previous, prior, config)
+        generations = {g for a in previous['attempts']
+                       for g in a.get('generations', [a['generation']])}
+        budget = cp.get('operating_budget') or {}
+        if (budget.get('id') != prior['budget_id']
+                or budget.get('total_seconds') != prior['training_seconds']
+                or cp.get('deadline_at') != prior['deadline_at']
+                or cp.get('training_generation') not in generations):
+            raise ValueError('checkpoint_does_not_belong_to_completed_previous_window')
+    if (not new_window and cp.get('deadline_at') is not None
+            and cp['deadline_at'] != config['deadline_at']):
+        raise ValueError('checkpoint_deadline_cannot_be_reset')
+    if cp.get('operating_budget') is not None and not new_window:
+        budget = cp['operating_budget']
+        if not has_history:
+            raise ValueError('original_watch_state_required_to_reconcile_deliveries')
+        if (budget['id'] != config['budget_id']
+                or budget['total_seconds'] != config['training_seconds']):
+            raise ValueError('checkpoint_operating_budget_cannot_be_reset')
+    return new_window
+
+
 class SegmentWatcher(Watcher):
     """RL4.1 adaptation of the original Friday owner, not a gameplay scheduler.
 
@@ -1345,11 +1397,8 @@ class SegmentWatcher(Watcher):
         resumed = config.get('previous_watch_state')
         previous = evaluate.read_pinned(resumed) if resumed and not self.state_path.exists() else None
         if previous is not None:
-            prior_config = evaluate.read_pinned(previous['configuration'])
-            if (previous['config_sha256'] != hashlib.sha256(json_bytes(prior_config)).hexdigest()
-                    or any(prior_config[k] != config[k] for k in (
-                        'run', 'peer', 'budget_id', 'deadline_at', 'training_seconds'))):
-                raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
+            require_watch_continuation(
+                previous, evaluate.read_pinned(previous['configuration']), config)
         frozen_config = self.work / 'watch-config.json'
         if not frozen_config.exists():
             save(frozen_config, config)
@@ -1369,9 +1418,7 @@ class SegmentWatcher(Watcher):
                  0 if (config.get('evaluation') or {}).get('initial_checkpoint') else 7200),
              'protected_checkpoints': [], 'incarnation': None})
         if previous is not None:
-            if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
-                   for key, digest in previous.get('blocking_integrity_findings', {}).items()):
-                raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+            require_acknowledged_findings(previous, config)
             save(self.work / 'previous-watch-state.json', previous)
             self.state['previous_config_sha256'] = self.state['config_sha256']
             self.state['config_sha256'] = hashlib.sha256(json_bytes(config)).hexdigest()
@@ -1682,15 +1729,22 @@ class SegmentWatcher(Watcher):
 
         Counts original closes and derived lost offers by close time across every
         generation of this watch. Records a typed overview; never retries a game.
+        Closes on a #386 auto-excluded node at or after its exclusion time are left out
+        of numerator and denominator (user 11-07: they only raise an alarm).
         """
         now = time.time()
         settings = unknown_window_settings(self.config)
         since = now - settings['window_seconds']
         lost = set(self.state.get('lost_world_offers', []))
+        placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
+        excluded_at = {node: record.get('at') for node, record in
+                       self.state.get('node_exclusion', {}).get('excluded', {}).items()}
         closes = unknown = 0
         window: collections.Counter[str] = collections.Counter()
         totals: collections.Counter[str] = collections.Counter()
         nodes: collections.Counter[str] = collections.Counter()
+        isolated: collections.Counter[str] = collections.Counter()  # window unknown
+        isolated_closes = isolated_total = 0
         closed_total = 0
         recent = []
         for intent, fact in self.state['worlds'].items():
@@ -1706,6 +1760,15 @@ class SegmentWatcher(Watcher):
             value = self.unknown_class(intent, fact) if bad else None
             if value is not None:
                 totals[value['category']] += 1
+            node = placed.get(fact.get('actor'))
+            cut = excluded_at.get(node)
+            if (type(cut) in (int, float) and type(at) in (int, float) and at >= cut):
+                isolated_total += value is not None
+                if at > since:
+                    isolated_closes += 1
+                    if value is not None:
+                        isolated[node] += 1
+                continue
             if at is None or at <= since:
                 continue
             closes += 1
@@ -1721,15 +1784,26 @@ class SegmentWatcher(Watcher):
             'by_category': dict(totals),
             # Model statistics leave infrastructure out of numerator and denominator.
             'model_unknown_fraction': ((sum(totals.values()) - infra)
-                                       / max(closed_total - infra, 1)) if closed_total else None}
+                                       / max(closed_total - infra, 1)) if closed_total else None,
+            'excluded_node_unknown': isolated_total}
         record = {'at': now, 'window_seconds': settings['window_seconds'], 'closes': closes,
                   'unknown': unknown, 'fraction': fraction, 'level': level,
                   'by_category': dict(window), 'top_nodes': nodes.most_common(5),
+                  'excluded_node_closes': isolated_closes,
+                  'excluded_node_unknown': dict(isolated),
                   'recent': [{'intent': i, 'category': v['category'], 'rule': v['rule'],
                               'detail': v['detail']}
                              for _, i, v in sorted(recent, key=lambda r: r[0])[-5:]],
                   'settings': settings}
         self.state['unknown_window'] = record
+        marks = self.state.setdefault('excluded_node_unknown_alarm_at', {})
+        for node, count in sorted(isolated.items()):
+            if marks.get(node) is None or now - marks[node] >= settings['window_seconds']:
+                marks[node] = now
+                self.persist()
+                self.telemetry('attention', reason='excluded_node_unknown', node=node,
+                               unknown=count, window_seconds=settings['window_seconds'],
+                               action='training_continues_node_already_excluded')
         # Attention and stop alarms are rate-limited separately, so a stop is always
         # announced even right after the attention alarm of the same window.
         mark = 'unknown_stop_alarm_at' if level == 'stop' else 'unknown_attention_at'
@@ -1838,8 +1912,9 @@ class SegmentWatcher(Watcher):
             '--error=' + str(root / '%j.err')]
         if self.config.get('cpu_constraint'):
             command.append('--constraint=' + self.config['cpu_constraint'])
-        if self.config.get('exclude_nodes'):
-            command.append('--exclude=' + ','.join(self.config['exclude_nodes']))
+        excluded = self.actor_exclude_nodes()  # also the eval-prepare step (U4 7b)
+        if excluded:
+            command.append('--exclude=' + ','.join(excluded))
         command.append(str(script))
         with scheduler.user_submission_lock():
             save(intent, {'at': time.time(), 'command': command, 'script_sha256': hashed(script)})
@@ -1863,35 +1938,11 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
-        # The link stays in force until this window publishes its own first CP; a
-        # first attempt that dies earlier re-enters from the same pinned parent.
-        new_window = bool(self.config.get('previous_window_state')
-                          and (cp.get('operating_budget') or {}).get('id')
-                          != self.config['budget_id'])
-        if new_window:
-            previous = evaluate.read_pinned(self.config['previous_window_state'])
-            prior = evaluate.read_pinned(previous['configuration'])
-            require_completed_previous_window(previous, prior, self.config)
-            generations = {g for a in previous['attempts']
-                           for g in a.get('generations', [a['generation']])}
-            budget = cp.get('operating_budget') or {}
-            if (budget.get('id') != prior['budget_id']
-                    or budget.get('total_seconds') != prior['training_seconds']
-                    or cp.get('deadline_at') != prior['deadline_at']
-                    or cp.get('training_generation') not in generations):
-                raise ValueError('checkpoint_does_not_belong_to_completed_previous_window')
-        if (not new_window and cp.get('deadline_at') is not None
-                and cp['deadline_at'] != self.config['deadline_at']):
-            raise ValueError('checkpoint_deadline_cannot_be_reset')
+        new_window = checkpoint_link(cp, self.config, has_history=bool(
+            self.state['attempts'] or self.config.get('previous_watch_state')))
         if cp.get('operating_budget') is not None and not new_window:
-            budget = cp['operating_budget']
-            if not self.state['attempts'] and not self.config.get('previous_watch_state'):
-                raise ValueError('original_watch_state_required_to_reconcile_deliveries')
-            if (budget['id'] != self.config['budget_id']
-                    or budget['total_seconds'] != self.config['training_seconds']):
-                raise ValueError('checkpoint_operating_budget_cannot_be_reset')
             self.state['training_seconds'] = max(self.state['training_seconds'],
-                                                 budget['consumed_seconds'])
+                                                 cp['operating_budget']['consumed_seconds'])
         number = len(self.state['attempts']) + 1
         root = private_root(self.work / f'attempt-{number:04d}')
         generation = f'g-ops-{number:04d}-{time.time_ns()}'
@@ -1984,16 +2035,18 @@ class SegmentWatcher(Watcher):
         self.persist()
 
     def actor_exclude_nodes(self) -> list[str] | None:
-        """Configured exclusions plus this run's typed automatic node exclusions."""
+        """Configured exclusions plus this run's typed automatic node exclusions.
+        Every submission (actors, CPU steps, evaluations) starts from this list."""
         nodes = [*(self.config.get('exclude_nodes') or []),
                  *self.state.get('node_exclusion', {}).get('excluded', {})]
         return list(dict.fromkeys(nodes)) or None
 
     def evaluation_exclude_nodes(self) -> list[str] | None:
-        """Configured exclusions; with ``evaluation.avoid_actor_nodes`` also the nodes of
-        this watch's running actors (#386 placement facts), so an evaluation does not
-        share a node with actors. Opt-in: excluding many nodes can delay the job."""
-        nodes = list(self.config.get('exclude_nodes') or [])
+        """Configured and #386 auto-excluded nodes; with ``evaluation.avoid_actor_nodes``
+        also the nodes of this watch's running actors (#386 placement facts), so an
+        evaluation does not share a node with actors. Opt-in: excluding many nodes can
+        delay the job."""
+        nodes = list(self.actor_exclude_nodes() or [])
         if (self.config.get('evaluation') or {}).get('avoid_actor_nodes'):
             terminal = set(self.state['terminal_actors'])
             placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
@@ -2278,6 +2331,23 @@ class SegmentWatcher(Watcher):
         result_path = path.parent / 'result.json'
         if (read_published(result_path) is None
                 or read_published(path.parent / 'snapshot.json') is None):
+            # A terminal job may still be publishing, so wait. A job that ended without
+            # publishing (e.g. cancelled on a bad node) is one skipped evaluation with its
+            # originals kept; it must not stay pending, which blocks exit and later evals.
+            if 'terminal_seen_at' not in pending:
+                pending['terminal_seen_at'] = time.time()
+                self.persist()
+            grace = (self.config.get('evaluation') or {}).get(
+                'result_grace_seconds', EVALUATION_RESULT_GRACE_SECONDS)
+            if time.time() - pending['terminal_seen_at'] < grace:
+                return
+            self.state['evaluations'].append({**pending, 'stage': 'terminal_without_result',
+                'at_training_seconds': pending['due_seconds'],
+                'skipped': 'evaluation_job_terminal_without_result'})
+            self.state['pending'] = None
+            self.telemetry('attention', reason='evaluation_job_terminal_without_result',
+                           evaluation=pending['root'], job_id=pending['job_id'])
+            self.persist()
             return
         plan, result, cohort, closed = self.evaluation_cohort(path, result_path)
         binding = evaluate.read_pinned(plan['checkpoint_binding'])
