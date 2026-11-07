@@ -297,6 +297,24 @@ def test_preparation_abandoned_at_deadline_keeps_stop_and_releases_window_link(
             watch.require_completed_previous_window(owner.state, owner.config, following)
 
 
+def test_preparation_before_deadline_still_follows_its_original_path(tmp_path, monkeypatch):
+    watch = original_watch.__wrapped__()
+    owner = watch.SegmentWatcher({
+        'run': 'prep-normal', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+        'budget_id': 'prep-normal-budget', 'deadline_at': 9999999999,
+        'training_seconds': 72000, 'actors': 1}, tmp_path/'watch')
+    owner.state['pending'] = {'stage': 'preparation', 'root': str(tmp_path/'evaluation-0001'),
+                              'due_seconds': 7200, 'job_id': '92'}
+    accounting = {'terminal': False}
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: dict(accounting))
+    owner.collect_segment_evaluation()
+    assert owner.state['pending']['stage'] == 'preparation' and owner.state['stop'] is None
+    accounting['terminal'] = True
+    owner.collect_segment_evaluation()  # terminal without a plan: the original typed stop
+    assert owner.state['stop'] == 'evaluation_CP_preparation_failed'
+    assert owner.state['pending']['stage'] == 'failed' and not owner.state['evaluations']
+
+
 def test_H1_anchor_is_first_cycle_point_without_moving_two_hour_cadence(tmp_path):
     watch = original_watch.__wrapped__()
     config = {'run': 'anchor', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},

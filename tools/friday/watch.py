@@ -1902,15 +1902,6 @@ class SegmentWatcher(Watcher):
         if pending is None:
             return
         root = Path(pending['root'])
-        if pending['stage'] == 'preparation':
-            if time.time() >= self.config['deadline_at'] - 900:
-                self.signal_once(pending['job_id'])
-                pending['stage'] = 'preparation_abandoned'
-                pending['reason'] = 'absolute_deadline_no_World_offer'
-                # Same rule as tick_segment: the deadline never relabels an earlier stop.
-                self.state['stop'] = self.state['stop'] or 'absolute_deadline'
-                self.persist()
-                return
         if (pending['stage'] == 'preparation_abandoned'
                 or pending['stage'] == 'failed'
                 and pending.get('reason') == 'absolute_deadline_no_World_offer'):
@@ -1925,6 +1916,15 @@ class SegmentWatcher(Watcher):
             self.state['pending'] = None
             self.persist()
             return
+        if pending['stage'] == 'preparation':
+            if time.time() >= self.config['deadline_at'] - 900:
+                self.signal_once(pending['job_id'])
+                pending['stage'] = 'preparation_abandoned'
+                pending['reason'] = 'absolute_deadline_no_World_offer'
+                # Same rule as tick_segment: the deadline never relabels an earlier stop.
+                self.state['stop'] = self.state['stop'] or 'absolute_deadline'
+                self.persist()
+                return
             if not job_accounting(pending['job_id'])['terminal']:
                 return
             plan_path = root / 'round/evaluation/plan.json'
