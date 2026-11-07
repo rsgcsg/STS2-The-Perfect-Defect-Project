@@ -288,8 +288,12 @@ dataplane 对象里显式加 `"sgd_process": true` 才启用，不加时默认�
 匿名内存/pinned 全计；spool、arena、prepared 输出、WAL 只在 tmpfs/ramfs/未知文件系统上计入。
 上限取 `memory_limit_bytes`，否则 cgroup 路径上最小限制，否则物理内存；计入总量须 ≤ `(1-memory_headroom_fraction)`×上限
 （默认 0.20），否则 `sgd_process_memory_budget_exceeded`。`memory_budget` 只能覆盖声明项
-`controller_base/worker_process/publisher_process/sgd_base_cuda/sgd_base_cpu`；默认值是声明值不是实测，首轮须以实测替换。
-Friday 现 profile（/dev/shm 上 source 20GiB + arena 30GiB + prepared）在 64GiB cgroup 内预计会被拒绝，需由 owner 决定重配额或申请内存。
+`controller_base/worker_process/publisher_process/sgd_base_cuda/sgd_base_cpu`。默认值按实测取：SGD 进程 2.5GiB
+（S3 I1 GPU 回放 1.97GiB 不含 pinned）、worker 1.5GiB（RL4.1 I1 单进程峰 1.30GiB）、publisher 1GiB（947MiB）；
+控制进程 6GiB 仍是声明值，首次真实运行按进程量后替换。pinned 槽按配置上限 `prepared_bytes` 计（回放实际约 0.21GiB）。
+Friday 现 profile 的 dataplane root 在节点本地 `/tmp`（xfs），spool/arena/prepared/WAL 是可回收页缓存，不计入；
+按 c11 配置（19 个辅助进程、prepared 8GiB）计入约 46GiB。RL5 运行学习端申请 ≥96GiB（A100 节点给得出时 128GiB），
+因为 cgroup 也计页缓存，c11 同进程峰 63.87GiB 已贴 64GiB。
 
 其他键：`sgd_start_seconds`（默认600）、`sgd_shutdown_seconds`（60）、`sgd_cpus`（仅 Linux 亲和性）。
 CPU 证据：`tests/test_rl_sgd_process.py` 证明 CP 逐位相等、双向恢复和各故障注入；GPU BF16/TF32 下只能声明容差内一致，

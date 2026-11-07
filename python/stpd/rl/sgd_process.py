@@ -51,13 +51,21 @@ OPTION_KEYS = frozenset((
     "sgd_cpus", "sgd_offline_step_seconds", "memory_limit_bytes",
     "memory_headroom_fraction", "memory_budget",
 ))
-# Declared, not measured: replace with first-run per-process peaks via
-# `dataplane.memory_budget`. The check refuses; it never shrinks a limit.
+# Per-process bases from measurement where one exists (margin ~15-25%); override
+# with `dataplane.memory_budget` once a run measures better. The check refuses;
+# it never shrinks a limit.
 DECLARED_BYTES = {
+    # Not yet measured for the binary-socket controller without CUDA (RL4.1 I1's
+    # in-process learner, CUDA included, peaked at 3.21 GiB RSS): declared.
     "controller_base": 6 * GiB,
-    "worker_process": 1 * GiB,
-    "publisher_process": 2 * GiB,
-    "sgd_base_cuda": 4 * GiB,
+    # RL4.1 I1: max single spawn-worker RSS 1.30 GiB (shared arena pages included).
+    "worker_process": 3 * GiB // 2,
+    # RL4.1 I1: publisher lifetime RSS 947 MiB; the budget adds 3 x model bytes.
+    "publisher_process": 1 * GiB,
+    # S3 I1 GPU replay (Friday job 1444109, A100): SGD process RSS 2.18 GiB after
+    # steps incl. 0.21 GiB pinned -> 1.97 GiB base; state capture added 0.15 GiB.
+    "sgd_base_cuda": 5 * GiB // 2,
+    # CPU tests only.
     "sgd_base_cpu": 2 * GiB,
 }
 MEMORY_FILESYSTEMS = frozenset(("tmpfs", "ramfs", "devtmpfs", "unknown"))
