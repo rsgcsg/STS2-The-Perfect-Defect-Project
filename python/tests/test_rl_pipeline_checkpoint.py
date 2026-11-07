@@ -20,8 +20,14 @@ from stpd.rl.segment_learner import SegmentLearner
 from stpd.rl.tensor_segment import TensorSegmentEncoder
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
+# Explicit S3 SGD-process alternative for the same seams. The declared budget
+# items are this CPU fixture's own bounds; production uses the module defaults.
+SGD_PROCESS = {"sgd_process": True, "memory_limit_bytes": 64 * 1024**3, "memory_budget": {
+    "controller_base": 1024**3, "worker_process": 256 * 1024**2,
+    "publisher_process": 512 * 1024**2, "sgd_base_cpu": 1024**3}}
 
-def binary_owner(tmp_path, monkeypatch, datasets=3):
+
+def binary_owner(tmp_path, monkeypatch, datasets=3, dataplane=None):
     config, io = configuration(tmp_path, monkeypatch)
     config = dc.replace(config, segments=dc.replace(config.segments, minibatches=2,
         archive_min_free_bytes=0, archive_min_free_inodes=0))
@@ -29,7 +35,7 @@ def binary_owner(tmp_path, monkeypatch, datasets=3):
         "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
         "prepare_slots": 4, "source_bytes": 64 * 1024**2,
         "preparation_workers": 2, "assembly_workers": 2, "prepared_batches": 3,
-        "lock_timing": True,
+        "lock_timing": True, **(dataplane or {}),
     })
     owner = SegmentLearner(config, tmp_path / "owner", io)
     monkeypatch.setenv(AUTH_ENV, owner.pool.environment()[AUTH_ENV])
@@ -49,7 +55,7 @@ def binary_owner(tmp_path, monkeypatch, datasets=3):
             frozen = scorer.models[grant["mu"]["snapshot_sha256"]]
             value = segment(frozen, name=grant["lease"], run_id=episode, rows=2,
                 generation=owner.generation, mu=grant["mu"])
-            encoder = TensorSegmentEncoder(vocabulary=owner.model.vocabulary,
+            encoder = TensorSegmentEncoder(vocabulary=owner.input_preparer.vocabulary,
                 compiler_identity=owner.compiler_identity,
                 recipe={**owner.pool.binary_profile["binary_recipe"], "actor": actor},
                 spool=tmp_path / f"spool-{i}")
@@ -72,8 +78,10 @@ def binary_owner(tmp_path, monkeypatch, datasets=3):
     return owner, config, io
 
 
-def test_CP_keeps_real_pending_requests_workers_and_selection_rng(tmp_path, monkeypatch):
-    owner, config, io = binary_owner(tmp_path, monkeypatch)
+@pytest.mark.parametrize("sgd", [False, True], ids=["in_process", "sgd_process"])
+def test_CP_keeps_real_pending_requests_workers_and_selection_rng(tmp_path, monkeypatch, sgd):
+    owner, config, io = binary_owner(tmp_path, monkeypatch,
+                                     dataplane=SGD_PROCESS if sgd else None)
     restored = None
     try:
         assert owner._prepare()
@@ -154,9 +162,12 @@ def test_CP_keeps_real_pending_requests_workers_and_selection_rng(tmp_path, monk
         owner.close()
 
 
+@pytest.mark.parametrize("sgd", [False, True], ids=["in_process", "sgd_process"])
 @pytest.mark.parametrize("cutoff", ["soft", "absolute"])
-def test_cutoff_finishes_frozen_two_minibatch_dataset_and_final_CP(tmp_path, monkeypatch, cutoff):
-    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=1)
+def test_cutoff_finishes_frozen_two_minibatch_dataset_and_final_CP(tmp_path, monkeypatch, cutoff,
+                                                                    sgd):
+    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=1,
+                               dataplane=SGD_PROCESS if sgd else None)
     assert owner._prepare()
     original_step = owner._step
     steps = []
@@ -184,10 +195,12 @@ def test_cutoff_finishes_frozen_two_minibatch_dataset_and_final_CP(tmp_path, mon
     assert not cp.input_pipeline["pending_requests"]
 
 
-def test_source_frontend_wait_overlaps_real_optimizer_step(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sgd", [False, True], ids=["in_process", "sgd_process"])
+def test_source_frontend_wait_overlaps_real_optimizer_step(tmp_path, monkeypatch, sgd):
     import threading
 
-    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=2)
+    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=2,
+                               dataplane=SGD_PROCESS if sgd else None)
     entered, resume = threading.Event(), threading.Event()
     try:
         assert owner._prepare()
