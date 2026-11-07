@@ -510,6 +510,9 @@ Unique OS/shard/attempt artifacts retain the original complete collection,
 selection, actual setup/call/teardown and subtest outcomes, terminal execution,
 source identities and workspace results. Before sealing a fresh receipt,
 `portable` downloads every Linux current-run artifact directory separately and
+proves each shard by its newest attempt within the run (a failed-only rerun keeps
+earlier passing shards; no later attempt, older pass behind a newer artifact, or
+attempt relabel counts). It
 verifies clean exact head/tree/workflow/selector and cost-profile Git blob/raw SHA256
 plus routing algorithm, run/attempt/scope/OS, identical
 same-OS collection, disjoint/exhaustive deterministic selections, and terminal

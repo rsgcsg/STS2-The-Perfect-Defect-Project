@@ -165,16 +165,28 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     expected.source?.routing_algorithm === algorithm, "cost_profile_identity");
   requireProof(["full", "python"].includes(expected.scope) && /^[\w.-]+\/[\w.-]+$/.test(expected.repository ?? "") &&
     /^[1-9][0-9]*$/.test(expected.run_id ?? "") && /^[1-9][0-9]*$/.test(expected.run_attempt ?? ""), "expected_run");
-  const names = oses.flatMap(os => PYTEST_SHARD_INDEXES.map(index => `pytest-${os}-shard-${index}-${expected.run_attempt}`));
-  requireProof(equal(sort(fs.readdirSync(directory)), sort(names)), "missing_or_extra_artifact");
+  // "Re-run failed jobs" keeps the earlier attempt's passing shard jobs, and
+  // their artifacts keep that attempt's suffix. Each shard is therefore proven
+  // by its newest attempt within this run (never a later one, never an older
+  // pass behind a newer artifact); source identity below still binds one head.
+  const current = Number(expected.run_attempt), newest = new Map();
+  for (const entry of fs.readdirSync(directory)) {
+    const match = /^pytest-([A-Za-z]+)-shard-([1-9][0-9]*)-([1-9][0-9]*)$/u.exec(entry);
+    const attempt = Number(match?.[3]);
+    requireProof(match && oses.includes(match[1]) && PYTEST_SHARD_INDEXES.includes(Number(match[2])) &&
+      Number.isSafeInteger(attempt) && attempt <= current, "missing_or_extra_artifact");
+    const key = `${match[1]}/${Number(match[2])}`;
+    newest.set(key, Math.max(attempt, newest.get(key) ?? 0));
+  }
+  requireProof(newest.size === oses.length * PYTEST_SHARD_INDEXES.length, "missing_or_extra_artifact");
   const proofs = [], collections = new Map(), selections = new Map();
   for (const os of oses) for (const index of PYTEST_SHARD_INDEXES) {
-    const name = `pytest-${os}-shard-${index}-${expected.run_attempt}`;
-    const artifact = path.join(directory, name);
+    const attempt = String(newest.get(`${os}/${index}`));
+    const artifact = path.join(directory, `pytest-${os}-shard-${index}-${attempt}`);
     requireProof(fs.lstatSync(artifact).isDirectory() && !fs.lstatSync(artifact).isSymbolicLink(), "artifact_directory");
     const manifest = readJson(path.join(artifact, "python", ".local", "pytest-shard.json"));
     const report = manifest.data;
-    const run = {repository: expected.repository, run_id: expected.run_id, run_attempt: expected.run_attempt,
+    const run = {repository: expected.repository, run_id: expected.run_id, run_attempt: attempt,
       job: os === "Linux" ? "linux-portability" : os === "Windows" ? "windows-portability" : "fixture",
       os, scope: expected.scope};
     requireProof(report.schema === "spireagent/pytest-shard-2" && equal(report.run, run) &&
@@ -202,7 +214,7 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     requireProof(hash(junit) === report.junit_sha256, "junit_digest");
     const workspace = readJson(path.join(artifact, ".local", "checks", `workspace-${expected.scope}-${{Linux: "linux", Windows: "win32", Darwin: "darwin"}[os]}.json`));
     verifyWorkspace(workspace.data, expected, os, index);
-    proofs.push({os, index, manifest_sha256: manifest.sha256, workspace_sha256: workspace.sha256,
+    proofs.push({os, index, run_attempt: attempt, manifest_sha256: manifest.sha256, workspace_sha256: workspace.sha256,
       collection_sha256: report.collection_sha256, selected: selected.length, ...counts});
   }
   for (const os of oses) idsMatch(selections.get(os), collections.get(os).map(item => item.nodeid), "exhaustive_union");

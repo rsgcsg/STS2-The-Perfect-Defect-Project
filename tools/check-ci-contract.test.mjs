@@ -50,7 +50,8 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
-    ["pattern: pytest-Linux-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
+    ["pattern: pytest-Linux-shard-*", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
+    ["pattern: pytest-Linux-shard-*", "pattern: pytest-Linux-shard-*-${{ github.run_attempt }}", "portable must download separate original current-run shard artifacts"],
   ]) assert.ok(ciWorkflowErrors(currentSource().replaceAll(before, after)).includes(error), error);
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
 });

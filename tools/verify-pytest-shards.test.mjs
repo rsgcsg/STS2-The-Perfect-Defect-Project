@@ -129,6 +129,49 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
   }
 });
 
+// "Re-run failed jobs" reruns one shard as attempt 2; the other shards keep attempt 1.
+function rerun(data, leaf, attempt, mutate = () => {}) {
+  const root = leaf.root.replace(/-1$/u, `-${attempt}`);
+  fs.cpSync(leaf.root, root, {recursive: true});
+  const report = structuredClone(leaf.report);
+  report.run.run_attempt = String(attempt);
+  mutate(report);
+  write(path.join(root, "python", ".local", "pytest-shard.json"), report);
+  return root;
+}
+
+test("a failed-only rerun is proven by each shard's newest attempt in the same run", () => {
+  const data = fixture();
+  try {
+    const expected = {...data.expected, run_attempt: "2"};
+    // The stale attempt-1 shard 5 stays downloaded next to its attempt-2 rerun.
+    for (const leaf of data.leaves.filter(leaf => leaf.report.shard.index === 5)) rerun(data, leaf, 2);
+    const result = verifyPytestShards(data.directory, expected, {profileRoot: data.profileRoot});
+    assert.deepEqual(result.leaves.map(leaf => `${leaf.os}/${leaf.index}@${leaf.run_attempt}`),
+      ["Linux", "Windows"].flatMap(os => PYTEST_SHARD_INDEXES.map(index => `${os}/${index}@${index === 5 ? 2 : 1}`)));
+    // Attempt 1 results alone are still attempt 1's proof, not a later attempt's.
+    assert.throws(() => verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot}), /missing_or_extra_artifact/);
+  } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
+  for (const [label, arrange, attempt] of [
+    // A newer failed rerun is never hidden behind the older passing attempt.
+    ["newer failure", data => rerun(data, data.leaves[4], 2, report => { report.invocation.exit_code = 1; }), "2"],
+    // The rerun directory must carry the attempt its name claims.
+    ["renamed attempt", data => rerun(data, data.leaves[4], 2, report => { report.run.run_attempt = "1"; }), "2"],
+    // No artifact from a later attempt than the aggregate's own.
+    ["future attempt", data => rerun(data, data.leaves[4], 3), "2"],
+    ["zero attempt", data => fs.renameSync(data.leaves[4].root, data.leaves[4].root.replace(/-1$/u, "-0")), "2"],
+    ["missing shard", data => fs.rmSync(data.leaves[4].root, {recursive: true}), "2"],
+    ["foreign OS", data => fs.cpSync(data.leaves[0].root, path.join(data.directory, "pytest-Darwin-shard-1-1"), {recursive: true}), "1"],
+  ]) {
+    const data = fixture();
+    try {
+      arrange(data);
+      assert.throws(() => verifyPytestShards(data.directory, {...data.expected, run_attempt: attempt},
+        {profileRoot: data.profileRoot}), undefined, label);
+    } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
+  }
+});
+
 test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic", () => {
   const profile = structuredClone(readCostProfile().profile);
   profile.first_shard_overhead_ms = 0;
