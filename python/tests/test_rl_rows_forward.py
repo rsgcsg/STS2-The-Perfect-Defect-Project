@@ -209,3 +209,27 @@ def test_effective_config_records_rows_v2_only_when_selected_and_resume_ignores_
     assert "prepared_compile" not in selected.frozen()["performance"]
     # The binary recipe digest and the CP resume comparison see the same objectives.
     assert _resume_config(dc.asdict(base)) == _resume_config(dc.asdict(selected))
+
+
+def test_compiled_rows_forward_trains_and_diagnostic_steps_run_eager(model, varied):
+    """A compiled backward refuses retain_graph (per-head diagnostics); those steps
+    run the same block eager, every other step compiled."""
+    padded, rows = prepared(model, "padded-v1", "rows-v2")
+    config = LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01)
+    reference = copy.deepcopy(model)
+    eager_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    for diagnostics in (True, False):
+        result = prepared_update(
+            model, optimizer, rows.minibatches[0], config=config, target_kl=1e9,
+            performance=PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True),
+            diagnostics=diagnostics)
+        expected = prepared_update(reference, eager_optimizer, padded.minibatches[0],
+                                   config=config, target_kl=1e9,
+                                   performance=PerformanceConfig(), diagnostics=diagnostics)
+        assert result["stepped"] and ("trunk_gradients" in result) == diagnostics
+        assert result["policy_loss"] == pytest.approx(expected["policy_loss"], rel=1e-4,
+                                                      abs=1e-6)
+    for name, value in reference.state_dict().items():
+        torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
+                                   msg=name)
