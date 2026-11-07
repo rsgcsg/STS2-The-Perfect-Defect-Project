@@ -370,7 +370,7 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
    - 其它stop、预算和截止都还有余 → 同窗口（`previous_watch_state`，保留`previous_window_state`）。
      须在`deadline_at`−600 s−`--launch-margin`（默认1800 s）前启动，清单写明时刻。
    - 其它stop，且预算已用完或已过`deadline_at`−600 s → 只关窗：同窗口配置、前任自己的release和ENV，
-     第一个tick就以`run_budget_complete`/`absolute_deadline`停、在`start_attempt`之前，所以不开learner和actor；
+     第一个tick就以`run_budget_complete`/`absolute_deadline`停、在`start_attempt`之前，所以不开learner和actor（到点的评估可能先跑完再退出）；
      然后对它再跑一次本命令开新窗口（c12c→c12d→c13）。这时第1步建的release用不上，留给新窗口复用。
    - 离`deadline_at`−600 s不到`--launch-margin`：两种都不安全（启动的watch还会开attempt），拒绝并给出可重跑的时刻。
    前任仍在跑、learner job未终态、死attempt缺`control-wal-final.json`（c10）、有未确认integrity finding

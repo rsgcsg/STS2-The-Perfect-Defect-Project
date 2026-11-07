@@ -348,8 +348,8 @@ def checklist(*, decision: dict[str, Any], rows: list[dict[str, Any]] | None,
            f'- budget {cfg["budget_id"]}, training_seconds {cfg["training_seconds"]}, '
            f'deadline_at {stamp(cfg["deadline_at"])}']
     if decision['mode'] == 'close_window':
-        out.append('- close-only: runs on the predecessor release and stops on its first tick '
-                   '(no learner, no actor); then prepare the new window against it')
+        out.append('- close-only: runs on the predecessor release; no learner or actor starts '
+                   '(a due evaluation may still run first); then prepare the new window')
     if decision.get('launch_by'):
         out.append(f'- [ ] launch before {stamp(decision["launch_by"])} '
                    '(deadline_at - 600 s - margin); later it only closes the window')
@@ -958,7 +958,8 @@ def _finish(args, steps, watch, staging, final, evidence, kind, decision, rows, 
     if kind != 'existing':
         (final / 'CHECKLIST.txt').write_text(text)
         write(ready, {'files': hashes, 'launch': command,
-                      'watch_config_sha256': hashes['watch.json'], 'dry_run': args.dry_run})
+                      'watch_config_sha256': hashes['watch.json'], 'dry_run': args.dry_run,
+                      'launch_by': decision.get('launch_by')})
     print('\n' + text)
 
 
