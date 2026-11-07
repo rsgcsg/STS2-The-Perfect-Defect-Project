@@ -2394,7 +2394,11 @@ class SegmentWatcher(Watcher):
                  if not blocking(row['cohort']) and scored(row)),
                 ('baseline', baseline) if 'baseline' not in skipped else (latest_name, latest))
             if previous_name != latest_name:
-                skipped['latest_closed'] = blocking(latest)
+                if blocking(latest):
+                    skipped['latest_closed'] = blocking(latest)
+                else:  # Same protocol, but it counted no game under the selection score.
+                    report['previous_passed_over'] = {'root': latest_name,
+                                                      'reason': 'no_counted_games'}
             report['previous_reference'] = previous_name
             report['against_previous'], report['reward_against_previous'] = against(
                 'previous', previous_name, previous)

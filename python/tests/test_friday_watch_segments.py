@@ -1200,4 +1200,7 @@ def test_unscored_evaluation_is_neither_a_regression_verdict_nor_a_reference(
     assert second['paired_regression'] is None
     assert second['paired_regression_skipped'] == 'no_paired_interval'
     assert third['previous_reference'] == first['root']  # the unscored one is passed over
+    assert third['previous_passed_over'] == {'root': second['root'],
+                                             'reason': 'no_counted_games'}
+    assert 'protocol_skipped' not in third
     assert third['paired_regression'] is True and owner.state['stop'] is None
