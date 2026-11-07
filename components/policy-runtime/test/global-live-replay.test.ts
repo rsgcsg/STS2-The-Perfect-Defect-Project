@@ -19,8 +19,9 @@ it("the normal HTTP/Agent producer closes transitions before run end, including 
     let first!: () => void;
     const emitted = new Promise<void>(resolve => { first = resolve; });
     streaming = streamGlobalAgentRun(f.evidence.directory, globalJournalEvents(f.evidence.directory), async row => {
-      const manifest = JSON.parse(await readFile(join(f.evidence.directory, "manifest.json"), "utf8"));
-      if (!rows.length) expect(manifest.ended_at).toBeNull();
+      // Row 0 is checked while the test holds the next tick, so nothing writes the
+      // live manifest. Later rows may run during the closing tick's finalize rewrite.
+      if (!rows.length) expect(JSON.parse(await readFile(join(f.evidence.directory, "manifest.json"), "utf8")).ended_at).toBeNull();
       expect(row.input.catalog).toEqual(row.input.observation.catalog);
       // This conformance Agent has no model; research admission separately
       // requires a complete score vector bound to its real mu response.
