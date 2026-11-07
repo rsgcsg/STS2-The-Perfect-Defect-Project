@@ -355,7 +355,8 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                     readmit_evidence: str | None = None, eval_nodes: list[str] = (),
                     max_excluded_nodes: int | None = None, name: str = '',
                     auto_records: dict[str, Any] | None = None,
-                    partition_nodes: list[str] | None = None) -> None:
+                    partition_nodes: list[str] | None = None,
+                    nfs_checks: dict[str, Any] | None = None) -> None:
     """Provenance, re-admission, evaluation pool and the #386 cap, in that order.
 
     With a pool, evaluations run only there: ``evaluation.exclude_nodes`` is every other
@@ -397,6 +398,8 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                             f'{READMISSION_LIMIT} times and excluded again; diagnose first')
         row = {'node': node, 'by': f'release_swap {name}'.strip(), 'evidence': readmit_evidence,
                'excluded_as': before}
+        if nfs_checks and node in nfs_checks:
+            row['nfs_check'] = nfs_checks[node]
         history.append(row)
         requests.append({'node': node, 'evidence': readmit_evidence})
     for node in sorted(set(eval_nodes)):
@@ -437,6 +440,81 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
         cfg['node_unknown_exclusion'] = {**(cfg.get('node_unknown_exclusion') or {}),
                                          'max_nodes': max_excluded_nodes}
     cfg['exclude_node_provenance'] = {n: provenance[n] for n in cfg['exclude_nodes']}
+
+
+NFS_ACK_PREFIX = 'nfs_state_loss:'
+NFS_RECENT_SECONDS = 6 * 3600
+KTHREAD_EINTR = re.compile(r'^(\S+) .*nfs4_schedule_state_manager: kthread_run: -4')
+
+
+def node_nfs_state_loss(node: str, *, partition: str, now: float) -> dict[str, Any]:
+    """OPS F2: a 1-core read-only probe on ``node``; ``kthread_run: -4`` (NFS client state
+    manager failure, seen at every bad-node stop) in the last 6 h. Anything that is not a
+    clean read of the whole 6 h is reported, never guessed: an empty kernel log, or one
+    whose oldest line is newer than 6 h on a node up for longer (the ring buffer wrapped),
+    is ``unavailable``. The step runs in ``/tmp`` so a stuck NFS client cannot hang it."""
+    command = ['srun', '--partition=' + partition, '--nodelist=' + node, '--nodes=1',
+               '--ntasks=1', '--cpus-per-task=1', '--mem=256M', '--time=2', '--immediate=120',
+               '--chdir=/tmp', '--job-name=rl4-node-nfs-check',
+               'sh', '-c', 'cat /proc/uptime && dmesg --time-format iso']
+    try:
+        out = subprocess.run(command, capture_output=True, timeout=300, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {'status': 'unavailable', 'reason': type(error).__name__, 'checked_at': now}
+    stdout = out.stdout.decode('utf-8', errors='replace')
+    if out.returncode != 0:
+        return {'status': 'unavailable', 'reason': f'rc={out.returncode}',
+                'detail': safe(out.stderr.decode('utf-8', errors='replace').strip()[-200:]),
+                'checked_at': now}
+    first, _, kernel = stdout.partition('\n')
+    try:
+        uptime = float(first.split()[0])
+    except (IndexError, ValueError):
+        return {'status': 'unavailable', 'reason': 'uptime_unreadable', 'checked_at': now}
+    recent, oldest = [], None
+    for line in kernel.splitlines():
+        stamp = line.split(' ', 1)[0]
+        try:
+            at = datetime.fromisoformat(stamp.replace(',', '.')).timestamp()
+        except ValueError:
+            if KTHREAD_EINTR.match(line):
+                return {'status': 'unavailable', 'reason': 'kernel_time_unparsed',
+                        'checked_at': now}
+            continue  # a wrapped continuation line carries no stamp
+        oldest = at if oldest is None else min(oldest, at)
+        if KTHREAD_EINTR.match(line) and now - at <= NFS_RECENT_SECONDS:
+            recent.append(at)
+    window = {'window_seconds': NFS_RECENT_SECONDS, 'uptime_seconds': uptime,
+              'oldest_line_at': oldest, 'checked_at': now}
+    if recent:
+        return {'status': 'state_loss', 'recent': recent, **window}
+    if oldest is None or (oldest > now - NFS_RECENT_SECONDS and uptime > NFS_RECENT_SECONDS):
+        return {'status': 'unavailable', 'reason': 'kernel_log_window_incomplete', **window}
+    return {'status': 'clean', 'recent': [], **window}
+
+
+def readmission_nfs_checks(nodes: list[str], acknowledged: dict[str, str], *, partition: str,
+                           now: float, dry_run: bool = False) -> dict[str, Any]:
+    """Refuse to re-admit a node with recent NFS state loss (or an unreadable check)
+    unless ``--acknowledge nfs_state_loss:<node>=<reason>`` names it."""
+    checks = {}
+    for node in nodes:
+        if dry_run:  # a dry run submits no Slurm job: the check is recorded as not run
+            print(f'   node NFS check {node}: skipped (dry run, no probe submitted)')
+            checks[node] = {'status': 'skipped_dry_run', 'checked_at': now}
+            continue
+        check = node_nfs_state_loss(node, partition=partition, now=now)
+        print(f"   node NFS check {node}: {check['status']}"
+              + (f" ({len(check['recent'])} kthread_run -4 in 6 h)" if check.get('recent') else ''))
+        if check['status'] != 'clean':
+            if node not in acknowledged:
+                code = ('readmit_node_recent_nfs_state_loss' if check['status'] == 'state_loss'
+                        else 'readmit_node_nfs_check_unavailable')
+                raise SwapError(code, f'{node}: diagnose, or pass --acknowledge '
+                                f'{NFS_ACK_PREFIX}{node}=<reason>')
+            check = {**check, 'acknowledged': acknowledged[node]}
+        checks[node] = check
+    return checks
 
 
 def refuse_node_plan_on_close(mode: str, args: argparse.Namespace) -> None:
@@ -1031,6 +1109,13 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
             'readmit_evidence': args.readmit_evidence, 'eval_nodes': args.eval_node,
             'max_excluded_nodes': args.max_excluded_nodes, 'name': args.name,
             'auto_records': auto_records}
+    acknowledged = dict(a.split('=', 1) for a in args.acknowledge)
+    nfs_acks = {k.split(':', 1)[1]: v for k, v in acknowledged.items()
+                if k.startswith(NFS_ACK_PREFIX)}
+    if args.readmit and mode != 'close_window':
+        plan['nfs_checks'] = readmission_nfs_checks(
+            sorted(set(args.readmit)), nfs_acks, partition=prior.get('actor_partition', 'smp'),
+            now=now, dry_run=args.dry_run)
     pooled = args.eval_node or any(
         (p or {}).get('source') == 'evaluation_pool'
         for p in (prior.get('exclude_node_provenance') or {}).values())
@@ -1041,7 +1126,8 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
                       exclude=args.exclude_node, auto_excluded=auto, window=window,
-                      acknowledgements=dict(a.split('=', 1) for a in args.acknowledge),
+                      acknowledgements={k: v for k, v in acknowledged.items()
+                                        if not k.startswith(NFS_ACK_PREFIX)},
                       evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS,
                       nodes=plan)
     episodes = [(c.get('evaluation') or {}).get('episode_seconds',
@@ -1208,7 +1294,9 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument('--max-excluded-nodes', type=int, choices=range(0, 17),
                          metavar='0..16', help='node_unknown_exclusion.max_nodes')
     prepare.add_argument('--acknowledge', action='append', default=[],
-                         help='diagnosed integrity finding KEY=RECORD_SHA256')
+                         help='diagnosed integrity finding KEY=RECORD_SHA256, or '
+                              'nfs_state_loss:NODE=REASON to re-admit a node whose 1-core '
+                              'check found kthread_run -4 in the last 6 h (OPS F2)')
     prepare.add_argument('--expect-mode', choices=('same_window', 'new_window', 'close_window'))
     prepare.add_argument('--launch-margin', type=float, default=1800,
                          help='seconds the lead needs to review and launch (default 1800)')
