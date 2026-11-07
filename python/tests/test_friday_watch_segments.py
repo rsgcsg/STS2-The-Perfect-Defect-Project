@@ -427,6 +427,35 @@ def test_learner_only_restore_preserves_unknown_denominator_and_charged_time(own
     assert owner.state['health']['known_unknown'] == 1
 
 
+def test_stop_request_to_closed_learner_socket_is_recorded_not_a_watcher_crash(
+        owner, monkeypatch):
+    """c13d 11-08: the learner closed its socket while draining; the watcher's repeated
+    stop request got ConnectionRefusedError and the watcher died without its final drain."""
+    from stpd.p1.export import adapter_identity
+    from stpd.p1.local_inference import SEGMENT_SCHEMA, SegmentConnection
+
+    current = attempt(owner)
+    current['actor_plans'] = []
+    owner.signal_once = lambda _job: None
+    owner.config['dataplane'] = {}
+    monkeypatch.setattr(owner, '_socket_attachment', lambda _attempt: {
+        'run': owner.config['run'], 'training_generation': 'g-one', 'pool_id': 'p-one',
+        'schema': SEGMENT_SCHEMA, 'adapter': adapter_identity(),
+    })
+    def refused(*args, **kwargs):
+        raise ConnectionRefusedError(111, 'Connection refused')
+    monkeypatch.setattr(SegmentConnection, 'request', refused)
+    alarms = []
+    owner.telemetry = lambda kind, **fields: alarms.append((kind, fields))
+    owner.stop_attempt(current, 'evaluation_CP_preparation_failed')
+    owner.stop_attempt(current, 'evaluation_CP_preparation_failed')
+    assert current['stopping'] == 'evaluation_CP_preparation_failed'
+    assert current['stop_channel_unavailable']['error_type'] == 'ConnectionRefusedError'
+    assert current['stop_channel_unavailable']['epoch'] == 1 and current['stop_epoch'] == 2
+    assert alarms == [('attention', {'reason': 'stop_channel_unavailable',
+                                     'error_type': 'ConnectionRefusedError'})]
+
+
 @pytest.mark.parametrize('corrupt', [False, True])
 def test_final_wal_snapshot_closes_event_cursor_without_reconnecting(
         owner, monkeypatch, corrupt):

@@ -344,9 +344,37 @@ def test_preparation_before_deadline_still_follows_its_original_path(tmp_path, m
     owner.collect_segment_evaluation()
     assert owner.state['pending']['stage'] == 'preparation' and owner.state['stop'] is None
     accounting['terminal'] = True
-    owner.collect_segment_evaluation()  # terminal without a plan: the original typed stop
+    owner.collect_segment_evaluation()  # terminal, plan not yet visible: wait for it
+    assert owner.state['pending']['stage'] == 'preparation' and owner.state['stop'] is None
+    owner.state['pending']['terminal_seen_at'] -= watch.EVALUATION_RESULT_GRACE_SECONDS
+    owner.collect_segment_evaluation()  # still no plan after the grace: the original typed stop
     assert owner.state['stop'] == 'evaluation_CP_preparation_failed'
     assert owner.state['pending']['stage'] == 'failed' and not owner.state['evaluations']
+
+
+def test_preparation_plan_visible_late_is_submitted_not_a_stop(tmp_path, monkeypatch):
+    """c13d 11-08: the preparation job wrote plan.json 00:16:30.8 and was terminal at
+    00:16:31; the login node did not see the plan yet and the window stopped."""
+    watch = original_watch.__wrapped__()
+    owner = watch.SegmentWatcher({
+        'run': 'prep-late', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+        'budget_id': 'prep-late-budget', 'deadline_at': 9999999999,
+        'training_seconds': 72000, 'actors': 1, 'evaluation': {}}, tmp_path/'watch')
+    root = tmp_path/'evaluation-0005'
+    owner.state['pending'] = {'stage': 'preparation', 'root': str(root),
+                              'due_seconds': 28800, 'job_id': '93'}
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    submitted = []
+    monkeypatch.setattr(watch.evaluate, 'submit',
+                        lambda plan, **kw: submitted.append(plan) or {'job_id': '94'})
+    owner.collect_segment_evaluation()
+    assert owner.state['stop'] is None and not submitted
+    plan = root/'round/evaluation/plan.json'
+    plan.parent.mkdir(parents=True)
+    plan.write_text('{}')
+    owner.collect_segment_evaluation()
+    assert owner.state['stop'] is None and submitted == [plan]
+    assert owner.state['pending']['stage'] == 'running' and owner.state['pending']['job_id'] == '94'
 
 
 def test_H1_anchor_is_first_cycle_point_without_moving_two_hour_cadence(tmp_path):
