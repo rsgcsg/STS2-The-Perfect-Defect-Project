@@ -82,6 +82,33 @@ class _ReadySource:
 class _PackedBatch:
     tree: Any
     arrays: tuple[_SharedArray, ...]
+    # Hand-off mode only: the opaque tree stays pickled and the controller reads
+    # just this small summary; the SGD process verifies the file digest.
+    summary: dict[str, Any] | None = None
+
+
+@dc.dataclass(frozen=True)
+class PreparedHandoff:
+    """Controller view of one complete PreparedBatch whose bytes stay in its file.
+
+    Explicit `sgd_process` profile only. The controller never pins, stages or
+    unpickles the tensor tree; it keeps the metadata that selection and
+    successful-use accounting already read. The spawned SGD process maps the
+    same `_write_batch` file, checks `sha256` over `used_bytes`, then pins it.
+    """
+
+    request: PrepareRequest
+    metadata: tuple[dict[str, Any], ...]
+    policy_mask: torch.Tensor  # CPU bool copy; same values as PreparedBatch.policy_mask
+    label_updates: tuple[dict[str, Any], ...]
+    timings: dict[str, float]
+    payload_bytes: int
+    minibatch_count: int
+    path: str
+    tree: bytes  # trusted spawn-IPC metadata, never a durable or public format
+    arrays: tuple[_SharedArray, ...]
+    used_bytes: int
+    sha256: str
 
 
 @dc.dataclass(frozen=True)
@@ -98,7 +125,7 @@ def _timed(function: Any, *args: Any) -> _WorkerResult:
     return _WorkerResult(value, os.getpid(), time.perf_counter() - wall, time.process_time() - cpu)
 
 
-def _write_batch(batch: PreparedBatch, path: str) -> _PackedBatch:
+def _write_batch(batch: PreparedBatch, path: str, *, handoff: bool = False) -> _PackedBatch:
     tree, arrays = bp.pack_transport(batch)
     with open(path, "r+b") as stream:
         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
@@ -112,7 +139,21 @@ def _write_batch(batch: PreparedBatch, path: str) -> _PackedBatch:
             mapping[cursor : cursor + array.nbytes] = memoryview(array).cast("B")
             views.append(_SharedArray(path, cursor, array.size, array.dtype.str))
             cursor += array.nbytes
-        return _PackedBatch(tree, tuple(views))
+        if not handoff:
+            return _PackedBatch(tree, tuple(views))
+        # Worker-side digest: the controller never hashes or unpickles the batch.
+        summary = {
+            "request": batch.request,
+            "metadata": batch.metadata,
+            "policy_mask": tuple(bool(value) for value in batch.policy_mask.tolist()),
+            "label_updates": batch.label_updates,
+            "timings": dict(batch.timings),
+            "payload_bytes": batch.payload_bytes,
+            "minibatch_count": len(batch.minibatches),
+            "used_bytes": cursor,
+            "sha256": hashlib.sha256(memoryview(mapping)[:cursor]).hexdigest(),
+        }
+        return _PackedBatch(pickle.dumps(tree, protocol=5), tuple(views), summary)
     finally:
         mapping.close()
 
@@ -208,6 +249,7 @@ def _assemble(
     excluded: frozenset[str],
     submitted: float,
     output: str,
+    handoff: bool = False,
 ) -> Any:
     began = time.perf_counter()
 
@@ -246,6 +288,7 @@ def _assemble(
                 },
             ),
             output,
+            handoff=handoff,
         )
 
     return _opened(ready, work)
@@ -469,6 +512,7 @@ class BinaryBatchPreparer:
         prepared_batches: int = 2,
         label_workers: int = 1,
         source_wait_seconds: float = 60,
+        handoff: bool = False,
         **existing_assembly_options: Any,
     ) -> None:
         if (
@@ -483,6 +527,12 @@ class BinaryBatchPreparer:
             raise ValueError("positive_binary_preparation_limits_required")
         if not 0 < source_wait_seconds <= 120:
             raise ValueError("invalid_binary_source_wait_bound")
+        if type(handoff) is not bool:
+            raise ValueError("binary_handoff_mode_must_be_explicit")
+        # Explicit S3 SGD-process profile: complete batches stay in their output
+        # files until the SGD process reports them staged; this process never pins.
+        self.handoff = handoff
+        self.handoffs: dict[str, PreparedHandoff] = {}
         self.source_wait_seconds = source_wait_seconds
         self.source_wait_seconds_total = 0.0
         self.main_source_wait_seconds = 0.0
@@ -849,6 +899,7 @@ class BinaryBatchPreparer:
         def collect() -> Any:
             began = time.perf_counter()
             output = None
+            handed_off = False
             try:
                 ready = tuple(job.result().value for job in jobs)
                 sources_at = time.perf_counter()
@@ -860,7 +911,7 @@ class BinaryBatchPreparer:
                     with output.open("xb") as stream:
                         os.chmod(output, 0o600)
                         stream.truncate(args[0].max_output_bytes + 64)
-                    worker_args = (*args, str(output))
+                    worker_args = (*args, str(output), self.handoff)
                 role = "assembly" if function is _assemble else "labels"
                 pool = self.assembly_pool if function is _assemble else self.label_pool
                 future = pool.submit(_timed, function, ready, *worker_args)
@@ -870,6 +921,10 @@ class BinaryBatchPreparer:
                 if function is _assemble:
                     if output is None:
                         raise RuntimeError("binary_output_descriptor_missing")
+                    if self.handoff:
+                        handoff = self._handoff(result, output, began, sources_at, epoch)
+                        handed_off = True
+                        return handoff
                     with output.open("rb") as input_stream:
                         mapping = mmap.mmap(input_stream.fileno(), 0, access=mmap.ACCESS_READ)
                     try:
@@ -906,7 +961,7 @@ class BinaryBatchPreparer:
                             mapping.close()
                 return result
             finally:
-                if output is not None:
+                if output is not None and not handed_off:
                     output.unlink(missing_ok=True)
                 self._release(descriptors)
 
@@ -925,6 +980,34 @@ class BinaryBatchPreparer:
             self.preparing.add(result)
         return result
 
+    def _handoff(self, result: _PackedBatch, output: Path, began: float,
+                 sources_at: float, epoch: int) -> PreparedHandoff:
+        summary = result.summary
+        if summary is None or not isinstance(result.tree, bytes):
+            raise RuntimeError("binary_handoff_summary_missing")
+        with self.condition:
+            # Same fence as pinning: a barrier/close never hands off an old file.
+            if self.closed or epoch != self.pinned.epoch:
+                raise CancelledError("binary_pinned_preparation_fenced")
+            handoff = PreparedHandoff(
+                summary["request"], summary["metadata"],
+                torch.tensor(summary["policy_mask"], dtype=torch.bool),
+                summary["label_updates"],
+                {**summary["timings"], "binary_sources_wait_seconds": sources_at - began,
+                 "binary_ipc_wall_seconds": time.perf_counter() - began},
+                summary["payload_bytes"], summary["minibatch_count"], str(output),
+                result.tree, result.arrays, summary["used_bytes"], summary["sha256"])
+            self.handoffs[handoff.path] = handoff
+        return handoff
+
+    def release_handoff(self, handoff: PreparedHandoff) -> None:
+        """The SGD process owns pinned/device copies; remove the derived file."""
+        with self.condition:
+            if self.handoffs.pop(handoff.path, None) is not handoff:
+                raise ValueError("binary_handoff_not_owned")
+            self.condition.notify_all()
+        Path(handoff.path).unlink()
+
     def submit(
         self, request: PrepareRequest, auxiliary_inputs: tuple = ()
     ) -> Future[PreparedBatch]:
@@ -933,7 +1016,7 @@ class BinaryBatchPreparer:
             self.preparing = {f for f in self.preparing if not f.done()}
             if self.closed or self.fenced:
                 raise RuntimeError("binary_preparer_fenced_or_closed")
-            if len(self.preparing) >= self.prepared_batches:
+            if len(self.preparing) + len(self.handoffs) >= self.prepared_batches:
                 raise ValueError("binary_current_plus_next_limit")
             if (
                 type(request.max_output_bytes) is not int
@@ -1037,6 +1120,10 @@ class BinaryBatchPreparer:
                 arena.mapping.close()
                 Path(arena.name).unlink()
             self.arenas.clear()
+            # Unstaged hand-off files are derived bytes of fenced requests.
+            for path in self.handoffs:
+                Path(path).unlink(missing_ok=True)
+            self.handoffs.clear()
             self.next_arena = 0
             self.sources.clear()
             self.source_jobs.clear()

@@ -25,7 +25,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -91,6 +91,18 @@ from .performance import PerformanceConfig
 from .prepared_batch import AuxiliarySelection, BatchMember, PreparedBatch, PrepareRequest
 from .reward import REWARD_SPEC
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
+from .sgd_process import (
+    INIT_SCHEMA,
+    STATE_SCHEMA,
+    WEIGHTS_SCHEMA,
+    SgdProcess,
+    SgdProcessFailed,
+    memory_budget,
+    read_tree,
+    sgd_options,
+    weights_digest,
+    write_tree,
+)
 
 
 @dataclass(frozen=True)
@@ -283,6 +295,16 @@ def _publish_snapshot(
             "publisher_memory": _process_memory()}
 
 
+def _publish_snapshot_file(snapshot: dict[str, Any], *, weights: dict[str, Any],
+                           **publication: Any) -> dict[str, Any]:
+    """SGD-process profile: the publisher reads the SGD-written weights file itself."""
+    value = read_tree(weights, WEIGHTS_SCHEMA)
+    if value["updates"] != publication["updates"]:
+        raise ValueError("sgd_snapshot_updates_changed")
+    return _publish_snapshot(pack_transport({**unpack_transport(snapshot),
+                                             "weights": value["weights"]}), **publication)
+
+
 def _encode_snapshot(checkpoint: SelfContainedCheckpoint) -> FrozenCheckpoint:
     began = time.perf_counter()
     raw = encode_state(checkpoint)
@@ -353,6 +375,17 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
         settings = config.segments
         self.dataplane = copy.deepcopy(io.dataplane)
+        # Explicit S3 alternative only; None keeps the default in-process E4.
+        self.sgd_options = sgd_options(self.dataplane)
+        self.sgd: SgdProcess | None = None
+        self.sgd_owns_theta = False
+        self.sgd_snapshot_updates = -1  # updates of the last theta file the child handed over
+        self.sgd_failure: dict[str, Any] | None = None
+        if self.sgd_options is not None:
+            if settings.central_scoring:
+                raise BoundaryError("rl_learner", "sgd_process_requires_actor_local_mu")
+            if torch.cuda.is_initialized():
+                raise BoundaryError("rl_learner", "sgd_process_controller_has_CUDA_context")
         self.fd_limits = None
         if self.dataplane is not None:
             from spireagent.rl_socket_transport import ensure_fd_capacity
@@ -409,7 +442,10 @@ class SegmentLearner:
         self.active_training_began: float | None = None
         self.active_training_seconds = 0.
         self.selection_deadline: float | None = None
-        self.device = _device(config.device)
+        # With an SGD process the controller holds theta on CPU only until the
+        # child reports ready; the child alone validates and opens the device.
+        self.device = (torch.device("cpu") if self.sgd_options is not None
+                       else _device(config.device))
         torch.set_num_threads(config.threads)
         torch.manual_seed(config.seed)
         self.rng = random.Random(config.seed)
@@ -627,6 +663,7 @@ class SegmentLearner:
                     self.dataplane.get("source_bytes", 20 * 1024**3)
                     * (self.prepared_batches + 2) // 4),
                 source_wait_seconds=self.dataplane.get("source_wait_seconds", 60),
+                handoff=self.sgd_options is not None,
                 **preparation_options)
         else:
             self.input_preparer = BatchPreparer(
@@ -661,6 +698,7 @@ class SegmentLearner:
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer, background=True)
         self.checkpoint_requested = False
         self.pending_publication: Future[dict[str, Any]] | None = None
+        self.pending_snapshot: dict[str, Any] | None = None
         self.latest_snapshot: dict[str, Any] | None = None
         self.pending_labels: deque[tuple[Future[Any], tuple[BatchMember, ...], str]] = deque()
         self.pending_label_requests: dict[str, dict[str, Any]] = {}
@@ -687,6 +725,14 @@ class SegmentLearner:
             self._capture_model(), self.version, self.updates
         ).result()
         self.published_updates = initial["updates"]
+        if self.sgd_options is not None:
+            # Before any listener or attachment: a refused budget or a failed
+            # child start means this learner never accepts a connection.
+            try:
+                self._start_sgd_process(restored)
+            except BaseException as error:
+                self._abort_before_listener(error)
+                raise
         self.pool = create_segment_inference_pool(
             self.model.vocabulary,
             initial["identity"],
@@ -745,6 +791,136 @@ class SegmentLearner:
             self.source_prefetch_thread = threading.Thread(
                 target=self._source_prefetch_loop, name="rl-source-prefetch", daemon=True)
             self.source_prefetch_thread.start()
+        if self.sgd is not None:
+            # theta/Adam/EMA now exist only in the SGD process.
+            del self.model, self.optimizer, self.ema
+            self.sgd_owns_theta = True
+
+    def _start_sgd_process(self, restored: SelfContainedCheckpoint | None) -> None:
+        assert self.sgd_options is not None and self.wal is not None and self.dataplane
+        options, settings = self.sgd_options, self.settings
+        model_bytes = sum(value.numel() * value.element_size()
+                          for value in self.model.state_dict().values())
+        per_batch = settings.prepared_bytes // (self.prepared_batches + 1)
+        preparer = cast("BinaryBatchPreparer", self.input_preparer)
+        budget = memory_budget(
+            options=options, device=self.config.device, model_bytes=model_bytes,
+            source_bytes=self.binary_sources.max_bytes,
+            prepare_source_bytes=preparer.maximum, prepared_bytes=settings.prepared_bytes,
+            per_batch_bytes=per_batch,
+            wal_bytes=self.dataplane.get("wal_max_bytes", 4 * 1024**3),
+            workers=(preparer.workers + preparer.assembly_workers + preparer.label_workers + 4),
+            paths={"sources": self.live_work / "sources", "arenas": self.live_work,
+                   "wal": self.live_work / "control.sqlite"})
+        (self.work / "sgd-memory-budget.json").write_bytes(json_bytes(budget))
+        if not budget["fits"]:
+            raise BoundaryError("rl_learner", "sgd_process_memory_budget_exceeded")
+        root = self.live_work / "sgd"
+        root.mkdir(parents=True, exist_ok=True)
+        weights = snapshot_weights(self.model.state_dict())
+        self.optimizer_names = self._optimizer_names()
+        state = write_tree(root / "init.tree", {
+            "schema": INIT_SCHEMA, "updates": self.updates, "datasets": self.datasets,
+            "weights": weights, "optimizer": cpu_copy(self.optimizer.state_dict()),
+            "optimizer_parameter_names": self.optimizer_names,
+            "ema": snapshot_weights(self.ema),
+            # Same point as the in-process owner: resumed RNG, or the seeded state.
+            "torch_rng": (restored.rng.torch_rng if restored is not None
+                          else torch.get_rng_state()).clone(),
+            "cuda_rng": tuple(value.cpu().clone() for value in self.cuda_rng)})
+        self.sgd = SgdProcess(run=self.config.run, generation=self.generation, root=root,
+                              options=options, on_staged=self._sgd_staged)
+        self.sgd_planned: dict[int, Any] = {}
+        self.sgd_rates = (self.optimizer.param_groups[0]["lr"],
+                          self.optimizer.param_groups[1]["lr"])
+        self.sgd_memory: dict[str, Any] | None = None
+        ready = self.sgd.start({
+            "schema": INIT_SCHEMA, "state": state, "root": str(root),
+            "device": self.config.device, "threads": self.config.threads,
+            "seed": self.config.seed, "cpus": list(options.cpus) if options.cpus else None,
+            "model": {"vocabulary": self.model.vocabulary,
+                      "execution": asdict(self.model.execution),
+                      "model_size": self.model.model_size,
+                      "architecture": self.model.architecture},
+            "lr": self.config.lr, "head_lr": settings.head_lr,
+            "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
+            "performance": asdict(self.performance), "target_kl": settings.target_kl,
+            "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
+            "pinned_bytes": 2 * per_batch})
+        Path(state["path"]).unlink()
+        if (ready["weights_sha256"] != weights_digest(weights)
+                or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
+            raise self.sgd.violation("sgd_ready_state_changed")
+        if torch.cuda.is_initialized():
+            raise BoundaryError("rl_learner", "sgd_process_controller_has_CUDA_context")
+        self.sgd_groups = ready["optimizer_param_groups"]
+        self.sgd_memory = ready["memory"]
+        self._event("sgd_process_started", pid=ready["pid"], device=ready["device"],
+                    gpu_uuid=ready["gpu_uuid"], gpu_name=ready["gpu_name"], cpus=ready["cpus"],
+                    weights_sha256=ready["weights_sha256"], updates=ready["updates"],
+                    memory_budget=budget, memory=ready["memory"])
+
+    def _abort_before_listener(self, error: BaseException) -> None:
+        """A refused/failed SGD start: one failed event, then release what exists."""
+        facts = (error.facts if isinstance(error, SgdProcessFailed)
+                 else {"component": "sgd_process", "code": getattr(error, "code", None),
+                       "error_type": type(error).__name__})
+        self.sgd_failure = facts
+        with ExitStack() as cleanup:
+            cleanup.callback(self._close_journal)
+            cleanup.callback(self.input_preparer.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.preparation_dispatch.shutdown, wait=True)
+            cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.header_checks.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.checkpoint_encoder.shutdown, wait=True)
+            cleanup.callback(self.telemetry.shutdown, wait=True)
+            cleanup.callback(self.checkpoints.__exit__, RuntimeError)
+            cleanup.callback(self.binary_sources.stop)
+            if self.sgd is not None:
+                cleanup.callback(self.sgd.close)
+            with suppress(Exception):
+                self.exchange.publish_event(
+                    "failed", training_generation=self.generation, updates=self.updates,
+                    budget_id=(self.config.operating_budget or {}).get("id"),
+                    error_type=type(error).__name__, error_code=getattr(error, "code", None),
+                    diagnostic=exception_facts(error), sgd_failure=facts)
+
+    def _sgd_staged(self, message: dict[str, Any]) -> None:
+        # The SGD process owns pinned/device copies; the derived file goes now.
+        handoff = self.sgd_planned.pop(message["dataset"])
+        cast("BinaryBatchPreparer", self.input_preparer).release_handoff(handoff)
+        self.timing["input_transfer_host_seconds"] += message["host_seconds"]
+        self.timing["input_transfer_copies"] += message["copies"]
+
+    def _sgd_plan(self, handoff: Any) -> None:
+        assert self.sgd is not None
+        sequence = handoff.request.identity.sequence
+        if sequence in self.sgd_planned or sequence in self.sgd.staged:
+            return
+        self.sgd_planned[sequence] = handoff
+        self.sgd.send("plan", dataset=sequence, path=handoff.path, tree=handoff.tree,
+                      arrays=[(a.offset, a.count, a.dtype) for a in handoff.arrays],
+                      used_bytes=handoff.used_bytes, sha256=handoff.sha256,
+                      minibatch_count=handoff.minibatch_count, epochs=handoff.request.epochs)
+
+    def _sgd_plan_ahead(self) -> None:
+        """At most one dataset beyond the started one is staged ahead in the SGD process."""
+        assert self.sgd is not None
+        if self.sgd.planned or self.pending_batch is None:
+            return
+        future = self.pending_batch[1]
+        if future.done() and not future.cancelled() and future.exception() is None:
+            self._sgd_plan(future.result())
+
+    def _sgd_fence(self, failure: SgdProcessFailed) -> None:
+        with self.condition:
+            self.input_fenced = self.newlease_stopped = True
+            self.sgd_failure = failure.facts
+            self.input_failure = {"operation": "sgd_process", **failure.facts}
+            self.condition.notify_all()
+            self._notify_capacity(force=True)
+        assert self.sgd is not None
+        self.sgd.kill()
 
     def archive_capacity(self) -> dict[str, Any]:
         if self.archive is None:
@@ -940,6 +1116,8 @@ class SegmentLearner:
 
     def _capture_model(self) -> dict[str, Any]:
         began = time.perf_counter()
+        if self.sgd_owns_theta:
+            return self._sgd_snapshot(began)
         with self.gpu_lock:
             weights = snapshot_weights(self.model.state_dict())
         snapshot = {
@@ -951,9 +1129,37 @@ class SegmentLearner:
         self.timing["snapshot_seconds"] += time.perf_counter() - began
         return snapshot
 
+    def _sgd_snapshot(self, began: float) -> dict[str, Any]:
+        """The SGD process wrote this dataset's final theta right after its last step."""
+        assert self.sgd is not None
+        message = self.sgd.expect("snapshot", timeout=self.sgd.options.stall_seconds,
+                                  updates=self.updates, datasets=self.datasets)
+        self.sgd_snapshot_updates = self.updates
+        snapshot = {
+            "weights_file": message["file"],
+            "construction": self.construction_template,
+            "deduplicate_text": self.performance.deduplicate_text,
+            "updates": self.updates,
+        }
+        self.timing["snapshot_seconds"] += time.perf_counter() - began
+        return snapshot
+
+    def _discard_snapshot(self, snapshot: dict[str, Any] | None) -> None:
+        # An unsent/finished SGD weights file is a derived copy; theta stays in the child.
+        if snapshot is not None and "weights_file" in snapshot:
+            Path(snapshot["weights_file"]["path"]).unlink(missing_ok=True)
+
     def _submit_publication(
         self, snapshot: dict[str, Any], version: int, updates: int
     ) -> Future[Any]:
+        if "weights_file" in snapshot:
+            metadata = {key: value for key, value in snapshot.items() if key != "weights_file"}
+            return self.publisher.submit(
+                _publish_snapshot_file, pack_transport(metadata),
+                weights=snapshot["weights_file"], peer=self.config.peer, run=self.config.run,
+                generation=self.generation, version=version, updates=updates,
+                producer=self.producer, publish_model=self.io.publish_model,
+                work=str(self.live_work))
         published = self.publisher.submit(
             _publish_snapshot,
             pack_transport(snapshot),
@@ -999,12 +1205,16 @@ class SegmentLearner:
             self.pending_publication = self._submit_publication(
                 snapshot, self.version, snapshot["updates"]
             )
+            # Only the SGD profile's file needs a later release; never retain theta.
+            self.pending_snapshot = snapshot if "weights_file" in snapshot else None
 
     def _collect_publication(self, *, wait: bool = False) -> None:
         while self.pending_publication is not None:
             if not wait and not self.pending_publication.done():
                 return
             publication = self.pending_publication.result()
+            self._discard_snapshot(self.pending_snapshot)
+            self.pending_snapshot = None
             with self.condition:
                 if isinstance(self.pool, CentralInferencePool):
                     self.pool.publish(publication["model"], publication["identity"])
@@ -1025,9 +1235,15 @@ class SegmentLearner:
                 return
 
     def _schedule_publication(self) -> None:
-        self.latest_snapshot = (
-            self._capture_model()
-        )  # replace unsent snapshot; skip intermediate mu
+        if self.sgd_owns_theta and self.sgd_snapshot_updates == self.updates:
+            # The SGD process already handed over theta for these updates at the
+            # dataset boundary; it is queued or in flight. No second copy exists.
+            self._collect_publication(wait=False)
+            self._kick_publication()
+            return
+        snapshot = self._capture_model()
+        self._discard_snapshot(self.latest_snapshot)
+        self.latest_snapshot = snapshot  # replace unsent snapshot; skip intermediate mu
         self._collect_publication(wait=False)
         self._kick_publication()
 
@@ -1960,6 +2176,8 @@ class SegmentLearner:
                 self.pending_batch = pending
             else:
                 self.ahead_batches.append(pending)
+        if self.sgd is not None and not self.newlease_stopped and not self.input_fenced:
+            self._sgd_plan_ahead()
 
     def _prepare(self) -> bool:
         if self.active_batch is not None:
@@ -2000,10 +2218,16 @@ class SegmentLearner:
         self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
         self.active, self.active_batch = active, batch
         active["start_updates"] = self.updates
-        transfer_started = time.perf_counter()
-        self.device_batch, copies = stage_batch(batch, self.device)
-        self.timing["input_transfer_host_seconds"] += time.perf_counter() - transfer_started
-        self.timing["input_transfer_copies"] += copies
+        if self.sgd is not None:
+            # Same point as the in-process stage: the SGD process owns its pinned
+            # and device copies before preparation and PPO references are released.
+            self._sgd_plan(batch)
+            self.sgd.wait_staged(batch.request.identity.sequence)
+        else:
+            transfer_started = time.perf_counter()
+            self.device_batch, copies = stage_batch(batch, self.device)
+            self.timing["input_transfer_host_seconds"] += time.perf_counter() - transfer_started
+            self.timing["input_transfer_copies"] += copies
         self._ready_labels(batch)
         # Complete batch owns its tensors now. Release preparation and PPO bytes;
         # delayed-label/aux owners independently protect their own future reads.
@@ -2020,11 +2244,16 @@ class SegmentLearner:
             preparation=batch.timings,
             bytes=batch.payload_bytes,
         )
+        if self.sgd is not None:
+            # Boundary checks are done; the SGD process never starts a dataset itself.
+            self.sgd.send("start", dataset=batch.request.identity.sequence)
         return True
 
     def _step(self) -> dict[str, Any]:
         active, batch = self.active, self.active_batch
         assert active is not None and batch is not None
+        if self.sgd is not None:
+            return self._remote_step(active, batch)
         assert self.device_batch is not None
         index = active["minibatch"]
         began = time.perf_counter()
@@ -2049,6 +2278,45 @@ class SegmentLearner:
         )
         policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
+        return self._account_step(active, batch, index, len(batch.minibatches), result,
+                                  policy_samples, policy_observed_at, policy_version,
+                                  policy_updates)
+
+    def _remote_step(self, active: dict[str, Any], batch: Any) -> dict[str, Any]:
+        """Charge one SGD-process attempt; `update` and position are the fence."""
+        assert self.sgd is not None
+        index = active["minibatch"]
+        message = self.sgd.expect("step", timeout=self.sgd.step_timeout())
+        result = message["result"]
+        stepped = message["stepped"]
+        expected = {"dataset": batch.request.identity.sequence, "minibatch": index,
+                    "epoch": active["epoch"], "update": self.updates + int(stepped)}
+        if (type(stepped) is not bool or result.get("stepped") is not stepped
+                or result.get("kl_stopped") is stepped or message["kl_stopped"] is stepped
+                or any(message[key] != value for key, value in expected.items())):
+            raise self.sgd.violation("sgd_step_fence_mismatch", expected=expected,
+                                     received={key: message.get(key) for key in expected})
+        policy_samples = result.pop("_policy_rows", [])
+        timing = message["timing"]
+        self.timing["optimizer_attempt_seconds"] += timing["optimizer_seconds"]
+        self.sgd_rates = message["lr"], message["head_lr"]
+        self.sgd_memory = message["memory"]
+        reference = self.sgd.options.offline_step_seconds
+        result["sgd_timing"] = {
+            **timing, "step_ended_at": message["sent_at"],
+            "message_lag_seconds": message["_received_at"] - message["sent_at"],
+            "accounted_lag_seconds": time.time() - message["sent_at"],
+            "online_offline_ratio": (timing["optimizer_seconds"] / reference
+                                     if reference is not None else None)}
+        return self._account_step(active, batch, index, batch.minibatch_count, result,
+                                  policy_samples, message["observed_at"], self.version,
+                                  self.updates)
+
+    def _account_step(self, active: dict[str, Any], batch: Any, index: int, minibatches: int,
+                      result: dict[str, Any], policy_samples: list[dict[str, Any]],
+                      policy_observed_at: float, policy_version: int,
+                      policy_updates: int) -> dict[str, Any]:
+        """The single successful-use owner: first use, aux uses, counters, events."""
         if result["stepped"]:
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
             self.first_use += len(newly_used)
@@ -2075,19 +2343,8 @@ class SegmentLearner:
                             if (member.segment_id not in remaining
                                     and not isinstance(member.payload, BinaryRef)):
                                 self._release(member.payload, f"aux:{kind}:{identity}")
-            decay = self.settings.ema_decay
-            with torch.no_grad():
-                weights = self.model.state_dict()
-                floating = [name for name, value in weights.items() if value.is_floating_point()]
-                torch._foreach_mul_([self.ema[name] for name in floating], decay)
-                torch._foreach_add_(
-                    [self.ema[name] for name in floating],
-                    [weights[name] for name in floating],
-                    alpha=1 - decay,
-                )
-                for name, value in weights.items():
-                    if not value.is_floating_point():
-                        self.ema[name].copy_(value)
+            if self.sgd is None:
+                self._update_ema()
             self.updates += 1
             rows = [batch.metadata[i] for i in newly_used]
             now = time.time()
@@ -2110,10 +2367,11 @@ class SegmentLearner:
                     batch, newly_used, policy_samples, now=policy_observed_at,
                     version=policy_version, updates=policy_updates),
             )
+        lr, head_lr = self._learning_rates()
         result.update(
             update=self.updates,
-            lr=self.optimizer.param_groups[0]["lr"],
-            head_lr=self.optimizer.param_groups[1]["lr"],
+            lr=lr,
+            head_lr=head_lr,
             dataset=batch.request.identity.sequence,
             minibatch=index,
             epoch=active["epoch"],
@@ -2122,7 +2380,7 @@ class SegmentLearner:
             memory=self._memory(),
         )
         active["minibatch"] += 1
-        end_epoch = active["minibatch"] == len(batch.minibatches)
+        end_epoch = active["minibatch"] == minibatches
         finished = result["kl_stopped"] or (
             end_epoch and active["epoch"] + 1 >= self.settings.epochs)
         if end_epoch and not finished:
@@ -2162,6 +2420,32 @@ class SegmentLearner:
                 self.updates,
             )
         return result
+
+    def _update_ema(self) -> None:
+        decay = self.settings.ema_decay
+        with torch.no_grad():
+            weights = self.model.state_dict()
+            floating = [name for name, value in weights.items() if value.is_floating_point()]
+            torch._foreach_mul_([self.ema[name] for name in floating], decay)
+            torch._foreach_add_(
+                [self.ema[name] for name in floating],
+                [weights[name] for name in floating],
+                alpha=1 - decay,
+            )
+            for name, value in weights.items():
+                if not value.is_floating_point():
+                    self.ema[name].copy_(value)
+
+    def _learning_rates(self) -> tuple[float, float]:
+        if self.sgd_owns_theta:
+            return self.sgd_rates
+        return self.optimizer.param_groups[0]["lr"], self.optimizer.param_groups[1]["lr"]
+
+    def _optimizer_groups(self) -> list[dict[str, Any]]:
+        if self.sgd_owns_theta:
+            return copy.deepcopy(self.sgd_groups)
+        return [{key: value for key, value in group.items() if key != "params"}
+                for group in self.optimizer.param_groups]
 
     def _forget_unreferenced(self) -> None:
         with self.condition:
@@ -2203,11 +2487,13 @@ class SegmentLearner:
             ):
                 self.sources.pop(identity)
 
-    def _memory(self) -> dict[str, int]:
-        values = _process_memory()
+    def _memory(self) -> dict[str, Any]:
+        values: dict[str, Any] = dict(_process_memory())
         if self.device.type == "cuda":
             values.update(cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
                           cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device))
+        if self.sgd is not None:
+            values["sgd_process"] = self.sgd_memory  # latest child-reported peaks
         return values
 
     def _event(self, kind: str, **fields: Any) -> None:
@@ -2222,15 +2508,40 @@ class SegmentLearner:
             )
         )
 
+    def _sgd_state(self) -> dict[str, Any]:
+        """Dataset-boundary state from the SGD process; counters must match exactly."""
+        assert self.sgd is not None
+        self.sgd.send("checkpoint", updates=self.updates, datasets=self.datasets)
+        message = self.sgd.expect("state", timeout=self.sgd.options.stall_seconds)
+        if message["updates"] != self.updates or message["datasets"] != self.datasets:
+            # Never pair new theta/Adam with other successful-use counters.
+            raise self.sgd.violation("sgd_state_counters_changed", updates=message["updates"],
+                                     datasets=message["datasets"], expected_updates=self.updates,
+                                     expected_datasets=self.datasets)
+        value = read_tree(message["file"], STATE_SCHEMA)
+        Path(message["file"]["path"]).unlink()
+        if (value["updates"] != self.updates or value["datasets"] != self.datasets
+                or tuple(tuple(group) for group in value["optimizer_parameter_names"])
+                != self.optimizer_names):
+            raise self.sgd.violation("sgd_state_file_binding_changed")
+        self.sgd_groups = message["optimizer_param_groups"]
+        self.sgd_memory = message["memory"]
+        return value
+
     def _learning_state(self) -> SelfContainedCheckpoint:
-        with self.gpu_lock:
-            weights = snapshot_weights(self.model.state_dict())
-            optimizer, ema = cpu_copy(self.optimizer.state_dict()), snapshot_weights(self.ema)
-        names = self._optimizer_names()
+        if self.sgd_owns_theta:
+            remote = self._sgd_state()
+            weights, optimizer, ema = remote["weights"], remote["optimizer"], remote["ema"]
+            names, torch_rng, cuda = self.optimizer_names, remote["torch_rng"], remote["cuda_rng"]
+        else:
+            with self.gpu_lock:
+                weights = snapshot_weights(self.model.state_dict())
+                optimizer, ema = cpu_copy(self.optimizer.state_dict()), snapshot_weights(self.ema)
+            names = self._optimizer_names()
+            torch_rng = torch.get_rng_state().clone()
+            cuda = (tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda"
+                    else self.cuda_rng)
         validate_optimizer_order(optimizer, names, weights)
-        cuda = (
-            tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda" else self.cuda_rng
-        )
         configuration = asdict(self.config)
         if configuration["operating_budget"] is not None:
             active = (time.monotonic() - self.active_training_began
@@ -2256,7 +2567,7 @@ class SegmentLearner:
             RngState(
                 random.getstate(),
                 self.committed_selection_rng if self.wal is not None else self.rng.getstate(),
-                torch.get_rng_state().clone(),
+                torch_rng,
                 tuple(value.cpu().clone() for value in cuda),
             ),
             self.conversion,
@@ -2361,9 +2672,13 @@ class SegmentLearner:
                 self.pool.close()
             finally:
                 try:
-                    self.preparation_dispatch.shutdown(wait=True, cancel_futures=False)
+                    if self.sgd is not None:
+                        self.sgd.close()  # shutdown, join; a timeout kills and is recorded
                 finally:
-                    self.input_preparer.shutdown(wait=True, cancel_futures=False)
+                    try:
+                        self.preparation_dispatch.shutdown(wait=True, cancel_futures=False)
+                    finally:
+                        self.input_preparer.shutdown(wait=True, cancel_futures=False)
             for future, _, _ in self.pending_labels:
                 future.result()
             for (_slot, owner), payload in list(self.hot_references.items()):
@@ -2386,6 +2701,8 @@ class SegmentLearner:
             }
             if getattr(self, "finalization_failure", None) is not None:
                 fields["finalization_failure"] = self.finalization_failure
+            if self.sgd_failure is not None:
+                fields["sgd_failure"] = self.sgd_failure
             try:
                 self.exchange.publish_event("failed", **fields)
             except Exception as publication_error:
@@ -2423,6 +2740,8 @@ class SegmentLearner:
                 and self.stop_fact is None
                 and self.version < self.config.max_versions
             ):
+                if self.sgd is not None:
+                    self.sgd.check()
                 if time.monotonic() >= stop_at:
                     stop_at = time.monotonic() + self.config.remote_stop_seconds
                     if on_tick is not None:
@@ -2450,6 +2769,10 @@ class SegmentLearner:
                         continue
                 self._prepare_ahead()
                 self._step()
+        except SgdProcessFailed as failure:
+            # Original fence path: no new lease/CP; OPS restores the newest CP
+            # under a new generation. No in-process or same-generation retry.
+            self._sgd_fence(failure)
         finally:
             with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
                 self.newlease_stopped = True
@@ -2461,9 +2784,12 @@ class SegmentLearner:
             # Finish only the frozen dataset within the original compute and
             # absolute budget. Stop never selects another dataset.
             if self.wal is not None and not self.input_fenced:
-                while (self.active is not None
-                        and (self.deadline_at is None or time.time() < self.deadline_at - 120)):
-                    self._step()
+                try:
+                    while (self.active is not None and (
+                            self.deadline_at is None or time.time() < self.deadline_at - 120)):
+                        self._step()
+                except SgdProcessFailed as failure:
+                    self._sgd_fence(failure)
             training_elapsed = time.monotonic() - began
             self.active_training_seconds = training_elapsed
             self.active_training_began = None
@@ -2516,11 +2842,9 @@ class SegmentLearner:
             "elapsed_seconds": time.monotonic() - began,
             "timing": self.timing,
             "memory": self._memory(),
-            "learning_configuration": {"lr": self.optimizer.param_groups[0]["lr"],
-                "head_lr": self.optimizer.param_groups[1]["lr"],
-                "optimizer_param_groups": [
-                    {key: value for key, value in group.items() if key != "params"}
-                    for group in self.optimizer.param_groups],
+            "learning_configuration": {"lr": self._learning_rates()[0],
+                "head_lr": self._learning_rates()[1],
+                "optimizer_param_groups": self._optimizer_groups(),
                 "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
                 "segments": asdict(self.settings),
                 "performance": self.config.frozen()["performance"]},
@@ -2534,6 +2858,9 @@ class SegmentLearner:
             "budget_id": (self.config.operating_budget or {}).get("id"),
             "trajectory_encoding": "hot-segment",
         }
+        if self.sgd is not None:
+            summary["sgd_process"] = {"implementation": "alternative:sgd_process",
+                                      "exit": self.sgd.exit, "failure": self.sgd_failure}
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         if self.input_fenced:
             raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
@@ -2541,4 +2868,6 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "unresolved_worlds_after_drain")
         if self.actor_allocation_pending:
             raise BoundaryError("rl_learner", "unresolved_actor_allocations_after_drain")
+        if self.sgd is not None and (self.sgd.exit or {}).get("exitcode") != 0:
+            raise BoundaryError("rl_learner", "sgd_process_shutdown_failed")
         return summary
