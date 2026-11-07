@@ -14,6 +14,7 @@ import os
 import pytest
 import test_rl41_w1 as w1
 import torch
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_rl41_w1 import model as model  # noqa: F401  (fixture)
 
 from spireagent.json_boundary import BoundaryError
