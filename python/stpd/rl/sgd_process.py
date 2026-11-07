@@ -398,7 +398,7 @@ class SgdProcess:
     def violation(self, code: str, **extra: Any) -> SgdProcessFailed:
         return self._fail(code, protocol_violation=True, **extra)
 
-    def _get(self, deadline: float, kind: str) -> dict[str, Any]:
+    def _get(self, deadline: float, kind: str, timeout: float) -> dict[str, Any]:
         began = time.monotonic()
         while True:
             remaining = deadline - time.monotonic()
@@ -412,7 +412,7 @@ class SgdProcess:
                 if remaining <= 0:
                     raise self._fail("sgd_process_stalled", waited_for=kind,
                                      waited_seconds=time.monotonic() - began,
-                                     timeout_seconds=deadline - began) from None
+                                     timeout_seconds=timeout) from None
                 continue
             if message is None:
                 self.process.join(5)
@@ -434,7 +434,7 @@ class SgdProcess:
     def expect(self, kind: str, *, timeout: float, **binding: Any) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
-            message = self._get(deadline, kind)
+            message = self._get(deadline, kind, timeout)
             if message["kind"] == "staged" and kind != "staged":
                 self._staged(message)
                 continue
@@ -462,7 +462,7 @@ class SgdProcess:
         if dataset not in self.staged:
             deadline = time.monotonic() + self.options.stall_seconds
             while dataset not in self.staged:
-                message = self._get(deadline, "staged")
+                message = self._get(deadline, "staged", self.options.stall_seconds)
                 if message["kind"] != "staged":
                     raise self.violation("sgd_unexpected_message", expected="staged",
                                          received=message["kind"])

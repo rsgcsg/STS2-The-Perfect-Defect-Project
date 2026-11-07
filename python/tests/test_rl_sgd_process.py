@@ -462,7 +462,13 @@ def test_controller_end_closed_makes_child_exit_without_writing(tmp_path, monkey
     owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=0)
     try:
         before = set((owner.live_work / "sgd").iterdir())
-        owner.sgd.connection.close()  # what a dead controller looks like to the child
+        # What a dead controller looks like to the child: the socket ends. On
+        # Linux close() alone does not wake our own reader blocked in recv on
+        # the same fd, so the peer would never see EOF; shutdown() ends it.
+        connection = owner.sgd.connection
+        with socket.socket(fileno=os.dup(connection.fileno())) as duplicate:
+            duplicate.shutdown(socket.SHUT_RDWR)
+        connection.close()
         owner.sgd.process.join(5)
         assert owner.sgd.process.exitcode == 70
         assert set((owner.live_work / "sgd").iterdir()) == before
