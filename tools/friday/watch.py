@@ -1503,8 +1503,9 @@ class SegmentWatcher(Watcher):
         pending = self.state.get('pending')
         if pending is None or pending.get('stage') != 'failed':
             return
-        self.state['evaluations'].append({**pending, 'at_training_seconds': pending['due_seconds'],
-                                          'skipped': 'evaluation_preparation_failed_no_World_offer'})
+        self.state['evaluations'].append({
+            **pending, 'at_training_seconds': pending['due_seconds'],
+            'skipped': 'evaluation_preparation_failed_no_World_offer'})
         self.state['pending'] = None
         print(json.dumps({'kind': 'inherited_failed_evaluation_closed',
                           'evaluation': pending.get('root')}), file=sys.stderr, flush=True)
