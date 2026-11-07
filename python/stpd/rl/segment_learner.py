@@ -491,8 +491,12 @@ class SegmentLearner:
             assert budget is not None and cp_budget is not None
             expected_parent = {"checkpoint_artifact_id": config.resume_checkpoint,
                                "operating_budget": cp_budget, "deadline_at": cp_deadline}
+            # consumed_seconds is the new window's own ledger: 0 for its first attempt,
+            # or the seconds its earlier attempts charged when they died before the
+            # window's first CP and this one re-enters from the same parent. It never
+            # inherits the parent's seconds and can only shorten the new budget.
             if (config.operating_budget_parent != expected_parent
-                    or budget["consumed_seconds"] != 0 or config.deadline_at is None):
+                    or config.deadline_at is None):
                 raise ValueError("checkpoint_operating_budget_cannot_be_reset")
         if (not new_window and cp_deadline is not None
                 and config.deadline_at not in {None, cp_deadline}):

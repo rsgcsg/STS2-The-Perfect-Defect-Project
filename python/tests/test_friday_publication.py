@@ -212,6 +212,91 @@ def test_watcher_started_after_deadline_ends_with_typed_stop_never_relabelled(
     assert owner.state['stop'] == final and owner.state['active'] is None
 
 
+@pytest.mark.parametrize('own_cp', [False, True])
+def test_new_window_link_stays_in_force_until_its_own_first_CP(tmp_path, monkeypatch, own_cp):
+    """Review #388 M1: attempt-0001 of a linked window died before its first CP."""
+    import sys
+
+    from stpd.rl.learner import LearnerConfig
+    watch = original_watch.__wrapped__()
+    prior_cfg, _, owner = completed_window(tmp_path, watch)
+    parent = previous_window_CP(prior_cfg)()
+    newest_prior = {**parent, 'checkpoint_artifact_id': 'c'*64}
+    own = {**parent, 'checkpoint_artifact_id': 'd'*64, 'training_generation': 'g-ops-0001',
+           'deadline_at': owner.config['deadline_at'],
+           'operating_budget': {'id': 'long', 'total_seconds': 72000, 'consumed_seconds': 600}}
+    stored = {cp['checkpoint_artifact_id']: cp for cp in (parent, newest_prior, own)}
+    reads = []
+    def cold(identity):
+        reads.append(identity)
+        return dict(stored[identity])
+    owner.cold_checkpoint = cold
+    records = [{'checkpoint_artifact_id': 'c'*64, 'published_at': 1.}]
+    if own_cp:
+        records.append({'checkpoint_artifact_id': 'd'*64, 'published_at': 2.})
+    owner.exchange.checkpoint_records = lambda: list(records)
+    monkeypatch.setattr(LearnerConfig, 'read', staticmethod(
+        lambda _: SimpleNamespace(resume_checkpoint='b'*64, segments=None)))
+    monkeypatch.setitem(sys.modules, 'rl', SimpleNamespace())
+    owner.state['attempts'] = [{'generation': 'g-ops-0001',
+                                'terminal_accounting': {'terminal': True}}]
+    owner.state['training_seconds'] = 600.
+    # Both paths pass every link/deadline/budget check and reach the learner config;
+    # before the fix the first raised checkpoint_deadline_cannot_be_reset.
+    with pytest.raises(ValueError, match='short_segment_learner_configuration_required'):
+        owner.start_attempt()
+    assert reads == (['d'*64] if own_cp else ['c'*64, 'b'*64])
+    assert owner.state['training_seconds'] == 600. and len(owner.state['attempts']) == 1
+
+
+@pytest.mark.parametrize('earlier,final', [
+    (None, 'absolute_deadline'),
+    ('training_unknown_fraction_above_limit', 'training_unknown_fraction_above_limit'),
+])
+@pytest.mark.parametrize('stage', ['preparation', 'legacy_failed'])
+def test_preparation_abandoned_at_deadline_keeps_stop_and_releases_window_link(
+    tmp_path, monkeypatch, earlier, final, stage
+):
+    """Review #388 M2: same guard as tick_segment; no sticky pending without a World."""
+    import time
+    watch = original_watch.__wrapped__()
+    owner = watch.SegmentWatcher({
+        'run': 'prep', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+        'budget_id': 'prep-budget', 'deadline_at': time.time() + 600,
+        'training_seconds': 72000, 'actors': 1}, tmp_path/'watch')
+    owner.state['stop'] = earlier
+    pending = {'stage': 'preparation', 'root': str(tmp_path/'evaluation-0001'),
+               'checkpoint': {'checkpoint_artifact_id': 'e'*64}, 'due_seconds': 7200,
+               'job_id': '91'}
+    if stage == 'legacy_failed':  # persisted by the code before this fix
+        pending.update(stage='failed', reason='absolute_deadline_no_World_offer')
+    owner.state['pending'] = pending
+    signalled = []
+    owner.signal_once = signalled.append
+    accounting = {'terminal': False}
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: dict(accounting))
+    owner.collect_segment_evaluation()
+    if stage == 'preparation':
+        assert owner.state['stop'] == final and signalled == ['91']
+        assert owner.state['pending']['stage'] == 'preparation_abandoned'
+        owner.collect_segment_evaluation()
+    assert owner.state['pending'] is not None  # its job is not terminal yet
+    accounting['terminal'] = True
+    owner.collect_segment_evaluation()
+    assert owner.state['pending'] is None
+    record = owner.state['evaluations'][-1]
+    assert record['skipped'] == 'absolute_deadline_no_World_offer'
+    assert record['job_id'] == '91' and record['at_training_seconds'] == 7200
+    owner.state.update(stop=owner.state['stop'] or earlier,
+                       attempts=[{'generation': 'g', 'terminal_accounting': {'terminal': True}}])
+    following = {**owner.config, 'budget_id': 'next-budget'}
+    if owner.state['stop'] == 'absolute_deadline':
+        watch.require_completed_previous_window(owner.state, owner.config, following)
+    else:
+        with pytest.raises(ValueError, match='completed_distinct_previous_operating_window'):
+            watch.require_completed_previous_window(owner.state, owner.config, following)
+
+
 def test_H1_anchor_is_first_cycle_point_without_moving_two_hour_cadence(tmp_path):
     watch = original_watch.__wrapped__()
     config = {'run': 'anchor', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},

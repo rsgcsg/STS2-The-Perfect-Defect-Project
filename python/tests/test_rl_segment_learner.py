@@ -793,6 +793,19 @@ def test_explicit_completed_window_link_preserves_learning_state_with_new_budget
         assert restored.config['operating_budget_parent'] == parent
     finally:
         replacement.close()
+    # Review #388 M1: the window's first attempt died before its first CP, so the next
+    # one re-enters from the same parent carrying the seconds already charged here.
+    reentry = SegmentLearner(dataclasses.replace(request,
+        operating_budget={'id': 'long-window', 'total_seconds': 72000, 'consumed_seconds': 600},
+        segments=dataclasses.replace(config.segments, training_generation='g-long-2')),
+        tmp_path/'reentry-owner', io)
+    try:
+        assert reentry.config.operating_budget == {
+            'id': 'long-window', 'total_seconds': 72000, 'consumed_seconds': 600}
+        assert reentry.config.wall_seconds <= 72000 - 600
+        assert reentry._learning_state().counters.updates == cp.counters.updates
+    finally:
+        reentry.close()
     with pytest.raises(ValueError, match='cannot_be_reset'):
         SegmentLearner(dataclasses.replace(request, operating_budget_parent={**parent,
             'checkpoint_artifact_id': '0'*64}), tmp_path/'bad-window', io)

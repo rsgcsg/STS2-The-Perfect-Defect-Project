@@ -253,6 +253,8 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
 之后补位与新attempt的actor `--exclude` = 配置exclude_nodes + 自动排除节点。原unknown照计入全局门，
 不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局5%门。阈值来自c11回放。
+限制：排除在本watch内永久，不自动重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
+新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job只用配置的`exclude_nodes`。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
@@ -287,7 +289,8 @@ baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/resul
 下界之差不是提升的下界。`--excluded-facts` 可补排除局的公开进度。一局保存失败只排除该局，
 批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）；正式审计槽
 的保存仍失败则整批不计分（`evaluation_audit_save_failed_cohort_not_scored`）。只覆盖
-`preserve_report` 失败，轨迹分片上传失败照旧停批。
+`preserve_report` 失败，轨迹分片上传失败照旧停批。待重试的保存继续占用pending额度与磁盘余量，
+新局不会挤占它唯一一次重试所需的空间。
 
 首批技术停止只可用新批填原not_started、无offer且无run_id的题；fixed_baseline由原每行资格
 投影，保固定分母，拒绝重投任何已尝试seed，原失败status不升级。旧full_peer批没有轨迹时，
@@ -310,6 +313,10 @@ unknown比例、watcher失败或信号等其它stop仍走各自恢复路径。de
 原learner接收`operating_budget_parent={checkpoint_artifact_id,operating_budget,deadline_at}`明确父链接，
 完整继承θ/Adam/EMA/RNG/训练计数，μ按普通恢复重新发布，旧CP和旧窗口耗时不改。
 这只用于明确授权的新运营窗口；同窗口故障恢复仍继承已耗时间，禁止重置预算或deadline。
+新窗口在发布自己budget的首个CP之前，链接一直有效：首个attempt在首CP前死亡时，下一attempt
+仍从同一父CP经同一校验重新进入，`consumed_seconds`带上已记账的本窗口秒数（不清零、不继承父窗口）。
+评估准备在deadline−900仍未完成时，只发协作信号并记`absolute_deadline_no_World_offer`
+（不改标更早的typed stop）；准备job终态后原pending记为skipped评估并清空，不阻塞本窗口链接。
 
 评估manifest先用`evaluate.py prepare-manifest --game-directory <已部署游戏> --output <manifest.json>`
 读取原`release_info.json`的精确`version`（当前为`v0.111.0`），再交原prepare-checkpoint。

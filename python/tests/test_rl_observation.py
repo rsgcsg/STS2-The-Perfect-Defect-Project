@@ -379,6 +379,31 @@ def test_default_report_writes_reward_table_and_excluded_floors(tmp_path):
     assert saved_report['rewards']['baseline']['excluded'] == 1
 
 
+def test_reward_reports_missing_boss_witness_and_bounds_only_same_seed_sets():
+    """Review #387 R5/R7: a witness-less loss is counted; differing seeds have no bound."""
+    from stpd.evaluation.rl_observation import compare_rewards, reward_lines, reward_summary
+
+    def row(seed, result, floor, bosses):
+        return {'seed': seed, 'run_id': seed, 'status': 'finished', 'scored': True,
+                'result': result, 'floor': floor, 'observed_floor_lower_bound': floor,
+                'boss_cleared_acts': [] if bosses is None else list(range(1, bosses + 1)),
+                'boss_count': bosses}
+    cohort = {'ascension': 0, 'rows': [row('a', 'loss', 20, None), row('b', 'loss', 20, 1),
+                                       row('c', 'win', 49, None)]}
+    summary = reward_summary(cohort)
+    assert summary['scored'] == 3 and summary['scored_loss_boss_witness_missing'] == 1
+    text = '\n'.join(reward_lines({'current': summary}, {}))
+    assert 'Scored losses without a Boss witness' in text and 'current 1' in text
+    same = compare_rewards(cohort, cohort)
+    assert same['mean_difference_bound'] is not None
+    assert same['mean_difference_bound_reason'] is None
+    other = {'ascension': 0, 'rows': [row('a', 'loss', 20, 1), row('d', 'loss', 25, 1)]}
+    different = compare_rewards(cohort, other)
+    assert different['mean_difference_bound'] is None
+    assert different['mean_difference_bound_reason'] == 'different_planned_seed_set'
+    assert different['official']['paired_n'] == 1  # paired delta stays per shared seed
+
+
 def test_ledger_public_floor_is_an_excluded_lower_bound_not_a_score(tmp_path):
     path = saved(tmp_path, status='save_failed', floor=None, result=None)
     value = json.loads(path.read_bytes())
