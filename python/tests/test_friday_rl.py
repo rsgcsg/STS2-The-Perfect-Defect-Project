@@ -401,6 +401,8 @@ def test_run_calls_original_module_and_abnormal_results_fence_pending_workers(
             return original_snapshot(source, target)
 
     monkeypatch.setattr(rl.subprocess, 'Popen', actor)
+    # The node kernel log is a host fact; keep it out of the recorded actor commands.
+    monkeypatch.setattr(rl, 'node_nfs_counts', lambda: None)
     monkeypatch.setattr(rl, 'snapshot', checked_snapshot)
     result = rl.run(file)
     assert result['original_summary']['games'][0]['status'] == disposition
@@ -1387,3 +1389,33 @@ def test_actor_monitor_preserves_expected_pending_until_terminal_observation(
     monitor.observations.put({'actor': 'b', 'terminal': True})
     monitor.poll(owner)
     assert not owner.actor_allocation_pending
+
+
+def test_actor_result_records_node_nfs_state_loss(rl, monkeypatch):
+    """OPS 11-07: each bad-node stop matched kernel NFS lost-locks + kthread_run -4 lines
+    in that minute; the actor result now carries the per-allocation delta as a fact."""
+    log = ('[t] NFS: 10.1.2.6: lost 5 locks\n'
+           '[t] nfs4_schedule_state_manager: kthread_run: -4\n')
+    calls = iter([log, log * 3])
+    monkeypatch.setattr(rl.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        stdout=next(calls)))
+    before, after = rl.node_nfs_counts(), rl.node_nfs_counts()
+    assert before == {'lost_locks': 1, 'state_manager_failed': 1, 'server_not_responding': 0}
+    assert rl.nfs_events(before, after) == {'status': 'state_lost', 'during_allocation': {
+        'lost_locks': 2, 'state_manager_failed': 2, 'server_not_responding': 0}}
+    assert rl.nfs_events(after, before)['status'] == 'clean'  # wrapped ring buffer
+    assert rl.nfs_events(None, after) == {'status': 'kernel_log_unavailable'}
+
+    def denied(*a, **k):
+        raise rl.subprocess.CalledProcessError(1, 'dmesg')
+    monkeypatch.setattr(rl.subprocess, 'run', denied)
+    assert rl.node_nfs_counts() is None
+
+    seen = {}
+
+    def undecodable(*a, **k):
+        seen.update(k)
+        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
+    monkeypatch.setattr(rl.subprocess, 'run', undecodable)
+    assert rl.node_nfs_counts() is None  # any failure is a missing fact, never a lost result
+    assert seen['errors'] == 'replace' and seen['timeout'] <= 5

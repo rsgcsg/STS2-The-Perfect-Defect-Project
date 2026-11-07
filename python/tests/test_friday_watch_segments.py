@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from test_friday_watch import watch as original_watch_fixture
@@ -1217,6 +1218,37 @@ def test_evaluation_and_cpu_steps_avoid_auto_excluded_nodes(owner, watch, tmp_pa
     assert '--exclude=smp-9-8,smp-9-10' in commands[0]
 
 
+def test_evaluation_pool_list_replaces_the_actor_list_for_evaluations(owner, watch, tmp_path,
+                                                                      monkeypatch):
+    """OPS 11-07: eval-prepare waited 52 and 57 min because every node outside the actor
+    exclude list was full of our own actors. ``evaluation.exclude_nodes`` lets evaluations
+    and their CPU preparation use nodes the actors are kept off; auto-excluded nodes and
+    (opt-in) running actor nodes are still added; actors keep the configured list."""
+    owner.config['exclude_nodes'] = ['smp-9-8', 'smp-c03', 'smp-c04']
+    owner.config['evaluation'] = {'exclude_nodes': ['smp-9-8']}
+    owner.state['node_exclusion'] = {'actor_nodes': {'a': 'smp-9-1'},
+                                     'excluded': {'smp-9-10': {'at': 1.0}}}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-10']
+    assert owner.actor_exclude_nodes() == ['smp-9-8', 'smp-c03', 'smp-c04', 'smp-9-10']
+    owner.config['evaluation'] = {'exclude_nodes': [], 'avoid_actor_nodes': True}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-10', 'smp-9-1']
+    commands = []
+    monkeypatch.setattr(watch.scheduler, 'user_submission_lock', nullcontext)
+    monkeypatch.setattr(watch.scheduler, 'output', lambda c: commands.append(c) or '78')
+    script = tmp_path / 'prepare.sh'
+    script.write_text('#!/bin/sh\n')
+    owner.submit_cpu_step(script, tmp_path / 'prep', name='rl4-eval-prepare', cpus=1,
+                          minutes=10, memory_gb=6, exclude=owner.evaluation_exclude_nodes())
+    assert '--exclude=smp-9-10,smp-9-1' in commands[0]
+    owner.submit_cpu_step(script, tmp_path / 'other', name='x', cpus=1, minutes=1,
+                          memory_gb=1)  # default: the actor list
+    assert '--exclude=smp-9-8,smp-c03,smp-c04,smp-9-10' in commands[1]
+    for good in ([], ['smp-c04', 'r01-c01']):
+        assert watch.node_list_valid(good)
+    for bad in ('smp-9-8', ['smp-9-8', 'smp-9-8'], ['smp-9-[1-3]'], [3], ['a,b']):
+        assert not watch.node_list_valid(bad)
+
+
 def test_unknowns_of_an_auto_excluded_node_only_alarm(owner, watch):
     """U4 7a, user 11-07 "不算，只报警": after its exclusion time a node's closes leave the
     global gate's numerator and denominator; its closes before that still count."""
@@ -1252,6 +1284,92 @@ def test_unknowns_of_an_auto_excluded_node_only_alarm(owner, watch):
     owner.unknown_window_gate()
     assert len(alarms) == 1  # once per node per window
     assert owner.state['worlds']['late-0']['status'] == 'unknown'  # original kept
+
+
+def test_evaluation_pool_is_the_only_evaluation_placement_and_long_waits_alarm(
+        owner, watch):
+    """Lead decision S1 (review of #400): with ``evaluation.pool_nodes`` evaluations run only
+    on the pool (release_swap writes the complement); a pool the configs do not enforce is
+    refused; a queued prepare or evaluation job past 20 min raises one typed attention per
+    stage and is never moved to other nodes."""
+    good = {'exclude_nodes': ['smp-9-8', 'smp-c03', 'smp-c04'],
+            'evaluation': {'pool_nodes': ['smp-c03', 'smp-c04'],
+                           'exclude_nodes': ['smp-9-1', 'smp-9-8']}}
+    watch.require_evaluation_pool(good)
+    watch.require_evaluation_pool({'evaluation': {}})
+    for bad in ({**good, 'exclude_nodes': ['smp-9-8', 'smp-c03']},  # actors may use c04
+                {**good, 'evaluation': {'pool_nodes': ['smp-c03', 'smp-c04']}},
+                {**good, 'evaluation': {'pool_nodes': ['smp-c03'],
+                                        'exclude_nodes': ['smp-c03']}},
+                {**good, 'evaluation': {'pool_nodes': [], 'exclude_nodes': []}}):
+        with pytest.raises(ValueError, match='evaluation_pool_must_be_actor_excluded'):
+            watch.require_evaluation_pool(bad)
+    owner.config.update(good)
+    owner.state['node_exclusion'] = {'excluded': {'smp-9-10': {'at': 1.0}}}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-1', 'smp-9-8', 'smp-9-10']
+    alarms = []
+    owner.telemetry = lambda kind, **f: alarms.append((kind, f))
+    now = time.time()
+    pending = {'root': 'evaluation-0005', 'stage': 'preparation', 'job_id': '91',
+               'stage_submitted_at': now - 1300}
+    queued = {'rows': [{'state': 'PENDING'}], 'terminal': False}
+    owner.evaluation_wait_alarm(pending, {'rows': [{'state': 'RUNNING'}], 'terminal': False})
+    assert alarms == []  # running, not waiting
+    owner.evaluation_wait_alarm({**pending, 'stage_submitted_at': now - 60}, queued)
+    assert alarms == []  # under 20 min
+    owner.evaluation_wait_alarm(pending, queued)
+    owner.evaluation_wait_alarm(pending, queued)
+    assert [(k, f['reason'], f['stage']) for k, f in alarms] == [
+        ('attention', 'evaluation_job_queued_over_limit_no_fallback', 'preparation')]
+    assert alarms[0][1]['pool_nodes'] == ['smp-c03', 'smp-c04']
+    pending.update(stage='running', stage_submitted_at=now - 1300)
+    owner.evaluation_wait_alarm(pending, queued)
+    assert len(alarms) == 2 and alarms[1][1]['stage'] == 'running'
+
+
+def test_readmitted_node_counts_again_and_keeps_its_bad_burst_isolated(owner, watch):
+    """OPS re-admission at a natural restart: release_swap probed smp-9-10 healthy and lists
+    it in ``readmit_nodes``. The inherited auto exclusion ends; the burst while it was
+    excluded stays out of the gate, its closes after re-admission count, and a fresh #386
+    window can exclude it again."""
+    attempt(owner)
+    now = time.time()
+    owner.state['node_exclusion'] = {
+        'actor_nodes': {'good': 'smp-9-1', 'bad': 'smp-9-10', 'new': 'smp-9-10'},
+        'excluded': {'smp-9-10': {'kind': 'node_unknown_exclusion', 'at': now - 900}},
+        'windows': {'smp-9-10': [1] * 30}, 'logged': {'smp-9-10': 'node_unknown_exclusion'}}
+    owner.config['readmit_nodes'] = [{'node': 'smp-9-10', 'evidence': {'job_id': '9'}},
+                                     {'node': 'smp-9-0', 'evidence': {'job_id': '8'}}]
+    owner.apply_readmissions()
+    nodes = owner.state['node_exclusion']
+    assert nodes['excluded'] == {} and 'smp-9-10' not in nodes['windows']
+    assert 'smp-9-10' not in nodes['logged'] and 'smp-9-0' not in nodes.get('readmitted', {})
+    period = nodes['readmitted']['smp-9-10'][0]
+    assert period['excluded_at'] == now - 900 and period['readmitted_at'] >= now
+    assert [e['kind'] for e in nodes['events']] == ['node_readmitted',
+                                                  'node_readmission_skipped']
+    assert owner.actor_exclude_nodes() is None
+
+    def close(intent, actor, status, at):
+        owner.state['worlds'][intent] = {'actor': actor, 'generation': 'g-one',
+                                         'offered': True, 'closed': True,
+                                         'status': status, 'closed_at': at}
+
+    for i in range(100):
+        close(f'good-{i}', 'good', 'finished', now - 60)
+    for i in range(50):  # the burst while excluded: stays isolated
+        close(f'burst-{i}', 'bad', 'unknown', now - 300)
+    for i in range(4):  # after re-admission: counted again
+        close(f'after-{i}', 'new', 'unknown', time.time() + 1)
+    owner.telemetry = lambda kind, **f: None
+    owner.state['unknown_window'] = None
+    with patch.object(watch.time, 'time', return_value=now + 5):
+        assert owner.unknown_window_gate() is None
+    window = owner.state['unknown_window']
+    assert (window['closes'], window['unknown']) == (104, 4)
+    assert window['excluded_node_closes'] == 50
+    assert owner.unknown_class('burst-0', owner.state['worlds']['burst-0'])['category'] \
+        == 'infrastructure'
 
 
 def test_newly_lost_offer_enters_the_window_and_unoffered_closes_never_do(owner):

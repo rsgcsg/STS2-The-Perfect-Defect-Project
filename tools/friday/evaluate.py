@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import sys
@@ -280,9 +281,15 @@ exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
 
 def submit(plan_path: Path, *, constraint: str | None = None,
            dry_run: bool = False, begin: str | None = None,
-           partition: str = 'smp', exclude_nodes: list[str] | None = None) -> dict[str, Any]:
+           partition: str = 'smp', exclude_nodes: list[str] | None = None,
+           nodelist: str | None = None) -> dict[str, Any]:
     if partition not in {'smp', 'general', 'debug'}:
         raise ValueError('supported_Friday_CPU_partition_required')
+    # One named node (OPS node probe); a set would need every node for a 1-node job.
+    if nodelist is not None and (not isinstance(nodelist, str)
+                                 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}',
+                                                     nodelist)):
+        raise ValueError('single_node_name_required')
     # Slurm owns the timer; this is an earliest start, not a resource reservation.
     if begin is not None:
         parsed = datetime.fromisoformat(begin)
@@ -325,6 +332,8 @@ def submit(plan_path: Path, *, constraint: str | None = None,
             command.append('--constraint=' + constraint)
         if exclude_nodes:
             command.append('--exclude=' + ','.join(exclude_nodes))
+        if nodelist is not None:
+            command.append('--nodelist=' + nodelist)
         if begin is not None:
             command.append('--begin=' + begin)
         command.append(str(script))
@@ -780,6 +789,7 @@ def main():
         if name == 'submit':
             command.add_argument('--partition', choices=('smp', 'general', 'debug'), default='smp')
             command.add_argument('--exclude-node', action='append', dest='exclude_nodes')
+            command.add_argument('--nodelist', help='one node name (OPS node probe)')
             command.add_argument('--constraint')
             command.add_argument('--dry-run', action='store_true')
             command.add_argument('--begin', help='earliest start ISO8601 with timezone; no reservation')
@@ -824,7 +834,8 @@ def main():
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
                         dry_run=args.dry_run, begin=args.begin,
-                        partition=args.partition, exclude_nodes=args.exclude_nodes)
+                        partition=args.partition, exclude_nodes=args.exclude_nodes,
+                        nodelist=args.nodelist)
     else:
         result = run(args.plan.resolve())
     print(json.dumps(result, sort_keys=True))
