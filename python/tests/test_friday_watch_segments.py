@@ -1254,6 +1254,47 @@ def test_unknowns_of_an_auto_excluded_node_only_alarm(owner, watch):
     assert owner.state['worlds']['late-0']['status'] == 'unknown'  # original kept
 
 
+def test_evaluation_pool_is_the_only_evaluation_placement_and_long_waits_alarm(
+        owner, watch):
+    """Lead decision S1 (review of #400): with ``evaluation.pool_nodes`` evaluations run only
+    on the pool (release_swap writes the complement); a pool the configs do not enforce is
+    refused; a queued prepare or evaluation job past 20 min raises one typed attention per
+    stage and is never moved to other nodes."""
+    good = {'exclude_nodes': ['smp-9-8', 'smp-c03', 'smp-c04'],
+            'evaluation': {'pool_nodes': ['smp-c03', 'smp-c04'],
+                           'exclude_nodes': ['smp-9-1', 'smp-9-8']}}
+    watch.require_evaluation_pool(good)
+    watch.require_evaluation_pool({'evaluation': {}})
+    for bad in ({**good, 'exclude_nodes': ['smp-9-8', 'smp-c03']},  # actors may use c04
+                {**good, 'evaluation': {'pool_nodes': ['smp-c03', 'smp-c04']}},
+                {**good, 'evaluation': {'pool_nodes': ['smp-c03'],
+                                        'exclude_nodes': ['smp-c03']}},
+                {**good, 'evaluation': {'pool_nodes': [], 'exclude_nodes': []}}):
+        with pytest.raises(ValueError, match='evaluation_pool_must_be_actor_excluded'):
+            watch.require_evaluation_pool(bad)
+    owner.config.update(good)
+    owner.state['node_exclusion'] = {'excluded': {'smp-9-10': {'at': 1.0}}}
+    assert owner.evaluation_exclude_nodes() == ['smp-9-1', 'smp-9-8', 'smp-9-10']
+    alarms = []
+    owner.telemetry = lambda kind, **f: alarms.append((kind, f))
+    now = time.time()
+    pending = {'root': 'evaluation-0005', 'stage': 'preparation', 'job_id': '91',
+               'stage_submitted_at': now - 1300}
+    queued = {'rows': [{'state': 'PENDING'}], 'terminal': False}
+    owner.evaluation_wait_alarm(pending, {'rows': [{'state': 'RUNNING'}], 'terminal': False})
+    assert alarms == []  # running, not waiting
+    owner.evaluation_wait_alarm({**pending, 'stage_submitted_at': now - 60}, queued)
+    assert alarms == []  # under 20 min
+    owner.evaluation_wait_alarm(pending, queued)
+    owner.evaluation_wait_alarm(pending, queued)
+    assert [(k, f['reason'], f['stage']) for k, f in alarms] == [
+        ('attention', 'evaluation_job_queued_over_limit_no_fallback', 'preparation')]
+    assert alarms[0][1]['pool_nodes'] == ['smp-c03', 'smp-c04']
+    pending.update(stage='running', stage_submitted_at=now - 1300)
+    owner.evaluation_wait_alarm(pending, queued)
+    assert len(alarms) == 2 and alarms[1][1]['stage'] == 'running'
+
+
 def test_readmitted_node_counts_again_and_keeps_its_bad_burst_isolated(owner, watch):
     """OPS re-admission at a natural restart: release_swap probed smp-9-10 healthy and lists
     it in ``readmit_nodes``. The inherited auto exclusion ends; the burst while it was
@@ -1273,7 +1314,8 @@ def test_readmitted_node_counts_again_and_keeps_its_bad_burst_isolated(owner, wa
     assert 'smp-9-10' not in nodes['logged'] and 'smp-9-0' not in nodes.get('readmitted', {})
     period = nodes['readmitted']['smp-9-10'][0]
     assert period['excluded_at'] == now - 900 and period['readmitted_at'] >= now
-    assert [e['kind'] for e in nodes['events']] == ['node_readmitted']
+    assert [e['kind'] for e in nodes['events']] == ['node_readmitted',
+                                                  'node_readmission_skipped']
     assert owner.actor_exclude_nodes() is None
 
     def close(intent, actor, status, at):

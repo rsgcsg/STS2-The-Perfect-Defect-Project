@@ -446,13 +446,15 @@ NFS_STATE_PATTERNS = {'lost_locks': re.compile(r'NFS: \S+: lost \d+ locks'),
 def node_nfs_counts() -> dict[str, int] | None:
     """Kernel NFS client state-loss lines seen so far on this node (OPS 11-07: every bad-node
     stop matched lost locks + kthread_run -4 in that minute). Read-only; None when the kernel
-    log is not readable. A diagnostic fact for the result, never a decision here."""
+    log is not readable. A diagnostic fact for the result, never a decision here: any
+    failure (including undecodable bytes) is None, and the short timeout keeps the final
+    read inside Slurm's KillWait so result.json is always saved."""
     try:
-        text = subprocess.run(['dmesg'], capture_output=True, text=True, timeout=20,
-                              check=True).stdout
-    except (OSError, subprocess.SubprocessError):
+        text = subprocess.run(['dmesg'], capture_output=True, text=True, errors='replace',
+                              timeout=5, check=True).stdout
+        return {key: len(pattern.findall(text)) for key, pattern in NFS_STATE_PATTERNS.items()}
+    except Exception:  # noqa: BLE001 - diagnostics must never cost the actor its result
         return None
-    return {key: len(pattern.findall(text)) for key, pattern in NFS_STATE_PATTERNS.items()}
 
 
 def nfs_events(before: dict[str, int] | None, after: dict[str, int] | None

@@ -1410,3 +1410,12 @@ def test_actor_result_records_node_nfs_state_loss(rl, monkeypatch):
         raise rl.subprocess.CalledProcessError(1, 'dmesg')
     monkeypatch.setattr(rl.subprocess, 'run', denied)
     assert rl.node_nfs_counts() is None
+
+    seen = {}
+
+    def undecodable(*a, **k):
+        seen.update(k)
+        raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
+    monkeypatch.setattr(rl.subprocess, 'run', undecodable)
+    assert rl.node_nfs_counts() is None  # any failure is a missing fact, never a lost result
+    assert seen['errors'] == 'replace' and seen['timeout'] <= 5

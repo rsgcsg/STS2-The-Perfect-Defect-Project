@@ -273,6 +273,7 @@ UNKNOWN_WINDOW_DEFAULTS: dict[str, Any] = {
     'window_seconds': 1800, 'attention_fraction': .10, 'stop_fraction': .20,
     'min_denominator': 100}
 EVALUATION_EPISODE_SECONDS = 1800  # evaluate.py's maximum; 900 s cut deep games (U4-1).
+EVALUATION_WAIT_ALARM_SECONDS = 1200  # OPS 11-07: queued eval/prepare -> typed attention
 EVALUATION_RESULT_GRACE_SECONDS = 900  # terminal job, result not yet visible on NFS
 SELECTION_SCORES = ('conservative', 'finished_mean', 'paired_max_floor')
 UNKNOWN_STATUSES = frozenset({'unknown', 'save_failed'})
@@ -1271,6 +1272,18 @@ def node_list_valid(value: Any) -> bool:
             and all(isinstance(n, str) and NODE_NAME.fullmatch(n) for n in value))
 
 
+def require_evaluation_pool(value: dict[str, Any]) -> None:
+    """``evaluation.pool_nodes`` is real only when actors exclude the pool and evaluations
+    exclude everything but the pool; anything else would silently evaluate elsewhere."""
+    evaluation = value.get('evaluation') or {}
+    pool = evaluation.get('pool_nodes')
+    if pool is not None and (
+            not pool or not node_list_valid(pool) or evaluation.get('exclude_nodes') is None
+            or set(pool) & set(evaluation['exclude_nodes'])
+            or not set(pool) <= set(value.get('exclude_nodes') or [])):
+        raise ValueError('evaluation_pool_must_be_actor_excluded_and_the_only_eval_nodes')
+
+
 def read_segment_config(path: Path) -> dict[str, Any]:
     """The existing watcher owns this mode; it consumes the original launch/ledger."""
     value: dict[str, Any] = json.loads(path.read_bytes())
@@ -1333,8 +1346,14 @@ def read_segment_config(path: Path) -> dict[str, Any]:
                 or not 10 <= evaluation.get('episode_seconds', EVALUATION_EPISODE_SECONDS) <= 1800
                 or evaluation.get('selection_score', 'conservative') not in SELECTION_SCORES
                 or type(evaluation.get('avoid_actor_nodes', False)) is not bool
-                or not node_list_valid(evaluation.get('exclude_nodes', []))):
+                or not node_list_valid(evaluation.get('exclude_nodes', []))
+                or not node_list_valid(evaluation.get('pool_nodes', []))
+                or type(evaluation.get('wait_alarm_seconds', EVALUATION_WAIT_ALARM_SECONDS))
+                is not int
+                or not 60 <= evaluation.get('wait_alarm_seconds',
+                                            EVALUATION_WAIT_ALARM_SECONDS) <= 86400):
             raise ValueError('fixed_two_hour_paired_evaluation_required')
+        require_evaluation_pool(value)
         if (evaluation.get('initial_checkpoint') is not None
                 and evaluation['initial_checkpoint'] != base.resume_checkpoint):
             raise ValueError('initial_evaluation_must_bind_continuation_checkpoint')
@@ -1750,7 +1769,8 @@ class SegmentWatcher(Watcher):
         ``readmit_nodes`` come from release_swap's per-node real-game probe. A listed node
         leaves ``node_exclusion.excluded`` (its exclusion period is kept in ``readmitted``,
         so its earlier closes stay isolated) and starts a fresh #386 window: if it goes bad
-        again it is excluded again. Nodes that are not auto-excluded here are untouched.
+        again it is excluded again. A request for a node that is not auto-excluded here
+        changes nothing and is recorded as a ``node_readmission_skipped`` event.
         """
         nodes = self.state.setdefault('node_exclusion', {})
         excluded = nodes.setdefault('excluded', {})
@@ -1758,6 +1778,14 @@ class SegmentWatcher(Watcher):
             node = request['node']
             record = excluded.pop(node, None)
             if record is None:
+                # Typed record, not a silent skip: the request named a node this inherited
+                # state does not hold as auto-excluded (e.g. a static exclusion).
+                nodes.setdefault('events', []).append(
+                    {'kind': 'node_readmission_skipped', 'node': node, 'at': time.time(),
+                     'reason': 'not_auto_excluded_in_inherited_state',
+                     'evidence': request.get('evidence')})
+                print(json.dumps({'kind': 'node_readmission_skipped', 'node': node}),
+                      file=sys.stderr, flush=True)
                 continue
             at = time.time()
             nodes.setdefault('readmitted', {}).setdefault(node, []).append(
@@ -2119,8 +2147,10 @@ class SegmentWatcher(Watcher):
         delay the job.
 
         ``evaluation.exclude_nodes`` (OPS, 11-07) replaces the configured actor list for
-        evaluations and their CPU preparation step, so they can use nodes the actors are
-        kept off (an evaluation pool). Auto-excluded nodes are always added."""
+        evaluations and their CPU preparation step. With ``evaluation.pool_nodes``
+        release_swap writes it as the complement of the pool in the evaluation partition,
+        so evaluations run only on the pool (actors are kept off it). Auto-excluded nodes
+        are always added."""
         evaluation = self.config.get('evaluation') or {}
         if evaluation.get('exclude_nodes') is not None:
             auto = self.state.get('node_exclusion', {}).get('excluded', {})
@@ -2386,7 +2416,9 @@ class SegmentWatcher(Watcher):
                 self.state['stop'] = self.state['stop'] or 'absolute_deadline'
                 self.persist()
                 return
-            if not job_accounting(pending['job_id'])['terminal']:
+            accounting = job_accounting(pending['job_id'])
+            if not accounting['terminal']:
+                self.evaluation_wait_alarm(pending, accounting)
                 return
             plan_path = root / 'round/evaluation/plan.json'
             if not plan_path.exists():
@@ -2400,12 +2432,15 @@ class SegmentWatcher(Watcher):
             cfg = self.config['evaluation']
             receipt = evaluate.submit(plan_path, partition=cfg.get('partition', 'general'),
                 constraint=cfg.get('constraint'), exclude_nodes=self.evaluation_exclude_nodes())
-            pending.update(stage='running', job_id=str(receipt['job_id']).split(';')[0])
+            pending.update(stage='running', job_id=str(receipt['job_id']).split(';')[0],
+                           stage_submitted_at=time.time())
             self.persist()
             return
         if pending['stage'] in {'failed', 'submission_intent'}:
             return  # Sticky uncertain/failed original; no replacement games.
-        if not job_accounting(pending['job_id'])['terminal']:
+        accounting = job_accounting(pending['job_id'])
+        if not accounting['terminal']:
+            self.evaluation_wait_alarm(pending, accounting)
             return
         path = Path(pending['plan'])
         result_path = path.parent / 'result.json'
@@ -2747,7 +2782,26 @@ class SegmentWatcher(Watcher):
         job = self.submit_cpu_step(script, root / 'preparation', name='rl4-eval-prepare',
                                   cpus=1, minutes=10, memory_gb=6,
                                   exclude=self.evaluation_exclude_nodes())
-        pending.update(stage='preparation', job_id=job)
+        pending.update(stage='preparation', job_id=job, stage_submitted_at=time.time())
+        self.persist()
+
+    def evaluation_wait_alarm(self, pending: dict[str, Any], accounting: dict[str, Any]) -> None:
+        """Typed attention, once per stage, when an evaluation or its prepare step is still
+        queued past ``evaluation.wait_alarm_seconds`` (20 min). No fallback to other nodes:
+        the job keeps waiting where its placement allows (an evaluation pool stays a pool)."""
+        since = pending.get('stage_submitted_at')
+        limit = (self.config.get('evaluation') or {}).get(
+            'wait_alarm_seconds', EVALUATION_WAIT_ALARM_SECONDS)
+        if (since is None or time.time() - since < limit
+                or pending.get('wait_alarm_stage') == pending['stage']
+                or not any(row.get('state') == 'PENDING'
+                           for row in accounting.get('rows') or [])):
+            return
+        pending['wait_alarm_stage'] = pending['stage']
+        self.telemetry('attention', reason='evaluation_job_queued_over_limit_no_fallback',
+                       evaluation=pending['root'], stage=pending['stage'],
+                       job_id=pending['job_id'], waited_seconds=round(time.time() - since),
+                       pool_nodes=(self.config.get('evaluation') or {}).get('pool_nodes'))
         self.persist()
 
     def retain_segment_checkpoints(self):

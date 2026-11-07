@@ -455,6 +455,11 @@ def test_real_game_judges_only_the_selected_slot(swap, tmp_path, monkeypatch):
                        timeout=60, episode_seconds=1800)
 
 
+PARTITION = ['smp-9-0', 'smp-9-10', 'smp-9-12', 'smp-9-19', 'smp-9-3', 'smp-9-7', 'smp-c03',
+             'smp-c04']
+EVAL_EXCLUDED = ['biol-0-0', 'smp-9-0', 'smp-9-10', 'smp-9-12', 'smp-9-19', 'smp-9-3', 'smp-9-7']
+
+
 def test_node_plan_readmits_reserves_and_records_provenance(swap):
     """OPS 11-07 lead plan: re-admit checked nodes, keep two nodes for evaluations only,
     raise the #386 cap; every excluded node says where its exclusion came from."""
@@ -470,9 +475,12 @@ def test_node_plan_readmits_reserves_and_records_provenance(swap):
                          exclude_reason='bad node 11-07 06:33', name='c14',
                          readmit=['smp-9-0', 'smp-9-10', 'smp-9-7'],
                          readmit_evidence='replies/RL5/OPS-NODE-CHECK-20261107.md',
-                         eval_nodes=['smp-c03', 'smp-c04'], max_excluded_nodes=8)
+                         eval_nodes=['smp-c03', 'smp-c04'], max_excluded_nodes=8,
+                         partition_nodes=PARTITION)
     assert cfg['exclude_nodes'] == ['biol-0-0', 'smp-9-12', 'smp-9-3', 'smp-c03', 'smp-c04']
-    assert cfg['evaluation']['exclude_nodes'] == ['biol-0-0', 'smp-9-12', 'smp-9-3']
+    # Evaluations only on the pool: every other partition node and every actor exclusion.
+    assert cfg['evaluation']['pool_nodes'] == ['smp-c03', 'smp-c04']
+    assert cfg['evaluation']['exclude_nodes'] == EVAL_EXCLUDED
     assert cfg['node_unknown_exclusion'] == {'max_nodes': 8}
     provenance = cfg['exclude_node_provenance']
     assert provenance['biol-0-0'] == {'source': 'static_unrecorded'}
@@ -493,9 +501,10 @@ def test_node_plan_readmits_reserves_and_records_provenance(swap):
                              previous_ref={'path': 'p', 'sha256': 's'}, release=Path('/r/b'),
                              execution=Path('/o/e.json'), learner=Path('/o/l.json'), cp_id='cp',
                              held_job=None, exclude=[], auto_excluded=[], window=None,
-                             acknowledgements={}, nodes={'name': 'c15'})
+                             acknowledgements={}, nodes={'name': 'c15',
+                                                         'partition_nodes': PARTITION})
     assert 'readmit_nodes' not in later
-    assert later['evaluation']['exclude_nodes'] == ['biol-0-0', 'smp-9-12', 'smp-9-3']
+    assert later['evaluation']['exclude_nodes'] == EVAL_EXCLUDED
     assert len(later['node_readmissions']) == 3
     lines = swap.exclusion_summary(cfg, {'smp-9-12': {'features': 'smp,fc430,intel,rocky'},
                                          'biol-0-0': {'features': 'biol,r640,cuda,t4'}})
@@ -525,14 +534,52 @@ def test_node_plan_refuses_unbacked_or_unknown_readmission(swap):
                              readmit=['smp-9-7'], readmit_evidence='x')
 
 
-def test_dry_run_with_a_node_plan(friday, capsys):
+def test_eval_pool_needs_backed_readmission_of_a_bad_node_and_the_partition_list(swap):
+    """Review S2: a node #386 just judged bad joins the pool only through --readmit with
+    evidence; a pool needs the partition list (no silent 'anything not excluded')."""
+    prior = {'exclude_nodes': ['smp-9-10', 'smp-c03'], 'evaluation': {}}
+    auto = {'auto_excluded': ['smp-9-10'], 'auto_records': {'smp-9-10': {'at': 1.0}}}
+    cfg = copy.deepcopy(prior)
+    with pytest.raises(swap.SwapError, match='eval_node_auto_excluded_needs_readmission'):
+        swap.apply_node_plan(cfg, prior, eval_nodes=['smp-9-10'], partition_nodes=PARTITION,
+                             **auto)
+    cfg = copy.deepcopy(prior)
+    swap.apply_node_plan(cfg, prior, eval_nodes=['smp-9-10'], readmit=['smp-9-10'],
+                         readmit_evidence='node check', partition_nodes=PARTITION, **auto)
+    assert cfg['evaluation']['pool_nodes'] == ['smp-9-10']
+    assert 'smp-9-10' in cfg['exclude_nodes']  # still kept off the actors
+    assert cfg['readmit_nodes'] == [{'node': 'smp-9-10', 'evidence': 'node check'}]
+    assert cfg['exclude_node_provenance']['smp-9-10']['readmitted_with_evidence'] == \
+        'node check'
+    for kwargs, code in (({}, 'evaluation_pool_partition_nodes_unavailable'),
+                         ({'partition_nodes': ['smp-9-0']},
+                          'evaluation_pool_node_not_in_partition')):
+        with pytest.raises(swap.SwapError, match=code):
+            swap.apply_node_plan(copy.deepcopy(prior), prior, auto_excluded=[],
+                                 eval_nodes=['smp-c03'], **kwargs)
+
+
+def test_close_window_refuses_every_ignored_node_plan_option(swap):
+    args = swap.parser().parse_args(['prepare', '--predecessor', 'p', '--name', 'n',
+                                     '--max-excluded-nodes', '8'])
+    with pytest.raises(swap.SwapError, match='node_plan_needs_a_continuation') as error:
+        swap.refuse_node_plan_on_close('close_window', args)
+    assert 'drop --max-excluded-nodes' in error.value.detail
+    swap.refuse_node_plan_on_close('same_window', args)
+
+
+def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
+    asked = []
+    monkeypatch.setattr(swap, 'evaluation_partition_nodes', lambda partition: (
+        asked.append(partition) or ['smp-9-10', 'smp-9-19', 'smp-9-8', 'smp-c04']))
     friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'OPS-NODE-CHECK',
                    '--eval-node', 'smp-c04', '--max-excluded-nodes', '8')
     final = friday.long_run / 'swap-c13b-dry-run'
     cfg = json.loads((final / 'watch.json').read_bytes())
     assert cfg['exclude_nodes'] == ['smp-9-8', 'smp-c04']
     assert cfg['readmit_nodes'] == [{'node': 'smp-9-10', 'evidence': 'OPS-NODE-CHECK'}]
-    assert cfg['evaluation']['exclude_nodes'] == ['smp-9-8']
+    assert cfg['evaluation']['exclude_nodes'] == ['smp-9-10', 'smp-9-19', 'smp-9-8']
+    assert cfg['evaluation']['pool_nodes'] == ['smp-c04'] and len(asked) == 1
     assert cfg['node_unknown_exclusion'] == {'max_nodes': 8}
     assert json.loads((final / 'decision.json').read_bytes())['readmitted'] == ['smp-9-10']
     out = capsys.readouterr().out

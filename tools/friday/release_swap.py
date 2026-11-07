@@ -354,8 +354,13 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                     exclude_reason: str | None = None, readmit: list[str] = (),
                     readmit_evidence: str | None = None, eval_nodes: list[str] = (),
                     max_excluded_nodes: int | None = None, name: str = '',
-                    auto_records: dict[str, Any] | None = None) -> None:
-    """Provenance, re-admission, evaluation pool and the #386 cap, in that order."""
+                    auto_records: dict[str, Any] | None = None,
+                    partition_nodes: list[str] | None = None) -> None:
+    """Provenance, re-admission, evaluation pool and the #386 cap, in that order.
+
+    With a pool, evaluations run only there: ``evaluation.exclude_nodes`` is every other
+    node of the evaluation partition (``partition_nodes``, read from Slurm at prepare)
+    plus the actor exclusions, and ``evaluation.pool_nodes`` names the pool."""
     old = prior.get('exclude_node_provenance') or {}
     records = auto_records or {}
     configured = set(prior.get('exclude_nodes') or [])
@@ -394,6 +399,12 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                'excluded_as': before}
         history.append(row)
         requests.append({'node': node, 'evidence': readmit_evidence})
+    for node in sorted(set(eval_nodes)):
+        # A node #386 just judged bad joins the pool only through a backed re-admission;
+        # otherwise a new window (fresh watcher state) would evaluate on it unexamined.
+        if (provenance.get(node) or {}).get('source') == 'auto_node_unknown_exclusion':
+            raise SwapError('eval_node_auto_excluded_needs_readmission',
+                            f'{node}: pass --readmit {node} --readmit-evidence <node check>')
     cfg['exclude_nodes'] = [n for n in cfg['exclude_nodes'] if n not in set(readmit)]
     if requests:
         cfg['readmit_nodes'] = requests
@@ -409,13 +420,47 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
         elif provenance[node].get('source') != 'evaluation_pool':
             provenance[node] = {'source': 'evaluation_pool', 'was': provenance[node],
                                 'added_by': f'release_swap {name}'.strip()}
+        if node in readmit:
+            provenance[node]['readmitted_with_evidence'] = readmit_evidence
     cfg['exclude_nodes'] = sorted(set(cfg['exclude_nodes']) | set(pool))
     if pool and cfg.get('evaluation') is not None:
-        cfg['evaluation']['exclude_nodes'] = [n for n in cfg['exclude_nodes'] if n not in pool]
+        if not partition_nodes:
+            raise SwapError('evaluation_pool_partition_nodes_unavailable',
+                            'the pool needs the evaluation partition node list from Slurm')
+        outside = sorted(set(pool) - set(partition_nodes))
+        if outside:
+            raise SwapError('evaluation_pool_node_not_in_partition', ', '.join(outside))
+        cfg['evaluation']['pool_nodes'] = pool
+        cfg['evaluation']['exclude_nodes'] = sorted(
+            (set(partition_nodes) | set(cfg['exclude_nodes'])) - set(pool))
     if max_excluded_nodes is not None:
         cfg['node_unknown_exclusion'] = {**(cfg.get('node_unknown_exclusion') or {}),
                                          'max_nodes': max_excluded_nodes}
     cfg['exclude_node_provenance'] = {n: provenance[n] for n in cfg['exclude_nodes']}
+
+
+def refuse_node_plan_on_close(mode: str, args: argparse.Namespace) -> None:
+    """A close-only watch keeps its config, so any node-plan option would be ignored."""
+    used = [flag for flag, value in (('--readmit', args.readmit), ('--eval-node', args.eval_node),
+                                     ('--max-excluded-nodes', args.max_excluded_nodes),
+                                     ('--exclude-reason', args.exclude_reason))
+            if value not in (None, [])]
+    if mode == 'close_window' and used:
+        raise SwapError('node_plan_needs_a_continuation',
+                        f"a close-only watch keeps its config; drop {' '.join(used)}")
+
+
+def evaluation_partition_nodes(partition: str) -> list[str]:
+    """Every node of the evaluation partition, so a pool can exclude its complement."""
+    try:
+        out = run(['sinfo', '-h', '-N', '-p', partition, '-o', '%N'], check=True,
+                  timeout=60).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SwapError('evaluation_pool_partition_nodes_unavailable', str(error)) from error
+    nodes = sorted({line.strip() for line in out.splitlines() if line.strip()})
+    if not nodes:
+        raise SwapError('evaluation_pool_partition_nodes_unavailable', partition)
+    return nodes
 
 
 def node_facts(nodes: list[str]) -> dict[str, dict[str, Any]]:
@@ -981,12 +1026,17 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
               f"({window['training_seconds_reason']}), deadline {stamp(window['deadline_at'])}")
     auto_records = (previous.get('node_exclusion') or {}).get('excluded', {})
     auto = sorted(auto_records)
-    if mode == 'close_window' and (args.readmit or args.eval_node):
-        raise SwapError('node_plan_needs_a_continuation', 'a close-only watch keeps its config')
+    refuse_node_plan_on_close(mode, args)
     plan = {'exclude_reason': args.exclude_reason, 'readmit': args.readmit,
             'readmit_evidence': args.readmit_evidence, 'eval_nodes': args.eval_node,
             'max_excluded_nodes': args.max_excluded_nodes, 'name': args.name,
             'auto_records': auto_records}
+    pooled = args.eval_node or any(
+        (p or {}).get('source') == 'evaluation_pool'
+        for p in (prior.get('exclude_node_provenance') or {}).values())
+    if pooled and mode != 'close_window':
+        plan['partition_nodes'] = evaluation_partition_nodes(
+            (prior.get('evaluation') or {}).get('partition', 'general'))
     cfg = build_watch(mode, prior, previous_ref=previous_ref, release=release,
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
