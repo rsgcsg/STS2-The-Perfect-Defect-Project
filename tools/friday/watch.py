@@ -190,9 +190,12 @@ def protocol_differences(before: dict[str, Any], after: dict[str, Any]) -> list[
     return sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
 
 
-def protocol_skip(keys: list[str], reference: str) -> dict[str, Any]:
+def protocol_skip(before: dict[str, Any], after: dict[str, Any], reference: str) -> dict[str, Any]:
+    keys = protocol_differences(before, after)
     return {'skipped': 'different_observed_protocol', 'differing_keys': keys,
-            'reference': reference}
+            'reference': reference, 'values': {
+                key: {'reference': before['protocol_observed'][key],
+                      'current': after['protocol_observed'][key]} for key in keys}}
 
 
 def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool:
@@ -1967,6 +1970,9 @@ class SegmentWatcher(Watcher):
                     raise ValueError('complete_argmax_evaluation_protocol_required')
             if {r['seed'] for r in baseline['rows']} != {r['seed'] for r in cohort['rows']}:
                 raise ValueError('exact_same_frozen_paired_seed_set_required')
+            # compare's own refusal, checked here so a protocol skip can never bypass it.
+            if any(baseline[k] != cohort[k] for k in ('host_kind', 'character', 'ascension')):
+                raise ValueError('different_host_character_or_ascension')
             compared = [row for row in self.state['evaluations'] if not row.get('skipped')]
             # Default mean reward score (reward v2) and the diagnostic [L, U] bound. Standalone,
             # so they are reported even when no reference shares this cohort's protocol.
@@ -1979,7 +1985,7 @@ class SegmentWatcher(Watcher):
                 keys = protocol_differences(group, cohort)
                 if keys:
                     skipped[label] = keys
-                    return protocol_skip(keys, name), protocol_skip(keys, name)
+                    return protocol_skip(group, cohort, name), protocol_skip(group, cohort, name)
                 return compare(group, cohort), compare_rewards(group, cohort)
 
             report['against_baseline'], report['reward_against_baseline'] = against(
@@ -1997,35 +2003,39 @@ class SegmentWatcher(Watcher):
             report['previous_reference'] = previous_name
             report['against_previous'], report['reward_against_previous'] = against(
                 'previous', previous_name, previous)
-            report['report_directory'] = str(root / 'comparison')
-            cohorts = {name: group for name, group in (
-                ('baseline', None if 'baseline' in skipped else baseline),
-                ('previous', None if 'previous' in skipped else previous),
-                ('current', cohort)) if group is not None}
-            write_report(cohorts, root / 'comparison',
-                         scope_note='Managed fixed pool; unknown pairs excluded, '
-                         'no retries. Selection uses raw CP theta, never training returns.'
-                         + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
-                            if skipped else ''))
             best = self.state.get('best_checkpoint')
             best_cohort = self.state.get('best_cohort', baseline)
             best_keys = protocol_differences(best_cohort, cohort)
-            comparison = None if best_keys else compare(best_cohort, cohort)
-            if comparison is None:
-                # The first cohort of a new protocol becomes that protocol's best reference;
-                # the prior best stays recorded and is never compared across protocols.
+            first_of_protocol = False
+            if best_keys:
+                # The best is chosen only within one protocol. The current best is kept in
+                # superseded_best (never compared across protocols); a returning protocol
+                # resumes its own stored best, else this cohort is the new protocol's first.
                 skipped['best'] = best_keys
-                self.state.setdefault('superseded_best', []).append({
-                    'best_checkpoint': best, 'best_cohort_source': (
-                        'frozen_baseline' if 'best_cohort' not in self.state else 'evaluation'),
-                    'differing_keys': best_keys,
-                    'protocol_observed': best_cohort['protocol_observed'],
-                    'superseded_by': binding['checkpoint_artifact_id'],
-                    'evaluation': pending['root']})
-                self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
-                self.state['best_cohort'] = cohort
-                report['best_selection'] = {'reason': 'first_cohort_of_new_observed_protocol',
-                                            'differing_keys': best_keys}
+                superseded = self.state.setdefault('superseded_best', [])
+                restored = next((row for row in reversed(superseded)
+                                 if not protocol_differences(row['cohort'], cohort)), None)
+                superseded.append({
+                    'best_checkpoint': best, 'cohort': best_cohort,
+                    'best_cohort_source': ('frozen_baseline' if best_cohort == baseline
+                                           else 'evaluation'),
+                    'differing_keys': best_keys, 'superseded_by_evaluation': pending['root']})
+                if restored is None:
+                    first_of_protocol = True
+                    self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
+                    self.state['best_cohort'] = cohort
+                    report['best_selection'] = {
+                        'reason': 'first_cohort_of_new_observed_protocol',
+                        'differing_keys': best_keys}
+                else:
+                    best, best_cohort = restored['best_checkpoint'], restored['cohort']
+                    self.state['best_checkpoint'], self.state['best_cohort'] = best, best_cohort
+                    report['best_selection'] = {
+                        'reason': 'restored_best_of_returning_observed_protocol',
+                        'restored_checkpoint': best, 'differing_keys': best_keys}
+            comparison = None if first_of_protocol else compare(best_cohort, cohort)
+            if comparison is None:
+                pass  # This cohort already is its new protocol's best reference.
             elif comparison['mean_delta'] is not None and comparison['mean_delta'] > 0:
                 self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
                 self.state['best_cohort'] = cohort
@@ -2053,14 +2063,19 @@ class SegmentWatcher(Watcher):
                     anchor_keys = protocol_differences(anchor['cohort'], cohort)
                     if anchor_keys:
                         skipped['recipe_switch'] = anchor_keys
-                        regression_comparison = protocol_skip(anchor_keys, anchor['root'])
+                        regression_comparison = protocol_skip(anchor['cohort'], cohort,
+                                                              anchor['root'])
                     else:
                         regression_comparison = compare(anchor['cohort'], cohort)
                 report['against_recipe_switch'] = regression_comparison
-            # A protocol-skipped reference has no interval: never a paired regression.
             interval = (regression_comparison.get('bootstrap95_fixed_seed_sensitivity')
                         if regression_comparison is not None else None)
-            regression = bool(interval and interval[1] < 0)
+            regression: bool | None = bool(interval and interval[1] < 0)
+            if regression_comparison is not None and regression_comparison.get('skipped'):
+                # Not compared is not "no regression": None, with the reason, and it never
+                # counts towards the two-regressions stop.
+                regression = None
+                report['paired_regression_skipped'] = regression_comparison['skipped']
             prior = self.state['evaluations'][-1] if self.state['evaluations'] else {}
             report['paired_regression'] = regression
             report['regression_reference'] = reference
@@ -2073,6 +2088,16 @@ class SegmentWatcher(Watcher):
                     'regression_reference': reference,
                     'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
+            report['report_directory'] = str(root / 'comparison')
+            cohorts = {name: group for name, group in (
+                ('baseline', None if 'baseline' in skipped else baseline),
+                ('previous', None if 'previous' in skipped else previous),
+                ('current', cohort)) if group is not None}
+            write_report(cohorts, root / 'comparison',
+                         scope_note='Managed fixed pool; unknown pairs excluded, '
+                         'no retries. Selection uses raw CP theta, never training returns.'
+                         + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
+                            if skipped else ''))
             if skipped:
                 # Typed alarm only: the cohort and its originals are kept, training continues.
                 report['protocol_skipped'] = skipped

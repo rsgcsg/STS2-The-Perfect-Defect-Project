@@ -578,9 +578,12 @@ def test_new_host_pin_evaluation_is_protocol_skipped_not_a_watcher_crash(
     first, second, third = owner.state['evaluations']
     assert owner.state['stop'] is None
     skip = {'skipped': 'different_observed_protocol', 'differing_keys': ['host_pin'],
-            'reference': 'baseline'}
+            'reference': 'baseline', 'values': {'host_pin': {
+                'reference': {'version': '1.1.0-rc.63'}, 'current': {'version': '1.1.0-rc.64'}}}}
     assert first['against_baseline'] == first['reward_against_baseline'] == skip
     assert first['against_previous'] == skip and first['previous_reference'] == 'baseline'
+    # Not compared is not "no regression"; the anchor (initial_checkpoint) is not a comparison.
+    assert first['paired_regression'] is (None if reference == 'previous' else False)
     assert first['protocol_skipped'] == {'baseline': ['host_pin'], 'previous': ['host_pin'],
                                          'best': ['host_pin']}
     assert first['reward']['planned'] == 2 and 'lower_bound' in first['reward']
@@ -616,14 +619,64 @@ def test_protocol_skip_prefers_latest_same_protocol_reference(
     assert third['against_previous']['mean_delta'] == 4
     assert third['against_baseline']['mean_delta'] == 4
     assert third['protocol_skipped'] == {'latest_closed': ['host_pin'], 'best': ['host_pin']}
+    assert third['best_selection']['reason'] == 'restored_best_of_returning_observed_protocol'
+    assert owner.state['best_checkpoint'] == 'cp-c'  # +4 over the restored rc.63 reference
     assert owner.state['stop'] is None
 
 
-def test_host_character_or_ascension_change_is_still_refused(owner, watch, tmp_path, monkeypatch):
-    """Only the observed-protocol pin check is skipped; a different character still raises."""
+def test_returning_protocol_keeps_its_better_earlier_best(owner, watch, tmp_path, monkeypatch):
+    _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.63', (30, 30)),
+        (7200, 'cp-b', '1.1.0-rc.64', (21, 21)),
+        (14400, 'cp-c', '1.1.0-rc.63', (21, 21))])
+    assert owner.state['evaluations'][-1]['best_selection']['restored_checkpoint'] == 'cp-a'
+    assert owner.state['best_checkpoint'] == 'cp-a'
+    assert [row['best_checkpoint'] for row in owner.state['superseded_best']] == ['cp-a', 'cp-b']
+
+
+def test_protocol_skipped_regression_reference_never_reads_as_no_regression(
+        owner, watch, tmp_path, monkeypatch):
+    _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (0, 'anchor', '1.1.0-rc.63', (30, 30)),
+        (7200, 'cp-b', '1.1.0-rc.64', (20, 20)),
+        (14400, 'cp-c', '1.1.0-rc.64', (10, 10))], reference='initial_checkpoint')
+    later = owner.state['evaluations'][1:]
+    assert [row['paired_regression'] for row in later] == [None, None]
+    assert all(row['paired_regression_skipped'] == 'different_observed_protocol' for row in later)
+    assert all(row['protocol_skipped']['recipe_switch'] == ['host_pin'] for row in later)
+    assert later[1]['against_previous']['mean_delta'] == -10  # same-protocol delta kept
+    assert owner.state['stop'] is None
+
+
+def test_resumed_window_with_old_protocol_evaluations_is_the_c13_incident_shape(
+        owner, watch, tmp_path, monkeypatch):
+    """A resumed state carrying rc.63 evaluations and an rc.63 best, then an rc.64 cohort."""
+    old = _cohort('1.1.0-rc.63', (25, 25))
+    owner.state['evaluations'].append({'root': 'window-1/evaluation-0007', 'cohort': old,
+                                       'at_training_seconds': 50400, 'paired_regression': True,
+                                       'regression_reference': 'previous'})
+    owner.state.update(best_checkpoint='w1-best', best_cohort=old)
+    _run_evaluations(owner, watch, tmp_path, monkeypatch, [
+        (57600, 'cp-6787', '1.1.0-rc.64', (24, 30)),
+        (64800, 'cp-next', '1.1.0-rc.64', (10, 10))])
+    first, second = owner.state['evaluations'][1:]
+    assert first['against_previous']['reference'] == 'window-1/evaluation-0007'
+    assert first['paired_regression'] is None and second['paired_regression'] is True
+    assert owner.state['superseded_best'][0]['best_checkpoint'] == 'w1-best'
+    assert owner.state['superseded_best'][0]['best_cohort_source'] == 'evaluation'
+    assert owner.state['best_checkpoint'] == 'cp-6787'
+    assert owner.state['stop'] is None  # rc.63's regression never chains into rc.64's
+
+
+@pytest.mark.parametrize('host', ['1.1.0-rc.63', '1.1.0-rc.64'])
+def test_host_character_or_ascension_change_is_still_refused(
+        owner, watch, tmp_path, monkeypatch, host):
+    """Only the observed-protocol pin check is skipped; a different character still raises,
+    also when the Host changes at the same time (no reference then reaches compare)."""
     with pytest.raises(ValueError, match='different_host_character_or_ascension'):
         _run_evaluations(owner, watch, tmp_path, monkeypatch, [
-            (0, 'cp-a', '1.1.0-rc.63', (20, 20), 'Ironclad')])
+            (0, 'cp-a', host, (20, 20), 'Ironclad')])
+    assert owner.state['evaluations'] == [] and owner.state.get('best_checkpoint') is None
 
 
 @pytest.mark.parametrize('status, closed', [('save_failed', True), ('save_pending', False)])
