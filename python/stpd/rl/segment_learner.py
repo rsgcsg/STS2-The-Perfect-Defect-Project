@@ -386,6 +386,11 @@ class SegmentLearner:
                 raise BoundaryError("rl_learner", "sgd_process_requires_actor_local_mu")
             if torch.cuda.is_initialized():
                 raise BoundaryError("rl_learner", "sgd_process_controller_has_CUDA_context")
+        if (config.performance is not None and config.performance.prepared_forward != "padded-v1"
+                and self.sgd_options is None):
+            # The faster rows-v2 step is what the in-process GIL convoy eats (S0-GPU
+            # I0: 7.15x), so it is selected only together with the SGD process.
+            raise BoundaryError("rl_learner", "rows_v2_requires_sgd_process")
         self.fd_limits = None
         if self.dataplane is not None:
             from spireagent.rl_socket_transport import ensure_fd_capacity
@@ -625,6 +630,10 @@ class SegmentLearner:
             excluded_seeds=frozenset(settings.excluded_seeds),
             gae_lambda=settings.gae_lambda,
         )
+        if self.performance.prepared_forward != "padded-v1":
+            # S3 rows-v2: preparation workers add the CPU row layout; the forward
+            # refuses any group whose layout does not match this selection.
+            preparation_options["prepared_layout"] = self.performance.prepared_forward
         if self.dataplane is not None:
             from spireagent.rl_local_wal import LocalControlWAL, WalReplication
             from spireagent.rl_socket_transport import BinarySources

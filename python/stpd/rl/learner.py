@@ -140,12 +140,15 @@ class LearnerConfig:
 
     def frozen(self) -> dict[str, Any]:
         """Ordinary run JSON; prepared runs expose only effective performance choices."""
-        from .performance import PREPARED_PERFORMANCE_FIELDS
+        from .performance import FORWARD_IMPLEMENTATION_DEFAULTS, PREPARED_PERFORMANCE_FIELDS
 
         value = {"schema": CONFIG_SCHEMA, **asdict(self)}
         if self.segments is not None and value["performance"] is not None:
-            value["performance"] = {key: value["performance"][key]
-                                    for key in PREPARED_PERFORMANCE_FIELDS}
+            performance = value["performance"]
+            value["performance"] = {key: performance[key] for key in PREPARED_PERFORMANCE_FIELDS}
+            value["performance"].update({key: performance[key] for key, default in
+                                         FORWARD_IMPLEMENTATION_DEFAULTS.items()
+                                         if performance[key] != default})
         return value
 
     def bind_actors(self, actors: int) -> LearnerConfig:

@@ -271,8 +271,19 @@ class MStd(nn.Module):
                       encoded)
         return vectors.index_select(0, torch.tensor(inverse, device=device))
 
-    def tensor_nodes(self, frame: TensorFrame | JointNodes, vectors: Tensor) -> Tensor:
+    def tensor_nodes(self, frame: TensorFrame | JointNodes, vectors: Tensor,
+                     *, flat: dict[str, Any] | None = None) -> Tensor:
+        """`flat` (S3 rows-v2 only) gives each joint reduction as one index list."""
         device = self.ids.weight.device
+
+        def reduce(values: Tensor, key: str, empty: Tensor) -> Tensor:
+            if flat is not None:
+                from .rows_forward import mean_terms_flat
+
+                return mean_terms_flat(values, flat[key], empty)
+            return _mean_terms(values, frame.reductions[key], empty,
+                               non_blocking=self.nonblocking_inputs)
+
         t = {key: frame.tensors[key].to(device, non_blocking=self.nonblocking_inputs) for key in (
             "identities", "identity_fields", "kinds", "positions", "number_fields",
             "numbers", "missing_fields", "text_fields", "text_indices")}
@@ -282,8 +293,7 @@ class MStd(nn.Module):
         id_vectors = self.ids(identities)
         if len(identities):
             id_vectors = id_vectors + self.fields(t["identity_fields"])
-        nodes = _mean_terms(id_vectors, frame.reductions["ids"], self.ids.weight[0],
-                            non_blocking=self.nonblocking_inputs)
+        nodes = reduce(id_vectors, "ids", self.ids.weight[0])
         nodes = nodes + self.kinds(t["kinds"])
         nodes = nodes + positions(t["positions"], 192)
         number_parts = []
@@ -293,17 +303,14 @@ class MStd(nn.Module):
         if len(t["missing_fields"]):
             number_parts.append(self.number_missing(t["missing_fields"]))
         number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
-        number_features = _mean_terms(number_values, frame.reductions["numbers"], self.no_numbers,
-                                      non_blocking=self.nonblocking_inputs)
+        number_features = reduce(number_values, "numbers", self.no_numbers)
         if len(t["text_fields"]):
             terms = vectors.index_select(0, t["text_indices"]) + self.fields(t["text_fields"])
         else:
             terms = vectors.new_zeros((0, 192))
-        features = _mean_terms(terms, frame.reductions["text"], nodes.new_zeros(192),
-                               non_blocking=self.nonblocking_inputs)
+        features = reduce(terms, "text", nodes.new_zeros(192))
         nodes = nodes + (features + number_features)
-        linked = _mean_terms(nodes, frame.reductions["refs"], nodes.new_zeros(192),
-                             non_blocking=self.nonblocking_inputs)
+        linked = reduce(nodes, "refs", nodes.new_zeros(192))
         return cast(Tensor, self.node_norm(nodes + self.relations(linked)))
 
     def node_vectors(self, frame: Frame, vectors: Tensor) -> Tensor:
@@ -456,14 +463,22 @@ class MStd(nn.Module):
             raise ValueError("non_finite_rl4_head_outputs")
         return scores, logits, hp
 
-    def forward_prepared_rl4(self, group: Any) -> tuple[Tensor, Tensor, Tensor]:
+    def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False
+                             ) -> tuple[Tensor, Tensor, Tensor]:
         """RL4.1 tensor region: metadata is complete before the GPU sees it.
 
         Text is encoded from current theta on every update, with gradients through
         CPU-selected duplicate occurrences. No learned value is cached here.
         Static indexing/floor checks belong to the CPU preparation boundary;
         dynamic finite/gradient/KL checks are combined once by the step owner.
+        A group carrying an S3 rows-v2 layout runs the padding-free forward.
         """
+        if getattr(group, "layout", None) is not None:
+            from .rows_forward import forward_rows
+
+            return forward_rows(self, group, compile=compile_rows)
+        if compile_rows:
+            raise ValueError("compiled_rows_forward_requires_row_layout")
         device = self.ids.weight.device
         t = {key: value.to(device, non_blocking=self.nonblocking_inputs)
              for key, value in group.tensors.items()}
