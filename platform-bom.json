@@ -57,7 +57,7 @@
       "component_source_digest_sha256": "af9ff08be273f9f5c79126f080bff24a2c270ef234a2de35aca5b12ccaa5ea77"
     },
     "player_environment_protocol": "1.0.0",
-    "typescript_sdk": "1.3.0-rc.19"
+    "typescript_sdk": "1.3.0-rc.21"
   },
   "public_packages": {
     "connector_host": {
