@@ -16,7 +16,7 @@ risk. One worker has one current assignment; it is not a general assistant colle
 miscellaneous work. Do not spawn merely because slots are available, or create hidden
 worker chains. The lead may implement; delegation never transfers accountability.
 
-项目模型偏好：新子代理默认GPT-6.1-Sol/high；简单任务可选其medium/low，或GPT-6-Luna/xhigh、max，由主管按任务与实际可用模型选择。这是用户项目偏好，不是平台可用性或能力保证，不为换模型重启正在运行的任务。更贵模型只用于具体未决问题。总轮次预算不因worker/上下文更换而重置，也不因此授权付费外部操作。
+项目模型偏好：新子代理默认用Claude子代理或独立代理（用户11-07），主Claude会话任主管与汇报人；简单任务可选较低推理档，或按需用GPT-6.1-Sol、GPT-6-Luna等，由主管按任务与实际可用模型选择。这是用户项目偏好，不是平台可用性或能力保证，不为换模型重启正在运行的任务。更贵模型只用于具体未决问题。总轮次预算不因worker/上下文更换而重置，也不因此授权付费外部操作。
 
 Use a small number of non-overlapping writers on separate branches/worktrees. Reuse a
 suitable clean checkout where possible; read-only reviewers need no new worktree.
