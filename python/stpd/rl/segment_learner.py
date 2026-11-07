@@ -589,6 +589,10 @@ class SegmentLearner:
             excluded_seeds=frozenset(settings.excluded_seeds),
             gae_lambda=settings.gae_lambda,
         )
+        if self.performance.prepared_forward != "padded-v1":
+            # S3 rows-v2: preparation workers add the CPU row layout; the forward
+            # refuses any group whose layout does not match this selection.
+            preparation_options["prepared_layout"] = self.performance.prepared_forward
         if self.dataplane is not None:
             from spireagent.rl_local_wal import LocalControlWAL, WalReplication
             from spireagent.rl_socket_transport import BinarySources

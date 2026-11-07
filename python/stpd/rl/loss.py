@@ -178,10 +178,16 @@ def prepared_update(
         totals = t["targets"].new_zeros(8)
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
         offset = 0
+        rows_forward = performance.prepared_forward == "rows-v2"
         with lock, prepared_precision(model, performance):
             for group in minibatch.groups:
+                if (getattr(group, "layout", None) is not None) != rows_forward:
+                    raise BoundaryError("rl_performance",
+                                        "prepared_layout_does_not_match_selected_forward")
                 phase = time.perf_counter()
-                scores, logits, hp = model.forward_prepared_rl4(group)
+                scores, logits, hp = (
+                    model.forward_prepared_rl4(group, compile_rows=performance.prepared_compile)
+                    if rows_forward else model.forward_prepared_rl4(group))
                 scores = F.pad(scores, (0, t["old_probabilities"].shape[1] - scores.shape[1]),
                                value=-torch.inf if group.policy else 0)
                 phases["forward"] += time.perf_counter() - phase

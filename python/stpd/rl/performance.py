@@ -49,6 +49,15 @@ class PerformanceConfig:
     tf32: bool = False
     deduplicate_text: bool = False
     compile_loss: bool = False  # read-only historical G0 configs; live prepared compile retired
+    # S3 0-level (S0-GPU): explicit training-forward implementation, chosen when a
+    # generation starts and never hot-swapped. "padded-v1" is the original padded
+    # forward; "rows-v2" adds a CPU row layout (no padding in text/scene/roles,
+    # varlen scene attention on supported CUDA). Same weights, inputs, attention
+    # membership and loss denominators; float accumulation order differs, so a
+    # switch starts a new trajectory, not a bitwise continuation.
+    prepared_forward: str = "padded-v1"
+    # rows-v2 only: torch.compile of the per-bucket scene/heads/action block.
+    prepared_compile: bool = False
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -67,6 +76,11 @@ class PerformanceConfig:
                 (type(self.inference_microbatch_size) is not int
                  or not 1 <= self.inference_microbatch_size <= 64)):
             raise BoundaryError("rl_performance", "invalid_inference_microbatch")
+        if self.prepared_forward not in {"padded-v1", "rows-v2"} or type(
+                self.prepared_compile) is not bool:
+            raise BoundaryError("rl_performance", "invalid_prepared_forward")
+        if self.prepared_compile and self.prepared_forward != "rows-v2":
+            raise BoundaryError("rl_performance", "prepared_compile_requires_rows_v2")
         if self.tensor_cache and not self.packed:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
         if self.device_cache and not self.tensor_cache:

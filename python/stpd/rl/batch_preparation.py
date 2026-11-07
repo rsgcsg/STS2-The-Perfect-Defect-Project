@@ -39,6 +39,7 @@ from .prepared_batch import (
     PreparedGroup,
     PreparedMinibatch,
     PrepareRequest,
+    RowLayout,
 )
 from .segment_inputs import decode_auxiliary_bytes, verified_auxiliary_bytes
 from .segment_targets import recorded_targets
@@ -304,6 +305,125 @@ def _role_metadata(
     return indices, weights
 
 
+PREPARED_LAYOUTS = ("padded-v1", "rows-v2")
+ROW_BUCKET_ROWS = 256  # S0-GPU row 8: 256-row buckets
+ROW_WIDTH_MULTIPLE = 64  # S0-GPU rows 6-8: bucket widths in multiples of 64
+
+
+def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
+               width_multiple: int = ROW_WIDTH_MULTIPLE) -> RowLayout:
+    """S3 rows-v2 layout from one complete CPU PreparedGroup (S0-GPU 0-level items).
+
+    Re-indexes the group's own tensors only. Real text rows, real scene slots and
+    nonzero role terms are kept exactly once; every dropped position is padding
+    by construction (checked, never assumed), so means, attention membership and
+    loss denominators are unchanged. Raises on any layout it cannot prove.
+    """
+    if type(bucket_rows) is not int or bucket_rows < 1 or type(width_multiple) is not int \
+            or width_multiple < 1:
+        raise ValueError("invalid_row_layout_bucket")
+    t = group.tensors
+    rows = len(group.rows)
+    if any(t[key].device.type != "cpu" for key in t):
+        raise ValueError("row_layout_requires_host_tensors")
+    # Text: only the unique texts that nodes reference; padding text rows are
+    # never encoded. Width buckets are powers of two up to the prepared width.
+    inverse = t["text_inverse"]
+    texts = int(inverse.max()) + 1 if len(inverse) else 0
+    lengths = t["text_lengths"][:texts]
+    prepared_width = int(t["text_ids"].shape[1])
+    if texts and (int(lengths.min()) < 1 or int(lengths.max()) > prepared_width):
+        raise ValueError("row_layout_text_length_outside_prepared_width")
+    order = torch.argsort(lengths, stable=True)
+    ordered = lengths[order]
+    edges = [edge for edge in (8, 16, 32, 64, 128, 256, 512) if edge < prepared_width]
+    text_buckets, low = [], 0
+    for edge in [*edges, prepared_width]:
+        high = int((ordered <= edge).sum())
+        if high > low:
+            text_buckets.append((high - low, edge))
+        low = high
+    text_slots = torch.empty_like(order)
+    text_slots[order] = torch.arange(texts)
+    joint = group.joint
+    node_text = joint.tensors["text_indices"]
+    if len(node_text) and int(node_text.max()) >= len(inverse):
+        raise ValueError("row_layout_text_term_outside_group")
+    reductions = {}
+    for key, value in joint.reductions.items():
+        parts = [indices for width, _count, indices in value.buckets if width]
+        reductions[key] = (torch.cat(parts) if parts else torch.zeros(0, dtype=torch.long),
+                           tuple((int(width), int(count)) for width, count, _ in value.buckets),
+                           value.inverse)
+    # Scene: each real row's slots are its own contiguous node range (prepare_group).
+    gather, mask = t["scene_gather"], t["scene_mask"]
+    width = int(gather.shape[1])
+    slots = (~mask[:rows]).sum(1)
+    starts = gather[:rows, 0]
+    if bool(((~mask[:rows]).long().cumsum(1) != torch.arange(1, width + 1).clamp(
+            max=slots[:, None])).any()):
+        raise ValueError("row_layout_requires_left_packed_scene_rows")
+    for row in range(rows):
+        count = int(slots[row])
+        if not torch.equal(gather[row, :count], torch.arange(int(starts[row]),
+                                                              int(starts[row]) + count)):
+            raise ValueError("row_layout_requires_contiguous_scene_rows")
+    if t["scene_lengths"][:rows, 0].ne(slots.float()).any():
+        raise ValueError("row_layout_scene_lengths_changed")
+    row_order = torch.argsort(slots, stable=True)
+    catalog = int(t["action_types"].shape[1]) if group.policy else 0
+    buckets, nodes, positions, offsets = [], [], [], []
+    roles: dict[str, list[list[Tensor]]] = {"source": [], "target": []}
+    present: dict[str, list[Tensor]] = {"source": [], "target": []}
+    for first in range(0, rows, bucket_rows):
+        members = row_order[first:first + bucket_rows]
+        counts = slots[members]
+        longest = int(counts.max())
+        bucket_width = min(width, -(-longest // width_multiple) * width_multiple)
+        local = torch.repeat_interleave(torch.arange(len(members)), counts)
+        within = torch.arange(int(counts.sum())) - torch.repeat_interleave(
+            counts.cumsum(0) - counts, counts)
+        nodes.append(torch.repeat_interleave(starts[members], counts) + within)
+        positions.append(local * bucket_width + within)
+        offsets.append(torch.cat((counts.new_zeros(1), counts.cumsum(0))).to(torch.int32))
+        buckets.append((len(members), bucket_width, longest, int(counts.sum())))
+        if group.policy:
+            candidates = (members[:, None] * catalog + torch.arange(catalog)).reshape(-1)
+            owner = torch.arange(len(members)).repeat_interleave(catalog)[:, None]
+            for key in ("source", "target"):
+                indices = t[key + "_indices"][candidates]
+                weights = t[key + "_weights"][candidates]
+                term_rows, term_slots = indices // width, indices % width
+                live = weights != 0
+                own_slot = (term_rows == members.repeat_interleave(catalog)[:, None]) & (
+                    term_slots < counts.repeat_interleave(catalog)[:, None])
+                if bool((live & ~own_slot).any()):
+                    raise ValueError("row_layout_role_term_outside_its_real_scene_row")
+                candidate, column = live.nonzero(as_tuple=True)
+                slot = owner.expand_as(indices)[candidate, column] * bucket_width + term_slots[
+                    candidate, column]
+                roles[key].append([candidate, slot, weights[candidate, column]])
+                present[key].append(weights.sum(1) > 0)
+    role_layout: dict[str, tuple[Tensor, Tensor, Tensor, tuple[int, ...]]] = {}
+    role_flags: dict[str, Tensor] = {}
+    if group.policy:
+        for key in ("source", "target"):
+            role_layout[key] = (torch.cat([part[0] for part in roles[key]]),
+                                torch.cat([part[1] for part in roles[key]]),
+                                torch.cat([part[2] for part in roles[key]]),
+                                tuple(len(part[0]) for part in roles[key]))
+            role_flags[key] = torch.cat(present[key])
+    scene_inverse = torch.empty_like(row_order)
+    scene_inverse[row_order] = torch.arange(rows)
+    return RowLayout(
+        text_buckets=tuple(text_buckets), text_order=order, text_inverse=text_slots,
+        node_text_indices=inverse[node_text] if len(node_text) else node_text.clone(),
+        reductions=reductions, scene_buckets=tuple(buckets), scene_rows=row_order,
+        scene_inverse=scene_inverse, scene_nodes=torch.cat(nodes),
+        scene_positions=torch.cat(positions), scene_lengths=slots[row_order],
+        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags)
+
+
 def prepare_group(
     frames: list[TensorFrame],
     rows: tuple[int, ...],
@@ -311,6 +431,7 @@ def prepare_group(
     floors: Tensor,
     *,
     deduplicate_text: bool,
+    layout: str = "padded-v1",
 ) -> PreparedGroup:
     """CPU tensor-only forward inputs, including trainable-text occurrence mapping."""
     scene_width = _bucket(
@@ -390,7 +511,12 @@ def prepare_group(
             )
             data[key + "_indices"] = indices
             data[key + "_weights"] = weights
-    return PreparedGroup(rows, policy, combined, data)
+    group = PreparedGroup(rows, policy, combined, data)
+    if layout == "padded-v1":
+        return group
+    if layout != "rows-v2":
+        raise ValueError("unsupported_prepared_layout")
+    return dataclasses.replace(group, layout=row_layout(group))
 
 
 def assemble(
@@ -402,8 +528,11 @@ def assemble(
     scene_attention_area: int = 67108864,
     text_attention_area: int = 67108864,
     auxiliary_frames: tuple[AuxiliaryFrame, ...] = (),
+    prepared_layout: str = "padded-v1",
 ) -> PreparedBatch:
     began = time.perf_counter()
+    if prepared_layout not in PREPARED_LAYOUTS:
+        raise ValueError("unsupported_prepared_layout")
     if type(request.epochs) is not int or request.epochs < 1:
         raise ValueError("positive_prepared_epochs_required")
     by_id = {source.segment_id: source for source in sources}
@@ -516,7 +645,8 @@ def assemble(
                 or (text_count + frame.text_count) * width**2 > text_attention_area
             ):
                 groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
-                    floor_tensor[group], deduplicate_text=deduplicate_text))
+                    floor_tensor[group], deduplicate_text=deduplicate_text,
+                    layout=prepared_layout))
                 group, text_count, text_width, scene_width = [], 0, 0, 0
             group.append(row)
             text_count += frame.text_count
@@ -524,7 +654,8 @@ def assemble(
             scene_width = max(scene_width, frame.entity_count)
         if group:
             groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
-                floor_tensor[group], deduplicate_text=deduplicate_text))
+                floor_tensor[group], deduplicate_text=deduplicate_text,
+                    layout=prepared_layout))
         order = [row for group in groups for row in group.rows]
         selector = torch.tensor(order, dtype=torch.long)
         policy_indices = torch.nonzero(policy_mask[selector], as_tuple=True)[0]
@@ -711,7 +842,10 @@ class BatchPreparer:
         text_attention_area: int = 67108864,
         excluded_seeds: frozenset[str] = frozenset(),
         gae_lambda: float = 0.99,
+        prepared_layout: str = "padded-v1",
     ) -> None:
+        if prepared_layout not in PREPARED_LAYOUTS:
+            raise ValueError("unsupported_prepared_layout")
         self.pool = ProcessPoolExecutor(
             max_workers=workers,
             mp_context=multiprocessing.get_context("spawn"),
@@ -728,6 +862,8 @@ class BatchPreparer:
             scene_attention_area=scene_attention_area,
             text_attention_area=text_attention_area,
         )
+        if prepared_layout != "padded-v1":
+            self.options["prepared_layout"] = prepared_layout
         self.pending: Future[PreparedBatch] | None = None
 
     def submit(
