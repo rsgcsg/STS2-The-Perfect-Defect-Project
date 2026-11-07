@@ -865,6 +865,31 @@ def test_save_failed_keeps_dispatching_and_batch_end_retry_recovers_score(ledger
     assert report["loss"] == 4 and report["save_failed"] == 0
 
 
+def test_deferred_save_keeps_its_pending_credit_until_its_one_retry(ledger, monkeypatch):
+    """Review #387 R4: a failed save still holds credit, so no new game takes its room."""
+    from spireagent.workbench import evaluation_ledger as module
+
+    usage = shutil.disk_usage(ledger.directory)
+    monkeypatch.setattr(module.shutil, "disk_usage",
+                        lambda _: usage._replace(free=100 * 1024**3))
+    configuration = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
+    configuration.update(pipeline={"save_workers": 1, "pending_limit": 1})
+    execution = ledger.directory.parent / "one-credit-execution.json"
+    execution.write_bytes(json_bytes(configuration))
+    manifest = ledger.plan["slots"][0]["manifest"]
+    current = EvaluationLedger.create(ledger.directory.parent / "one-credit-ledger",
+        Path(manifest["path"]), manifest["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+    executor = QueuedSaveExecutor(fail_once=True)
+    result = current.run_managed(workers=1, max_episodes=3, executor=executor)
+    first = Path(current.slots()[0]["attempt_report"])
+    # The only credit stays with the deferred save: it is retried before the next offer.
+    assert executor.saved_paths[:2] == [first, first]
+    assert result["dispatched"] == 3 and executor.offers == 3 and executor.saves == 4
+    assert result["save_retried"] == [current.slots()[0]["slot_id"]]
+    assert result["save_failed_after_retry"] == [] and result["new_finished"] == 3
+
+
 def test_save_failed_twice_stays_excluded_with_originals_and_typed_record(ledger):
     executor = QueuedSaveExecutor(failures=2)
     result = ledger.run_managed(workers=1, max_episodes=3, executor=executor)
@@ -1304,10 +1329,15 @@ _LOADED_WORLD = _prepared_identity(
 @pytest.mark.parametrize("identity,code", [
     (None, "prepared_identity_invalid"),
     ([], "prepared_identity_invalid"),
-    (_prepared_identity(episode_provenance=KeyError), "prepared_seed_changed"),
+    (_prepared_identity(episode_provenance=KeyError), "prepared_provenance_not_passed"),
+    (_prepared_identity(episode_provenance="pass"), "prepared_provenance_not_passed"),
+    # Review #389 L1: the same seed whose provenance did not pass is not a seed change.
     (_prepared_identity(episode_provenance={"verdict": "provenance_incomplete",
-                                            "actual_seed": "seed"}), "prepared_seed_changed"),
+                                            "actual_seed": "seed"}),
+     "prepared_provenance_not_passed"),
     (_prepared_identity(episode_provenance={"verdict": "provenance_pass",
+                                            "actual_seed": "other"}), "prepared_seed_changed"),
+    (_prepared_identity(episode_provenance={"verdict": "provenance_incomplete",
                                             "actual_seed": "other"}), "prepared_seed_changed"),
     (_LOADED_WORLD, "prepared_initial_progress_missing"),
     (_prepared_identity(initial_progress=KeyError), "prepared_initial_progress_missing"),
@@ -1331,8 +1361,16 @@ def test_prepared_identity_fails_closed_with_a_typed_code(identity, code):
                               initial_progress=_PREPARED_PROGRESS)
 
 
+@pytest.mark.parametrize("reply,reason,name", [
+    ({"result": {"identity": _LOADED_WORLD}}, "prepared_initial_progress_missing",
+     "episode-identity.json"),
+    # Review #389 L3: a malformed reply envelope is typed and its original kept.
+    ({}, "prepared_identity_reply_invalid", "episode-identity-reply.json"),
+    ({"result": None}, "prepared_identity_reply_invalid", "episode-identity-reply.json"),
+    ({"result": {}}, "prepared_identity_reply_invalid", "episode-identity-reply.json"),
+])
 def test_executor_records_unreplayed_progress_as_typed_unknown_and_keeps_identity(
-    tmp_path, monkeypatch, synthetic_managed_admission,
+    tmp_path, monkeypatch, synthetic_managed_admission, reply, reason, name,
 ):
     """Real executor path up to the identity gate; Host, model and Runtime are faked."""
     from types import SimpleNamespace
@@ -1355,7 +1393,7 @@ def test_executor_records_unreplayed_progress_as_typed_unknown_and_keeps_identit
              "episode": {"game_continuity_id": "game"}}
     manager = SimpleNamespace(
         reset=lambda *_args, **_kwargs: {},
-        request=lambda _: {"result": {"identity": _LOADED_WORLD}},
+        request=lambda _: reply,
         close_host=lambda: {"result": {"exit": {"code": 0}}},
     )
     launch = SimpleNamespace(pid=1, process=SimpleNamespace(wait=lambda **_: 0))
@@ -1378,6 +1416,11 @@ def test_executor_records_unreplayed_progress_as_typed_unknown_and_keeps_identit
            "world_mutation_offered": False}
     executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
              artifacts, lambda: None)
-    assert (row["status"], row["reason"]) == ("unknown", "prepared_initial_progress_missing")
-    assert row["episode_identity"] == "episode-identity.json"
-    assert json.loads(stored["episode-identity.json"]) == _LOADED_WORLD
+    assert (row["status"], row["reason"]) == ("unknown", reason)
+    assert list(stored)[:2] == ["managed-reset.json", name]
+    if name == "episode-identity.json":
+        assert row["episode_identity"] == name
+        assert json.loads(stored[name]) == _LOADED_WORLD
+    else:
+        assert row["episode_identity_reply"] == name and "episode_identity" not in row
+        assert json.loads(stored[name]) == reply

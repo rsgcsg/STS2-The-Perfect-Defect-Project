@@ -45,6 +45,8 @@ def test_failure_before_typed_seal_keeps_all_available_originals(
     row = {"selection_id": "m", "seed": "new", "manifest_sha256": "d"*64}
     report = {"episodes": [row], "status": "running"}
     calls = []
+    identity = {"episode_provenance": {"verdict": "provenance_incomplete", "actual_seed": "new"},
+                "initial_progress": None}
 
     def failed_original(self, row, manifest, artifacts, checkpoint):
         calls.append(1)
@@ -54,6 +56,7 @@ def test_failure_before_typed_seal_keeps_all_available_originals(
         run.mkdir(parents=True)
         (run / "events.jsonl").write_bytes(b'{"incomplete":true}\n')
         row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
+        row["episode_identity"] = artifacts.put("episode-identity.json", json_bytes(identity))
         if not startup_known:
             row.pop("run_id")
         checkpoint()
@@ -70,6 +73,8 @@ def test_failure_before_typed_seal_keeps_all_available_originals(
     receipt = json.loads((artifacts.root/final["failure_preservation"]["path"]).read_bytes())
     assert receipt["full_readback"] and receipt["typed_recording_qualified"] is False
     manifest = executor.peer.get_manifest(final["stored_failure_id"])
+    # Review #389 L2: the judged Host identity outlives the node-local attempt.
+    assert manifest.parameters.value()["facts"]["episode_identity"] == identity
     transfer = json.loads(b"".join(executor.peer.read_payload(manifest.payload("transfer"))))
     assert [f["path"] for f in transfer["files"]] == (
         ["events.jsonl"] if startup_known else ["failed-one/events.jsonl"])

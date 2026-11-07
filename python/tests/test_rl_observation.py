@@ -356,6 +356,19 @@ def test_reward_lower_bound_without_facts_uses_row_bound_or_zero_and_never_score
     assert summary['lower_bound']['L'] < .3071
 
 
+def test_reward_bound_is_over_planned_rows_so_a_deep_unknown_puts_the_mean_below_L():
+    """R14: c13 eval-0001 read mean .374 < L .382. Not a bug: the official mean is over the
+    scored rows, L/U over all planned rows; excluded games that stopped deep score above it."""
+    from stpd.evaluation.rl_observation import reward_summary
+
+    cohorts, facts = u3_cohorts()
+    summary = reward_summary(cohorts['10h'], facts)
+    assert summary['mean'] < summary['lower_bound']['L']
+    meaning = summary['lower_bound']['meaning']
+    assert 'means over all 50 planned rows' in meaning and 'the 2 excluded rows' in meaning
+    assert 'over the 48 scored rows only' in meaning and 'below L (never above U' in meaning
+
+
 def test_default_report_writes_reward_table_and_excluded_floors(tmp_path):
     cohorts, facts = u3_cohorts()
     full = {}
@@ -374,9 +387,36 @@ def test_default_report_writes_reward_table_and_excluded_floors(tmp_path):
     readme = (tmp_path / 'report/README.md').read_text()
     assert 'Mean reward score (reward v2, per difficulty)' in readme
     assert '| current | 0 | 50 | 48 | 2 | 0.3071 | [0.3216, ' in readme
+    assert 'Official mean (scored rows) | Bound [L, U] (all planned rows, diagnostic)' in readme
+    assert 'the mean can lie below L (never above U)' in readme
     assert 'public floor >= 48 (excluded_facts)' in readme
     saved_report = json.loads((tmp_path / 'report/report.json').read_bytes())
     assert saved_report['rewards']['baseline']['excluded'] == 1
+
+
+def test_reward_reports_missing_boss_witness_and_bounds_only_same_seed_sets():
+    """Review #387 R5/R7: a witness-less loss is counted; differing seeds have no bound."""
+    from stpd.evaluation.rl_observation import compare_rewards, reward_lines, reward_summary
+
+    def row(seed, result, floor, bosses):
+        return {'seed': seed, 'run_id': seed, 'status': 'finished', 'scored': True,
+                'result': result, 'floor': floor, 'observed_floor_lower_bound': floor,
+                'boss_cleared_acts': [] if bosses is None else list(range(1, bosses + 1)),
+                'boss_count': bosses}
+    cohort = {'ascension': 0, 'rows': [row('a', 'loss', 20, None), row('b', 'loss', 20, 1),
+                                       row('c', 'win', 49, None)]}
+    summary = reward_summary(cohort)
+    assert summary['scored'] == 3 and summary['scored_loss_boss_witness_missing'] == 1
+    text = '\n'.join(reward_lines({'current': summary}, {}))
+    assert 'Scored losses without a Boss witness' in text and 'current 1' in text
+    same = compare_rewards(cohort, cohort)
+    assert same['mean_difference_bound'] is not None
+    assert same['mean_difference_bound_reason'] is None
+    other = {'ascension': 0, 'rows': [row('a', 'loss', 20, 1), row('d', 'loss', 25, 1)]}
+    different = compare_rewards(cohort, other)
+    assert different['mean_difference_bound'] is None
+    assert different['mean_difference_bound_reason'] == 'different_planned_seed_set'
+    assert different['official']['paired_n'] == 1  # paired delta stays per shared seed
 
 
 def test_ledger_public_floor_is_an_excluded_lower_bound_not_a_score(tmp_path):

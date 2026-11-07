@@ -180,6 +180,24 @@ def reward_overview(cohort: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in value.items() if k not in {'by_seed', 'lower_by_seed'}}
 
 
+def protocol_differences(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Observed-protocol keys for which ``rl_observation.compare`` refuses a pair.
+
+    Same rule as compare (shared keys only). A Host/Runtime/model-input pin change, as
+    between operating windows, is a different measuring instrument, not a regression.
+    """
+    old, new = before['protocol_observed'], after['protocol_observed']
+    return sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
+
+
+def protocol_skip(before: dict[str, Any], after: dict[str, Any], reference: str) -> dict[str, Any]:
+    keys = protocol_differences(before, after)
+    return {'skipped': 'different_observed_protocol', 'differing_keys': keys,
+            'reference': reference, 'values': {
+                key: {'reference': before['protocol_observed'][key],
+                      'current': after['protocol_observed'][key]} for key in keys}}
+
+
 def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool:
     """Occasional unknowns never stop a round: the fraction's denominator is at least
     100 games, so the first few completed games cannot trip it with one unknown."""
@@ -1498,7 +1516,8 @@ class SegmentWatcher(Watcher):
         from spireagent.storage.store import copy_artifact
         from stpd.rl.learner import LearnerConfig
         base = LearnerConfig.read(Path(self.config['learner_config']))
-        if self.config.get('previous_window_state') and not self.state['attempts']:
+        linked = bool(self.config.get('previous_window_state'))
+        if linked and not self.state['attempts']:
             assert base.resume_checkpoint is not None
             return self.cold_checkpoint(base.resume_checkpoint)
         records = self.exchange.checkpoint_records()
@@ -1515,7 +1534,7 @@ class SegmentWatcher(Watcher):
             identities.append(fallback)
         for identity in identities:
             try:
-                return self.cold_checkpoint(identity)
+                cp = self.cold_checkpoint(identity)
             except StoreError as error:
                 if error.code != 'object_not_found':
                     raise
@@ -1524,7 +1543,18 @@ class SegmentWatcher(Watcher):
                 # preservation. Finish that same immutable upload before restore.
                 copy_artifact(self.exchange.store, open_peer(self.config['peer']['archive']),
                               identity, scratch=self.work)
-                return self.cold_checkpoint(identity)
+                cp = self.cold_checkpoint(identity)
+            if linked and (cp.get('operating_budget') or {}).get('id') != self.config['budget_id']:
+                # This window has no CP of its own budget yet (its attempts died before
+                # the first one), so the newest CP is the previous window's: re-enter
+                # from the pinned parent through the same validated new-window link.
+                assert base.resume_checkpoint is not None
+                self.telemetry('window_first_checkpoint_pending',
+                               newest_checkpoint_artifact_id=identity,
+                               parent_checkpoint_artifact_id=base.resume_checkpoint)
+                return (cp if identity == base.resume_checkpoint
+                        else self.cold_checkpoint(base.resume_checkpoint))
+            return cp
         raise ValueError('no_independently_recoverable_checkpoint')
 
     def submit_cpu_step(self, script: Path, root: Path, *, name: str, cpus: int,
@@ -1565,7 +1595,11 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
-        new_window = bool(self.config.get('previous_window_state') and not self.state['attempts'])
+        # The link stays in force until this window publishes its own first CP; a
+        # first attempt that dies earlier re-enters from the same pinned parent.
+        new_window = bool(self.config.get('previous_window_state')
+                          and (cp.get('operating_budget') or {}).get('id')
+                          != self.config['budget_id'])
         if new_window:
             previous = evaluate.read_pinned(self.config['previous_window_state'])
             prior = evaluate.read_pinned(previous['configuration'])
@@ -1886,12 +1920,27 @@ class SegmentWatcher(Watcher):
         if pending is None:
             return
         root = Path(pending['root'])
+        if (pending['stage'] == 'preparation_abandoned'
+                or pending['stage'] == 'failed'
+                and pending.get('reason') == 'absolute_deadline_no_World_offer'):
+            # Preparation only builds a plan; the watcher never submitted it, so no
+            # World was offered. Once its job is terminal the original is recorded as
+            # a skipped evaluation and no longer blocks a completed window's link.
+            if not job_accounting(pending['job_id'])['terminal']:
+                return
+            self.state['evaluations'].append({**pending, 'stage': 'preparation_abandoned',
+                'at_training_seconds': pending['due_seconds'],
+                'skipped': 'absolute_deadline_no_World_offer'})
+            self.state['pending'] = None
+            self.persist()
+            return
         if pending['stage'] == 'preparation':
             if time.time() >= self.config['deadline_at'] - 900:
                 self.signal_once(pending['job_id'])
-                pending['stage'] = 'failed'
+                pending['stage'] = 'preparation_abandoned'
                 pending['reason'] = 'absolute_deadline_no_World_offer'
-                self.state['stop'] = 'absolute_deadline'
+                # Same rule as tick_segment: the deadline never relabels an earlier stop.
+                self.state['stop'] = self.state['stop'] or 'absolute_deadline'
                 self.persist()
                 return
             if not job_accounting(pending['job_id'])['terminal']:
@@ -1952,22 +2001,100 @@ class SegmentWatcher(Watcher):
                     raise ValueError('complete_argmax_evaluation_protocol_required')
             if {r['seed'] for r in baseline['rows']} != {r['seed'] for r in cohort['rows']}:
                 raise ValueError('exact_same_frozen_paired_seed_set_required')
+            # compare's own refusal, checked here so a protocol skip can never bypass it.
+            if any(baseline[k] != cohort[k] for k in ('host_kind', 'character', 'ascension')):
+                raise ValueError('different_host_character_or_ascension')
             compared = [row for row in self.state['evaluations'] if not row.get('skipped')]
-            previous = compared[-1]['cohort'] if compared else baseline
-            report['against_baseline'] = compare(baseline, cohort)
-            report['against_previous'] = compare(previous, cohort)
-            # Default mean reward score (reward v2) and the diagnostic [L, U] bound.
+            # Default mean reward score (reward v2) and the diagnostic [L, U] bound. Standalone,
+            # so they are reported even when no reference shares this cohort's protocol.
             report['reward'] = reward_overview(cohort)
-            report['reward_against_baseline'] = compare_rewards(baseline, cohort)
-            report['reward_against_previous'] = compare_rewards(previous, cohort)
-            report['report_directory'] = str(root / 'comparison')
-            write_report({'baseline': baseline, 'previous': previous, 'current': cohort},
-                         root / 'comparison', scope_note='Managed fixed pool; unknown pairs excluded, '
-                         'no retries. Selection uses raw CP theta, never training returns.')
+            # Paired deltas only within one observed protocol (Host/Runtime/input/progress
+            # pins): a different protocol is recorded as skipped with its keys, not a crash.
+            skipped: dict[str, list[str]] = {}
+
+            def against(label: str, name: str, group: dict[str, Any]) -> tuple[Any, Any]:
+                keys = protocol_differences(group, cohort)
+                if keys:
+                    skipped[label] = keys
+                    return protocol_skip(group, cohort, name), protocol_skip(group, cohort, name)
+                return compare(group, cohort), compare_rewards(group, cohort)
+
+            report['against_baseline'], report['reward_against_baseline'] = against(
+                'baseline', 'baseline', baseline)
+            latest_name, latest = ((compared[-1]['root'], compared[-1]['cohort'])
+                                   if compared else ('baseline', baseline))
+            # The most recent closed cohort with this protocol, else the baseline if it
+            # matches; with neither, the latest closed cohort is recorded as skipped.
+            previous_name, previous = next(
+                ((row['root'], row['cohort']) for row in reversed(compared)
+                 if not protocol_differences(row['cohort'], cohort)),
+                ('baseline', baseline) if 'baseline' not in skipped else (latest_name, latest))
+            if previous_name != latest_name:
+                skipped['latest_closed'] = protocol_differences(latest, cohort)
+            report['previous_reference'] = previous_name
+            report['against_previous'], report['reward_against_previous'] = against(
+                'previous', previous_name, previous)
             best = self.state.get('best_checkpoint')
             best_cohort = self.state.get('best_cohort', baseline)
-            comparison = compare(best_cohort, cohort)
-            if comparison['mean_delta'] is not None and comparison['mean_delta'] > 0:
+            best_keys = protocol_differences(best_cohort, cohort)
+            if best_keys:
+                skipped['best'] = best_keys
+            reference = cfg.get('rollback_reference', 'previous')
+            anchor = (next((row for row in compared if row['at_training_seconds'] == 0), None)
+                      if reference == 'initial_checkpoint' else None)
+            if reference == 'initial_checkpoint':
+                # Refusals before the report is written, so a reconciled re-run is clean.
+                if anchor is None and pending['due_seconds'] != 0:
+                    raise ValueError('initial_checkpoint_evaluation_missing')
+                if (anchor is not None and anchor['checkpoint']['checkpoint_artifact_id']
+                        != cfg['initial_checkpoint']):
+                    raise ValueError('initial_checkpoint_evaluation_binding_changed')
+            anchor_keys = protocol_differences(anchor['cohort'], cohort) if anchor else []
+            if anchor_keys:
+                skipped['recipe_switch'] = anchor_keys
+            # Report from pure inputs before any state change: if it fails, the watch state
+            # (best, superseded_best, stop) is untouched and pending stays the original.
+            report['report_directory'] = str(root / 'comparison')
+            cohorts = {name: group for name, group in (
+                ('baseline', None if 'baseline' in skipped else baseline),
+                ('previous', None if 'previous' in skipped else previous),
+                ('current', cohort)) if group is not None}
+            write_report(cohorts, root / 'comparison',
+                         scope_note='Managed fixed pool; unknown pairs excluded, '
+                         'no retries. Selection uses raw CP theta, never training returns.'
+                         + (' Protocol-skipped references: ' + json.dumps(skipped, sort_keys=True)
+                            if skipped else ''))
+            first_of_protocol = False
+            if best_keys:
+                # The best is chosen only within one protocol. The current best is kept in
+                # superseded_best (never compared across protocols); a returning protocol
+                # resumes its own stored best, else this cohort is the new protocol's first.
+                superseded = self.state.setdefault('superseded_best', [])
+                restored = next((row for row in reversed(superseded)
+                                 if row.get('cohort') is not None
+                                 and not protocol_differences(row['cohort'], cohort)), None)
+                superseded.append({
+                    'best_checkpoint': best, 'cohort': best_cohort,
+                    'best_cohort_source': ('frozen_baseline' if best_cohort == baseline
+                                           else 'evaluation'),
+                    'differing_keys': best_keys, 'superseded_by_evaluation': pending['root']})
+                if restored is None:
+                    first_of_protocol = True
+                    self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
+                    self.state['best_cohort'] = cohort
+                    report['best_selection'] = {
+                        'reason': 'first_cohort_of_new_observed_protocol',
+                        'differing_keys': best_keys}
+                else:
+                    best, best_cohort = restored['best_checkpoint'], restored['cohort']
+                    self.state['best_checkpoint'], self.state['best_cohort'] = best, best_cohort
+                    report['best_selection'] = {
+                        'reason': 'restored_best_of_returning_observed_protocol',
+                        'restored_checkpoint': best, 'differing_keys': best_keys}
+            comparison = None if first_of_protocol else compare(best_cohort, cohort)
+            if comparison is None:
+                pass  # This cohort already is its new protocol's best reference.
+            elif comparison['mean_delta'] is not None and comparison['mean_delta'] > 0:
                 self.state['best_checkpoint'] = binding['checkpoint_artifact_id']
                 self.state['best_cohort'] = cohort
             elif best is None:
@@ -1978,24 +2105,25 @@ class SegmentWatcher(Watcher):
                         Path(self.config['learner_config'])).resume_checkpoint
                 self.state['best_checkpoint'] = resume
                 self.state['best_cohort'] = baseline
-            reference = cfg.get('rollback_reference', 'previous')
             regression_comparison: dict[str, Any] | None = report['against_previous']
             if reference == 'initial_checkpoint':
-                anchor = next((row for row in compared
-                               if row['at_training_seconds'] == 0), None)
                 if anchor is None:
-                    if pending['due_seconds'] != 0:
-                        raise ValueError('initial_checkpoint_evaluation_missing')
                     regression_comparison = None  # The anchor is not a post-switch evaluation.
                 else:
-                    if (anchor['checkpoint']['checkpoint_artifact_id']
-                            != cfg['initial_checkpoint']):
-                        raise ValueError('initial_checkpoint_evaluation_binding_changed')
-                    regression_comparison = compare(anchor['cohort'], cohort)
+                    if anchor_keys:
+                        regression_comparison = protocol_skip(anchor['cohort'], cohort,
+                                                              anchor['root'])
+                    else:
+                        regression_comparison = compare(anchor['cohort'], cohort)
                 report['against_recipe_switch'] = regression_comparison
-            interval = (regression_comparison['bootstrap95_fixed_seed_sensitivity']
+            interval = (regression_comparison.get('bootstrap95_fixed_seed_sensitivity')
                         if regression_comparison is not None else None)
-            regression = bool(interval and interval[1] < 0)
+            regression: bool | None = bool(interval and interval[1] < 0)
+            if regression_comparison is not None and regression_comparison.get('skipped'):
+                # Not compared is not "no regression": None, with the reason, and it never
+                # counts towards the two-regressions stop.
+                regression = None
+                report['paired_regression_skipped'] = regression_comparison['skipped']
             prior = self.state['evaluations'][-1] if self.state['evaluations'] else {}
             report['paired_regression'] = regression
             report['regression_reference'] = reference
@@ -2008,6 +2136,11 @@ class SegmentWatcher(Watcher):
                     'regression_reference': reference,
                     'recipe_after_diagnosis': cfg.get('rollback_recipe'),
                     'automatic_training_resume': False, 'reason': self.state['stop']})
+            if skipped:
+                # Typed alarm only: the cohort and its originals are kept, training continues.
+                report['protocol_skipped'] = skipped
+                self.telemetry('attention', reason='different_observed_protocol',
+                               evaluation=pending['root'], protocol_skipped=skipped)
         else:
             # An incomplete evaluation is recorded and skipped, never a training stop:
             # its originals stay preserved and the next scheduled evaluation compares.
