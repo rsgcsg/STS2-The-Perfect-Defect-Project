@@ -134,7 +134,7 @@ describe("P1 hot-path optimizations keep exact bytes and answers", () => {
         expect(policy.relationAt(publicPath(path))).toBe(expected);
       }
     }
-  });
+  }, 30000); // about 1.7 s locally, about 4x that on CI runners
 
   it("relation() equals develop's on targeted event, detail and shop paths for every kind and revision", () => {
     const scene = { surface: { options: [{ tooltips: [{ kind: "card", card }] }, { tooltips: [{ kind: "text" }, { kind: "card", card }] }] } };
@@ -165,5 +165,5 @@ describe("P1 hot-path optimizations keep exact bytes and answers", () => {
       const path = `combat.content.enemies[${index}].entity_id`;
       expect(policy.relationAt(publicPath(path))).toBe(reference.relation(path));
     }
-  });
+  }, 30000);
 });
