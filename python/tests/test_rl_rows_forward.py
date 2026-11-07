@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import dataclasses as dc
 import itertools
+import os
 
 import pytest
 import test_rl41_w1 as w1
@@ -161,39 +162,82 @@ def test_rows_forward_refuses_training_mode(model, varied):
         model.eval()
 
 
-def test_binary_learner_trains_rows_v2_end_to_end_close_to_padded(tmp_path, monkeypatch):
-    """Real socket/WAL/preparation workers: the selection reaches the workers, the
-    layout survives the binary hand-off, and 2 datasets train like padded-v1."""
-    import test_rl_pipeline_checkpoint as pipeline
+@pytest.mark.skipif(os.name != "posix", reason="real spawned SGD process")
+def test_rows_v2_trains_in_the_sgd_process_close_to_padded_in_process(tmp_path, monkeypatch):
+    """Real socket/WAL/preparation workers and SGD child: the selection reaches the
+    workers, the layout survives the binary hand-off into the child, and 2 datasets
+    train like padded-v1 in-process. Each update reports the attention path."""
+    import test_rl_sgd_process as split
 
-    original = pipeline.configuration
+    original = split.configuration
     trained = {}
-    for layout in ("padded-v1", "rows-v2"):
+    for layout, sgd in (("padded-v1", False), ("rows-v2", True)):
         def configured(path, patch, _layout=layout, **kwargs):
             config, io = original(path, patch, **kwargs)
             return dc.replace(config, performance=dc.replace(
                 config.performance, prepared_forward=_layout)), io
 
-        monkeypatch.setattr(pipeline, "configuration", configured)
-        (tmp_path / layout).mkdir()
-        torch.manual_seed(20261108)
-        owner, _, _ = pipeline.binary_owner(tmp_path / layout, monkeypatch, datasets=2)
+        monkeypatch.setattr(split, "configuration", configured)
+        owner, _, _ = split.terminal_owner(tmp_path / layout, monkeypatch, sgd=sgd)
         try:
-            for _ in range(2):
-                assert owner._prepare()
-                groups = [g for mb in owner.active_batch.minibatches for g in mb.groups]
-                assert all((g.layout is not None) == (layout == "rows-v2") for g in groups)
-                owner._prepare_ahead()
-                while owner.active is not None:
-                    owner._step()
-                    owner._prepare_ahead()
+            events = split.train(owner, 2)
             assert owner.updates == 4
-            trained[layout] = {k: v.detach().clone() for k, v in owner.model.state_dict().items()}
+            facts = [event.get("rows_forward") for event in events]
+            assert facts == ([{"path": "masked", "compiled": False}] * 4 if sgd
+                             else [None] * 4)  # CPU: masked; varlen is CUDA sm80+ BF16
+            owner.checkpoint(final=True)
+            trained[layout] = split.read_cp(owner)[1].weights
         finally:
             owner.close()
     for name, value in trained["padded-v1"].items():
         torch.testing.assert_close(value, trained["rows-v2"][name], rtol=1e-4, atol=1e-5,
                                    msg=name)
+
+
+@pytest.mark.parametrize("compile_", [False, True])
+def test_rows_v2_without_the_sgd_process_is_a_typed_config_error(tmp_path, monkeypatch,
+                                                                  compile_):
+    import test_rl_sgd_process as split
+
+    original = split.configuration
+
+    def configured(path, patch, **kwargs):
+        config, io = original(path, patch, **kwargs)
+        return dc.replace(config, performance=dc.replace(
+            config.performance, prepared_forward="rows-v2", prepared_compile=compile_)), io
+
+    monkeypatch.setattr(split, "configuration", configured)
+    with pytest.raises(BoundaryError, match="rows_v2_requires_sgd_process"):
+        split.terminal_owner(tmp_path, monkeypatch, sgd=False, episodes=0)
+
+
+@pytest.fixture
+def bare(monkeypatch):
+    """No deck, no playable cards (so no role terms) and an empty catalog label."""
+    original = w1.public_state
+
+    def state():
+        value = original()
+        value["deck"]["content"]["cards"] = []
+        value["scene"]["content"]["surface"] = {"playable_cards": []}
+        value["catalog"][0]["label"] = ""
+        return value
+
+    monkeypatch.setattr(w1, "public_state", state)
+
+
+def test_rows_forward_handles_empty_text_and_absent_roles(model, bare):
+    """Card edge cases: an empty text string and candidates with no role terms.
+    (A group with no text at all is not producible: kind/field texts are always
+    present in a public frame.)"""
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    for group in groups:
+        layout = row_layout(group)
+        assert len(layout.roles["target"][0]) == 0  # no target terms anywhere
+        assert not bool(layout.role_present["target"].any())
+        assert not bool(layout.role_present["source"].all())
+        assert_same_function(model, group, dc.replace(group, layout=layout))
 
 
 def test_effective_config_records_rows_v2_only_when_selected_and_resume_ignores_it():
@@ -228,6 +272,9 @@ def test_compiled_rows_forward_trains_and_diagnostic_steps_run_eager(model, vari
                                    config=config, target_kl=1e9,
                                    performance=PerformanceConfig(), diagnostics=diagnostics)
         assert result["stepped"] and ("trunk_gradients" in result) == diagnostics
+        facts = result["rows_forward"]
+        assert facts["path"] == "masked" and facts["compiled"] is not diagnostics
+        assert facts["dynamo_frames_ok"] >= (0 if diagnostics else 1)
         assert result["policy_loss"] == pytest.approx(expected["policy_loss"], rel=1e-4,
                                                       abs=1e-6)
     for name, value in reference.state_dict().items():

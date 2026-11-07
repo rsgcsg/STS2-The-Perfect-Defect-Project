@@ -116,6 +116,18 @@ def varlen_supported(device: torch.device) -> bool:
             and torch.cuda.get_device_capability(device) >= (8, 0))
 
 
+def compile_counters() -> dict[str, int]:
+    """This process's dynamo counters (the SGD process runs only this model).
+
+    frames_ok counts compiles and recompiles; frames_total - frames_ok counts
+    frames dynamo did not compile (for example past cache_size_limit: eager)."""
+    from torch._dynamo.utils import counters
+
+    return {"dynamo_frames_ok": int(counters["frames"]["ok"]),
+            "dynamo_frames_total": int(counters["frames"]["total"]),
+            "dynamo_unique_graphs": int(counters["stats"]["unique_graphs"])}
+
+
 def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
     """AttentionValueResidual.forward with batch-first attention."""
     pooled = attention(module.attention, module.query.expand(scene.shape[0], -1, -1), scene, mask)

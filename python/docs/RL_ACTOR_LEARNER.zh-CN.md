@@ -149,7 +149,10 @@ lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功�
 - compile：每桶块按形状编译（`dynamic=None`），每进程首见形状要编译；逐头梯度诊断步（`retain_graph`）与编译后向的 donated buffer
   不兼容，诊断步走同一块的 eager。生产形状更多样时的重编译次数和缓存上限未在真实运行里测，默认不开。
 - 采用规则：提速后的步对同进程 GIL 护航更敏感（S0-GPU I0：0.48 s 步同进程 ×1.0 负载慢 7.15 倍），所以与
-  `dataplane.sgd_process=true`（显式 SGD 进程）同一 release 上线，不单独进同进程学习端。
+  `dataplane.sgd_process=true`（显式 SGD 进程）同一 release 上线，不单独进同进程学习端：`SegmentLearner` 在
+  `prepared_forward!="padded-v1"` 而没有选 SGD 进程时报 `rows_v2_requires_sgd_process`（compile 只能配 rows-v2，同样被拦）。
+- 上报：每次更新的 `progress` 事件带 `rows_forward={path: varlen|masked, compiled}`；开 compile 时再带本进程 dynamo 计数
+  （`dynamo_frames_ok` 含重编译，`dynamo_frames_total - dynamo_frames_ok` 是没编译、走 eager 的帧，如超过 cache_size_limit）。
 
 ## 冻结身份和 μ
 
