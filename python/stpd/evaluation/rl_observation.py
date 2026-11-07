@@ -250,12 +250,18 @@ def progress_summary(
                    'absence is not zero. Human/mixed overlays never grant evaluation eligibility.'}
 
 
-def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+def compare(before: dict[str, Any], after: dict[str, Any], *,
+            compatible_keys: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
+    """Paired max-floor deltas. ``compatible_keys`` names protocol keys whose difference
+    the caller matched to a registered compatible fix; any other difference refuses."""
     if any(before[k] != after[k] for k in ('host_kind', 'character', 'ascension')):
         raise ValueError('different_host_character_or_ascension')
+    allowed = []
     for key in before['protocol_observed'].keys() & after['protocol_observed'].keys():
         if before['protocol_observed'][key] != after['protocol_observed'][key]:
-            raise ValueError('different_observed_protocol')
+            if key not in compatible_keys:
+                raise ValueError('different_observed_protocol')
+            allowed.append(key)
     b = {r['seed']: r for r in before['rows']}
     a = {r['seed']: r for r in after['rows']}
     rows = []
@@ -294,6 +300,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
                             'zero variance cannot plan n; deterministic repeats do not increase n.',
         'bootstrap95_fixed_seed_sensitivity': interval,
         'approx_paired_seeds_for_one_floor_80pct_power': required,
+        **({'compatible_protocol_keys': sorted(allowed)} if allowed else {}),
         'protocol_warning': 'Verify exact game/Host/model/action mode/manifest identities; '
                             'a fixed suite bootstrap is sensitivity, not population qualification.',
         'rows': rows}
@@ -353,7 +360,10 @@ def reward_summary(cohort: dict[str, Any],
             'scored_loss_boss_witness_missing': None,
             'lower_bound': {'L': None, 'U': None,
                             'meaning': 'Not computed: reward_spec_missing_ascension.'},
-            'excluded_rows': [], 'by_seed': {}, 'lower_by_seed': {}}
+            'conservative': {'score': None, 'counted': None, 'not_counted': None,
+                             'meaning': 'Not computed: reward_spec_missing_ascension.'},
+            'excluded_rows': [], 'by_seed': {}, 'lower_by_seed': {},
+            'conservative_by_seed': {}}
     official: dict[str, float] = {}
     lower: dict[str, float] = {}
     excluded = []
@@ -376,9 +386,22 @@ def reward_summary(cohort: dict[str, Any],
         lower[row['seed']] = value if value is not None else 0.0
         excluded.append({'seed': row['seed'], 'run_id': row.get('run_id'),
                          'status': row.get('status'), 'public_floor_lower_bound': floor,
-                         'bosses_witnessed': bosses, 'source': source})
+                         'bosses_witnessed': bosses, 'source': source,
+                         'unknown_category': row.get('unknown_category')})
     win = float(spec['win'])
     total = sum(official.values())
+    # Conservative headline score (card U4 B): every planned row at its L value, except
+    # rows that say nothing about the model: an infrastructure unknown (typed by the
+    # watcher as unknown_category) and a game never played (not_started).
+    not_counted = {'infrastructure_unknown': 0, 'not_played': 0}
+    conservative: dict[str, float] = {}
+    for row in cohort['rows']:
+        if row['seed'] not in official and row.get('status') == 'not_started':
+            not_counted['not_played'] += 1
+        elif row['seed'] not in official and row.get('unknown_category') == 'infrastructure':
+            not_counted['infrastructure_unknown'] += 1
+        else:
+            conservative[row['seed']] = lower[row['seed']]
     # A scored loss without a Boss witness adds no Boss bonus (same as training), so
     # the official mean can be low by 0.1 per uncounted Boss: report the count with it.
     witness_missing = sum(row['seed'] in official and row.get('result') == 'loss'
@@ -400,7 +423,15 @@ def reward_summary(cohort: dict[str, Any],
                        'a win being the maximum): exactly when the excluded rows average a '
                        'higher L value than the scored mean. Not natural endpoints, not the '
                        'official score.'},
-        'excluded_rows': excluded, 'by_seed': official, 'lower_by_seed': lower}
+        'conservative': {
+            'score': (sum(conservative.values()) / len(conservative)) if conservative else None,
+            'counted': len(conservative), 'not_counted': not_counted,
+            'meaning': 'Conservative score: mean over every planned game, each unknown or '
+                       'other excluded game scored as a loss at the floor it reached (its L '
+                       'value); infrastructure unknowns and games never played are left out. '
+                       'Default for best-CP selection and regression checks.'},
+        'excluded_rows': excluded, 'by_seed': official, 'lower_by_seed': lower,
+        'conservative_by_seed': conservative}
 
 
 def _paired_reward_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, Any]:
@@ -442,17 +473,23 @@ def compare_rewards(before: dict[str, Any], after: dict[str, Any], *,
                                              else 'different_planned_seed_set'),
             'lower_bound_paired': _paired_reward_delta(old['lower_by_seed'],
                                                        new['lower_by_seed']),
+            'conservative_paired': _paired_reward_delta(old['conservative_by_seed'],
+                                                        new['conservative_by_seed']),
             'meaning': 'official = paired reward-v2 delta on seeds scored on both sides. '
                        'mean_difference_bound = [L_new-U_old, U_new-L_old]. A difference of '
-                       'lower bounds is NOT a lower bound on improvement.'}
+                       'lower bounds is NOT a lower bound on improvement. conservative_paired '
+                       '= paired delta of the conservative per-game values on seeds counted '
+                       'on both sides.'}
 
 
 def write_report(
     cohorts: dict[str, dict[str, Any]], output: Path, *, through_floor: int | None = None,
     scope_note: str | None = None,
     excluded_facts: dict[str, dict[str, Any]] | None = None,
+    compatible_keys: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
-    comparisons = {name: compare(cohort, cohorts['current'])
+    comparisons = {name: compare(cohort, cohorts['current'],
+                                 compatible_keys=(compatible_keys or {}).get(name, frozenset()))
                    for name, cohort in cohorts.items() if name != 'current'}
     rewards = {name: reward_summary(c, excluded_facts) for name, c in cohorts.items()}
     reward_comparisons = {name: compare_rewards(cohort, cohorts['current'],
@@ -525,34 +562,43 @@ def reward_lines(rewards: dict[str, dict[str, Any]],
                  comparisons: dict[str, dict[str, Any]]) -> list[str]:
     lines = ['', '## Mean reward score (reward v2, per difficulty)', '',
              '| Cohort | Ascension | Planned | Scored | Excluded | Official mean (scored rows) | '
-             'Bound [L, U] (all planned rows, diagnostic) |', '|---|---:|---:|---:|---:|---:|---|']
+             'Conservative score (all planned, unknown at reached floor) | '
+             'Bound [L, U] (all planned rows, diagnostic) |',
+             '|---|---:|---:|---:|---:|---:|---:|---|']
     for name, r in rewards.items():
         bound = r['lower_bound']
         if r['reason'] == 'reward_spec_missing_ascension':
             lines.append(f"| {name} | {r['ascension']} | {r['planned']} | — | — | "
-                         f"not computed: {r['reason']} | — |")
+                         f"not computed: {r['reason']} | — | — |")
             continue
+        conservative = r.get('conservative') or {}
         lines.append(f"| {name} | {r['ascension']} | {r['planned']} | {r['scored']} | "
                      f"{r['excluded']} | {_number(r['mean'])} | "
+                     f"{_number(conservative.get('score'))} | "
                      f"[{_number(bound['L'])}, {_number(bound['U'])}] |")
     if comparisons:
         lines += ['', '| current vs | Pairs | Better / same / worse | Official paired delta | '
-                  'Bootstrap 95% | Mean-difference bound |', '|---|---:|---|---:|---|---|']
+                  'Bootstrap 95% | Conservative paired delta (pairs) | Mean-difference bound |',
+                  '|---|---:|---|---:|---|---:|---|']
         for name, c in comparisons.items():
             o, bound = c['official'], c['mean_difference_bound']
             interval = o['bootstrap95_fixed_seed_sensitivity']
+            conservative = c.get('conservative_paired') or {}
             lines.append(
                 f"| {name} | {o['paired_n']} | {o['better']} / {o['same']} / {o['worse']} | "
                 f"{_number(o['mean_delta'], True)} | "
                 + (f"[{_number(interval[0], True)}, {_number(interval[1], True)}]"
                    if interval else '—') + ' | '
+                + f"{_number(conservative.get('mean_delta'), True)} "
+                  f"({conservative.get('paired_n', 0)}) | "
                 + (f"[{_number(bound[0], True)}, {_number(bound[1], True)}]" if bound else '—')
                 + ' |')
     excluded = [(name, row) for name, r in rewards.items() for row in r['excluded_rows']]
     if excluded:
         lines += ['', 'Excluded games (never scored; their pairs are dropped):', '']
-        lines += [f"- {name} {row['seed']}: {row['status']}, public floor >= "
-                  f"{row['public_floor_lower_bound']} ({row['source']}), "
+        lines += [f"- {name} {row['seed']}: {row['status']}"
+                  + (f" ({row['unknown_category']})" if row.get('unknown_category') else '')
+                  + f", public floor >= {row['public_floor_lower_bound']} ({row['source']}), "
                   f"Bosses witnessed {row['bosses_witnessed']}" for name, row in excluded]
     missing = [(name, r['scored_loss_boss_witness_missing']) for name, r in rewards.items()
                if r.get('scored_loss_boss_witness_missing')]

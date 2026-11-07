@@ -1,0 +1,5 @@
+{
+  "schema": "spireagent/friday-compatible-fixes-1",
+  "meaning": "Registered compatible Host fixes (card U4 D). An entry says host_pin `from` -> `to` changes only games that ended unknown before; `proof` pins its fixed-seed rerun artifact showing previously normal games step-for-step not worse. The watcher then compares cohorts across that pair, with a note; any other protocol difference is still skipped. Matched exactly, either direction, never chained. Entry keys: id, key (host_pin), from, to, proof {artifact, sha256}, optional approved, note.",
+  "entries": []
+}
