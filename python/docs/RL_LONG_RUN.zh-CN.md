@@ -262,8 +262,14 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
 之后补位与新attempt的actor、CPU步和评估job的`--exclude` = 配置exclude_nodes + 自动排除节点。排除前的原unknown照计入全局门，
 不重投；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
-限制：排除在本watch内永久，不自动重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
+限制：排除在本watch内永久，watch不自己重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
 新运营窗口从新state开始不继承；`release_swap.py`两种续跑都把前任自动排除的节点并进`exclude_nodes`（另见`avoid_actor_nodes`）。
+重新准入只在自然重启点、由负责人按节点体检证据决定（`release_swap.py --readmit`，见“换 release 续训”）：
+配置`readmit_nodes`里的节点在同窗口续跑首次启动时移出继承的自动排除（排除期间那段原局仍隔离、仍不进门），
+之后它的局照常计数，并开一个新的#386窗口，坏了会再被排除。请求里不是自动排除的节点不改，
+记一条`node_readmission_skipped`事件。
+每个actor结果带`node_nfs_events`：分配开始和结束时节点内核日志里NFS lost locks、state manager失败、
+server not responding的计数差（读不到内核日志记`kernel_log_unavailable`），供节点诊断用，不影响门和排除。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
@@ -307,7 +313,13 @@ unknown再多也不作废；只有原件缺失（没开、待保存、清理未�
 （`evaluation.selection_score`可选`conservative`/`finished_mean`/`paired_max_floor`，记录里写
 `selection_score`/`regression_score`；旧记录按`paired_max_floor`，换分口径时不跨口径连成两次回归）。
 单局默认墙钟1800 s（`evaluation.episode_seconds`）；`evaluation.avoid_actor_nodes=true`时评估job排除
-本watch在跑actor的节点。兼容修复登记在`tools/friday/compatible-fixes.json`（host_pin X→Y + 固定种子
+本watch在跑actor的节点。`evaluation.exclude_nodes`（节点名列表）设了时，评估job和它的1核prepare步
+用它代替actor的`exclude_nodes`（自动排除的节点照加）；没设时行为不变。设了`evaluation.pool_nodes`（评估池）时，
+评估**只**在池里跑：release_swap把`evaluation.exclude_nodes`写成评估分区里池以外的全部节点，actor排除池；
+两者对不上的配置被拒（`evaluation_pool_must_be_actor_excluded_and_the_only_eval_nodes`）。背景是OPS 11-07：
+prepare曾因允许的节点全被自己的actor占满等了52和57 min。prepare步或评估job排队超过
+`evaluation.wait_alarm_seconds`（默认1200 s）时，每个阶段发一次`attention`
+（`evaluation_job_queued_over_limit_no_fallback`），不换到别的节点。兼容修复登记在`tools/friday/compatible-fixes.json`（host_pin X→Y + 固定种子
 证明sha256）：只差已登记host_pin的两批照常比较并记`compatible_fixes`注记，未登记的差异照旧跳过。已登记：Host rc.63→rc.64（U4-1固定种子复跑，原卡住局前536步相同后自然获胜），所以窗口1（rc.63）与窗口2（rc.64）的评估从下一个release起可以带注记比较。每局墙钟上限900→1800 s不进观测协议，不需要登记。一局保存失败只排除该局，
 批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）；正式审计槽
 的保存仍失败则整批不计分（`evaluation_audit_save_failed_cohort_not_scored`）。只覆盖
@@ -352,8 +364,23 @@ scp /tmp/swap.bundle friday:<scratch>/
 python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
   --sha <40位develop SHA> --bundle <scratch>/swap.bundle \
   --predecessor <long-run>/watch-c13 --name c13b \
-  [--total-training-seconds 129600] [--exclude-node smp-9-12] [--expect-mode same_window]
+  [--total-training-seconds 129600] [--exclude-node smp-9-12 --exclude-reason '坏节点 11-07 06:33'] \
+  [--readmit smp-9-0 --readmit smp-9-7 --readmit-evidence <节点体检报告>] \
+  [--eval-node smp-c03 --eval-node smp-c04] [--max-excluded-nodes 8] [--expect-mode same_window]
 ```
+
+节点计划（OPS 11-07，都写进watch配置，下个续跑照抄）：
+- `exclude_node_provenance`：每个排除节点的来源，`auto_node_unknown_exclusion`（#386，带时刻和窗口数）、
+  `operator`（`--exclude-node`，带`--exclude-reason`）、`evaluation_pool`或`static_unrecorded`（来源没记的旧条目）。
+  清单按来源、按节点类型计数，并点名actor类型（如fc430）里被排除的节点。
+- `--readmit NODE`（可多次，必须是当前排除的节点，必须带`--readmit-evidence`）：从`exclude_nodes`去掉，
+  写`readmit_nodes`（watch在同窗口续跑时移出继承的自动排除）和累积的`node_readmissions`记录
+  （节点、原排除来源、证据、哪次swap）。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
+- `--eval-node NODE`：评估池，加进actor的`exclude_nodes`，写`evaluation.pool_nodes`，`evaluation.exclude_nodes` =
+  评估分区（`sinfo`读取，读不到就拒绝）里池以外的节点 + actor排除节点；准备时的真游戏也按这个列表提交。
+  当前被自动排除的节点只能和`--readmit NODE --readmit-evidence`一起进池（否则`eval_node_auto_excluded_needs_readmission`）。
+- `close_window`时`--readmit`/`--eval-node`/`--max-excluded-nodes`/`--exclude-reason`都会被拒（不静默忽略）。
+- `--max-excluded-nodes N`：写`node_unknown_exclusion.max_nodes`（0–16）。
 
 `tools/friday/release_swap.py prepare`按顺序做下面6步，任一步失败就停在该步，打印
 `release_swap FAILED at <步>: <typed code> (<说明>)`：
