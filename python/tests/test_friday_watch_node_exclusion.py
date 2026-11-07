@@ -253,6 +253,7 @@ def test_continuation_closes_only_an_inherited_failed_evaluation(
     root = str(tmp_path / "watch-prev/evaluation-0005")
     owner.state["pending"] = {"root": root, "stage": stage, "due_seconds": 28800,
                               "job_id": "1445040"}
+    owner.state.update(training_seconds=50500.0, next_evaluation_seconds=28800)
     owner.persist()
     reference = {"path": str(owner.state_path), "sha256": watch.hashed(owner.state_path)}
     config = {**owner.config, "previous_watch_state": reference}
@@ -264,5 +265,9 @@ def test_continuation_closes_only_an_inherited_failed_evaluation(
         record = resumed.state["evaluations"][-1]
         assert record["skipped"] == "evaluation_preparation_failed_no_World_offer"
         assert record["root"] == root and record["at_training_seconds"] == 28800
+        assert record["stage"] == "preparation_failed"
+        # One evaluation at the latest passed 2 h point (50400), no catch-up of 36000/43200.
+        assert resumed.state["next_evaluation_seconds"] == 50400
     else:
         assert resumed.state["pending"]["stage"] == stage and not resumed.state["evaluations"]
+        assert resumed.state["next_evaluation_seconds"] == 28800
