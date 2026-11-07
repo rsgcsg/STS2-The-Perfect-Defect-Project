@@ -477,6 +477,9 @@ def test_reward_for_undeclared_ascension_is_typed_none_never_a_partial_mean(tmp_
     # U4-1: eval-0001's five deep unknowns were the 900 s per-game wall limit.
     ('unknown', 'runtime_execution_or_release_unknown', {'wall_limit_reached': True},
      'wall_limit', 'episode_wall_limit_reached'),
+    # U4-1 reason without the attempt flag: actor failure facts, slot-only eval fallback.
+    ('unknown', 'episode_wall_limit_reached', {'execution_reason': 'episode_wall_limit_reached'},
+     'wall_limit', 'episode_wall_limit_reached'),
     # No classifying fact, or facts of two categories: unclassified with the reason.
     ('unknown', 'runtime_execution_or_release_unknown', None, 'unclassified',
      'no_classifying_fact'),

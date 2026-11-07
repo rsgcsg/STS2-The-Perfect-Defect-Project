@@ -34,6 +34,7 @@ INFRASTRUCTURE_CODES = frozenset({
 INFRASTRUCTURE_HANDOFFS = frozenset({'agent_call_timeout'})
 ENVIRONMENT_RECEIPT_CODES = frozenset({'managed_execution_unknown'})
 SETTLING = 'managed_settling_stalled'
+WALL_LIMIT = 'episode_wall_limit_reached'  # U4-1 executor reason for the same fact
 
 
 def _text(value: Any) -> str | None:
@@ -61,8 +62,9 @@ def classify_unknown(status: str, reason: Any = None,
 
     if status == 'save_failed':
         signal('save_ledger', 'save_failed_after_retry')
-    if failure.get('wall_limit_reached') is True:
-        signal('wall_limit', 'episode_wall_limit_reached')
+    if (failure.get('wall_limit_reached') is True
+            or WALL_LIMIT in (codes['reason'], codes['execution_reason'])):
+        signal('wall_limit', WALL_LIMIT)
     for name in ('reason', 'execution_reason'):
         code = codes[name]
         if code in SAVE_LEDGER_CODES:
