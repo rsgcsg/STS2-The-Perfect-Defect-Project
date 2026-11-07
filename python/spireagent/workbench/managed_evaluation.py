@@ -200,6 +200,33 @@ def behavior_policy(model: Mapping[str, Any], row: Mapping[str, Any]) -> dict[st
     return {**declared, "seed": row["intent_id"]}
 
 
+def require_prepared_identity(
+    identity: object, *, seed: str, initial_progress: Mapping[str, Any]
+) -> None:
+    """Fail closed, with a typed code, unless the prepared world is the required one.
+
+    The runner requires a seeded world whose native progress proof matches the
+    frozen ``initial_progress``. A native map-continue load never replays that
+    progress, so its Host identity reports ``initial_progress: null``; such a
+    world is rejected as ``prepared_initial_progress_missing`` instead of failing
+    as an untyped TypeError/KeyError. Whether a loaded world can prove the same
+    progress is a separate Host/native question, not decided here.
+    """
+    if not isinstance(identity, Mapping):
+        reject("prepared_identity_invalid")
+    provenance = identity.get("episode_provenance")
+    if (not isinstance(provenance, Mapping)
+            or provenance.get("verdict") != "provenance_pass"
+            or provenance.get("actual_seed") != seed):
+        reject("prepared_seed_changed")
+    proof = identity.get("initial_progress")
+    if not isinstance(proof, Mapping):
+        reject("prepared_initial_progress_missing")
+    if (proof.get("run_unlock_state_matches") is not True
+            or proof.get("progress_sha256") != initial_progress["progress_sha256"]):
+        reject("prepared_initial_progress_changed")
+
+
 class ManagedEpisodeExecutor:
     """One independent Host/Runtime/Agent per call; safe for separate worker threads."""
 
@@ -464,17 +491,13 @@ class ManagedEpisodeExecutor:
                 row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
                 ready = client.ready()
                 identity = manager.request({"command": "episode_identity"})["result"]["identity"]
-                provenance = identity["episode_provenance"]
-                if (
-                    provenance["verdict"] != "provenance_pass"
-                    or provenance["actual_seed"] != row["seed"]
-                    or identity["initial_progress"]["run_unlock_state_matches"] is not True
-                    or identity["initial_progress"]["progress_sha256"]
-                    != self.configuration["initial_progress"]["progress_sha256"]
-                ):
-                    reject("prepared_seed_or_progress_changed")
+                # Preserve the Host's identity before judging it, so a rejected
+                # world keeps its original proof next to the typed reason.
                 row["episode_identity"] = artifacts.put(
                     "episode-identity.json", json_bytes(identity))
+                require_prepared_identity(
+                    identity, seed=row["seed"],
+                    initial_progress=self.configuration["initial_progress"])
                 target = {
                     "input_profile": "public-basis-1",
                     "profile_sha256": hashlib.sha256(

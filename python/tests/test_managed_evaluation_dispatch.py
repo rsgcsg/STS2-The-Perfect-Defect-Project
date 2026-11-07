@@ -1274,3 +1274,110 @@ def test_requested_agent_deadline_is_checked_against_runtime_reply(
     else:
         value = registration.global_environment_manifest(*args)
         assert value['limits']['agent_timeout_ms'] == actual
+
+
+_PREPARED_PROGRESS = {"recipe": "normal-sp-all-unlocked-v1", "progress_sha256": "progress"}
+
+
+def _prepared_identity(**changes):
+    identity = {"episode_provenance": {"origin": {"kind": "seed"},
+                                       "verdict": "provenance_pass", "actual_seed": "seed"},
+                "initial_progress": {"recipe": "normal-sp-all-unlocked-v1",
+                                     "progress_sha256": "progress",
+                                     "run_unlock_state_matches": True}}
+    for key, value in changes.items():
+        if value is KeyError:
+            identity.pop(key)
+        else:
+            identity[key] = value
+    return identity
+
+
+# A native map-continue load reports this shape: map_continue_save origin and no
+# replayed progress (S0-P1 §3.2). The runner must name it, never TypeError on it.
+_LOADED_WORLD = _prepared_identity(
+    episode_provenance={"origin": {"kind": "map_continue_save", "save_sha256": "0" * 64},
+                        "verdict": "provenance_pass", "actual_seed": "seed"},
+    initial_progress=None)
+
+
+@pytest.mark.parametrize("identity,code", [
+    (None, "prepared_identity_invalid"),
+    ([], "prepared_identity_invalid"),
+    (_prepared_identity(episode_provenance=KeyError), "prepared_seed_changed"),
+    (_prepared_identity(episode_provenance={"verdict": "provenance_incomplete",
+                                            "actual_seed": "seed"}), "prepared_seed_changed"),
+    (_prepared_identity(episode_provenance={"verdict": "provenance_pass",
+                                            "actual_seed": "other"}), "prepared_seed_changed"),
+    (_LOADED_WORLD, "prepared_initial_progress_missing"),
+    (_prepared_identity(initial_progress=KeyError), "prepared_initial_progress_missing"),
+    (_prepared_identity(initial_progress="progress"), "prepared_initial_progress_missing"),
+    (_prepared_identity(initial_progress={"progress_sha256": "progress"}),
+     "prepared_initial_progress_changed"),
+    (_prepared_identity(initial_progress={"progress_sha256": "progress",
+                                          "run_unlock_state_matches": False}),
+     "prepared_initial_progress_changed"),
+    (_prepared_identity(initial_progress={"progress_sha256": "other",
+                                          "run_unlock_state_matches": True}),
+     "prepared_initial_progress_changed"),
+])
+def test_prepared_identity_fails_closed_with_a_typed_code(identity, code):
+    from spireagent.workbench.managed_evaluation import require_prepared_identity
+
+    with pytest.raises(BoundaryError) as raised:
+        require_prepared_identity(identity, seed="seed", initial_progress=_PREPARED_PROGRESS)
+    assert raised.value.code == code
+    require_prepared_identity(_prepared_identity(), seed="seed",
+                              initial_progress=_PREPARED_PROGRESS)
+
+
+def test_executor_records_unreplayed_progress_as_typed_unknown_and_keeps_identity(
+    tmp_path, monkeypatch, synthetic_managed_admission,
+):
+    """Real executor path up to the identity gate; Host, model and Runtime are faked."""
+    from types import SimpleNamespace
+
+    from spireagent.workbench import managed_evaluation as backend
+
+    executor = object.__new__(backend.ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = ()
+    executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
+        "host_pin": {}, "initial_progress": dict(_PREPARED_PROGRESS)}
+    executor.preparation = {"store": "fixture"}
+    executor.read_concurrency = 1
+    executor.settling_timeout_ms = None
+    executor.measure_host_performance = False
+    executor.host = executor.candidate = executor.runtime = tmp_path
+    executor.episode_seconds = executor.cleanup_seconds = 10
+    executor.build = {"artifact_sha256": "candidate"}
+    executor.inference_pool = None
+    ready = {"service_instance_id": "service", "adapter_runtime_instance_id": "runtime",
+             "episode": {"game_continuity_id": "game"}}
+    manager = SimpleNamespace(
+        reset=lambda *_args, **_kwargs: {},
+        request=lambda _: {"result": {"identity": _LOADED_WORLD}},
+        close_host=lambda: {"result": {"exit": {"code": 0}}},
+    )
+    launch = SimpleNamespace(pid=1, process=SimpleNamespace(wait=lambda **_: 0))
+    executor.api = SimpleNamespace(
+        launch_managed_host_service=lambda **_: launch,
+        ManagedHostServiceClient=SimpleNamespace(from_attachment=lambda _: SimpleNamespace(
+            ready=lambda: ready)),
+        ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
+    )
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("a rejected world must not reach the model or Runtime")
+
+    monkeypatch.setattr(backend, "runtime_arguments", never)
+    monkeypatch.setattr(backend.subprocess, "Popen", never)
+    stored = {}
+    artifacts = SimpleNamespace(root=tmp_path,
+                                put=lambda name, value: stored.setdefault(name, value) and name)
+    row = {"selection_id": "model", "seed": "seed", "intent_id": "intent",
+           "world_mutation_offered": False}
+    executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
+             artifacts, lambda: None)
+    assert (row["status"], row["reason"]) == ("unknown", "prepared_initial_progress_missing")
+    assert row["episode_identity"] == "episode-identity.json"
+    assert json.loads(stored["episode-identity.json"]) == _LOADED_WORLD
