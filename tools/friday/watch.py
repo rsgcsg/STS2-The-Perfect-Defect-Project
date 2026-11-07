@@ -214,7 +214,10 @@ def read_compatible_fixes(path: Path = COMPATIBLE_FIXES_PATH) -> list[dict[str, 
     Only ``host_pin`` changes can be registered. A pair is matched exactly, in either
     direction (the proof shows the same games on both pins); chains are not composed.
     """
-    value = json.loads(path.read_bytes())
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        raise ValueError('compatible_fix_registry_unreadable') from None
     entries = value.get('entries') if isinstance(value, dict) else None
     if (not isinstance(value, dict) or value.get('schema') != COMPATIBLE_FIXES_SCHEMA
             or not isinstance(entries, list)):
@@ -1610,8 +1613,11 @@ class SegmentWatcher(Watcher):
         offered = {k for k, v in worlds.items() if v.get('offered')}
         unknown = {k for k in offered if worlds[k].get('status') in {'unknown', 'save_failed'}}
         lost = {k for k in offered if not worlds[k].get('closed') and worlds[k]['actor'] in terminal}
+        known = set(self.state.get('lost_world_offers', []))
         for intent in lost:
-            worlds[intent].setdefault('lost_at', time.time())  # rolling-window time only
+            # Rolling-window time only. Offers already lost in a state saved before this
+            # field existed have no observed time and never enter the window on resume.
+            worlds[intent].setdefault('lost_at', None if intent in known else time.time())
         self.state['games_total'] = len(offered)
         self.state['unknown_intents'] = sorted(unknown)
         self.state['lost_world_offers'] = sorted(lost)
@@ -1688,6 +1694,8 @@ class SegmentWatcher(Watcher):
         closed_total = 0
         recent = []
         for intent, fact in self.state['worlds'].items():
+            if not fact.get('offered'):
+                continue  # Same population as the old gate: Worlds actually offered.
             if fact.get('closed'):
                 at, bad = fact.get('closed_at'), fact.get('status') in UNKNOWN_STATUSES
             elif intent in lost:
@@ -1722,9 +1730,12 @@ class SegmentWatcher(Watcher):
                              for _, i, v in sorted(recent, key=lambda r: r[0])[-5:]],
                   'settings': settings}
         self.state['unknown_window'] = record
-        last = self.state.get('unknown_attention_at')
+        # Attention and stop alarms are rate-limited separately, so a stop is always
+        # announced even right after the attention alarm of the same window.
+        mark = 'unknown_stop_alarm_at' if level == 'stop' else 'unknown_attention_at'
+        last = self.state.get(mark)
         if level is not None and (last is None or now - last >= settings['window_seconds']):
-            self.state['unknown_attention_at'] = now
+            self.state[mark] = now
             alarms = self.state.setdefault('unknown_alarms', [])
             alarms.append({k: v for k, v in record.items() if k != 'recent'})
             del alarms[:-50]
@@ -2371,9 +2382,16 @@ class SegmentWatcher(Watcher):
                                    if compared else ('baseline', baseline))
             # The most recent closed cohort with this protocol, else the baseline if it
             # matches; with neither, the latest closed cohort is recorded as skipped.
+            def scored(row: dict[str, Any]) -> bool:
+                # A record with no game counted by the selection score cannot be a
+                # regression reference (pre-U4 records have no scores and stay usable).
+                counts = row.get('scores')
+                return counts is None or bool(counts.get(
+                    'conservative_n' if score == 'conservative' else 'finished_n'))
+
             previous_name, previous = next(
                 ((row['root'], row['cohort']) for row in reversed(compared)
-                 if not blocking(row['cohort'])),
+                 if not blocking(row['cohort']) and scored(row)),
                 ('baseline', baseline) if 'baseline' not in skipped else (latest_name, latest))
             if previous_name != latest_name:
                 skipped['latest_closed'] = blocking(latest)
@@ -2430,6 +2448,7 @@ class SegmentWatcher(Watcher):
                                  and not blocking(row['cohort'])), None)
                 superseded.append({
                     'best_checkpoint': best, 'cohort': best_cohort,
+                    'best_selection_score': self.state.get('best_selection_score'),
                     'best_cohort_source': ('frozen_baseline' if best_cohort == baseline
                                            else 'evaluation'),
                     'differing_keys': best_keys, 'superseded_by_evaluation': pending['root']})
@@ -2444,6 +2463,7 @@ class SegmentWatcher(Watcher):
                 else:
                     best, best_cohort = restored['best_checkpoint'], restored['cohort']
                     self.state['best_checkpoint'], self.state['best_cohort'] = best, best_cohort
+                    self.state['best_selection_score'] = restored.get('best_selection_score')
                     report['best_selection'] = {
                         'reason': 'restored_best_of_returning_observed_protocol',
                         'restored_checkpoint': best, 'differing_keys': best_keys}
@@ -2489,6 +2509,10 @@ class SegmentWatcher(Watcher):
                 # counts towards the two-regressions stop.
                 regression = None
                 report['paired_regression_skipped'] = regression_comparison['skipped']
+            elif regression_comparison is not None and interval is None:
+                # Too few paired games for an interval: not measured, never "no regression".
+                regression = None
+                report['paired_regression_skipped'] = 'no_paired_interval'
             prior = self.state['evaluations'][-1] if self.state['evaluations'] else {}
             report['paired_regression'] = regression
             report['regression_reference'] = reference

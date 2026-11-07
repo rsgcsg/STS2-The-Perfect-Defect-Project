@@ -1061,6 +1061,11 @@ def test_resume_from_a_c13b_shaped_state_keeps_every_persisted_key(
                                            'failure': {'handoff_reason': 'agent_call_timeout'}}
                                           if i < 30 else {})}
                              for i in range(100)}
+    # Review H1: c13 crashed with its actors gone, so its state holds lost offers.
+    owner.state['worlds'].update({f'lost{i}': {'actor': 'gone', 'generation': 'g-one',
+                                               'offered': True} for i in range(25)})
+    owner.state['terminal_actors'] = ['gone']
+    owner.state['lost_world_offers'] = sorted(f'lost{i}' for i in range(25))
     owner.state['evaluations'] = [{'root': 'c13/evaluation-0001', 'cohort': old,
                                    'closed': True, 'at_training_seconds': 0,
                                    'paired_regression': True,
@@ -1075,10 +1080,12 @@ def test_resume_from_a_c13b_shaped_state_keeps_every_persisted_key(
     for key, value in before.items():
         if key not in {'config_sha256', 'configuration', 'incarnation', 'stop'}:
             assert resumed.state[key] == value, key
-    # Old closes carry no close time: they never enter the rolling window.
+    # Old closes and old lost offers carry no time: they never enter the rolling window.
+    resumed.refresh_world_health()
+    assert resumed.state['worlds']['lost0']['lost_at'] is None
     assert resumed.unknown_window_gate() is None
     assert resumed.state['unknown_window']['closes'] == 0
-    assert resumed.state['unknown_overview']['by_category'] == {'infrastructure': 30}
+    assert resumed.state['unknown_overview']['by_category'] == {'infrastructure': 55}
     # The next evaluation names its score; the floor-rule regression never chains into it.
     floors = [10] * 50
     _u4_evaluate(resumed, watch, tmp_path / 'next', monkeypatch,
@@ -1147,3 +1154,50 @@ def test_evaluation_defaults_to_1800s_games_and_can_avoid_actor_nodes(owner, wat
     assert owner.evaluation_exclude_nodes() == ['smp-9-8']
     owner.config['evaluation'] = {'avoid_actor_nodes': True}
     assert owner.evaluation_exclude_nodes() == ['smp-9-8', 'smp-9-1', 'smp-9-2']
+
+
+def test_newly_lost_offer_enters_the_window_and_unoffered_closes_never_do(owner):
+    attempt(owner)
+    event(owner, 'actor_world_offered', actor='dead', intent_id='lost', seed='s',
+          training_generation='g-one')
+    event(owner, 'actor_games_closed', actor='a', games=[
+        {'intent_id': 'never', 'seed': 's2', 'status': 'unknown',
+         'reason': 'runtime_exited_before_startup', 'world_mutation_offered': False}])
+    owner.collect_events()
+    owner.state['terminal_actors'] = ['dead']
+    owner.refresh_world_health()
+    assert owner.state['worlds']['lost']['lost_at'] is not None
+    owner.unknown_window_gate()
+    window = owner.state['unknown_window']
+    assert (window['closes'], window['unknown']) == (1, 1)
+    assert window['by_category'] == {'infrastructure': 1}
+
+
+def test_stop_alarm_is_announced_even_after_an_attention_alarm(owner, watch, monkeypatch):
+    stops, alarms = _tick_with_closes(owner, watch, monkeypatch, 100, 12)
+    event(owner, 'actor_games_closed', actor='actor', games=[
+        {'intent_id': f'late-{i}', 'seed': f'late-{i}', 'status': 'unknown',
+         'world_mutation_offered': True, 'training_generation': 'g-one'} for i in range(10)])
+    owner.tick_segment()
+    assert [f['reason'] for kind, f in alarms if kind == 'attention'] == [
+        'training_unknown_window_at_or_above_attention_fraction_lead_investigates',
+        'training_unknown_window_at_or_above_stop_fraction']
+    assert owner.state['stop'] == 'training_unknown_fraction_above_limit'
+    assert [a['level'] for a in owner.state['unknown_alarms']] == ['attention', 'stop']
+
+
+def test_unscored_evaluation_is_neither_a_regression_verdict_nor_a_reference(
+        owner, watch, tmp_path, monkeypatch):
+    """Review M1: 50/50 infrastructure unknowns count no game conservatively."""
+    n = 50
+    infra = {i: {'reason': 'runtime_exited_before_startup'} for i in range(n)}
+    _u4_evaluate(owner, watch, tmp_path, monkeypatch, [
+        (0, 'cp-a', '1.1.0-rc.64', [30] * n, ['finished'] * n, {}),
+        (7200, 'cp-b', '1.1.0-rc.64', [0] * n, ['unknown'] * n, infra),
+        (14400, 'cp-c', '1.1.0-rc.64', [10] * n, ['finished'] * n, {})])
+    first, second, third = owner.state['evaluations']
+    assert second['scores']['conservative_n'] == 0
+    assert second['paired_regression'] is None
+    assert second['paired_regression_skipped'] == 'no_paired_interval'
+    assert third['previous_reference'] == first['root']  # the unscored one is passed over
+    assert third['paired_regression'] is True and owner.state['stop'] is None

@@ -261,7 +261,7 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 之后补位与新attempt的actor `--exclude` = 配置exclude_nodes + 自动排除节点。原unknown照计入全局门，
 不重投、不改评估；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
 限制：排除在本watch内永久，不自动重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
-新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job只用配置的`exclude_nodes`。
+新运营窗口从新state开始不继承，需要时把节点显式写入`exclude_nodes`；评估job用配置的`exclude_nodes`（另见`avoid_actor_nodes`）。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
 
 审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
