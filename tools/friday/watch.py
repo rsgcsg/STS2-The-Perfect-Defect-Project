@@ -1504,11 +1504,18 @@ class SegmentWatcher(Watcher):
         if pending is None or pending.get('stage') != 'failed':
             return
         self.state['evaluations'].append({
-            **pending, 'at_training_seconds': pending['due_seconds'],
+            **pending, 'stage': 'preparation_failed', 'at_training_seconds': pending['due_seconds'],
             'skipped': 'evaluation_preparation_failed_no_World_offer'})
         self.state['pending'] = None
+        # Resume the 2 h grid at the latest point already passed: one evaluation of the
+        # current CP now, not a back-to-back catch-up over every missed point.
+        behind = self.state['next_evaluation_seconds']
+        latest = int(self.state.get('training_seconds', 0)) // 7200 * 7200
+        self.state['next_evaluation_seconds'] = max(behind, latest)
         print(json.dumps({'kind': 'inherited_failed_evaluation_closed',
-                          'evaluation': pending.get('root')}), file=sys.stderr, flush=True)
+                          'evaluation': pending.get('root'), 'next_was': behind,
+                          'next': self.state['next_evaluation_seconds']}),
+              file=sys.stderr, flush=True)
 
     def _socket_attachment(self, attempt):
         import rl
