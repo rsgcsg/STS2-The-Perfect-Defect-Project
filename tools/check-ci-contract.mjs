@@ -134,7 +134,7 @@ export function ciWorkflowErrors(rawSource) {
       if (!portable.includes(`${name}:`)) errors.push(`portable missing ${name}`);
     }
     if (!portable.includes("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093") ||
-        !portable.includes("pattern: pytest-Linux-shard-*-${{ github.run_attempt }}") ||
+        !/^\s*pattern: pytest-Linux-shard-\*\s*$/mu.test(portable) ||
         !portable.includes("path: .local/ci/pytest-shards") || !portable.includes("merge-multiple: false") ||
         portable.includes("run-id:") || portable.includes("repository:")) {
       errors.push("portable must download separate original current-run shard artifacts");
