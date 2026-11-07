@@ -221,6 +221,9 @@ GPU 提前退出保留原请求与 STOP，不自动重投。排队本身不消�
 `--minutes` 可显式申请到2880分钟（48h），申请时限不等于训练或使用预算授权。
 默认仍拒绝账户已有 GPU 作业；只有显式 `--alongside-job <id>` 才允许一个已核的
 opposite 型号 `rl4-learner` 单卡作业，最多一个 A100 和一个 A30，不接受同型、多个或不明作业。
+例外：watch 配置开了 `gpu_successor` 时，自动后继 holder 按用户 11-07 的授权，允许和当前 holder
+同型号，但总卡数不超过 2 张、同时最多一个在排队（见 [RL_LONG_RUN](RL_LONG_RUN.zh-CN.md)
+“GPU 后继 holder”）。它走自己的提交路径 `tools/friday/gpu_successor.py`，不经过 `rl.py launch`。
 `--reserve-only` 只提交明确的分配脚本，不开 learner、不给 CPU actor 发任务；
 收据 `reservation_only=true` 不能当训练或G1通过。
 

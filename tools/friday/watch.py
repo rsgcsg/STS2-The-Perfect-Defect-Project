@@ -1302,6 +1302,13 @@ def read_segment_config(path: Path) -> dict[str, Any]:
     if value.get('dataplane') is not None and not isinstance(value['dataplane'], dict):
         raise ValueError('explicit_binary_dataplane_profile_required')
     node_exclusion_settings(value)
+    if value.get('gpu_successor') is not None:
+        import gpu_successor
+
+        # Template and record root are checked now, not in the last hours before expiry.
+        gpu_successor.settings(value['gpu_successor'], value.get('gpu', 'a100'))
+        if not value.get('held_job_id'):
+            raise ValueError('gpu_successor_requires_held_job_id')
     readmit = value.get('readmit_nodes', [])
     if (not isinstance(readmit, list) or not all(isinstance(r, dict) for r in readmit)
             or not node_list_valid([r.get('node') for r in readmit])):
@@ -2855,6 +2862,34 @@ class SegmentWatcher(Watcher):
                        pool_nodes=(self.config.get('evaluation') or {}).get('pool_nodes'))
         self.persist()
 
+    def check_gpu_successor(self) -> None:
+        """Opt-in ``gpu_successor`` (OPS, user decision 11-07): at most every 5 min, let
+        gpu_successor decide whether the held allocation needs its one bounded successor.
+        Submissions and every refusal are typed attention alarms (one per outcome); a
+        failed check is an alarm too, never a fallback. Nothing here hands over."""
+        raw = self.config.get('gpu_successor')
+        held = self.config.get('held_job_id')
+        now = time.time()
+        if raw is None or not held or now - self.state.get('gpu_successor_checked_at', 0) < 300:
+            return
+        self.state['gpu_successor_checked_at'] = now
+        import gpu_successor
+
+        try:
+            result = gpu_successor.tick(
+                gpu_successor.settings(raw, self.config.get('gpu', 'a100')), held, now=now)
+        except Exception as error:  # noqa: BLE001 -- alarm, never a silent fallback
+            result = {'action': 'alarm', 'reason': 'gpu_successor_check_failed',
+                      'error_type': type(error).__name__}
+        signature = [result['action'], result['reason'], result.get('holder')]
+        if result['action'] != 'none' and self.state.get('gpu_successor_last') != signature:
+            self.telemetry('attention', gpu_successor=result['action'],
+                           **{k: v for k, v in result.items() if k != 'action'})
+            print(json.dumps({'kind': 'gpu_successor', **result}, default=str),
+                  file=sys.stderr, flush=True)
+            self.state['gpu_successor_last'] = signature
+        self.persist()
+
     def retain_segment_checkpoints(self):
         records = self.exchange.checkpoint_records()
         current = records[-1]['checkpoint_artifact_id'] if records else None
@@ -2879,6 +2914,7 @@ class SegmentWatcher(Watcher):
         self.collect_segment_evaluation()
         self.schedule_segment_evaluation()
         self.retain_segment_checkpoints()
+        self.check_gpu_successor()
         if self.signalled:
             self.state['stop'] = self.state['stop'] or 'watcher_signal'
         if (now >= self.config['deadline_at'] - 600

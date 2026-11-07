@@ -993,6 +993,15 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
             signal.signal(number, handler)
 
 
+HELD_JOB_NAME = 'rl4-learner'
+
+
+def held_allocation_detail(gpu: str) -> list[str]:
+    """``squeue -o '%T|%b|%j'`` of a held allocation ``launch(held_job_id=...)`` accepts;
+    gpu_successor builds its successor holder to match exactly this."""
+    return ['RUNNING', f'gres/gpu:{gpu}:1', HELD_JOB_NAME]
+
+
 def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Path,
            output: Path, *, gpu: str = 'a30', minutes: int = 85,
            cpus: int = 32, memory_gb: int = 64,
@@ -1049,7 +1058,7 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
                     raise ValueError('owned_held_GPU_allocation_required')
                 detail = scheduler.output(['squeue', '-h', '-j', held_job_id,
                     '-o', '%T|%b|%j']).split('|')
-                if detail != ['RUNNING', f'gres/gpu:{gpu}:1', 'rl4-learner']:
+                if detail != held_allocation_detail(gpu):
                     raise ValueError('running_owned_held_GPU_allocation_required')
                 steps = scheduler.output(['squeue', '--steps', '-h', '-j', held_job_id,
                                           '-o', '%i']).splitlines()
