@@ -1225,6 +1225,24 @@ def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, mon
         rl.actor_accounting(path)
 
 
+def test_actor_accounting_reports_node_only_when_asked(rl, tmp_path, monkeypatch):
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    (tmp_path / "submission.json").write_text(json.dumps({"job_id": "77"}))
+    monkeypatch.setattr(rl, "load_plan", lambda _: {"actors": [{"actor": "a"}, {"actor": "b"}]})
+    formats = []
+
+    def sacct(command, **kwargs):
+        formats.append(command[-1])
+        return "101|77_0|RUNNING|0:0|smp-9-20\n102|77_1|PENDING|0:0|None assigned\n"
+
+    monkeypatch.setattr(rl.subprocess, "check_output", sacct)
+    assert [r["node"] for r in rl.actor_accounting(path, with_node=True)] == ["smp-9-20", None]
+    assert "node" not in rl.actor_accounting(path)[0]
+    assert formats == ["--format=JobIDRaw,JobID,State,ExitCode,NodeList",
+                       "--format=JobIDRaw,JobID,State,ExitCode"]
+
+
 def test_explicit_capacity_limit_survives_repeated_actor_binding():
     from stpd.rl.learner import LearnerConfig
     from stpd.rl.segments import SegmentConfig
