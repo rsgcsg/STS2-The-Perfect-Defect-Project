@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,3 +184,59 @@ def test_c11_replay_excludes_both_bad_nodes_well_before_the_global_stop(watch):
     assert stop - excluded["smp-9-7"] >= 10 * 60
     # Eight healthy nodes stay far below the 25% line in every window.
     assert len(windows) == 10 and healthy_peak <= 0.07
+
+
+def test_readmitted_through_continuation_then_excluded_again_by_account_nodes(
+        owner, watch, monkeypatch, tmp_path):
+    """Review of #400: re-admission runs in the same-window continuation's __init__, a
+    request for a node that is not auto-excluded leaves a typed record, an in-place restart
+    does not repeat it, and a node that goes bad again is excluded again by #386."""
+    attempt(owner)
+    excluded_at = time.time() - 900
+    owner.state["node_exclusion"] = {
+        "actor_nodes": {"old-bad": "smp-9-20"},
+        "excluded": {"smp-9-20": {"kind": "node_unknown_exclusion", "at": excluded_at,
+                                  "signalled_actors": []}},
+        "windows": {"smp-9-20": [1] * 20}, "logged": {"smp-9-20": "node_unknown_exclusion"}}
+    owner.persist()
+    reference = {"path": str(owner.state_path), "sha256": watch.hashed(owner.state_path)}
+    config = {**owner.config, "previous_watch_state": reference,
+              "readmit_nodes": [{"node": "smp-9-20", "evidence": "node check"},
+                                {"node": "smp-9-8", "evidence": "node check"}]}
+    resumed = watch.SegmentWatcher(config, tmp_path / "watch-next")
+    nodes = resumed.state["node_exclusion"]
+    assert nodes["excluded"] == {} and "smp-9-20" not in nodes["windows"]
+    [period] = nodes["readmitted"]["smp-9-20"]
+    assert period["excluded_at"] == excluded_at and period["evidence"] == "node check"
+    assert [(e["kind"], e["node"]) for e in nodes["events"]] == [
+        ("node_readmitted", "smp-9-20"), ("node_readmission_skipped", "smp-9-8")]
+    assert nodes["events"][1]["reason"] == "not_auto_excluded_in_inherited_state"
+    pinned = json.loads((resumed.work / "previous-watch-state.json").read_bytes())
+    assert "smp-9-20" in pinned["node_exclusion"]["excluded"]  # original kept
+    resumed.persist()
+    again = watch.SegmentWatcher(config, tmp_path / "watch-next")  # in-place restart
+    assert len(again.state["node_exclusion"]["events"]) == 2
+    assert again.actor_exclude_nodes() == ["smp-9-8"]
+
+    # After re-admission the node's new closes count; #386 excludes it again.
+    resumed.config.update(execution=str(tmp_path / "execution.json"),
+                          runtime_source=str(tmp_path / "runtime"), unknown_stop_fraction=0.5)
+    placement = {"good-0": "smp-9-2", "good-1": "smp-9-4", "new-bad": "smp-9-20"}
+    for actor in ("good-0", "good-1"):
+        closes(resumed, actor, ["finished"] * 25, actor)
+    closes(resumed, "new-bad", ["unknown"] * 13 + ["finished"] * 7, "new-bad")
+    resumed.collect_events()
+
+    def accounting(with_node):
+        return [{"actor": a, "job_id": f"9{i}", "array_job_id": f"78_{i}", "state": "RUNNING",
+                 "exit_code": "0:0", "terminal": False, "node": n}
+                for i, (a, n) in enumerate(placement.items())]
+
+    _, signals = wire(resumed, watch, monkeypatch, tmp_path, accounting)
+    resumed.replace_actors(resumed.state["attempts"][resumed.state["active"]])
+    record = nodes["excluded"]["smp-9-20"]
+    assert record["at"] >= period["readmitted_at"]
+    assert (record["window_unknown"], record["window_attempts"]) == (13, 20)
+    assert nodes["events"][-1]["kind"] == "node_unknown_exclusion"
+    assert signals == ["78_2"]
+    assert resumed.actor_exclude_nodes() == ["smp-9-8", "smp-9-20"]
