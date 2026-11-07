@@ -140,6 +140,13 @@ lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功�
   下拒绝；推理、actor 包和 μ 结构不变。
 - CPU 证据：`tests/test_rl_rows_forward.py`，fp32 下输出和每个参数梯度与 `padded-v1` 在浮点容差内一致（多桶、长度不一、
   policy/非 policy），布局经 transport 不变，一步 Adam 和 binary learner 两个 dataset 都与 `padded-v1` 接近。
+- GPU 实测（单 A100 80GB PCIe，S0-GPU 同卡，3 个快照 ~850 决策/批，BF16，7 次取暖后中位数）：`padded-v1` 1.60–1.68 s/批、
+  显存分配峰值 28–29 GiB；rows-v2 eager 0.316–0.332 s、13–15 GiB；rows-v2 + compile 0.260–0.274 s、12.5–13.9 GiB（5.8–6.5×）。
+  TF32 对 rows-v2 无可见变化。对 fp32 补齐参考的梯度相对 L2：rows-v2 与 `padded-v1` BF16 同量级（2.4–9.7% 对 2.6–9.7%）；
+  rows-v2 对 `padded-v1` BF16 的差（2–5%）大于 `padded-v1` 自身两次之差（0.4–0.5%），因累加次序和 flash 核不同，属 BF16 误差带内。
+  布局构建 CPU 0.03–0.05 s/组（准备进程内）。
+- compile：每桶块按形状编译（`dynamic=None`），每进程首见形状要编译；逐头梯度诊断步（`retain_graph`）与编译后向的 donated buffer
+  不兼容，诊断步走同一块的 eager。生产形状更多样时的重编译次数和缓存上限未在真实运行里测，默认不开。
 - 采用规则：提速后的步对同进程 GIL 护航更敏感（S0-GPU I0：0.48 s 步同进程 ×1.0 负载慢 7.15 倍），所以与
   `dataplane.sgd_process=true`（显式 SGD 进程）同一 release 上线，不单独进同进程学习端。
 
