@@ -1,5 +1,34 @@
 {
   "schema": "spireagent/friday-compatible-fixes-1",
   "meaning": "Registered compatible Host fixes (card U4 D). An entry says host_pin `from` -> `to` changes only games that ended unknown before; `proof` pins its fixed-seed rerun artifact showing previously normal games step-for-step not worse. The watcher then compares cohorts across that pair, with a note; any other protocol difference is still skipped. Matched exactly, either direction, never chained. Entry keys: id, key (host_pin), from, to, proof {artifact, sha256}, optional approved, note.",
-  "entries": []
+  "entries": [
+    {
+      "id": "u4-1-host-rc63-to-rc64-soul-nexus",
+      "key": "host_pin",
+      "from": {
+        "component_tree_revision": "a819f6f18fe063dfa9c351d2f9ee2858ff90f8fd",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "911dfe1c5e085caaafb86b314a643bbb06eab8d203263fa052ade2414e3b9583",
+        "release_asset_sha256": "cfefbd56d277a967de0cc9771b079033071f62061ab3a70d812fb473a88c5b99",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "4b129ceb2c11b47a708a2317106d303b01cb9ac1",
+        "version": "1.1.0-rc.63"
+      },
+      "to": {
+        "component_tree_revision": "4f65d53c8d47af8cdac4fa089ef50c045637d9e2",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "59abf654e8c26322b9bad00d68928c1f8171d49ff58da6f2f2044ee20a0236a6",
+        "release_asset_sha256": "4d11390c6bdb8eb6efb944a0d13e19b9b9e0b5ca13dd505d938ba77a7c9299a1",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "670e912a02d20ce91447a6d9bd42ce19389b2bd5",
+        "version": "1.1.0-rc.64"
+      },
+      "proof": {
+        "artifact": "u4-1-fixed-seed-replay-b/result.json",
+        "sha256": "72dc0bd632ad87dca1afe50adcff458fe9973350f6353e5dfee2d650019c5c1f"
+      },
+      "approved": "lead 2026-11-07, card U4 D (U4-1 report, PR #395)",
+      "note": "Host rc.64 changes only SoulNexus.AfterDeath (headless null scene, U2 #384). Fixed-seed rerun on rc.64 with the 14 h CP (rc.63 eval-0008): seed 13, rc.63 unknown at step 536 (end turn on Soul Nexus) -> same 536 actions and 515 public inputs, then a natural win; seed 31 natural loss at floor 17 on both, all 177 actions and 169 inputs equal (handle names aside). Companion replay A (window-2 start CP on rc.64, seeds 17/31): u4-1-fixed-seed-replay-a/result.json sha256 04578fb58643cdd74742a6a836fe75a77d5785efd564bb6b47b8a3c163a8cd00; comparison scripts u4-1-cmp.py 8a5bde57, u4-1-obs.py 193af7fd. The eval wall limit 900 -> 1800 s needs no entry: episode_seconds is not in the observed protocol, so it never splits cohorts."
+    }
+  ]
 }

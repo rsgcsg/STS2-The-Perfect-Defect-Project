@@ -1330,6 +1330,57 @@ def require_completed_previous_window(previous: dict[str, Any], prior: dict[str,
         raise ValueError('completed_distinct_previous_operating_window_required')
 
 
+def require_watch_continuation(previous: dict[str, Any], prior: dict[str, Any],
+                               config: dict[str, Any]) -> None:
+    """Same-window continuation (previous_watch_state): the pinned original config and its
+    run/peer/budget/deadline/total are unchanged. Also used by release_swap.py."""
+    if (previous['config_sha256'] != hashlib.sha256(json_bytes(prior)).hexdigest()
+            or any(prior[k] != config[k] for k in (
+                'run', 'peer', 'budget_id', 'deadline_at', 'training_seconds'))):
+        raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
+
+
+def require_acknowledged_findings(previous: dict[str, Any], config: dict[str, Any]) -> None:
+    """A continuation names every blocking integrity finding it diagnosed (by record sha)."""
+    if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
+           for key, digest in previous.get('blocking_integrity_findings', {}).items()):
+        raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+
+
+def checkpoint_link(cp: dict[str, Any], config: dict[str, Any], *, has_history: bool) -> bool:
+    """The resume CP rule of start_attempt; True when it enters a new operating window.
+
+    The link stays in force until this window publishes its own first CP; a first
+    attempt that dies earlier re-enters from the same pinned parent. Also used by
+    release_swap.py, so a prepared continuation is checked by this one rule.
+    """
+    new_window = bool(config.get('previous_window_state')
+                      and (cp.get('operating_budget') or {}).get('id') != config['budget_id'])
+    if new_window:
+        previous = evaluate.read_pinned(config['previous_window_state'])
+        prior = evaluate.read_pinned(previous['configuration'])
+        require_completed_previous_window(previous, prior, config)
+        generations = {g for a in previous['attempts']
+                       for g in a.get('generations', [a['generation']])}
+        budget = cp.get('operating_budget') or {}
+        if (budget.get('id') != prior['budget_id']
+                or budget.get('total_seconds') != prior['training_seconds']
+                or cp.get('deadline_at') != prior['deadline_at']
+                or cp.get('training_generation') not in generations):
+            raise ValueError('checkpoint_does_not_belong_to_completed_previous_window')
+    if (not new_window and cp.get('deadline_at') is not None
+            and cp['deadline_at'] != config['deadline_at']):
+        raise ValueError('checkpoint_deadline_cannot_be_reset')
+    if cp.get('operating_budget') is not None and not new_window:
+        budget = cp['operating_budget']
+        if not has_history:
+            raise ValueError('original_watch_state_required_to_reconcile_deliveries')
+        if (budget['id'] != config['budget_id']
+                or budget['total_seconds'] != config['training_seconds']):
+            raise ValueError('checkpoint_operating_budget_cannot_be_reset')
+    return new_window
+
+
 class SegmentWatcher(Watcher):
     """RL4.1 adaptation of the original Friday owner, not a gameplay scheduler.
 
@@ -1345,11 +1396,8 @@ class SegmentWatcher(Watcher):
         resumed = config.get('previous_watch_state')
         previous = evaluate.read_pinned(resumed) if resumed and not self.state_path.exists() else None
         if previous is not None:
-            prior_config = evaluate.read_pinned(previous['configuration'])
-            if (previous['config_sha256'] != hashlib.sha256(json_bytes(prior_config)).hexdigest()
-                    or any(prior_config[k] != config[k] for k in (
-                        'run', 'peer', 'budget_id', 'deadline_at', 'training_seconds'))):
-                raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
+            require_watch_continuation(
+                previous, evaluate.read_pinned(previous['configuration']), config)
         frozen_config = self.work / 'watch-config.json'
         if not frozen_config.exists():
             save(frozen_config, config)
@@ -1369,9 +1417,7 @@ class SegmentWatcher(Watcher):
                  0 if (config.get('evaluation') or {}).get('initial_checkpoint') else 7200),
              'protected_checkpoints': [], 'incarnation': None})
         if previous is not None:
-            if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
-                   for key, digest in previous.get('blocking_integrity_findings', {}).items()):
-                raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+            require_acknowledged_findings(previous, config)
             save(self.work / 'previous-watch-state.json', previous)
             self.state['previous_config_sha256'] = self.state['config_sha256']
             self.state['config_sha256'] = hashlib.sha256(json_bytes(config)).hexdigest()
@@ -1863,35 +1909,11 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
-        # The link stays in force until this window publishes its own first CP; a
-        # first attempt that dies earlier re-enters from the same pinned parent.
-        new_window = bool(self.config.get('previous_window_state')
-                          and (cp.get('operating_budget') or {}).get('id')
-                          != self.config['budget_id'])
-        if new_window:
-            previous = evaluate.read_pinned(self.config['previous_window_state'])
-            prior = evaluate.read_pinned(previous['configuration'])
-            require_completed_previous_window(previous, prior, self.config)
-            generations = {g for a in previous['attempts']
-                           for g in a.get('generations', [a['generation']])}
-            budget = cp.get('operating_budget') or {}
-            if (budget.get('id') != prior['budget_id']
-                    or budget.get('total_seconds') != prior['training_seconds']
-                    or cp.get('deadline_at') != prior['deadline_at']
-                    or cp.get('training_generation') not in generations):
-                raise ValueError('checkpoint_does_not_belong_to_completed_previous_window')
-        if (not new_window and cp.get('deadline_at') is not None
-                and cp['deadline_at'] != self.config['deadline_at']):
-            raise ValueError('checkpoint_deadline_cannot_be_reset')
+        new_window = checkpoint_link(cp, self.config, has_history=bool(
+            self.state['attempts'] or self.config.get('previous_watch_state')))
         if cp.get('operating_budget') is not None and not new_window:
-            budget = cp['operating_budget']
-            if not self.state['attempts'] and not self.config.get('previous_watch_state'):
-                raise ValueError('original_watch_state_required_to_reconcile_deliveries')
-            if (budget['id'] != self.config['budget_id']
-                    or budget['total_seconds'] != self.config['training_seconds']):
-                raise ValueError('checkpoint_operating_budget_cannot_be_reset')
             self.state['training_seconds'] = max(self.state['training_seconds'],
-                                                 budget['consumed_seconds'])
+                                                 cp['operating_budget']['consumed_seconds'])
         number = len(self.state['attempts']) + 1
         root = private_root(self.work / f'attempt-{number:04d}')
         generation = f'g-ops-{number:04d}-{time.time_ns()}'
