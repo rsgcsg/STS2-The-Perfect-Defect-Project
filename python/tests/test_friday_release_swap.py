@@ -68,10 +68,18 @@ def test_decision_follows_the_c12c_c12d_c13_c13b_shapes(swap, watch):
     # c12c just after the deadline: a same-window watch only closes the window (c12d).
     closing = decide(swap, C12C, W1_DEADLINE + 60)
     assert closing['mode'] == 'close_window' and 'deadline_at - 600' in closing['why']
-    # ... and inside the 600 s + margin before it, too (the 06:38-06:48 trap).
-    assert decide(swap, C12C, W1_DEADLINE - 1200)['mode'] == 'close_window'
-    used = (state('learner_failed', seconds=71000.0), C13[1])
+    # From deadline_at - 600 on, the first tick stops with run_budget_complete.
+    assert decide(swap, C12C, W1_DEADLINE - 600)['mode'] == 'close_window'
+    # Before it, a launched watch would still start an attempt: refused, with the time.
+    with pytest.raises(swap.SwapError, match='too_close_to_the_window_deadline'):
+        decide(swap, C12C, W1_DEADLINE - 1200)
+    used = (state('learner_failed', seconds=72000.0), C13[1])
     assert decide(swap, used, NOW_C13)['mode'] == 'close_window'
+    # A small remainder is still same-window: it trains it and ends run_budget_complete.
+    small = (state('learner_failed', seconds=71000.0), C13[1])
+    assert decide(swap, small, NOW_C13)['mode'] == 'same_window'
+    with pytest.raises(swap.SwapError, match='completed_window_with_active_attempt'):
+        decide(swap, ({**C12D[0], 'active': 13}, C12D[1]), NOW_C13, active_terminal=True)
     with pytest.raises(swap.SwapError, match='predecessor_watch_not_stopped'):
         decide(swap, C13B_RUNNING, NOW_C13)
     # The real c13 state still names attempt-0001 as active (the watcher crashed).
@@ -274,7 +282,7 @@ def friday(swap, watch, tmp_path, monkeypatch):
         'config_sha256': hashlib.sha256(watch.json_bytes(prior)).hexdigest()})
     calls = {'children': 0}
 
-    def child(root, registration, python, rel, adapter, compiler):
+    def child(root, registration, python, rel, adapter, compiler, keys):
         calls['children'] += 1
         root.mkdir(parents=True, exist_ok=True)
         bad = compiler['compiler_sha256'] != '4f8b8fbe'
@@ -311,7 +319,9 @@ def friday(swap, watch, tmp_path, monkeypatch):
 def test_dry_run_prepares_the_c13b_continuation_and_is_idempotent(friday, capsys):
     friday.prepare('--expect-mode', 'same_window')
     final = friday.long_run / 'swap-c13b-dry-run'
-    ready = json.loads((final / 'READY.json').read_bytes())
+    assert not (final / 'READY.json').exists()  # a dry run is never launchable
+    ready = json.loads((final / 'DRY-RUN.json').read_bytes())
+    assert ready['launch'].startswith('# DRY RUN')
     assert set(ready['files']) == set(['decision.json', 'identities.json', 'checkpoint.json',
                                        'execution.json', 'learner.json', 'watch.json'])
     cfg = json.loads((final / 'watch.json').read_bytes())
@@ -342,7 +352,7 @@ def test_a_failing_verification_leaves_no_valid_looking_output(friday, swap):
         friday.prepare()
     assert not (friday.long_run / 'swap-c13b-dry-run').exists()
     failed = list(friday.long_run.glob('.swap-c13b-dry-run.FAILED-*'))
-    assert len(failed) == 1 and not (failed[0] / 'READY.json').exists()
+    assert len(failed) == 1 and not (failed[0] / 'DRY-RUN.json').exists()
 
 
 def test_typed_failure_line_never_prints_an_endpoint(swap, capsys, monkeypatch):
@@ -377,3 +387,47 @@ def test_registration_search_skips_stripped_models_and_walks_linked_windows(swap
     assert swap.find_registration(w2, read) == kept
     with pytest.raises(swap.SwapError, match='no_actor_registration_with_model_found'):
         swap.find_registration({**w2, 'configuration': pin(tmp_path / 'c.json', C13[1])}, read)
+
+
+def test_launch_deadline_is_checked_after_verification(friday, swap, monkeypatch):
+    # The real game can outlast the margin; READY must not be written after launch_by.
+    clock = iter([NOW_C13])
+    monkeypatch.setattr(swap.time, 'time', lambda: next(clock, W2_DEADLINE))
+    with pytest.raises(swap.SwapError, match='launch_deadline_passed'):
+        friday.prepare()
+    assert not (friday.long_run / 'swap-c13b-dry-run').exists()
+    assert list(friday.long_run.glob('.swap-c13b-dry-run.FAILED-*'))
+
+
+def test_real_game_judges_only_the_selected_slot(swap, tmp_path, monkeypatch):
+    """Shape of verify-1443709/one/result.json: 100 planned slots, one selected and played."""
+    calls = []
+    slot = {'slot_id': 'picked', 'status': 'finished', 'execution_reason': 'natural_terminal',
+            'natural_result': 'loss', 'max_observed_floor': 17, 'seed_ordinal': 67}
+    report = {'save_failed': 0, 'slots': [slot] + [
+        {'slot_id': f'other-{i}', 'status': 'not_started'} for i in range(99)]}
+
+    def submit(plan, **kwargs):
+        calls.append(kwargs)
+        (tmp_path / 'game/one').mkdir(parents=True, exist_ok=True)
+        (tmp_path / 'game/one/result.json').write_text(json.dumps(
+            {'status': 'completed', 'error_type': None, 'selected_slot_ids': ['picked'],
+             'ledger_report': report}))
+        return {'job_id': '1443710'}
+    evaluate = SimpleNamespace(read_pinned=lambda ref: None, submit=submit,
+                               prepare_checkpoint=lambda *a, **k: None,
+                               prepare=lambda *a, **k: None)
+    monkeypatch.setattr(swap.time, 'sleep', lambda s: None)
+    cfg = {'exclude_nodes': ['smp-9-8'], 'evaluation': {
+        'manifest': {'path': 'm.json', 'sha256': 'x'}, 'constraint': 'fc430', 'seeds': 50}}
+    game = swap.real_game(evaluate, tmp_path / 'game', cfg, Path('e'), Path('l'), 'cp',
+                          timeout=60, episode_seconds=1800)
+    assert game == {'job_id': '1443710', 'status': 'completed', 'error_type': None,
+                    'slot_status': 'finished', 'reason': 'natural_terminal', 'result': 'loss',
+                    'floor': 17, 'seed_ordinal': 67}
+    assert calls == [{'partition': 'general', 'constraint': 'fc430',
+                      'exclude_nodes': ['smp-9-8']}]
+    slot.update(status='unknown', execution_reason='episode_wall_limit_reached')
+    with pytest.raises(swap.SwapError, match='real_game_not_a_natural_end'):
+        swap.real_game(evaluate, tmp_path / 'game', cfg, Path('e'), Path('l'), 'cp',
+                       timeout=60, episode_seconds=1800)

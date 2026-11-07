@@ -58,12 +58,12 @@ PYTHON_CHANGE_HINTS = ('python/stpd', 'python/spireagent')
 DETERMINISTIC = ('decision.json', 'identities.json', 'checkpoint.json', 'execution.json',
                  'learner.json', 'watch.json')
 CREDENTIALS = '${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}'
-WRAPPER = r'''set -euo pipefail
+WRAPPER = r'''set -eo pipefail
 source "$SWAP_ENV_FILE" >/dev/null
 c=''' + CREDENTIALS + r'''
 [[ -f "$c" && ! -L "$c" && $(stat -c '%a' "$c") = 600 && $(stat -c '%u' "$c") = $(id -u) ]] || {
   echo "release_swap: private R2 credential file unavailable" >&2; exit 97; }
-source "$c" >/dev/null
+set -a; source "$c" >/dev/null; set +a
 exec python "$SWAP_TOOL" "$@"
 '''
 
@@ -113,10 +113,13 @@ def decide(previous: dict[str, Any], prior: dict[str, Any], *, now: float, margi
                  previous_window_state; require_completed_previous_window decides the rest.
     same_window  it stopped for any other reason with budget and deadline left: continue
                  with previous_watch_state, launched before deadline_at - 600 - margin.
-    close_window it stopped for another reason but its deadline (or budget) is used up. A
-                 same-window watch then ends at once with absolute_deadline or
-                 run_budget_complete, so launch it to close the window, then prepare again
-                 against it (the c12c -> c12d -> c13 path, without the guesswork).
+    close_window it stopped for another reason and its budget is used up or deadline_at - 600
+                 has passed. A same-window watch on the predecessor's own release then
+                 stops on its first tick (run_budget_complete / absolute_deadline) before
+                 start_attempt, so no learner or actor starts; launch it to close the window,
+                 then prepare again against it (c12c -> c12d -> c13, without the guesswork).
+    Between deadline_at - 600 - margin and deadline_at - 600 neither is safe (a watch launched
+    there would still start an attempt), so that is refused with the time to re-run.
 
     A stopped watch may still name its active attempt (c13 crashed with attempt-0001 open).
     A same-window continuation reconciles it on its first tick, so that is accepted when the
@@ -131,17 +134,24 @@ def decide(previous: dict[str, Any], prior: dict[str, Any], *, now: float, margi
                         f"attempt index {previous['active']} has a learner job that is not "
                         'terminal; wait for it or reconcile first')
     if stop in completed_stops:
+        if previous.get('active') is not None:
+            raise SwapError('completed_window_with_active_attempt',
+                            'require_completed_previous_window refuses it: reconcile first')
         return {'mode': 'new_window', 'predecessor_stop': stop,
                 'why': f'predecessor window ended with {stop}'}
     deadline = prior['deadline_at'] - DEADLINE_HEADROOM
     budget_left = prior['training_seconds'] - previous['training_seconds']
-    if budget_left <= margin:
+    if budget_left <= 0:
         return {'mode': 'close_window', 'predecessor_stop': stop,
-                'why': f'{stop}, and only {budget_left:.0f} s of the window budget is left'}
+                'why': f'{stop}, and the window budget is used up'}
+    if now >= deadline:
+        return {'mode': 'close_window', 'predecessor_stop': stop,
+                'why': f'{stop}, and deadline_at - 600 ({stamp(deadline)}) has passed'}
     if deadline - now <= margin:
-        return {'mode': 'close_window', 'predecessor_stop': stop,
-                'why': f'{stop}, and deadline_at - 600 ({stamp(deadline)}) is less than '
-                       f'{margin:.0f} s away'}
+        raise SwapError('too_close_to_the_window_deadline',
+                        f'a same-window watch could not train {margin:.0f} s, and launched '
+                        f'now it would still start an attempt; re-run after {stamp(deadline)} '
+                        'to prepare a close-only watch')
     return {'mode': 'same_window', 'predecessor_stop': stop, 'launch_by': deadline - margin,
             'why': f'{stop}, with {budget_left:.0f} s of budget and the deadline still ahead'}
 
@@ -298,7 +308,9 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
     assert release and execution and learner and cp_id
     cfg['execution'] = str(execution)
     cfg['runtime_source'] = str(release / 'source')
-    cfg['learner_python'] = str(release / 'env-gpu/bin/python')
+    old_release = str(Path(prior['runtime_source']).parent) + '/'
+    if prior['learner_python'].startswith(old_release):  # same links in the new release
+        cfg['learner_python'] = str(release) + '/' + prior['learner_python'][len(old_release):]
     cfg['learner_config'] = str(learner)
     if cfg.get('evaluation') is not None:
         cfg['evaluation']['execution'] = str(execution)
@@ -335,6 +347,9 @@ def checklist(*, decision: dict[str, Any], rows: list[dict[str, Any]] | None,
            f'- why: {decision["why"]}',
            f'- budget {cfg["budget_id"]}, training_seconds {cfg["training_seconds"]}, '
            f'deadline_at {stamp(cfg["deadline_at"])}']
+    if decision['mode'] == 'close_window':
+        out.append('- close-only: runs on the predecessor release and stops on its first tick '
+                   '(no learner, no actor); then prepare the new window against it')
     if decision.get('launch_by'):
         out.append(f'- [ ] launch before {stamp(decision["launch_by"])} '
                    '(deadline_at - 600 s - margin); later it only closes the window')
@@ -408,6 +423,8 @@ def build_release(old_release: Path, sha: str, bundle: Path | None) -> tuple[Pat
     old_head = git(old_release / 'source', 'rev-parse', 'HEAD')
     if new.exists():
         check_release(new, sha, links)
+        if not (new / 'source/tools/friday/release_swap.py').is_file():
+            raise SwapError('release_predates_release_swap', sha[:12])
         return new, True
     staging = old_release.parent / f'.{new.name}.staging-{os.getpid()}'
     try:
@@ -521,21 +538,24 @@ def find_registration(previous: dict[str, Any],
     raise SwapError('no_actor_registration_with_model_found', 'pass --registration')
 
 
-def actor_environment(release: Path, tmp: Path) -> dict[str, str]:
-    """The Policy Runtime's env -i for the agent child (verify.sh / c12b reproduction)."""
+def actor_environment(release: Path, tmp: Path, adapter_keys: list[str]) -> dict[str, str]:
+    """The agent child's environment: Policy Runtime agentProcessEnvironment (PATH, TMPDIR,
+    PYTHONPATH) plus the execution's adapter_environment_keys. PYTHONDONTWRITEBYTECODE is the
+    one addition: it keeps a release in use free of new __pycache__ files."""
     tmp.mkdir(parents=True, exist_ok=True)
-    return {'PATH': os.environ['PATH'], 'LD_LIBRARY_PATH': os.environ.get('LD_LIBRARY_PATH', ''),
+    defaults = {'FRIDAY_INFERENCE_THREADS': '1'}
+    return {'PATH': os.environ['PATH'], 'TMPDIR': str(tmp),
             'PYTHONPATH': f'{release}/source/python:{release}/source/components/evidence',
-            'PYTHONDONTWRITEBYTECODE': '1', 'FRIDAY_INFERENCE_THREADS': '1', 'TMPDIR': str(tmp),
-            'CUDA_VISIBLE_DEVICES': ''}
+            'PYTHONDONTWRITEBYTECODE': '1',
+            **{key: os.environ.get(key, defaults.get(key, '')) for key in adapter_keys}}
 
 
-def freeze_identities(python: str, release: Path, registration: Path,
-                      tmp: Path) -> dict[str, Any]:
+def freeze_identities(python: str, release: Path, registration: Path, tmp: Path,
+                      adapter_keys: list[str]) -> dict[str, Any]:
     result = run([python, '-P', str(Path(__file__).resolve()), '_identities',
                   '--vocabulary-file', str(registration / 'local-inference.json'),
                   '--release-source', str(release / 'source')],
-                 env=actor_environment(release, tmp), check=False, timeout=600)
+                 env=actor_environment(release, tmp, adapter_keys), check=False, timeout=600)
     if result.returncode != 0:
         raise SwapError('identity_freeze_failed', safe(result.stderr.strip()[-400:]))
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -557,7 +577,8 @@ def identities_main(args: argparse.Namespace) -> None:
 
 
 def child_check(root: Path, registration: Path, python: str, release: Path,
-                adapter: dict[str, Any], compiler: dict[str, Any]) -> dict[str, Any]:
+                adapter: dict[str, Any], compiler: dict[str, Any],
+                adapter_keys: list[str]) -> dict[str, Any]:
     """Start the real agent child on a copy of an original registration (stdin closed)."""
     shutil.copytree(registration, root / 'registration')
     reg = (root / 'registration').resolve()
@@ -580,7 +601,8 @@ def child_check(root: Path, registration: Path, python: str, release: Path,
              '--manifest', str(reg / 'manifest.json'), '--binding-root', str(reg),
              '--local-inference', str(reg / 'local-inference.json')],
             cwd=root, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr,
-            env=actor_environment(release, root / 'tmp'), timeout=300)
+            env=actor_environment(release, root / 'tmp', adapter_keys), timeout=300,
+            check=False)
     text = (root / 'child.stderr').read_text()
     code = next((c for c in ('RL_producer_compiler_identity_differs',
                              'P1 model installation binding differs',
@@ -602,8 +624,8 @@ def real_game(evaluate: Any, root: Path, cfg: dict[str, Any], execution: Path, l
                      manifest_path=manifest, episode_seconds=episode_seconds,
                      unknown_policy='continue_cleaned')
     submitted = evaluate.submit(root / 'one/plan.json', partition=evaluation.get(
-        'partition', 'smp'), constraint=evaluation.get('constraint'),
-        exclude_nodes=cfg.get('exclude_nodes') or None)
+        'partition', 'general'), constraint=evaluation.get('constraint'),
+        exclude_nodes=cfg.get('exclude_nodes') or None)  # as watch submits evaluations
     job = submitted.get('job_id')
     print(f'   real game submitted as job {job}; waiting (up to {timeout:.0f} s)', flush=True)
     started, result_path = time.time(), root / 'one/result.json'
@@ -616,12 +638,15 @@ def real_game(evaluate: Any, root: Path, cfg: dict[str, Any], execution: Path, l
                             'scancel it yourself if needed')
         state = run(['sacct', '-n', '-P', '-X', '-j', str(job), '-o', 'State'],
                     check=False).stdout.split()
-        if state and state[0] not in {'PENDING', 'RUNNING', 'COMPLETING', 'CONFIGURING'}:
+        if state and state[0] in {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'NODE_FAIL',
+                                  'OUT_OF_MEMORY', 'BOOT_FAIL', 'DEADLINE', 'PREEMPTED'}:
             time.sleep(30)
             if _read_json(result_path) is None:
                 raise SwapError('real_game_job_ended_without_result', f'job {job}: {state[0]}')
         time.sleep(15)
-    played = [s for s in result['ledger_report']['slots'] if s.get('status')]
+    # The plan holds every manifest seed; limit=1 selects one slot, the rest stay not_started.
+    selected = set(result.get('selected_slot_ids') or [])
+    played = [s for s in result['ledger_report']['slots'] if s.get('slot_id') in selected]
     slot = played[0] if len(played) == 1 else {}
     summary = {'job_id': job, 'status': result['status'], 'error_type': result.get('error_type'),
                'slot_status': slot.get('status'), 'reason': slot.get('execution_reason'),
@@ -644,8 +669,8 @@ def _read_json(path: Path) -> Any:
 
 def view(cfg: dict[str, Any], final: Path, staging: Path) -> dict[str, Any]:
     """The staged watch config with its own file references pointed into staging."""
-    return json.loads(json.dumps(cfg).replace(json.dumps(str(final))[1:-1],
-                                              json.dumps(str(staging))[1:-1]))
+    return json.loads(json.dumps(cfg).replace(json.dumps(str(final) + '/')[1:-1],
+                                              json.dumps(str(staging) + '/')[1:-1]))
 
 
 # ------------------------------------------------------------------- orchestration
@@ -742,13 +767,11 @@ def phase_b(args: argparse.Namespace, steps: Steps) -> None:
         raise SwapError('attempt_needs_reconciliation', f'attempts {stuck} have no '
                         'control-wal-final.json: write a reconciled state (c10) and pass '
                         '--predecessor-state')
-    findings = previous.get('blocking_integrity_findings') or {}
-    acks = dict(a.split('=', 1) for a in args.acknowledge)
-    if mode != 'new_window' and any(
-            {**prior.get('acknowledged_integrity_events', {}), **acks}.get(k) != v
-            for k, v in findings.items()):
-        raise SwapError('integrity_findings_need_diagnosis',
-                        f'{sorted(findings)}: diagnose, then pass --acknowledge KEY=SHA')
+    if mode == 'close_window':
+        # It runs on the predecessor's release: launch it with that release's ENV.
+        env_file = env_file.parent / f"ENV-{Path(prior['runtime_source']).parent.name[-8:]}.sh"
+        if not env_file.is_file():
+            raise SwapError('predecessor_env_file_missing', env_file.name)
 
     staging = root / f'.swap-{args.name}{suffix}.staging-{os.getpid()}'
     evidence = root / f'swap-{args.name}{suffix}.evidence' / f'run-{os.getpid()}'
@@ -782,7 +805,7 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
               + old_execution['python_executable'])
         registration = args.registration or find_registration(previous, evaluate.read_pinned)
         new = freeze_identities(old_execution['python_executable'], release, registration,
-                                evidence / 'tmp')
+                                evidence / 'tmp', old_execution.get('adapter_environment_keys', []))
         old_head = git(Path(prior['runtime_source']), 'rev-parse', 'HEAD')
         changed = git(release / 'source', 'diff', '--name-only', old_head, 'HEAD', '--',
                       *PYTHON_CHANGE_HINTS).splitlines()
@@ -838,6 +861,7 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
         verification['require_completed_previous_window'] = 'OK'
     else:
         watch.require_watch_continuation(previous, prior, checked)
+        watch.require_acknowledged_findings(previous, checked)  # pass --acknowledge KEY=SHA
         verification['require_watch_continuation'] = 'OK (stop reset by the continuation)'
     if cp is not None:
         linked = watch.checkpoint_link(cp, checked, has_history=True)
@@ -855,14 +879,15 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
         compiler = files['learner.json']['segments']['input_compiler_identity']
         python = files['execution.json']['python_executable']
         registration = Path(files['identities.json']['registration'])
+        keys = files['execution.json'].get('adapter_environment_keys', [])
         good = child_check(evidence / 'child-new', registration, python, release, adapter,
-                           compiler)
+                           compiler, keys)
         old_sha = rows[2]['old'] if rows[2]['changed'] else '0' * 64
         bad = child_check(evidence / 'child-negative', registration, python, release, adapter,
-                          {**compiler, 'compiler_sha256': old_sha})
+                          {**compiler, 'compiler_sha256': old_sha}, keys)
         print(f'   agent child new identity rc={good["rc"]}; negative control rc={bad["rc"]} '
               f'{bad["code"]}')
-        if good['rc'] != 0 or good['stderr_bytes']:
+        if good['rc'] != 0 or good['code'] is not None:
             raise SwapError('agent_child_refused_new_identity', json.dumps(good))
         if bad['rc'] == 0 or bad['code'] != 'RL_producer_compiler_identity_differs':
             raise SwapError('agent_child_negative_control_not_refused', json.dumps(bad))
@@ -887,7 +912,15 @@ def _finish(args, steps, watch, staging, final, evidence, kind, decision, rows, 
             verification, hashes, env_file, work):
     driver = final.parent / f'watch-driver-{args.name}.out'
     command = launch_command(cfg, env_file, final / 'watch.json', work, driver)
-    ready = final / 'READY.json'
+    if args.dry_run:  # never launchable: the real game was skipped
+        command = '# DRY RUN, not verified with a real game; do not launch:\n# ' + command
+    ready = final / ('DRY-RUN.json' if args.dry_run else 'READY.json')
+
+    def in_time() -> None:
+        # Verification (the real game) can outlast the launch margin: the c12d mistake.
+        if decision.get('launch_by') and time.time() > decision['launch_by']:
+            raise SwapError('launch_deadline_passed', f"launch_by {stamp(decision['launch_by'])} "
+                            'has passed; prepare again (a close-only watch, or a new window)')
     if kind == 'existing':
         steps('6 ready', f'{final.name} already exists: comparing')
         shutil.rmtree(staging)
@@ -895,10 +928,14 @@ def _finish(args, steps, watch, staging, final, evidence, kind, decision, rows, 
         if old is None:
             raise SwapError('previous_prepare_incomplete', f'{final} has no READY.json; move '
                             'it aside and run again')
-        if old['files'] != hashes:
-            differ = sorted(k for k in hashes if old['files'].get(k) != hashes[k])
-            raise SwapError('prepared_output_differs', f'{differ}: inputs changed since '
-                            f'{final.name} was prepared; use a new --name')
+        on_disk = {name: sha256(final / name) if (final / name).is_file() else None
+                   for name in old['files']}
+        differ = sorted(k for k in set(hashes) | set(old['files'])
+                        if not old['files'].get(k) == hashes.get(k) == on_disk.get(k))
+        if differ:
+            raise SwapError('prepared_output_differs', f'{differ}: the inputs or the prepared '
+                            f'files changed since {final.name} was prepared; use a new --name')
+        in_time()
         verification = _read_json(final / 'verification.json') or {}
         verification.pop('evidence', None)
         print('   unchanged: same files and hashes; verification from the first run kept')
@@ -907,10 +944,11 @@ def _finish(args, steps, watch, staging, final, evidence, kind, decision, rows, 
         os.rename(staging, final)
         try:
             checked = watch.read_segment_config(final / 'watch.json')
-            if decision['mode'] == 'same_window':
-                previous = json.loads(Path(cfg['previous_watch_state']['path']).read_bytes())
+            if decision['mode'] != 'new_window':
+                previous = watch.evaluate.read_pinned(cfg['previous_watch_state'])
                 watch.require_watch_continuation(
                     previous, watch.evaluate.read_pinned(previous['configuration']), checked)
+            in_time()
         except BaseException:
             failed = final.parent / f'.{final.name}.FAILED-{os.getpid()}'
             os.rename(final, failed)

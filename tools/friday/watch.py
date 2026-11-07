@@ -1340,6 +1340,13 @@ def require_watch_continuation(previous: dict[str, Any], prior: dict[str, Any],
         raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
 
 
+def require_acknowledged_findings(previous: dict[str, Any], config: dict[str, Any]) -> None:
+    """A continuation names every blocking integrity finding it diagnosed (by record sha)."""
+    if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
+           for key, digest in previous.get('blocking_integrity_findings', {}).items()):
+        raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+
+
 def checkpoint_link(cp: dict[str, Any], config: dict[str, Any], *, has_history: bool) -> bool:
     """The resume CP rule of start_attempt; True when it enters a new operating window.
 
@@ -1410,9 +1417,7 @@ class SegmentWatcher(Watcher):
                  0 if (config.get('evaluation') or {}).get('initial_checkpoint') else 7200),
              'protected_checkpoints': [], 'incarnation': None})
         if previous is not None:
-            if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
-                   for key, digest in previous.get('blocking_integrity_findings', {}).items()):
-                raise ValueError('diagnosed_integrity_findings_required_for_continuation')
+            require_acknowledged_findings(previous, config)
             save(self.work / 'previous-watch-state.json', previous)
             self.state['previous_config_sha256'] = self.state['config_sha256']
             self.state['config_sha256'] = hashlib.sha256(json_bytes(config)).hexdigest()

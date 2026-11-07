@@ -369,19 +369,25 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
      预算id默认递增，截止默认holder结束−30 min，训练秒 = min(72000, `--total-training-seconds` − 各窗口已用)。
    - 其它stop、预算和截止都还有余 → 同窗口（`previous_watch_state`，保留`previous_window_state`）。
      须在`deadline_at`−600 s−`--launch-margin`（默认1800 s）前启动，清单写明时刻。
-   - 其它stop但截止或预算已用完 → 只关窗：同窗口配置、旧release，启动后立即以
-     `absolute_deadline`/`run_budget_complete`结束、不开actor；然后对它再跑一次本命令开新窗口（c12c→c12d→c13）。
-   前任仍在跑、learner job未终态、死attempt缺`control-wal-final.json`（c10）、有未确认integrity finding时拒绝。
+   - 其它stop，且预算已用完或已过`deadline_at`−600 s → 只关窗：同窗口配置、前任自己的release和ENV，
+     第一个tick就以`run_budget_complete`/`absolute_deadline`停、在`start_attempt`之前，所以不开learner和actor；
+     然后对它再跑一次本命令开新窗口（c12c→c12d→c13）。这时第1步建的release用不上，留给新窗口复用。
+   - 离`deadline_at`−600 s不到`--launch-margin`：两种都不安全（启动的watch还会开attempt），拒绝并给出可重跑的时刻。
+   前任仍在跑、learner job未终态、死attempt缺`control-wal-final.json`（c10）、有未确认integrity finding
+   （`--acknowledge KEY=SHA`）时拒绝。
 5. **验证**：`read_segment_config`；同窗口`require_watch_continuation`，新窗口`require_completed_previous_window`；
    `checkpoint_link`（即`start_attempt`的CP规则）；`compatible-fixes.json`能读；agent子进程用新身份启动成功、
    错编译器身份被拒（`RL_producer_compiler_identity_differs`，负对照）；新release+CP经`evaluate.py
    prepare-checkpoint/prepare/submit`打一局真游戏，必须自然结束、0 unknown。
-6. **就位**：在`.swap-<name>.staging-*`里写完并验完才改名为`swap-<name>/`，再核一次，最后写`READY.json`。
+6. **就位**：在`.swap-<name>.staging-*`里写完并验完才改名为`swap-<name>/`，再核一次（含启动截止：
+   真游戏可能比`--launch-margin`还长，过了就拒绝），最后写`READY.json`。
    失败的staging改名为`.swap-<name>.FAILED-*`，不像有效输出。验证原件在`swap-<name>.evidence/`。
 
 规则全用release里watcher自己的函数，不另写一套。同输入重跑得到同样的文件和hash（`READY.json`对比），
-不重打真游戏；输入变了报`prepared_output_differs`。`--dry-run --release-dir <已有release>`跳过建release
-和真游戏，可在scratch里对前任state的拷贝演练。
+不重打真游戏；输入或已准备文件变了报`prepared_output_differs`。`--dry-run --release-dir <已有release>`跳过建release
+和真游戏，可在scratch里对前任state的拷贝演练；dry run写`DRY-RUN.json`（不写READY），启动命令被注释掉。
+agent子进程的环境照Runtime的`agentProcessEnvironment`（PATH、TMPDIR、PYTHONPATH）加执行文件的
+`adapter_environment_keys`，另加`PYTHONDONTWRITEBYTECODE`以免在用的release多出`__pycache__`。
 
 `swap-<name>/CHECKLIST.txt`列出模式和原因、身份变化、CP、各项验证结果、启动截止和人工核对项，
 最后是启动命令（负责人执行）：
