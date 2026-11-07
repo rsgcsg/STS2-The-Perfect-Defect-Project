@@ -18,7 +18,8 @@ identities by hand. One run of this command does the following:
              watcher would pick: watch.SegmentWatcher.select_checkpoint).
   4 watch    the watch config. Same window (previous_watch_state), new window
              (previous_window_state) or close-only is chosen from the predecessor's stop,
-             budget and deadline.
+             budget and deadline. The node plan (OPS): every excluded node's provenance,
+             --readmit with evidence (typed record), --eval-node pool, --max-excluded-nodes.
   5 verify   read_segment_config, the continuation/new-window rule (watch.checkpoint_link,
              watch.require_watch_continuation, watch.require_completed_previous_window), the
              agent-child identity check with its negative control, and one real Managed game
@@ -292,7 +293,8 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
                 cp_id: str | None, held_job: str | None, exclude: list[str],
                 auto_excluded: list[str], window: dict[str, Any] | None,
                 acknowledgements: dict[str, str],
-                evaluation_episode_seconds: int = 1800) -> dict[str, Any]:
+                evaluation_episode_seconds: int = 1800,
+                nodes: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = copy.deepcopy(prior)
     if held_job:
         cfg['held_job_id'] = held_job
@@ -334,7 +336,134 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
         cfg['deadline_at'] = window['deadline_at']
         cfg['training_seconds'] = window['training_seconds']
     cfg['exclude_nodes'] = sorted(set(cfg.get('exclude_nodes', [])) | extra)
+    cfg.pop('readmit_nodes', None)  # a request applies once, to its own continuation
+    apply_node_plan(cfg, prior, auto_excluded=auto_excluded, **(nodes or {}))
     return cfg
+
+
+# ------------------------------------------------------------ node exclusion plan (OPS)
+# Every excluded node carries where its exclusion came from (``exclude_node_provenance``,
+# deterministic: config, predecessor state and command line only). Re-admission is an
+# explicit operator decision backed by evidence (a node check), applied only here, at a
+# natural restart; the watcher drops the node from its inherited auto exclusion once.
+HEALTH_SOURCES = ('auto_node_unknown_exclusion', 'operator', 'static_unrecorded')
+READMISSION_LIMIT = 2  # the same node re-admitted twice and excluded again: ask, not probe
+
+
+def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded: list[str],
+                    exclude_reason: str | None = None, readmit: list[str] = (),
+                    readmit_evidence: str | None = None, eval_nodes: list[str] = (),
+                    max_excluded_nodes: int | None = None, name: str = '',
+                    auto_records: dict[str, Any] | None = None) -> None:
+    """Provenance, re-admission, evaluation pool and the #386 cap, in that order."""
+    old = prior.get('exclude_node_provenance') or {}
+    records = auto_records or {}
+    configured = set(prior.get('exclude_nodes') or [])
+    provenance: dict[str, Any] = {}
+    for node in cfg['exclude_nodes']:
+        if node in old:
+            provenance[node] = old[node]
+        elif node in auto_excluded:
+            record = records.get(node) or {}
+            provenance[node] = {'source': 'auto_node_unknown_exclusion',
+                                'since': record.get('at'), 'detail': {
+                                    k: record.get(k) for k in (
+                                        'window_unknown', 'window_attempts', 'total_attempts',
+                                        'total_unknown') if k in record}}
+        elif node in configured:
+            provenance[node] = {'source': 'static_unrecorded'}
+        else:
+            provenance[node] = {'source': 'operator', 'reason': exclude_reason or 'unrecorded',
+                                'added_by': f'release_swap {name}'.strip()}
+    history = list(cfg.get('node_readmissions') or [])
+    unknown = sorted(set(readmit) - set(cfg['exclude_nodes']))
+    if unknown:
+        raise SwapError('readmit_node_not_excluded', ', '.join(unknown))
+    if readmit and not readmit_evidence:
+        raise SwapError('readmit_evidence_required', 'pass --readmit-evidence <node check>')
+    requests = []
+    for node in sorted(set(readmit)):
+        before = provenance.pop(node)
+        if before.get('source') == 'evaluation_pool':
+            raise SwapError('readmit_node_is_evaluation_pool', node)
+        if sum(1 for row in history if row['node'] == node) >= READMISSION_LIMIT \
+                and before.get('source') == 'auto_node_unknown_exclusion':
+            raise SwapError('readmission_limit_reached', f'{node}: re-admitted '
+                            f'{READMISSION_LIMIT} times and excluded again; diagnose first')
+        row = {'node': node, 'by': f'release_swap {name}'.strip(), 'evidence': readmit_evidence,
+               'excluded_as': before}
+        history.append(row)
+        requests.append({'node': node, 'evidence': readmit_evidence})
+    cfg['exclude_nodes'] = [n for n in cfg['exclude_nodes'] if n not in set(readmit)]
+    if requests:
+        cfg['readmit_nodes'] = requests
+    if history:
+        cfg['node_readmissions'] = history
+    # Evaluation pool: kept off the actors, the only nodes evaluations may add.
+    pool = sorted({n for n, p in provenance.items() if p.get('source') == 'evaluation_pool'}
+                  | set(eval_nodes))
+    for node in pool:
+        if node not in provenance:
+            provenance[node] = {'source': 'evaluation_pool',
+                                'added_by': f'release_swap {name}'.strip()}
+        elif provenance[node].get('source') != 'evaluation_pool':
+            provenance[node] = {'source': 'evaluation_pool', 'was': provenance[node],
+                                'added_by': f'release_swap {name}'.strip()}
+    cfg['exclude_nodes'] = sorted(set(cfg['exclude_nodes']) | set(pool))
+    if pool and cfg.get('evaluation') is not None:
+        cfg['evaluation']['exclude_nodes'] = [n for n in cfg['exclude_nodes'] if n not in pool]
+    if max_excluded_nodes is not None:
+        cfg['node_unknown_exclusion'] = {**(cfg.get('node_unknown_exclusion') or {}),
+                                         'max_nodes': max_excluded_nodes}
+    cfg['exclude_node_provenance'] = {n: provenance[n] for n in cfg['exclude_nodes']}
+
+
+def node_facts(nodes: list[str]) -> dict[str, dict[str, Any]]:
+    """Slurm type facts for the checklist (features, cores, state); never a decision input."""
+    try:
+        out = run(['scontrol', 'show', 'node', '-o'], check=False, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}  # the summary then says unknown_to_slurm; nothing is decided from it
+    facts = {}
+    for line in out.splitlines():
+        fields = dict(item.split('=', 1) for item in line.split() if '=' in item)
+        if fields.get('NodeName') in nodes:
+            facts[fields['NodeName']] = {'features': fields.get('AvailableFeatures', ''),
+                                         'cpus': fields.get('CPUTot'),
+                                         'state': fields.get('State')}
+    return facts
+
+
+def exclusion_summary(cfg: dict[str, Any], facts: dict[str, dict[str, Any]]) -> list[str]:
+    """Checklist lines: the excluded nodes by source and by type, actor-type nodes by name."""
+    provenance = cfg.get('exclude_node_provenance') or {}
+    types = set(cfg.get('actor_node_types') or []) | ({cfg['actor_constraint']}
+                                                    if cfg.get('actor_constraint') else set())
+    by_source: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    named = []
+    for node in cfg.get('exclude_nodes', []):
+        source = (provenance.get(node) or {}).get('source', 'static_unrecorded')
+        by_source[source] = by_source.get(source, 0) + 1
+        features = [f for f in (facts.get(node) or {}).get('features', '').split(',')
+                    if f and f not in ('smp', 'intel', 'amd', 'rocky')]
+        kind = ','.join(features) or 'unknown_to_slurm'
+        by_type[kind] = by_type.get(kind, 0) + 1
+        if types & set(features):
+            named.append(f'{node}={source}')
+    lines = [f'- exclude_nodes {len(cfg.get("exclude_nodes", []))}: by source '
+             + ', '.join(f'{k} {v}' for k, v in sorted(by_source.items())),
+             '  by type ' + ', '.join(f'{k} {v}' for k, v in sorted(by_type.items(),
+                                                                key=lambda kv: -kv[1]))]
+    if named:
+        lines.append(f'  actor-type nodes excluded ({len(named)}): ' + ' '.join(sorted(named)))
+    for row in cfg.get('readmit_nodes') or []:
+        lines.append(f"- re-admitted {row['node']} (evidence {row['evidence']}); the watcher "
+                     'drops its inherited auto exclusion once; #386 watches it again')
+    if (cfg.get('evaluation') or {}).get('exclude_nodes') is not None:
+        pool = sorted(set(cfg['exclude_nodes']) - set(cfg['evaluation']['exclude_nodes']))
+        lines.append(f'- evaluation pool (no actors): {" ".join(pool)}')
+    return lines
 
 
 def launch_command(cfg: dict[str, Any], env_file: Path, watch_file: Path, work: Path,
@@ -346,7 +475,8 @@ def launch_command(cfg: dict[str, Any], env_file: Path, watch_file: Path, work: 
 
 def checklist(*, decision: dict[str, Any], rows: list[dict[str, Any]] | None,
               cp: dict[str, Any] | None, cfg: dict[str, Any], verification: dict[str, Any],
-              command: str, ready: Path, dry_run: bool, name: str) -> str:
+              command: str, ready: Path, dry_run: bool, name: str,
+              facts: dict[str, dict[str, Any]] | None = None) -> str:
     out = [f'# Release swap {name}: {decision["mode"]}' + (' (DRY RUN: do not launch)'
                                                            if dry_run else ''),
            f'- why: {decision["why"]}',
@@ -370,10 +500,12 @@ def checklist(*, decision: dict[str, Any], rows: list[dict[str, Any]] | None,
                    f"generation {cp['training_generation']} budget {budget.get('id')}")
     for key, value in verification.items():
         out.append(f'- verified {key}: {value}')
+    out += exclusion_summary(cfg, facts or {})
     out += [f'- [ ] {ready} exists (written last; no READY = not prepared)',
             f"- [ ] holder {cfg.get('held_job_id')} RUNNING (squeue), at most 2 GPU cards held",
             '- [ ] no other watcher holds this run; predecessor work dir left untouched',
-            f"- [ ] exclude_nodes reviewed ({len(cfg.get('exclude_nodes', []))} nodes)",
+            f"- [ ] exclude_nodes reviewed ({len(cfg.get('exclude_nodes', []))} nodes; "
+            'sources and types above)',
             '- [ ] write launch-intent-<name>.json (at, reason, retry=false, config_sha256)',
             '- [ ] after launch: first-CP check (step-walls.jsonl / checkpoint-pauses.jsonl)',
             '', 'Launch (lead only):', command]
@@ -618,6 +750,12 @@ def child_check(root: Path, registration: Path, python: str, release: Path,
     return {'rc': result.returncode, 'stderr_bytes': len(text), 'code': code}
 
 
+def evaluation_exclude(cfg: dict[str, Any]) -> list[str] | None:
+    """watch.evaluation_exclude_nodes for a fresh state: the pool list when set."""
+    nodes = (cfg.get('evaluation') or {}).get('exclude_nodes')
+    return (list(nodes) if nodes is not None else cfg.get('exclude_nodes')) or None
+
+
 def real_game(evaluate: Any, root: Path, cfg: dict[str, Any], execution: Path, learner: Path,
               cp_id: str, *, timeout: float, episode_seconds: int) -> dict[str, Any]:
     """One Managed game with the new release + resume CP through the normal submit path."""
@@ -633,7 +771,7 @@ def real_game(evaluate: Any, root: Path, cfg: dict[str, Any], execution: Path, l
                      unknown_policy='continue_cleaned')
     submitted = evaluate.submit(root / 'one/plan.json', partition=evaluation.get(
         'partition', 'general'), constraint=evaluation.get('constraint'),
-        exclude_nodes=cfg.get('exclude_nodes') or None)  # as watch submits evaluations
+        exclude_nodes=evaluation_exclude(cfg))  # as watch submits evaluations
     job = submitted.get('job_id')
     print(f'   real game submitted as job {job}; waiting (up to {timeout:.0f} s)', flush=True)
     started, result_path = time.time(), root / 'one/result.json'
@@ -841,13 +979,21 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
         decision = {**decision, 'launch_by': window['launch_by']}
         print(f"   budget {window['budget_id']}, training_seconds {window['training_seconds']} "
               f"({window['training_seconds_reason']}), deadline {stamp(window['deadline_at'])}")
-    auto = sorted((previous.get('node_exclusion') or {}).get('excluded', {}))
+    auto_records = (previous.get('node_exclusion') or {}).get('excluded', {})
+    auto = sorted(auto_records)
+    if mode == 'close_window' and (args.readmit or args.eval_node):
+        raise SwapError('node_plan_needs_a_continuation', 'a close-only watch keeps its config')
+    plan = {'exclude_reason': args.exclude_reason, 'readmit': args.readmit,
+            'readmit_evidence': args.readmit_evidence, 'eval_nodes': args.eval_node,
+            'max_excluded_nodes': args.max_excluded_nodes, 'name': args.name,
+            'auto_records': auto_records}
     cfg = build_watch(mode, prior, previous_ref=previous_ref, release=release,
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
                       exclude=args.exclude_node, auto_excluded=auto, window=window,
                       acknowledgements=dict(a.split('=', 1) for a in args.acknowledge),
-                      evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS)
+                      evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS,
+                      nodes=plan)
     episodes = [(c.get('evaluation') or {}).get('episode_seconds',
                                                 watch.EVALUATION_EPISODE_SECONDS)
                 for c in (prior, cfg)]
@@ -859,6 +1005,7 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
                               'predecessor_state': previous_ref, 'window': window,
                               'release': str(release), 'sha': args.resolved_sha,
                               'auto_excluded_carried': auto if mode != 'close_window' else [],
+                              'readmitted': [r['node'] for r in cfg.get('readmit_nodes') or []],
                               'dry_run': args.dry_run}
     for name, value in files.items():
         write(staging / name, value)
@@ -969,7 +1116,8 @@ def _finish(args, steps, watch, staging, final, evidence, kind, decision, rows, 
             os.rename(final, failed)
             raise
     text = checklist(decision=decision, rows=rows, cp=cp, cfg=cfg, verification=verification,
-                     command=command, ready=ready, dry_run=args.dry_run, name=args.name)
+                     command=command, ready=ready, dry_run=args.dry_run, name=args.name,
+                     facts=node_facts(cfg.get('exclude_nodes', [])))
     if kind != 'existing':
         (final / 'CHECKLIST.txt').write_text(text)
         write(ready, {'files': hashes, 'launch': command,
@@ -1000,6 +1148,15 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument('--output-root', type=Path, help='default: the long-run dir')
     prepare.add_argument('--held-job', help="GPU holder (default: the predecessor's)")
     prepare.add_argument('--exclude-node', action='append', default=[])
+    prepare.add_argument('--exclude-reason', help='why the --exclude-node nodes are excluded '
+                         '(written into exclude_node_provenance)')
+    prepare.add_argument('--readmit', action='append', default=[], metavar='NODE',
+                         help='put an excluded node back (typed record; needs evidence)')
+    prepare.add_argument('--readmit-evidence', help='node check that justifies --readmit')
+    prepare.add_argument('--eval-node', action='append', default=[], metavar='NODE',
+                         help='reserve for evaluations: kept off actors, evaluations may use it')
+    prepare.add_argument('--max-excluded-nodes', type=int, choices=range(0, 17),
+                         metavar='0..16', help='node_unknown_exclusion.max_nodes')
     prepare.add_argument('--acknowledge', action='append', default=[],
                          help='diagnosed integrity finding KEY=RECORD_SHA256')
     prepare.add_argument('--expect-mode', choices=('same_window', 'new_window', 'close_window'))

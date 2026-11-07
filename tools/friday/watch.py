@@ -1238,6 +1238,39 @@ class Watcher:
             time.sleep(self.next_delay(time.time(), tick_started_at=tick_started_at))
 
 
+def node_isolation_periods(node_exclusion: dict[str, Any]) -> dict[str, list[tuple[float, float]]]:
+    """[start, end) times when a node's closes stay out of the global gate (#399).
+
+    A current auto exclusion runs from its ``at`` on; an OPS re-admission (release_swap
+    probe at a natural restart) closes that period at ``readmitted_at``, so the node's
+    later closes count again while its earlier bad burst stays isolated.
+    """
+    periods: dict[str, list[tuple[float, float]]] = {}
+    for node, record in (node_exclusion.get('excluded') or {}).items():
+        if type(record.get('at')) in (int, float):
+            periods.setdefault(node, []).append((record['at'], math.inf))
+    for node, rows in (node_exclusion.get('readmitted') or {}).items():
+        for row in rows:
+            start, end = row.get('excluded_at'), row.get('readmitted_at')
+            if type(start) in (int, float) and type(end) in (int, float):
+                periods.setdefault(node, []).append((start, end))
+    return periods
+
+
+def in_isolation(periods: dict[str, list[tuple[float, float]]], node: Any, at: Any) -> bool:
+    return type(at) in (int, float) and any(start <= at < end
+                                            for start, end in periods.get(node, ()))
+
+
+NODE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$')
+
+
+def node_list_valid(value: Any) -> bool:
+    """A list of distinct Slurm node names (no ranges: each name is one ``--exclude`` item)."""
+    return (isinstance(value, list) and len(value) <= 1000 and len(set(value)) == len(value)
+            and all(isinstance(n, str) and NODE_NAME.fullmatch(n) for n in value))
+
+
 def read_segment_config(path: Path) -> dict[str, Any]:
     """The existing watcher owns this mode; it consumes the original launch/ledger."""
     value: dict[str, Any] = json.loads(path.read_bytes())
@@ -1256,6 +1289,10 @@ def read_segment_config(path: Path) -> dict[str, Any]:
     if value.get('dataplane') is not None and not isinstance(value['dataplane'], dict):
         raise ValueError('explicit_binary_dataplane_profile_required')
     node_exclusion_settings(value)
+    readmit = value.get('readmit_nodes', [])
+    if (not isinstance(readmit, list) or not all(isinstance(r, dict) for r in readmit)
+            or not node_list_valid([r.get('node') for r in readmit])):
+        raise ValueError('explicit_node_readmission_list_required')
     unknown_window_settings(value)
     read_compatible_fixes()
     if value.get('dataplane') is not None:
@@ -1295,7 +1332,8 @@ def read_segment_config(path: Path) -> dict[str, Any]:
                 or type(evaluation.get('episode_seconds', EVALUATION_EPISODE_SECONDS)) is not int
                 or not 10 <= evaluation.get('episode_seconds', EVALUATION_EPISODE_SECONDS) <= 1800
                 or evaluation.get('selection_score', 'conservative') not in SELECTION_SCORES
-                or type(evaluation.get('avoid_actor_nodes', False)) is not bool):
+                or type(evaluation.get('avoid_actor_nodes', False)) is not bool
+                or not node_list_valid(evaluation.get('exclude_nodes', []))):
             raise ValueError('fixed_two_hour_paired_evaluation_required')
         if (evaluation.get('initial_checkpoint') is not None
                 and evaluation['initial_checkpoint'] != base.resume_checkpoint):
@@ -1424,6 +1462,7 @@ class SegmentWatcher(Watcher):
             self.state['config_sha256'] = hashlib.sha256(json_bytes(config)).hexdigest()
             self.state['configuration'] = config_reference
             self.state['stop'] = None  # Explicit continuation; original state remains pinned above.
+            self.apply_readmissions()
         if self.state['config_sha256'] != hashlib.sha256(json_bytes(config)).hexdigest():
             raise ValueError('watch_resume_configuration_changed')
         self.signalled = self.maintenance_requested = False
@@ -1705,6 +1744,33 @@ class SegmentWatcher(Watcher):
             'window_inconclusive': inconclusive, 'window_fraction': fraction,
             'admission_paused': paused}
 
+    def apply_readmissions(self) -> None:
+        """OPS re-admission, once, when a same-window continuation inherits its state.
+
+        ``readmit_nodes`` come from release_swap's per-node real-game probe. A listed node
+        leaves ``node_exclusion.excluded`` (its exclusion period is kept in ``readmitted``,
+        so its earlier closes stay isolated) and starts a fresh #386 window: if it goes bad
+        again it is excluded again. Nodes that are not auto-excluded here are untouched.
+        """
+        nodes = self.state.setdefault('node_exclusion', {})
+        excluded = nodes.setdefault('excluded', {})
+        for request in self.config.get('readmit_nodes') or []:
+            node = request['node']
+            record = excluded.pop(node, None)
+            if record is None:
+                continue
+            at = time.time()
+            nodes.setdefault('readmitted', {}).setdefault(node, []).append(
+                {'excluded_at': record.get('at'), 'readmitted_at': at,
+                 'evidence': request.get('evidence')})
+            nodes.get('windows', {}).pop(node, None)
+            nodes.get('logged', {}).pop(node, None)
+            event = {'kind': 'node_readmitted', 'node': node, 'at': at,
+                     'excluded_at': record.get('at'), 'evidence': request.get('evidence')}
+            nodes.setdefault('events', []).append(event)
+            print(json.dumps({'kind': 'node_readmitted', 'node': node}), file=sys.stderr,
+                  flush=True)
+
     def unknown_class(self, intent: str, fact: dict[str, Any]) -> dict[str, Any]:
         """Close-time typed category, plus the node; a #386 auto-excluded node's
         unclassified or environment-gap closes count as infrastructure (kept as close_*)."""
@@ -1718,7 +1784,9 @@ class SegmentWatcher(Watcher):
         nodes = self.state.get('node_exclusion', {})
         node = nodes.get('actor_nodes', {}).get(fact.get('actor'))
         value = {**value, 'detail': {**value['detail'], 'node': node}}
-        if (node in nodes.get('excluded', {})
+        readmitted = (nodes.get('readmitted') or {}).get(node) and in_isolation(
+            node_isolation_periods(nodes), node, fact.get('closed_at', fact.get('lost_at')))
+        if ((node in nodes.get('excluded', {}) or readmitted)
                 and value['category'] in {'environment_gap', 'unclassified'}):
             value = {**value, 'category': 'infrastructure', 'rule': 'node_auto_excluded',
                      'close_category': value['category'], 'close_rule': value['rule']}
@@ -1737,8 +1805,7 @@ class SegmentWatcher(Watcher):
         since = now - settings['window_seconds']
         lost = set(self.state.get('lost_world_offers', []))
         placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
-        excluded_at = {node: record.get('at') for node, record in
-                       self.state.get('node_exclusion', {}).get('excluded', {}).items()}
+        periods = node_isolation_periods(self.state.get('node_exclusion', {}))
         closes = unknown = 0
         window: collections.Counter[str] = collections.Counter()
         totals: collections.Counter[str] = collections.Counter()
@@ -1761,8 +1828,7 @@ class SegmentWatcher(Watcher):
             if value is not None:
                 totals[value['category']] += 1
             node = placed.get(fact.get('actor'))
-            cut = excluded_at.get(node)
-            if (type(cut) in (int, float) and type(at) in (int, float) and at >= cut):
+            if in_isolation(periods, node, at):
                 isolated_total += value is not None
                 if at > since:
                     isolated_closes += 1
@@ -1900,8 +1966,13 @@ class SegmentWatcher(Watcher):
         raise ValueError('no_independently_recoverable_checkpoint')
 
     def submit_cpu_step(self, script: Path, root: Path, *, name: str, cpus: int,
-                        minutes: int, memory_gb: int) -> str:
-        """Engineering/CPU allocation only. GPU submission stays in I1's launcher."""
+                        minutes: int, memory_gb: int,
+                        exclude: list[str] | None = None) -> str:
+        """Engineering/CPU allocation only. GPU submission stays in I1's launcher.
+
+        ``exclude`` replaces the actor list for this step (the evaluation preparation
+        passes ``evaluation_exclude_nodes()``); the default is ``actor_exclude_nodes()``.
+        """
         intent, receipt = root / 'submission-intent.json', root / 'submission.json'
         if intent.exists() or receipt.exists():
             raise ValueError('original_submission_intent_requires_reconciliation_no_retry')
@@ -1912,7 +1983,7 @@ class SegmentWatcher(Watcher):
             '--error=' + str(root / '%j.err')]
         if self.config.get('cpu_constraint'):
             command.append('--constraint=' + self.config['cpu_constraint'])
-        excluded = self.actor_exclude_nodes()  # also the eval-prepare step (U4 7b)
+        excluded = self.actor_exclude_nodes() if exclude is None else exclude
         if excluded:
             command.append('--exclude=' + ','.join(excluded))
         command.append(str(script))
@@ -2045,9 +2116,18 @@ class SegmentWatcher(Watcher):
         """Configured and #386 auto-excluded nodes; with ``evaluation.avoid_actor_nodes``
         also the nodes of this watch's running actors (#386 placement facts), so an
         evaluation does not share a node with actors. Opt-in: excluding many nodes can
-        delay the job."""
-        nodes = list(self.actor_exclude_nodes() or [])
-        if (self.config.get('evaluation') or {}).get('avoid_actor_nodes'):
+        delay the job.
+
+        ``evaluation.exclude_nodes`` (OPS, 11-07) replaces the configured actor list for
+        evaluations and their CPU preparation step, so they can use nodes the actors are
+        kept off (an evaluation pool). Auto-excluded nodes are always added."""
+        evaluation = self.config.get('evaluation') or {}
+        if evaluation.get('exclude_nodes') is not None:
+            auto = self.state.get('node_exclusion', {}).get('excluded', {})
+            nodes = [*evaluation['exclude_nodes'], *auto]
+        else:
+            nodes = list(self.actor_exclude_nodes() or [])
+        if evaluation.get('avoid_actor_nodes'):
             terminal = set(self.state['terminal_actors'])
             placed = self.state.get('node_exclusion', {}).get('actor_nodes', {})
             nodes += sorted({node for actor, node in placed.items() if actor not in terminal})
@@ -2665,7 +2745,8 @@ class SegmentWatcher(Watcher):
         self.state['next_evaluation_seconds'] += 7200
         self.persist()
         job = self.submit_cpu_step(script, root / 'preparation', name='rl4-eval-prepare',
-                                  cpus=1, minutes=10, memory_gb=6)
+                                  cpus=1, minutes=10, memory_gb=6,
+                                  exclude=self.evaluation_exclude_nodes())
         pending.update(stage='preparation', job_id=job)
         self.persist()
 
