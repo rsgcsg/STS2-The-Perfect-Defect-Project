@@ -566,6 +566,7 @@ class BinaryBatchPreparer:
             "deduplicate_text",
             "scene_attention_area",
             "text_attention_area",
+            "prepared_layout",
         }
         if set(existing_assembly_options) - allowed:
             raise TypeError("unknown_binary_assembly_options")

@@ -178,10 +178,24 @@ def prepared_update(
         totals = t["targets"].new_zeros(8)
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
         offset = 0
+        rows_forward = performance.prepared_forward == "rows-v2"
+        # Per-head diagnostics take retain_graph gradients, which a compiled backward
+        # (donated buffers) refuses; those occasional steps run the same block eager.
+        compile_rows = performance.prepared_compile and diagnostic is None
+        rows_path: str | None = None
         with lock, prepared_precision(model, performance):
+            if rows_forward:
+                from stpd.p1.rows_forward import varlen_supported
+
+                rows_path = "varlen" if varlen_supported(device) else "masked"
             for group in minibatch.groups:
+                if (getattr(group, "layout", None) is not None) != rows_forward:
+                    raise BoundaryError("rl_performance",
+                                        "prepared_layout_does_not_match_selected_forward")
                 phase = time.perf_counter()
-                scores, logits, hp = model.forward_prepared_rl4(group)
+                scores, logits, hp = (
+                    model.forward_prepared_rl4(group, compile_rows=compile_rows)
+                    if rows_forward else model.forward_prepared_rl4(group))
                 scores = F.pad(scores, (0, t["old_probabilities"].shape[1] - scores.shape[1]),
                                value=-torch.inf if group.policy else 0)
                 phases["forward"] += time.perf_counter() - phase
@@ -267,6 +281,14 @@ def prepared_update(
                 **phases,
             },
         }
+        if rows_path is not None:
+            # Which scene-attention path ran (device-chosen, not a fallback) and the
+            # process's dynamo counters: a cache-limit fall back to eager shows here.
+            result["rows_forward"] = {"path": rows_path, "compiled": compile_rows}
+            if performance.prepared_compile:
+                from stpd.p1.rows_forward import compile_counters
+
+                result["rows_forward"].update(compile_counters())
         if result["acting_kl_infinite"]:
             result["acting_kl_theta_mu"] = None
         if collect_policy_rows:

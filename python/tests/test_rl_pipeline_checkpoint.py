@@ -7,6 +7,7 @@ import socket
 import time
 
 import pytest
+from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_rl41_w1 import configuration, segment
 from test_rl_segment_learner import read_cp
 
