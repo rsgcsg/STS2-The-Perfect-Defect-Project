@@ -2011,6 +2011,13 @@ class SegmentWatcher(Watcher):
             reference = cfg.get('rollback_reference', 'previous')
             anchor = (next((row for row in compared if row['at_training_seconds'] == 0), None)
                       if reference == 'initial_checkpoint' else None)
+            if reference == 'initial_checkpoint':
+                # Refusals before the report is written, so a reconciled re-run is clean.
+                if anchor is None and pending['due_seconds'] != 0:
+                    raise ValueError('initial_checkpoint_evaluation_missing')
+                if (anchor is not None and anchor['checkpoint']['checkpoint_artifact_id']
+                        != cfg['initial_checkpoint']):
+                    raise ValueError('initial_checkpoint_evaluation_binding_changed')
             anchor_keys = protocol_differences(anchor['cohort'], cohort) if anchor else []
             if anchor_keys:
                 skipped['recipe_switch'] = anchor_keys
@@ -2070,13 +2077,8 @@ class SegmentWatcher(Watcher):
             regression_comparison: dict[str, Any] | None = report['against_previous']
             if reference == 'initial_checkpoint':
                 if anchor is None:
-                    if pending['due_seconds'] != 0:
-                        raise ValueError('initial_checkpoint_evaluation_missing')
                     regression_comparison = None  # The anchor is not a post-switch evaluation.
                 else:
-                    if (anchor['checkpoint']['checkpoint_artifact_id']
-                            != cfg['initial_checkpoint']):
-                        raise ValueError('initial_checkpoint_evaluation_binding_changed')
                     if anchor_keys:
                         regression_comparison = protocol_skip(anchor['cohort'], cohort,
                                                               anchor['root'])

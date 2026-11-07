@@ -389,9 +389,10 @@ def reward_summary(cohort: dict[str, Any],
             'meaning': f'Diagnostic only. L and U are means over all {planned} planned rows, '
                        f'with the {len(excluded)} excluded rows scored as public-progress '
                        'losses (L) or wins (U); the official mean is over the '
-                       f'{len(official)} scored rows only, so it is not bracketed by [L, U] '
-                       '(it is below L when excluded games stopped deeper than the scored '
-                       'average). Not natural endpoints, not the official score.'},
+                       f'{len(official)} scored rows only, so it can lie below L (never above U, '
+                       'a win being the maximum): exactly when the excluded rows average a '
+                       'higher L value than the scored mean. Not natural endpoints, not the '
+                       'official score.'},
         'excluded_rows': excluded, 'by_seed': official, 'lower_by_seed': lower}
 
 
@@ -544,7 +545,8 @@ def reward_lines(rewards: dict[str, dict[str, Any]],
     lines += ['', 'The lower-bound interval is a diagnostic, not a natural endpoint; '
               'a difference of lower bounds is not a lower bound on improvement.']
     lines.append('The official mean is over scored rows and [L, U] over all planned rows, so '
-                 'the mean can lie outside [L, U] (below L when excluded games stopped deeper).')
+                 'the mean can lie below L (never above U) when the excluded games stopped '
+                 'deeper than the scored average.')
     return lines
 
 
