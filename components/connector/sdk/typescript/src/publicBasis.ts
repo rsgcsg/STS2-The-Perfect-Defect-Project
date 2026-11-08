@@ -162,9 +162,9 @@ export function decodePublicBasis(value: unknown): PublicBasis {
 }
 
 /** Per-step light check for a revision-1 basis that the same process just built
- * (fast chain, design v2 §2.7). It keeps every semantic gate of decodePublicBasis:
- * public-only policy, catalog invariants, Read/snapshot binding, finite facts and
- * the completeness inventory. It skips the strict shape decode (zod), which runs on
+ * (fast chain, design v2 §2.7). It keeps every non-shape gate of decodePublicBasis:
+ * public-only policy, no revision-3 relic witness, referent properties with a schema,
+ * catalog invariants, Read/snapshot binding, finite facts and the completeness inventory. It skips the strict shape decode (zod), which runs on
  * the sampled steps and R7 games together with the byte re-hash and JSON re-parse.
  * Any other revision gets the full decode. */
 export function checkPublicBasisLight(value: unknown): PublicBasis {
@@ -174,8 +174,12 @@ export function checkPublicBasisLight(value: unknown): PublicBasis {
   if (basis.schema !== PUBLIC_BASIS_SCHEMA || basis.capture_scope !== PUBLIC_BASIS_SCOPE || !Array.isArray(basis.reads)
       || !isJsonObject(basis.snapshot)) throw new Error("public basis shell is not revision 1");
   if (!hasFinitePublicNumbers(basis)) throw new Error("public basis has nonfinite facts");
+  if (Object.hasOwn(basis, "settled_relic_counters")) throw new Error("settled relic counters require public basis revision 3");
   const snapshot = basis.snapshot as unknown as PlayerEnvironmentSnapshot;
   if (snapshot.information_policy?.includes_hidden_information !== false) throw new Error("source is not public");
+  if (!Array.isArray(snapshot.referents)
+      || snapshot.referents.some(referent => referent?.properties != null && !referent.properties_schema))
+    throw new Error("referent properties require a content schema");
   const problems = playerSnapshotInvariantProblems(snapshot);
   if (problems.length) throw new Error(`Player Environment observation failed light check: ${problems.join("; ")}`);
   if (basis.reads.length !== snapshot.reads.length || new Set(basis.reads.map(read => read.read_id)).size !== basis.reads.length

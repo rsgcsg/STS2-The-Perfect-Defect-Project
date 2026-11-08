@@ -187,6 +187,19 @@ describe('per-step light check (fast chain)', () => {
     expect(() => checkPublicBasisLight(status)).toThrow(/capture status/u);
     const unbound = basis(); unbound.reads[0].response.observed_snapshot_id = 'other';
     expect(() => checkPublicBasisLight(unbound)).toThrow(/Read source binding/u);
+    // The two non-shape gates outside the snapshot invariants: no revision-3 witness, properties need a schema.
+    const settled = basis(); settled.settled_relic_counters = { relics: [] };
+    expect(() => checkPublicBasisLight(settled)).toThrow(/require public basis revision 3/u);
+    expect(() => decodePublicBasis(settled)).toThrow(/require public basis revision 3/u);
+    const unschemed = basis(); const referent = unschemed.snapshot.referents[0];
+    referent.properties = { x: 1 }; referent.properties_schema = null;
+    expect(() => checkPublicBasisLight(unschemed)).toThrow(/properties require a content schema/u);
+    expect(() => decodePublicBasis(unschemed)).toThrow(/properties require a content schema/u);
+  });
+  it('serializes to the same bytes as the strict decode', async () => {
+    const { checkPublicBasisLight } = await import('../src/index.js');
+    const value = basis();
+    expect(JSON.stringify(checkPublicBasisLight(structuredClone(value)))).toBe(JSON.stringify(decodePublicBasis(structuredClone(value))));
   });
   it('leaves the strict shell to the sampled check: an unknown field passes light, fails strict', () => {
     return import('../src/index.js').then(({ checkPublicBasisLight }) => {
