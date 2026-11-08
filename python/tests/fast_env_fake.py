@@ -18,7 +18,11 @@ import uuid
 with open(sys.argv[1], "rb") as source:
     scenario = json.loads(source.read())
 lock = threading.Lock()
-games = iter(scenario.get("games", []))
+plans = list(scenario.get("games", []))
+# Plans naming a ``seed`` go to that seed's open (parallel tests stay order-free);
+# the others are taken in open order.
+by_seed = {plan["seed"]: plan for plan in plans if "seed" in plan}
+games = iter([plan for plan in plans if "seed" not in plan])
 open_games: dict[int, dict] = {}
 native = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
 with open(scenario["log"] + ".native", "w") as handle:
@@ -59,8 +63,9 @@ for raw in sys.stdin:
     command = json.loads(raw)
     log(command)
     if command["cmd"] == "open":
-        plan = next(games, {"close": {"reason": "terminal",
-                                      "terminal": {"result": "defeat"}}, "after": 0.05})
+        plan = by_seed.pop(command["seed"], None) or next(games, {
+            "close": {"reason": "terminal", "terminal": {"result": "defeat"}},
+            "after": 0.05})
         if "refuse" in plan:
             emit({"event": "open_refused", "command_id": command["command_id"],
                   "slot": command["slot"], "game_ref": command["game_ref"],
@@ -89,6 +94,9 @@ for raw in sys.stdin:
             later(plan["exit_after"], lambda: os._exit(3))  # a crash, children left over
     elif command["cmd"] == "close_slot":
         game = open_games.get(command["slot"])
+        named = command.get("game_instance_id")
+        if named is not None and game is not None and named != game["game_instance_id"]:
+            game = None  # a close_slot naming another instance is ignored
         if game is not None and not game["plan"].get("ignore_close_slot"):
             close(command["slot"], reason="stop", detail="stop_before_send")
     elif command["cmd"] == "stop":

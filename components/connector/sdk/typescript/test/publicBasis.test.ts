@@ -166,3 +166,48 @@ it('retains the complete original navigation record and verifies its own Read bi
   foreign.snapshot.raw_native_navigation_basis.snapshot.observed_at = '2026-10-19T00:00:00Z';
   expect(() => decodePublicBasis(foreign)).toThrow(/same public capture/);
 });
+
+describe('per-step light check (fast chain)', () => {
+  it('accepts what the strict decode accepts and keeps every semantic gate', async () => {
+    const { checkPublicBasisLight } = await import('../src/index.js');
+    const good = basis();
+    expect(checkPublicBasisLight(good)).toBe(good);
+    expect(decodePublicBasis(good)).toEqual(good);
+    const hidden = basis(); hidden.snapshot.information_policy.includes_hidden_information = true;
+    expect(() => checkPublicBasisLight(hidden)).toThrow(/not public/u);
+    const duplicate = basis(); const actions = duplicate.snapshot.bound_actions.actions;
+    actions[1].bound_action_id = actions[0].bound_action_id;
+    expect(() => checkPublicBasisLight(duplicate)).toThrow(/bound action ids must be unique/u);
+    expect(() => decodePublicBasis(duplicate)).toThrow(/bound action ids must be unique/u);
+    const dangling = basis(); dangling.snapshot.bound_actions.actions[0].subject_referent_id = 'no-such-referent';
+    expect(() => checkPublicBasisLight(dangling)).toThrow(/subject must be a current referent/u);
+    const nonfinite = basis(); nonfinite.snapshot.extra_fact = Number.NaN;
+    expect(() => checkPublicBasisLight(nonfinite)).toThrow(/nonfinite/u);
+    const status = basis(); status.capture_status = 'partial';
+    expect(() => checkPublicBasisLight(status)).toThrow(/capture status/u);
+    const unbound = basis(); unbound.reads[0].response.observed_snapshot_id = 'other';
+    expect(() => checkPublicBasisLight(unbound)).toThrow(/Read source binding/u);
+    // The two non-shape gates outside the snapshot invariants: no revision-3 witness, properties need a schema.
+    const settled = basis(); settled.settled_relic_counters = { relics: [] };
+    expect(() => checkPublicBasisLight(settled)).toThrow(/require public basis revision 3/u);
+    expect(() => decodePublicBasis(settled)).toThrow(/require public basis revision 3/u);
+    const unschemed = basis(); const referent = unschemed.snapshot.referents[0];
+    referent.properties = { x: 1 }; referent.properties_schema = null;
+    expect(() => checkPublicBasisLight(unschemed)).toThrow(/properties require a content schema/u);
+    expect(() => decodePublicBasis(unschemed)).toThrow(/properties require a content schema/u);
+  });
+  it('serializes to the same bytes as the strict decode', async () => {
+    const { checkPublicBasisLight } = await import('../src/index.js');
+    const value = basis();
+    expect(JSON.stringify(checkPublicBasisLight(structuredClone(value)))).toBe(JSON.stringify(decodePublicBasis(structuredClone(value))));
+  });
+  it('leaves the strict shell to the sampled check: an unknown field passes light, fails strict', () => {
+    return import('../src/index.js').then(({ checkPublicBasisLight }) => {
+      const extra = basis(); extra.snapshot.unlisted_field = 'x';
+      expect(checkPublicBasisLight(extra)).toBe(extra);
+      expect(() => decodePublicBasis(extra)).toThrow();
+      const other = basis(); other.revision = '2'; other.snapshot.input_profile = 'public-basis-1'; other.snapshot.unlisted_field = 'x';
+      expect(() => checkPublicBasisLight(other)).toThrow();
+    });
+  });
+});
