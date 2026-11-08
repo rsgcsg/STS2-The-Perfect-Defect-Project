@@ -162,6 +162,11 @@ def _finish_runtime(process: subprocess.Popen | _EmbeddedRuntime, stdout: Path, 
     return startup
 
 
+# The released Runtime/Host pair that carries the same-process launcher. Empty
+# until the P-REWRITE integration release pins it (rc.65 was released unused),
+# so "in_process" is refused loudly instead of guessed from file presence.
+IN_PROCESS_RUNTIME_VERSIONS: frozenset[str] = frozenset()
+IN_PROCESS_HOST_VERSIONS: frozenset[str] = frozenset()
 INPROCESS_REQUEST_SCHEMA = "sts2.policy-runtime/inprocess-runtime-request-1"
 INPROCESS_STOP_SCHEMA = "sts2.policy-runtime/inprocess-runtime-stop-1"
 INPROCESS_EXIT_SCHEMA = "sts2.policy-runtime/inprocess-runtime-exit-1"
@@ -386,7 +391,6 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
-            "0.1.0-rc.65",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -403,7 +407,6 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
-            "0.1.0-rc.65",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -421,7 +424,6 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.62",
                 "0.1.0-rc.63",
                 "0.1.0-rc.64",
-                "0.1.0-rc.65",
             }
             else "event",
         )
@@ -438,13 +440,12 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
-            "0.1.0-rc.65",
         }:
             reject("runtime_decision_durability_required")
         if self.managed_transport == "in_process" and (
-                runtime_version not in {"0.1.0-rc.65"}
+                runtime_version not in IN_PROCESS_RUNTIME_VERSIONS
                 or json.loads((self.host / "package.json").read_bytes()).get("version")
-                not in {"1.1.0-rc.65"}
+                not in IN_PROCESS_HOST_VERSIONS
                 or not (self.runtime / "managed-inprocess-host.js").is_file()
                 or not (self.host / "src/managed-host-service-tool.mjs").is_file()):
             reject("in_process_transport_unsupported")
@@ -454,8 +455,7 @@ class ManagedEpisodeExecutor:
             (self.host / "package.json").read_bytes()
         ).get("version") not in {
             "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59",
-            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62", "1.1.0-rc.63", "1.1.0-rc.64",
-            "1.1.0-rc.65"
+            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62", "1.1.0-rc.63", "1.1.0-rc.64"
         }:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(

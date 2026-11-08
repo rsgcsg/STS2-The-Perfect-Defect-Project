@@ -366,7 +366,7 @@ service and episode; the Managed CLI rejects `--connector-endpoint`. Its
 `startup-2` includes the verified binding digest and selected service/runtime/
 continuity IDs without a token, private path, or seed.
 
-**Same-process Managed transport (rc.65, opt-in).** `dist/managed-inprocess-host.js`
+**Same-process Managed transport (opt-in).** `dist/managed-inprocess-host.js`
 runs one Host `managed-host-service` tool body and this CLI in one process:
 
 ```bash
