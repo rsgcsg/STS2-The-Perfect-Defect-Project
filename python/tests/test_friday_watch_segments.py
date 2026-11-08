@@ -1566,7 +1566,8 @@ def test_unscored_evaluation_is_neither_a_regression_verdict_nor_a_reference(
     assert third['paired_regression'] is True and owner.state['stop'] is None
 
 
-def test_archiver_lag_is_visible_and_a_slow_final_drain_reports_not_fails(owner, monkeypatch):
+def test_archiver_lag_is_visible_and_a_slow_final_drain_reports_not_fails(
+        owner, watch, monkeypatch):
     """Review M4: watch-state carries the archiver's backlog, age, rate and error, with
     one attention per episode; the final drain is sized from the backlog and a slow tail
     is reported in archive-final.json (originals kept), not a watcher failure."""
@@ -1590,6 +1591,8 @@ def test_archiver_lag_is_visible_and_a_slow_final_drain_reports_not_fails(owner,
     store = ArchivedStore.__new__(ArchivedStore)
     store.archive = Archive()
     monkeypatch.setattr(owner.exchange, "store", store, raising=False)
+    frozen = time.time()  # rates divide by elapsed wall time; a moving clock made this flaky
+    monkeypatch.setattr(watch.time, "time", lambda: frozen)
     alarms = []
     monkeypatch.setattr(owner, "telemetry", lambda kind, **fields: alarms.append(
         fields.get("reason", kind)))
