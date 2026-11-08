@@ -91,6 +91,7 @@ public static class NativePublicCardDetails
         bool addedToPath = false;
         CardModel subject = card;
         string stage = "canonical_copy";
+        string? cacheKey = null, rawTitle = null, rawDescription = null;
         try
         {
             if (path.Count >= 16 || !(addedToPath = path.Add(card)))
@@ -107,11 +108,16 @@ public static class NativePublicCardDetails
             stage = "preflight";
             NativeCardRenderTransaction.Run(card, displayPile, () =>
             {
+                stage = "detail_cache";
+                cacheKey = NativeCardDetailCache.Key(card, displayPile, mode);
+                var served = NativeCardDetailCache.TryServe(cacheKey);
                 stage = "title";
-                visible["name"] = card.Title;
+                visible["name"] = rawTitle = served != null ? served.Title : card.Title;
                 stage = "description";
-                visible["description"] = mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
+                visible["description"] = rawDescription = served != null ? served.Description
+                    : mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
                     : card.GetDescriptionForPile(displayPile, card.CurrentTarget);
+                if (served != null) cacheKey = null;
                 stage = "energy_cost";
                 visible["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
                 stage = "star_cost";
@@ -183,7 +189,7 @@ public static class NativePublicCardDetails
                 && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
                 missing.Add("native_selector_enchantment_description");
         }
-        catch (Exception error) when (error is not NativeRenderStateViolationException)
+        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException)
         {
             // Private, opt-in diagnosis of an actual render failure. Type metadata
             // avoids invoking a model getter after preflight has rejected it.
@@ -194,6 +200,8 @@ public static class NativePublicCardDetails
             visible["description"] = null;
         }
         finally { if (addedToPath) path.Remove(subject); }
-        return new(visible, missing.Distinct(StringComparer.Ordinal).ToArray());
+        string[] gaps = missing.Distinct(StringComparer.Ordinal).ToArray();
+        if (gaps.Length == 0) NativeCardDetailCache.Store(cacheKey, rawTitle, rawDescription);
+        return new(visible, gaps);
     }
 }

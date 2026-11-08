@@ -40,6 +40,10 @@ is closed and versioned.
     segment references it; a segment of a game closed as `not_started`/`unknown` is
     sealed truncated, kept as original and not given to SGD;
   - a sealed segment is written to local disk before it is handed to SGD;
+  - `episode_open.audit_retain_mu` (optional, default false) marks an R7 audit game chosen
+    before it opens; every temporary mu its segments bind is archived with its weights
+    (bound by sha256) before a row is scored with it, and the game's originals are kept
+    in full; the flag carries no game information;
   - `single_choice: omit` (L1) and arms other than `control` change training data and
     need their own approval; the defaults are `score` and `control`.
 
