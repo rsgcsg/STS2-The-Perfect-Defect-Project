@@ -189,7 +189,8 @@ export async function hostSlotNativeFactory(config: FastEnvConfig): Promise<Slot
       const started = await host.startManagedPlayerEnvironmentSession({
         root: config.host.package, candidateDirectory: config.host.candidate_directory, diskIdentity,
         character: config.host.character, language: config.host.language, ascension: config.host.ascension,
-        requestTimeoutMs: config.host.request_timeout_ms, quietDiagnostics: true,
+        // This process is fast_chain only: the native fast path is always on here.
+        requestTimeoutMs: config.host.request_timeout_ms, quietDiagnostics: true, fastChain: true,
         ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate } } : {})
       });
       return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }));
