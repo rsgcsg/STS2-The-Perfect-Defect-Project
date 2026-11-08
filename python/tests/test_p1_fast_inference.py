@@ -549,10 +549,13 @@ def test_tail_value_uses_the_previous_mu_at_the_tail_floor(vocabulary, model):
         (3, "MU_NOT_RESIDENT")]
 
 
-@pytest.mark.parametrize("join_workers", [0, 2])
+@pytest.mark.parametrize(("arena_row_bytes", "join_workers"),
+                         [(256 * 1024, 0), (None, 0), (None, 2)])
 def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, model,
+                                                                     arena_row_bytes,
                                                                      join_workers):
-    """Two prepare workers each prepare half a job; concatenate_groups joins them
+    """Two prepare workers each prepare half a job: written into the shared arena
+    and staged by `stage_forward_parts` (default), or joined by concatenate_groups
     in the device process (0) or in a joiner process (2)."""
     encoder = RowsEncoder(vocabulary)
     compiler = FrameCompiler(vocabulary)
@@ -566,7 +569,8 @@ def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, 
     service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
                                    address=("127.0.0.1", 0), env_sha256=ENV,
                                    prepare_workers=2, job_parts=2, window_ms=200.0,
-                                   join_workers=join_workers)
+                                   join_workers=join_workers,
+                                   arena_row_bytes=arena_row_bytes)
     assert service.publish(model, Handoff(MU))
     client = _open_client(service, encoder, "g1")
     try:
@@ -595,11 +599,14 @@ def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, 
         assert torch.allclose(torch.tensor(got), torch.tensor(behavior), atol=1e-6)
 
 
-@pytest.mark.parametrize("join_workers", [0, 1])
-def test_a_dead_prepare_worker_stops_the_service_loudly(vocabulary, model, join_workers):
+@pytest.mark.parametrize(("arena_row_bytes", "join_workers"),
+                         [(256 * 1024, 0), (None, 1)])
+def test_a_dead_prepare_worker_stops_the_service_loudly(vocabulary, model, arena_row_bytes,
+                                                        join_workers):
     encoder = RowsEncoder(vocabulary)
     encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
-    service = _service(vocabulary, model, FakeAssembler(), join_workers=join_workers)
+    service = _service(vocabulary, model, FakeAssembler(), join_workers=join_workers,
+                       arena_row_bytes=arena_row_bytes)
     client = _open_client(service, encoder, "g1")
     try:
         assert _score(client, encoded, 3, "g1")["status"] == "scored"
@@ -625,3 +632,18 @@ def test_publish_ships_a_model_that_carries_a_compiled_block(vocabulary, model):
         assert model._rows_block_compiled is unpicklable
     finally:
         del model._rows_block_compiled
+
+
+def test_an_arena_slice_too_small_stops_the_service_loudly(vocabulary, model, capfd):
+    """No truncation and no other route: the rows are refused and the service stops."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler(), arena_row_bytes=1)
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
+        assert service.stopping.is_set()
+    finally:
+        client.close()
+        service.close()
+    assert "rl_inference_3_arena_overflow" in capfd.readouterr().err
