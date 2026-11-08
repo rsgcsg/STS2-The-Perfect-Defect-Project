@@ -456,8 +456,10 @@ def test_arena_parts_join_like_concatenate_groups_bitwise(model, varied, policy,
         concatenate_groups,
         forward_arena_bytes,
         forward_inputs,
+        plan_forward_join,
         prepare_group,
         stage_forward_parts,
+        stage_joined,
         write_forward_inputs,
     )
 
@@ -481,6 +483,25 @@ def test_arena_parts_join_like_concatenate_groups_bitwise(model, varied, policy,
         cursor = item.end
     joined = stage_forward_parts(arena, written, torch.device("cpu"), rows=rows)
     _equal_structure(joined, expected)
+    # Planned in a prepare/joiner process, staged on the device: plan in the arena
+    # next to the parts (one copy), or in a separate buffer; JoinPlan pickles.
+    plan_arena = allocate_forward_arena(1 << 22, shared=True)
+    for target in (None, plan_arena):
+        if target is None:
+            big = allocate_forward_arena(arena.numel() + (1 << 22), shared=True)
+            big[:arena.numel()] = arena
+            source, offset = big, arena.numel() + 5
+        else:
+            source, offset = arena, 3
+        plan = pickle.loads(pickle.dumps(plan_forward_join(source, written, offset, rows=rows,
+                                                           plan_arena=target)))
+        assert plan.plan_start % 64 == 0 and plan.in_arena == (target is None)
+        _equal_structure(stage_joined(source, plan, torch.device("cpu"), plan_arena=target),
+                         expected)
+    single = forward_inputs(concatenate_groups(parts[1:2], rows=rows[:6]))
+    plan = plan_forward_join(arena, written[1:2], 0, rows=rows[:6], plan_arena=plan_arena)
+    _equal_structure(stage_joined(arena, plan, torch.device("cpu"), plan_arena=plan_arena),
+                     single)
     model.eval()
     with torch.no_grad():
         for left, right in zip(model.forward_prepared_rl4(joined),
@@ -515,3 +536,14 @@ def test_forward_arena_fails_loudly(model, varied):
     with pytest.raises(ValueError, match="join_requires_one_index_dtype"):
         join_forward_inputs([forward_inputs(group),
                              forward_inputs(group, index_dtype=torch.int64)])
+    from stpd.rl.batch_preparation import plan_forward_join, stage_joined
+
+    full = allocate_forward_arena(forward_arena_bytes(group))
+    part = write_forward_inputs(full, 0, group)
+    with pytest.raises(ValueError, match="forward_arena_overflow"):
+        plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(64))
+    with pytest.raises(ValueError, match="join_requires_parts"):
+        plan_forward_join(full, [], 0)
+    plan = plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(1 << 22))
+    with pytest.raises(ValueError, match="plan_arena_mismatch"):
+        stage_joined(full, plan, torch.device("cpu"))
