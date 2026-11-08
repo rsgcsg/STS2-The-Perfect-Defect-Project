@@ -298,8 +298,9 @@ export class ManagedPeDriverSession {
         }
       }
       case "capture": {
-        if (Object.keys(request).some(key => !["command", "request_id", "expected_runtime_instance_id", "expected_game_continuity_id", "settled_relic_counters"].includes(key))
-            || request.settled_relic_counters !== undefined && typeof request.settled_relic_counters !== "boolean")
+        if (Object.keys(request).some(key => !["command", "request_id", "expected_runtime_instance_id", "expected_game_continuity_id", "settled_relic_counters", "full_check"].includes(key))
+            || request.settled_relic_counters !== undefined && typeof request.settled_relic_counters !== "boolean"
+            || request.full_check !== undefined && typeof request.full_check !== "boolean")
           throw new Error("managed_capture_fields_invalid");
         this.#requireEpisode(); this.#requireExpectedEpisode(request);
         await this.#started.session.refreshSettling({ timeoutMs: this.#timeoutMs });
@@ -307,7 +308,7 @@ export class ManagedPeDriverSession {
         const full = captureManagedPublicBasis(this.#started.session, {
           generationId: this.#started.runtime.adapterRuntimeInstanceId,
           gameContinuityId: this.#gameContinuityId, ordinal: ++this.#captureOrdinal,
-          settledRelicCounters: request.settled_relic_counters === true });
+          settledRelicCounters: request.settled_relic_counters === true, fullCheck: request.full_check !== false });
         return { type: "capture_result", request_id: requestId, full };
       }
       case "observe":

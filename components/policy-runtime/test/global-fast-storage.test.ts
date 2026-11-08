@@ -30,7 +30,7 @@ function step(row: number | null, frameLine: string | null, over: Partial<FastSt
 }
 function closed(over: Partial<FastGameClose> = {}): FastGameClose {
   return { reason: "terminal", detail: "victory", decisions: 2, native_steps: 3, last_step_index: 1, terminal: { result: "victory" },
-    public_facts: { act: 1, floor: 3, hp: 50, max_hp: 70 }, native_replaced: false, ...over };
+    public_facts: { act: 1, floor: 3, hp: 50, max_hp: 70 }, native_replaced: false, full_checks: 1, ...over };
 }
 
 /** Plays a small game: 3 lines, 2 model rows + 1 forced step, one boundary. */
