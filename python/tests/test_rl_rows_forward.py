@@ -316,3 +316,96 @@ def test_compiled_rows_forward_trains_and_diagnostic_steps_run_eager(model, vari
     for name, value in reference.state_dict().items():
         torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
                                    msg=name)
+
+
+def _equal_structure(left, right):
+    """Bitwise: same tensors (dtype, shape, values) through dataclasses and containers."""
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor) and left.dtype == right.dtype
+        assert left.shape == right.shape and torch.equal(left, right)
+    elif dc.is_dataclass(left):
+        assert type(left) is type(right)
+        for item in dc.fields(left):
+            _equal_structure(getattr(left, item.name), getattr(right, item.name))
+    elif isinstance(left, dict):
+        assert list(left) == list(right)
+        for key in left:
+            _equal_structure(left[key], right[key])
+    elif isinstance(left, (tuple, list)):
+        assert len(left) == len(right)
+        for a, b in zip(left, right, strict=True):
+            _equal_structure(a, b)
+    else:
+        assert left == right
+
+
+def _frames(model, count=3):
+    sources = [w1.source(model, w1.segment(model, name=f"actor/{i}", run_id=f"episode-{i}",
+                                           rows=5)) for i in range(count)]
+    frames = [frame for source in sources for frame in source.frames]
+    floors = [floor for source in sources for floor in source.floors]
+    return frames, floors
+
+
+@pytest.mark.parametrize("policy", [True, False])
+@pytest.mark.parametrize("layout", ["rows-v2", "padded-v1"])
+def test_concatenated_subgroups_equal_one_prepared_group_bitwise(model, varied, policy, layout):
+    """Lead 11-09 (a): merging prepared parts is the one-shot group, bit for bit."""
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model)
+    cuts = [(0, 1), (1, 7), (7, 15)]  # uneven parts: widths, catalogs, row buckets differ
+    parts = [prepare_group(frames[a:b], tuple(range(a, b)), policy,
+                           torch.tensor(floors[a:b]), deduplicate_text=False, layout=layout)
+             for a, b in cuts]
+    whole = prepare_group(frames, tuple(range(len(frames))), policy, torch.tensor(floors),
+                          deduplicate_text=False, layout=layout)
+    merged = concatenate_groups(parts)
+    _equal_structure(merged, whole)
+    model.eval()
+    with torch.no_grad():
+        for left, right in zip(model.forward_prepared_rl4(merged),
+                               model.forward_prepared_rl4(whole), strict=True):
+            assert torch.equal(left, right)
+
+
+def test_concatenated_deduplicated_subgroups_score_like_their_parts(model, varied):
+    """rl-inference-3 parts (`rows_scorer.prepare`, deduplicated per part): one merged
+    forward gives each part's own outputs bit for bit (CPU fp32 eager)."""
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model)
+    cuts = [(0, 4), (4, 9), (9, 15)]
+    parts = [prepare_group(frames[a:b], tuple(range(b - a)), True, torch.tensor(floors[a:b]),
+                           deduplicate_text=True, layout="rows-v2") for a, b in cuts]
+    merged = concatenate_groups(parts, rows=tuple(range(len(frames))))
+    assert merged.rows == tuple(range(len(frames)))
+    model.eval()
+    with torch.no_grad():
+        together = model.forward_prepared_rl4(merged)
+        alone = [model.forward_prepared_rl4(part) for part in parts]
+    for index, outputs in enumerate(zip(*alone, strict=True)):
+        joined = together[index]
+        width = joined.shape[1] if joined.ndim > 1 else None
+        expected = torch.cat([value if width is None else torch.nn.functional.pad(
+            value, (0, width - value.shape[1]), value=-torch.inf) for value in outputs])
+        if index == 0:  # scores: catalog padding of a narrower part is -inf in both
+            assert torch.equal(joined.isneginf(), expected.isneginf())
+            finite = joined.isfinite()
+            assert torch.equal(joined[finite], expected[finite])
+        else:
+            assert torch.equal(joined, expected)
+
+
+def test_concatenate_refuses_mixed_parts(model, varied):
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model, count=1)
+    a = prepare_group(frames[:2], (0, 1), True, torch.tensor(floors[:2]),
+                      deduplicate_text=True, layout="rows-v2")
+    b = prepare_group(frames[2:], (2, 3, 4), False, torch.tensor(floors[2:]),
+                      deduplicate_text=True, layout="rows-v2")
+    with pytest.raises(ValueError, match="one_policy_and_layout"):
+        concatenate_groups([a, b])
+    with pytest.raises(ValueError, match="rows_mismatch"):
+        concatenate_groups([a], rows=(0,))
