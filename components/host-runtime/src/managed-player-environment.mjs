@@ -2875,6 +2875,11 @@ export class ManagedPlayerEnvironmentSession {
     return this.#compactInstance?.reconstructor.episodeInstance ?? null;
   }
 
+  /** How the native says the current compact instance began (its first full frame's `start`); null on the old chain. */
+  get episodeStart() {
+    return this.#compactInstance?.reconstructor.start ?? null;
+  }
+
   get compactOutput() {
     return this.#compact == null ? null : { ...this.#compact, configured: this.#compactConfigured };
   }
@@ -2949,8 +2954,9 @@ export class ManagedPlayerEnvironmentSession {
     }
   }
 
-  async restoreMapSave({ path, timeoutMs = 10_000 }) {
+  async restoreMapSave({ path, timeoutMs = 10_000, compactCheckAll = false }) {
     if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot restore a run.");
+    this.#compactCheckAll = compactCheckAll === true;
     this.#projection = null;
     this.#ledger.clear();
     this.#publicEntityAliases.clear();

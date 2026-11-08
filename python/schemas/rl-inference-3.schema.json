@@ -253,7 +253,7 @@
         "status": {"enum": ["completed", "not_started", "unknown"]},
         "reason": {"enum": ["inference_timeout", "response_binding_mismatch", "refused",
                             "stop_before_send", "delivery_unknown", "native_crash",
-                            "compact_state_divergence"]},
+                            "compact_state_divergence", "native_not_delivered"]},
         "receipt_sha256": {"$ref": "#/$defs/sha256"},
         "public_facts": {"$ref": "#/$defs/public_facts"},
         "forced_steps": {

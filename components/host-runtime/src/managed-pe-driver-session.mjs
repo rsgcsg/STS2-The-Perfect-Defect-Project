@@ -232,8 +232,10 @@ export class ManagedPeDriverSession {
         // outcome can carry the old episode's controller into the new one.
         this.#control = null;
         this.#controlGeneration += 1;
+        // compact_check_all (fast_chain R7 game): every compact frame gets the full check.
         const snapshot = await this.#started.session.mount({
-          seed, reset, initialProgress, timeoutMs: this.#timeoutMs
+          seed, reset, initialProgress, timeoutMs: this.#timeoutMs,
+          ...(request.compact_check_all === true ? { compactCheckAll: true } : {})
         });
         if (this.#closed) throw new Error("driver_closed_during_reset");
         this.#requestedSeed = seed;
@@ -273,7 +275,7 @@ export class ManagedPeDriverSession {
         let loaded = false;
         try {
           const snapshot = await this.#started.session.restoreMapSave({ path: save.path,
-            timeoutMs: this.#timeoutMs });
+            timeoutMs: this.#timeoutMs, ...(request.compact_check_all === true ? { compactCheckAll: true } : {}) });
           loaded = true;
           await assertManagedMapReady(this.#started, this.#timeoutMs, save);
           validateManagedMapContinue(this.#started, save);

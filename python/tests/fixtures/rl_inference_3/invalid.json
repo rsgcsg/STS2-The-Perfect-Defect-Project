@@ -42,6 +42,25 @@
   },
   "world_key": "seed-123"
  },
+ "native_not_delivered_reason_misspelled": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "not_delivered",
+  "row_request_id": 15,
+  "schema": "stpd/rl-inference-3",
+  "status": "not_started",
+  "step_index": 4
+ },
+ "native_not_delivered_with_receipt": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "native_not_delivered",
+  "receipt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "row_request_id": 15,
+  "schema": "stpd/rl-inference-3",
+  "status": "not_started",
+  "step_index": 4
+ },
  "not_started_with_receipt": {
   "game_instance_id": "env-3:slot-2:run-9",
   "kind": "step_outcome",
