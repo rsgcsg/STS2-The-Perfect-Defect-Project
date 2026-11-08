@@ -1481,3 +1481,187 @@ def test_executor_records_unreplayed_progress_as_typed_unknown_and_keeps_identit
     else:
         assert row["episode_identity_reply"] == name and "episode_identity" not in row
         assert json.loads(stored[name]) == reply
+
+
+@pytest.mark.parametrize("configuration,code", [
+    ({"managed_transport": "socket"}, "invalid_managed_transport"),
+    ({"managed_transport": "in_process", "inference": {"mode": "central_batch"}},
+     "in_process_transport_requires_per_actor_inference"),
+])
+def test_managed_transport_is_validated_before_reading_packages(configuration, code):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match=code):
+        ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+
+
+def test_embedded_runtime_reads_only_its_own_exit_line_and_stops_through_stdin(tmp_path):
+    import io
+    import subprocess as sp
+
+    from spireagent.workbench import managed_evaluation as backend
+
+    class Stdin(io.BytesIO):
+        def close(self):
+            self.final = self.getvalue()
+            super().close()
+
+    class Launcher:
+        args = ["node", "launcher"]
+        returncode = None
+
+        def __init__(self):
+            self.stdin = Stdin()
+
+        def poll(self):
+            return self.returncode
+
+    stdout = tmp_path / "runtime.stdout"
+    stdout.write_bytes(b"")
+    launcher = Launcher()
+    runtime = backend._EmbeddedRuntime(launcher, stdout)
+    runtime.start(["--manifest", "m.json"])
+    assert json.loads(launcher.stdin.getvalue()) == {
+        "schema": backend.INPROCESS_REQUEST_SCHEMA, "argv": ["--manifest", "m.json"]}
+    assert runtime.poll() is None
+    stdout.write_bytes(json_bytes({"schema": "sts2.policy-runtime/agent-session-startup-2"}))
+    assert runtime.poll() is None, "the startup line is not an exit"
+    with pytest.raises(sp.TimeoutExpired):
+        runtime.wait(timeout=0.1)
+    runtime.terminate()
+    stop = launcher.stdin.final.split(b"\n")[1]
+    assert json.loads(stop) == {"schema": backend.INPROCESS_STOP_SCHEMA}
+    runtime.terminate()  # closed stdin: a repeated Stop is a no-op, never a retry.
+    with stdout.open("ab") as handle:
+        handle.write(json_bytes({"schema": backend.INPROCESS_EXIT_SCHEMA, "code": 0}))
+    assert runtime.wait(timeout=1) == 0
+    # A launcher that dies without the Runtime's exit line is a failed Runtime.
+    stdout.write_bytes(json_bytes({"schema": "startup"}))
+    dead = Launcher()
+    dead.returncode = 0
+    assert backend._EmbeddedRuntime(dead, stdout).poll() == 1
+
+
+def test_in_process_transport_starts_the_same_runtime_arguments_inside_the_host_process(
+    tmp_path, monkeypatch, synthetic_managed_admission,
+):
+    import io
+    from types import SimpleNamespace
+
+    from spireagent.workbench import managed_evaluation as backend
+
+    monkeypatch.setenv("FRIDAY_INFERENCE_THREADS", "1")
+    executor = object.__new__(backend.ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = ("FRIDAY_INFERENCE_THREADS",)
+    executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
+        "python_executable": "/synthetic/python", "host_pin": {},
+        "initial_progress": {"progress_sha256": "progress"}}
+    executor.preparation = {"store": "fixture"}
+    executor.read_concurrency = 1
+    executor.settling_timeout_ms = None
+    executor.measure_host_performance = False
+    executor.managed_transport = "in_process"
+    executor.host = tmp_path / "host"
+    executor.candidate = executor.runtime = tmp_path
+    executor.episode_seconds = executor.cleanup_seconds = 10
+    executor.build = {"artifact_sha256": "candidate"}
+    executor.evidence_durability = "event"
+    executor.max_auto_submissions = 1
+    executor.inference_pool = None
+    ready = {"service_instance_id": "service", "adapter_runtime_instance_id": "runtime",
+             "episode": {"game_continuity_id": "game"}}
+    identity = {"episode_provenance": {"verdict": "provenance_pass", "actual_seed": "seed"},
+                "initial_progress": {"run_unlock_state_matches": True,
+                                     "progress_sha256": "progress"}}
+    manager = SimpleNamespace(
+        reset=lambda *_args, **_kwargs: {}, request=lambda _: {"result": {"identity": identity}},
+        close_host=lambda: {"result": {"exit": {"code": 0}}},
+    )
+    launches = []
+    runtime_stdout = tmp_path / "private" / "runtime.stdout"
+
+    class Stdin(io.BytesIO):
+        def close(self):
+            self.final = self.getvalue()
+            with runtime_stdout.open("ab") as handle:  # the launcher's own exit line
+                handle.write(json_bytes({"schema": backend.INPROCESS_EXIT_SCHEMA, "code": 0}))
+            super().close()
+
+    stdin = Stdin()
+    launch = SimpleNamespace(pid=1, process=SimpleNamespace(
+        wait=lambda **_: 0, stdin=stdin, args=["node"], poll=lambda: None))
+    executor.api = SimpleNamespace(
+        launch_managed_host_service=lambda **kwargs: launches.append(kwargs) or launch,
+        ManagedHostServiceClient=SimpleNamespace(from_attachment=lambda _: SimpleNamespace(
+            ready=lambda: ready)),
+        ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
+    )
+    monkeypatch.setattr(backend, "runtime_arguments", lambda *_: ["--managed-binding", "b"])
+    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_: {})
+    monkeypatch.setattr(backend.export, "declared_p1_revision", lambda _: "r1.9")
+    monkeypatch.setattr(backend.export, "register",
+                        lambda _package, target, *_args, **_kwargs: target.mkdir())
+    monkeypatch.setattr(backend.subprocess, "Popen", lambda *_a, **_k: pytest.fail(
+        "in-process transport must not spawn a separate Runtime"))
+
+    def finish(process, stdout, *_args, **_kwargs):
+        assert isinstance(process, backend._EmbeddedRuntime)
+        assert stdout == tmp_path / "private" / "runtime.stdout"
+        raise RuntimeError("synthetic_finish_boundary_stop")
+
+    monkeypatch.setattr(backend, "_finish_runtime", finish)
+    artifacts = SimpleNamespace(root=tmp_path, put=lambda name, _bytes: name)
+    row = {"selection_id": "model", "seed": "seed", "intent_id": "intent",
+           "world_mutation_offered": False}
+    executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
+             artifacts, lambda: None)
+    assert row["managed_transport"] == "in_process"
+    assert row["status"] == "unknown" and row["reason"] == "RuntimeError"
+    assert row["cleanup_accepted"] is True
+    (kwargs,) = launches
+    assert kwargs["embedder"] == [str(tmp_path / "managed-inprocess-host.js"), "--host-package",
+                                  str(tmp_path / "host"), "--runtime-stdout",
+                                  str(tmp_path / "private" / "runtime.stdout"), "--"]
+    request = json.loads(stdin.final.split(b"\n")[0])
+    assert request["schema"] == backend.INPROCESS_REQUEST_SCHEMA
+    argv = request["argv"]
+    assert argv[:2] == ["--manifest", str(tmp_path / "private" / "registration" / "manifest.json")]
+    assert argv[argv.index("--adapter-env-key") + 1] == "FRIDAY_INFERENCE_THREADS"
+    assert argv[argv.index("--managed-binding") + 1] == "b"
+    assert "node" not in argv and str(tmp_path / "cli.js") not in argv
+    # Cleanup sent the same owner Stop on stdin before the Host manager close.
+    assert json.loads(stdin.final.split(b"\n")[1]) == {"schema": backend.INPROCESS_STOP_SCHEMA}
+
+
+@pytest.mark.parametrize("transport", ["in_process", "http"])
+def test_in_process_is_refused_on_the_current_release_even_with_its_files(
+    tmp_path, monkeypatch, transport
+):
+    """The released pin sets are empty: rc.64 plus launcher files never admits in_process."""
+    from spireagent.workbench import managed_evaluation as backend
+
+    assert frozenset() == backend.IN_PROCESS_RUNTIME_VERSIONS
+    assert frozenset() == backend.IN_PROCESS_HOST_VERSIONS
+    actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
+    monkeypatch.setattr(backend, "source_identity", lambda _: actual)
+    monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
+    monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
+
+    def audit(*_, **_kwargs):
+        raise RuntimeError("admitted_runtime_before_world_audit")
+
+    monkeypatch.setattr(backend, "_audit", audit)
+    (tmp_path / "package.json").write_bytes(json_bytes({"version": "0.1.0-rc.64"}))
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "managed-inprocess-host.js").write_text("")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "managed-host-service-tool.mjs").write_text("")
+    configuration = {"producer": actual.to_dict(), "managed_transport": transport,
+        "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
+        "agent_adapter": backend.export.adapter_identity()}
+    error, reason = (
+        (BoundaryError, "in_process_transport_unsupported") if transport == "in_process"
+        else (RuntimeError, "admitted_runtime_before_world_audit"))
+    with pytest.raises(error, match=reason):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)

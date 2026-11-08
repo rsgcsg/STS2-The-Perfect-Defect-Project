@@ -11,6 +11,12 @@ import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
 
 const TEXT_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1";
 
+function taintError(reason) {
+  if (reason === "successor_projection_failed") return "managed_session_tainted_after_successor_projection_failure";
+  if (reason === "compact_state_divergence") return "managed_session_tainted_after_compact_state_divergence";
+  return "managed_session_tainted_after_unknown";
+}
+
 /** One JSONL driver's raw and text commands over one exact Managed session. */
 export class ManagedPeDriverSession {
   #started;
@@ -226,8 +232,10 @@ export class ManagedPeDriverSession {
         // outcome can carry the old episode's controller into the new one.
         this.#control = null;
         this.#controlGeneration += 1;
+        // compact_check_all (fast_chain R7 game): every compact frame gets the full check.
         const snapshot = await this.#started.session.mount({
-          seed, reset, initialProgress, timeoutMs: this.#timeoutMs
+          seed, reset, initialProgress, timeoutMs: this.#timeoutMs,
+          ...(request.compact_check_all === true ? { compactCheckAll: true } : {})
         });
         if (this.#closed) throw new Error("driver_closed_during_reset");
         this.#requestedSeed = seed;
@@ -267,7 +275,7 @@ export class ManagedPeDriverSession {
         let loaded = false;
         try {
           const snapshot = await this.#started.session.restoreMapSave({ path: save.path,
-            timeoutMs: this.#timeoutMs });
+            timeoutMs: this.#timeoutMs, ...(request.compact_check_all === true ? { compactCheckAll: true } : {}) });
           loaded = true;
           await assertManagedMapReady(this.#started, this.#timeoutMs, save);
           validateManagedMapContinue(this.#started, save);
@@ -320,9 +328,7 @@ export class ManagedPeDriverSession {
         this.#requireControlIntent(intent);
         this.#requireEpisode();
         if (this.#started.session.tainted === true) {
-          throw new Error(this.#started.session.taintReason === "successor_projection_failed"
-            ? "managed_session_tainted_after_successor_projection_failure"
-            : "managed_session_tainted_after_unknown");
+          throw new Error(taintError(this.#started.session.taintReason));
         }
         this.#claimMutationRoute(request.mutation_request_id, "raw");
         this.#clearTextV2Owner();
@@ -394,9 +400,7 @@ export class ManagedPeDriverSession {
         this.#requireEpisode();
         this.#requireExpectedEpisode(request);
         if (this.#started.session.tainted === true) {
-          throw new Error(this.#started.session.taintReason === "successor_projection_failed"
-            ? "managed_session_tainted_after_successor_projection_failure"
-            : "managed_session_tainted_after_unknown");
+          throw new Error(taintError(this.#started.session.taintReason));
         }
         if (this.#control != null) throw new Error("managed_control_held");
         if (intent.generation !== this.#controlGeneration) {
