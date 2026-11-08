@@ -16,9 +16,9 @@
     },
     "host_runtime": {
       "version": "1.1.0-rc.64",
-      "source_revision": "c595cf0bc393597ff719b967c3253cab992b5d49",
-      "component_tree_revision": "30a113d0641159886631e367c90d0fb5c6a83e34",
-      "component_source_digest_sha256": "cedf609ddb45959fb3ca8dcd520f6d12697dc522866b426cf6f8f89107e492d0"
+      "source_revision": "9a1aaf4f0971e3bbc64b8806a130f70d594211f1",
+      "component_tree_revision": "3200f07c34269f88a7a2f2893c3422c19ca22918",
+      "component_source_digest_sha256": "76685a0e75879fbf69629d4b012abe42c57e9fba72e2f1ea0094387a7560e6bb"
     },
     "annotator": {
       "version": "0.3.0-rc.33",
@@ -34,9 +34,9 @@
     },
     "policy_runtime": {
       "version": "0.1.0-rc.64",
-      "source_revision": "c595cf0bc393597ff719b967c3253cab992b5d49",
-      "component_tree_revision": "3fba2300c986cb5ef5c8b0f9f036f92668769ca8",
-      "component_source_digest_sha256": "9352d552d65b9e51714e336e8d46e81857a35af600a6dc0c0542599811cbea81"
+      "source_revision": "9a1aaf4f0971e3bbc64b8806a130f70d594211f1",
+      "component_tree_revision": "e45106b4f62ce8e7ea4358b9664a4b0b1f783d53",
+      "component_source_digest_sha256": "882d59a17dc7ad355d15ddea846cd49a2793a2be851cc8b704a35929b899236b"
     },
     "workbench": {
       "version": "0.1.0-rc.4",
@@ -269,8 +269,8 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "c595cf0bc393597ff719b967c3253cab992b5d49",
-      "current_component_source_digest_sha256": "9352d552d65b9e51714e336e8d46e81857a35af600a6dc0c0542599811cbea81",
+      "current_component_source_revision": "9a1aaf4f0971e3bbc64b8806a130f70d594211f1",
+      "current_component_source_digest_sha256": "882d59a17dc7ad355d15ddea846cd49a2793a2be851cc8b704a35929b899236b",
       "current_component_version": "0.1.0-rc.64",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
