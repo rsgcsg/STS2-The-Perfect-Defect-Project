@@ -532,3 +532,15 @@ test("actual frozen-run readback is required before prepared mount becomes avail
   await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress: initialProgressInput() }), /tainted/u);
   assert.equal(calls.filter(call => ["start_run", "reset_run"].includes(call.cmd)).length, 1);
 });
+
+test("capture full_check=false (fast chain) returns the same sealed basis; a non-boolean is refused", async () => {
+  const { driver } = fixture();
+  await driver.handle({ command: "reset", seed: "SEED" });
+  const strict = await driver.handle({ command: "capture" });
+  const light = await driver.handle({ command: "capture", full_check: false });
+  // Reads carry their own observed_at, so compare the sealed shape, not the bytes.
+  assert.equal(light.full.basis.snapshot.snapshot_id, strict.full.basis.snapshot.snapshot_id);
+  assert.deepEqual(light.full.basis.missing, strict.full.basis.missing);
+  assert.equal(light.full.basis.capture_status, strict.full.basis.capture_status);
+  await assert.rejects(driver.handle({ command: "capture", full_check: "no" }), /managed_capture_fields_invalid/u);
+});

@@ -17,7 +17,7 @@ import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
-import { HostSlotNative, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
+import { HostSlotNative, SampledCheckFailure, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
 const p1Fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const SAMPLING = { mode: "temperature_uniform", seed: "actor-7", arm_id: "control",
@@ -29,6 +29,8 @@ interface NativeHooks {
   delivery?: (step: number) => string;
   stepThrows?: (step: number) => boolean;
   captureThrows?: (capture: number) => boolean;
+  /** This capture's sampled full check disagrees with the light check. */
+  sampledCheckFails?: (capture: number) => boolean;
   stepGate?: () => Promise<void>;
   resetThrows?: boolean;
   /** Emit a fake compact line on every mount and step (evidence tap). */
@@ -75,6 +77,7 @@ class FakeNative implements SlotNative {
   async capture() {
     this.captures += 1;
     if (this.hooks.captureThrows?.(this.captures)) throw new Error("fixture_native_dead");
+    if (this.hooks.sampledCheckFails?.(this.captures)) throw new SampledCheckFailure(new Error("basis_differs_from_bytes"));
     const full = await this.transport.capture({ timeoutMs: 2000 });
     if (this.hooks.settlingAfterStep !== undefined && this.source.steps >= this.hooks.settlingAfterStep)
       (full.basis.snapshot as { status: string }).status = "settling";
@@ -524,6 +527,19 @@ describe("fast-env failure paths", () => {
     await expectBuildStopped(h);
   });
 
+  it("a sampled full check that disagrees ends the game like a capture failure and stops build output", async () => {
+    const h = await harness({ hooks: () => ({ sampledCheckFails: capture => capture === 2 }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    // Same close a capture failure gets today (env_crash; the delivered row's outcome stays unknown).
+    expect(closed).toMatchObject({ reason: "env_crash", native: "replaced", native_steps: 1 });
+    expect(String(closed.detail)).toMatch(/sampled_check_failed:basis_differs_from_bytes/u);
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown" })]);
+    expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "sampled_check_failed", slot: 0 });
+    h.open(0);
+    expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
+  });
+
   it("an ordinary reset failure is refused with its lines kept and does not stop build output", async () => {
     const calls: any[] = [];
     const h = await harness({ sink: recordingSink(calls), hooks: () => ({ resetThrows: true, compactLines: true }), edit: config => { config.compact.enabled = true; } });
@@ -633,5 +649,53 @@ describe("HostSlotNative", () => {
     expect(requests.filter(request => request.command === "step").at(-1).control_epoch).toBe(7);
     epoch = null;
     await expect(native.reset({ seed: "s", initialProgress: null, r7: false })).rejects.toThrow(/fast_env_claim_result_drift/u);
+  });
+
+  it("light-checks every capture, fully verifies the first and the sampled ones, and every capture of an R7 game", async () => {
+    const fixture = await new FakeNative(0, {}).init();
+    await fixture.reset();
+    const good = await fixture.transport.capture({ timeoutMs: 2000 });
+    await fixture.shutdown(true);
+    const continuity = good.capture.game_continuity_id;
+    let serve: () => any = () => good;
+    const requests: any[] = [];
+    const driver: any = {
+      async handle(request: any) {
+        requests.push(request);
+        if (request.command === "claim_control") return { type: "claim_control_result", control_token: "t", control_epoch: 1 };
+        if (request.command === "capture") return { type: "capture_result", full: serve() };
+        return { type: `${request.command}_result` };
+      },
+      status: () => ({ game_continuity_id: continuity }), async shutdown() {}
+    };
+    const started: any = { session: { episodeInstance: "e", episodeStart: null }, runtime: { adapterRuntimeInstanceId: good.capture.session.runtime_instance_id } };
+    // Bytes no longer match the basis object: only a full check can see it.
+    const drifted = () => ({ ...good, basis: { ...good.basis, missing: [...good.basis.missing] , capture_status: good.basis.capture_status, reads: good.basis.reads.slice().reverse() } });
+    const native = new HostSlotNative(started, driver, 0);
+    await native.reset({ seed: "s", initialProgress: null, r7: false });
+    expect(await native.capture()).not.toBe(good); // first capture of the game: verified copy
+    expect(await native.capture()).toBe(good);     // unsampled: the Host's object as built
+    serve = drifted;
+    await expect(native.capture()).resolves.toBeDefined();
+    expect(requests.filter(request => request.command === "capture").every(request => request.full_check === false)).toBe(true);
+    await native.reset({ seed: "s", initialProgress: null, r7: false });
+    await expect(native.capture()).rejects.toBeInstanceOf(SampledCheckFailure);
+    serve = () => good;
+    await native.reset({ seed: "s", initialProgress: null, r7: true });
+    await native.capture(); serve = drifted;
+    await expect(native.capture()).rejects.toThrow(/sampled_check_failed/u);
+    serve = () => ({ ...good, capture: { ...good.capture, source_snapshot_id: "other" } });
+    await expect(native.capture()).rejects.toThrow(/fast_env_capture_world_drift/u);
+  });
+
+  it("the capture schedule draws about the configured share and always includes the first capture", () => {
+    let draws = 0;
+    const schedule = captureSampleSchedule(0.01, false, () => { draws += 1; return 0.37; });
+    expect(draws).toBe(1);
+    const hits = Array.from({ length: 100_000 }, (_, i) => schedule(i)).filter(Boolean).length;
+    expect(schedule(0)).toBe(true);
+    expect(hits).toBeGreaterThan(800); expect(hits).toBeLessThan(1200);
+    expect(Array.from({ length: 50 }, (_, i) => captureSampleSchedule(0.01, true)(i)).every(Boolean)).toBe(true);
+    expect(captureSampleSchedule(0, false)(1)).toBe(false);
   });
 });

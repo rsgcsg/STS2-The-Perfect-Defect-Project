@@ -13,7 +13,7 @@ import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
 import { pyJsonSha256 } from "./json-bytes.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
-import type { SlotNative, SlotNativeFactory } from "./host.js";
+import { SampledCheckFailure, type SlotNative, type SlotNativeFactory } from "./host.js";
 
 type Reduction = ReturnType<typeof reduce>;
 type OpenCommand = Extract<FastEnvCommand, { cmd: "open" }>;
@@ -194,6 +194,11 @@ class GameRun {
       return { full, frame: this.native.frame() };
     } catch (error) {
       if (error instanceof GameEnd) throw error;
+      if (error instanceof SampledCheckFailure) {
+        // Same close as any capture failure today, plus: this build stops producing output.
+        throw new GameEnd("env_crash", `capture:${error.message}`, { replaceNative: true, buildStop: "sampled_check_failed",
+          pendingOutcome: { status: "unknown", reason: "native_crash" } });
+      }
       const taint = this.native.taint();
       if (taint.reason === "compact_state_divergence") {
         throw new GameEnd("not_started", "compact_state_divergence", { replaceNative: true, buildStop: "compact_state_divergence",

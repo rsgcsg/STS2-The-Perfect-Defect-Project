@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isJsonObject, type JsonObject } from "./json.js";
-import { decodePlayerRead, decodePlayerSnapshot, decodePlayerReceipt,
+import { decodePlayerRead, decodePlayerSnapshot, decodePlayerReceipt, playerSnapshotInvariantProblems,
   type DecodedPlayerPayload, type PlayerEnvironmentSnapshot, type PlayerEnvironmentReceipt } from "./protocol.js";
 import { decodeSettledRelicCounters, type SettledRelicCounters } from "./settledRelicCounters.js";
 import { hasFinitePublicNumbers } from "./publicCombat.js";
@@ -159,6 +159,50 @@ export function decodePublicBasis(value: unknown): PublicBasis {
   if (canonical(basis.missing) !== canonical(missing) || basis.capture_status !== (missing.length ? "partial" : "complete"))
     throw new Error("public capture status does not match original inventory");
   return basis as PublicBasis;
+}
+
+/** Per-step light check for a revision-1 basis that the same process just built
+ * (fast chain, design v2 §2.7). It keeps every semantic gate of decodePublicBasis:
+ * public-only policy, catalog invariants, Read/snapshot binding, finite facts and
+ * the completeness inventory. It skips the strict shape decode (zod), which runs on
+ * the sampled steps and R7 games together with the byte re-hash and JSON re-parse.
+ * Any other revision gets the full decode. */
+export function checkPublicBasisLight(value: unknown): PublicBasis {
+  if (!isJsonObject(value)) throw new Error("public basis must contain only finite JSON facts");
+  if (value.revision !== "1") return decodePublicBasis(value);
+  const basis = value as unknown as PublicBasis;
+  if (basis.schema !== PUBLIC_BASIS_SCHEMA || basis.capture_scope !== PUBLIC_BASIS_SCOPE || !Array.isArray(basis.reads)
+      || !isJsonObject(basis.snapshot)) throw new Error("public basis shell is not revision 1");
+  if (!hasFinitePublicNumbers(basis)) throw new Error("public basis has nonfinite facts");
+  const snapshot = basis.snapshot as unknown as PlayerEnvironmentSnapshot;
+  if (snapshot.information_policy?.includes_hidden_information !== false) throw new Error("source is not public");
+  const problems = playerSnapshotInvariantProblems(snapshot);
+  if (problems.length) throw new Error(`Player Environment observation failed light check: ${problems.join("; ")}`);
+  if (basis.reads.length !== snapshot.reads.length || new Set(basis.reads.map(read => read.read_id)).size !== basis.reads.length
+    || new Set(snapshot.reads.map(read => read.read_id)).size !== snapshot.reads.length)
+    throw new Error("public Read inventory is incomplete or duplicated");
+  const missing: string[] = [];
+  const session = canonical(snapshot.session), policy = canonical(snapshot.information_policy);
+  for (const listed of snapshot.reads) {
+    const captured = basis.reads.find(read => read.read_id === listed.read_id);
+    if (!captured || captured.kind !== listed.kind) throw new Error("public Read kind or identity changed");
+    if (captured.response === null) {
+      if (captured.error === null) throw new Error("failed Read has no cause");
+      missing.push(`read:${listed.read_id}:${captured.error}`); continue;
+    }
+    const read = captured.response as unknown as ReturnType<typeof decodePlayerRead>["data"];
+    if (captured.error !== null || read.read_id !== listed.read_id || read.kind !== listed.kind
+      || read.expected_snapshot_id !== snapshot.snapshot_id || read.observed_snapshot_id !== snapshot.snapshot_id
+      || read.content_schema !== listed.content_schema || read.ordering_semantics !== listed.ordering_semantics
+      || read.visibility_basis !== listed.visibility_basis
+      || canonical(read.completeness.hidden_by_policy) !== canonical(listed.hidden_by_policy) || (read.target_referent_id ?? null) !== (listed.target_referent_id ?? null)
+      || canonical(read.session) !== session || canonical(read.information_policy) !== policy) throw new Error("Read source binding mismatch");
+    if (read.completeness.status !== "complete" || read.completeness.missing.length) missing.push(`read:${listed.read_id}:partial`);
+  }
+  if (snapshot.completeness.status !== "complete" || snapshot.completeness.missing.length) missing.push("snapshot:partial");
+  if (canonical(basis.missing) !== canonical(missing) || basis.capture_status !== (missing.length ? "partial" : "complete"))
+    throw new Error("public capture status does not match original inventory");
+  return basis;
 }
 
 export async function verifyPublicBasis(capture: PublicBasisHandle, serializedObservation: string): Promise<FullPublicBasis> {
