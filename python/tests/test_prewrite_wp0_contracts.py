@@ -182,6 +182,8 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
         for key, body in frame["objects"].items():
             if not isinstance(body, dict) or body.get("native_ref") != key.split("#")[0]:
                 raise Divergence("object_key_ref_mismatch")
+            if "ordering_semantics" in body:  # a pile container is never tabled, under any key
+                raise Divergence("pile_tabled")
         if set(frame["objects"]) != set(frame["object_digests"]):
             raise Divergence("digest_set_mismatch")
         if frame["frame"] == "delta":
@@ -289,6 +291,7 @@ def test_native_compact_divergence_fails_closed(name: str, reason: str) -> None:
     ("invalid-pile-key-with-ref.jsonl", "pile_placeholder", "schema_invalid"),
     ("invalid-pile-card-other-view.jsonl", "pile_placeholder", "pile_placeholder"),
     ("invalid-discard-view.jsonl", "pile_placeholder", "schema_invalid"),
+    ("invalid-pile-container-tabled.jsonl", "pile_tabled", "pile_tabled"),
 ])
 def test_native_compact_pile_cards_never_tabled(name: str, hot: str, sampled: str) -> None:
     with pytest.raises(Divergence, match=hot):

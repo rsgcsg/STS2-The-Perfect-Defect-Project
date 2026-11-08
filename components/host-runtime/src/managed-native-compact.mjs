@@ -61,6 +61,12 @@ function placeholders(value, found = []) {
   return found;
 }
 
+function validStart(start) {
+  if (!plain(start)) return false;
+  if (start.kind === "new_run") return Object.keys(start).length === 1;
+  return start.kind === "from_save" && Object.keys(start).length === 2 && typeof start.save_sha256 === "string" && SHA.test(start.save_sha256);
+}
+
 /** Fair piles carry no instance: no table placeholder inside any pile container. */
 function checkPiles(value, inPile = false) {
   if (Array.isArray(value)) {
@@ -291,8 +297,11 @@ export class CompactStateReconstructor {
     if (!plain(frame.objects) || !plain(frame.object_digests) || !plain(frame.skeleton)) diverge("schema_invalid", "frame_members");
     const kind = frame.frame;
     if (kind === "full") {
+      // Every instance starts at seq 0 (the sample schedule always checks it) and says how it began.
+      if (frame.seq !== 0) diverge("full_seq_nonzero");
+      if (!validStart(frame.start)) diverge("start_invalid");
       this.#table = new Map(); this.#digests = new Map(); this.#children = new Map();
-      this.#instance = frame.episode_instance; this.#anchor = frame.seq; this.#start = frame.start ?? null;
+      this.#instance = frame.episode_instance; this.#anchor = frame.seq; this.#start = { ...frame.start };
     } else if (kind !== "delta" && kind !== "reconcile") {
       diverge("schema_invalid", "frame_kind");
     } else if (this.#held == null || frame.episode_instance !== this.#instance || frame.base_seq !== this.#held) {
@@ -303,20 +312,34 @@ export class CompactStateReconstructor {
       diverge("reconcile_overdue");
     }
     const upserts = Object.entries(frame.objects);
-    for (const [key, body] of upserts)
+    for (const [key, body] of upserts) {
       if (!plain(body) || typeof key !== "string" || body.native_ref !== key.split("#")[0]) diverge("object_key_ref_mismatch", key);
+      // A pile container is never tabled: its own instance ref must not reach the reader.
+      if (Object.hasOwn(body, "ordering_semantics")) diverge("pile_tabled", key);
+    }
     const digestKeys = Object.keys(frame.object_digests);
     if (digestKeys.length !== upserts.length || digestKeys.some(key => !Object.hasOwn(frame.objects, key)))
       diverge("digest_set_mismatch");
 
     if (kind === "delta") {
       if (!Array.isArray(frame.removed)) diverge("schema_invalid", "removed");
+      for (const key of frame.removed) {
+        if (!this.#digests.has(key)) diverge("removed_not_held", key);
+        if (Object.hasOwn(frame.objects, key)) diverge("removed_and_upserted", key);
+      }
+      // Rule 5 is an iff: a key is upserted exactly when its digest changed.
+      for (const [key] of upserts) if (this.#digests.get(key) === frame.object_digests[key]) diverge("noop_upsert", key);
       // The Host forgets a removed key; an object that comes back must be upserted again.
       for (const key of frame.removed) { this.#table.delete(key); this.#digests.delete(key); this.#children.delete(key); }
       for (const [key, body] of upserts) this.#put(key, body, frame.object_digests[key]);
     } else if (kind === "reconcile") {
       if (!Array.isArray(frame.removed) || !Array.isArray(frame.upserted)) diverge("schema_invalid", "reconcile_lists");
       const removed = new Set(frame.removed), upserted = new Set(frame.upserted);
+      for (const key of removed)
+        if (!this.#digests.has(key) || Object.hasOwn(frame.objects, key)) diverge("reconcile_mismatch", `removed:${key}`);
+      for (const key of upserted)
+        if (!Object.hasOwn(frame.objects, key) || this.#digests.get(key) === frame.object_digests[key])
+          diverge("reconcile_mismatch", `upserted:${key}`);
       for (const [key, digest] of this.#digests) {
         if (removed.has(key)) continue;
         if (!Object.hasOwn(frame.object_digests, key)) diverge("reconcile_mismatch", `missing:${key}`);

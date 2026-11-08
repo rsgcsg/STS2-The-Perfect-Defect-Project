@@ -27,7 +27,8 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    writes them: no `native_ref`, no index, draw pile ordered by visible content only.
    A pile is structural, not a view name: on the hot path any table placeholder inside
    a pile container (a skeleton `draw_pile`/`discard_pile`/`exhaust_pile`, or any object
-   with `ordering_semantics`) diverges, and view names containing pile, draw, discard
+   with `ordering_semantics`) diverges, an object with `ordering_semantics` is itself
+   never a table body (under any key or view), and view names containing pile, draw, discard
    or exhaust are refused by the schema. The wire never says which instance is in a
    pile.
 5. **Delta by output bytes.** A key is upserted iff the sha256 of its body's emitted
