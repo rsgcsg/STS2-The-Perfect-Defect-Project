@@ -17,7 +17,7 @@ import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
-import type { NativeEpisode, SlotNative, SlotNativeFactory } from "../src/fast-env/host.js";
+import { HostSlotNative, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
 const p1Fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const SAMPLING = { mode: "temperature_uniform", seed: "actor-7", arm_id: "control",
@@ -33,6 +33,12 @@ interface NativeHooks {
   resetThrows?: boolean;
   /** Emit a fake compact line on every mount and step (evidence tap). */
   compactLines?: boolean;
+  /** The native's taint reason (e.g. compact_state_divergence), read after a failure. */
+  taintReason?: () => string | null;
+  /** reason_code on the receipt of a native step. */
+  receiptReasonCode?: (step: number) => string | null;
+  /** From this native step on, every capture shows a settling snapshot. */
+  settlingAfterStep?: number;
 }
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
@@ -50,9 +56,9 @@ class FakeNative implements SlotNative {
   }
   get runtimeInstanceId() { return this.source.capabilities.host.runtime_instance_id as string; }
   async reset(): Promise<NativeEpisode> {
-    if (this.hooks.resetThrows) throw new Error("fixture_reset_failed");
     this.#lines = []; this.#listener = null;
     this.#line('{"frame":"full","seq":0}');
+    if (this.hooks.resetThrows) throw new Error("fixture_reset_failed");
     this.source.basis = p1Fixture("synthetic-complete-combat");
     this.source.steps = 0;
     this.source.terminalAfterStep = (this.hooks.terminalAfter ?? 1) <= 1;
@@ -66,7 +72,10 @@ class FakeNative implements SlotNative {
   async capture() {
     this.captures += 1;
     if (this.hooks.captureThrows?.(this.captures)) throw new Error("fixture_native_dead");
-    return this.transport.capture({ timeoutMs: 2000 });
+    const full = await this.transport.capture({ timeoutMs: 2000 });
+    if (this.hooks.settlingAfterStep !== undefined && this.source.steps >= this.hooks.settlingAfterStep)
+      (full.basis.snapshot as { status: string }).status = "settling";
+    return full;
   }
   async step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown> {
     const step = this.source.steps + 1;
@@ -76,10 +85,11 @@ class FakeNative implements SlotNative {
     this.source.terminalAfterStep = step >= (this.hooks.terminalAfter ?? 1);
     const receipt = await this.transport.step(input, { timeoutMs: 2000 });
     this.#line(`{"frame":"delta","seq":${step}}`);
-    return receipt;
+    const reasonCode = this.hooks.receiptReasonCode?.(step);
+    return reasonCode === undefined ? receipt : { ...receipt, reason_code: reasonCode };
   }
   async release() { await this.transport.release(); }
-  taint() { return { tainted: false, reason: null }; }
+  taint() { const reason = this.hooks.taintReason?.() ?? null; return { tainted: reason !== null, reason }; }
   #lines: string[] = [];
   #listener: ((line: string) => void) | null = null;
   #line(text: string) { if (!this.hooks.compactLines) return; if (this.#listener) this.#listener(text); else this.#lines.push(text); }
@@ -242,7 +252,8 @@ describe("fast-env K-game process", () => {
     const h = await harness({ hooks: index => index === 0 ? { delivery: () => "unknown" } : {} });
     h.open(0);
     const first = await h.next(event => event.event === "closed");
-    expect(first).toMatchObject({ reason: "unknown", detail: "delivery_unknown", native: "replaced", decisions: 1 });
+    expect(first).toMatchObject({ reason: "unknown", native: "replaced", decisions: 1 });
+    expect(first.detail).toMatch(/^delivery_unknown:receipt_delivery_unknown:/u);
     expect(linkOf(h.linkMessages, "step_outcome", first.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "delivery_unknown" })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
     h.open(0);
@@ -320,20 +331,36 @@ describe("fast-env K-game process", () => {
     expect(linkOf(h.linkMessages, "step_outcome")).toEqual([expect.objectContaining({ status: "not_started", reason: "native_not_delivered" })]);
   });
 
-  it("Stop waits for the in-flight inference and closes it stop_before_send; stdin EOF also stops", async () => {
+  it("Stop waits until the in-flight row resolves (timeout or reply), then records stop_before_send without acting", async () => {
+    // Resolved by timeout: Stop is held for the inference timeout, never longer.
     let pending: any = null;
-    const h = await harness({ timeoutMs: 1000, policy: decision => { pending = decision; return "silent"; } });
+    const h = await harness({ timeoutMs: 300, policy: decision => { pending = decision; return "silent"; } });
     h.open(0);
     await h.next(event => event.event === "opened");
     while (!pending) await new Promise(resolve => setTimeout(resolve, 5));
     const started = Date.now();
     h.send({ cmd: "stop" });
     expect(await h.exit).toBe(0);
-    expect(Date.now() - started).toBeLessThan(500);
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(200);
+    expect(waited).toBeLessThan(2000);
     expect(h.events.find(event => event.event === "closed")).toMatchObject({ reason: "stop", detail: "stop_before_send", native: "kept" });
     expect(linkOf(h.linkMessages, "step_outcome")).toEqual([expect.objectContaining({ status: "not_started", reason: "stop_before_send" })]);
     expect(h.natives[0]!.source.steps).toBe(0);
     expect(h.events.at(-1)).toMatchObject({ event: "stopped", games_closed: 1 });
+    // Resolved by a valid reply that arrives during Stop: still never acted on.
+    let held: any = null;
+    const r = await harness({ timeoutMs: 5000, policy: decision => { held = decision; return "silent"; } });
+    r.open(0);
+    while (!held) await new Promise(resolve => setTimeout(resolve, 5));
+    r.send({ cmd: "stop" });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(r.events.some(event => event.event === "closed")).toBe(false);
+    r.inject(scored(held));
+    expect(await r.exit).toBe(0);
+    expect(r.events.find(event => event.event === "closed")).toMatchObject({ reason: "stop", detail: "stop_before_send" });
+    expect(linkOf(r.linkMessages, "step_outcome")).toEqual([expect.objectContaining({ status: "not_started", reason: "stop_before_send" })]);
+    expect(r.natives[0]!.source.steps).toBe(0);
   });
 
   it("refuses opens on a busy or out-of-range slot and a malformed command is fatal", async () => {
@@ -380,7 +407,7 @@ describe("fast-env K-game process", () => {
       return { nativeLine: line => calls.push(["line", line]), step: record => calls.push(["step", record]),
         async segmentBoundary(range) { calls.push(["boundary", range]); },
         async close(closed) { calls.push(["close", closed]); return "locator"; } };
-    } });
+    }, async refusedOpen(refused) { calls.push(["refused", refused]); return null; } });
     const h = await harness({ sink, hooks: () => ({ terminalAfter: 3, compactLines: true }), edit: config => { config.evidence.boundary_rows = 2; config.compact.enabled = true; } });
     h.open(0, { r7: true, retain_originals: true });
     const closed = await h.next(event => event.event === "closed");
@@ -413,13 +440,15 @@ describe("fast-env K-game process", () => {
       terminal: { result: "defeat" }, native_replaced: false, public_facts: expect.objectContaining({ act: 1 }) });
     // An unknown delivery is still recorded, with the native step that was handed over.
     calls.length = 0;
-    const unknown = await harness({ sink, hooks: () => ({ delivery: () => "unknown" }) });
+    const unknown = await harness({ sink, hooks: () => ({ delivery: () => "unknown", compactLines: true }), edit: config => { config.compact.enabled = true; } });
     unknown.open(0);
     await unknown.next(event => event.event === "closed");
+    // Not R7, not retained: the sink still gets every native line and the input line (retention is its call).
     expect(calls.filter(([kind]) => kind === "step").map(([, record]) => record)).toEqual([expect.objectContaining({ status: "unknown",
-      native_steps: [expect.objectContaining({ delivery: "unknown" })] })]);
+      native_steps: [expect.objectContaining({ delivery: "unknown" })], input_line: expect.stringContaining('"type":"decision"') })]);
+    expect(calls.filter(([kind]) => kind === "line").map(([, line]) => JSON.parse(line).seq)).toEqual([0, 1]);
     expect(calls.at(-1)[1]).toMatchObject({ reason: "unknown", native_replaced: true });
-    expect(calls[0][1]).toMatchObject({ r7: false, retain_originals: false, native_lines: false });
+    expect(calls[0][1]).toMatchObject({ r7: false, retain_originals: false, native_lines: true });
   });
 
   it("budget closes the game before a further row", async () => {
@@ -429,5 +458,129 @@ describe("fast-env K-game process", () => {
     expect(closed).toMatchObject({ reason: "budget", detail: "max_decisions_per_game", decisions: 3 });
     const outcomes = linkOf(h.linkMessages, "step_outcome");
     expect(outcomes.map(outcome => outcome.status)).toEqual(["completed", "completed", "completed"]);
+  });
+});
+
+describe("fast-env failure paths", () => {
+  const recordingSink = (calls: any[]) => (): FastEvidenceSink => ({
+    openGame(meta: FastGameMeta) {
+      calls.push(["open", meta]);
+      return { nativeLine: line => calls.push(["line", line]), step: record => calls.push(["step", record]),
+        async segmentBoundary() {}, async close(closed) { calls.push(["close", closed]); return null; } };
+    },
+    async refusedOpen(refused) { calls.push(["refused", refused]); return "refused-locator"; }
+  });
+
+  const expectBuildStopped = async (h: Awaited<ReturnType<typeof harness>>) => {
+    expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "compact_state_divergence", slot: 0 });
+    h.open(0);
+    expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
+  };
+
+  it("a capture that fails on a compact-divergent native: row unknown/compact_state_divergence, game not_started, native replaced, build output stopped", async () => {
+    const h = await harness({ hooks: () => ({ captureThrows: capture => capture === 2, taintReason: () => "compact_state_divergence" }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
+    expect(h.natives[0]!.shutdowns).toEqual([true]);
+    await expectBuildStopped(h);
+  });
+
+  it("a receipt carrying reason_code compact_state_divergence ends the game the same way", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 5, receiptReasonCode: () => "compact_state_divergence" }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
+    await expectBuildStopped(h);
+  });
+
+  it("a mount whose first frame diverges hands its lines to refusedOpen, refuses the open and stops build output", async () => {
+    const calls: any[] = [];
+    const h = await harness({ sink: recordingSink(calls), hooks: () => ({ resetThrows: true, compactLines: true, taintReason: () => "compact_state_divergence" }),
+      edit: config => { config.compact.enabled = true; } });
+    h.open(0, { game_ref: "mount-1" });
+    expect(await h.next(event => event.event === "open_refused")).toMatchObject({ game_ref: "mount-1", reason: "reset_failed:compact_state_divergence" });
+    expect(calls).toEqual([["refused", { slot: 0, game_ref: "mount-1", start: { kind: "new_run" }, reason: "reset_failed:compact_state_divergence",
+      native_lines: ['{"frame":"full","seq":0}'] }]]);
+    expect(h.natives[0]!.shutdowns).toEqual([true]);
+    expect(h.events.some(event => event.event === "opened")).toBe(false);
+    await expectBuildStopped(h);
+  });
+
+  it("an ordinary reset failure is refused with its lines kept and does not stop build output", async () => {
+    const calls: any[] = [];
+    const h = await harness({ sink: recordingSink(calls), hooks: () => ({ resetThrows: true, compactLines: true }), edit: config => { config.compact.enabled = true; } });
+    h.open(0);
+    const refused = await h.next(event => event.event === "open_refused");
+    expect(refused.reason).toMatch(/^reset_failed:.*fixture_reset_failed/u);
+    expect(calls).toEqual([["refused", expect.objectContaining({ reason: refused.reason, native_lines: ['{"frame":"full","seq":0}'] })]]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ build_output_stopped: null });
+  });
+
+  it("delivered, then the successor never settles: the game is unknown and the native is replaced", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 5, settlingAfterStep: 1 }), edit: config => { config.settling_timeout_ms = 100; } });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "unknown", detail: "delivered_successor_unreadable:managed_settling_stalled", native: "replaced", native_steps: 1 });
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "native_crash" })]);
+    expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "unknown" })]);
+    expect(h.natives[0]!.shutdowns).toEqual([true]);
+  });
+
+  it("close_slot for another game or an idle slot is ignored and counted; the matching one stops the game; open clears it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = await harness({ hooks: () => ({ terminalAfter: 100, stepGate: () => gate }), edit: config => { config.budget.max_decisions_per_game = 3; } });
+    const counters = async () => {
+      const before = h.events.filter(event => event.event === "status").length;
+      h.send({ cmd: "status" });
+      for (;;) { const all = h.events.filter(event => event.event === "status"); if (all.length > before) return all.at(-1).counters; await new Promise(resolve => setTimeout(resolve, 5)); } };
+    h.open(0);
+    const opened = await h.next(event => event.event === "opened");
+    h.send({ cmd: "close_slot", slot: 0, game_instance_id: "gi-someone-else" });
+    expect((await counters()).stale_close_slot_ignored).toBe(1);
+    h.send({ cmd: "close_slot", slot: 0, game_instance_id: opened.game_instance_id });
+    release();
+    expect(await h.next(event => event.event === "closed")).toMatchObject({ game_instance_id: opened.game_instance_id, reason: "stop", detail: "close_slot" });
+    h.send({ cmd: "close_slot", slot: 0, game_instance_id: opened.game_instance_id });
+    h.send({ cmd: "close_slot", slot: 0 });
+    expect((await counters()).stale_close_slot_ignored).toBe(3);
+    h.open(0);
+    const second = await h.next(event => event.event === "closed" && event.game_instance_id !== opened.game_instance_id);
+    expect(second).toMatchObject({ reason: "budget", detail: "max_decisions_per_game", decisions: 3 });
+  });
+});
+
+describe("HostSlotNative", () => {
+  it("passes the Host's control epoch through unchanged (an opaque id, not a number)", async () => {
+    const requests: any[] = [];
+    let epoch: unknown = "5f0c2a8e-7d3b-4c1a-9e2f-0b6d8a4c3e71";
+    const driver: any = {
+      async handle(request: any) {
+        requests.push(request);
+        if (request.command === "claim_control") return { type: "claim_control_result", control_token: "token-1", control_epoch: epoch };
+        if (request.command === "step") return { type: "step_result", receipt: { ok: true } };
+        return { type: `${request.command}_result` };
+      },
+      status: () => ({ game_continuity_id: "continuity-1" }),
+      async shutdown() {}
+    };
+    const started: any = { session: { episodeInstance: "episode-1", episodeStart: { kind: "new_run" } }, runtime: { adapterRuntimeInstanceId: "runtime-1" } };
+    const native = new HostSlotNative(started, driver);
+    expect(await native.reset({ seed: "s", initialProgress: null, r7: false })).toEqual({ gameInstanceId: "episode-1", start: { kind: "new_run" } });
+    expect(await native.step({ requestId: "r", expectedSnapshotId: "snap", boundActionId: "b" })).toEqual({ ok: true });
+    await native.release();
+    const step = requests.find(request => request.command === "step"), released = requests.find(request => request.command === "release_control");
+    expect(step).toMatchObject({ control_token: "token-1", control_epoch: epoch, mutation_request_id: "r", expected_game_continuity_id: "continuity-1" });
+    expect(released).toMatchObject({ control_token: "token-1", control_epoch: epoch });
+    epoch = 7;
+    await native.reset({ seed: "s", initialProgress: null, r7: false });
+    await native.step({ requestId: "r2", expectedSnapshotId: "snap", boundActionId: "b" });
+    expect(requests.filter(request => request.command === "step").at(-1).control_epoch).toBe(7);
+    epoch = null;
+    await expect(native.reset({ seed: "s", initialProgress: null, r7: false })).rejects.toThrow(/fast_env_claim_result_drift/u);
   });
 });

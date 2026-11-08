@@ -71,8 +71,9 @@ async function loadHost(hostPackage: string): Promise<HostModules> {
     resolveInstallation: installation.resolveInstallation, readDiskIdentity: installation.readDiskIdentity };
 }
 
-class HostSlotNative implements SlotNative {
-  #control: { token: string; epoch: number } | null = null;
+export class HostSlotNative implements SlotNative {
+  /** The Host's credential exactly as issued (its epoch is an opaque id, not a number). */
+  #control: { token: string; epoch: unknown } | null = null;
   #continuity: string | null = null;
   #lines: string[] = [];
   #listener: ((line: string) => void) | null = null;
@@ -129,7 +130,8 @@ class HostSlotNative implements SlotNative {
     const claim = await this.driver.handle({ command: "claim_control", request_id: rid(),
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: this.#continuity }, CLIENT);
     if (claim?.type !== "claim_control_result") throw new Error("fast_env_claim_result_drift");
-    this.#control = { token: String(claim.control_token), epoch: Number(claim.control_epoch) };
+    if (typeof claim.control_token !== "string" || claim.control_epoch == null) throw new Error("fast_env_claim_result_drift");
+    this.#control = { token: claim.control_token, epoch: claim.control_epoch };
     return { gameInstanceId: this.started.session.episodeInstance ?? null, start: this.started.session.episodeStart ?? null };
   }
 

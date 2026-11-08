@@ -49,6 +49,7 @@ export class FastEnvProcess {
   #stopping = false;
   #buildStopped: string | null = null;
   #gamesClosed = 0;
+  #staleCloses = 0;
   #finished: Promise<number> | null = null;
   readonly #cpuStart = process.cpuUsage();
 
@@ -114,7 +115,11 @@ export class FastEnvProcess {
       }
       case "close_slot": {
         const slot = this.#slots[command.slot];
-        if (slot && slot.state !== "idle") slot.closeRequested = true;
+        // A close for a game that is not this slot's current one (already closed, or the next
+        // game on the slot) never touches the slot: it is ignored and counted.
+        if (!slot || slot.state === "idle"
+            || command.game_instance_id !== null && slot.gameInstanceId !== command.game_instance_id) { this.#staleCloses += 1; return; }
+        slot.closeRequested = true;
         return;
       }
       case "status":
@@ -131,7 +136,7 @@ export class FastEnvProcess {
     const round = (value: number) => Math.round(value * 1000) / 1000;
     const s = this.stats;
     return { late_replies_discarded: this.deps.link.lateReplies, invalid_replies_discarded: this.deps.link.invalidReplies,
-      games: s.games, games_closed: this.#gamesClosed, decisions: s.decisions, forced_steps: s.forced, native_steps: s.native_steps,
+      games: s.games, games_closed: this.#gamesClosed, stale_close_slot_ignored: this.#staleCloses, decisions: s.decisions, forced_steps: s.forced, native_steps: s.native_steps,
       settle_waits: s.settle_waits, build_output_stopped: this.#buildStopped,
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
@@ -150,7 +155,8 @@ export class FastEnvProcess {
   #finish(code: number, fatal: string | null): Promise<number> {
     if (this.#finished) return this.#finished;
     this.#stopping = true;
-    this.deps.link.cancelPending();
+    // In-flight rows are not cancelled: each resolves by reply or timeout and is then
+    // recorded stop_before_send (WP0 contract); Stop is bounded by the inference timeout.
     this.#finished = (async () => {
       const results = await Promise.allSettled(this.#slots.map(slot => slot.shutdown()));
       const failed = results.find(result => result.status === "rejected");

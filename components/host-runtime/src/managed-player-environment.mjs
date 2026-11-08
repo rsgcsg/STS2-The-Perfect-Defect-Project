@@ -2877,7 +2877,6 @@ export class ManagedPlayerEnvironmentSession {
     return this.#compactInstance?.reconstructor.episodeInstance ?? null;
   }
 
-  /** How the native says the current compact instance began (its first full frame's `start`); null on the old chain. */
   /** Evidence hook (fast_chain): called with the exact emitted line of every compact
    * frame, before it is checked, so a diverging frame reaches the originals too. */
   set compactLineTap(listener) {
@@ -2885,6 +2884,7 @@ export class ManagedPlayerEnvironmentSession {
     this.#compactLineTap = listener ?? null;
   }
 
+  /** How the native says the current compact instance began (its first full frame's `start`); null on the old chain. */
   get episodeStart() {
     return this.#compactInstance?.reconstructor.start ?? null;
   }

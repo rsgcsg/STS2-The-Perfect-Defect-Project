@@ -61,6 +61,24 @@
   "status": "not_started",
   "step_index": 4
  },
+ "not_started_with_compact_state_divergence": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "compact_state_divergence",
+  "row_request_id": 13,
+  "schema": "stpd/rl-inference-3",
+  "status": "not_started",
+  "step_index": 3
+ },
+ "not_started_with_delivery_unknown": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "delivery_unknown",
+  "row_request_id": 13,
+  "schema": "stpd/rl-inference-3",
+  "status": "not_started",
+  "step_index": 3
+ },
  "not_started_with_receipt": {
   "game_instance_id": "env-3:slot-2:run-9",
   "kind": "step_outcome",
@@ -170,5 +188,23 @@
   "start": {
    "kind": "new_run"
   }
+ },
+ "unknown_with_native_not_delivered": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "native_not_delivered",
+  "row_request_id": 13,
+  "schema": "stpd/rl-inference-3",
+  "status": "unknown",
+  "step_index": 3
+ },
+ "unknown_with_stop_before_send": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "stop_before_send",
+  "row_request_id": 13,
+  "schema": "stpd/rl-inference-3",
+  "status": "unknown",
+  "step_index": 3
  }
 }

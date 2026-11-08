@@ -44,7 +44,8 @@ export type GameStart = { kind: "new_run" } | { kind: "from_save"; save: HostSav
 export type FastEnvCommand =
   | { cmd: "open"; command_id: string; slot: number; game_ref: string; seed: string;
       initial_progress: Record<string, unknown> | null; start: GameStart; r7: boolean; retain_originals: boolean }
-  | { cmd: "close_slot"; command_id: string; slot: number }
+  /** game_instance_id (optional): the game this close is for; a close for any other game is ignored and counted. */
+  | { cmd: "close_slot"; command_id: string; slot: number; game_instance_id: string | null }
   | { cmd: "stop"; command_id: string }
   | { cmd: "status"; command_id: string };
 
@@ -182,8 +183,9 @@ export function parseFastEnvCommand(value: unknown): FastEnvCommand {
         retain_originals: v.retain_originals === undefined ? false : bool(v.retain_originals, "open.retain_originals") };
     }
     case "close_slot":
-      obj(v, "close_slot", ["schema", "cmd", "command_id", "slot"]);
-      return { cmd: "close_slot", command_id: commandId, slot: int(v.slot, "close_slot.slot", 0, MAX_SLOTS - 1) };
+      obj(v, "close_slot", ["schema", "cmd", "command_id", "slot", "game_instance_id"]);
+      return { cmd: "close_slot", command_id: commandId, slot: int(v.slot, "close_slot.slot", 0, MAX_SLOTS - 1),
+        game_instance_id: v.game_instance_id === undefined ? null : str(v.game_instance_id, "close_slot.game_instance_id", ID) };
     case "stop":
       obj(v, "stop", ["schema", "cmd", "command_id"]);
       return { cmd: "stop", command_id: commandId };

@@ -69,8 +69,8 @@ export interface FastStepRecord {
   /** Delivery of the whole P1 choice (the fold of Host BoundActions). */
   status: "completed" | "interrupted_known" | "not_started" | "unknown";
   native_steps: FastNativeStepRecord[];
-  /** Model rows only: the exact `decision` line sent to the aggregator. The sink keeps
-   * it only when it keeps this game's originals; the string is not copied. */
+  /** Model rows only: the exact `decision` line sent to the aggregator, handed over for every
+   * game; which games keep it is the sink's retention policy (WP6). The string is not copied. */
   input_line: string | null;
 }
 
@@ -100,13 +100,38 @@ export interface FastGameEvidence {
   close(closed: FastGameClose): Promise<string | null>;
 }
 
-export interface FastEvidenceSink {
-  openGame(meta: FastGameMeta): FastGameEvidence;
+/** A mount that failed before its game existed (reset / load_map refused, the first frame
+ * diverged): every compact line the native emitted for it, handed over with the reason. */
+export interface FastRefusedOpen {
+  slot: number;
+  game_ref: string;
+  start: FastGameStartRecord;
+  reason: string;
+  native_lines: string[];
 }
 
-/** Interim measurement-only sink (not formal evidence): one JSONL file per game,
- * written and fsynced once when the game closes; native lines only when retained. */
+export interface FastEvidenceSink {
+  openGame(meta: FastGameMeta): FastGameEvidence;
+  /** Resolves with a locator, or null when there was nothing to keep. */
+  refusedOpen(refused: FastRefusedOpen): Promise<string | null>;
+}
+
+const fileName = (id: string) => id.replace(/[^A-Za-z0-9._-]/gu, "_");
+
+async function writeOnce(directory: string, name: string, body: string): Promise<string> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, name);
+  const handle = await open(path, "wx", 0o600);
+  try { await handle.writeFile(body); await handle.sync(); }
+  finally { await handle.close(); }
+  return path;
+}
+
+/** Interim measurement-only sink (not formal evidence, no retention policy of its own;
+ * WP6's sink owns which originals are kept): one JSONL file per game, written and fsynced
+ * once when the game closes; native lines and input lines only for R7 / retained games. */
 export class MinimalJsonlEvidenceSink implements FastEvidenceSink {
+  #refused = 0;
   constructor(private readonly directory: string) {}
   openGame(meta: FastGameMeta): FastGameEvidence {
     const lines: string[] = [JSON.stringify({ kind: "game_open", ...meta })];
@@ -118,13 +143,14 @@ export class MinimalJsonlEvidenceSink implements FastEvidenceSink {
       async segmentBoundary(range) { lines.push(JSON.stringify({ kind: "boundary", ...range })); },
       async close(closed) {
         lines.push(JSON.stringify({ kind: "game_close", ...closed, native_lines: natives.length }));
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        const path = join(directory, `${meta.game_instance_id.replace(/[^A-Za-z0-9._-]/gu, "_")}.jsonl`);
-        const handle = await open(path, "wx", 0o600);
-        try { await handle.writeFile(`${lines.join("\n")}\n${natives.map(line => `${line}\n`).join("")}`); await handle.sync(); }
-        finally { await handle.close(); }
-        return path;
+        return writeOnce(directory, `${fileName(meta.game_instance_id)}.jsonl`, `${lines.join("\n")}\n${natives.map(line => `${line}\n`).join("")}`);
       }
     };
+  }
+  /** Records the refusal and the line count only; keeping the lines is WP6's sink's call. */
+  async refusedOpen(refused: FastRefusedOpen): Promise<string | null> {
+    const { native_lines: natives, ...rest } = refused;
+    return writeOnce(this.directory, `refused-${fileName(refused.game_ref)}-${process.pid}-${++this.#refused}.jsonl`,
+      `${JSON.stringify({ kind: "open_refused", ...rest, native_lines: natives.length })}\n`);
   }
 }
