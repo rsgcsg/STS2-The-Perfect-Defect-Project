@@ -405,6 +405,7 @@ export class SlotKernel {
   #native: SlotNative | null = null;
   #current: Promise<void> | null = null;
   #game: GameRun | null = null;
+  #metrics: Promise<void> | null = null;
 
   constructor(readonly index: number, private readonly ctx: KernelContext) {}
 
@@ -437,6 +438,8 @@ export class SlotKernel {
   async #run(command: OpenCommand): Promise<void> {
     const { ctx } = this;
     const refuse = (reason: string) => { this.#idle(); ctx.emit("open_refused", { command_id: command.command_id, slot: this.index, game_ref: command.game_ref, reason }); };
+    // A between-games metrics read still holds the native's one request slot.
+    if (this.#metrics) await this.#metrics;
     const mountStarted = performance.now();
     let nativeTag: "started" | "reused" = "reused";
     // A Host map load needs a process that never mounted a run.
@@ -535,8 +538,16 @@ export class SlotKernel {
   }
 
   /** Only between games: the Host's native channel carries one request at a time, so a
-   * metrics read during a game would collide with a step and make its delivery unknown. */
-  async nativeCpuMs(): Promise<number | null> { return this.#native && this.state === "idle" ? this.#native.nativeCpuMs() : null; }
+   * metrics read during a game would collide with a step and make its delivery unknown.
+   * An open that arrives while a read is in flight waits for it before mounting. */
+  async nativeCpuMs(): Promise<number | null> {
+    if (!this.#native || this.state !== "idle") return null;
+    const read = this.#native.nativeCpuMs().catch(() => null);
+    const held = read.then(() => undefined);
+    this.#metrics = held;
+    void held.finally(() => { if (this.#metrics === held) this.#metrics = null; });
+    return read;
+  }
 }
 
 export { ResponseBinding };

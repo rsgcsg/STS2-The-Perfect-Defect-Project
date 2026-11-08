@@ -39,8 +39,8 @@ interface NativeHooks {
   receiptReasonCode?: (step: number) => string | null;
   /** From this native step on, every capture shows a settling snapshot. */
   settlingAfterStep?: number;
-  /** Called when the process asks the native for its CPU time. */
-  onCpuRead?: () => void;
+  /** Called when the process asks the native for its CPU time; may hold the read open. */
+  onCpuRead?: () => void | Promise<void>;
 }
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
@@ -58,6 +58,7 @@ class FakeNative implements SlotNative {
   }
   get runtimeInstanceId() { return this.source.capabilities.host.runtime_instance_id as string; }
   async reset(): Promise<NativeEpisode> {
+    if (this.cpuReadInFlight) throw new Error("fixture_one_request_at_a_time");
     this.#lines = []; this.#listener = null;
     this.#line('{"frame":"full","seq":0}');
     if (this.hooks.resetThrows) throw new Error("fixture_reset_failed");
@@ -101,7 +102,8 @@ class FakeNative implements SlotNative {
     if (listener) for (const line of buffered) listener(line);
   }
   frame() { return this.hooks.compactLines ? { episode_instance: "fake", seq: this.source.steps, objects_root_sha256: "b".repeat(64), line_sha256: "c".repeat(64) } : null; }
-  async nativeCpuMs() { this.hooks.onCpuRead?.(); return 1; }
+  cpuReadInFlight = false;
+  async nativeCpuMs() { this.cpuReadInFlight = true; try { await this.hooks.onCpuRead?.(); return 1; } finally { this.cpuReadInFlight = false; } }
   async shutdown(force: boolean) { this.shutdowns.push(force); await this.source.close(); }
 }
 
@@ -559,6 +561,24 @@ describe("fast-env failure paths", () => {
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(h.events.filter(event => event.event === "status").at(-1).slots).toEqual([expect.objectContaining({ state: "idle", native_cpu_ms: 1 })]);
     expect(reads).toBe(1);
+  });
+
+  it("an open that arrives during a between-games metrics read waits for it instead of colliding", async () => {
+    let releaseRead!: () => void;
+    let holdRead = false;
+    const h = await harness({ hooks: () => ({ onCpuRead: () => holdRead ? new Promise<void>(resolve => { releaseRead = resolve; }) : undefined }) });
+    h.open(0);
+    const first = await h.next(event => event.event === "closed");
+    holdRead = true;
+    h.send({ cmd: "status" });
+    while (!releaseRead) await new Promise(resolve => setTimeout(resolve, 2));
+    h.open(0);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(h.events.some(event => event.event === "open_refused" || event.event === "opened" && event.game_instance_id !== first.game_instance_id)).toBe(false);
+    releaseRead();
+    const second = await h.next(event => event.event === "closed" && event.game_instance_id !== first.game_instance_id);
+    expect(second).toMatchObject({ reason: "terminal", native: "kept" });
+    expect(h.events.some(event => event.event === "open_refused")).toBe(false);
   });
 
   it("close_slot for another game or an idle slot is ignored and counted; the matching one stops the game; open clears it", async () => {
