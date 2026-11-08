@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { decodePublicBasis } from "@rsgcsg/sts2-connector-client";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
@@ -542,6 +543,8 @@ test("capture full_check=false (fast chain) returns the same sealed basis; a non
   assert.equal(light.full.basis.snapshot.snapshot_id, strict.full.basis.snapshot.snapshot_id);
   assert.deepEqual(light.full.basis.missing, strict.full.basis.missing);
   assert.equal(light.full.basis.capture_status, strict.full.basis.capture_status);
+  // The light basis is byte-for-byte what the strict decode makes of it.
+  assert.equal(JSON.stringify(decodePublicBasis(structuredClone(light.full.basis))), JSON.stringify(light.full.basis));
   await assert.rejects(driver.handle({ command: "capture", full_check: "no" }), /managed_capture_fields_invalid/u);
   // The light capture hands out the session's own objects frozen, not copies; the session
   // keeps working on them (step, successor, next capture), and no consumer can change them.

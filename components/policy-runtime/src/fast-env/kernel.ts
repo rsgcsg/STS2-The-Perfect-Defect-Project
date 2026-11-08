@@ -13,17 +13,17 @@ import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
 import { pyJsonSha256 } from "./json-bytes.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
-import { SampledCheckFailure, type SlotNative, type SlotNativeFactory } from "./host.js";
+import { SampledCheckFailure, type SampledCheckMismatch, type SlotNative, type SlotNativeFactory } from "./host.js";
 
 type Reduction = ReturnType<typeof reduce>;
 type OpenCommand = Extract<FastEnvCommand, { cmd: "open" }>;
 type StepStatus = "completed" | "interrupted_known" | "not_started" | "unknown";
 
 export interface KernelStats {
-  games: number; decisions: number; forced: number; native_steps: number; settle_waits: number;
+  games: number; decisions: number; forced: number; native_steps: number; settle_waits: number; full_checks: number;
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
 }
-export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0,
+export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0 });
 
 /** What every slot of one environment process shares. */
@@ -47,7 +47,7 @@ export interface KernelContext {
 class GameEnd extends Error {
   constructor(readonly reason: CloseReason, readonly detail: string,
               readonly options: { replaceNative?: boolean; buildStop?: string; pendingOutcome?: { status: "unknown"; reason: OutcomeReason };
-                terminal?: { result: "victory" | "defeat" } | null } = {}) {
+                terminal?: { result: "victory" | "defeat" } | null; sampledMismatch?: SampledCheckMismatch } = {}) {
     super(`${reason}:${detail}`);
   }
 }
@@ -197,7 +197,7 @@ class GameRun {
       if (error instanceof SampledCheckFailure) {
         // Same close as any capture failure today, plus: this build stops producing output.
         throw new GameEnd("env_crash", `capture:${error.message}`, { replaceNative: true, buildStop: "sampled_check_failed",
-          pendingOutcome: { status: "unknown", reason: "native_crash" } });
+          pendingOutcome: { status: "unknown", reason: "native_crash" }, sampledMismatch: error.mismatch });
       }
       const taint = this.native.taint();
       if (taint.reason === "compact_state_divergence") {
@@ -511,7 +511,15 @@ export class SlotKernel {
         if (detail !== "compact_state_divergence") detail = `delivered_successor_unreadable:${detail}`;
       }
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
+      // The originals the sampled check disagreed with go into this game's evidence, and
+      // every original of this game is kept, whatever else the close says.
+      if (end.options.sampledMismatch) {
+        try { evidence.retainSampledCheckMismatch(end.options.sampledMismatch); }
+        catch (failure) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: gameInstanceId, reason: errorText(failure) }); }
+      }
     }
+    const fullChecks = native.fullChecks();
+    ctx.stats.full_checks += fullChecks;
     ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason, last_step_index: game.lastStepIndex });
     if (!replace) {
       try { await native.release(); } catch { replace = true; }
@@ -523,7 +531,7 @@ export class SlotKernel {
       // The rows recorded since the last boundary.
       await game.boundary();
       evidenceDir = await evidence.close({ reason, detail, decisions: game.decisions, native_steps: game.nativeSteps,
-        last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace });
+        last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace, full_checks: fullChecks });
     }
     catch (error) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: gameInstanceId, reason: error instanceof Error ? error.message : String(error) }); }
     this.#idle();

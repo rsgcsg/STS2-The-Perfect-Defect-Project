@@ -22,6 +22,8 @@ export interface SlotNative {
   /** A sealed public basis of the current state: light-checked every capture, fully
    * verified on the sampled ones (throws SampledCheckFailure when that disagrees). */
   capture(): Promise<FullPublicBasis>;
+  /** How many captures of the current episode got the full check so far. */
+  fullChecks(): number;
   /** Submits one Host BoundAction. Resolves with the Host's original receipt object. */
   step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown>;
   /** Gives control back between games. */
@@ -50,18 +52,38 @@ export interface SlotNativeFactory {
 /** A sampled full check (byte re-hash, JSON re-parse, strict decode, basis equality)
  * disagreed with what the light check accepted. The kernel stops this build's output. */
 export class SampledCheckFailure extends Error {
-  constructor(cause: unknown) {
-    super(`sampled_check_failed:${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  /** The originals the light path accepted, exactly as the Host returned them. */
+  readonly mismatch: SampledCheckMismatch;
+  constructor(cause: unknown, original: FullPublicBasis, ordinal: number) {
+    const text = cause instanceof Error ? cause.message : String(cause);
+    super(`sampled_check_failed:${text}`, { cause });
     this.name = "SampledCheckFailure";
+    this.mismatch = { capture_ordinal: ordinal, cause: text, capture: original.capture,
+      serialized_observation: original.serializedObservation, basis: original.basis };
   }
 }
 
-/** Which captures of one episode get the full check (design v2 §2.7), drawn before the
- * episode starts: the first capture always, every capture for R7, else about `rate`. */
-export function captureSampleSchedule(rate: number, all: boolean, random: () => number = Math.random): (ordinal: number) => boolean {
-  if (all || rate >= 1) return () => true;
+/** One sampled full check that disagreed: the Host's handle, bytes and light basis. */
+export interface SampledCheckMismatch {
+  capture_ordinal: number;
+  cause: string;
+  capture: FullPublicBasis["capture"];
+  serialized_observation: string;
+  basis: FullPublicBasis["basis"];
+}
+
+/** The per-episode offset of the full-check draw: derived from the episode's own id, so a
+ * re-run or an audit recomputes exactly which captures were fully checked. */
+export function captureSampleOffset(episodeId: string): number {
+  return createHash("sha256").update(`fast-env-full-check-v1\n${episodeId}`, "utf8").digest().readUInt32BE(0);
+}
+
+/** Which captures of one episode get the full check (design v2 §2.7), fixed before the
+ * first capture: the first capture always, every capture for R7, else about `rate`. A
+ * null offset (no episode id to derive it from) checks every capture. */
+export function captureSampleSchedule(rate: number, all: boolean, offset: number | null): (ordinal: number) => boolean {
+  if (all || rate >= 1 || offset === null) return () => true;
   if (rate <= 0) return ordinal => ordinal === 0;
-  const offset = Math.floor(random() * 0x1_0000_0000) >>> 0;
   const threshold = Math.round(rate * 0x1_0000_0000);
   return ordinal => ordinal === 0 || (Math.imul(ordinal ^ offset, 0x9e3779b1) >>> 0) < threshold;
 }
@@ -100,8 +122,10 @@ export class HostSlotNative implements SlotNative {
   #last: { line: string; episode_instance: string; seq: number; objects_root_sha256: string; sha?: string } | null = null;
   #sampled: (ordinal: number) => boolean = () => true;
   #captures = 0;
+  #fullChecks = 0;
+  #r7 = false;
   constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>,
-              private readonly sampleRate = 1, private readonly random: () => number = Math.random) {
+              private readonly sampleRate = 1) {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
       if (typeof line !== "string") return;
       this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
@@ -112,8 +136,10 @@ export class HostSlotNative implements SlotNative {
   /** A new episode starts with an empty line buffer and no listener. */
   #beginEpisode(r7: boolean): void {
     this.#lines = []; this.#listener = null; this.#last = null;
-    this.#captures = 0; this.#sampled = captureSampleSchedule(this.sampleRate, r7, this.random);
+    this.#captures = 0; this.#fullChecks = 0; this.#r7 = r7; this.#sampled = () => true;
   }
+
+  fullChecks(): number { return this.#fullChecks; }
 
   attachLines(listener: ((line: string) => void) | null): void {
     this.#listener = listener;
@@ -158,7 +184,10 @@ export class HostSlotNative implements SlotNative {
     if (claim?.type !== "claim_control_result") throw new Error("fast_env_claim_result_drift");
     if (typeof claim.control_token !== "string" || claim.control_epoch == null) throw new Error("fast_env_claim_result_drift");
     this.#control = { token: claim.control_token, epoch: claim.control_epoch };
-    return { gameInstanceId: this.started.session.episodeInstance ?? null, start: this.started.session.episodeStart ?? null };
+    const episodeId: string | null = this.started.session.episodeInstance ?? null;
+    // Fixed after mount and before the first capture: no model choice can move it.
+    this.#sampled = captureSampleSchedule(this.sampleRate, this.#r7, episodeId === null ? null : captureSampleOffset(episodeId));
+    return { gameInstanceId: episodeId, start: this.started.session.episodeStart ?? null };
   }
 
   async capture(): Promise<FullPublicBasis> {
@@ -172,12 +201,14 @@ export class HostSlotNative implements SlotNative {
         || full.capture.session.runtime_instance_id !== this.runtimeInstanceId
         || full.capture.source_snapshot_id !== full.basis.snapshot.snapshot_id
         || typeof full.serializedObservation !== "string") throw new Error("fast_env_capture_world_drift");
-    if (!this.#sampled(this.#captures++)) return full;
+    const ordinal = this.#captures++;
+    if (!this.#sampled(ordinal)) return full;
+    this.#fullChecks += 1;
     try {
       const verified = await verifyPublicBasis(full.capture, full.serializedObservation);
       if (canonicalJson(verified.basis) !== canonicalJson(full.basis)) throw new Error("basis_differs_from_bytes");
       return verified;
-    } catch (error) { throw new SampledCheckFailure(error); }
+    } catch (error) { throw new SampledCheckFailure(error, full, ordinal); }
   }
 
   async step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown> {
