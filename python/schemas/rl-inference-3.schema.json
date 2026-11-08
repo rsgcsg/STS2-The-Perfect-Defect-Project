@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rsgcsg/STS2-The-Perfect-Defect/schemas/rl-inference-3.schema.json",
+  "title": "STPD RL inference wire v3 (fast_chain)",
+  "description": "Node aggregator <-> GPU inference service messages for the fast_chain. Each message is one JSON envelope; score_request rows point into the packet's binary section. The service scores and draws a catalog position only; it never decides legality, never holds a World and never resends a score. Rules a schema cannot express (identity triple match, not_started, timeout, late replies, Stop, mu eviction) are in python/schemas/README.md and executable in python/tests/test_prewrite_wp0_contracts.py. Replaces stpd/rl-inference-2 only on fast_chain; the old chain keeps v2.",
+  "oneOf": [
+    {"$ref": "#/$defs/attach"},
+    {"$ref": "#/$defs/attached"},
+    {"$ref": "#/$defs/episode_open"},
+    {"$ref": "#/$defs/score_request"},
+    {"$ref": "#/$defs/score_response"},
+    {"$ref": "#/$defs/step_outcome"},
+    {"$ref": "#/$defs/episode_close"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "game_instance_id": {
+      "description": "One run in one environment process slot. New on every in-process restart and save load (same value as the native episode_instance). The second member of the response identity triple.",
+      "$ref": "#/$defs/id"
+    },
+    "request_id": {
+      "description": "One counter per aggregator connection for every message it sends; strictly increasing, never reused, never resent. A row's request_id is the first member of the response identity triple.",
+      "type": "integer", "minimum": 1
+    },
+    "compiler_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_spec", "vocabulary_sha256", "compiler_sha256"],
+      "properties": {
+        "input_spec": {"type": "object"},
+        "vocabulary_sha256": {"$ref": "#/$defs/sha256"},
+        "compiler_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "class_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["temperature", "uniform_mix"],
+      "properties": {
+        "temperature": {"type": "number", "minimum": 1.0, "maximum": 3.0},
+        "uniform_mix": {"type": "number", "minimum": 0, "maximum": 0.1}
+      }
+    },
+    "sampling": {
+      "description": "q = (1-eps) p^(1/T)/sum + eps/N per decision class; draw = inverse CDF of sha256(seed NUL consumption_id). class = combat iff the public observation is in combat, else noncombat. Arms other than control need user approval before training (M); this contract only carries them.",
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "seed", "arm_id", "classes"],
+      "properties": {
+        "mode": {"const": "temperature_uniform"},
+        "seed": {"type": "string", "minLength": 1, "maxLength": 128},
+        "arm_id": {"$ref": "#/$defs/id"},
+        "classes": {
+          "type": "object", "additionalProperties": false,
+          "required": ["combat", "noncombat"],
+          "properties": {
+            "combat": {"$ref": "#/$defs/class_policy"},
+            "noncombat": {"$ref": "#/$defs/class_policy"}
+          }
+        }
+      }
+    },
+    "start": {
+      "description": "S4 hook for WP7: how this game instance began.",
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind"],
+         "properties": {"kind": {"const": "new_run"}}},
+        {"type": "object", "additionalProperties": false,
+         "required": ["kind", "save_sha256", "act", "floor"],
+         "properties": {
+           "kind": {"const": "from_save"},
+           "save_sha256": {"$ref": "#/$defs/sha256"},
+           "origin_game_instance_id": {"$ref": "#/$defs/id"},
+           "act": {"type": "integer", "minimum": 1},
+           "floor": {"type": "integer", "minimum": 0}
+         }}
+      ]
+    },
+    "attach": {
+      "description": "Aggregator -> service, once per connection. Any identity difference is refused at attach (fail loudly, no fallback).",
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "request_id", "aggregator_id", "chain", "python_env_sha256",
+                   "compiler_identity", "encoder", "row_format"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "attach"},
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "aggregator_id": {"$ref": "#/$defs/id"},
+        "chain": {"const": "fast_chain"},
+        "python_env_sha256": {
+          "description": "Actor and service run in the same environment (S2 r4).",
+          "$ref": "#/$defs/sha256"
+        },
+        "compiler_identity": {"$ref": "#/$defs/compiler_identity"},
+        "encoder": {
+          "type": "object", "additionalProperties": false, "required": ["implementation", "sha256"],
+          "properties": {
+            "implementation": {"enum": ["python", "typescript"]},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "row_format": {"const": "stpd/rows-v2-row-1"}
+      }
+    },
+    "attached": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "request_id", "service_instance", "training_generation",
+                   "max_rows_per_packet"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "attached"},
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "service_instance": {"$ref": "#/$defs/id"},
+        "training_generation": {"$ref": "#/$defs/id"},
+        "max_rows_per_packet": {"type": "integer", "minimum": 1, "maximum": 4096}
+      }
+    },
+    "episode_open": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "request_id", "game_instance_id", "actor_id", "world_key",
+                   "sampling", "single_choice", "start"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "episode_open"},
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "actor_id": {"$ref": "#/$defs/id"},
+        "world_key": {"$ref": "#/$defs/id"},
+        "sampling": {"$ref": "#/$defs/sampling"},
+        "single_choice": {
+          "description": "L1. score = today (one-option rows are sent and kept). omit = the environment executes the only BoundAction itself (the game still revalidates it), sends no row and reports it in the next step_outcome.forced_steps. Default score; omit changes training data, so it is a method switch.",
+          "enum": ["score", "omit"]
+        },
+        "start": {"$ref": "#/$defs/start"}
+      }
+    },
+    "row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "game_instance_id", "step_index", "consumption_id",
+                   "catalog_len", "catalog_sha256", "observation_sha256", "in_combat", "floor",
+                   "payload"],
+      "properties": {
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "step_index": {"type": "integer", "minimum": 0},
+        "consumption_id": {"$ref": "#/$defs/id"},
+        "catalog_len": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "catalog_sha256": {
+          "description": "Digest of the complete public catalog this row was compiled from. Third member of the response identity triple.",
+          "$ref": "#/$defs/sha256"
+        },
+        "observation_sha256": {"$ref": "#/$defs/sha256"},
+        "in_combat": {"type": "boolean"},
+        "floor": {"type": "integer", "minimum": 0},
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["offset", "length", "row_sha256"],
+          "properties": {
+            "offset": {"type": "integer", "minimum": 0},
+            "length": {"type": "integer", "minimum": 1},
+            "row_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    },
+    "score_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "packet_id", "rows"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "score_request"},
+        "packet_id": {"type": "integer", "minimum": 1},
+        "rows": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/row"}}
+      }
+    },
+    "scored": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "game_instance_id", "catalog_sha256", "status",
+                   "mu_snapshot_sha256", "segment_id", "row_in_segment", "selected_index",
+                   "behavior_q", "selected_q", "applied"],
+      "properties": {
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "scored"},
+        "mu_snapshot_sha256": {
+          "description": "Fixed within one segment; the service evicts a mu only when no open segment references it.",
+          "$ref": "#/$defs/sha256"
+        },
+        "segment_id": {"$ref": "#/$defs/id"},
+        "row_in_segment": {"type": "integer", "minimum": 0, "maximum": 63},
+        "selected_index": {"type": "integer", "minimum": 0},
+        "behavior_q": {
+          "description": "The actual behavior distribution the draw used, catalog order, length catalog_len.",
+          "type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "selected_q": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "applied": {
+          "type": "object", "additionalProperties": false,
+          "required": ["arm_id", "decision_class", "temperature", "uniform_mix"],
+          "properties": {
+            "arm_id": {"$ref": "#/$defs/id"},
+            "decision_class": {"enum": ["combat", "noncombat"]},
+            "temperature": {"type": "number", "minimum": 1.0, "maximum": 3.0},
+            "uniform_mix": {"type": "number", "minimum": 0, "maximum": 0.1}
+          }
+        }
+      }
+    },
+    "refused": {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "game_instance_id", "catalog_sha256", "status", "error_code"],
+      "properties": {
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "refused"},
+        "error_code": {"enum": ["MU_NOT_RESIDENT", "EPISODE_NOT_OPEN", "IDENTITY_MISMATCH",
+                                "ROW_DECODE_FAILED", "NONFINITE_SCORES", "SERVICE_STOPPING"]}
+      }
+    },
+    "score_response": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "packet_id", "results"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "score_response"},
+        "packet_id": {"type": "integer", "minimum": 1},
+        "results": {"type": "array", "minItems": 1,
+                    "items": {"oneOf": [{"$ref": "#/$defs/scored"}, {"$ref": "#/$defs/refused"}]}}
+      }
+    },
+    "public_facts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["act", "floor", "hp", "max_hp"],
+      "properties": {
+        "act": {"type": "integer", "minimum": 1},
+        "floor": {"type": "integer", "minimum": 0},
+        "hp": {"type": "integer", "minimum": 0},
+        "max_hp": {"type": "integer", "minimum": 1}
+      }
+    },
+    "step_outcome": {
+      "description": "Environment -> service after the step resolved. completed: the native action ran and the Host decoded the receipt. not_started: no native action was sent (inference timeout, identity mismatch, refused, Stop before send). unknown: sent and the outcome is not known. not_started and unknown both close the game; neither is ever retried.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "row_request_id", "game_instance_id", "step_index", "status"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "step_outcome"},
+        "row_request_id": {
+          "description": "The request_id of the row this outcome resolves.",
+          "$ref": "#/$defs/request_id"
+        },
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "step_index": {"type": "integer", "minimum": 0},
+        "status": {"enum": ["completed", "not_started", "unknown"]},
+        "reason": {"enum": ["inference_timeout", "response_binding_mismatch", "refused",
+                            "stop_before_send", "delivery_unknown", "native_crash",
+                            "compact_state_divergence"]},
+        "receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "public_facts": {"$ref": "#/$defs/public_facts"},
+        "forced_steps": {
+          "description": "L1 omit only: one-option steps the environment executed after this row and before the next row.",
+          "type": "integer", "minimum": 0
+        },
+        "combat_end": {
+          "description": "Native combat_end facts (managed-native-compact-1) observed in this step's successor, copied unchanged.",
+          "type": "array", "maxItems": 4, "items": {"type": "object"}
+        },
+        "terminal": {
+          "oneOf": [{"type": "null"},
+                    {"type": "object", "additionalProperties": false, "required": ["result"],
+                     "properties": {"result": {"enum": ["victory", "defeat"]}}}]
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "completed"}}},
+         "then": {"required": ["receipt_sha256", "public_facts", "terminal"],
+                  "not": {"required": ["reason"]}},
+         "else": {"required": ["reason"], "not": {"required": ["receipt_sha256"]}}}
+      ]
+    },
+    "episode_close": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "kind", "request_id", "game_instance_id", "reason", "last_step_index"],
+      "properties": {
+        "schema": {"const": "stpd/rl-inference-3"},
+        "kind": {"const": "episode_close"},
+        "request_id": {"$ref": "#/$defs/request_id"},
+        "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
+        "reason": {"enum": ["terminal", "not_started", "unknown", "stop", "budget", "env_crash"]},
+        "last_step_index": {"type": ["integer", "null"], "minimum": 0}
+      }
+    }
+  }
+}

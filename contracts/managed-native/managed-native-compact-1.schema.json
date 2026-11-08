@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/contracts/managed-native/managed-native-compact-1.schema.json",
+  "title": "Managed native compact state output v1",
+  "description": "One JSON line per native state output when the Host enabled compact output with configure_output. Without that command the native candidate keeps today's full output unchanged. Structural shape only; the rules that a schema cannot express (inline, rename, delta membership, reconcile, divergence) are in README.md beside this file and are executable in python/tests/test_prewrite_wp0_contracts.py.",
+  "oneOf": [
+    {"$ref": "#/$defs/full"},
+    {"$ref": "#/$defs/delta"},
+    {"$ref": "#/$defs/reconcile"},
+    {"$ref": "#/$defs/configure_output"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "native_ref": {"type": "string", "pattern": "^native-[1-9][0-9]*$"},
+    "object_key": {
+      "description": "<native_ref>#<view>. The view names the position kind the old writer emitted the body at (hand, draw_pile, deck, relic, potion, enemy, orb, pet, map_point, reward, ...), because one native object can be written with different field sets at different positions.",
+      "type": "string",
+      "pattern": "^native-[1-9][0-9]*#[a-z][a-z0-9_]{0,31}$"
+    },
+    "object_body": {
+      "description": "Exactly the object the old full writer emits at that position, including its native_ref field when the old writer has one.",
+      "type": "object"
+    },
+    "objects": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/object_key"},
+      "additionalProperties": {"$ref": "#/$defs/object_body"}
+    },
+    "object_digests": {
+      "description": "sha256 of each body's exact UTF-8 bytes as written in this line (compact JSON, no insignificant whitespace). Computed from output bytes only, never from internal dirty flags.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/object_key"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "start": {
+      "description": "How this episode instance began. S4 hook: from_save carries the loaded save's digest so initial progress is known from the first frame.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind"],
+          "properties": {"kind": {"const": "new_run"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "save_sha256"],
+          "properties": {"kind": {"const": "from_save"}, "save_sha256": {"$ref": "#/$defs/sha256"}}
+        }
+      ]
+    },
+    "combat_end": {
+      "description": "Native fact written once when a combat ends, in the first frame after the end. Every field is visible to a player. Reward-only: not model input. Pending the Connector fair-projection review before any consumer uses it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["combat_index", "act", "floor", "room_kind", "encounter_id", "result",
+                   "hp_start", "hp_end", "max_hp_start", "max_hp_end", "potions_used", "turns"],
+      "properties": {
+        "combat_index": {"type": "integer", "minimum": 1},
+        "act": {"type": "integer", "minimum": 1},
+        "floor": {"type": "integer", "minimum": 0},
+        "room_kind": {"enum": ["monster", "elite", "boss", "event"]},
+        "encounter_id": {"type": "string", "minLength": 1},
+        "result": {"enum": ["victory", "defeat"]},
+        "hp_start": {"type": "integer", "minimum": 0},
+        "hp_end": {"type": "integer", "minimum": 0},
+        "max_hp_start": {"type": "integer", "minimum": 1},
+        "max_hp_end": {"type": "integer", "minimum": 1},
+        "potions_used": {"type": "integer", "minimum": 0},
+        "turns": {"type": "integer", "minimum": 0}
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "combat_end": {"type": "array", "items": {"$ref": "#/$defs/combat_end"}, "maxItems": 4}
+      }
+    },
+    "diagnostics": {
+      "description": "Optional counters for profiling. Never model input; never compared for equivalence.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text_cache_hits": {"type": "integer", "minimum": 0},
+        "text_cache_misses": {"type": "integer", "minimum": 0},
+        "write_microseconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "frame_base": {
+      "type": "object",
+      "required": ["type", "schema", "frame", "episode_instance", "seq", "skeleton",
+                   "objects", "object_digests", "objects_root_sha256"],
+      "properties": {
+        "type": {"const": "compact_state"},
+        "schema": {"const": "managed-native-compact-1"},
+        "episode_instance": {
+          "description": "New for every run in the process, including each in-process restart and each save load. Late messages keyed to an old instance are discarded.",
+          "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,96}$"
+        },
+        "seq": {"type": "integer", "minimum": 0},
+        "skeleton": {
+          "description": "Today's full state tree with every table object replaced in place by {\"$obj\": key}. Always complete in every frame: decision kind, stage, option lists and their order, and every other field outside object bodies.",
+          "type": "object",
+          "required": ["type", "decision"],
+          "properties": {"type": {"const": "decision"}, "decision": {"type": "string", "minLength": 1}}
+        },
+        "objects": {"$ref": "#/$defs/objects"},
+        "object_digests": {"$ref": "#/$defs/object_digests"},
+        "objects_root_sha256": {
+          "description": "sha256 over the lines \"<key>\\t<digest>\\n\" of the whole table after this frame, keys sorted by byte order.",
+          "$ref": "#/$defs/sha256"
+        },
+        "facts": {"$ref": "#/$defs/facts"},
+        "diagnostics": {"$ref": "#/$defs/diagnostics"}
+      }
+    },
+    "full": {
+      "description": "Starts an episode instance (seq 0) or answers configure_output. Carries the whole table.",
+      "allOf": [{"$ref": "#/$defs/frame_base"}],
+      "required": ["base_seq", "start"],
+      "properties": {
+        "frame": {"const": "full"},
+        "base_seq": {"type": "null"},
+        "start": {"$ref": "#/$defs/start"}
+      },
+      "unevaluatedProperties": false
+    },
+    "delta": {
+      "description": "objects holds only the upserted keys; removed lists keys no longer referenced by the skeleton.",
+      "allOf": [{"$ref": "#/$defs/frame_base"}],
+      "required": ["base_seq", "removed"],
+      "properties": {
+        "frame": {"const": "delta"},
+        "base_seq": {"type": "integer", "minimum": 0},
+        "removed": {"type": "array", "items": {"$ref": "#/$defs/object_key"}, "uniqueItems": true}
+      },
+      "unevaluatedProperties": false
+    },
+    "reconcile": {
+      "description": "Once per reconcile_interval steps. objects holds the whole table; upserted and removed state what a delta frame would have said, so the Host can prove its carried table matches the full one.",
+      "allOf": [{"$ref": "#/$defs/frame_base"}],
+      "required": ["base_seq", "upserted", "removed"],
+      "properties": {
+        "frame": {"const": "reconcile"},
+        "base_seq": {"type": "integer", "minimum": 0},
+        "upserted": {"type": "array", "items": {"$ref": "#/$defs/object_key"}, "uniqueItems": true},
+        "removed": {"type": "array", "items": {"$ref": "#/$defs/object_key"}, "uniqueItems": true}
+      },
+      "unevaluatedProperties": false
+    },
+    "configure_output": {
+      "description": "Host to native command. The reply is a full frame of the current state. Absent this command, output stays today's full format.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "format", "reconcile_interval"],
+      "properties": {
+        "cmd": {"const": "configure_output"},
+        "format": {"const": "managed-native-compact-1"},
+        "reconcile_interval": {"type": "integer", "minimum": 1, "maximum": 1024}
+      }
+    }
+  }
+}
