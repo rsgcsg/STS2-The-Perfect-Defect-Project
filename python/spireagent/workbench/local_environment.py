@@ -87,6 +87,30 @@ class HostClientPreparationError(RuntimeError):
         self.code = code
 
 
+def managed_load_map(manager: Any, *, save: Mapping[str, Any],
+                     expected_runtime_instance_id: str,
+                     expected_game_continuity_id: str | None) -> dict[str, Any]:
+    """Named ``/v1/admin/load-map`` (S4): one fresh-process map-save load, never resent.
+
+    The pinned Host consumer has no named method yet, so this goes through its
+    ``_admin`` (request-id correlation; a lost reply raises its uncertain error, which
+    the caller records as unknown). A reply that does not name this exact save is
+    unconfirmed: the world was offered, so the caller records it as unknown too.
+    """
+    named = getattr(manager, "load_map", None)
+    body = {"save": dict(save), "expected_runtime_instance_id": expected_runtime_instance_id,
+            "expected_game_continuity_id": expected_game_continuity_id}
+    value = named(**body) if callable(named) else manager._admin("/v1/admin/load-map", body)
+    result = value.get("result") if isinstance(value, Mapping) else None
+    source = result.get("source") if isinstance(result, Mapping) else None
+    loaded = source.get("save") if isinstance(source, Mapping) else None
+    if (not isinstance(result, Mapping) or result.get("type") != "load_map_result"
+            or not isinstance(result.get("game_continuity_id"), str)
+            or not isinstance(loaded, Mapping) or loaded.get("sha256") != save.get("sha256")):
+        raise BoundaryError("local_environment", "managed_service_load_map_unconfirmed")
+    return dict(value)
+
+
 class _ManagedServiceEnvironment:
     """Workbench operations over the pinned Host-owned attachment API."""
 
@@ -162,6 +186,19 @@ class _ManagedServiceEnvironment:
             raise BoundaryError("local_environment", "managed_service_reset_unconfirmed")
         self.refresh()
         return result
+
+    def load_map(self, save: Mapping[str, Any]) -> dict[str, Any]:
+        """Load one map save into this fresh Host process (the Host refuses otherwise)."""
+        runtime = self.ready.get("adapter_runtime_instance_id")
+        episode = self.ready.get("episode")
+        continuity = episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
+        if not isinstance(runtime, str) or not runtime:
+            raise BoundaryError("local_environment", "managed_service_identity_invalid")
+        value = managed_load_map(self._manager, save=save,
+                                 expected_runtime_instance_id=runtime,
+                                 expected_game_continuity_id=continuity)
+        self.refresh()
+        return dict(value["result"])
 
     def episode_identity(self, *, manager: bool = False) -> dict[str, Any]:
         result = (self._manager.request({"command": "episode_identity"}).get("result")
