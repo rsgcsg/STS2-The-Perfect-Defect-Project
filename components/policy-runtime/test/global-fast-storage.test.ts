@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -106,7 +108,7 @@ describe("fast-chain WP6 evidence", () => {
     expect(() => game.nativeLine("x")).toThrow("fast_evidence_native_lines_off");
   });
 
-  it("makes each boundary durable before it resolves; a crash leaves an unsatisfied tail, never a pretend close", async () => {
+  it("has each boundary on disk (page cache; fsync is not observable here) before it resolves; a crash leaves an unsatisfied tail, never a pretend close", async () => {
     const dir = await root();
     const game = new FastActionEvidenceSink(dir).openGame(meta());
     game.nativeLine(line(0));
@@ -208,6 +210,73 @@ describe("fast-chain WP6 evidence", () => {
     game.step(step(1, line(0)));
     await expect(game.segmentBoundary({ first_row_id: 1, last_row_id: 1 })).rejects.toThrow(/^fast_evidence_failed:/u);
     await expect(game.close(closed())).rejects.toThrow(/^fast_evidence_failed:/u);
+  });
+
+  it("keeps the originals of a process killed mid-game: the boundary spools are the originals", async () => {
+    const dir = await root();
+    const dist = fileURLToPath(new URL("../dist/global-fast-storage.js", import.meta.url));
+    const script = `
+      const { FastActionEvidenceSink } = await import(${JSON.stringify(dist)});
+      const [dir, meta, lines, steps] = JSON.parse(process.argv[1]);
+      const game = new FastActionEvidenceSink(dir).openGame(meta);
+      game.nativeLine(lines[0]); game.step(steps[0]);
+      await game.segmentBoundary({ first_row_id: 1, last_row_id: 1 });
+      game.nativeLine(lines[1]); game.step(steps[1]);
+      process.stdout.write("boundary\\n");
+      setInterval(() => {}, 1000);`;
+    const lines = [line(0), line(1)];
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script,
+      JSON.stringify([dir, meta(), lines, [step(1, lines[0]!), step(2, lines[1]!)]])], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => { if (chunk.toString().includes("boundary")) resolve(); });
+      child.on("exit", code => reject(new Error(`child exited ${code}`)));
+    });
+    child.kill("SIGKILL");
+    await new Promise(resolve => child.once("exit", resolve));
+    const read = await readFastGameEvidence(join(dir, "g_1_a"));
+    // Everything up to the boundary survived the kill, originals included; the tail after it did not.
+    expect(read).toMatchObject({ state: "unsatisfied", close: null, satisfied_steps: 1, spool_torn: false, native_lines: [lines[0]] });
+    expect(read.input_lines!.map(i => i.row_id)).toEqual([1]);
+  }, 20000);
+
+  it("keeps the originals when a sampled check did not match, even on a clean finish", async () => {
+    const dir = await root();
+    const game = new FastActionEvidenceSink(dir).openGame(meta());
+    game.nativeLine(line(0));
+    game.step(step(1, line(0)));
+    game.retainSampledCheckMismatch();
+    await game.close(closed());
+    const read = await readFastGameEvidence(join(dir, "g_1_a"));
+    expect(read.close!.retained).toEqual(["sampled_check_mismatch"]);
+    expect(read.native_lines).toEqual([line(0)]);
+    expect(fastRetainReasons({ r7: false, retain_originals: false }, closed(), new Set(["completed"]), { sampled_check_mismatch: true }))
+      .toEqual(["sampled_check_mismatch"]);
+  });
+
+  it("8 games and 8 refusals on one root at once: every one reads back whole, none overwrites another", async () => {
+    const dir = join(await root(), "shared");
+    const sink = new FastActionEvidenceSink(dir);
+    const games = Array.from({ length: 8 }, (_, i) => play(dir, meta({ game_instance_id: `g-${i}`, retain_originals: i % 2 === 0 }),
+      closed(i % 3 === 0 ? { reason: "unknown", terminal: null } : {})));
+    const refusals = Array.from({ length: 8 }, (_, i) => sink.refusedOpen({ slot: i, game_ref: "same", start: { kind: "new_run" },
+      reason: "reset_failed:x", native_lines: [line(i)] }));
+    const [played, refused] = await Promise.all([Promise.all(games), Promise.all(refusals)]);
+    expect(new Set([...played.map(p => p.locator), ...refused]).size).toBe(16);
+    for (const [i, { locator, lines }] of played.entries()) {
+      const read = await readFastGameEvidence(locator!);
+      expect(read.state).toBe("closed");
+      expect(read.native_lines).toEqual(i % 2 === 0 || i % 3 === 0 ? lines : null);
+    }
+    for (const [i, locator] of refused.entries()) expect((await readFastGameEvidence(locator!)).native_lines).toEqual([line(i)]);
+  });
+
+  it("refuses a second boundary or close while one is still writing", async () => {
+    const dir = await root();
+    const game = new FastActionEvidenceSink(dir).openGame(meta());
+    game.step(step(1, null));
+    const first = game.segmentBoundary({ first_row_id: 1, last_row_id: 1 });
+    await expect(game.segmentBoundary({ first_row_id: 1, last_row_id: 1 })).rejects.toThrow("fast_evidence_concurrent:boundary");
+    await first;
   });
 
   it("names the retain reasons from the manager choice and the close only", () => {
