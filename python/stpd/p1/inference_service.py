@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import pickle
@@ -26,7 +27,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Connection
@@ -323,10 +323,10 @@ if __name__ == "__main__":
 # stpd/rl-inference-3 (P-REWRITE WP4, fast_chain only; the S2-1 service above is
 # the old chain and is unchanged). One message = u32 envelope length, the
 # envelope (json_bytes), then the binary section that score_request rows point
-# into. Rows from every connection share one batch queue (no per-connection or
-# 8-row cap); CPU decode/validate/prepare runs in spawned processes while the
-# previous batch is on the device; segments and the per-segment mu belong to
-# the WP5 assembler, which the service calls around every row.
+# into. Rows from every connection share one queue (no per-connection or 8-row
+# cap). Spawned prepare processes decode and prepare; one spawned device process
+# only forwards (no GIL shared with this process's per-row work); segments and
+# the per-segment mu belong to the WP5 assembler, called around every row.
 # ---------------------------------------------------------------------------
 V3_SCHEMA = "stpd/rl-inference-3"
 V3_REFUSALS = frozenset({"MU_NOT_RESIDENT", "EPISODE_NOT_OPEN", "IDENTITY_MISMATCH",
@@ -367,95 +367,193 @@ def python_env_sha256() -> str:
                               "machine": platform.machine(), "packages": packages}))
 
 
-def _prepare_worker(connection: Connection, vocabulary: dict[str, Any],
+def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any) -> tuple[Any, str | None]:
+    """Hot path: decode with the row layout's own structure checks only.
+
+    An audited row (design §2.7: fixed before the game opens, about 1%, plus every
+    R7 game) also recomputes `row_sha256` and runs the full index/shape validator.
+    Returns (frame or None, refusal code); `audit_mismatch` means only the audit
+    caught it, which stops this build's output.
+    """
+    from .rows_encoder_wire import decode_row
+
+    try:
+        return decode_row(raw, validator=compiler if audit_sha else None,
+                          expected_sha256=audit_sha), None
+    except ValueError:
+        if audit_sha is None:
+            return None, "ROW_DECODE_FAILED"
+    try:
+        decode_row(raw, validator=None, expected_sha256=None)
+    except ValueError:
+        return None, "ROW_DECODE_FAILED"
+    return None, "audit_mismatch"
+
+
+def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str, Any],
                     cpu: int | None) -> None:
-    """Spawned CPU preparation: decode + validate rows, then the rows-v2 group."""
+    """Spawned CPU preparation for one sub-group: decode rows, then rows-v2 groups.
+
+    Jobs come from the service's dispatcher; the prepared part goes straight to
+    the device process, so the service process never unpickles a group.
+    """
     if cpu is not None:
         os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
     torch.set_num_threads(1)
     from .frame_compiler import FrameCompiler
-    from .rows_encoder_wire import decode_row
     from .rows_scorer import prepare
 
     compiler = FrameCompiler(vocabulary)
-    connection.send_bytes(b"ready")
+    jobs.send_bytes(b"ready")
     while True:
         try:
-            message = connection.recv_bytes()
+            message = jobs.recv_bytes()
         except EOFError:
             return
         if not message:
             return
-        rows = pickle.loads(message)  # [(raw, row_sha256, catalog_len, floor)]
-        frames, floors, failed = [], [], {}
-        for index, (raw, sha, catalog_len, floor) in enumerate(rows):
-            try:
-                frame = decode_row(raw, validator=compiler, expected_sha256=sha)
-            except ValueError:
-                failed[index] = "ROW_DECODE_FAILED"
+        # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None)]
+        job_id, part, parts, mu, rows = pickle.loads(message)
+        frames, floors, kept, failed, audit = [], [], [], {}, []
+        tails: dict[str, list[tuple[int, Any, int]]] = {}
+        for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
+            frame, code = _audited_decode(raw, audit_sha, compiler)
+            if code == "audit_mismatch":
+                audit.append(index)
+                code = "ROW_DECODE_FAILED"
+            if frame is None:
+                failed[index] = code
                 continue
-            if len(frame.choices) != catalog_len:  # #418 review S5
+            if len(frame.choices) != catalog_len:  # #418 review S5 (every row)
                 failed[index] = "IDENTITY_MISMATCH"
                 continue
             frames.append(frame)
             floors.append(floor)
+            kept.append(index)
+            if tail is not None:
+                tails.setdefault(tail[0], []).append((index, frame, tail[1]))
+        group = None
         try:
             group = prepare(frames, floors) if frames else None
         except ValueError:
-            group, failed = None, {i: "ROW_DECODE_FAILED" for i in range(len(rows))}
+            failed.update(dict.fromkeys(kept, "ROW_DECODE_FAILED"))
+            kept, tails = [], {}
+        tail_parts = []
+        for tail_mu, members in tails.items():
+            indices = [index for index, _, _ in members]
+            try:
+                tail_group = prepare([frame for _, frame, _ in members],
+                                     [floor for _, _, floor in members])
+            except ValueError:
+                tail_parts.append((tail_mu, indices, None))
+                continue
+            tail_parts.append((tail_mu, indices, tail_group))
         # Plain pickle copies tensor data; no shared-memory handles cross the pipe.
-        connection.send_bytes(pickle.dumps((group, failed, [len(f.choices) for f in frames]),
+        results.send_bytes(pickle.dumps(
+            {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
+             "kept": kept, "lengths": [len(frame.choices) for frame in frames],
+             "failed": failed, "audit": audit, "tails": tail_parts},
+            protocol=pickle.HIGHEST_PROTOCOL))
+
+
+def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
+    """Score one job's prepared sub-groups with one mu.
+
+    Interface for the C-SCALE merge of prepared rows-v2 sub-groups into one
+    forward (lead 11-09 (a), `batch_preparation.py`): until it exists each
+    sub-group is its own forward, so a job is normally one sub-group.
+    """
+    return [scorer.forward_tensors(group) for group in groups]
+
+
+def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
+                   device: str, bf16: bool, compile: bool, threads: int) -> None:
+    """Spawned device process: models and forwards only, no per-row Python work.
+
+    It reads prepared parts from every prepare worker, runs one job's parts when
+    all of them are there, and sends CPU tensors back; the service process does
+    the per-row checks, draws and replies (no GIL shared with the forward).
+    """
+    import io
+    from multiprocessing.connection import wait
+
+    from .rows_scorer import RowsScorer
+
+    torch.set_num_threads(threads)
+    scorers: dict[str, Any] = {}
+    waiting: dict[int, list[dict[str, Any]]] = {}
+    control.send_bytes(b"ready")
+    sources = list(inputs)
+    while True:
+        ready = wait([control, *sources])
+        if control in ready:  # models first: a published mu is resident before its rows
+            message = control.recv_bytes()
+            if not message:
+                return
+            kind, key, blob = pickle.loads(message)
+            if kind == "model":
+                model = torch.load(io.BytesIO(blob), map_location=device, weights_only=False)
+                model.eval().requires_grad_(False)
+                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile)
+            else:
+                scorers.pop(key, None)
+            control.send_bytes(b"ok")
+            continue
+        for source in ready:
+            reader = cast(Connection, source)
+            try:
+                part = pickle.loads(reader.recv_bytes())
+            except EOFError:
+                sources.remove(reader)
+                continue
+            parts = waiting.setdefault(part["job"], [])
+            parts.append(part)
+            if len(parts) < part["parts"]:
+                continue
+            del waiting[part["job"]]
+            parts.sort(key=lambda item: item["part"])
+            output.send_bytes(pickle.dumps(_device_job(scorers, parts),
                                            protocol=pickle.HIGHEST_PROTOCOL))
 
 
-class _PreparePool:
-    """Spawned preparation processes; batches complete in submission order."""
-
-    def __init__(self, vocabulary: dict[str, Any], workers: int,
-                 cpus: list[int] | None) -> None:
-        import multiprocessing
-
-        context: Any = multiprocessing.get_context("spawn")
-        self.workers = []
-        for index in range(workers):
-            parent, child = context.Pipe(duplex=True)
-            process = context.Process(target=_prepare_worker, daemon=True,
-                                      name=f"rl-inference-3-prepare-{index}",
-                                      args=(child, vocabulary,
-                                            None if cpus is None else cpus[index]))
-            process.start()
-            child.close()
-            if parent.recv_bytes() != b"ready":
-                raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
-            self.workers.append((process, parent, threading.Lock()))
-        self.next = 0
-
-    def run(self, rows: list[tuple[bytes, str, int, int]]) -> Future:
-        process, connection, lock = self.workers[self.next % len(self.workers)]
-        self.next += 1
-        answer: Future = Future()
-
-        def call() -> None:
-            try:
-                with lock:
-                    connection.send_bytes(pickle.dumps(rows, protocol=pickle.HIGHEST_PROTOCOL))
-                    result = pickle.loads(connection.recv_bytes())
-                answer.set_result(result)
-            except BaseException as error:  # a dead worker fails its batch loudly
-                answer.set_exception(BoundaryError("rl_inference_3", "prepare_worker_died"))
-                answer.exception().__cause__ = error  # type: ignore[union-attr]
-
-        threading.Thread(target=call, daemon=True, name="rl-inference-3-prepare-call").start()
-        return answer
-
-    def close(self) -> None:
-        for process, connection, lock in self.workers:
-            with lock, contextlib.suppress(OSError):
-                connection.send_bytes(b"")
-            process.join(5)
-            if process.is_alive():
-                process.kill()
-            connection.close()
+def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    mu = parts[0]["mu"]
+    scorer = scorers.get(mu)
+    live = [part for part in parts if part["group"] is not None]
+    started = time.perf_counter()
+    outputs: dict[int, Any] = {}
+    error: tuple[str, str] | None = None
+    if live and scorer is None:
+        error = ("MU_NOT_RESIDENT", "")
+    elif live:
+        try:
+            for part, tensors in zip(live, _forward_parts(scorer, [p["group"] for p in live]),
+                                     strict=True):
+                outputs[part["part"]] = tensors
+        except Exception as failure:  # loud in the service: the rows are refused
+            error = ("NONFINITE_SCORES", f"{type(failure).__name__}: {str(failure)[:200]}")
+    for part in parts:
+        tails = []
+        for tail_mu, indices, group in part["tails"]:
+            tail_scorer = scorers.get(tail_mu)
+            if group is None:
+                tails.append((indices, "ROW_DECODE_FAILED"))
+            elif tail_scorer is None:
+                tails.append((indices, "MU_NOT_RESIDENT"))
+            else:
+                try:
+                    tails.append((indices, tail_scorer.forward_tensors(group)))
+                except Exception:
+                    tails.append((indices, "NONFINITE_SCORES"))
+        out.append({"job": part["job"], "part": part["part"], "kept": part["kept"],
+                    "lengths": part["lengths"], "failed": part["failed"],
+                    "audit": part["audit"], "tails": tails, "error": error,
+                    "outputs": outputs.get(part["part"])})
+    if out:
+        out[0]["device_seconds"] = time.perf_counter() - started
+        out[0]["forwards"] = len(live) if error is None else 0
+    return out
 
 
 def _begin_refusal(error: BaseException) -> str:
@@ -477,6 +575,7 @@ class _V3Row:
     raw: bytes
     sampling: dict[str, Any]
     plan: Any = None
+    audit: bool = False
 
 
 @dataclass
@@ -506,6 +605,12 @@ class FastInferenceService:
     open_episode / begin_row / finish_row / abort_row / step_outcome /
     close_episode / offer_mu methods). Models are published per mu handoff;
     a mu the assembler evicts is dropped here.
+
+    Processes: this one (links, assembler, per-row checks, draws, replies),
+    `prepare_workers` spawned CPU preparers and one spawned device process that
+    only forwards. Batching is adaptive: at most `in_flight` jobs are between
+    dispatch and reply, so under load rows wait for a slot and the next job
+    (up to `max_job_rows`) grows; with a free slot a job leaves after `window_ms`.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -513,9 +618,11 @@ class FastInferenceService:
                  address: tuple[str, int] | None = None, authkey: bytes | None = None,
                  max_rows: int = 1024, window_ms: float = 1.0, prepare_workers: int = 2,
                  prepare_cpus: list[int] | None = None, in_flight: int | None = None,
-                 prepare_chunk_rows: int = 8,
-                 bf16: bool = True, compile: bool = False, encoder_sha256: str | None = None,
-                 env_sha256: str | None = None) -> None:
+                 max_job_rows: int = 256, job_parts: int = 1, device: str | None = None,
+                 device_threads: int = 2, bf16: bool = True, compile: bool = False,
+                 audit_fraction: float = 0.01, failure_dir: str | Path | None = None,
+                 encoder_sha256: str | None = None, env_sha256: str | None = None) -> None:
+        import multiprocessing
         from multiprocessing.connection import Listener
 
         from .rows_encoder import encoder_digest
@@ -525,35 +632,75 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_max_rows")
         if prepare_cpus is not None and len(prepare_cpus) != prepare_workers:
             raise ValueError("prepare_cpus_per_worker")
+        if not 1 <= job_parts <= prepare_workers or max_job_rows < 1:
+            raise ValueError("invalid_rl_inference_3_job_shape")
+        if not 0.0 <= audit_fraction <= 1.0:
+            raise ValueError("invalid_rl_inference_3_audit_fraction")
         self.vocabulary = copy.deepcopy(vocabulary)
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.assembler = assembler
         self.training_generation = training_generation
         self.max_rows, self.window = max_rows, window_ms / 1000
+        self.max_job_rows, self.job_parts = max_job_rows, job_parts
         self.bf16, self.compile = bf16, compile
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
                                  "sha256": encoder_sha256 or encoder_digest()}
         self.row_format = FORMAT
         self.env_sha256 = env_sha256 or python_env_sha256()
         self.service_instance = "svc-" + os.urandom(8).hex()
-        self.models: dict[str, Any] = {}
+        # Spot checks (design §2.7): a row is audited when its game is marked
+        # (R7) or the service's secret seed picks it; fixed before the game opens.
+        self.audit_threshold = int(audit_fraction * 2 ** 64)
+        self.audit_seed = os.urandom(16).hex()
+        self.full_audit: set[str] = set()
+        self.failure_dir = Path(failure_dir) if failure_dir is not None else None
+        self.audit_failed = threading.Event()
         self.sampling: dict[str, dict[str, Any]] = {}
-        self._compiler: Any = None  # device thread only (tail rows)
-        self.scorers: dict[str, Any] = {}
-        self.model_lock = threading.Lock()
         self.queue: queue.Queue[_V3Row | None] = queue.Queue()
         self.stopping = threading.Event()
-        self.stats: dict[str, Any] = {"rows": 0, "batches": 0, "refused": {},
+        self.stats: dict[str, Any] = {"rows": 0, "batches": 0, "jobs": 0, "refused": {},
                                       "attach_refused": 0, "batch_rows_max": 0,
-                                      "device_seconds": 0.0, "prepare_wait_seconds": 0.0}
-        self.prepare = _PreparePool(self.vocabulary, prepare_workers, prepare_cpus)
-        # A batch is split over the prepare workers (CPU decode+prepare is per
-        # row; one worker per batch would bound latency by the batch size); each
-        # chunk is one device forward. in_flight bounds prepared-but-unscored chunks.
-        self.workers = prepare_workers
-        self.chunk_rows = max(1, prepare_chunk_rows)
-        self.inflight: queue.Queue[tuple[list[_V3Row], Future] | None] = queue.Queue(
-            maxsize=max(1, in_flight if in_flight is not None else 2 * prepare_workers))
+                                      "job_rows_max": 0, "device_seconds": 0.0,
+                                      "audited": 0, "audit_failures": 0}
+        context: Any = multiprocessing.get_context("spawn")
+        control, control_child = context.Pipe(duplex=True)
+        results, results_child = context.Pipe(duplex=False)
+        worker_pipes = [context.Pipe(duplex=True) for _ in range(prepare_workers)]
+        part_pipes = [context.Pipe(duplex=False) for _ in range(prepare_workers)]
+        self.device_process = context.Process(
+            target=_device_worker, daemon=True, name="rl-inference-3-device",
+            args=(control_child, [reader for reader, _ in part_pipes], results_child,
+                  self.device, bf16, compile, device_threads))
+        self.device_process.start()
+        self.workers: list[tuple[Any, Connection, queue.SimpleQueue[bytes]]] = []
+        for index, ((parent, child), (_, writer)) in enumerate(
+                zip(worker_pipes, part_pipes, strict=True)):
+            process = context.Process(target=_prepare_worker, daemon=True,
+                                      name=f"rl-inference-3-prepare-{index}",
+                                      args=(child, writer, self.vocabulary,
+                                            None if prepare_cpus is None else prepare_cpus[index]))
+            process.start()
+            child.close()
+            self.workers.append((process, parent, queue.SimpleQueue()))
+        for reader, writer in part_pipes:
+            reader.close()
+            writer.close()
+        control_child.close()
+        results_child.close()
+        self.control, self.results = control, results
+        self.control_lock = threading.Lock()
+        if control.recv_bytes() != b"ready":
+            raise BoundaryError("rl_inference_3", "device_process_start_failed")
+        for _, connection, _ in self.workers:
+            if connection.recv_bytes() != b"ready":
+                raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
+        self.outstanding = [0] * prepare_workers
+        self.jobs: dict[int, list[Any]] = {}  # job id -> [remaining parts, parts' rows, workers]
+        self.jobs_lock = threading.Lock()
+        self.job_ids = 0
+        self.slots = threading.BoundedSemaphore(
+            max(1, in_flight if in_flight is not None else prepare_workers))
         self.auth = authkey or os.urandom(32)
         ip = socket.gethostbyname(socket.gethostname())
         self.listener = Listener(address or (ip, 0), authkey=self.auth)
@@ -563,28 +710,55 @@ class FastInferenceService:
                                          name="rl-inference-3-accept"),
                         threading.Thread(target=self._batch, daemon=True,
                                          name="rl-inference-3-batch"),
-                        threading.Thread(target=self._device, daemon=True,
-                                         name="rl-inference-3-device")]
+                        threading.Thread(target=self._results, daemon=True,
+                                         name="rl-inference-3-results")]
+        self.threads += [threading.Thread(target=self._sender, args=(index,), daemon=True,
+                                          name=f"rl-inference-3-send-{index}")
+                         for index in range(prepare_workers)]
         for thread in self.threads:
             thread.start()
 
     # -- mu ------------------------------------------------------------------
+    def _device_control(self, kind: str, key: str, blob: bytes | None) -> None:
+        self.control.send_bytes(pickle.dumps((kind, key, blob), protocol=pickle.HIGHEST_PROTOCOL))
+        if self.control.recv_bytes() != b"ok":
+            raise BoundaryError("rl_inference_3", "device_control_failed")
+
     def publish(self, model: Any, handoff: Any) -> bool:
-        """Offer a mu to the assembler; keep the model only when accepted."""
+        """Offer a mu to the assembler; the device holds it only when accepted.
+
+        The model reaches the device process before the assembler can plan a
+        row on it, so a planned row never finds its mu missing in transit.
+        """
+        import io
+
         from .rows_scorer import RowsScorer
 
-        scorer = RowsScorer(model, bf16=self.bf16, compile=self.compile)
-        offer = self.assembler.offer_mu(handoff)
-        with self.model_lock:
-            if offer.accepted:
-                self.models[handoff.snapshot_sha256] = model
-                self.scorers[handoff.snapshot_sha256] = scorer
-            for key in offer.evicted:
-                self.models.pop(key, None)
-                self.scorers.pop(key, None)
+        RowsScorer(model, bf16=self.bf16, compile=self.compile)  # immutable eval snapshot
+        blob = io.BytesIO()
+        torch.save(model, blob)
+        key = handoff.snapshot_sha256
+        with self.control_lock:
+            self._device_control("model", key, blob.getvalue())
+            offer = self.assembler.offer_mu(handoff)
+            if not offer.accepted:
+                self._device_control("drop", key, None)
+            for evicted in offer.evicted:
+                self._device_control("drop", evicted, None)
             if getattr(offer, "generation_changed", False):
                 self.training_generation = handoff.training_generation
         return bool(offer.accepted)
+
+    def mark_full_audit(self, game_instance_id: str) -> None:
+        """Audit every row of this game (an R7 game); call before its episode_open."""
+        self.full_audit.add(game_instance_id)
+
+    def _audited(self, row: dict[str, Any]) -> bool:
+        game = str(row.get("game_instance_id"))
+        if game in self.full_audit:
+            return True
+        pick = hashlib.sha256(f"{self.audit_seed}\0{game}\0{row.get('step_index')}".encode())
+        return int.from_bytes(pick.digest()[:8], "big") < self.audit_threshold
 
     # -- links ---------------------------------------------------------------
     def _accept(self) -> None:
@@ -686,11 +860,11 @@ class FastInferenceService:
                 raise BoundaryError("rl_inference_3", "row_payload_range")
             sampling = self.sampling.get(str(row.get("game_instance_id")))
             item = _V3Row(link, packet, index, row, bytes(binary[offset:offset + length]),
-                          sampling or {})
+                          sampling or {}, audit=self._audited(row))
             if type(row.get("catalog_len")) is not int or not 1 <= row["catalog_len"] <= 4096:
                 self._refuse(item, "IDENTITY_MISMATCH", abort=False)
                 continue
-            if self.stopping.is_set():
+            if self.stopping.is_set() or self.audit_failed.is_set():
                 self._refuse(item, "SERVICE_STOPPING", abort=False)
                 continue
             if sampling is None:
@@ -701,120 +875,183 @@ class FastInferenceService:
             except ValueError as error:  # AssemblyError: the plan was not created
                 self._refuse(item, _begin_refusal(error), abort=False)
                 continue
+            self.stats["audited"] += item.audit
             self.queue.put(item)
 
-    # -- batching ------------------------------------------------------------
+    # -- batching (adaptive: a job waits for a slot, so jobs grow under load) --
     def _batch(self) -> None:
-        while True:
-            first = self.queue.get()
-            if first is None:
-                self.inflight.put(None)
-                return
-            batch = [first]
-            deadline = time.perf_counter() + self.window
-            while len(batch) < self.max_rows:
-                remaining = deadline - time.perf_counter()
-                try:
-                    item = self.queue.get(timeout=max(remaining, 0)) if remaining > 0 \
-                        else self.queue.get_nowait()
-                except queue.Empty:
-                    break
+        pending: list[_V3Row] = []
+        closing = False
+        while not (closing and not pending):
+            if not pending:
+                item = self.queue.get()
                 if item is None:
-                    self.queue.put(None)
                     break
-                batch.append(item)
-            # One forward per mu: a segment boundary after a publish can mix two
-            # mu in one window; each group is prepared and scored on its own.
-            groups: dict[str, list[_V3Row]] = {}
-            for item in batch:
-                groups.setdefault(item.plan.mu.snapshot_sha256, []).append(item)
-            for members in groups.values():
-                size = max(self.chunk_rows, -(-len(members) // self.workers))
-                for start in range(0, len(members), size):
-                    chunk = members[start:start + size]
-                    rows = [(item.raw, item.row["payload"]["row_sha256"],
-                             item.row["catalog_len"], item.row["floor"]) for item in chunk]
-                    self.inflight.put((chunk, self.prepare.run(rows)))  # bounded: in_flight
+                pending.append(item)
+            slot_waited = not self.slots.acquire(blocking=False)
+            if slot_waited:
+                self.slots.acquire()
+            closing = self._drain(pending, closing)
+            if not slot_waited and not closing and len(pending) < self.max_job_rows:
+                deadline = time.perf_counter() + self.window
+                while len(pending) < self.max_job_rows:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    try:
+                        item = self.queue.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+                    if item is None:
+                        closing = True
+                        break
+                    pending.append(item)
+            # One forward per mu: rows of another mu stay pending for the next job.
+            mu = pending[0].plan.mu.snapshot_sha256
+            job: list[_V3Row] = []
+            rest: list[_V3Row] = []
+            for item in pending:
+                (job if len(job) < self.max_job_rows
+                 and item.plan.mu.snapshot_sha256 == mu else rest).append(item)
+            pending = rest
+            self._dispatch(job)
 
-    def _device(self) -> None:
-        while True:
-            job = self.inflight.get()
-            if job is None:
-                return
-            batch, prepared = job
-            waited = time.perf_counter()
+    def _drain(self, pending: list[_V3Row], closing: bool) -> bool:
+        while not closing:
             try:
-                group, failed, lengths = prepared.result()
-            except Exception:
-                for item in batch:
-                    self._refuse(item, "ROW_DECODE_FAILED")
-                continue
-            self.stats["prepare_wait_seconds"] += time.perf_counter() - waited
-            good = [item for index, item in enumerate(batch) if index not in failed]
-            for index, code in failed.items():
-                self._refuse(batch[index], code)
-            if group is not None:
-                try:
-                    self._forward(good, group, lengths)
-                except Exception as error:  # loud: refuse the chunk, keep serving
-                    print(json.dumps({"rl_inference_3_forward_failed": type(error).__name__,
-                                      "message": str(error)[:200]}), file=sys.stderr, flush=True)
-                    for item in good:
-                        if item.packet.results[item.index] is None:
-                            self._refuse(item, "NONFINITE_SCORES")
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                return True
+            pending.append(item)
+        return closing
 
-    def _forward(self, rows: list[_V3Row], group: Any, lengths: list[int]) -> None:
-        started = time.perf_counter()
-        key = rows[0].plan.mu.snapshot_sha256
-        with self.model_lock:
-            scorer = self.scorers.get(key)
-        if scorer is None:
-            for item in rows:
-                self._refuse(item, "MU_NOT_RESIDENT")
-            return
-        outputs = scorer.forward(group, lengths)
-        tails = self._tails(rows)
-        self.stats["device_seconds"] += time.perf_counter() - started
-        self.stats["batches"] += 1
-        self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"], len(rows))
-        for index, (item, output) in enumerate(zip(rows, outputs, strict=True)):
-            tail = tails.get(index)
-            if output is None:
-                self._refuse(item, "NONFINITE_SCORES")
-            elif isinstance(tail, str):
-                self._refuse(item, tail)
-            else:
-                self._scored(item, output, tail)
+    def _dispatch(self, rows: list[_V3Row]) -> None:
+        parts = min(self.job_parts, len(rows))
+        size = -(-len(rows) // parts)
+        chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
+        with self.jobs_lock:
+            self.job_ids += 1
+            job_id = self.job_ids
+            workers = sorted(range(len(self.workers)), key=self.outstanding.__getitem__)
+            workers = workers[:len(chunks)]
+            for worker in workers:
+                self.outstanding[worker] += 1
+            self.jobs[job_id] = [len(chunks), chunks, workers]
+        self.stats["jobs"] += 1
+        self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
+        mu = rows[0].plan.mu.snapshot_sha256
+        for part, (chunk, worker) in enumerate(zip(chunks, workers, strict=True)):
+            payload = []
+            for item in chunk:
+                tail = item.plan.tail
+                needs_tail = tail is not None and (
+                    tail.mu != item.plan.mu.snapshot_sha256 or tail.floor != item.row["floor"])
+                payload.append((item.raw,
+                                item.row["payload"]["row_sha256"] if item.audit else None,
+                                item.row["catalog_len"], item.row["floor"],
+                                (tail.mu, tail.floor) if needs_tail else None))
+            self.workers[worker][2].put(pickle.dumps((job_id, part, len(chunks), mu, payload),
+                                                     protocol=pickle.HIGHEST_PROTOCOL))
 
-    def _tails(self, rows: list[_V3Row]) -> dict[int, list[float] | str]:
-        """Previous segment mu's value at the tail floor, when the row's own does not serve.
+    def _sender(self, index: int) -> None:
+        _, connection, outbox = self.workers[index]
+        while True:
+            message = outbox.get()
+            try:
+                connection.send_bytes(message)
+            except (OSError, ValueError):
+                return  # the device side sees the worker gone; close() fails loudly
+            if not message:
+                return
 
-        Only a full segment's successor row after a publish (or a floor rise on
-        it) needs this, so it runs per row on the device thread.
-        """
-        from .frame_compiler import FrameCompiler
-        from .rows_encoder_wire import decode_row
+    def _results(self) -> None:
+        while True:
+            try:
+                message = self.results.recv_bytes()
+            except (EOFError, OSError):
+                break
+            for part in pickle.loads(message):
+                self._finish_part(part)
+        with self.jobs_lock:
+            left = list(self.jobs.values())
+            self.jobs.clear()
+        if left and not self.stopping.is_set():
+            print(json.dumps({"rl_inference_3_device_process_gone": len(left)}),
+                  file=sys.stderr, flush=True)
+        self.stopping.set()
+        for _, chunks, _ in left:
+            for chunk in chunks:
+                for item in chunk:
+                    if item.packet.results[item.index] is None:
+                        self._refuse(item, "SERVICE_STOPPING")
 
-        need = [i for i, item in enumerate(rows) if item.plan.tail is not None and (
-            item.plan.tail.mu != item.plan.mu.snapshot_sha256
-            or item.plan.tail.floor != item.row["floor"])]
-        out: dict[int, list[float] | str] = {}  # values, or a refusal code
-        if not need:
-            return out
-        if self._compiler is None:
-            self._compiler = FrameCompiler(self.vocabulary)
-        for i in need:
-            item = rows[i]
-            with self.model_lock:
-                scorer = self.scorers.get(item.plan.tail.mu)
-            if scorer is None:
-                out[i] = "MU_NOT_RESIDENT"
-                continue
-            frame = decode_row(item.raw, validator=self._compiler,
-                               expected_sha256=item.row["payload"]["row_sha256"])
-            value = scorer.score([frame], [item.plan.tail.floor])[0]
-            out[i] = "NONFINITE_SCORES" if value is None else value.outcome_probabilities
-        return out
+    def _finish_part(self, part: dict[str, Any]) -> None:
+        from .rows_scorer import RowsScorer
+
+        with self.jobs_lock:
+            job = self.jobs[part["job"]]
+            rows = job[1][part["part"]]
+        if "device_seconds" in part:
+            self.stats["device_seconds"] += part["device_seconds"]
+            self.stats["batches"] += part["forwards"]
+        for index, code in part["failed"].items():
+            self._refuse(rows[index], code)
+        if part["audit"]:
+            self._audit_failure([rows[index] for index in part["audit"]])
+        kept = [rows[index] for index in part["kept"]]
+        if part["error"] is not None:
+            code, message = part["error"]
+            if message:
+                print(json.dumps({"rl_inference_3_forward_failed": message}), file=sys.stderr,
+                      flush=True)
+            for item in kept:
+                self._refuse(item, code)
+        elif kept:
+            self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"], len(kept))
+            tails: dict[int, list[float] | str] = {}
+            for indices, values in part["tails"]:
+                if isinstance(values, str):
+                    tails.update(dict.fromkeys(indices, values))
+                    continue
+                lengths = [rows[index].row["catalog_len"] for index in indices]
+                for index, value in zip(indices, RowsScorer.rows(values, lengths), strict=True):
+                    tails[index] = ("NONFINITE_SCORES" if value is None
+                                    else value.outcome_probabilities)
+            outputs = RowsScorer.rows(part["outputs"], part["lengths"])
+            for index, item, output in zip(part["kept"], kept, outputs, strict=True):
+                tail = tails.get(index)
+                if output is None:
+                    self._refuse(item, "NONFINITE_SCORES")
+                elif isinstance(tail, str):
+                    self._refuse(item, tail)
+                else:
+                    self._scored(item, output, tail)
+        with self.jobs_lock:
+            job[0] -= 1
+            self.outstanding[job[2][part["part"]]] -= 1
+            done = job[0] == 0
+            if done:
+                del self.jobs[part["job"]]
+        if done:
+            self.slots.release()
+
+    def _audit_failure(self, rows: list[_V3Row]) -> None:
+        """A spot check differs: stop this build's output, keep the originals (§2.7)."""
+        self.audit_failed.set()
+        self.stats["audit_failures"] += len(rows)
+        for item in rows:
+            meta = {"rl_inference_3_audit_mismatch": {
+                key: item.row.get(key) for key in ("game_instance_id", "step_index",
+                                                   "consumption_id", "catalog_sha256")}}
+            print(json.dumps(meta), file=sys.stderr, flush=True)
+            if self.failure_dir is not None:
+                self.failure_dir.mkdir(parents=True, exist_ok=True)
+                name = f"audit-{self.service_instance}-{item.row.get('request_id')}"
+                (self.failure_dir / f"{name}.row").write_bytes(item.raw)
+                (self.failure_dir / f"{name}.json").write_bytes(json_bytes(
+                    {"row": item.row, "aggregator_id": item.link.aggregator_id}))
 
     def _scored(self, item: _V3Row, output: Any, tail: list[float] | None) -> None:
         from .sampling import distribution, draw
@@ -880,9 +1117,24 @@ class FastInferenceService:
             pass
         self.listener.close()
         self.queue.put(None)
-        for thread in self.threads[1:]:
-            thread.join(60)
-        self.prepare.close()
+        self.threads[1].join(60)
+        deadline = time.perf_counter() + 60
+        while self.jobs and time.perf_counter() < deadline and self.device_process.is_alive():
+            time.sleep(0.01)
+        for _, _, outbox in self.workers:
+            outbox.put(b"")
+        for process, connection, _ in self.workers:
+            process.join(5)
+            if process.is_alive():
+                process.kill()
+            connection.close()
+        with self.control_lock, contextlib.suppress(OSError):
+            self.control.send_bytes(b"")
+        self.device_process.join(10)
+        if self.device_process.is_alive():
+            self.device_process.kill()
+        self.threads[2].join(10)
+        self.control.close()
         batches = self.stats["batches"]
         return {"schema": V3_SCHEMA, "service_instance": self.service_instance, **self.stats,
                 "batch_rows_mean": self.stats["rows"] / batches if batches else 0}

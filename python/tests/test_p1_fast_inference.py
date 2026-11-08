@@ -28,6 +28,7 @@ from stpd.p1.inference_service import (
 from stpd.p1.input import V2_INPUT_SPEC
 from stpd.p1.model import MStd, MStdExecution
 from stpd.p1.rows_encoder import RowsEncoder
+from stpd.p1.rows_encoder_wire import decode_row
 from stpd.p1.rows_scorer import RowsScorer
 from stpd.p1.sampling import distribution, draw
 from stpd.p1.vocabulary import public_vocabulary
@@ -399,3 +400,135 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
         service.close()
     aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
     assert aborted == {3: "ROW_DECODE_FAILED", 5: "IDENTITY_MISMATCH"}
+
+
+def _open_client(service: FastInferenceService, encoder: RowsEncoder, game: str) -> Any:
+    client = _attach(service, encoder.identity["encoder"])
+    assert unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0]["kind"] == "attached"
+    client.send_bytes(pack_message({
+        "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2, "game_instance_id": game,
+        "actor_id": "a", "sampling": SAMPLING, "single_choice": "score",
+        "start": {"kind": "new_run"}}))
+    return client
+
+
+def _score(client: Any, encoded: Any, request_id: int, game: str, *,
+           row_sha256: str | None = None, floor: int = 2) -> dict[str, Any]:
+    row = {"request_id": request_id, "game_instance_id": game, "step_index": request_id,
+           "consumption_id": f"c{request_id}", "catalog_len": encoded.catalog_len,
+           "catalog_sha256": encoded.catalog_sha256,
+           "observation_sha256": encoded.observation_sha256, "in_combat": False,
+           "floor": floor, "payload": {"offset": 0, "length": len(encoded.row),
+                                       "row_sha256": row_sha256 or encoded.row_sha256}}
+    client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                    "packet_id": request_id, "rows": [row]}, encoded.row))
+    envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+    [result] = envelope["results"]
+    return dict(result)
+
+
+def test_row_hash_is_a_spot_check_and_a_mismatch_stops_the_build(vocabulary, model):
+    """Design §2.7: the hot path does not recompute row_sha256; an audited row does,
+    and a difference stops this service's output with the original kept."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    wrong = "f" * 64
+    service = _service(vocabulary, model, FakeAssembler(), audit_fraction=0.0)
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1", row_sha256=wrong)["status"] == "scored"
+    finally:
+        client.close()
+        report = service.close()
+    assert report["audited"] == 0 and report["audit_failures"] == 0
+
+    with tempfile.TemporaryDirectory() as failures:
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, audit_fraction=0.0,
+                           failure_dir=failures)
+        service.mark_full_audit("g1")  # an R7 game: every row audited
+        client = _open_client(service, encoder, "g1")
+        try:
+            assert _score(client, encoded, 3, "g1")["status"] == "scored"
+            refused = _score(client, encoded, 4, "g1", row_sha256=wrong)
+            assert refused["error_code"] == "ROW_DECODE_FAILED"
+            after = _score(client, encoded, 5, "g1")
+            assert after["error_code"] == "SERVICE_STOPPING"
+        finally:
+            client.close()
+            report = service.close()
+        kept = sorted(os.listdir(failures))
+        assert len(kept) == 2 and kept[0].endswith(".json") and kept[1].endswith(".row")
+        with open(os.path.join(failures, kept[1]), "rb") as handle:
+            assert handle.read() == encoded.row
+    assert report["audited"] == 2 and report["audit_failures"] == 1
+    aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
+    assert aborted == {4: "ROW_DECODE_FAILED"}
+
+
+@dataclass(frozen=True)
+class Tail:
+    segment_id: str
+    mu: str
+    floor: int
+
+
+class TailAssembler(FakeAssembler):
+    """Every row asks for the tail value of another mu (a segment boundary)."""
+
+    def __init__(self, tail_mu: str) -> None:
+        super().__init__()
+        self.tail_mu = tail_mu
+
+    def begin_row(self, row: dict[str, Any], row_bytes: bytes) -> Plan:
+        plan = super().begin_row(row, row_bytes)
+        return Plan(plan.game_instance_id, plan.request_id, plan.step_index, plan.segment_id,
+                    plan.row_in_segment, plan.mu, Tail("seg-old", self.tail_mu, 5))
+
+    def finish_row(self, plan: Plan, scored: dict[str, Any], values: list[float],
+                   tail: list[float] | None = None) -> None:
+        with self.lock:
+            self.calls.append(("finish", (plan.request_id, scored, values, tail)))
+
+
+def test_tail_value_uses_the_previous_mu_at_the_tail_floor(vocabulary, model):
+    torch.manual_seed(11)
+    old = MStd(vocabulary, MStdExecution(
+        implementation="experimental-packed-v1", microbatch_size=4,
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1))
+    old.enable_rl4_heads(7)
+    old = old.eval().requires_grad_(False)
+    old_mu = "b" * 64
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    frame = decode_row(encoded.row, validator=FrameCompiler(vocabulary),
+                       expected_sha256=encoded.row_sha256)
+    expected = RowsScorer(old).score([frame], [5])[0]
+    own = RowsScorer(model).score([frame], [2])[0]
+    assert expected is not None and own is not None
+
+    assembler = TailAssembler(old_mu)
+    service = _service(vocabulary, model, assembler)
+    assert service.publish(old, Handoff(old_mu))
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["status"] == "scored"
+    finally:
+        client.close()
+        service.close()
+    [(_, _, values, tail)] = [body for kind, body in assembler.calls if kind == "finish"]
+    assert torch.allclose(torch.tensor(tail), torch.tensor(expected.outcome_probabilities),
+                          atol=1e-6)
+    assert torch.allclose(torch.tensor(values), torch.tensor(own.outcome_probabilities),
+                          atol=1e-6)
+
+    assembler = TailAssembler("c" * 64)  # never published
+    service = _service(vocabulary, model, assembler)
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["error_code"] == "MU_NOT_RESIDENT"
+    finally:
+        client.close()
+        service.close()
+    assert [body for kind, body in assembler.calls if kind == "abort"] == [
+        (3, "MU_NOT_RESIDENT")]

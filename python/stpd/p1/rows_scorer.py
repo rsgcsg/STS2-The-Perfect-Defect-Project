@@ -57,18 +57,22 @@ class RowsScorer:
         self.bf16 = bf16 and self.device.type == "cuda"
         self.compile = compile
 
-    def forward(self, group: Any, catalog_lengths: Sequence[int]) -> list[RowScores | None]:
-        """Scores per row; None for a row whose outputs are not finite."""
+    def forward_tensors(self, group: Any) -> tuple[torch.Tensor, ...]:
+        """Device forward only: CPU float (scores, outcome probabilities, logits, hp)."""
         autocast = (torch.autocast("cuda", dtype=torch.bfloat16) if self.bf16
                     else nullcontext())
         with torch.inference_mode(), autocast:
             scores, logits, hp = self.model.forward_prepared_rl4(group,
                                                                  compile_rows=self.compile)
             probabilities = logits.float().softmax(-1)
-        scores_cpu = scores.float().cpu()
-        probabilities_cpu = probabilities.cpu()
-        logits_cpu = logits.float().cpu()
-        hp_cpu = hp.float().cpu()
+        return (scores.float().cpu(), probabilities.cpu(), logits.float().cpu(),
+                hp.float().cpu())
+
+    @staticmethod
+    def rows(tensors: tuple[torch.Tensor, ...], catalog_lengths: Sequence[int]
+             ) -> list[RowScores | None]:
+        """Per-row scores from `forward_tensors`; None for a row that is not finite."""
+        scores_cpu, probabilities_cpu, logits_cpu, hp_cpu = tensors
         out: list[RowScores | None] = []
         for row, count in enumerate(catalog_lengths):
             values = scores_cpu[row, :count]
@@ -85,6 +89,10 @@ class RowsScorer:
             out.append(RowScores(values.tolist(), probabilities_cpu[row].tolist(),
                                  float(hp_cpu[row])))
         return out
+
+    def forward(self, group: Any, catalog_lengths: Sequence[int]) -> list[RowScores | None]:
+        """Scores per row; None for a row whose outputs are not finite."""
+        return self.rows(self.forward_tensors(group), catalog_lengths)
 
     def score(self, frames: Sequence[TensorFrame], floors: Sequence[int]
               ) -> list[RowScores | None]:
