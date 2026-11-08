@@ -53,6 +53,8 @@ class GameEnd extends Error {
 }
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+/** One line of an original error for a close detail (never parsed, never retried on). */
+const errorText = (error: unknown) => (error instanceof Error ? `${error.name}:${error.message}` : String(error)).replace(/\s+/gu, " ").slice(0, 240);
 const isObj = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Player-visible run facts of one public observation (rl-inference-3 public_facts). */
@@ -87,6 +89,11 @@ class GameRun {
   #prepared: Prepared | null = null;
   #pendingSource: Source | null = null;
   #pendingOutcome: PendingOutcome | null = null;
+  /** Why the last fold ended unknown; the close detail keeps it after `delivery_unknown:`. */
+  #unknownCause: string | null = null;
+  #unknownDetail(): string { return this.#unknownCause ? `delivery_unknown:${this.#unknownCause}` : "delivery_unknown"; }
+  /** A native step was delivered and its successor has not been read and accepted yet. */
+  awaitingSuccessor = false;
   #noProgress: GlobalNoProgressWindow | null;
   readonly #started = performance.now();
 
@@ -241,6 +248,7 @@ class GameRun {
         return { reason: "terminal", detail: observation.status, terminal };
       }
       this.#flushOutcome(facts, null);
+      this.awaitingSuccessor = false;
       this.lastFacts = facts;
       if (this.ctx.stopping() || this.slot.closeRequested) throw new GameEnd("stop", this.ctx.stopping() ? "process_stop" : "close_slot");
       if (this.decisions >= config.budget.max_decisions_per_game) throw new GameEnd("budget", "max_decisions_per_game");
@@ -253,7 +261,7 @@ class GameRun {
         const status = await this.#acted(prepared, 0, null);
         if (forced) forced.forced += 1;
         if (status === "not_started") throw new GameEnd("not_started", "forced_step_not_delivered");
-        if (status === "unknown") throw new GameEnd("unknown", "delivery_unknown", { replaceNative: true });
+        if (status === "unknown") throw new GameEnd("unknown", this.#unknownDetail(), { replaceNative: true });
         continue;
       }
 
@@ -283,6 +291,9 @@ class GameRun {
         this.#outcome(rowId, stepIndex, "not_started", { reason });
         throw new GameEnd(close, detail);
       };
+      // Stop (WP0 contract: control is released only after every in-flight row resolved, by
+      // reply or timeout): a row that resolves during Stop is never acted on, whatever came back.
+      if (this.ctx.stopping() && result.kind !== "disconnected") notStarted("stop_before_send", "stop", "stop_before_send");
       if (result.kind === "timeout") notStarted("inference_timeout", "not_started", "inference_timeout");
       if (result.kind === "cancelled") notStarted("stop_before_send", "stop", "stop_before_send");
       if (result.kind === "disconnected") throw new GameEnd("not_started", "link_disconnected");
@@ -299,7 +310,7 @@ class GameRun {
       if (status === "not_started") notStarted("native_not_delivered", "not_started", "native_not_delivered");
       if (status === "unknown") {
         this.#outcome(rowId, stepIndex, "unknown", { reason: "delivery_unknown" });
-        throw new GameEnd("unknown", "delivery_unknown", { replaceNative: true });
+        throw new GameEnd("unknown", this.#unknownDetail(), { replaceNative: true });
       }
     }
   }
@@ -325,9 +336,10 @@ class GameRun {
       let raw: unknown;
       try {
         raw = await this.native.step({ requestId, expectedSnapshotId: String(source.full.basis.snapshot.snapshot_id), boundActionId: step.bound_action_id });
-      } catch {
+      } catch (error) {
         // Handed to the Host: whether the native received it is not known.
         stats.step_ms += performance.now() - stepStarted;
+        this.#unknownCause = `host_step_failed:${errorText(error)}`;
         return "unknown";
       }
       const receiptStarted = performance.now();
@@ -340,13 +352,18 @@ class GameRun {
         const matches = decoded.delivery === "not_delivered" ? actual.bound_action_id === expected.bound_action_id
           : canonicalJson(expected) === canonicalJson(actual);
         if (decoded.request_id !== requestId || !matches) throw new Error("receipt_binding");
-      } catch { stats.receipt_ms += performance.now() - receiptStarted; return "unknown"; }
+      } catch (error) {
+        stats.receipt_ms += performance.now() - receiptStarted;
+        this.#unknownCause = `receipt_unreadable:${errorText(error)}`;
+        return "unknown";
+      }
       receiptSha = globalDigest(decoded);
       stats.receipt_ms += performance.now() - receiptStarted;
       steps += 1; this.nativeSteps += 1; stats.native_steps += 1;
+      if (decoded.delivery === "delivered") this.awaitingSuccessor = true;
       record.native_steps.push({ fold_index: steps - 1, native_verb: String(step.verb), delivery: decoded.delivery,
         reason_code: decoded.reason_code ?? null, receipt_sha256: receiptSha });
-      if (decoded.delivery === "unknown") return "unknown";
+      if (decoded.delivery === "unknown") { this.#unknownCause = `receipt_delivery_unknown:${decoded.reason_code ?? "none"}`; return "unknown"; }
       if (decoded.delivery === "not_delivered") { status = steps === 1 ? "not_started" : "interrupted_known"; break; }
       if (decoded.reason_code === "compact_state_divergence") {
         if (row) this.#pendingOutcome = { row_id: row.rowId, step_index: row.stepIndex, receipt_sha256: receiptSha, forced: 0 };
@@ -429,6 +446,9 @@ export class SlotKernel {
       catch (error) { return refuse(`native_start_failed:${error instanceof Error ? error.message : String(error)}`); }
     }
     const native = this.#native;
+    const openStart: FastGameMeta["start"] = command.start.kind === "from_save"
+      ? { kind: "from_save", save_sha256: command.start.save.sha256, act: command.start.save.act, floor: command.start.save.floor }
+      : { kind: "new_run" };
     let gameInstanceId: string, start: Record<string, unknown>;
     try {
       const episode = command.start.kind === "from_save"
@@ -443,18 +463,21 @@ export class SlotKernel {
         throw new Error("native_start_changed");
     } catch (error) {
       const divergence = native.taint().reason === "compact_state_divergence";
+      // The lines this mount emitted (a diverging first frame included) outlive the native.
+      const lines: string[] = [];
+      if (ctx.config.compact.enabled) { native.attachLines(line => lines.push(line)); native.attachLines(null); }
       await this.#replaceNative();
       if (divergence) ctx.stopBuildOutput("compact_state_divergence", this.index, null);
-      return refuse(`reset_failed:${divergence ? "compact_state_divergence" : error instanceof Error ? error.message : String(error)}`);
+      const reason = `reset_failed:${divergence ? "compact_state_divergence" : errorText(error)}`;
+      try { await ctx.evidence.refusedOpen({ slot: this.index, game_ref: command.game_ref, start: openStart, reason, native_lines: lines }); }
+      catch (failure) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: null, reason: errorText(failure) }); }
+      return refuse(reason);
     }
     this.gameInstanceId = gameInstanceId;
     this.state = "running";
     ctx.stats.games += 1;
     ctx.emit("opened", { command_id: command.command_id, slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
       start, native: nativeTag, mount_ms: Math.round(performance.now() - mountStarted) });
-    const openStart: FastGameMeta["start"] = command.start.kind === "from_save"
-      ? { kind: "from_save", save_sha256: command.start.save.sha256, act: command.start.save.act, floor: command.start.save.floor }
-      : { kind: "new_run" };
     ctx.link.send({ type: "episode_open", game_instance_id: gameInstanceId, actor_id: ctx.config.inference.actor_id,
       sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart });
     const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
@@ -471,6 +494,12 @@ export class SlotKernel {
       game.failPending(end);
       ({ reason, detail } = end);
       replace = end.options.replaceNative === true || native.taint().tainted;
+      // Delivered, then no readable successor (settling stalled, incomplete capture, capacity,
+      // missing facts): the effect is not known, so the game is unknown and the native goes.
+      // A compact divergence stays not_started: it stops this build's output loudly instead.
+      if (game.awaitingSuccessor && reason === "not_started" && detail !== "compact_state_divergence") {
+        reason = "unknown"; detail = `delivered_successor_unreadable:${detail}`; replace = true;
+      }
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
     }
     ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason, last_step_index: game.lastStepIndex });

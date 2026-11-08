@@ -274,7 +274,13 @@
         {"if": {"properties": {"status": {"const": "completed"}}},
          "then": {"required": ["receipt_sha256", "public_facts", "terminal"],
                   "not": {"required": ["reason"]}},
-         "else": {"required": ["reason"], "not": {"required": ["receipt_sha256"]}}}
+         "else": {"required": ["reason"], "not": {"required": ["receipt_sha256"]}}},
+        {"if": {"required": ["reason"], "properties": {"reason": {"enum": ["inference_timeout", "response_binding_mismatch",
+                                                                          "refused", "stop_before_send", "native_not_delivered"]}}},
+         "then": {"properties": {"status": {"const": "not_started"}}}},
+        {"if": {"required": ["reason"], "properties": {"reason": {"enum": ["delivery_unknown", "native_crash",
+                                                                          "compact_state_divergence"]}}},
+         "then": {"properties": {"status": {"const": "unknown"}}}}
       ]
     },
     "episode_close": {
