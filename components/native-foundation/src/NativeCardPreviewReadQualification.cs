@@ -29,15 +29,16 @@ public static partial class NativeCardPreviewReadQualification
     internal const BindingFlags NativeMembers = BindingFlags.Instance | BindingFlags.Static
         | BindingFlags.Public | BindingFlags.NonPublic;
 
-    public static bool IsUnpatched(MethodBase? method)
-    {
-        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
-        catch { return false; }
-    }
+    // fast_chain memoizes by patch generation; off = the original live check.
+    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
 
     private static readonly ConditionalWeakTable<Type, ILookup<string, MethodInfo>> MethodTables = new();
 
-    internal static bool MethodsUnpatched(Type owner, params string[] names)
+    internal static bool MethodsUnpatched(Type owner, params string[] names) => !NativePatchStateCache.Enabled
+        ? MethodsUnpatchedLive(owner, names)
+        : NativePatchStateCache.Memo(nameof(MethodsUnpatched), owner, string.Join('\u001f', names), () => MethodsUnpatchedLive(owner, names));
+
+    private static bool MethodsUnpatchedLive(Type owner, string[] names)
     {
         // CLR method metadata is immutable for each loaded Type. Reuse only
         // that table; every requested overload's Harmony state remains live.
@@ -46,10 +47,13 @@ public static partial class NativeCardPreviewReadQualification
         return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
     }
 
-    private static bool FixedConstructorsUnpatched(Type type) =>
-        type.GetConstructors(NativeMembers).All(IsUnpatched);
+    private static bool FixedConstructorsUnpatched(Type type) => NativePatchStateCache.Memo(nameof(FixedConstructorsUnpatched), type,
+        static current => current.GetConstructors(NativeMembers).All(IsUnpatched));
 
-    private static bool CloneLambdaUnpatched(Type owner)
+    private static bool CloneLambdaUnpatched(Type owner) =>
+        NativePatchStateCache.Memo(nameof(CloneLambdaUnpatched), owner, CloneLambdaUnpatchedLive);
+
+    private static bool CloneLambdaUnpatchedLive(Type owner)
     {
         MethodInfo[] exact = owner.GetNestedType("<>c", BindingFlags.NonPublic)?
             .GetMethods(NativeMembers).Where(method => method.Name.StartsWith("<Clone>b__", StringComparison.Ordinal)).ToArray()
@@ -58,6 +62,9 @@ public static partial class NativeCardPreviewReadQualification
     }
 
     private static bool BaseImplementation(Type current, Type owner, string method) =>
+        NativePatchStateCache.Memo(nameof(BaseImplementation), current, owner, () => BaseImplementationLive(current, owner, method), method);
+
+    private static bool BaseImplementationLive(Type current, Type owner, string method) =>
         current.GetMethod(method, NativeMembers) is { } effective
         && effective.DeclaringType == owner && IsUnpatched(effective);
 
@@ -174,6 +181,9 @@ public static partial class NativeCardPreviewReadQualification
     // the existing canonical-instance binding. Framework collection/decimal
     // primitives are the trusted CLR boundary, not a native plugin callback.
     private static bool CopyClosureUnpatched() =>
+        NativePatchStateCache.Memo(nameof(CopyClosureUnpatched), null, null, CopyClosureUnpatchedLive);
+
+    private static bool CopyClosureUnpatchedLive() =>
         MethodsUnpatched(typeof(AbstractModel), "MutableClone", "get_IsMutable", "set_IsMutable", "AssertMutable", "AfterCloned")
         && MethodsUnpatched(typeof(CardModel), "DeepCloneFields", "AfterCloned", "GetKeywordsWithSources", "get_LocalKeywords",
             "get_DynamicVars", "get_Enchantment", "get_Affliction", "get_EnergyCost", "get_CanonicalEnergyCost", "get_HasEnergyCostX",
@@ -188,6 +198,9 @@ public static partial class NativeCardPreviewReadQualification
         && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 
     private static bool CopyAfterClonedQualified(Type type) =>
+        NativePatchStateCache.Memo(nameof(CopyAfterClonedQualified), type, CopyAfterClonedQualifiedLive);
+
+    private static bool CopyAfterClonedQualifiedLive(Type type) =>
         BaseImplementation(type, typeof(CardModel), "AfterCloned")
         // Exact v0.111.0 SovereignBlade only calls base.AfterCloned and clears
         // its copied CreatedThroughForge presentation state. No scope/run write.
@@ -291,6 +304,9 @@ public static partial class NativeCardPreviewReadQualification
     }
 
     private static bool UpgradeClosureQualified(Type type) =>
+        NativePatchStateCache.Memo(nameof(UpgradeClosureQualified), type, UpgradeClosureQualifiedLive);
+
+    private static bool UpgradeClosureQualifiedLive(Type type) =>
             type.GetMethod("OnUpgrade", NativeMembers) is { } upgrade
                 && (upgrade.DeclaringType == typeof(CardModel)
                     || upgrade.DeclaringType == type && NativeUpgradeMethodInventory.Contains(type.Name))
@@ -380,7 +396,10 @@ public static partial class NativeCardPreviewReadQualification
 
     private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
 
-    private static bool SingletonListUnpatched(Type element)
+    private static bool SingletonListUnpatched(Type element) =>
+        NativePatchStateCache.Memo(nameof(SingletonListUnpatched), element, SingletonListUnpatchedLive);
+
+    private static bool SingletonListUnpatchedLive(Type element)
     {
         Type? fixedType = typeof(CardModel).Assembly.GetType("<>z__ReadOnlySingleElementList`1")?.MakeGenericType(element);
         return fixedType != null && fixedType.GetMethods(NativeMembers).All(IsUnpatched)

@@ -24,11 +24,8 @@ public static class NativeRunHookReadQualification
     private static readonly Guid AuditedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
     private static readonly FieldInfo? Subscribers = typeof(ModHelper).GetField("_runHookSubscribers",
         BindingFlags.Static | BindingFlags.NonPublic);
-    public static bool IsUnpatched(MethodBase? method)
-    {
-        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
-        catch { return false; }
-    }
+    // fast_chain memoizes by patch generation; off = the original live check.
+    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
 
     private static bool IteratorIsUnpatched(MethodInfo? method)
     {
@@ -77,13 +74,17 @@ public static class NativeRunHookReadQualification
             return run.GetType() == typeof(RunState)
                 && typeof(RunState).Assembly.ManifestModule.ModuleVersionId == AuditedGameMvid
                 && Subscribers?.GetValue(null) is ICollection { Count: 0 }
-                && IteratorReadClosureIsUnpatched()
-                && IteratorIsUnpatched(typeof(RunState).GetMethod(nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }))
-                && IteratorIsUnpatched(typeof(ModHelper).GetMethod(nameof(ModHelper.IterateAllRunStateSubscribers)))
-                && IsUnpatched(typeof(RunState).GetMethod("Contains", BindingFlags.Static | BindingFlags.NonPublic));
+                && NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched);
         }
         catch { return false; }
     }
+
+    // The fixed (metadata and patch state) part of Preflight.
+    private static bool FixedClosureIsUnpatched() =>
+        IteratorReadClosureIsUnpatched()
+        && IteratorIsUnpatched(typeof(RunState).GetMethod(nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }))
+        && IteratorIsUnpatched(typeof(ModHelper).GetMethod(nameof(ModHelper.IterateAllRunStateSubscribers)))
+        && IsUnpatched(typeof(RunState).GetMethod("Contains", BindingFlags.Static | BindingFlags.NonPublic));
 
     public static bool TryCaptureListeners(IRunState run, out IReadOnlyList<AbstractModel> listeners, out string? gap)
     {

@@ -31,7 +31,8 @@ export function textBoundaryErrors(relative, contents) {
       "NativeRunHookReadQualification.cs",
       "NativeSelectorReadQualification.cs",
       "NativeCardPreviewReadQualification.cs",
-      "NativeCardRewardAlternativePreview.cs"
+      "NativeCardRewardAlternativePreview.cs",
+      "NativePatchStateCache.cs"
     ].map(name => `components/native-foundation/src/${name}`));
     // Do not parse comments with a regex: comment-like text inside a C# string
     // can precede executable code. Only these fixed, inert prose fragments are
@@ -46,7 +47,8 @@ export function textBoundaryErrors(relative, contents) {
     ]) ownershipText = ownershipText.replaceAll(prose, "");
     if (readQualificationFiles.has(normalized)) {
       ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
-        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");
+        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo")
+        .replace(/\bHarmony\.GetAllPatchedMethods(?=\s*\()/gu, "readPatchedMethods");
     }
     // This process-local preview uses only exclusion attributes; no JSON I/O.
     if (normalized === "components/native-foundation/src/NativeDetachedCardPreview.cs") {

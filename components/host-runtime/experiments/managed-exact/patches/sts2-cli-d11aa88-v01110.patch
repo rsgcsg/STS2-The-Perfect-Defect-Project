@@ -6199,10 +6199,10 @@ index 0000000..c17040a
 +}
 diff --git a/src/Sts2Headless/NativePatchStateCache.cs b/src/Sts2Headless/NativePatchStateCache.cs
 new file mode 100644
-index 0000000..89bcd05
+index 0000000..41f2d9b
 --- /dev/null
 +++ b/src/Sts2Headless/NativePatchStateCache.cs
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,188 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Reflection;
@@ -6213,27 +6213,32 @@ index 0000000..89bcd05
 +namespace STS2Platform.NativeFoundation;
 +
 +/// <summary>
-+/// fast_chain only (STS2_HEADLESS_FAST_CHAIN=1, default off). Memoizes native read
-+/// qualification answers that are functions of loaded CLR metadata and the Harmony
-+/// patch state only, by patch generation. Off: every caller takes its original live
-+/// path and this class is never consulted.
++/// fast_chain only, default off. Memoizes native read qualification answers that are
++/// functions of loaded CLR metadata and the patch-owner state only, by patch generation.
++/// Off: every caller takes its original live path and this class is never consulted.
++/// Only the Managed headless entry point enables it (STS2_HEADLESS_FAST_CHAIN=1, read
++/// once by that entry point); no other host calls <see cref="Configure"/>, so every
++/// other host, including the in-game Mod, always stays off.
 +///
 +/// Generation: a new generation starts, and every cached answer is dropped, when the
-+/// set of methods that currently have at least one Harmony owner differs from the set
++/// set of methods that currently have at least one patch owner differs from the set
 +/// sampled last. Sampling points: native initialization end (after every install
-+/// block) and every Program command before it is handled. A Harmony change made
-+/// INSIDE a command is observed at the next command; in this process the only Harmony
-+/// writers are the initialization install blocks, which end with <see cref="Refresh"/>. The call-scope selector
-+/// patches (DeckUpgradeCallScope, NativeSelectorCallScope) are installed once there;
-+/// their per-call frames are [ThreadStatic] values and never change Harmony state.
++/// block) and every headless command before it is handled. A patch change made INSIDE
++/// a command is observed at the next command; in that process the only patch writers
++/// are the initialization install blocks, which end with <see cref="Refresh"/>. The
++/// call-scope selector patches (DeckUpgradeCallScope, NativeSelectorCallScope) are
++/// installed once there; their per-call frames are [ThreadStatic] values and never
++/// change the patch-owner state.
 +///
 +/// Live object facts (field values, delegates, listeners, formatter roster, combat
 +/// or TestMode state) are never cached; only the metadata/patch part is.
 +/// </summary>
 +public static class NativePatchStateCache
 +{
-+    public static bool Enabled { get; private set; } =
-+        Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1";
++    public static bool Enabled { get; private set; }
++
++    /// <summary>Process start only, before any read; the Managed entry point is the only caller.</summary>
++    public static void Configure(bool enabled) => Enabled = enabled;
 +
 +    // Sampling (rare) is serialized by Gate; the hot path takes no lock. Each thread keeps
 +    // its own answers tagged with the generation they were computed in, and drops them as
@@ -6248,7 +6253,7 @@ index 0000000..89bcd05
 +    public static long Misses { get; private set; }
 +    public static long Invalidations { get; private set; }
 +
-+    /// <summary>The original live check: Harmony owners of exactly this method.</summary>
++    /// <summary>The original live check: patch owners of exactly this method.</summary>
 +    public static bool IsUnpatchedLive(MethodBase? method)
 +    {
 +        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
@@ -9042,7 +9047,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..c8af1f7 100644
+index 800f139..c5d9c02 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -9056,17 +9061,19 @@ index 800f139..c8af1f7 100644
  
  namespace Sts2Headless;
  
-@@ -41,6 +44,9 @@ class Program
+@@ -41,6 +44,11 @@ class Program
  
      static void Main(string[] args)
      {
++        // fast_chain native read caches (default off; off = original output byte for byte).
++        NativePatchStateCache.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1");
 +        if (Environment.GetEnvironmentVariable("STS2_HEADLESS_QUIET") == "1")
 +            Console.SetError(TextWriter.Null);
 +
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -85,7 +91,8 @@ class Program
+@@ -85,7 +93,8 @@ class Program
              try
              {
                  var cmd = JsonSerializer.Deserialize<JsonElement>(line);
@@ -9076,7 +9083,7 @@ index 800f139..c8af1f7 100644
              }
              catch (JsonException ex)
              {
-@@ -93,7 +100,8 @@ class Program
+@@ -93,7 +102,8 @@ class Program
              }
              catch (Exception ex)
              {
@@ -9086,7 +9093,7 @@ index 800f139..c8af1f7 100644
              }
  
              if (result != null)
-@@ -108,17 +116,64 @@ class Program
+@@ -108,17 +118,64 @@ class Program
          }
      }
  
