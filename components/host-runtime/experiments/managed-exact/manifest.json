@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
-    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
-    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
+    "source_patch_sha256": "177378d285aff5746a29057aae1e891ea51718f01061b389792105e753a1693f",
+    "artifact_sha256": "e8f9ce9d017b59400603d4dc782693c5b76f76f2d04e3f329f22d0bf25458f0c",
+    "artifact_mvid": "0e9e78f6-0a66-4d39-96dc-0aea7be4dee0",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
-        "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
-        "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+        "source_patch_sha256": "7573daa446337e679ced094370722cc38e73d75350788c2f8da76e7d50062498",
+        "artifact_sha256": "0d49180e9d825024f99bc8b42a295478057ecc27e2cb72c52384e392b316407e",
+        "artifact_mvid": "30e1853f-42cb-4416-8fe6-4b45dd4d2eca",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -163,6 +163,13 @@
           "artifact_mvid": "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host63 Sphere r1.9 Linux build used by the RL4.2 long run; original source/package immutable, not current Soul Nexus source."
+        },
+        {
+          "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
+          "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
+          "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host64 Soul Nexus Linux build (RL5 P2 and the P-REWRITE equivalence corpus); original source/package immutable, not current fast_chain source."
         }
       ]
     }
@@ -502,14 +509,20 @@
       "risk": "medium",
       "effect": "TestMode replaces only native ShowScreen with the bound real minigame. Publish masks and items discovered from cleared occupied cells before type/ref allocation. Original SetTool/CellClicked/reveal/complete/rewards own all effects. Preserve parent and current child tasks, including awaited Curse reveal; explicit r1.9 public input, no hidden inventory or renderer.",
       "regression": "u1-native-tests sphere-empty, sphere-visible, sphere-reward, sphere-curse-pending; real NDJSON pipe/PB1/P1 r1.9 completion and old-profile parent refusal."
-    }
-,
+    },
     {
       "id": "native_soul_nexus_death_node_callsite",
       "kind": "harmony_presentation_callsite",
       "risk": "low",
       "effect": "Only the single exact NCombatRoom.GetCreatureNode(Creature) call in SoulNexus.AfterDeath (its Died handler, used only to reset a spine animation) is remapped. An absent combat-room scene yields null only in TestMode; all other cases call the original method. Native death, removal, combat end, rewards and RNG unchanged; exact call-count drift fails.",
       "regression": "u1-native-tests soul-nexus-play (original lethal play on the original elite is witnessed and ends combat; old build reproduces the unwitnessed play) and soul-nexus-survives (ordinary non-lethal play recorded in native history)."
+    },
+    {
+      "id": "fast_chain_patch_generation_read_cache",
+      "kind": "native_read_qualification_cache",
+      "risk": "medium",
+      "effect": "Default off; only the Managed entry point enables it (STS2_HEADLESS_FAST_CHAIN=1, accepted once per process). Memoizes only the metadata/patch-state part of native read qualification, keyed by the patch-owner generation sampled before each command and after initialization; live object facts (subscribers, listeners, variable owners and delegates, field values) are read every time. Off is the original live check byte for byte; Mod and Reference Host never enable it.",
+      "regression": "patch-cache-tests/PatchCacheTests.csproj (58 checks: generation invalidation, thread drop, off-is-live, single Configure, and live-fact flips for run-hook subscribers, a foreign calculated-variable delegate and Weak/Vulnerable variable owners); managed-reward-native.test.mjs enable-site check."
     }
   ],
   "admission": {
@@ -688,6 +701,12 @@
     "source_patch_sha256": "0137fdda669e1f959f9e4d231f7fbf95f09269ffacbf84803d4ca63ceb9d2d5a",
     "artifact_sha256": "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f",
     "artifact_mvid": "1df7d09d-d37e-43b8-b166-894ae4adbbd2",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_fast_chain_patch_cache_build": {
+    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
+    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
+    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
