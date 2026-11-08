@@ -52,7 +52,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             games_per_ledger: int = 2, runtime_source: Path | None = None,
             behavior: dict[str, Any] | None = None, seed_namespace: str | None = None,
             segment_inference: Path | None = None,
-            requested_learner: Path | None = None
+            requested_learner: Path | None = None,
+            archive_publisher: str | None = None
             ) -> dict[str, Any]:
     execution, learner = canonical_path(execution), canonical_path(learner)
     output = canonical_path(output, existing=False)
@@ -103,6 +104,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
                                 else games_per_ledger * episode_seconds + 180)
             or type(max_games) is not int or not 1 <= max_games <= 100000):
         raise ValueError('bounded_one_to_five_hundred_CPU_actor_budget_required')
+    if archive_publisher not in {None, 'shared'}:
+        raise ValueError('explicit_archive_publisher_required')
     defaults = learning.get('actor_defaults', {})
     behavior = behavior if behavior is not None else defaults.get('behavior', {
         'mode': 'temperature_uniform', 'temperature': 1.0,
@@ -129,6 +132,10 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             'episode_seconds': episode_seconds, 'max_games': max_games,
             'games_per_ledger': games_per_ledger, 'behavior': behavior,
             'pipeline': defaults.get('pipeline', {'save_workers': 1, 'pending_limit': 2})}
+        if archive_publisher is not None:
+            # Only a layout that runs the dedicated archiver (SegmentWatcher) sets this;
+            # without it the actor copies its own intents as before (no silent loss).
+            actor['archive_publisher'] = archive_publisher
         if inference is not None:
             actor['deadline_at'] = learning.get('deadline_at')
             actor['budget_id'] = (learning.get('operating_budget') or {}).get('id')
@@ -224,7 +231,8 @@ def learner_launcher(configuration: Path, work: Path, execution: Path, actors_ou
                      source: Path, actors: int, seed_namespace: str,
                      python: Path, episode_seconds: int = 14400,
                      supervisor: dict[str, str] | None = None,
-                     dataplane: dict[str, Any] | None = None) -> str:
+                     dataplane: dict[str, Any] | None = None,
+                     shared_archiver: bool = False) -> str:
     """Use the same environment and E2 owner for a learner allocation, CPU or GPU."""
     config = json.loads(configuration.read_bytes())
     allocation = configuration.parent / 'learner-allocation.json'
@@ -236,6 +244,8 @@ def learner_launcher(configuration: Path, work: Path, execution: Path, actors_ou
         '--actors-output', str(actors_output), '--actors', str(actors),
         '--seed-namespace', seed_namespace, '--episode-seconds', str(episode_seconds),
         '--external-submit']
+    if shared_archiver:
+        command.append('--shared-archiver')
     if dataplane is not None:
         profile = configuration.parent / 'dataplane-profile.json'
         save(profile, {**dataplane, 'lanes': actors})
@@ -900,7 +910,8 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
 def learn(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
           actors: int, seed_namespace: str, episode_seconds: int = 14400,
           memory_gb: int = 4, external_submit: bool = False,
-          dataplane_profile: Path | None = None) -> dict[str, Any]:
+          dataplane_profile: Path | None = None,
+          shared_archiver: bool = False) -> dict[str, Any]:
     """The GPU owner starts control, then submits the CPU actor adapter.
 
     The transient control capability reaches sbatch through its inherited environment;
@@ -980,7 +991,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
                 max_games=100000, games_per_ledger=10, runtime_source=source,
                 seed_namespace=seed_namespace,
                 segment_inference=Path(config.segments.rendezvous_path),
-                requested_learner=configuration)
+                requested_learner=configuration,
+                archive_publisher='shared' if shared_archiver else None)
             os.environ.update(learner.pool.environment())
             if not external_submit:
                 submit(actors_output/'plan.json', memory_gb=memory_gb)
@@ -1235,6 +1247,8 @@ def main():
                               help='login owns sbatch; GPU prepares the Actor plan')
     learn_parser.add_argument('--dataplane-profile', type=Path,
                               help='explicit binary socket/WAL and node mu cache profile')
+    learn_parser.add_argument('--shared-archiver', action='store_true',
+                              help='actors leave archive copies to the watcher archiver')
     launch_parser = commands.add_parser('launch')
     for name in ('gpu-script', 'config', 'work', 'actors-output', 'output'):
         launch_parser.add_argument('--'+name, type=Path, required=True)
@@ -1269,7 +1283,8 @@ def main():
         result = learn(args.config, args.work, args.execution, args.actors_output,
             actors=args.actors, seed_namespace=args.seed_namespace,
             episode_seconds=args.episode_seconds, memory_gb=args.memory_gb,
-            external_submit=args.external_submit, dataplane_profile=args.dataplane_profile)
+            external_submit=args.external_submit, dataplane_profile=args.dataplane_profile,
+            shared_archiver=args.shared_archiver)
     elif args.command == 'prepare':
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,

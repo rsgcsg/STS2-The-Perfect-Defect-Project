@@ -5,6 +5,8 @@ transport contract; these tests do not claim gameplay or cloud availability.
 """
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -730,3 +732,74 @@ def test_same_budget_deadline_cold_peer_archives_identical_control_bytes(tmp_pat
     assert second.run_deadline(20000, budget_id='two') == 20000
     with pytest.raises(BoundaryError, match='run_deadline_cannot_be_reset'):
         second.run_deadline(20001, budget_id='two')
+
+
+def test_intent_only_actor_leaves_copy_to_the_one_dedicated_archiver(tmp_path):
+    """RL5 OPS-2: an actor process records durable intents only (no thread, no NFS lock,
+    no R2 upload); the watcher's archiver takes publisher.lock and copies every intent
+    with the same full readback. Originals stay in the shared Store throughout."""
+    binding, hot, archive = peers(tmp_path)
+    exchange = Exchange(binding, "intent-only")
+    assert exchange.defer_archive() is True
+    model = publish_model(hot)
+    exchange.publish_model({"run": exchange.run, "version": 0,
+        "model_artifact_id": model.artifact_id, "model_sha256": model.payload("weights").sha256})
+    service = hot.archive
+    assert service.thread is None and service.intents_only
+    status = exchange.archive_status()
+    assert status["publisher"] == "shared" and status["pending"] > 0
+    assert not (Path(binding["directory"]) / ".archive/locks").exists()  # no lock taken
+    with pytest.raises(StoreError, match="intent_only_process_cannot_publish"):
+        service.start_publisher()
+    archiver = Archive(Path(binding["directory"]), binding["archive"])  # watcher process
+    assert archiver.start_publisher() is True and archiver.start_publisher() is False
+    deadline = time.monotonic() + 10
+    while archiver.status()["pending"] and time.monotonic() < deadline:
+        time.sleep(.05)
+    final = archiver.status()
+    assert final["pending"] == 0 and final["full_readback"]
+    assert archive.get_manifest(model.artifact_id).artifact_id == model.artifact_id
+    # The archiver's in-window view and its own thread finish the tail (review M4/L2);
+    # the intent-only status now reflects the archiver's receipts (review L1).
+    view = archiver.backlog()
+    assert view["pending"] == 0 and view["copied_records"] > 0 and view["copied_bytes"] > 0
+    assert view["publisher_alive"] and view["last_error"] is None
+    assert archiver.wait_for_publisher(timeout=5)["full_readback"]
+    assert exchange.archive_status()["full_readback"]
+
+
+def test_archiver_backlog_reports_oldest_pending_age(tmp_path):
+    binding, hot, _archive = peers(tmp_path)
+    exchange = Exchange(binding, "backlog")
+    exchange.defer_archive()
+    model = publish_model(hot)
+    exchange.publish_model({"run": exchange.run, "version": 0,
+        "model_artifact_id": model.artifact_id, "model_sha256": model.payload("weights").sha256})
+    pending = list((Path(binding["directory"]) / ".archive/pending").iterdir())
+    old = time.time() - 4000
+    os.utime(pending[0], (old, old))
+    view = Archive(Path(binding["directory"]), binding["archive"]).backlog()
+    assert view["pending"] == len(pending) and view["oldest_pending_seconds"] >= 3999
+    assert view["publisher_alive"] is False  # nobody is copying: visible, not silent
+
+
+@pytest.mark.parametrize("publisher", [None, "shared", "learner"])
+def test_actor_defers_only_when_its_plan_names_the_shared_archiver(tmp_path, publisher):
+    """Review M3: only a SegmentWatcher plan (which starts the archiver) sets
+    archive_publisher; any other launcher keeps the actor's own copy (no silent loss)."""
+    from spireagent.workbench.rl_actor import Actor
+
+    binding, _hot, _archive = peers(tmp_path)
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps({"peer": binding, "retention": {
+        "tier": "trajectory", "purpose": "training", "audit_every": 100}}))
+    config = {"schema": "spireagent/rl-actor-config-1", "actor": "a-1",
+              "execution": str(execution), "peer": binding, "run": "switch"}
+    if publisher is not None:
+        config["archive_publisher"] = publisher
+    if publisher == "learner":
+        with pytest.raises(BoundaryError, match="explicit_archive_publisher_required"):
+            Actor(config, tmp_path / "actor")
+        return
+    actor = Actor(config, tmp_path / "actor")
+    assert actor.exchange.store.archive.intents_only is (publisher == "shared")

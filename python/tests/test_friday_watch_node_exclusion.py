@@ -348,6 +348,7 @@ def test_cooldown_then_canary_pass_readmits_and_releases_pending_arrays(
     owner.replace_actors(value)
     [(args, kwargs)] = prepared
     assert kwargs["actors"] == 2 and "canary-smp-9-20-1-1" in kwargs["seed_namespace"]
+    assert kwargs["archive_publisher"] == "shared"  # the watcher archiver copies them
     [submitted] = rl.submissions
     assert submitted["nodelist"] == ["smp-9-20"] and "exclude_nodes" not in submitted
     record = owner.state["node_exclusion"]["excluded"]["smp-9-20"]
