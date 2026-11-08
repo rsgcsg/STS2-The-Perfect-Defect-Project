@@ -396,15 +396,31 @@ def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
 
 
 def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str, Any],
-                    cpu: int | None) -> None:
+                    cpu: int | None, keep: int) -> None:
     """Spawned CPU preparation for one sub-group: decode rows, then rows-v2 groups.
 
     Jobs come from the service's dispatcher; the prepared part goes straight to
-    the device process, so the service process never unpickles a group.
+    the device process, so the service process never unpickles a group. Tensors
+    cross as torch shared-memory handles (torch.multiprocessing, file_system
+    strategy): the device process maps them instead of copying them. The last
+    `keep` parts stay referenced here so a segment is never released before the
+    device process has mapped it (at most in_flight parts are unconsumed).
     """
+    import collections
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing
+
     if cpu is not None:
         os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
     torch.set_num_threads(1)
+    # Pipe ends received at spawn are inheritable; the torch_shm_manager this
+    # process starts would keep them open and hide this worker's death from the
+    # device process (no EOF). Keep them private to this process.
+    for end in (jobs, results):
+        os.set_inheritable(end.fileno(), False)
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    sent: collections.deque[dict[str, Any]] = collections.deque(maxlen=keep)
     from .frame_compiler import FrameCompiler
     from .rows_scorer import prepare
 
@@ -453,12 +469,11 @@ def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str,
                 tail_parts.append((tail_mu, indices, None))
                 continue
             tail_parts.append((tail_mu, indices, tail_group))
-        # Plain pickle copies tensor data; no shared-memory handles cross the pipe.
-        results.send_bytes(pickle.dumps(
-            {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
-             "kept": kept, "lengths": [len(frame.choices) for frame in frames],
-             "failed": failed, "audit": audit, "tails": tail_parts},
-            protocol=pickle.HIGHEST_PROTOCOL))
+        prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
+                    "kept": kept, "lengths": [len(frame.choices) for frame in frames],
+                    "failed": failed, "audit": audit, "tails": tail_parts}
+        results.send_bytes(bytes(ForkingPickler.dumps(prepared, pickle.HIGHEST_PROTOCOL)))
+        sent.append(prepared)
 
 
 def audit_pick(game_instance_id: str, step_index: Any, threshold: int) -> bool:
@@ -508,9 +523,12 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     import io
     from multiprocessing.connection import wait
 
+    import torch.multiprocessing
+
     from .rows_scorer import RowsScorer
 
     torch.set_num_threads(threads)
+    torch.multiprocessing.set_sharing_strategy("file_system")
     scorers: dict[str, Any] = {}
     waiting: dict[int, list[dict[str, Any]]] = {}
     joined: queue.Queue[tuple[list[dict[str, Any]], Any] | None] = queue.Queue(maxsize=2)
@@ -723,13 +741,15 @@ class FastInferenceService:
             args=(control_child, [reader for reader, _ in part_pipes], results_child,
                   self.device, bf16, compile, device_threads))
         self.device_process.start()
+        self.slot_count = max(1, in_flight if in_flight is not None else prepare_workers)
         self.workers: list[tuple[Any, Connection, queue.SimpleQueue[bytes]]] = []
         for index, ((parent, child), (_, writer)) in enumerate(
                 zip(worker_pipes, part_pipes, strict=True)):
             process = context.Process(target=_prepare_worker, daemon=True,
                                       name=f"rl-inference-3-prepare-{index}",
                                       args=(child, writer, self.vocabulary,
-                                            None if prepare_cpus is None else prepare_cpus[index]))
+                                            None if prepare_cpus is None else prepare_cpus[index],
+                                            self.slot_count + 2))
             process.start()
             child.close()
             self.workers.append((process, parent, queue.SimpleQueue()))
@@ -749,8 +769,7 @@ class FastInferenceService:
         self.jobs: dict[int, list[Any]] = {}  # job id -> [remaining parts, parts' rows, workers]
         self.jobs_lock = threading.Lock()
         self.job_ids = 0
-        self.slots = threading.BoundedSemaphore(
-            max(1, in_flight if in_flight is not None else prepare_workers))
+        self.slots = threading.BoundedSemaphore(self.slot_count)
         self.auth = authkey or os.urandom(32)
         ip = socket.gethostbyname(socket.gethostname())
         # Listener's default backlog is 1: aggregators connecting together would
