@@ -401,6 +401,28 @@ class _ArenaPart(NamedTuple):
 
     part: Any  # stpd.rl.batch_preparation.ForwardPart
     rows: int
+    slot: tuple[int, int]  # the job's slot in the arena (parts, then the join plan)
+
+
+class _JoinRef(NamedTuple):
+    """A job joined ahead of the device: its C-SCALE JoinPlan, in arena[start:end]."""
+
+    plan: Any  # stpd.rl.batch_preparation.JoinPlan
+    start: int
+    end: int
+
+
+def _plan_join(arena: torch.Tensor, live: list[_ArenaPart]) -> tuple[_JoinRef, list[int]]:
+    """Plan a job's join in its own slot, right after its parts (one H2D for both)."""
+    from stpd.rl.batch_preparation import plan_forward_join
+
+    start, end = live[0].slot
+    parts = [dataclasses.replace(item.part, start=item.part.start - start,
+                                 end=item.part.end - start) for item in live]
+    counts = [item.rows for item in live]
+    plan = plan_forward_join(arena[start:end], parts, max(part.end for part in parts),
+                             rows=tuple(range(sum(counts))))
+    return _JoinRef(plan, start, end), counts
 
 
 def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dict[str, Any],
@@ -475,7 +497,7 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
             kept, tails = [], {}
         if group is not None and arena is not None:
             from stpd.rl.batch_preparation import write_forward_inputs
-            start, end = span
+            start, end, slot_start, slot_end = span
             try:
                 written = write_forward_inputs(arena[start:end], 0, group)
             except ValueError as error:
@@ -490,7 +512,8 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                 kept, tails, group = [], {}, None
             else:
                 group = _ArenaPart(dataclasses.replace(written, start=written.start + start,
-                                                       end=written.end + start), len(kept))
+                                                       end=written.end + start), len(kept),
+                                   (slot_start, slot_end))
         tail_parts = []
         for tail_mu, members in tails.items():
             indices = [index for index, _, _ in members]
@@ -579,13 +602,18 @@ def _receive(reader: Connection) -> dict[str, Any]:
     return message
 
 
-def _join_worker(inputs: list[Connection], output: Connection, keep: int) -> None:
+def _join_worker(inputs: list[Connection], output: Connection, keep: int,
+                 arena: torch.Tensor | None = None) -> None:
     """Spawned joiner: maps a job's prepared parts and joins them into one group.
 
     The joined group goes to the device process as shared memory too, so the
     device loader maps one group per job instead of mapping and joining every
     part (the loader thread was the limit). Any prepare worker gone ends this
     process, so the device process sees it and the service fails loudly.
+
+    With the arena, a job's parts are already in its slot: the joiner only plans
+    the join (C-SCALE `plan_forward_join`, all host index maps) and writes the
+    plan after the parts, so the device process runs `stage_joined` alone.
     """
     import collections
     from multiprocessing.connection import wait
@@ -597,7 +625,8 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int) -> Non
     for end in (*inputs, output):
         os.set_inheritable(end.fileno(), False)
     torch.multiprocessing.set_sharing_strategy("file_system")
-    collector = _Collector()
+    collector = (_Collector() if arena is None
+                 else _Collector(lambda live: _plan_join(arena, live)))
     sent: collections.deque[Any] = collections.deque(maxlen=keep)
     while True:
         for source in wait(inputs):
@@ -637,7 +666,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     scorers: dict[str, Any] = {}
     collector = _Collector()
     if arena is not None:
-        from stpd.rl.batch_preparation import pin_host_arena, stage_forward_parts
+        from stpd.rl.batch_preparation import pin_host_arena, stage_forward_parts, stage_joined
 
         target = torch.device(device)
         if target.type == "cuda":
@@ -685,8 +714,18 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                 # this process so the service fails every outstanding row loudly.
                 return
             if part.get("joined"):
-                part["parts"][0]["load_seconds"] += part["load_seconds"]
-                joined.put((part["parts"], part["group"]))
+                parts, group = part["parts"], part["group"]
+                parts[0]["load_seconds"] += part["load_seconds"]
+                if arena is not None and isinstance(group, tuple):
+                    ref, counts = group
+                    staging = time.perf_counter()
+                    try:
+                        group = (stage_joined(arena[ref.start:ref.end], ref.plan, target),
+                                 counts)
+                    except Exception as failure:  # refused loudly by the service
+                        group = RuntimeError(f"{type(failure).__name__}: {str(failure)[:200]}")
+                    parts[0]["stage_seconds"] = time.perf_counter() - staging
+                joined.put((parts, group))
                 continue
             done = collector.add(part)
             if done is not None:
@@ -702,7 +741,11 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
     started = time.perf_counter()
     outputs: dict[int, Any] = {}
     error: tuple[str, str] | None = None
-    if isinstance(joined, Exception):
+    overflow = None
+    if isinstance(joined, Exception) and "forward_arena_overflow" in str(joined):
+        error = ("SERVICE_STOPPING", "")  # the join plan does not fit its slot
+        overflow = {"plan": str(joined)[:200]}
+    elif isinstance(joined, Exception):
         error = ("NONFINITE_SCORES", f"join {type(joined).__name__}: {str(joined)[:200]}")
     elif live and scorer is None:
         error = ("MU_NOT_RESIDENT", "")
@@ -728,7 +771,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         out.append({"job": part["job"], "part": part["part"], "kept": part["kept"],
                     "lengths": part["lengths"], "failed": part["failed"],
                     "audit": part["audit"], "tails": tails, "error": error,
-                    "overflow": part.get("overflow"),
+                    "overflow": part.get("overflow") or overflow,
                     "outputs": outputs.get(part["part"])})
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
@@ -736,6 +779,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         out[0]["forward_rows"] = sum(len(part["kept"]) for part in live)
         out[0]["load_seconds"] = parts[0].get("load_seconds", 0.0)
         out[0]["join_seconds"] = parts[0].get("join_seconds", 0.0)
+        out[0]["stage_seconds"] = parts[0].get("stage_seconds", 0.0)
     return out
 
 
@@ -818,7 +862,7 @@ class FastInferenceService:
             raise ValueError("prepare_cpus_per_worker")
         if not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0:
             raise ValueError("invalid_rl_inference_3_job_shape")
-        if arena_row_bytes is not None and (arena_row_bytes < 1 or join_workers):
+        if arena_row_bytes is not None and arena_row_bytes < 1:
             raise ValueError("invalid_rl_inference_3_arena")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
@@ -851,6 +895,7 @@ class FastInferenceService:
                                       "attach_refused": 0, "batch_rows_max": 0,
                                       "job_rows_max": 0, "device_seconds": 0.0,
                                       "load_seconds": 0.0, "join_seconds": 0.0,
+                                      "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0}
         context: Any = multiprocessing.get_context("spawn")
@@ -887,7 +932,7 @@ class FastInferenceService:
             process = context.Process(target=_join_worker, daemon=True,
                                       name=f"rl-inference-3-join-{index}",
                                       args=([pipes[index][0] for pipes in part_pipes], writer,
-                                            self.slot_count + 2))
+                                            self.slot_count + 2, self.arena))
             process.start()
             self.joiners.append(process)
         self.workers: list[tuple[Any, Connection, queue.SimpleQueue[bytes]]] = []
@@ -1176,7 +1221,10 @@ class FastInferenceService:
                 self.outstanding[worker] += 1
             slot = self.free_slots.pop()  # a slot semaphore is held: one is free
             self.jobs[job_id] = [len(chunks), chunks, workers, slot]
-        share = self.slot_bytes // len(chunks) // 64 * 64  # 64 B aligned part slices
+        # parts share the first 3/4 of the slot (64 B aligned); a joiner writes the
+        # join plan after them (C-SCALE: plan ~30% of the parts' bytes)
+        share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
+        base = slot * self.slot_bytes
         self.stats["jobs"] += 1
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
@@ -1190,8 +1238,8 @@ class FastInferenceService:
                                 item.row["payload"]["row_sha256"] if item.audit else None,
                                 item.row["catalog_len"], item.row["floor"],
                                 (tail.mu, tail.floor) if needs_tail else None))
-            span = (slot * self.slot_bytes + part * share, slot * self.slot_bytes
-                    + (part + 1) * share)
+            span = (base + part * share, base + (part + 1) * share, base,
+                    base + self.slot_bytes)
             self.workers[worker][2].put(pickle.dumps(
                 (job_id, part, len(chunks), mu, payload, span), protocol=pickle.HIGHEST_PROTOCOL))
         self.stats["dispatch_seconds"] += time.perf_counter() - dispatching
@@ -1240,6 +1288,7 @@ class FastInferenceService:
             self.stats["device_seconds"] += part["device_seconds"]
             self.stats["load_seconds"] += part["load_seconds"]
             self.stats["join_seconds"] += part["join_seconds"]
+            self.stats["stage_seconds"] += part["stage_seconds"]
             self.stats["batches"] += part["forwards"]
             self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"],
                                                part["forward_rows"] * part["forwards"])

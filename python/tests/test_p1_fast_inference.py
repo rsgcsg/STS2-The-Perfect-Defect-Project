@@ -550,12 +550,13 @@ def test_tail_value_uses_the_previous_mu_at_the_tail_floor(vocabulary, model):
 
 
 @pytest.mark.parametrize(("arena_row_bytes", "join_workers"),
-                         [(256 * 1024, 0), (None, 0), (None, 2)])
+                         [(256 * 1024, 0), (256 * 1024, 2), (None, 0), (None, 2)])
 def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, model,
                                                                      arena_row_bytes,
                                                                      join_workers):
     """Two prepare workers each prepare half a job: written into the shared arena
-    and staged by `stage_forward_parts` (default), or joined by concatenate_groups
+    and staged by `stage_forward_parts` (0) or planned in a joiner and staged by
+    `stage_joined` (2), or (no arena) joined by concatenate_groups
     in the device process (0) or in a joiner process (2)."""
     encoder = RowsEncoder(vocabulary)
     compiler = FrameCompiler(vocabulary)
@@ -600,7 +601,7 @@ def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, 
 
 
 @pytest.mark.parametrize(("arena_row_bytes", "join_workers"),
-                         [(256 * 1024, 0), (None, 1)])
+                         [(256 * 1024, 0), (256 * 1024, 1), (None, 1)])
 def test_a_dead_prepare_worker_stops_the_service_loudly(vocabulary, model, arena_row_bytes,
                                                         join_workers):
     encoder = RowsEncoder(vocabulary)
