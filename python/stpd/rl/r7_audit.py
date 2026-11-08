@@ -27,6 +27,11 @@ Comparators:
 - `compare_encoded_row`: a fast `stpd/rows-v2-row-1` row against the Python
   reference (`FrameCompiler.compile` -> `encode_row`); bytes first, tensor-level
   first difference for the report.
+- `compare_terminal_label`: the fast public terminal label equals the old
+  chain's label game by game (lead decision 2026-11-09).
+- `public_battle_hp` / `compare_hp_labels`: the candidate public hp auxiliary
+  rule and its per-battle check against the old chain; the rule is not emitted
+  until this check passes on the equivalence corpus.
 """
 from __future__ import annotations
 
@@ -338,3 +343,61 @@ def compare_encoded_row(fast_row: bytes, fast_row_sha256: str, reference: bytes,
                 for a, b in zip(bucketed.buckets, reduction.buckets, strict=True)):
             return Finding(None, "encoded_row", "divergence", f"reduction:{name}")
     return Finding(None, "encoded_row", "divergence", "bytes_differ_tensors_equal")
+
+
+# ----------------------------------------------------------- labels vs old chain
+def compare_terminal_label(fast: Mapping[str, Any] | None,
+                           legacy: Mapping[str, Any] | None) -> Finding | None:
+    """Fast segment `seal.terminal` against the old chain's terminal label, per game.
+
+    Both are None when neither chain labelled the game (no natural terminal, or
+    the class check refused it). Class and reward must be equal exactly: both
+    chains run the same reward v2 arithmetic and `checked_terminal_class`.
+    """
+    left = None if fast is None else (fast["class"], fast["reward"])
+    right = None if legacy is None else (legacy["class"], legacy["reward"])
+    if left == right:
+        return None
+    return Finding(None, "terminal_label", "divergence", [left, right])
+
+
+def public_battle_hp(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Candidate hp auxiliary rule (lead 2026-11-09), from one game's fast rows in order.
+
+    A battle is a maximal run of combat rows; it ends where the next row is not
+    in combat (or the run's last row carried the natural terminal). Its label is
+    the public hp in that last combat row's step_outcome (the successor state).
+    No combat_end is read. Not emitted: it is enabled only after
+    `compare_hp_labels` shows it equal to the old chain on the equivalence corpus.
+    """
+    battles: list[dict[str, Any]] = []
+    steps: list[int] = []
+    for index, row in enumerate(rows):
+        if row["in_combat"]:
+            steps.append(row["step_index"])
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        outcome = row.get("outcome") or {}
+        ends = bool(steps) and row["in_combat"] and (
+            (following is not None and not following["in_combat"])
+            or (following is None and outcome.get("terminal") is not None))
+        if ends:
+            hp = (outcome.get("public_facts") or {}).get("hp")
+            if type(hp) is int:
+                battles.append({"steps": list(steps), "post_hp": hp})
+            steps = []
+        elif not row["in_combat"]:
+            steps = []
+    return battles
+
+
+def compare_hp_labels(fast: Sequence[Mapping[str, Any]],
+                      legacy: Sequence[Mapping[str, Any]]) -> Finding | None:
+    """Per battle: the labelled state steps and the post-combat public hp, in order."""
+    left = [(list(b["steps"]), b["post_hp"]) for b in fast]
+    right = [(list(b["steps"]), b["post_hp"]) for b in legacy]
+    if left == right:
+        return None
+    first = next((i for i, (a, b) in enumerate(zip(left, right, strict=False)) if a != b),
+                 min(len(left), len(right)))
+    return Finding(None, "hp_labels", "divergence",
+                   {"first_battle": first, "fast": len(left), "legacy": len(right)})

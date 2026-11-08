@@ -51,18 +51,20 @@ def values(floor: int = 1) -> list[float]:
 
 
 class Harness:
-    def __init__(self, labeler: Any = None) -> None:
+    def __init__(self, labeler: Any = None, **options: Any) -> None:
         self.sealed: list[SealedSegment] = []
         self.assembler = FastSegmentAssembler(assembler_id="node-a", compiler_identity=COMPILER,
-                                              emit=self.sealed.append, terminal_labeler=labeler)
+                                              emit=self.sealed.append, terminal_labeler=labeler,
+                                              **options)
         self.request = 0
         self.steps: dict[str, int] = {}
 
-    def open(self, game: str, single_choice: str = "score") -> None:
+    def open(self, game: str, single_choice: str = "score", *,
+             start: dict | None = None, **extra: Any) -> None:
         self.assembler.open_episode({
             "schema": "stpd/rl-inference-3", "kind": "episode_open", "request_id": 1,
             "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
-            "single_choice": single_choice, "start": {"kind": "new_run"}})
+            "single_choice": single_choice, "start": start or {"kind": "new_run"}, **extra})
         self.steps[game] = 0
 
     def row(self, game: str, *, floor: int = 1, combat: bool = True) -> tuple[dict, bytes]:
@@ -96,7 +98,8 @@ class Harness:
                    "step_index": row["step_index"], "status": status}
         if status == "completed":
             message.update(receipt_sha256="c" * 64, terminal=None,
-                           public_facts={"act": 1, "floor": row["floor"], "hp": 50, "max_hp": 75})
+                           public_facts={"act": row.get("act", 1), "floor": row["floor"],
+                                         "hp": 50, "max_hp": 75})
         message.update(extra)
         self.assembler.step_outcome(message)
 
@@ -203,7 +206,8 @@ def test_terminal_seal_uses_labeler_and_unlabelled_terminal_is_truncated():
     first, second = h.sealed
     assert first.kind == "terminal" and first.trainable
     assert first.header["seal"]["terminal"] == {"result": "defeat", "class": 5, "reward": 0.0054}
-    assert labels[0]["max_floor"] == 5 and labels[0]["combat_end"] == [{"won": False}]
+    assert labels[0]["max_floor"] == 5 and labels[0]["acts"] == [1, 1, 1]
+    assert "combat_end" not in labels[0]  # never read before the fair-projection review
     assert second.kind == "truncated" and not second.trainable
     assert second.header["seal"]["truncation"]["reason"] == "terminal_unlabeled"
 

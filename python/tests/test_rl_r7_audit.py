@@ -233,3 +233,35 @@ def test_encoded_row_difference_names_the_tensor():
     finding = compare_encoded_row(corrupt, hashlib.sha256(corrupt).hexdigest(), row,
                                   validator=compiler)
     assert finding is not None and finding.category == "divergence"
+
+
+# ------------------------------------------------------- labels vs old chain
+def test_terminal_label_compared_game_by_game():
+    from stpd.rl.r7_audit import compare_terminal_label
+
+    label = {"result": "defeat", "class": 18, "reward": 0.5 * (18 / 48) ** 2 + 0.1}
+    legacy = {"class": 18, "reward": label["reward"], "typed_original": "c" * 64}
+    assert compare_terminal_label(label, legacy) is None
+    assert compare_terminal_label(None, None) is None
+    assert compare_terminal_label(label, None).category == "divergence"
+    assert compare_terminal_label({**label, "class": 50}, legacy).kind == "terminal_label"
+
+
+def _hp_row(step: int, combat: bool, hp: int, terminal: dict | None = None) -> dict:
+    return {"step_index": step, "in_combat": combat, "outcome": {
+        "status": "completed", "terminal": terminal,
+        "public_facts": {"act": 1, "floor": 3, "hp": hp, "max_hp": 80}}}
+
+
+def test_public_battle_hp_candidate_and_comparison():
+    from stpd.rl.r7_audit import compare_hp_labels, public_battle_hp
+
+    rows = [_hp_row(0, False, 80), _hp_row(1, True, 74), _hp_row(2, True, 70),
+            _hp_row(3, False, 70), _hp_row(4, True, 60), _hp_row(5, True, 0, {"result": "defeat"})]
+    battles = public_battle_hp(rows)
+    assert battles == [{"steps": [1, 2], "post_hp": 70}, {"steps": [4, 5], "post_hp": 0}]
+    # A game closed in combat without a natural terminal gives no final label.
+    assert public_battle_hp(rows[:5]) == [{"steps": [1, 2], "post_hp": 70}]
+    assert compare_hp_labels(battles, battles) is None
+    finding = compare_hp_labels(battles, [{"steps": [1, 2], "post_hp": 69}])
+    assert finding is not None and finding.detail == {"first_battle": 0, "fast": 2, "legacy": 1}

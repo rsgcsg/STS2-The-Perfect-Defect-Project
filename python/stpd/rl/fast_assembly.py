@@ -34,15 +34,23 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
 - a game closed other than by a labelled natural terminal seals its unsealed
   segments `truncated`: kept as original, counted, never given to SGD;
 - the environment's outcome fields are copied unchanged, including `combat_end`,
-  which no consumer reads before the Connector fair-projection review; the
-  terminal labeler is injected and is the only reader.
+  which nothing here reads before the Connector fair-projection review;
+- a natural terminal is labelled by `public_terminal_label` (lead decision
+  2026-11-09): the old chain's reward v2 and checked class from public facts
+  only; Bosses cleared = public act advances. A label refused by the class
+  check seals `truncated` (`terminal_label_refused`, counted). Missing
+  auxiliary labels never truncate: no auxiliary rows are produced here;
+- `episode_open.audit_retain_mu` (R7 games): every temporary mu such a game's
+  segments bind is archived (`mu_archive`, weights bound by sha256) before any
+  of its rows is scored with it, so the complete-chain replay can rescore.
 
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
 identity is the snapshot digest plus training generation, version and update
 count. Retained originals stay self-describing without the weights: every row
 records the actual q vector and the mu's value output. Replaying scores (R7)
-needs the weights; see `MuLedger.pin`.
+needs the weights: the service passes them in `MuHandoff.weights` (not part of
+the identity) and the assembler archives them for R7 games.
 """
 from __future__ import annotations
 
@@ -55,11 +63,49 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .fast_segment import MAX_ROWS, ROW_FORMAT, SealedSegment, encode_segment, sha256
+from .heads import checked_terminal_class
+from .reward import REWARD_SPEC
 
 OUTCOME_FIELDS = ("status", "reason", "receipt_sha256", "public_facts", "forced_steps",
                   "combat_end", "terminal")
 SINGLE_CHOICE = ("score", "omit")
 TerminalLabeler = Callable[[Mapping[str, Any]], "Mapping[str, Any] | None"]
+MuArchive = Callable[["MuHandoff"], None]
+TERMINAL_RESULTS = {"victory": "win", "defeat": "loss"}
+# Old chain: episode_reward divides by REWARD_SPEC finish_floors[ascension] and
+# checked_terminal_class accepts only the 48-floor (A0) class table, so only A0
+# terminals are labelled there; the inference side does not know the ascension.
+LABEL_FINISH_FLOOR = REWARD_SPEC["finish_floors"]["0"]
+
+
+def public_bosses_cleared(acts: list[int]) -> int:
+    """Old chain `boss_clearance` restricted to its public act-advance witness."""
+    cleared: set[int] = set()
+    previous = None
+    for act in acts:
+        if previous is not None and act == previous + 1 and previous not in cleared:
+            cleared.add(previous)
+        previous = act
+    return len(cleared)
+
+
+def public_terminal_label(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Reward v2 and its checked class from public facts (no combat_end, no Store).
+
+    Same arithmetic as `reward.episode_reward` + `heads.checked_terminal_class` on
+    the old chain: win = 1; loss = 0.5 * min(floor / 48, 1) ** 2 + 0.1 * Bosses,
+    with the Golden Compass floor-35 class told apart by the act advances.
+    Raises ValueError when the class check refuses the reward.
+    """
+    result = TERMINAL_RESULTS[context["result"]]
+    floor = context["max_floor"]
+    if result == "win":
+        reward = float(REWARD_SPEC["win"])
+    else:
+        reward = REWARD_SPEC["loss_floor_scale"] * min(floor / LABEL_FINISH_FLOOR, 1.0) ** 2
+        reward += REWARD_SPEC["boss_bonus"] * public_bosses_cleared(list(context["acts"]))
+    return {"class": checked_terminal_class(result=result, floor=floor, reward=reward),
+            "reward": reward}
 
 
 class AssemblyError(ValueError):
@@ -76,13 +122,17 @@ class MuHandoff:
     training_generation: str
     version: int
     updates: int
+    # The serialized weights of this snapshot, only needed to archive mu for R7
+    # games; not part of the identity.
+    weights: bytes | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if (not isinstance(self.snapshot_sha256, str) or len(self.snapshot_sha256) != 64
                 or any(c not in "0123456789abcdef" for c in self.snapshot_sha256)
                 or not isinstance(self.training_generation, str) or not self.training_generation
                 or type(self.version) is not int or type(self.updates) is not int
-                or self.version < 0 or self.updates < 0):
+                or self.version < 0 or self.updates < 0
+                or not (self.weights is None or isinstance(self.weights, bytes))):
             raise AssemblyError("invalid_mu_handoff")
 
     def identity(self) -> dict[str, Any]:
@@ -219,13 +269,13 @@ class _Game:
     sampling: dict[str, Any]
     single_choice: str
     start: dict[str, Any]
+    audit_retain_mu: bool = False
     segments: list[_Segment] = field(default_factory=list)
     inflight: RowPlan | None = None
     last_step: int = -1
     next_index: int = 0
     max_floor: int = 0
-    combat_end: list[Any] = field(default_factory=list)
-    last_public_facts: dict[str, Any] | None = None
+    acts: list[int] = field(default_factory=list)
     failure: str | None = None
     pending: tuple[dict[str, Any], bytes] | None = None
 
@@ -233,14 +283,18 @@ class _Game:
 class FastSegmentAssembler:
     def __init__(self, *, assembler_id: str, compiler_identity: dict[str, Any],
                  emit: Callable[[SealedSegment], None],
-                 terminal_labeler: TerminalLabeler | None = None,
-                 ledger: MuLedger | None = None, closed_memory: int = 65536) -> None:
+                 terminal_labeler: TerminalLabeler | None = public_terminal_label,
+                 ledger: MuLedger | None = None, closed_memory: int = 65536,
+                 mu_archive: MuArchive | None = None) -> None:
         if (not isinstance(assembler_id, str) or not assembler_id or len(assembler_id) > 64
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
         self.assembler_id, self.steps = assembler_id, MAX_ROWS
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.emit, self.terminal_labeler = emit, terminal_labeler
+        self.mu_archive = mu_archive
+        self.archived: set[str] = set()
+        self.archive_lock = threading.Lock()
         self.ledger = ledger or MuLedger()
         self.lock = threading.Lock()
         self.games: dict[str, _Game] = {}
@@ -251,7 +305,8 @@ class FastSegmentAssembler:
             "rows": 0, "aborted_rows": 0, "forced_steps": 0, "late_discarded": 0,
             "outcomes_without_row": 0, "segments": {"bootstrap": 0, "terminal": 0,
                                                     "truncated": 0},
-            "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0}
+            "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
+            "terminal_label_refused": 0, "mu_archived": 0}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -262,6 +317,10 @@ class FastSegmentAssembler:
         resolved and are never given to SGD, as the live queue is discarded on a
         CP-only restore.
         """
+        with self.lock:
+            audit_open = any(game.audit_retain_mu for game in self.games.values())
+        if audit_open:
+            self._archive(handoff)
         sealed: list[SealedSegment] = []
         with self.lock:
             latest = self.ledger.latest
@@ -288,6 +347,9 @@ class FastSegmentAssembler:
     # ------------------------------------------------------------ episodes
     def open_episode(self, message: Mapping[str, Any]) -> None:
         """`episode_open` exactly as received (rl-inference-3)."""
+        audit = message.get("audit_retain_mu", False)
+        if type(audit) is not bool:
+            raise AssemblyError("invalid_episode_open")
         with self.lock:
             instance = message.get("game_instance_id")
             if not isinstance(instance, str) or instance in self.games or instance in self.closed:
@@ -298,10 +360,19 @@ class FastSegmentAssembler:
                     or not isinstance(message.get("actor_id"), str)
                     or set(sampling.get("classes") or {}) != {"combat", "noncombat"}):
                 raise AssemblyError("invalid_episode_open")
-            self.games[instance] = _Game(instance, str(message["actor_id"]),
-                                         copy.deepcopy(dict(sampling)),
-                                         str(message["single_choice"]),
-                                         copy.deepcopy(dict(message["start"])))
+            start = copy.deepcopy(dict(message["start"]))
+            first_act = start.get("act", 1) if start.get("kind") == "from_save" else 1
+            if type(first_act) is not int or first_act < 1:
+                raise AssemblyError("invalid_episode_open")
+            game = _Game(instance, str(message["actor_id"]), copy.deepcopy(dict(sampling)),
+                         str(message["single_choice"]), start, audit, acts=[first_act])
+            if type(start.get("floor")) is int:
+                game.max_floor = start["floor"]
+            self.games[instance] = game
+            current = self.ledger.latest
+        if audit and current is not None:
+            # A mu offered from now on is archived by offer_mu before it can be bound.
+            self._archive(current)
 
     def begin_row(self, row: Mapping[str, Any], row_bytes: bytes) -> RowPlan:
         """Bind a request row to its segment and mu before the forward pass."""
@@ -325,6 +396,11 @@ class FastSegmentAssembler:
             current = game.segments[-1] if game.segments else None
             if current is not None and current.terminal is not None:
                 raise AssemblyError("row_after_terminal")
+            if (game.audit_retain_mu and (current is None or current.doomed is not None
+                                          or len(current.rows) >= self.steps)
+                    and self.ledger.current().snapshot_sha256 not in self.archived):
+                # Loud: an R7 game is never scored with a mu whose weights are not kept.
+                raise AssemblyError("audit_mu_not_archived")
             tail: TailPlan | None = None
             if (current is None or current.doomed is not None
                     or len(current.rows) >= self.steps):
@@ -446,11 +522,10 @@ class FastSegmentAssembler:
                 self.counters["forced_steps"] += forced or 0
                 facts = message.get("public_facts")
                 if isinstance(facts, Mapping):
-                    game.last_public_facts = copy.deepcopy(dict(facts))
                     if type(facts.get("floor")) is int:
                         game.max_floor = max(game.max_floor, facts["floor"])
-                if message.get("combat_end"):
-                    game.combat_end.extend(copy.deepcopy(list(message["combat_end"])))
+                    if type(facts.get("act")) is int:
+                        game.acts.append(facts["act"])
                 terminal = message.get("terminal")
                 if terminal is not None:
                     if segment is not game.segments[-1] or row is not segment.rows[-1]:
@@ -486,11 +561,17 @@ class FastSegmentAssembler:
                 last = segment is game.segments[-1]
                 if (last and reason == "terminal" and segment.doomed is None
                         and segment.terminal is not None and segment.completed()):
-                    label = self._label(game, segment)
-                    if label is not None:
-                        sealed.append(self._seal(game, segment, "terminal", terminal=label))
-                        continue
-                    segment.doomed = ("terminal_unlabeled", segment.terminal)
+                    try:
+                        label = self._label(game, segment)
+                    except ValueError as error:
+                        self.counters["terminal_label_refused"] += 1
+                        segment.doomed = ("terminal_label_refused", str(error))
+                    else:
+                        if label is not None:
+                            sealed.append(self._seal(game, segment, "terminal",
+                                                     terminal=label))
+                            continue
+                        segment.doomed = ("terminal_unlabeled", segment.terminal)
                 cause = segment.doomed or (reason, game.failure or reason)
                 sealed.append(self._seal(game, segment, "truncated",
                                          truncation={"reason": cause[0], "detail": cause[1]}))
@@ -547,8 +628,7 @@ class FastSegmentAssembler:
         label = self.terminal_labeler({
             "game_instance_id": game.game_instance_id, "result": segment.terminal,
             "start": copy.deepcopy(game.start), "max_floor": game.max_floor,
-            "public_facts": copy.deepcopy(game.last_public_facts),
-            "combat_end": copy.deepcopy(game.combat_end)})
+            "acts": list(game.acts)})
         if label is None:
             return None
         if (set(label) != {"class", "reward"} or type(label["class"]) is not int
@@ -583,6 +663,7 @@ class FastSegmentAssembler:
             "segment_id": segment.segment_id, "assembler_id": self.assembler_id,
             "game_instance_id": game.game_instance_id, "actor_id": game.actor_id,
             "segment_index": segment.index, "start": game.start,
+            "audit_retain_mu": game.audit_retain_mu,
             "single_choice": game.single_choice, "sampling": game.sampling,
             "mu": segment.mu.identity(), "compiler_identity": self.compiler_identity,
             "rows": segment.rows,
@@ -597,6 +678,20 @@ class FastSegmentAssembler:
             by_reason = self.counters["truncated_by_reason"]
             by_reason[truncation["reason"]] = by_reason.get(truncation["reason"], 0) + 1
         return sealed
+
+    def _archive(self, handoff: MuHandoff) -> None:
+        """Durably keep one mu's weights; outside `self.lock`, before it is bound."""
+        with self.archive_lock:
+            if handoff.snapshot_sha256 in self.archived:
+                return
+            if self.mu_archive is None:
+                raise AssemblyError("audit_mu_archive_unconfigured")
+            if handoff.weights is None:
+                raise AssemblyError("audit_mu_weights_missing")
+            self.mu_archive(handoff)
+            with self.lock:
+                self.archived.add(handoff.snapshot_sha256)
+                self.counters["mu_archived"] += 1
 
     def _emit(self, sealed: list[SealedSegment]) -> None:
         for segment in sealed:

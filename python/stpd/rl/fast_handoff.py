@@ -28,6 +28,7 @@ originals; recovery is CP-only (the live queue is discarded, never re-offered).
 """
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
@@ -37,7 +38,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-from .fast_segment import SealedSegment, decode_segment, sha256
+from .fast_segment import SealedSegment, canonical_json, decode_segment, sha256
 
 HANDOFF_SCHEMA = "stpd/rl-fast-segment-handoff-1"
 SUFFIX = ".stfs"
@@ -55,6 +56,24 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _durable_write(target: Path, data: bytes, conflict: str) -> None:
+    """Temporary file, fsync, rename, directory fsync; never overwrites."""
+    temporary = target.with_name("." + target.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(descriptor, view):]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if target.exists():
+        temporary.unlink()
+        raise HandoffError(conflict)
+    os.rename(temporary, target)
+    _fsync_directory(target.parent)
+
+
 class DurableSegmentWriter:
     """Immutable local originals; an existing file is never overwritten."""
 
@@ -68,21 +87,58 @@ class DurableSegmentWriter:
 
     def write(self, segment: SealedSegment) -> Path:
         target = self.path(segment)
-        temporary = target.with_name("." + target.name + ".tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            view = memoryview(segment.data)
-            while view:
-                view = view[os.write(descriptor, view):]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if target.exists():
-            temporary.unlink()
-            raise HandoffError("segment_original_already_exists")
-        os.rename(temporary, target)
-        _fsync_directory(target.parent)
+        _durable_write(target, segment.data, "segment_original_already_exists")
         return target
+
+
+MU_ARCHIVE_SCHEMA = "stpd/rl-fast-mu-archive-1"
+
+
+class DurableMuArchive:
+    """Weights of the temporary mu an R7 game used (`episode_open.audit_retain_mu`).
+
+    `<snapshot>.weights` holds the bytes the learner pushed; `<snapshot>.json`
+    (written last, the commit marker) binds them by sha256 to the mu identity.
+    Archiving the same mu again is a no-op; a different identity or byte digest
+    under the same snapshot is a loud conflict. Kept with the R7 originals.
+    """
+
+    def __init__(self, root: Path | str) -> None:
+        self.root = Path(root) / "mu"
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def manifest(self, handoff: Any) -> bytes:
+        weights = handoff.weights
+        if not isinstance(weights, bytes):
+            raise HandoffError("mu_archive_weights_missing")
+        return canonical_json({"schema": MU_ARCHIVE_SCHEMA, "mu": handoff.identity(),
+                               "weights_sha256": sha256(weights), "size": len(weights)})
+
+    def __call__(self, handoff: Any) -> None:
+        manifest = self.manifest(handoff)
+        weights_path = self.root / (handoff.snapshot_sha256 + ".weights")
+        manifest_path = self.root / (handoff.snapshot_sha256 + ".json")
+        if manifest_path.exists():
+            if manifest_path.read_bytes() != manifest:
+                raise HandoffError("mu_archive_conflict")
+            self.read(handoff.snapshot_sha256)
+            return
+        if not weights_path.exists():
+            _durable_write(weights_path, handoff.weights, "mu_archive_conflict")
+        elif sha256(weights_path.read_bytes()) != sha256(handoff.weights):
+            raise HandoffError("mu_archive_conflict")
+        _durable_write(manifest_path, manifest, "mu_archive_conflict")
+
+    def read(self, snapshot_sha256: str) -> tuple[dict[str, Any], bytes]:
+        """(mu identity, weights) for the R7 replay; verified, never repaired."""
+        manifest = json.loads((self.root / (snapshot_sha256 + ".json")).read_bytes())
+        weights = (self.root / (snapshot_sha256 + ".weights")).read_bytes()
+        if (manifest.get("schema") != MU_ARCHIVE_SCHEMA
+                or manifest["mu"]["snapshot_sha256"] != snapshot_sha256
+                or manifest["weights_sha256"] != sha256(weights)
+                or manifest["size"] != len(weights)):
+            raise HandoffError("mu_archive_mismatch")
+        return manifest["mu"], weights
 
 
 class ShmSegmentSender:
