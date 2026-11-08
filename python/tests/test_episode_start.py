@@ -20,6 +20,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.episode_start import (
     SAVE_START_SCHEMA,
     EpisodeStart,
+    decode_episode_starts,
     require_first_frame_start,
     require_loaded_identity,
 )
@@ -42,6 +43,13 @@ def _save_start(**changes):
         "lineage": {"initial_progress_sha256": "progress", "character": "Defect",
                     "ascension": 0, "parent_intent_id": "intent-parent",
                     "parent_run_id": "run-parent"},
+        # The parent game's own Host episode_identity (seeded, progress replayed).
+        "parent_identity": {"adapter_runtime_instance_id": "runtime-parent",
+                            "episode_provenance": {"origin": {"kind": "seed"},
+                                                   "verdict": "provenance_pass",
+                                                   "actual_seed": "seed"},
+                            "initial_progress": {"progress_sha256": "progress",
+                                                 "run_unlock_state_matches": True}},
     }
     for path, item in changes.items():
         target = value
@@ -96,11 +104,41 @@ def test_new_run_is_todays_seeded_reset_and_wire_starts_match_both_contracts():
     (_save_start(**{"lineage.initial_progress_sha256": KeyError}), "save_lineage_invalid"),
     (_save_start(**{"lineage.ascension": "0"}), "save_lineage_invalid"),
     (_save_start(**{"lineage.world_key": "x"}), "save_lineage_invalid"),
+    (_save_start(**{"parent_identity": KeyError}), "save_start_invalid"),
+    (_save_start(**{"parent_identity": None}), "save_parent_identity_invalid"),
+    (_save_start(**{"parent_identity.adapter_runtime_instance_id": "runtime-other"}),
+     "save_parent_identity_changed"),
+    (_save_start(**{"parent_identity.episode_provenance.actual_seed": "other"}),
+     "save_parent_identity_changed"),
+    (_save_start(**{"parent_identity.episode_provenance.verdict": "provenance_incomplete"}),
+     "save_parent_identity_changed"),
+    # Lineage and parent record cross-checked: the configured digest is not trusted alone.
+    (_save_start(**{"lineage.initial_progress_sha256": "other"}),
+     "save_parent_progress_unproved"),
+    # A parent that was itself loaded has no replayed proof: chained loads refused.
+    (_save_start(**{"parent_identity.initial_progress": None}),
+     "save_parent_progress_unproved"),
 ])
 def test_bad_save_start_is_typed_before_any_process(value, code):
     with pytest.raises(BoundaryError) as raised:
         EpisodeStart.decode(value, seed="seed")
     assert raised.value.code == code
+
+
+def test_episode_starts_are_decoded_once_with_their_progress_lineage():
+    starts = decode_episode_starts({"seed": _save_start()}, initial_progress=PROGRESS)
+    assert starts["seed"].kind == "from_save"
+    assert decode_episode_starts({}, initial_progress=None) == {}
+    for value, progress, code in (
+            ([], PROGRESS, "invalid_episode_starts"),
+            ({"": _save_start()}, PROGRESS, "invalid_episode_starts"),
+            ({"other": _save_start()}, PROGRESS, "save_start_seed_changed"),
+            ({"seed": _save_start()}, {**PROGRESS, "progress_sha256": "other"},
+             "loaded_initial_progress_lineage_changed"),
+            ({"seed": _save_start()}, None, "loaded_initial_progress_lineage_changed")):
+        with pytest.raises(BoundaryError) as raised:
+            decode_episode_starts(value, initial_progress=progress)
+        assert raised.value.code == code
 
 
 def _loaded_identity(**origin_changes):
@@ -167,11 +205,20 @@ def test_fast_chain_first_frame_start_must_name_the_offered_start():
             require_first_frame_start(observed, start=loaded)
 
 
+# Captured by running this fake against the pre-S4 executor (base 6c517cff).
+_OLD_CHAIN_ROW_KEYS = {
+    "cleanup_accepted", "detail_seconds", "detail_timing_schema", "elapsed_seconds",
+    "episode_identity", "finish", "host_kind", "host_service_instance_id", "host_service_pid",
+    "intent_id", "phase_seconds", "phase_timing_schema", "preservation_store",
+    "read_concurrency", "reason", "reset", "seed", "selection_id", "settling_timeout_ms",
+    "status", "world_mutation_offered"}
+
+
 class _Stop(BoundaryError):
     pass
 
 
-def _executor(tmp_path, monkeypatch, *, starts, identity, load=None):
+def _executor(tmp_path, monkeypatch, *, starts, identity, load=None, reply=None):
     """The real executor path through the identity gate; stops before the Runtime."""
     from spireagent.workbench import managed_evaluation as backend
 
@@ -179,6 +226,7 @@ def _executor(tmp_path, monkeypatch, *, starts, identity, load=None):
     executor.adapter_environment_keys = ()
     executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
         "host_pin": {}, "initial_progress": dict(PROGRESS), "episode_starts": starts}
+    executor.episode_starts = decode_episode_starts(starts, initial_progress=PROGRESS)
     executor.preparation = {"store": "fixture"}
     executor.read_concurrency = 1
     executor.settling_timeout_ms = None
@@ -199,14 +247,22 @@ def _executor(tmp_path, monkeypatch, *, starts, identity, load=None):
         calls.append(("admin", route, copy.deepcopy(body)))
         if load is not None:
             raise load
-        return {"result": {"type": "load_map_result", "game_continuity_id": "game-new"}}
+        if reply is not None:
+            return reply
+        return {"result": {"type": "load_map_result", "game_continuity_id": "game-new",
+                           "source": {"kind": "map_continue_save", "save": body["save"]}}}
 
     manager = SimpleNamespace(reset=reset, _admin=admin,
                               request=lambda _: {"result": {"identity": identity}},
                               close_host=lambda: {"result": {"exit": {"code": 0}}})
     launch = SimpleNamespace(pid=1, process=SimpleNamespace(wait=lambda **_: 0))
+
+    def launched(**_):
+        calls.append(("launch",))
+        return launch
+
     executor.api = SimpleNamespace(
-        launch_managed_host_service=lambda **_: launch,
+        launch_managed_host_service=launched,
         ManagedHostServiceClient=SimpleNamespace(from_attachment=lambda _: SimpleNamespace(
             ready=lambda: ready)),
         ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
@@ -233,8 +289,8 @@ def test_executor_loads_the_save_instead_of_reset_and_records_lineage_progress(
                                    identity=_loaded_identity())
     # Reached the next step (model/Runtime) only after the loaded-world gate passed.
     assert (row["status"], row["reason"]) == ("unknown", "stopped_after_identity_gate")
-    assert [call[0] for call in calls] == ["admin"]
-    _, route, body = calls[0]
+    assert [call[0] for call in calls] == ["launch", "admin"]
+    _, route, body = calls[1]
     assert route == "/v1/admin/load-map"
     assert set(body) == {"save", "expected_runtime_instance_id", "expected_game_continuity_id"}
     assert body["save"] == _save_start()["save"] and body["expected_game_continuity_id"] is None
@@ -251,13 +307,17 @@ def test_executor_without_save_start_keeps_the_seeded_reset(tmp_path, monkeypatc
                                    "run_unlock_state_matches": True}}
     row, calls, stored = _executor(tmp_path, monkeypatch, starts={}, identity=seeded)
     assert row["reason"] == "stopped_after_identity_gate"
-    assert [call[0] for call in calls] == ["reset"]
+    assert [call[0] for call in calls] == ["launch", "reset"]
+    # Exactly today's reset call, argument for argument.
+    assert calls[1][1:] == (("seed",), {"expected_runtime_instance_id": "runtime",
+                                        "expected_game_continuity_id": None,
+                                        "initial_progress": PROGRESS})
     assert list(stored)[:1] == ["managed-reset.json"]
-    assert "episode_start" not in row  # old-chain rows stay byte-identical
+    # Old-chain rows keep exactly the pre-S4 key set (captured from the base executor).
+    assert set(row) == _OLD_CHAIN_ROW_KEYS
 
 
 @pytest.mark.parametrize("start,code", [
-    (_save_start(**{"save.seed": "other"}), "save_start_seed_changed"),
     (_save_start(**{"lineage.ascension": 10}), "save_start_scenario_changed"),
     (_save_start(**{"lineage.character": "Ironclad"}), "save_start_scenario_changed"),
 ])
@@ -267,7 +327,53 @@ def test_bad_save_start_is_not_started_without_any_world_mutation(
                               identity=_loaded_identity())
     assert (row["status"], row["reason"], row["world_mutation_offered"]) == (
         "not_started", code, False)
-    assert calls == []
+    # Refused before any Host process: nothing launched, so nothing to clean up.
+    assert calls == [] and row["cleanup_accepted"] is True
+
+
+def test_bad_episode_starts_fail_the_executor_before_any_game(tmp_path, monkeypatch):
+    with pytest.raises(BoundaryError, match="save_start_seed_changed"):
+        _executor(tmp_path, monkeypatch, starts={"seed": _save_start(**{"save.seed": "x"})},
+                  identity=_loaded_identity())
+
+
+@pytest.mark.parametrize("reply", [
+    {"result": {"type": "reset_result"}},
+    {"result": {"type": "load_map_result", "game_continuity_id": "g",
+                "source": {"kind": "map_continue_save", "save": {"sha256": "d" * 64}}}},
+    {"result": {"type": "load_map_result", "source": {"save": {"sha256": SAVE_SHA}}}},
+])
+def test_unconfirmed_load_reply_is_unknown_and_never_retried(tmp_path, monkeypatch, reply):
+    row, calls, _ = _executor(tmp_path, monkeypatch, starts={"seed": _save_start()},
+                              identity=_loaded_identity(), reply=reply)
+    assert (row["status"], row["reason"]) == ("unknown", "managed_service_load_map_unconfirmed")
+    assert [call[0] for call in calls] == ["launch", "admin"]
+
+
+def test_named_load_map_prefers_a_consumer_method_and_refreshes_the_session():
+    from spireagent.workbench.local_environment import (
+        _ManagedServiceEnvironment,
+        managed_load_map,
+    )
+
+    seen = []
+
+    def named(**body):
+        seen.append(body)
+        return {"result": {"type": "load_map_result", "game_continuity_id": "g",
+                           "source": {"save": body["save"]}}}
+
+    save = _save_start()["save"]
+    managed_load_map(SimpleNamespace(load_map=named), save=save,
+                     expected_runtime_instance_id="r", expected_game_continuity_id=None)
+    assert seen == [{"save": save, "expected_runtime_instance_id": "r",
+                     "expected_game_continuity_id": None}]
+    ready = {"adapter_runtime_instance_id": "r", "episode": {"game_continuity_id": None}}
+    refreshed = []
+    session = object.__new__(_ManagedServiceEnvironment)
+    session._manager, session.ready = SimpleNamespace(load_map=named), ready
+    session._client = SimpleNamespace(ready=lambda: refreshed.append(1) or ready)
+    assert session.load_map(save)["game_continuity_id"] == "g" and refreshed == [1]
 
 
 def test_lost_load_reply_is_unknown_and_never_retried(tmp_path, monkeypatch):
@@ -275,7 +381,7 @@ def test_lost_load_reply_is_unknown_and_never_retried(tmp_path, monkeypatch):
     row, calls, _ = _executor(tmp_path, monkeypatch, starts={"seed": _save_start()},
                               identity=_loaded_identity(), load=lost)
     assert (row["status"], row["reason"]) == ("unknown", "managed_host_reply_unknown")
-    assert [call[0] for call in calls] == ["admin"]
+    assert [call[0] for call in calls] == ["launch", "admin"]
 
 
 def test_loaded_world_with_a_different_save_is_unknown_with_its_identity_kept(

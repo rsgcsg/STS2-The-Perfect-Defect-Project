@@ -76,6 +76,27 @@ def _lineage(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _parent(value: Any, *, save: Mapping[str, Any], lineage: Mapping[str, Any]) -> None:
+    """The parent game's own Host ``episode_identity`` must back the save's lineage.
+
+    The parent must be the runtime the save names, a passed seeded provenance of the
+    same seed, and a replayed progress proof equal to the lineage digest. A parent that
+    was itself loaded (no replayed proof) is refused: chained loads are not proved yet.
+    """
+    if not isinstance(value, Mapping):
+        reject("save_parent_identity_invalid")
+    provenance = value.get("episode_provenance")
+    if (value.get("adapter_runtime_instance_id") != save["parent_runtime_instance_id"]
+            or not isinstance(provenance, Mapping)
+            or provenance.get("verdict") != "provenance_pass"
+            or provenance.get("actual_seed") != save["seed"]):
+        reject("save_parent_identity_changed")
+    progress = value.get("initial_progress")
+    if (not isinstance(progress, Mapping) or progress.get("run_unlock_state_matches") is not True
+            or progress.get("progress_sha256") != lineage["initial_progress_sha256"]):
+        reject("save_parent_progress_unproved")
+
+
 @dataclass(frozen=True)
 class EpisodeStart:
     """``new_run`` (seeded reset) or ``from_save`` (fresh-process map load)."""
@@ -97,13 +118,15 @@ class EpisodeStart:
         if value is None:
             return cls.new_run(seed)
         if (not isinstance(value, Mapping) or value.get("schema") != SAVE_START_SCHEMA
-                or set(value) != {"schema", "save", "lineage"}):
+                or set(value) != {"schema", "save", "lineage", "parent_identity"}):
             reject("save_start_invalid")
         save = _host_save(value["save"])
         if save["seed"] != seed:
             # A save's descendants keep its seed (held-out and pairing bookkeeping).
             reject("save_start_seed_changed")
-        return cls("from_save", seed, save, _lineage(value["lineage"]))
+        lineage = _lineage(value["lineage"])
+        _parent(value["parent_identity"], save=save, lineage=lineage)
+        return cls("from_save", seed, save, lineage)
 
     @property
     def fresh_native_required(self) -> bool:
@@ -157,6 +180,28 @@ class EpisodeStart:
                 "expected_game_continuity_id": expected_game_continuity_id}
 
 
+def require_start_progress(start: EpisodeStart,
+                           initial_progress: Mapping[str, Any] | None) -> None:
+    """Before any offer, both chains: a save's lineage names this run's progress."""
+    if start.lineage is None:
+        return
+    if (not isinstance(initial_progress, Mapping)
+            or start.lineage["initial_progress_sha256"] != initial_progress.get(
+                "progress_sha256")):
+        reject("loaded_initial_progress_lineage_changed")
+
+
+def decode_episode_starts(value: Any, *,
+                          initial_progress: Mapping[str, Any] | None) -> dict[str, EpisodeStart]:
+    """The frozen ``episode_starts`` (slot seed -> save start), checked once, up front."""
+    if not isinstance(value, Mapping) or any(not _text(seed) for seed in value):
+        reject("invalid_episode_starts")
+    starts = {seed: EpisodeStart.decode(item, seed=seed) for seed, item in value.items()}
+    for start in starts.values():
+        require_start_progress(start, initial_progress)
+    return starts
+
+
 def lineage_progress(start: EpisodeStart, initial_progress: Mapping[str, Any],
                      reported: Any) -> dict[str, Any]:
     """Progress proof of a loaded world: the save lineage, never a guessed Host value.
@@ -166,8 +211,7 @@ def lineage_progress(start: EpisodeStart, initial_progress: Mapping[str, Any],
     a matching proof: a loaded world never claims a different progress.
     """
     assert start.lineage is not None and start.save is not None
-    if start.lineage["initial_progress_sha256"] != initial_progress["progress_sha256"]:
-        reject("loaded_initial_progress_lineage_changed")
+    require_start_progress(start, initial_progress)
     if reported is not None and (
             not isinstance(reported, Mapping)
             or reported.get("run_unlock_state_matches") is not True
