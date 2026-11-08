@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..f47e430
+index 0000000..82fa961
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,312 @@
+@@ -0,0 +1,343 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1544,6 +1544,7 @@ index 0000000..f47e430
 +            LiveSubscribersFlip();
 +            LiveDelegateFlip();
 +            LiveListenerVariablesFlip();
++            JsonLineBytes();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -1804,6 +1805,36 @@ index 0000000..f47e430
 +            }
 +        }
 +        SetEnabled(true);
++    }
++
++    // fast_chain direct UTF-8 response writer: the same bytes as the original
++    // Console.Out.WriteLine(JsonSerializer.Serialize(data, JsonOpts)) path.
++    static void JsonLineBytes()
++    {
++        var options = (JsonSerializerOptions)Simulator.Assembly.GetType("Sts2Headless.Program")!
++            .GetField("JsonOpts", Flags)!.GetValue(null)!;
++        void Same(Dictionary<string, object?> value, string label)
++        {
++            var stream = new MemoryStream();
++            Sts2Headless.NativeJsonLineWriter.Write(stream, value, options, "\n");
++            byte[] want = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value, options) + "\n");
++            Check(stream.ToArray().SequenceEqual(want), "direct UTF-8 bytes differ: " + label);
++        }
++        SetEnabled(false);
++        var state = (Dictionary<string, object?>)Call("DetectDecisionPoint")!;
++        Same(state, "decision state");
++        Same(new() { ["type"] = "x", ["text"] = "造成 6 点伤害。<b>\"q\"</b>&\u2028", ["lone"] = "\ud800", ["pair"] = "\ud83d\ude00", ["skip"] = null,
++            ["n"] = new object?[] { 1, -2L, 0.1, 1e300, double.Epsilon, 3.5m, true, null },
++            ["nested"] = new Dictionary<string, object?> { ["a"] = new List<Dictionary<string, object?>> { new() { ["b"] = "c" } } } }, "edge values");
++        Same(new() { ["type"] = "small" }, "buffer reuse after a large response");
++        Same(state, "large again");
++        string deep = "x"; object nested = deep;
++        for (int i = 0; i < 70; i++) nested = new Dictionary<string, object?> { ["d"] = nested };
++        bool originalThrew = false, directThrew = false;
++        try { JsonSerializer.Serialize(nested, options); } catch (JsonException) { originalThrew = true; }
++        try { Sts2Headless.NativeJsonLineWriter.Write(new MemoryStream(), nested, options, "\n"); } catch (JsonException) { directThrew = true; }
++        Check(originalThrew && directThrew, "depth limit must fail the same way");
++        Same(new() { ["type"] = "after failure" }, "writer usable after a failed response");
 +    }
 +}
 diff --git a/setup.sh b/setup.sh
@@ -6048,6 +6079,71 @@ index 0000000..fe6792d
 +        && refs==string.Join(",",Selected.Select(NativeObjectIdentity.Get))
 +            ? null : "The exact native hand selected set cannot be confirmed";
 +}
+diff --git a/src/Sts2Headless/NativeJsonLineWriter.cs b/src/Sts2Headless/NativeJsonLineWriter.cs
+new file mode 100644
+index 0000000..a1b262c
+--- /dev/null
++++ b/src/Sts2Headless/NativeJsonLineWriter.cs
+@@ -0,0 +1,59 @@
++using System.Buffers;
++using System.Text;
++using System.Text.Json;
++
++namespace Sts2Headless;
++
++/// <summary>
++/// fast_chain response writer: serializes one response straight to UTF-8 into a
++/// reused buffer and writes it to the standard output stream, instead of building a
++/// large UTF-16 string per response and re-encoding it through Console.Out.
++/// The bytes are the same JSON text JsonSerializer.Serialize produces with the same
++/// options (same encoder, depth and indentation), followed by Console.Out.NewLine.
++/// Off (the default) keeps the original string path unchanged.
++/// </summary>
++public static class NativeJsonLineWriter
++{
++    private static readonly ArrayBufferWriter<byte> Buffer = new(1 << 17);
++    private static Utf8JsonWriter? _writer;
++    private static JsonSerializerOptions? _writerOptionsFor;
++    private static Stream? _stdout;
++
++    /// <summary>Appends the JSON text of <paramref name="value"/> plus <paramref name="newline"/> to <paramref name="target"/>.</summary>
++    public static void Write(Stream target, object? value, JsonSerializerOptions options, string newline)
++    {
++        Buffer.ResetWrittenCount();
++        if (_writer == null || !ReferenceEquals(_writerOptionsFor, options))
++        {
++            _writer?.Dispose();
++            _writer = new Utf8JsonWriter(Buffer, new JsonWriterOptions
++            {
++                Encoder = options.Encoder,
++                Indented = options.WriteIndented,
++                MaxDepth = options.MaxDepth == 0 ? 64 : options.MaxDepth,
++                SkipValidation = true,
++            });
++            _writerOptionsFor = options;
++        }
++        else _writer.Reset(Buffer);
++        JsonSerializer.Serialize(_writer, value, value?.GetType() ?? typeof(object), options);
++        _writer.Flush();
++        int count = Encoding.UTF8.GetByteCount(newline);
++        Encoding.UTF8.GetBytes(newline, Buffer.GetSpan(count));
++        Buffer.Advance(count);
++        target.Write(Buffer.WrittenSpan);
++        target.Flush();
++    }
++
++    /// <summary>Writes one response line to standard output in order with every Console.Out writer.</summary>
++    public static void WriteStdout(object? value, JsonSerializerOptions options)
++    {
++        TextWriter console = Console.Out;
++        lock (console)
++        {
++            console.Flush();
++            _stdout ??= Console.OpenStandardOutput();
++            Write(_stdout, value, options, console.NewLine);
++        }
++    }
++}
 diff --git a/src/Sts2Headless/NativeKaiserDeathPresentation.cs b/src/Sts2Headless/NativeKaiserDeathPresentation.cs
 new file mode 100644
 index 0000000..0a4ee85
@@ -9196,7 +9292,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..c5d9c02 100644
+index 800f139..f07a21d 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -9309,6 +9405,18 @@ index 800f139..c5d9c02 100644
                  );
  
              case "action":
+@@ -232,6 +289,11 @@ class Program
+ 
+     static void WriteLine(Dictionary<string, object?> data)
+     {
++        if (NativePatchStateCache.Enabled)
++        {
++            NativeJsonLineWriter.WriteStdout(data, JsonOpts); // fast_chain: direct UTF-8, same bytes
++            return;
++        }
+         Console.Out.WriteLine(JsonSerializer.Serialize(data, JsonOpts));
+         Console.Out.Flush();
+     }
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
 index 6b9de4a..8069b8f 100644
 --- a/src/Sts2Headless/RunSimulator.cs

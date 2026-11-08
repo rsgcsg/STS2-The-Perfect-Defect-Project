@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "177378d285aff5746a29057aae1e891ea51718f01061b389792105e753a1693f",
-    "artifact_sha256": "e8f9ce9d017b59400603d4dc782693c5b76f76f2d04e3f329f22d0bf25458f0c",
-    "artifact_mvid": "0e9e78f6-0a66-4d39-96dc-0aea7be4dee0",
+    "source_patch_sha256": "3f783330dbd7e517bd5253bc7dd4cf655686686122aacc28fa7732c3d8829824",
+    "artifact_sha256": "1ce9509abf824b90b02094d4c57698bb1afd36ba674e01e81a1ea1bd232e3b1a",
+    "artifact_mvid": "281d620c-6fba-417e-bfb7-c70d058db7d2",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "7573daa446337e679ced094370722cc38e73d75350788c2f8da76e7d50062498",
-        "artifact_sha256": "0d49180e9d825024f99bc8b42a295478057ecc27e2cb72c52384e392b316407e",
-        "artifact_mvid": "30e1853f-42cb-4416-8fe6-4b45dd4d2eca",
+        "source_patch_sha256": "4c221bcffad0834b93a30a5fcb6948a951e36bb8f32a9344b133e85b8ef88925",
+        "artifact_sha256": "b54dece25a76bbdcb5b04e1d4dc17ba3f52da4b1e0f4eaa46a68482d7b70552a",
+        "artifact_mvid": "27a2cd01-4cb7-4adf-8439-fdf1bf908153",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -523,6 +523,13 @@
       "risk": "medium",
       "effect": "Default off; only the Managed entry point enables it (STS2_HEADLESS_FAST_CHAIN=1, accepted once per process). Memoizes only the metadata/patch-state part of native read qualification, keyed by the patch-owner generation sampled before each command and after initialization; live object facts (subscribers, listeners, variable owners and delegates, field values) are read every time. Off is the original live check byte for byte; Mod and Reference Host never enable it.",
       "regression": "patch-cache-tests/PatchCacheTests.csproj (58 checks: generation invalidation, thread drop, off-is-live, single Configure, and live-fact flips for run-hook subscribers, a foreign calculated-variable delegate and Weak/Vulnerable variable owners); managed-reward-native.test.mjs enable-site check."
+    },
+    {
+      "id": "fast_chain_direct_utf8_response_writer",
+      "kind": "native_response_serialization",
+      "risk": "low",
+      "effect": "Under the same fast_chain switch only: each response is serialized with the same JsonSerializerOptions straight to UTF-8 in a reused buffer and written to the standard output stream under the Console.Out lock, instead of a per-response UTF-16 string re-encoded by Console.Out. Same JSON bytes and newline; off is the original path.",
+      "regression": "patch-cache-tests JsonLineBytes (decision state, escaping/surrogates/numbers/nesting, buffer reuse, same depth failure); Friday paired replay byte-equal."
     }
   ],
   "admission": {
