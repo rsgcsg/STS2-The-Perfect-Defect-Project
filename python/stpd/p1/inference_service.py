@@ -687,6 +687,9 @@ class FastInferenceService:
             sampling = self.sampling.get(str(row.get("game_instance_id")))
             item = _V3Row(link, packet, index, row, bytes(binary[offset:offset + length]),
                           sampling or {})
+            if type(row.get("catalog_len")) is not int or not 1 <= row["catalog_len"] <= 4096:
+                self._refuse(item, "IDENTITY_MISMATCH", abort=False)
+                continue
             if self.stopping.is_set():
                 self._refuse(item, "SERVICE_STOPPING", abort=False)
                 continue
@@ -751,7 +754,14 @@ class FastInferenceService:
             for index, code in failed.items():
                 self._refuse(batch[index], code)
             if group is not None:
-                self._forward(good, group, lengths)
+                try:
+                    self._forward(good, group, lengths)
+                except Exception as error:  # loud: refuse the chunk, keep serving
+                    print(json.dumps({"rl_inference_3_forward_failed": type(error).__name__,
+                                      "message": str(error)[:200]}), file=sys.stderr, flush=True)
+                    for item in good:
+                        if item.packet.results[item.index] is None:
+                            self._refuse(item, "NONFINITE_SCORES")
 
     def _forward(self, rows: list[_V3Row], group: Any, lengths: list[int]) -> None:
         started = time.perf_counter()
@@ -812,7 +822,12 @@ class FastInferenceService:
         row, plan, sampling = item.row, item.plan, item.sampling
         decision_class = "combat" if row["in_combat"] else "noncombat"
         policy = sampling["classes"][decision_class]
-        _, behavior = distribution(output.scores, policy["temperature"], policy["uniform_mix"])
+        try:
+            _, behavior = distribution(output.scores, policy["temperature"],
+                                       policy["uniform_mix"])
+        except ValueError:
+            self._refuse(item, "NONFINITE_SCORES")
+            return
         selected = draw(behavior, sampling["seed"], row["consumption_id"])
         scored = {"request_id": row["request_id"], "game_instance_id": row["game_instance_id"],
                   "catalog_sha256": row["catalog_sha256"], "status": "scored",

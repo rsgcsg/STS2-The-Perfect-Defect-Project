@@ -78,7 +78,8 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
         ("input_spec", source.get("input_spec") == encoder.identity["input_spec"]),
         ("catalog", source.get("catalog") == source["observation"]["catalog"]),
         ("catalog_sha256", message.get("catalog_sha256") == encoded.catalog_sha256),
-        ("catalog_len", message.get("catalog_len") == encoded.catalog_len),
+        ("catalog_len", message.get("catalog_len") == encoded.catalog_len
+                        and encoded.catalog_len >= 1),
         ("in_combat", message.get("in_combat") is encoded.in_combat),
         ("floor", type(message.get("floor")) is int and (
             encoded.floor is None or message.get("floor") == encoded.floor)),

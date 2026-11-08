@@ -72,6 +72,9 @@ class RowsScorer:
         out: list[RowScores | None] = []
         for row, count in enumerate(catalog_lengths):
             values = scores_cpu[row, :count]
+            if count < 1:  # an empty catalog is never a decision
+                out.append(None)
+                continue
             # Same finiteness rule as forward_rl4(check_finite=True): real catalog
             # positions finite, outcome logits never NaN or +inf, hp finite.
             if (not bool(torch.isfinite(values).all()) or bool(logits_cpu[row].isnan().any())

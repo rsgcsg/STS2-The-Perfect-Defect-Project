@@ -375,14 +375,16 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
         rows = []
         for request_id, game, data, catalog_len in ((3, "g1", garbage, 2),
                                                     (4, "nope", encoded.row, 2),
-                                                    (5, "g1", encoded.row, 5)):
+                                                    (5, "g1", encoded.row, 5),
+                                                    (6, "g1", encoded.row, 0)):
             rows.append({"request_id": request_id, "game_instance_id": game, "step_index": 0,
                          "consumption_id": "c", "catalog_len": catalog_len,
                          "catalog_sha256": encoded.catalog_sha256,
                          "observation_sha256": encoded.observation_sha256, "in_combat": False,
                          "floor": 0, "payload": {"offset": 0, "length": len(data),
                                                  "row_sha256": digest(data)}})
-        for row, data in zip(rows, (garbage, encoded.row, encoded.row), strict=True):
+        for row, data in zip(rows, (garbage, encoded.row, encoded.row, encoded.row),
+                             strict=True):
             client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
                                             "packet_id": row["request_id"], "rows": [row]},
                                            data))
@@ -390,7 +392,8 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
         for _ in rows:
             envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
             codes[envelope["packet_id"]] = envelope["results"][0]["error_code"]
-        assert codes == {3: "ROW_DECODE_FAILED", 4: "EPISODE_NOT_OPEN", 5: "IDENTITY_MISMATCH"}
+        assert codes == {3: "ROW_DECODE_FAILED", 4: "EPISODE_NOT_OPEN", 5: "IDENTITY_MISMATCH",
+                         6: "IDENTITY_MISMATCH"}
     finally:
         client.close()
         service.close()
