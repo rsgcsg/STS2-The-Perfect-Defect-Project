@@ -23,9 +23,18 @@ const sha = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 const ascii = (value) => JSON.stringify(value).replace(/[\u0080-￿]/gu,
   char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
+/** Runs both consumers (design C shareUnchanged off and on): same states byte for byte, same divergence. */
 function reconstruct(lines, { sampled = true, reconcileInterval = 64 } = {}) {
-  const consumer = new CompactStateReconstructor({ reconcileInterval });
-  return lines.map(line => consumer.accept(JSON.parse(line), { line, sampled }));
+  const run = (shareUnchanged) => {
+    const consumer = new CompactStateReconstructor({ reconcileInterval, shareUnchanged });
+    try { return { states: lines.map(line => consumer.accept(JSON.parse(line), { line, sampled })) }; }
+    catch (error) { return { error }; }
+  };
+  const off = run(false), on = run(true);
+  assert.equal(on.error?.reason, off.error?.reason);
+  if (off.error) throw off.error;
+  assert.equal(JSON.stringify(on.states), JSON.stringify(off.states));
+  return off.states;
 }
 
 function divergence(fn, reason) {
@@ -208,6 +217,26 @@ test("sample schedule is fixed before content and always checks the full frame",
   assert.throws(() => compactSampleSchedule({ rate: 2 }), TypeError);
 });
 
+test("shareUnchanged: frozen states; an unchanged object is the same object in the next state", () => {
+  const lines = raw("compact-episode.jsonl");
+  const consumer = new CompactStateReconstructor({ shareUnchanged: true });
+  const states = lines.map(line => consumer.accept(JSON.parse(line), { line, sampled: true }));
+  const frames = lines.map(line => JSON.parse(line));
+  assert.ok(states.every(state => Object.isFrozen(state)));
+  assert.throws(() => { states[0].player.hp = -1; }, TypeError);
+  // A key neither upserted nor removed by frame 1, reached through an unchanged path, keeps its object.
+  const relic = Object.keys(frames[0].objects).find(key => key.endsWith("#relic"));
+  assert.ok(relic && !Object.hasOwn(frames[1].objects, relic) && !frames[1].removed.includes(relic));
+  const find = (state, ref) => JSON.stringify(state).includes(ref) ? state.player.relics.find(item => item.native_ref === ref) : null;
+  const ref = relic.split("#")[0];
+  assert.ok(find(states[0], ref));
+  assert.equal(find(states[1], ref), find(states[0], ref));
+  // An upserted key gets a new object, and so does every object holding it.
+  const upserted = Object.keys(frames[1].objects)[0];
+  assert.ok(upserted);
+  assert.notEqual(states[1], states[0]);
+});
+
 /** A minimal honest writer for hand-made episodes: digests over the emitted bytes, root over the held table. */
 function writer(instance = "ep-x:slot-0:run-1") {
   const held = new Map();
@@ -291,4 +320,28 @@ test("writer bookkeeping drift is a divergence (review S7)", () => {
   }
   const [w, full] = base();
   assert.equal(reconstruct([full, w.frame("reconcile", { hand: [{ $obj: "native-1#hand" }] }, { "native-1#hand": card("native-1") })]).length, 2);
+});
+
+test("shareUnchanged across the 64-frame reconcile: same bytes as off, unchanged objects kept, divergence unchanged", () => {
+  const w = writer();
+  const skeleton = { hand: [{ $obj: "native-1#hand" }, { $obj: "native-2#hand" }] };
+  const lines = [w.frame("full", skeleton, { "native-1#hand": card("native-1"), "native-2#hand": card("native-2", "S0") })];
+  for (let seq = 1; seq <= 140; seq += 1) {
+    const moving = { "native-2#hand": card("native-2", `S${seq}`) };
+    lines.push(seq % 64 === 0
+      ? w.frame("reconcile", skeleton, { "native-1#hand": card("native-1"), ...moving }, { upserted: ["native-2#hand"] })
+      : w.frame("delta", skeleton, moving));
+  }
+  const states = reconstruct(lines, { sampled: false }); // asserts on == off byte for byte
+  assert.equal(states.at(-1).hand[1].title, "S140");
+  const consumer = new CompactStateReconstructor({ shareUnchanged: true });
+  const shared = lines.map(line => consumer.accept(JSON.parse(line)));
+  // The unchanged card is one object for the whole episode, through both reconciles (re-sent, same digest).
+  assert.ok(shared.every(state => state.hand[0] === shared[0].hand[0]));
+  assert.ok(shared.slice(1).every((state, index) => state.hand[1] !== shared[index].hand[1]));
+  // A late delta (no reconcile at 64) still diverges with sharing on.
+  const late = writer();
+  const overdue = [late.frame("full", skeleton, { "native-1#hand": card("native-1"), "native-2#hand": card("native-2", "S0") })];
+  for (let seq = 1; seq <= 64; seq += 1) overdue.push(late.frame("delta", skeleton, { "native-2#hand": card("native-2", `S${seq}`) }));
+  divergence(() => reconstruct(overdue, { sampled: false }), "reconcile_overdue");
 });

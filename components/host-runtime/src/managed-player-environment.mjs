@@ -2766,7 +2766,10 @@ function validateCompactOutput(value) {
     throw new TypeError("compactOutput.reconcileInterval must be an integer in 1..1024.");
   if (typeof sampleRate !== "number" || !(sampleRate >= 0 && sampleRate <= 1))
     throw new TypeError("compactOutput.sampleRate must be in [0, 1].");
-  return Object.freeze({ reconcileInterval, sampleRate });
+  // Design C: unchanged subtrees stay the same frozen object between steps.
+  const shareUnchanged = value.shareUnchanged ?? false;
+  if (typeof shareUnchanged !== "boolean") throw new TypeError("compactOutput.shareUnchanged must be a boolean.");
+  return Object.freeze({ reconcileInterval, sampleRate, shareUnchanged });
 }
 
 function validateManagedAscension(ascension) {
@@ -3254,7 +3257,8 @@ export class ManagedPlayerEnvironmentSession {
       // A new instance gets a new table and its own check schedule, drawn now,
       // before any of its content has been read.
       this.#compactInstance = {
-        reconstructor: new CompactStateReconstructor({ reconcileInterval: this.#compact.reconcileInterval }),
+        reconstructor: new CompactStateReconstructor({ reconcileInterval: this.#compact.reconcileInterval,
+          shareUnchanged: this.#compact.shareUnchanged }),
         sampled: compactSampleSchedule({ rate: this.#compact.sampleRate, all: this.#compactCheckAll })
       };
     } else if (startsInstance) {

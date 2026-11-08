@@ -263,7 +263,7 @@ export async function hostSlotNativeFactory(config: FastEnvConfig): Promise<Slot
         // Strict SDK decodes of the projection run on the sampled captures (verifyPublicBasis)
         // and on every receipt in the kernel; the Host does not repeat them per step.
         validateSdk: false,
-        ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate } } : {})
+        ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate, shareUnchanged: true } } : {})
       });
       return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }),
         config.checks.sample_rate);
