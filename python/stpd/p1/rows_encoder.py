@@ -17,7 +17,7 @@ Correspondence with the reference (one structure, read side by side):
     _Encoder._order_positions  == input_order.order_frame(sorted_positions=False)
     _Encoder._assemble, part 2 == tensor_input.compile_frame; _reduction ==
                                   tensor_input.reduction
-    _Encoder._hashes           == frame_compiler.observation_hashes
+    _Encoder.hashes            == frame_compiler.observation_hashes
     identity_paths, unordered_domains, public_field_path, signed_log and the
     InputEncoding tokenizer are imported from the reference, not copied.
 
@@ -32,7 +32,8 @@ The only additions are caches:
   text indices and reductions are always assembled per observation.
 * Relation results, memoized per complete identity_paths input signature.
 * Sorted JSON bytes of top-level values, so the two observation hashes are the
-  sha256 of exactly `json_bytes(observation)` / `json_bytes(catalog)`.
+  sha256 of exactly `json_bytes(observation)` / `json_bytes(catalog)`, the same
+  `observation_sha256` / `catalog_sha256` every other P1 record carries.
 """
 from __future__ import annotations
 
@@ -83,6 +84,17 @@ def encoder_digest() -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def _non_finite(token: str) -> Any:
+    raise ValueError("non-finite JSON constant")
+
+
+def _finite_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    return value
+
+
 def _nested(item: Any) -> bool:
     """Cache unit policy for list elements: containers that themselves nest."""
     if isinstance(item, dict):
@@ -108,7 +120,7 @@ class _Unit:
     """
 
     __slots__ = ("n", "kinds", "kind_idx", "positions", "ids", "nums", "num_vals", "texts",
-                 "tree", "decl", "pend", "nbytes", "json")
+                 "tree", "decl", "pend", "nbytes", "json", "cost", "cached")
 
     def __init__(self, n: int, kinds: tuple[str, ...], kind_idx: tuple[int, ...],
                  positions: tuple[int, ...], ids: np.ndarray, nums: np.ndarray,
@@ -124,6 +136,8 @@ class _Unit:
         self.nbytes = 120 * n + 80 * (len(decl) + len(pend)) + sum(
             array.nbytes for array in (ids, nums, num_vals, texts, tree))
         self.json: bytes | None = None  # sorted JSON bytes, top-level units only
+        self.cost = 0         # bytes charged to the cache while `cached`
+        self.cached = False
 
 
 class _Builder:
@@ -203,21 +217,31 @@ class _Cache:
         self.items.move_to_end(key)
         return unit
 
-    @staticmethod
-    def _cost(key: tuple[Any, ...], unit: _Unit) -> int:
-        return unit.nbytes + len(key[-1]) + 240 + (len(unit.json) if unit.json else 0)
-
     def put(self, key: tuple[Any, ...], unit: _Unit) -> None:
-        cost = self._cost(key, unit)
+        cost = unit.nbytes + len(key[-1]) + 240
         if cost > self.limit:
             return
+        unit.cost, unit.cached = cost, True
         self.items[key] = unit
         self.size += cost
-        while self.size > self.limit:
-            old_key, old = self.items.popitem(last=False)
-            self.size -= self._cost(old_key, old)
+        self._evict()
+
+    def charge(self, unit: _Unit, nbytes: int) -> None:
+        """Account bytes attached to a unit later (its sorted JSON)."""
+        if unit.cached:
+            unit.cost += nbytes
+            self.size += nbytes
+            self._evict()
+
+    def _evict(self) -> None:
+        while self.size > self.limit and self.items:
+            _, old = self.items.popitem(last=False)
+            self.size -= old.cost
+            old.cached = False
 
     def clear(self) -> None:
+        for unit in self.items.values():
+            unit.cached = False
         self.items.clear()
         self.size = 0
 
@@ -288,7 +312,7 @@ class RowsEncoder:
         self._verify_every = verify_every
         self._count = 0
         self.identity = {**self._reference.identity,
-                         "encoder": {"implementation": IMPLEMENTATION,
+                         "encoder": {"implementation": "python",
                                      "sha256": encoder_digest()},
                          "row_format": ROW_FORMAT}
 
@@ -300,12 +324,19 @@ class RowsEncoder:
 
     def encode(self, raw: bytes | bytearray | memoryview) -> EncodedRow:
         """Encode one observation given as its JSON bytes."""
+        # FrameCompiler.encode hashes json_bytes(observation) (allow_nan=False)
+        # before compiling, so any non-finite number is invalid_public_json there.
         try:
-            observation = json.loads(bytes(raw))
+            observation = json.loads(bytes(raw), parse_constant=_non_finite,
+                                     parse_float=_finite_float)
         except (UnicodeDecodeError, ValueError) as error:
             raise BoundaryError("p1_rows_encoder", "invalid_public_json") from error
-        if not isinstance(observation, dict):
+        # FrameCompiler.encode checks the catalog binding (observation_hashes) first.
+        if not isinstance(observation, dict) or not isinstance(observation.get("catalog"), list):
             raise BoundaryError("p1_frame_compiler", "public_observation_and_catalog_required")
+        if any(not isinstance(choice, dict) or not isinstance(choice.get("choice_id"), str)
+               for choice in observation["catalog"]):
+            raise BoundaryError("p1_frame_compiler", "invalid_public_catalog")
         encoder = _Encoder(self, observation)
         frame = encoder.run()
         self._check(observation, frame)
@@ -663,7 +694,8 @@ class _Encoder:
         zone_rows = None
 
         def refs(row: int) -> list[int]:
-            return ref_dst[ref_offsets[row]:ref_offsets[row + 1]].tolist()
+            out: list[int] = ref_dst[ref_offsets[row]:ref_offsets[row + 1]].tolist()
+            return out
 
         for index, kind in enumerate(kinds):
             if kind not in paths and kind not in special:
@@ -721,5 +753,5 @@ class _Encoder:
                 unit.json = b"[" + b",".join(parts) + b"]"
             else:
                 unit.json = json_bytes(value)
-            self.owner._cache.size += len(unit.json)
+            self.owner._cache.charge(unit, len(unit.json))
         return unit.json
