@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "33df1bba37dadce2cf10d49829fcfb538f0031f791af2d7fd94b9d439aa263ce",
-    "artifact_sha256": "a6653b7f50b610182d5e41b544af966f2dea5a79cbaa6c113423d94eb30d856c",
-    "artifact_mvid": "09ba5553-218b-40fb-9e09-9db463c7004b",
+    "source_patch_sha256": "412e160d1009393e1f6d80f0207038245ea305dd785f04d552c22582d81b984e",
+    "artifact_sha256": "9cb2620b9d35964f0a3809fb177855ffd9b0c7c697edbb5e4f4e7b854a0ee9eb",
+    "artifact_mvid": "e3957a22-c2d6-4072-a820-b1b09e40095d",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -102,12 +102,12 @@
       "source_patch_mvid": {
         "from": "57785517-0b16-42b9-8b36-bad6fb28384b",
         "to": "58d08aa0-fa59-4264-b2a5-0a6a2c396c99",
-        "occurrences": 7
+        "occurrences": 8
       },
       "expected_build": {
-        "source_patch_sha256": "fa20093af055eba7ae2a18c4545c9c1a1ddf1fc6423469ac4ea946fb11b480bc",
-        "artifact_sha256": "5061101c604fcc896b678ca3067436778194c1c306c88be4de3e298b4340ff32",
-        "artifact_mvid": "5db5ff66-ab7c-4e25-b1e0-bf8b73fd5bc3",
+        "source_patch_sha256": "817f923280d4611fc51ba633d04d5657a8b3c9ddaecac2c3e42990194b1cee12",
+        "artifact_sha256": "15495632293726c8dd95f68958974913197b993dbe2898dfbbf593493ef5be0b",
+        "artifact_mvid": "daba51d5-f3d0-40a4-86c2-dc226d7f6371",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -535,8 +535,8 @@
       "id": "fast_chain_card_detail_cache",
       "kind": "native_render_result_cache",
       "risk": "medium",
-      "effect": "Under the same fast_chain switch only: the two costly game text calls of a card render (title, and the pile or upgrade-preview description) reuse an earlier live result when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Costs, hover tips, hover cards and text projection are rendered live every time. Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile, HoverTips or Title, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders. Every 64th frame renders live and compares; a difference is fatal compact_state_divergence.",
-      "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored); Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
+      "effect": "Under the same fast_chain switch only: the two costly game text calls of a card render (title, and the pile or upgrade-preview description) reuse an earlier live result when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Costs, hover tips, hover cards and text projection are rendered live every time. Only card types on a whitelist frozen from shadow job 1454482 and bound to the current game module version are cached; any other type, or any game version change, renders live. Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile, GetDescriptionForUpgradePreview, HoverTips or Title, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders. Every 64th frame renders live and compares; a difference is fatal compact_state_divergence.",
+      "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored), CardDetailExclusions, CardDetailOwnerFlip (owner strength change gives a new key, served equals live); a game update requires rerunning shadow mode and refreezing the whitelist; Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
     }
   ],
   "admission": {

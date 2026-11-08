@@ -29,8 +29,13 @@ public sealed class NativeCompactStateDivergenceException(string message) : Exce
 /// the description only through variable preview values (in the key) or
 /// AddExtraArgsToDescription (excluded); no card type overrides another description path.
 ///
+/// Only card types frozen in <see cref="ShadowedTypes"/> are cached, and only on the game build
+/// that list was measured on (<see cref="ShadowedGameMvid"/>): each had at least one shadow
+/// compare and the whole shadow corpus had none differing. Any other type, or any other game
+/// build, renders live until the shadow job is run again and the list is refrozen.
+///
 /// Not cached (always rendered live): types that override AddExtraArgsToDescription,
-/// GetDescriptionForPile, HoverTips or Title; enchanted or afflicted cards; a card with a current
+/// GetDescriptionForPile, GetDescriptionForUpgradePreview, HoverTips or Title; enchanted or afflicted cards; a card with a current
 /// target; a variable with a non-scalar field or a capturing delegate; any incomplete render.
 ///
 /// Reconcile: every 64th headless frame (every frame in shadow mode,
@@ -49,8 +54,18 @@ public static class NativeCardDetailCache
     private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
     private static readonly Dictionary<Type, bool> CacheableTypes = new();
     private static readonly Dictionary<Type, FieldInfo[]> ScalarFields = new();
+    private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
     private static int _ownerThread;
     private static long _frame;
+
+    static NativeCardDetailCache()
+    {
+        // Shadow evidence for refreezing ShadowedTypes: per-type live-vs-cache compares.
+        if (Shadow)
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine("[native-card-detail-cache] type-compares "
+                + string.Join(',', TypeCompares.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "=" + pair.Value))
+                + $" divergence={(Divergence == null ? 0 : 1)}");
+    }
 
     public static long Hits { get; private set; }
     public static long Stores { get; private set; }
@@ -115,6 +130,11 @@ public static class NativeCardDetailCache
         if (Entries.TryGetValue(key, out Entry? entry))
         {
             Compares++;
+            if (Shadow)
+            {
+                string type = key[..key.IndexOf('|')];
+                TypeCompares[type] = TypeCompares.GetValueOrDefault(type) + 1;
+            }
             if (!string.Equals(entry.Title, title, StringComparison.Ordinal)
                 || !string.Equals(entry.Description, description, StringComparison.Ordinal))
             {
@@ -131,9 +151,11 @@ public static class NativeCardDetailCache
     private static bool Cacheable(Type type)
     {
         if (CacheableTypes.TryGetValue(type, out bool value)) return value;
-        value = true;
+        // Shadow mode measures every structurally eligible type; otherwise only the frozen list.
+        value = Shadow || typeof(CardModel).Module.ModuleVersionId == ShadowedGameMvid && type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && ShadowedTypes.Contains(type.Name);
         for (Type? t = type; t != null && t != typeof(CardModel); t = t.BaseType)
-            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile", "get_HoverTips", "get_Title" })
+            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile",
+                         "GetDescriptionForUpgradePreview", "get_HoverTips", "get_Title" })
                 if (t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
                     .Any(method => method.Name == name)) value = false;
         CacheableTypes[type] = value;
@@ -188,4 +210,43 @@ public static class NativeCardDetailCache
         }
         return true;
     }
+
+    // Frozen from Friday shadow job 1454482 (92 corpus games, 0 divergence, 255 types with >= 1 compare)
+    // on this game build only. Refreeze after any game update. Names are in MegaCrit.Sts2.Core.Models.Cards.
+    private static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
+    private static readonly HashSet<string> ShadowedTypes = new(StringComparer.Ordinal)
+    {
+        "Abrasive", "Accuracy", "AdaptiveStrike", "Adrenaline", "Afterimage", "Alchemize", "AllForOne", "Anointed",
+        "Anticipate", "Automation", "Backflip", "Backstab", "BallLightning", "Barrage", "BeamCell", "BeatDown",
+        "Beckon", "BiasedCognition", "BlackHole", "BodySlam", "Bolas", "Bombardment", "BoostAway", "BootSequence",
+        "BorrowedTime", "Breakthrough", "Buffer", "BulkUp", "Bulwark", "Burn", "Bury", "Calamity", "CallOfTheVoid",
+        "Capacitor", "Catastrophe", "CelestialMight", "Chaos", "ChargeBattery", "ChildOfTheStars", "Chill", "Claw",
+        "CloakAndDagger", "Clumsy", "ColdSnap", "CollisionCourse", "Comet", "Compact", "CompileDriver",
+        "ConsumingShadow", "Coolant", "Coolheaded", "CreativeAi", "CrescentSpear", "CrushUnder", "CurseOfTheBell",
+        "DaggerThrow", "DarkShackles", "Darkness", "Dash", "Dazed", "DeadlyPoison", "Debris", "Decay",
+        "DecisionsDecisions", "DefendDefect", "Deflect", "Defragment", "Demesne", "Devastate", "Discovery",
+        "DoubleEnergy", "Doubt", "DramaticEntrance", "DualWield", "Dualcast", "DyingStar", "EchoForm", "Enthralled",
+        "Entropy", "Envenom", "Equilibrium", "EscapePlan", "EternalArmor", "Expose", "Exterminate", "FanOfKnives",
+        "Fasten", "Feral", "FightThrough", "Finesse", "Fisticuffs", "FlakCannon", "FlashOfSteel", "Flatten",
+        "Flechettes", "FocusedStrike", "FranticEscape", "Ftl", "Fuel", "Fusion", "Genesis", "GeneticAlgorithm",
+        "Glacier", "Glasswork", "Glitterstream", "Glow", "GoForTheEyes", "GoldAxe", "Greed", "Guilty", "GunkUp",
+        "Hailstorm", "HandOfGreed", "HandTrick", "Hang", "Haze", "HelixDrill", "HiddenGem", "HighFive", "Hologram",
+        "Hotfix", "Hyperbeam", "IAmInvincible", "IceLance", "Impatience", "Infection", "Inferno", "Injury",
+        "Iteration", "JackOfAllTrades", "Jackpot", "LeadingStrike", "Leap", "LightningRod", "Loop", "Luminesce",
+        "MachineLearning", "MakeItSo", "MasterOfStrategy", "Mayhem", "Metamorphosis", "MeteorStrike", "MindBlast",
+        "Modded", "MomentumStrike", "Monologue", "MultiCast", "Murder", "NegativePulse", "NeowsFury", "Nightmare",
+        "Nostalgia", "NoxiousFumes", "Null", "Omnislice", "Outbreak", "Outmaneuver", "Overclock", "Pagestorm",
+        "Panache", "PanicButton", "PhantomBlades", "PhotonCut", "PiercingWail", "Pinpoint", "Poke", "Pounce",
+        "PrepTime", "Prepared", "Production", "Prolong", "Prophesize", "Prowess", "Purity", "Quadcast", "Radiate",
+        "Rainbow", "ReaperForm", "Reboot", "Rebound", "Reflex", "Refract", "Rend", "Restlessness", "RocketPunch",
+        "RollingBoulder", "Royalties", "Salvo", "Scavenge", "Scourge", "Scrape", "Scrawl", "SecretTechnique",
+        "SecretWeapon", "SeekerStrike", "SeekingEdge", "SentryMode", "SerpentForm", "ShadowShield", "ShadowStep",
+        "SharedFate", "Shatter", "Shiv", "Shockwave", "SicEm", "Sidestep", "SignalBoost", "Skim", "SleightOfFlesh",
+        "Slimed", "Smokestack", "Snakebite", "Snap", "Soul", "SovereignBlade", "Spinner", "Splash", "SpoilsMap",
+        "Storm", "Stratagem", "StrikeDefect", "Subroutine", "SuckerPunch", "SummonForth", "Sunder", "Supercritical",
+        "SweepingBeam", "SweepingGaze", "Synchronize", "Synthesis", "Tempest", "Terraforming", "TeslaCoil", "TheBomb",
+        "TheGambit", "TheHunt", "ThinkingAhead", "ThrummingHatchet", "Thunder", "ToricToughness", "Toxic",
+        "TrashToTreasure", "Turbo", "UltimateDefend", "UltimateStrike", "UpMySleeve", "Uproar", "Void", "Volley",
+        "Voltaic", "Whistle", "WhiteNoise", "Wound", "WroughtInWar", "Zap",
+    };
 }

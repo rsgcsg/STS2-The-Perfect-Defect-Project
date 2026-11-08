@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..d851c73
+index 0000000..dba07da
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,517 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1503,6 +1503,7 @@ index 0000000..d851c73
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
 +using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 +using MegaCrit.Sts2.Core.Runs;
 +using STS2Platform.NativeFoundation;
 +
@@ -1546,6 +1547,8 @@ index 0000000..d851c73
 +            LiveListenerVariablesFlip();
 +            JsonLineBytes();
 +            CardDetailCache();
++            CardDetailExclusions();
++            CardDetailOwnerFlip();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -1824,7 +1827,7 @@ index 0000000..d851c73
 +        SetEnabled(false);
 +        var state = (Dictionary<string, object?>)Call("DetectDecisionPoint")!;
 +        Same(state, "decision state");
-+        Same(new() { ["type"] = "x", ["text"] = "造成 6 点伤害。<b>\"q\"</b>&\u2028", ["lone"] = "\ud800", ["skip"] = null,
++        Same(new() { ["type"] = "x", ["text"] = "造成 6 点伤害。<b>\"q\"</b>&\u2028", ["lone"] = "\ud800", ["pair"] = "\ud83d\ude00", ["skip"] = null,
 +            ["n"] = new object?[] { 1, -2L, 0.1, 1e300, double.Epsilon, 3.5m, true, null },
 +            ["nested"] = new Dictionary<string, object?> { ["a"] = new List<Dictionary<string, object?>> { new() { ["b"] = "c" } } } }, "edge values");
 +        Same(new() { ["type"] = "small" }, "buffer reuse after a large response");
@@ -1901,6 +1904,111 @@ index 0000000..d851c73
 +        NativePublicCardDetails.CaptureWithUpgradePreview((CardModel)((CardModel)canonical.MakeGenericMethod(extra!).Invoke(null, null)!).ToMutable(), PileType.Deck);
 +        Check(NativeCardDetailCache.Stores == stored, "an AddExtraArgsToDescription type must never be stored");
 +        SetEnabled(true);
++    }
++
++    static Type?[] GameTypes()
++    {
++        try { return typeof(CardModel).Module.GetTypes(); } catch (ReflectionTypeLoadException error) { return error.Types; }
++    }
++
++    static string? CacheKey(CardModel card) => (string?)typeof(NativeCardDetailCache).GetMethod("Key", Flags)!
++        .Invoke(null, new object[] { card, PileType.Hand, CardPreviewMode.Normal });
++
++    // Enchanted, afflicted and targeted cards and capturing variable delegates never get a key.
++    static void CardDetailExclusions()
++    {
++        SetEnabled(true);
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        CardModel card = run.Players[0].Deck.Cards.First(c => CacheKey(c) != null);
++        string?[] fields = { "<Enchantment>k__BackingField", "<Affliction>k__BackingField", "_currentTarget" };
++        foreach (string name in fields)
++        {
++            FieldInfo field = typeof(CardModel).GetField(name, Flags)!;
++            object? own = field.GetValue(card);
++            Type kind = name == "_currentTarget" ? field.FieldType
++                : GameTypes().OfType<Type>().First(t => field.FieldType.IsAssignableFrom(t) && !t.IsAbstract);
++            field.SetValue(card, System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(kind));
++            try { Check(CacheKey(card) == null, $"{name} set must render live"); }
++            finally { field.SetValue(card, own); }
++        }
++        Check(CacheKey(card) != null, "restored card is keyed again");
++        var calculated = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedVar);
++        FieldInfo multiplier = calculated.GetField("_multiplierCalc", Flags)!;
++        MethodInfo canonical = typeof(ModelDb).GetMethod(nameof(ModelDb.Card), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        foreach (Type type in GameTypes().OfType<Type>().Where(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract).OrderBy(t => t.FullName, StringComparer.Ordinal))
++        {
++            var copy = (CardModel)((CardModel)canonical.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
++            object? variable = copy.DynamicVars.Values.FirstOrDefault(calculated.IsInstanceOfType);
++            if (variable == null || multiplier.GetValue(variable) is not Delegate own || CacheKey(copy) == null) continue;
++            decimal captured = 2m;
++            Func<CardModel, MegaCrit.Sts2.Core.Entities.Creatures.Creature?, decimal> capturing = (_, _) => captured;
++            multiplier.SetValue(variable, Delegate.CreateDelegate(multiplier.FieldType, capturing.Target, capturing.Method));
++            try { Check(CacheKey(copy) == null, "a capturing variable delegate must render live"); }
++            finally { multiplier.SetValue(variable, own); }
++            Check(CacheKey(copy) != null, "the game's own delegate is keyed again");
++            return;
++        }
++        Check(false, "a keyed card with a calculated variable must exist");
++    }
++
++    // State outside the card (the owner's Strength) reaches the text only through variable
++    // preview values: after it changes, a warm card must miss, store a new key and equal live.
++    static void CardDetailOwnerFlip()
++    {
++        Type cache = typeof(NativeCardDetailCache);
++        void Frame(long value) => cache.GetField("_frame", Flags)!.SetValue(null, value);
++        SetEnabled(false);
++        Call("EnterRoom", "monster", null, null);
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        Player player = run.Players[0];
++        var damage = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DamageVar);
++        var calculatedDamage = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedDamageVar);
++        CardModel hand = PileType.Hand.GetPile(player).Cards.Concat(PileType.Draw.GetPile(player).Cards)
++            .First(c => c.DynamicVars.Values.Any(damage.IsInstanceOfType));
++        // A detached card owned by the same player exercises the calculated (delegate) variable path.
++        MethodInfo canonical = typeof(ModelDb).GetMethod(nameof(ModelDb.Card), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        FieldInfo owner = typeof(CardModel).GetField("_owner", Flags)!;
++        SetEnabled(true);
++        Frame(1);
++        var calcs = new List<CardModel>();
++        foreach (Type type in GameTypes().OfType<Type>().Where(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract).OrderBy(t => t.FullName, StringComparer.Ordinal))
++        {
++            var model = (CardModel)canonical.MakeGenericMethod(type).Invoke(null, null)!;
++            if (!model.DynamicVars.Values.Any(calculatedDamage.IsInstanceOfType)) continue;
++            var copy = (CardModel)model.ToMutable();
++            owner.SetValue(copy, player);
++            if (CacheKey(copy) == null) continue;
++            // Into the real combat hand through the game's own generated-card command.
++            ((Task)typeof(CardPileCmd).GetMethod("AddGeneratedCardToCombat")!.Invoke(null, new object?[] { copy, PileType.Hand, player,
++                Enum.GetValues(typeof(CardPileCmd).GetMethod("AddGeneratedCardToCombat")!.GetParameters()[3].ParameterType).Cast<object>()
++                    .First(value => value.ToString() == "Bottom") })!).GetAwaiter().GetResult();
++            if (NativePublicCardDetails.Capture(copy, PileType.Hand).Complete) calcs.Add(copy);
++            if (calcs.Count >= 3) break;
++        }
++        Check(calcs.Count > 0, "keyed owned cards with a calculated damage variable must exist");
++        string Live(CardModel card) { SetEnabled(false); try { return JsonSerializer.Serialize(NativePublicCardDetails.Capture(card, PileType.Hand).PublicCard); } finally { SetEnabled(true); } }
++        string Served(CardModel card) => JsonSerializer.Serialize(NativePublicCardDetails.Capture(card, PileType.Hand).PublicCard);
++        var before = calcs.Prepend(hand).Select(card => (card, text: Live(card))).ToArray();
++        foreach (var (card, text) in before) { Served(card); Check(Served(card) == text, "warm hit equals live before the flip"); }
++        Type strength = GameTypes().OfType<Type>().First(t => t.Name == "StrengthPower" && typeof(PowerModel).IsAssignableFrom(t));
++        MethodInfo apply = typeof(PowerCmd).GetMethods(BindingFlags.Static | BindingFlags.Public).First(m => m.Name == "Apply" && m.IsGenericMethod
++            && m.GetParameters().Length == 6 && m.GetParameters()[1].ParameterType == typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature));
++        var task = (Task)apply.MakeGenericMethod(strength).Invoke(null, new object?[] { new BlockingPlayerChoiceContext(), player.Creature, 5m, player.Creature, null, false })!;
++        task.GetAwaiter().GetResult();
++        int changedCalculated = 0;
++        foreach (var (card, text) in before)
++        {
++            string live = Live(card);
++            Check(ReferenceEquals(card, hand) ? live != text : true, "owner Strength must change the hand card's rendered text");
++            long hits = NativeCardDetailCache.Hits, stores = NativeCardDetailCache.Stores;
++            Check(Served(card) == live, $"after the owner flip {card.GetType().Name} must equal live, never a stale hit");
++            if (live != text)
++            {
++                Check(NativeCardDetailCache.Stores > stores && NativeCardDetailCache.Hits == hits, $"changed text of {card.GetType().Name} must be a new key");
++                if (!ReferenceEquals(card, hand)) changedCalculated++;
++            }
++        }
++        Check(changedCalculated > 0, "owner Strength must change at least one calculated-variable card's text");
 +    }
 +}
 diff --git a/setup.sh b/setup.sh
@@ -4193,10 +4301,10 @@ index 0000000..6147465
 +}
 diff --git a/src/Sts2Headless/NativeCardDetailCache.cs b/src/Sts2Headless/NativeCardDetailCache.cs
 new file mode 100644
-index 0000000..4b0494e
+index 0000000..a94995b
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardDetailCache.cs
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,252 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -4228,8 +4336,13 @@ index 0000000..4b0494e
 +/// the description only through variable preview values (in the key) or
 +/// AddExtraArgsToDescription (excluded); no card type overrides another description path.
 +///
++/// Only card types frozen in <see cref="ShadowedTypes"/> are cached, and only on the game build
++/// that list was measured on (<see cref="ShadowedGameMvid"/>): each had at least one shadow
++/// compare and the whole shadow corpus had none differing. Any other type, or any other game
++/// build, renders live until the shadow job is run again and the list is refrozen.
++///
 +/// Not cached (always rendered live): types that override AddExtraArgsToDescription,
-+/// GetDescriptionForPile, HoverTips or Title; enchanted or afflicted cards; a card with a current
++/// GetDescriptionForPile, GetDescriptionForUpgradePreview, HoverTips or Title; enchanted or afflicted cards; a card with a current
 +/// target; a variable with a non-scalar field or a capturing delegate; any incomplete render.
 +///
 +/// Reconcile: every 64th headless frame (every frame in shadow mode,
@@ -4248,8 +4361,18 @@ index 0000000..4b0494e
 +    private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
 +    private static readonly Dictionary<Type, bool> CacheableTypes = new();
 +    private static readonly Dictionary<Type, FieldInfo[]> ScalarFields = new();
++    private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
 +    private static int _ownerThread;
 +    private static long _frame;
++
++    static NativeCardDetailCache()
++    {
++        // Shadow evidence for refreezing ShadowedTypes: per-type live-vs-cache compares.
++        if (Shadow)
++            AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine("[native-card-detail-cache] type-compares "
++                + string.Join(',', TypeCompares.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "=" + pair.Value))
++                + $" divergence={(Divergence == null ? 0 : 1)}");
++    }
 +
 +    public static long Hits { get; private set; }
 +    public static long Stores { get; private set; }
@@ -4314,6 +4437,11 @@ index 0000000..4b0494e
 +        if (Entries.TryGetValue(key, out Entry? entry))
 +        {
 +            Compares++;
++            if (Shadow)
++            {
++                string type = key[..key.IndexOf('|')];
++                TypeCompares[type] = TypeCompares.GetValueOrDefault(type) + 1;
++            }
 +            if (!string.Equals(entry.Title, title, StringComparison.Ordinal)
 +                || !string.Equals(entry.Description, description, StringComparison.Ordinal))
 +            {
@@ -4330,9 +4458,11 @@ index 0000000..4b0494e
 +    private static bool Cacheable(Type type)
 +    {
 +        if (CacheableTypes.TryGetValue(type, out bool value)) return value;
-+        value = true;
++        // Shadow mode measures every structurally eligible type; otherwise only the frozen list.
++        value = Shadow || typeof(CardModel).Module.ModuleVersionId == ShadowedGameMvid && type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && ShadowedTypes.Contains(type.Name);
 +        for (Type? t = type; t != null && t != typeof(CardModel); t = t.BaseType)
-+            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile", "get_HoverTips", "get_Title" })
++            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile",
++                         "GetDescriptionForUpgradePreview", "get_HoverTips", "get_Title" })
 +                if (t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
 +                    .Any(method => method.Name == name)) value = false;
 +        CacheableTypes[type] = value;
@@ -4387,6 +4517,45 @@ index 0000000..4b0494e
 +        }
 +        return true;
 +    }
++
++    // Frozen from Friday shadow job 1454482 (92 corpus games, 0 divergence, 255 types with >= 1 compare)
++    // on this game build only. Refreeze after any game update. Names are in MegaCrit.Sts2.Core.Models.Cards.
++    private static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
++    private static readonly HashSet<string> ShadowedTypes = new(StringComparer.Ordinal)
++    {
++        "Abrasive", "Accuracy", "AdaptiveStrike", "Adrenaline", "Afterimage", "Alchemize", "AllForOne", "Anointed",
++        "Anticipate", "Automation", "Backflip", "Backstab", "BallLightning", "Barrage", "BeamCell", "BeatDown",
++        "Beckon", "BiasedCognition", "BlackHole", "BodySlam", "Bolas", "Bombardment", "BoostAway", "BootSequence",
++        "BorrowedTime", "Breakthrough", "Buffer", "BulkUp", "Bulwark", "Burn", "Bury", "Calamity", "CallOfTheVoid",
++        "Capacitor", "Catastrophe", "CelestialMight", "Chaos", "ChargeBattery", "ChildOfTheStars", "Chill", "Claw",
++        "CloakAndDagger", "Clumsy", "ColdSnap", "CollisionCourse", "Comet", "Compact", "CompileDriver",
++        "ConsumingShadow", "Coolant", "Coolheaded", "CreativeAi", "CrescentSpear", "CrushUnder", "CurseOfTheBell",
++        "DaggerThrow", "DarkShackles", "Darkness", "Dash", "Dazed", "DeadlyPoison", "Debris", "Decay",
++        "DecisionsDecisions", "DefendDefect", "Deflect", "Defragment", "Demesne", "Devastate", "Discovery",
++        "DoubleEnergy", "Doubt", "DramaticEntrance", "DualWield", "Dualcast", "DyingStar", "EchoForm", "Enthralled",
++        "Entropy", "Envenom", "Equilibrium", "EscapePlan", "EternalArmor", "Expose", "Exterminate", "FanOfKnives",
++        "Fasten", "Feral", "FightThrough", "Finesse", "Fisticuffs", "FlakCannon", "FlashOfSteel", "Flatten",
++        "Flechettes", "FocusedStrike", "FranticEscape", "Ftl", "Fuel", "Fusion", "Genesis", "GeneticAlgorithm",
++        "Glacier", "Glasswork", "Glitterstream", "Glow", "GoForTheEyes", "GoldAxe", "Greed", "Guilty", "GunkUp",
++        "Hailstorm", "HandOfGreed", "HandTrick", "Hang", "Haze", "HelixDrill", "HiddenGem", "HighFive", "Hologram",
++        "Hotfix", "Hyperbeam", "IAmInvincible", "IceLance", "Impatience", "Infection", "Inferno", "Injury",
++        "Iteration", "JackOfAllTrades", "Jackpot", "LeadingStrike", "Leap", "LightningRod", "Loop", "Luminesce",
++        "MachineLearning", "MakeItSo", "MasterOfStrategy", "Mayhem", "Metamorphosis", "MeteorStrike", "MindBlast",
++        "Modded", "MomentumStrike", "Monologue", "MultiCast", "Murder", "NegativePulse", "NeowsFury", "Nightmare",
++        "Nostalgia", "NoxiousFumes", "Null", "Omnislice", "Outbreak", "Outmaneuver", "Overclock", "Pagestorm",
++        "Panache", "PanicButton", "PhantomBlades", "PhotonCut", "PiercingWail", "Pinpoint", "Poke", "Pounce",
++        "PrepTime", "Prepared", "Production", "Prolong", "Prophesize", "Prowess", "Purity", "Quadcast", "Radiate",
++        "Rainbow", "ReaperForm", "Reboot", "Rebound", "Reflex", "Refract", "Rend", "Restlessness", "RocketPunch",
++        "RollingBoulder", "Royalties", "Salvo", "Scavenge", "Scourge", "Scrape", "Scrawl", "SecretTechnique",
++        "SecretWeapon", "SeekerStrike", "SeekingEdge", "SentryMode", "SerpentForm", "ShadowShield", "ShadowStep",
++        "SharedFate", "Shatter", "Shiv", "Shockwave", "SicEm", "Sidestep", "SignalBoost", "Skim", "SleightOfFlesh",
++        "Slimed", "Smokestack", "Snakebite", "Snap", "Soul", "SovereignBlade", "Spinner", "Splash", "SpoilsMap",
++        "Storm", "Stratagem", "StrikeDefect", "Subroutine", "SuckerPunch", "SummonForth", "Sunder", "Supercritical",
++        "SweepingBeam", "SweepingGaze", "Synchronize", "Synthesis", "Tempest", "Terraforming", "TeslaCoil", "TheBomb",
++        "TheGambit", "TheHunt", "ThinkingAhead", "ThrummingHatchet", "Thunder", "ToricToughness", "Toxic",
++        "TrashToTreasure", "Turbo", "UltimateDefend", "UltimateStrike", "UpMySleeve", "Uproar", "Void", "Volley",
++        "Voltaic", "Whistle", "WhiteNoise", "Wound", "WroughtInWar", "Zap",
++    };
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
