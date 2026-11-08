@@ -13,7 +13,7 @@ import multiprocessing
 import os
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
@@ -21,13 +21,14 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from spireagent.rl_contracts import HotPayloadRef, RowRef
 from spireagent.rl_dataplane_ports import BinaryRef
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.tensor_input import TensorFrame, joint_nodes, text_batch
+from stpd.p1.tensor_input import JointNodes, Reduction, TensorFrame, joint_nodes, text_batch
 
 from .heads import OUTCOME_CLASSES, outcome_mask
 from .prepared_batch import (
@@ -345,6 +346,11 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
         low = high
     text_slots = torch.empty_like(order)
     text_slots[order] = torch.arange(texts)
+    real = lengths.long()
+    starts_text = torch.repeat_interleave(real.cumsum(0) - real, real)
+    text_tokens = (torch.repeat_interleave(torch.arange(texts) * prepared_width, real)
+                   + torch.arange(int(real.sum())) - starts_text)
+    text_offsets = torch.cat((real.new_zeros(1), real.cumsum(0))).to(torch.int32)
     joint = group.joint
     node_text = joint.tensors["text_indices"]
     if len(node_text) and int(node_text.max()) >= len(inverse):
@@ -421,7 +427,9 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
         reductions=reductions, scene_buckets=tuple(buckets), scene_rows=row_order,
         scene_inverse=scene_inverse, scene_nodes=torch.cat(nodes),
         scene_positions=torch.cat(positions), scene_lengths=slots[row_order],
-        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags)
+        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags,
+        text_tokens=text_tokens, text_offsets=text_offsets,
+        text_longest=int(real.max()) if texts else 0)
 
 
 def prepare_group(
@@ -517,6 +525,155 @@ def prepare_group(
     if layout != "rows-v2":
         raise ValueError("unsupported_prepared_layout")
     return dataclasses.replace(group, layout=row_layout(group))
+
+
+def _merged_reduction(parts: list[tuple[Reduction, dict[str, int]]], key: str,
+                      totals: dict[str, int]) -> Reduction:
+    """`joint_nodes` reduction order from already joined sub-group reductions."""
+    buckets: dict[int, list[tuple[int, Tensor, Tensor]]] = {}
+    for value, offset in parts:
+        owners_packed = value.inverse.argsort()
+        cursor = 0
+        for width, count, indices in value.buckets:
+            owners = owners_packed[cursor:cursor + count] + offset["refs"]
+            cursor += count
+            if key == "numbers":  # [numbers..., missing...] of the joined graph
+                present = offset["numbers_total"]
+                indices = torch.where(indices < present, indices + offset["numbers"],
+                                      indices - present + totals["numbers"] + offset["missing"])
+            else:
+                indices = indices + offset[key]
+            buckets.setdefault(width, []).append((count, indices, owners))
+    combined: list[tuple[int, int, Tensor]] = []
+    order: list[Tensor] = []
+    for width, items in buckets.items():
+        combined.append((width, sum(item[0] for item in items),
+                         torch.cat([item[1] for item in items])))
+        order.extend(item[2] for item in items)
+    inverse = torch.empty(totals["refs"], dtype=torch.long)
+    if order:
+        inverse[torch.cat(order)] = torch.arange(totals["refs"])
+    return Reduction(tuple(combined), inverse)
+
+
+def concatenate_groups(groups: Sequence[PreparedGroup], *,
+                       rows: tuple[int, ...] | None = None) -> PreparedGroup:
+    """One PreparedGroup from already prepared sub-groups, rows in sub-group order.
+
+    The C-SCALE merge for a forward over several prepared parts (lead 11-09 (a);
+    rl-inference-3 `_forward_parts`). Only real rows, texts, nodes and role terms
+    are copied and re-offset; every padded size is re-bucketed over the union, so
+    the result equals `prepare_group` of all frames at once, except that a text
+    repeated in two sub-groups keeps one row per sub-group (an encoded duplicate,
+    same function). A rows-v2 result gets its layout from `row_layout`. `rows`
+    defaults to the sub-groups' rows in order (rl-inference-3 parts each count
+    from 0, so pass `range(total)`). Output row i is part row i in order.
+    """
+    if not groups:
+        raise ValueError("concatenate_requires_groups")
+    policy = groups[0].policy
+    has_layout = groups[0].layout is not None
+    if any(g.policy != policy or (g.layout is not None) != has_layout for g in groups):
+        raise ValueError("concatenate_requires_one_policy_and_layout")
+    counts = [len(g.rows) for g in groups]
+    total = sum(counts)
+    rows = tuple(r for g in groups for r in g.rows) if rows is None else tuple(rows)
+    if len(rows) != total:
+        raise ValueError("concatenate_rows_mismatch")
+    ts = [g.tensors for g in groups]
+    if any(value.device.type != "cpu" for t in ts for value in t.values()):
+        raise ValueError("concatenate_requires_host_tensors")
+    entities = [t["scene_lengths"][:n, 0].long() for t, n in zip(ts, counts, strict=True)]
+    entity = torch.cat(entities)
+    scene_width = _bucket(int(entity.max()), (32, 64, 128, 256, 512, 1024))
+    physical_rows = _bucket(total, (1, 2, 4, 8, 16, 32, 64))
+    # Text: each sub-group's real (unique) text rows, then re-padded once.
+    texts = [int(t["text_inverse"].max()) + 1 if len(t["text_inverse"]) else 0 for t in ts]
+    text_width = max(int(t["text_ids"].shape[1]) for t in ts)
+    ids = torch.cat([F.pad(t["text_ids"][:k], (0, text_width - t["text_ids"].shape[1]))
+                     for t, k in zip(ts, texts, strict=True)])
+    numbers = torch.cat([F.pad(t["text_numbers"][:k],
+                               (0, 0, 0, text_width - t["text_numbers"].shape[1]))
+                         for t, k in zip(ts, texts, strict=True)])
+    lengths = torch.cat([t["text_lengths"][:k] for t, k in zip(ts, texts, strict=True)])
+    text_offsets = [sum(texts[:i]) for i in range(len(ts))]
+    inverse = torch.cat([t["text_inverse"] + o for t, o in zip(ts, text_offsets, strict=True)])
+    text_rows = _bucket(len(lengths), (32, 128, 512, 2048)) if len(lengths) else 0
+    if text_rows > len(lengths):
+        ids = F.pad(ids, (0, 0, 0, text_rows - len(lengths)))
+        numbers = F.pad(numbers, (0, 0, 0, 0, 0, text_rows - len(lengths)))
+        lengths = F.pad(lengths, (0, text_rows - len(lengths)), value=1)
+    node_count = int(entity.sum())
+    gather = torch.full((physical_rows, scene_width), node_count, dtype=torch.long)
+    scene_mask = torch.ones_like(gather, dtype=torch.bool)
+    starts = entity.cumsum(0) - entity
+    for i in range(total):
+        count = int(entity[i])
+        gather[i, :count] = torch.arange(int(starts[i]), int(starts[i]) + count)
+        scene_mask[i, :count] = False
+    scene_mask[total:, 0] = False
+    data = {
+        "text_ids": ids, "text_numbers": numbers, "text_lengths": lengths,
+        "text_inverse": inverse, "scene_gather": gather, "scene_mask": scene_mask,
+        "scene_lengths": torch.cat((entity.float(), torch.ones(physical_rows - total)))[:, None],
+        "outcome_valid": torch.cat([t["outcome_valid"][:n] for t, n in zip(ts, counts, strict=True)]
+                                   + [outcome_mask(torch.zeros(physical_rows - total,
+                                                               dtype=torch.long))]),
+    }
+    if policy:
+        catalog = max(int(t["action_types"].shape[1]) for t in ts)
+        data["action_types"] = F.pad(torch.cat([
+            F.pad(t["action_types"][:n], (0, catalog - t["action_types"].shape[1]))
+            for t, n in zip(ts, counts, strict=True)]), (0, 0, 0, physical_rows - total))
+        data["catalog_mask"] = F.pad(torch.cat([
+            F.pad(t["catalog_mask"][:n], (0, catalog - t["catalog_mask"].shape[1]), value=True)
+            for t, n in zip(ts, counts, strict=True)]), (0, 0, 0, physical_rows - total),
+            value=True)
+        for key in ("source", "target"):
+            width = max(int(t[key + "_indices"].shape[1]) for t in ts)
+            indices = torch.zeros((physical_rows * catalog, width), dtype=torch.long)
+            weights = torch.zeros((physical_rows * catalog, width), dtype=torch.float32)
+            first = 0
+            for t, n in zip(ts, counts, strict=True):
+                local_catalog = int(t["action_types"].shape[1])
+                local_width = int(t["scene_gather"].shape[1])
+                part_indices = t[key + "_indices"][:n * local_catalog]
+                part_weights = t[key + "_weights"][:n * local_catalog]
+                columns = part_indices.shape[1]
+                moved = (part_indices // local_width + first) * scene_width \
+                    + part_indices % local_width
+                moved = torch.where(part_weights != 0, moved, torch.zeros_like(moved))
+                target = ((first + torch.arange(n))[:, None] * catalog
+                          + torch.arange(local_catalog)).reshape(-1)
+                indices[target, :columns] = moved
+                weights[target, :columns] = part_weights
+                first += n
+            data[key + "_indices"] = indices
+            data[key + "_weights"] = weights
+    # Joint node graph: same tensors and reduction order as `joint_nodes`.
+    names = ("identities", "identity_fields", "kinds", "positions", "number_fields",
+             "numbers", "missing_fields", "text_fields")
+    joints = [g.joint for g in groups]
+    tensors = {key: torch.cat([j.tensors[key] for j in joints]) for key in names}
+    offsets, cumulative = [], dict.fromkeys(("ids", "numbers", "missing", "text", "refs"), 0)
+    for j, n_refs in zip(joints, (int(e.sum()) for e in entities), strict=True):
+        offsets.append({**cumulative, "numbers_total": j.tensors["numbers"].numel()})
+        cumulative["ids"] += j.tensors["identities"].numel()
+        cumulative["numbers"] += j.tensors["numbers"].numel()
+        cumulative["missing"] += j.tensors["missing_fields"].numel()
+        cumulative["text"] += j.tensors["text_fields"].numel()
+        cumulative["refs"] += n_refs
+    vector_offsets = [0]
+    for t in ts:
+        vector_offsets.append(vector_offsets[-1] + len(t["text_inverse"]))
+    tensors["text_indices"] = torch.cat([j.tensors["text_indices"] + o
+                                         for j, o in zip(joints, vector_offsets, strict=False)])
+    reductions = {key: _merged_reduction([(j.reductions[key], o)
+                                          for j, o in zip(joints, offsets, strict=True)],
+                                         key, cumulative)
+                  for key in ("ids", "numbers", "text", "refs")}
+    group = PreparedGroup(rows, policy, JointNodes(tensors, reductions), data)
+    return dataclasses.replace(group, layout=row_layout(group)) if has_layout else group
 
 
 def assemble(

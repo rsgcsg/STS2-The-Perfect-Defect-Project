@@ -883,7 +883,7 @@ class SegmentLearner:
             "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
             "performance": asdict(self.performance), "target_kl": settings.target_kl,
             "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
-            "pinned_bytes": pinned_bytes})
+            "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init()})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
@@ -896,6 +896,18 @@ class SegmentLearner:
                     gpu_uuid=ready["gpu_uuid"], gpu_name=ready["gpu_name"], cpus=ready["cpus"],
                     weights_sha256=ready["weights_sha256"], updates=ready["updates"],
                     memory_budget=budget, memory=ready["memory"])
+
+    def _offline_dump_init(self) -> dict[str, Any] | None:
+        """C-SCALE sampled offline-step files: only with `sgd_offline_dump_every`."""
+        assert self.sgd_options is not None
+        dump = self.sgd_options.offline_dump
+        if dump is None:
+            return None
+        directory = Path(dump.directory) if dump.directory else self.work / "offline-steps"
+        directory.mkdir(parents=True, exist_ok=True)
+        return {"every": dump.every, "limit": dump.limit, "directory": str(directory),
+                "construction": asdict(self.construction_template),
+                "execution": asdict(self.model.execution)}
 
     def _abort_before_listener(self, error: BaseException) -> None:
         """A refused/failed SGD start: one failed event, then release what exists."""

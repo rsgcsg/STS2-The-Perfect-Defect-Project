@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+import dataclasses
 import gc
 import hashlib
 import math
@@ -41,6 +42,8 @@ import numpy as np
 
 from spireagent.json_boundary import BoundaryError
 
+from .offline_step import OfflineDumpOptions, dump_options
+
 PROTOCOL = "stpd/rl-sgd-process-1"
 INIT_SCHEMA = "stpd/rl-sgd-init-1"
 WEIGHTS_SCHEMA = "stpd/rl-sgd-weights-1"
@@ -50,6 +53,7 @@ OPTION_KEYS = frozenset((
     "sgd_process", "sgd_stall_seconds", "sgd_start_seconds", "sgd_shutdown_seconds",
     "sgd_cpus", "sgd_offline_step_seconds", "memory_limit_bytes",
     "memory_headroom_fraction", "memory_budget",
+    "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
 ))
 # Per-process bases from measurement where one exists (margin ~15-25%); override
 # with `dataplane.memory_budget` once a run measures better. The check refuses;
@@ -81,6 +85,8 @@ class SgdOptions:
     memory_limit_bytes: int | None = None
     headroom: float = 0.20
     declared: dict[str, int] = field(default_factory=dict)
+    # C-SCALE: sampled real online minibatches as offline-step files; None = off.
+    offline_dump: OfflineDumpOptions | None = None
 
 
 def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
@@ -125,6 +131,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         memory_limit_bytes=limit,
         headroom=number("memory_headroom_fraction", 0.20, 0.0, 0.9),
         declared=dict(declared),
+        offline_dump=dump_options(dataplane),
     )
 
 
@@ -250,6 +257,10 @@ def memory_budget(*, options: SgdOptions, device: str, model_bytes: int,
         ("sgd", "state_capture", 8 * model_bytes, "anonymous",
          "derived: CPU state 4x + encoded file 4x model bytes"),
     ]
+    if options.offline_dump is not None:
+        items.append(("sgd", "offline_dump", 8 * model_bytes + prepared_bytes // 2, "anonymous",
+                      "derived: state 8x model bytes + CPU and encoded copy of one minibatch "
+                      "(<= 1/4 of one dataset; prepared_bytes bounds two datasets)"))
     limit, limit_source = ((options.memory_limit_bytes, "profile_memory_limit_bytes")
                            if options.memory_limit_bytes is not None else _cgroup_limit())
     rows, counted = [], 0
@@ -696,6 +707,11 @@ class _SgdWorker:
         self.staged: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
+        # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
+        self.offline_dump = init.get("offline_dump")
+        self.offline_dumps = 0
+        self.next_dump = (self.updates + self.offline_dump["every"]
+                          if self.offline_dump is not None else None)
         loaded = weights_digest(self.model.state_dict())
         self.state["stage"] = "ready"
         properties = (torch.cuda.get_device_properties(self.device)
@@ -811,14 +827,21 @@ class _SgdWorker:
                     raise _ChildViolation("sgd_message_during_dataset_" + str(message["kind"]))
                 self.stage(message)
             inbox = time.perf_counter() - inbox_began
-            self.state["stage"] = "update"
-            step_began = time.perf_counter()
-            observed_at = time.time()
             batch = device_batch.minibatches[minibatch]
             if batch.epoch_auxiliary:
                 terminal_rows, hp_rows = batch.epoch_auxiliary_counts[epoch]
                 batch = replace(batch, terminal_rows=terminal_rows, hp_rows=hp_rows,
                                 tensors={**batch.tensors, **batch.epoch_auxiliary[epoch]})
+            diagnostics = self.updates % self.diagnostics_every == 0
+            dumped = None
+            if (self.next_dump is not None and self.updates >= self.next_dump
+                    and not diagnostics):
+                # Before the attempt and outside its timing: pre-step theta/Adam.
+                self.state["stage"] = "offline_dump"
+                dumped = self.dump_offline_step(batch, device_batch, dataset, minibatch, epoch)
+            self.state["stage"] = "update"
+            step_began = time.perf_counter()
+            observed_at = time.time()
             if cuda:
                 events = (torch.cuda.Event(enable_timing=True),
                           torch.cuda.Event(enable_timing=True))
@@ -826,8 +849,7 @@ class _SgdWorker:
             result = prepared_update(
                 self.model, self.optimizer, batch, config=self.loss,
                 performance=self.performance, target_kl=self.target_kl,
-                diagnostics=self.updates % self.diagnostics_every == 0,
-                collect_policy_rows=True)
+                diagnostics=diagnostics, collect_policy_rows=True)
             optimizer_seconds = time.perf_counter() - step_began
             ema_seconds = 0.0
             if result["stepped"]:
@@ -854,7 +876,8 @@ class _SgdWorker:
                               "wait_for_start_seconds": waited if minibatch == epoch == 0
                               else 0.0,
                               "boundary_seconds": boundary if minibatch == epoch == 0
-                              else None})
+                              else None,
+                              **({"offline_dump": dumped} if dumped is not None else {})})
             minibatch += 1
             end_epoch = minibatch == len(device_batch.minibatches)
             finished = result["kl_stopped"] or (end_epoch and epoch + 1 >= epochs)
@@ -867,6 +890,60 @@ class _SgdWorker:
         if self.updates > start_updates:
             self.snapshot()
         self.idle_since = time.perf_counter()
+
+    def dump_offline_step(self, batch: Any, device_batch: Any, dataset: int, minibatch: int,
+                          epoch: int) -> dict[str, Any]:
+        """Write one `p3-offline-step-input-1` file of the attempt about to run.
+
+        A diagnostic, not learning state: a failed write is reported on this step
+        and ends further dumps; it never fences training or changes the attempt.
+        """
+        from . import offline_step
+        from .checkpoint_state import cpu_copy
+
+        assert self.offline_dump is not None
+        began = time.perf_counter()
+        update = self.updates + 1
+        facts: dict[str, Any] = {"update": update, "dataset": dataset, "minibatch": minibatch,
+                                 "epoch": epoch, "index": self.offline_dumps}
+        try:
+            state = {
+                "schema": offline_step.SCHEMA,
+                "construction": self.offline_dump["construction"],
+                "sgd_execution": self.offline_dump["execution"],
+                "weights": cpu_copy(self.model.state_dict()),
+                "optimizer": cpu_copy(self.optimizer.state_dict()),
+                "minibatch": offline_step.cpu_tree(batch),
+                "loss": dataclasses.asdict(self.loss),
+                "performance": dataclasses.asdict(self.performance),
+                "target_kl": self.target_kl, "diagnostics": False,
+                "online_update": update, "dataset": dataset,
+                "minibatch_index": minibatch, "epoch": epoch}
+            captured = time.perf_counter()
+            receipt = {
+                **facts, **offline_step.minibatch_facts(batch), "online_update": update,
+                "run": self.state["run"], "training_generation": self.state["generation"],
+                "dataset_rows": len(device_batch.metadata),
+                "dataset_payload_bytes": device_batch.payload_bytes,
+                "dataset_bytes_per_ppo_row": (device_batch.payload_bytes
+                                              / len(device_batch.metadata)
+                                              if device_batch.metadata else None),
+                "device": str(self.device), "at": time.time(),
+                "capture_seconds": captured - began}
+            directory = Path(self.offline_dump["directory"]) / (
+                f"u{update:09d}-d{dataset:07d}-m{minibatch}-e{epoch}")
+            facts.update(offline_step.write(directory, state, receipt),
+                         capture_seconds=captured - began,
+                         write_seconds=time.perf_counter() - captured)
+            self.offline_dumps += 1
+            self.next_dump = (None if self.offline_dumps >= self.offline_dump["limit"]
+                              else self.updates + self.offline_dump["every"])
+        except Exception as error:  # diagnostics only; reported, then no further dumps
+            facts["error_type"] = type(error).__name__
+            facts["error_code"] = getattr(error, "code", None)
+            self.next_dump = None
+        facts["seconds"] = time.perf_counter() - began
+        return facts
 
     def update_ema(self) -> None:
         torch = self.torch
