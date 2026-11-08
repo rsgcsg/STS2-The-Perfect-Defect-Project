@@ -196,7 +196,7 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
     (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
     embed = tokens.shape[1]
     mask = torch.arange(width, device=tokens.device)[None, :] >= lengths[:, None]
-    packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions, tokens)
+    packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions.long(), tokens)
     scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
     scene = scene.view(rows, width, -1)
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
@@ -282,8 +282,16 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     Tests may force it on CPU (reference attention, one sequence at a time)."""
     if model.training:
         raise ValueError("rows_forward_requires_eval_mode")
-    layout = group.layout
     device = model.ids.weight.device
+    if device.type == "cuda" and any(value.device.type == "cpu"
+                                     for value in group.tensors.values()):
+        # A host group (inference): its forward inputs in one pinned non-blocking
+        # copy instead of ~50 pageable per-tensor copies (each a stream sync).
+        # The learner's groups are already staged (`stage_batch`): untouched.
+        from stpd.rl.batch_preparation import stage_group
+
+        group = stage_group(group, device)
+    layout = group.layout
     nonblocking = model.nonblocking_inputs
 
     def move(value: Tensor) -> Tensor:

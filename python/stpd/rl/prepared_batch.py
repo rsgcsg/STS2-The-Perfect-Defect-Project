@@ -89,6 +89,8 @@ class RowLayout:
     lengths, real scene slots, role terms and weights, reduction buckets): no
     theta value, no membership, mean length or loss-denominator change. Python
     ints carry every split size, so the GPU step never reads a device tensor back.
+    "long" below is the prepared dtype; `forward_inputs` (inference transfer) may
+    hold the same index values as int32.
     """
 
     # Unique real texts (padding text rows dropped), sorted by length into
