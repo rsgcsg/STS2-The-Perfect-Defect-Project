@@ -572,12 +572,8 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     asked = []
     monkeypatch.setattr(swap, 'evaluation_partition_nodes', lambda partition: (
         asked.append(partition) or ['smp-9-10', 'smp-9-19', 'smp-9-8', 'smp-c04']))
-    checked = []
-    monkeypatch.setattr(swap, 'node_nfs_state_loss', lambda node, **k: (
-        checked.append((node, k['partition'])) or {'status': 'clean', 'recent': []}))
     friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'OPS-NODE-CHECK',
                    '--eval-node', 'smp-c04', '--max-excluded-nodes', '8')
-    assert checked == []  # a dry run submits no Slurm probe
     final = friday.long_run / 'swap-c13b-dry-run'
     cfg = json.loads((final / 'watch.json').read_bytes())
     assert cfg['exclude_nodes'] == ['smp-9-8', 'smp-c04']
@@ -586,84 +582,90 @@ def test_dry_run_with_a_node_plan(friday, swap, monkeypatch, capsys):
     assert cfg['evaluation']['pool_nodes'] == ['smp-c04'] and len(asked) == 1
     assert cfg['node_unknown_exclusion'] == {'max_nodes': 8}
     assert json.loads((final / 'decision.json').read_bytes())['readmitted'] == ['smp-9-10']
-    assert cfg['node_readmissions'][-1]['nfs_check']['status'] == 'skipped_dry_run'
+    assert 'nfs_check' not in cfg['node_readmissions'][-1]  # F2 removed (review 11-08)
     out = capsys.readouterr().out
     assert '- re-admitted smp-9-10 (evidence OPS-NODE-CHECK)' in out
-    assert 'node NFS check smp-9-10: skipped (dry run, no probe submitted)' in out
     assert '- evaluation pool (no actors): smp-c04' in out
 
 
-def test_readmission_refuses_a_node_with_recent_nfs_state_loss(swap, monkeypatch):
-    """OPS F2: every bad-node stop matched ``kthread_run: -4``; a node that had it in the
-    last 6 h is not re-admitted without a named acknowledgement (c13e: smp-9-10)."""
+def test_static_exclusions_split_into_hardware_class_and_health_with_provenance(swap):
+    """OPS-2: an unrecorded static node outside the actor types is a hardware-class
+    constraint; a DOWN/DRAIN node is slurm_unavailable; --node-reason names the rest.
+    Only Slurm facts and the command line decide; an unreported node stays unrecorded."""
+    prior = {'exclude_nodes': ['biol-0-0', 'smp-9-3', 'smp-9-9', 'smp-c05'],
+             'actor_node_types': ['fc430']}
+    facts = {'biol-0-0': {'features': 'biol,r640,cuda,t4', 'state': 'IDLE'},
+             'smp-9-3': {'features': 'smp,fc430,intel', 'state': 'DOWN*+DRAIN'},
+             'smp-9-9': {'features': 'smp,fc430,intel', 'state': 'IDLE'}}
+    cfg = copy.deepcopy(prior)
+    swap.apply_node_plan(cfg, prior, auto_excluded=[], slurm_facts=facts, name='c16',
+                         node_reasons={'smp-9-9': 'disk errors 11-06'})
+    provenance = cfg['exclude_node_provenance']
+    assert provenance['biol-0-0'] == {'source': 'hardware_class',
+                                      'features': 'biol,r640,cuda,t4'}
+    assert provenance['smp-9-3'] == {'source': 'slurm_unavailable', 'state': 'DOWN*+DRAIN'}
+    assert provenance['smp-9-9'] == {'source': 'operator', 'reason': 'disk errors 11-06',
+                                     'added_by': 'release_swap c16',
+                                     'was': {'source': 'static_unrecorded'}}
+    assert provenance['smp-c05'] == {'source': 'static_unrecorded'}
+    assert cfg['exclude_nodes'] == prior['exclude_nodes']  # labels only, nothing re-admitted
+    with pytest.raises(swap.SwapError, match='node_reason_for_a_node_that_is_not_excluded'):
+        swap.apply_node_plan(copy.deepcopy(prior), prior, auto_excluded=[],
+                             node_reasons={'smp-9-2': 'x'})
+    assert not hasattr(swap, 'node_nfs_state_loss')  # F2 removed with the review's reason
+
+
+def test_auto_exclusions_carry_cooldown_into_the_next_watch_when_canary_is_on(swap):
+    """OPS-2: with canary readmission on, predecessor auto exclusions become the watcher's
+    in-window records (strike + cooldown end) instead of whole-window exclude_nodes; a
+    record from before OPS-2 gets its strike's cooldown from its exclusion time."""
     now = 1794200000.0
+    base = {'exclude_nodes': ['smp-9-8'], 'node_unknown_exclusion': {},
+            'execution': 'e', 'runtime_source': '/r/a/source', 'learner_python': '/x/python'}
+    records = {'smp-9-20': {'at': now - 600, 'strike': 2, 'cooldown_until': now + 13800,
+                            'window_unknown': 13, 'window_attempts': 20},
+               'smp-9-7': {'at': now - 9000}}  # pre-OPS-2 record: no strike/cooldown
 
-    def stamp(at):  # dmesg --time-format iso
-        from datetime import UTC, datetime
-        return datetime.fromtimestamp(at, UTC).strftime('%Y-%m-%dT%H:%M:%S,000000+00:00')
-
-    probe = {'uptime': '86400.00 1000.00', 'rc': 0, 'stderr': b''}
-    lines = [f'{stamp(now - 8 * 3600)} NFS: 10.1.2.6: lost 2 locks',
-             f'{stamp(now - 7 * 3600)} nfs4_schedule_state_manager: kthread_run: -4',
-             f'{stamp(now - 600)} NFS: 10.1.2.6: lost 5 locks']
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        body = '\n'.join([probe['uptime'], *lines]).encode() + b'\n\xff\xfe tail\n'
-        return SimpleNamespace(returncode=probe['rc'], stdout=body, stderr=probe['stderr'])
-    monkeypatch.setattr(swap.subprocess, 'run', fake_run)
-
-    def check(node='smp-9-10'):
-        return swap.node_nfs_state_loss(node, partition='smp', now=now)
-    clean = check()
-    assert clean['status'] == 'clean'  # the -4 is older than 6 h; non-UTF-8 is replaced
-    command, kwargs = calls[0]
-    assert '--nodelist=smp-9-10' in command and '--cpus-per-task=1' in command
-    assert '--chdir=/tmp' in command and 'text' not in kwargs
-    lines.append(f'{stamp(now - 3600)} nfs4_schedule_state_manager: kthread_run: -4')
-    lost = check()
-    assert lost['status'] == 'state_loss' and len(lost['recent']) == 1
-    with pytest.raises(swap.SwapError, match='readmit_node_recent_nfs_state_loss'):
-        swap.readmission_nfs_checks(['smp-9-10'], {}, partition='smp', now=now)
-    acked = swap.readmission_nfs_checks(['smp-9-10'], {'smp-9-10': 'admin fixed mount'},
-                                        partition='smp', now=now)
-    assert acked['smp-9-10']['acknowledged'] == 'admin fixed mount'
-    # The ring buffer must reach back 6 h: a wrapped or empty log is not clean.
-    del lines[:2], lines[-1]
-    assert check()['reason'] == 'kernel_log_window_incomplete'
-    probe['uptime'] = '3600.00 10.00'  # booted 1 h ago: the whole log is the window
-    assert check()['status'] == 'clean'
-    lines.clear()
-    assert check()['reason'] == 'kernel_log_window_incomplete'
-    # A check that cannot read the node is refused too, never treated as clean.
-    probe.update(rc=1, stderr=b'srun: error: Unable to allocate resources')
-    with pytest.raises(swap.SwapError, match='readmit_node_nfs_check_unavailable'):
-        swap.readmission_nfs_checks(['smp-9-0'], {}, partition='smp', now=now)
-    # A dry run never submits the probe and says so.
-    calls.clear()
-    skipped = swap.readmission_nfs_checks(['smp-9-0'], {}, partition='smp', now=now,
-                                          dry_run=True)
-    assert skipped['smp-9-0']['status'] == 'skipped_dry_run' and calls == []
-
-    def missing(command, **k):
-        raise FileNotFoundError('srun')
-    monkeypatch.setattr(swap.subprocess, 'run', missing)
-    assert check('smp-9-0')['status'] == 'unavailable'
+    def build(cfg, **nodes):
+        return swap.build_watch('same_window', cfg, previous_ref={'path': 'p', 'sha256': 's'},
+                                release=Path('/r/b'), execution=Path('/o/e.json'),
+                                learner=Path('/o/l.json'), cp_id='cp', held_job=None,
+                                exclude=[], auto_excluded=sorted(records), window=None,
+                                acknowledgements={}, nodes={'auto_records': records, **nodes})
+    cfg = build(base, strikes={'smp-9-7': 1})
+    assert cfg['exclude_nodes'] == ['smp-9-8']
+    inherited = cfg['inherited_node_exclusions']
+    assert inherited['smp-9-20']['cooldown_until'] == now + 13800
+    assert inherited['smp-9-20']['strike'] == 2
+    assert inherited['smp-9-20']['window_unknown'] == 13
+    assert inherited['smp-9-7'] == {'kind': 'node_unknown_exclusion', 'at': now - 9000,
+                                    'strike': 1, 'cooldown_until': now - 9000 + 7200,
+                                    'inherited': True}
+    lines = swap.exclusion_summary(cfg, {})
+    assert any(line.startswith('- watcher-managed exclusion smp-9-20: strike 2, canary from')
+               for line in lines)
+    # A backed manual readmission still works on a watcher-managed node.
+    again = build(base, readmit=['smp-9-20'], readmit_evidence='node check')
+    assert 'smp-9-20' not in again['inherited_node_exclusions']
+    assert again['readmit_nodes'] == [{'node': 'smp-9-20', 'evidence': 'node check'}]
+    # canary_lanes 0 keeps the old whole-window behaviour.
+    off = build({**base, 'node_unknown_exclusion': {'canary_lanes': 0}})
+    assert off['exclude_nodes'] == ['smp-9-20', 'smp-9-7', 'smp-9-8']
+    assert 'inherited_node_exclusions' not in off
 
 
-def test_nfs_acknowledgement_stays_out_of_the_integrity_acknowledgements(friday, swap,
-                                                                         monkeypatch):
-    """The prefix routes the reason to the NFS check (the friday fixture is a dry run,
-    so the probe is skipped there; refusal itself is covered above)."""
-    seen = []
-    real = swap.readmission_nfs_checks
-    monkeypatch.setattr(swap, 'readmission_nfs_checks', lambda nodes, acks, **k: (
-        seen.append(dict(acks)) or real(nodes, acks, **k)))
-    friday.prepare('--readmit', 'smp-9-10', '--readmit-evidence', 'node check',
-                   '--acknowledge', 'nfs_state_loss:smp-9-10=remount verified 11-08')
-    assert seen == [{'smp-9-10': 'remount verified 11-08'}]
-    cfg = json.loads((friday.long_run / 'swap-c13b-dry-run/watch.json').read_bytes())
-    assert cfg['node_readmissions'][-1]['nfs_check']['status'] == 'skipped_dry_run'
-    assert not any(k.startswith('nfs_state_loss') for k in
-                   cfg.get('acknowledged_integrity_events', {}))
+def test_evaluation_wall_below_the_release_default_is_raised(swap, watch):
+    """Audit row 21: evaluation-0007 hit its 2:05 Slurm wall in the snapshot phase."""
+    assert watch.EVALUATION_WALL_SECONDS == 10800
+    base = {'exclude_nodes': [], 'execution': 'e', 'runtime_source': '/r/a/source',
+            'learner_python': '/x/python', 'evaluation': {'wall_seconds': 7200}}
+
+    def build(cfg):
+        return swap.build_watch('same_window', cfg, previous_ref={'path': 'p', 'sha256': 's'},
+                                release=Path('/r/b'), execution=Path('/o/e.json'),
+                                learner=Path('/o/l.json'), cp_id='cp', held_job=None,
+                                exclude=[], auto_excluded=[], window=None, acknowledgements={},
+                                evaluation_wall_seconds=watch.EVALUATION_WALL_SECONDS)
+    assert build(base)['evaluation']['wall_seconds'] == 10800
+    longer = {**base, 'evaluation': {'wall_seconds': 14400}}
+    assert build(longer)['evaluation']['wall_seconds'] == 14400

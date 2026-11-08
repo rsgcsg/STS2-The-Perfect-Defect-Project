@@ -271,3 +271,285 @@ def test_continuation_closes_only_an_inherited_failed_evaluation(
     else:
         assert resumed.state["pending"]["stage"] == stage and not resumed.state["evaluations"]
         assert resumed.state["next_evaluation_seconds"] == 28800
+
+
+# ---------------------------------------------------------------- OPS-2 in-window readmission
+def test_node_state_failure_counts_all_but_game_side_categories(watch):
+    """c13f: 823/826 bad-node unknowns are runtime_execution_or_release_unknown ->
+    unclassified; they must count. Only categories that follow the game do not."""
+    assert watch.node_state_failure("unknown", {"category": "unclassified"})
+    assert watch.node_state_failure("unknown", None)
+    assert watch.node_state_failure("save_failed", {"category": "infrastructure"})
+    assert not watch.node_state_failure("unknown", {"category": "environment_gap"})
+    assert not watch.node_state_failure("unknown", {"category": "wall_limit"})
+    assert not watch.node_state_failure("finished", None)
+
+
+def test_readmission_and_slow_settings_are_bounded(watch):
+    rules = settings(watch)
+    assert rules["cooldown_seconds"] == [7200, 14400, 28800] and rules["canary_lanes"] == 2
+    assert watch.node_cooldown(rules, 1) == 7200 and watch.node_cooldown(rules, 3) == 28800
+    assert watch.node_cooldown(rules, 4) is None  # past the list: out for the window
+    for bad in ({"cooldown_seconds": [14400, 7200]}, {"cooldown_seconds": []},
+                {"cooldown_seconds": [60]}, {"canary_lanes": 5}, {"canary_games": 0},
+                {"slow_ratio": 1}, {"slow_min_games": 2}):
+        with pytest.raises(ValueError, match="explicit_node_unknown_exclusion_settings"):
+            settings(watch, **bad)
+
+
+def test_slow_node_is_its_own_throughput_verdict(watch):
+    rules = settings(watch)
+    fleet = {f"ok-{i}": [600.0 + i] * 20 for i in range(4)}
+    [slow] = watch.node_slow_decisions({**fleet, "slow": [1500.0] * 20}, {}, rules)
+    assert slow["kind"] == "node_slow" and slow["node"] == "slow" and slow["ratio"] > 2
+    assert watch.node_slow_decisions({**fleet, "slow": [1100.0] * 20}, {}, rules) == []
+    assert watch.node_slow_decisions({**fleet, "slow": [1500.0] * 19}, {}, rules) == []
+    # Fewer than three other qualifying nodes: no comparison, no verdict.
+    assert watch.node_slow_decisions({"ok-0": [600.0] * 20, "ok-1": [600.0] * 20,
+                                      "slow": [1500.0] * 20}, {}, rules) == []
+    assert watch.node_slow_decisions({**fleet, "slow": [1500.0] * 20}, {"slow": {}},
+                                     rules) == []
+
+
+def canary_owner(owner, watch, monkeypatch, tmp_path, placement, terminal=()):
+    value = attempt(owner)
+    value["root"] = str(tmp_path / "attempt")
+    owner.config.update(execution=str(tmp_path / "execution.json"),
+                        runtime_source=str(tmp_path / "runtime"), unknown_stop_fraction=0.5)
+
+    def accounting(with_node):
+        return [{"actor": a, "job_id": f"9{i}", "array_job_id": f"77_{i}", "state": "RUNNING",
+                 "exit_code": "0:0", "terminal": a in terminal, "node": n}
+                for i, (a, n) in enumerate(placement.items())]
+    rl, signals = wire(owner, watch, monkeypatch, tmp_path, accounting)
+    prepared = []
+    rl.prepare = lambda *a, **k: prepared.append((a, k))
+    rl.load_plan = lambda path: {"actors": [{"actor": f"canary-{len(prepared)}-a"},
+                                            {"actor": f"canary-{len(prepared)}-b"}]}
+    return value, rl, signals, prepared
+
+
+def excluded_record(watch, at, strike=1, due=None):
+    return {"kind": "node_unknown_exclusion", "at": at, "strike": strike,
+            "cooldown_until": due, "signalled_actors": []}
+
+
+def test_cooldown_then_canary_pass_readmits_and_releases_pending_arrays(
+        owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    placement = {"good-0": "smp-9-2", "good-1": "smp-9-4", "good-2": "smp-9-5"}
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path, placement)
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 3600, due=now + 3600)},
+        "strikes": {"smp-9-20": 1}}
+    owner.replace_actors(value)
+    assert prepared == [] and rl.submissions == []  # still in its 2 h cooldown
+    owner.state["node_exclusion"]["excluded"]["smp-9-20"]["cooldown_until"] = now - 1
+    owner.replace_actors(value)
+    [(args, kwargs)] = prepared
+    assert kwargs["actors"] == 2 and "canary-smp-9-20-1-1" in kwargs["seed_namespace"]
+    [submitted] = rl.submissions
+    assert submitted["nodelist"] == ["smp-9-20"] and "exclude_nodes" not in submitted
+    record = owner.state["node_exclusion"]["excluded"]["smp-9-20"]
+    assert record["canary"]["actors"] == ["canary-1-a", "canary-1-b"]
+    assert value["actor_plans"][-1].endswith("canary-smp-9-20-1-1/plan.json")
+    assert owner.actor_exclude_nodes() == ["smp-9-8", "smp-9-20"]  # others still avoid it
+    # Ten clean canary closes on the node re-admit it; nothing is retried or recounted.
+    placement.update({"canary-1-a": "smp-9-20", "canary-1-b": "smp-9-20"})
+    closes(owner, "canary-1-a", ["finished"] * 5, "ca")
+    closes(owner, "canary-1-b", ["finished"] * 4 + ["saved"], "cb")
+    owner.collect_events()
+    released = []
+    monkeypatch.setattr(watch, "read_published", lambda path: {"job_id": "77"})
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **k: (
+        released.append(command) or SimpleNamespace(returncode=0)))
+    pending_rows = [{"actor": "late", "state": "PENDING", "terminal": False}]
+    rl.actor_accounting = lambda path, with_node=False: (
+        pending_rows if not with_node else [
+            {"actor": a, "job_id": f"9{i}", "array_job_id": f"77_{i}", "state": "RUNNING",
+             "exit_code": "0:0", "terminal": False, "node": n}
+            for i, (a, n) in enumerate(placement.items())])
+    owner.replace_actors(value)
+    nodes = owner.state["node_exclusion"]
+    assert "smp-9-20" not in nodes["excluded"]
+    [period] = nodes["readmitted"]["smp-9-20"]
+    assert period["evidence"]["kind"] == "canary" and period["evidence"]["closes"] == 10
+    assert owner.actor_exclude_nodes() == ["smp-9-8"]
+    assert released and released[0][:3] == ["scontrol", "update", "JobId=77"]
+    assert released[0][3] == "ExcNodeList=smp-9-8"
+    kinds = [e["kind"] for e in nodes["events"]]
+    assert kinds == ["node_canary_started", "node_readmitted", "pending_exclusion_released"]
+    assert signals == []  # canary actors are never signalled on a pass
+    assert len(rl.submissions) == 1  # canary lanes are never replaced
+
+
+def test_canary_failure_is_the_next_strike_and_past_the_list_stays_out(
+        owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    placement = {"good-0": "smp-9-2"}
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path, placement)
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000, due=now - 1)},
+        "strikes": {"smp-9-20": 1}}
+    owner.replace_actors(value)
+    placement.update({"canary-1-a": "smp-9-20", "canary-1-b": "smp-9-20"})
+    closes(owner, "canary-1-a", ["finished", "unknown"], "ca")
+    owner.collect_events()
+    owner.replace_actors(value)
+    nodes = owner.state["node_exclusion"]
+    record = nodes["excluded"]["smp-9-20"]
+    assert record["canary"] is None and record["strike"] == 2
+    assert record["cooldown_until"] == pytest.approx(time.time() + 14400, abs=60)
+    assert record["canaries"][-1]["outcome"] == "failed"
+    assert sorted(signals) == ["77_1", "77_2"]  # both canary lanes finish their game
+    assert nodes["events"][-1]["kind"] == "node_canary_failed"
+    # The original unknown stays counted for the global gate.
+    assert "ca-1" in owner.state["unknown_intents"]
+    # Canary lanes that end before their sample fail closed as well.
+    record.update(cooldown_until=time.time() - 1)
+    owner.replace_actors(value)
+    assert record["canary"]["actors"] == ["canary-2-a", "canary-2-b"]
+    rl.actor_accounting = lambda path, with_node=False: [
+        {"actor": a, "job_id": "1", "array_job_id": "78_0", "state": "COMPLETED",
+         "exit_code": "0:0", "terminal": True, "node": "smp-9-20"}
+        for a in ("canary-2-a", "canary-2-b")]
+    owner.replace_actors(value)
+    assert record["canaries"][-1]["outcome"] == "lanes_ended_early" and record["strike"] == 3
+    # Third strike exhausted (strike 4 has no cooldown): no more canaries this window.
+    record.update(strike=4, cooldown_until=None)
+    owner.replace_actors(value)
+    assert len(prepared) == 2
+
+
+def test_canary_waits_for_cpu_budget_and_unsubmitted_canary_looks_again(
+        owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path,
+                                                {"good-0": "smp-9-2"})
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000, due=now - 1)},
+        "strikes": {"smp-9-20": 1}}
+    owner.config.update(actors=467, cpus=32, cpu_budget=500)  # 467+32+2 > 500
+    owner.replace_actors(value)
+    record = owner.state["node_exclusion"]["excluded"]["smp-9-20"]
+    assert record["canary_waiting"] == "cpu_budget" and prepared == []
+    owner.config["actors"] = 400
+
+    def refused(path, **kwargs):
+        raise ValueError("Friday_fair_share_refused")
+    rl.submit = refused
+    owner.replace_actors(value)
+    assert record["canary"] is None and record["canaries"][-1]["outcome"] == "not_submitted"
+    assert record["cooldown_until"] == pytest.approx(time.time() + 1800, abs=60)
+    assert value["actor_plans"] == ["actor-plan"]
+    # After the intent exists the submission is uncertain: never resubmitted, raised.
+    record["cooldown_until"] = now - 1
+
+    def uncertain(path, **kwargs):
+        (path.parent / "submission-intent.json").parent.mkdir(parents=True, exist_ok=True)
+        (path.parent / "submission-intent.json").write_text("{}")
+        raise ValueError("sbatch_failed")
+    rl.submit = uncertain
+    with pytest.raises(ValueError, match="sbatch_failed"):
+        owner.replace_actors(value)
+
+
+def test_max_nodes_bounds_concurrent_isolation_not_a_window_total(
+        owner, watch, monkeypatch, tmp_path):
+    rules = settings(watch, max_nodes=1)
+    windows = {**{f"ok-{i}": [0] * 30 for i in range(5)}, "bad-a": [1] * 30}
+    [first] = watch.node_exclusion_decisions(windows, {}, rules)
+    assert first["kind"] == "node_unknown_exclusion" and first["node"] == "bad-a"
+    windows["bad-b"] = [1] * 30
+    capped = watch.node_exclusion_decisions(windows, {"bad-a": {}}, rules)
+    assert [d["kind"] for d in capped] == ["node_exclusion_cap_reached"]
+    # bad-a re-admitted (its window dropped): the cap frees for bad-b.
+    del windows["bad-a"]
+    [second] = watch.node_exclusion_decisions(windows, {}, rules)
+    assert second["kind"] == "node_unknown_exclusion" and second["node"] == "bad-b"
+
+
+def test_slow_node_gets_no_new_placements_and_no_signal(owner, watch, monkeypatch, tmp_path):
+    placement = {f"a-{i}": f"smp-9-{i}" for i in range(5)}
+    value, rl, signals, _ = canary_owner(owner, watch, monkeypatch, tmp_path, placement)
+    for i in range(5):
+        event(owner, "actor_games_closed", actor=f"a-{i}", games=[
+            {"intent_id": f"g{i}-{j}", "seed": f"s{i}-{j}", "status": "finished",
+             "elapsed_seconds": 3000.0 if i == 4 else 900.0, "world_mutation_offered": True,
+             "training_generation": "g-one"} for j in range(20)])
+    owner.collect_events()
+    owner.replace_actors(value)
+    nodes = owner.state["node_exclusion"]
+    assert list(nodes["slow"]) == ["smp-9-4"] and nodes["excluded"] == {}
+    assert owner.actor_exclude_nodes() == ["smp-9-8", "smp-9-4"]
+    assert signals == []
+
+
+def test_inherited_exclusions_are_seeded_once_into_a_new_work_dir(owner, watch, tmp_path):
+    now = time.time()
+    config = {**owner.config, "inherited_node_exclusions": {
+        "smp-9-20": {"kind": "node_unknown_exclusion", "at": now - 600, "strike": 2,
+                     "cooldown_until": now + 13800, "inherited": True}}}
+    seeded = watch.SegmentWatcher(config, tmp_path / "watch-c16")
+    nodes = seeded.state["node_exclusion"]
+    assert nodes["excluded"]["smp-9-20"]["strike"] == 2 and nodes["strikes"] == {"smp-9-20": 2}
+    assert seeded.actor_exclude_nodes() == ["smp-9-8", "smp-9-20"]
+    nodes["excluded"].pop("smp-9-20")  # re-admitted by its canary
+    seeded.persist()
+    again = watch.SegmentWatcher(config, tmp_path / "watch-c16")  # in-place restart
+    assert again.state["node_exclusion"]["excluded"] == {}
+
+
+def test_canary_pending_past_start_deadline_is_cancelled_as_a_failed_canary(
+        owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path,
+                                                {"good-0": "smp-9-2"})
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000, due=now - 1)},
+        "strikes": {"smp-9-20": 1}}
+    owner.replace_actors(value)
+    record = owner.state["node_exclusion"]["excluded"]["smp-9-20"]
+    pending = [{"actor": a, "job_id": "1", "array_job_id": "78_0", "state": "PENDING",
+                "exit_code": "0:0", "terminal": False, "node": None}
+               for a in ("canary-1-a", "canary-1-b")]
+    rl.actor_accounting = lambda path, with_node=False: pending
+    commands = []
+    monkeypatch.setattr(watch, "read_published", lambda path: {"job_id": "78;cluster"})
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **k: (
+        commands.append(command) or SimpleNamespace(returncode=0)))
+    owner.replace_actors(value)
+    assert record["canary"] is not None and commands == []  # within the start deadline
+    record["canary"]["started_at"] = now - 3601
+    owner.replace_actors(value)
+    assert commands == [["scancel", "78"]]  # only the canary's own array
+    assert record["canary"] is None and record["strike"] == 2
+    assert record["canaries"][-1]["outcome"] == "not_started"
+    assert value["cancelled_canary_actors"] == ["canary-1-a", "canary-1-b"]
+    # Its still-PENDING lanes no longer count against the CPU budget.
+    owner.config.update(actors=466, cpus=32, cpu_budget=500)  # 466+32+2 == 500
+    record["cooldown_until"] = time.time() - 1
+    owner.replace_actors(value)
+    assert record.get("canary_waiting") is None and len(prepared) == 2
+
+
+def test_release_never_updates_a_pinned_canary_array(owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path,
+                                                {"good-0": "smp-9-2"})
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000),
+                     "smp-9-21": {**excluded_record(watch, now - 9000),
+                                  "canary": {"plan": "canary-B/plan.json", "actors": ["b"],
+                                             "started_at": now, "closes": 0,
+                                             "failures": 0}}},
+        "strikes": {}}
+    value["actor_plans"] = ["actor-plan", "canary-B/plan.json"]
+    updated = []
+    monkeypatch.setattr(watch, "read_published", lambda path: {"job_id": str(path.parent)})
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **k: (
+        updated.append(command) or SimpleNamespace(returncode=0)))
+    rl.actor_accounting = lambda path, with_node=False: [
+        {"actor": "x", "state": "PENDING", "terminal": False}]
+    owner.release_pending_exclusion(value, "smp-9-22")
+    assert [c[2] for c in updated] == ["JobId=."]  # actor-plan only, never canary-B
