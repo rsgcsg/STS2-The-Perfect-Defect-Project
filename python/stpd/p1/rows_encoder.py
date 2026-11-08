@@ -95,6 +95,18 @@ def _finite_float(token: str) -> float:
     return value
 
 
+def parse_public_json(raw: bytes | bytearray | memoryview) -> Any:
+    """json.loads that rejects non-finite numbers as `invalid_public_json`.
+
+    FrameCompiler.encode hashes json_bytes(observation) (allow_nan=False) before
+    compiling, so any non-finite number anywhere is invalid_public_json there.
+    """
+    try:
+        return json.loads(bytes(raw), parse_constant=_non_finite, parse_float=_finite_float)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise BoundaryError("p1_rows_encoder", "invalid_public_json") from error
+
+
 def _nested(item: Any) -> bool:
     """Cache unit policy for list elements: containers that themselves nest."""
     if isinstance(item, dict):
@@ -324,13 +336,10 @@ class RowsEncoder:
 
     def encode(self, raw: bytes | bytearray | memoryview) -> EncodedRow:
         """Encode one observation given as its JSON bytes."""
-        # FrameCompiler.encode hashes json_bytes(observation) (allow_nan=False)
-        # before compiling, so any non-finite number is invalid_public_json there.
-        try:
-            observation = json.loads(bytes(raw), parse_constant=_non_finite,
-                                     parse_float=_finite_float)
-        except (UnicodeDecodeError, ValueError) as error:
-            raise BoundaryError("p1_rows_encoder", "invalid_public_json") from error
+        return self.encode_parsed(parse_public_json(raw))
+
+    def encode_parsed(self, observation: Any) -> EncodedRow:
+        """Encode one observation parsed by `parse_public_json` (alone or inside a message)."""
         # FrameCompiler.encode checks the catalog binding (observation_hashes) first.
         if not isinstance(observation, dict) or not isinstance(observation.get("catalog"), list):
             raise BoundaryError("p1_frame_compiler", "public_observation_and_catalog_required")

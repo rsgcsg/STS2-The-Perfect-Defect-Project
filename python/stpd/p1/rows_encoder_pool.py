@@ -1,6 +1,8 @@
 """Per-node pool of RowsEncoder processes (P-REWRITE WP3, fast_chain only).
 
-Each worker is a spawned process holding one cached `RowsEncoder`. Lanes (one
+Each worker is a spawned process holding one cached `RowsEncoder` and one
+handler (default: one observation's JSON bytes -> EncodedRow; the node
+aggregator passes whole link messages so they are parsed once, in a worker). Lanes (one
 per game instance, or per environment connection) stick to one worker, so the
 adjacent-step content reuse lands in that worker's cache; a new lane goes to the
 worker with the fewest live lanes. Workers are started with `spawn` (or
@@ -17,16 +19,17 @@ Failure is loud and final:
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import multiprocessing
 import os
 import struct
 import threading
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from multiprocessing.connection import Connection
-from typing import Any
+from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError
 
@@ -38,8 +41,20 @@ _META = ("row_sha256", "observation_sha256", "catalog_sha256", "catalog_len", "i
          "floor")
 
 
+def encode_observation(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
+    """Default handler: the payload is one observation's JSON bytes."""
+    encoded = encoder.encode(payload)
+    return {name: getattr(encoded, name) for name in _META}, encoded.row
+
+
+def _handler(path: str) -> Callable[[Any, memoryview], tuple[dict[str, Any], bytes]]:
+    module, _, name = path.partition(":")
+    return cast(Callable[[Any, memoryview], tuple[dict[str, Any], bytes]],
+                getattr(importlib.import_module(module), name))
+
+
 def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int,
-            verify_every: int, cpu: int | None) -> None:
+            verify_every: int, cpu: int | None, handler_path: str) -> None:
     if cpu is not None:
         os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -49,6 +64,7 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
     from .rows_encoder import RowsEncoder
 
     encoder = RowsEncoder(vocabulary, cache_bytes=cache_bytes, verify_every=verify_every)
+    handler = _handler(handler_path)
     connection.send_bytes(json.dumps(encoder.identity).encode())
     while True:
         try:
@@ -63,7 +79,7 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
             connection.send_bytes(_REPLY.pack(tag, len(body)) + body)
             continue
         try:
-            encoded = encoder.encode(memoryview(message)[_TAG.size:])
+            meta, row = handler(encoder, memoryview(message)[_TAG.size:])
         except ValueError as error:  # BoundaryError is a ValueError
             boundary = isinstance(error, BoundaryError)
             failure = {"error": "BoundaryError" if boundary else "ValueError",
@@ -72,8 +88,8 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
             body = json.dumps(failure).encode()
             connection.send_bytes(_REPLY.pack(tag, len(body)) + body)
             continue
-        meta = json.dumps({name: getattr(encoded, name) for name in _META}).encode()
-        connection.send_bytes(_REPLY.pack(tag, len(meta)) + meta + encoded.row)
+        body = json.dumps(meta).encode()
+        connection.send_bytes(_REPLY.pack(tag, len(body)) + body + row)
 
 
 class _Worker:
@@ -91,7 +107,8 @@ class EncoderPool:
 
     def __init__(self, vocabulary: dict[str, Any], *, workers: int,
                  cache_bytes: int = DEFAULT_CACHE_BYTES, verify_every: int = 0,
-                 cpus: Sequence[int] | None = None, start_method: str = "spawn") -> None:
+                 cpus: Sequence[int] | None = None, start_method: str = "spawn",
+                 handler: str = "stpd.p1.rows_encoder_pool:encode_observation") -> None:
         if workers < 1:
             raise ValueError("encoder_pool_requires_workers")
         if start_method not in {"spawn", "forkserver"}:
@@ -99,6 +116,7 @@ class EncoderPool:
         if cpus is not None and len(cpus) != workers:
             raise ValueError("encoder_pool_cpus_per_worker")
         context: Any = multiprocessing.get_context(start_method)
+        self._default = handler == "stpd.p1.rows_encoder_pool:encode_observation"
         self._workers: list[_Worker] = []
         self._lanes: dict[Any, _Worker] = {}
         self._lock = threading.Lock()
@@ -111,7 +129,7 @@ class EncoderPool:
             process = context.Process(
                 target=_worker, name=f"rows-encoder-{index}", daemon=True,
                 args=(child, vocabulary, cache_bytes, verify_every,
-                      None if cpus is None else cpus[index]))
+                      None if cpus is None else cpus[index], handler))
             process.start()
             child.close()
             worker = _Worker(process, parent)
@@ -147,8 +165,12 @@ class EncoderPool:
                 worker.lanes -= 1
 
     # -- requests ----------------------------------------------------------
-    def submit(self, lane: Any, raw: bytes) -> Future[EncodedRow]:
-        """Encode one observation (its JSON bytes) on the lane's worker."""
+    def submit(self, lane: Any, raw: bytes) -> Future[Any]:
+        """Run the handler on the lane's worker, in submission order per worker.
+
+        With the default handler `raw` is one observation's JSON bytes and the
+        future holds an EncodedRow; otherwise it holds the handler's (meta, row).
+        """
         with self._lock:
             if self._broken is not None:
                 raise BoundaryError("p1_rows_encoder", "encoder_worker_died") from self._broken
@@ -202,8 +224,10 @@ class EncoderPool:
                     future.set_exception(BoundaryError(meta["stage"], meta["code"]))
                 else:
                     future.set_exception(ValueError(meta["message"]))
-            else:
+            elif self._default:
                 future.set_result(EncodedRow(row=message[_REPLY.size + length:], **meta))
+            else:
+                future.set_result((meta, message[_REPLY.size + length:]))
 
     def _break(self, error: BaseException) -> None:
         with self._lock:
