@@ -575,7 +575,8 @@ class ManagedEpisodeExecutor:
         runtime_process: subprocess.Popen[bytes] | _EmbeddedRuntime | None = None
         transport = getattr(self, "managed_transport", "http")
         in_process = transport == "in_process"
-        row["managed_transport"] = transport
+        if transport != "http":  # the default old chain keeps its rows unchanged
+            row["managed_transport"] = transport
         embedder = None
         if in_process:
             (private / "runtime.stdout").touch(mode=0o600, exist_ok=False)
