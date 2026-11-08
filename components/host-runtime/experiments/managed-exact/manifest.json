@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "bd206763e9785467721f131a35793febe5241ab31e0581f28edf5584ab5f8e58",
-    "artifact_sha256": "db9fe05ca169f64b9bc200cab302db11c58a146d2b13e7b9a95223dbe7401f8d",
-    "artifact_mvid": "98673af8-996a-4307-b224-e0d953e4610f",
+    "source_patch_sha256": "177378d285aff5746a29057aae1e891ea51718f01061b389792105e753a1693f",
+    "artifact_sha256": "e8f9ce9d017b59400603d4dc782693c5b76f76f2d04e3f329f22d0bf25458f0c",
+    "artifact_mvid": "0e9e78f6-0a66-4d39-96dc-0aea7be4dee0",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "3fbbd1c3fd2eb6071809febcfe755b7e84b3c09a194a8707aeb166aa555f269b",
-        "artifact_sha256": "1fc66a2dfc60d84ed3c92db05c16f19b6bc0630e811d8cb808173ad532d25b13",
-        "artifact_mvid": "b242fff0-cd99-49d0-afe1-0413048e7195",
+        "source_patch_sha256": "7573daa446337e679ced094370722cc38e73d75350788c2f8da76e7d50062498",
+        "artifact_sha256": "0d49180e9d825024f99bc8b42a295478057ecc27e2cb72c52384e392b316407e",
+        "artifact_mvid": "30e1853f-42cb-4416-8fe6-4b45dd4d2eca",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [

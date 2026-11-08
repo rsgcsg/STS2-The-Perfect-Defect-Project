@@ -28,10 +28,11 @@ namespace STS2Platform.NativeFoundation;
 public static partial class NativeCardPreviewReadQualification
 {
     private static bool RenderMethodsUnpatched(Type type) =>
-        NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive);
+        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive)
+            : RenderMethodsUnpatchedLive(type);
     private static bool RenderMethodsUnpatchedLive(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
         .All(IsUnpatched) && type.GetConstructors(NativeMembers).All(IsUnpatched);
-    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null ? RenderIteratorUnpatchedLive(method)
+    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null || !NativePatchStateCache.Enabled ? RenderIteratorUnpatchedLive(method)
         : NativePatchStateCache.Memo<MethodInfo>(nameof(RenderIteratorUnpatched), method, RenderIteratorUnpatchedLive);
     private static bool RenderIteratorUnpatchedLive(MethodInfo? method)
     {
@@ -39,9 +40,10 @@ public static partial class NativeCardPreviewReadQualification
         Type? iterator = method!.GetCustomAttribute<IteratorStateMachineAttribute>()?.StateMachineType;
         return iterator == null || RenderMethodsUnpatched(iterator);
     }
-    private static bool RenderGettersUnpatched(Type type, params string[] names) => !NativePatchStateCache.Enabled
-        ? RenderGettersUnpatchedLive(type, names)
-        : NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
+    private static bool RenderGettersUnpatched(Type type, params string[] names) => NativePatchStateCache.Enabled
+        ? RenderGettersUnpatchedMemo(type, names) : RenderGettersUnpatchedLive(type, names);
+    private static bool RenderGettersUnpatchedMemo(Type type, string[] names) =>
+        NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
     private static bool RenderGettersUnpatchedLive(Type type, string[] names) => names.All(name =>
         IsUnpatched(type.GetProperty(name, NativeMembers)?.GetMethod));
     private static bool NativeRenderMethod(MethodInfo? method) => method != null
@@ -51,7 +53,9 @@ public static partial class NativeCardPreviewReadQualification
     private static bool RenderCardDispatchQualified(CardModel card)
     {
         Type type = card.GetType();
-        return NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive);
+        return NativePatchStateCache.Enabled
+            ? NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive)
+            : RenderCardDispatchQualifiedLive(type);
     }
 
     private static bool RenderCardDispatchQualifiedLive(Type type)
@@ -128,7 +132,8 @@ public static partial class NativeCardPreviewReadQualification
             && NativeRenderMethod(character.GetType().GetProperty("CardPool", NativeMembers)?.GetMethod);
     }
     private static bool RenderFixedClosureUnpatched() =>
-        NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive);
+        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive)
+            : RenderFixedClosureUnpatchedLive();
     private static bool RenderFixedClosureUnpatchedLive() =>
         MethodsUnpatched(typeof(CardModel), "get_TitleLocString", "get_Title", "get_Description", "get_Type", "get_Rarity",
             "get_IsUpgraded", "get_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "get_Pile", "get_UpgradePreviewType", "get_IsEnchantmentPreview",
@@ -208,7 +213,9 @@ public static partial class NativeCardPreviewReadQualification
     private static bool RenderCombatListenerQualified(AbstractModel model)
     {
         Type current = model.GetType();
-        if (!NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)) return false;
+        if (!(NativePatchStateCache.Enabled
+                ? NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)
+                : RenderCombatListenerTypeQualified(current))) return false;
         if (model is WeakPower or VulnerablePower)
             return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
                 typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
@@ -240,7 +247,9 @@ public static partial class NativeCardPreviewReadQualification
         gap = "native_card_render_combat_hook_closure_unqualified";
         if (combat.GetType() != typeof(CombatState) || !NativeRunHookReadQualification.Preflight(run)
             || typeof(ModHelper).GetField("_combatHookSubscribers", NativeMembers)?.GetValue(null) is not ICollection { Count: 0 }
-            || !NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)) return false;
+            || !(NativePatchStateCache.Enabled
+                ? NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)
+                : RenderCombatFixedClosureUnpatched())) return false;
         if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
         AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
         if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
