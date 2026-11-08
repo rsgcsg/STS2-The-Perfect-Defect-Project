@@ -468,13 +468,24 @@ def audit_pick(game_instance_id: str, step_index: Any, threshold: int) -> bool:
 
 
 def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
-    """Score one job's prepared sub-groups with one mu.
+    """Score one job's prepared sub-groups with one mu in one forward.
 
-    Interface for the C-SCALE merge of prepared rows-v2 sub-groups into one
-    forward (lead 11-09 (a), `batch_preparation.py`): until it exists each
-    sub-group is its own forward, so a job is normally one sub-group.
+    The sub-groups are joined by the C-SCALE `concatenate_groups` (lead 11-09 (a);
+    one logic with `prepare_group`); each part's rows count from 0, so the joined
+    rows are `range(total)` and output rows come back in part order.
     """
-    return [scorer.forward_tensors(group) for group in groups]
+    if len(groups) == 1:
+        return [scorer.forward_tensors(groups[0])]
+    from stpd.rl.batch_preparation import concatenate_groups
+
+    counts = [len(group.rows) for group in groups]
+    joined = concatenate_groups(groups, rows=tuple(range(sum(counts))))
+    tensors = scorer.forward_tensors(joined)
+    out, start = [], 0
+    for count in counts:
+        out.append(tuple(value[start:start + count] for value in tensors))
+        start += count
+    return out
 
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
@@ -563,7 +574,8 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]]) -> list[di
                     "outputs": outputs.get(part["part"])})
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
-        out[0]["forwards"] = len(live) if error is None else 0
+        out[0]["forwards"] = 1 if live and error is None else 0  # parts are joined
+        out[0]["forward_rows"] = sum(len(part["kept"]) for part in live)
     return out
 
 
@@ -1015,6 +1027,8 @@ class FastInferenceService:
         if "device_seconds" in part:
             self.stats["device_seconds"] += part["device_seconds"]
             self.stats["batches"] += part["forwards"]
+            self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"],
+                                               part["forward_rows"] * part["forwards"])
         for index, code in part["failed"].items():
             self._refuse(rows[index], code)
         if part["audit"]:
@@ -1028,7 +1042,6 @@ class FastInferenceService:
             for item in kept:
                 self._refuse(item, code)
         elif kept:
-            self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"], len(kept))
             tails: dict[int, list[float] | str] = {}
             for indices, values in part["tails"]:
                 if isinstance(values, str):

@@ -547,3 +547,45 @@ def test_tail_value_uses_the_previous_mu_at_the_tail_floor(vocabulary, model):
         service.close()
     assert [body for kind, body in assembler.calls if kind == "abort"] == [
         (3, "MU_NOT_RESIDENT")]
+
+
+def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, model):
+    """Two prepare workers each prepare half a job; concatenate_groups joins them."""
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    observations = _observations(6)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in observations]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    assembler = FakeAssembler()
+    identity = FrameCompiler(vocabulary).identity
+    service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
+                                   address=("127.0.0.1", 0), env_sha256=ENV,
+                                   prepare_workers=2, job_parts=2, window_ms=200.0)
+    assert service.publish(model, Handoff(MU))
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = [], bytearray()
+        for index, item in enumerate(encoded):
+            rows.append({"request_id": 3 + index, "game_instance_id": "g1", "step_index": index,
+                         "consumption_id": f"c{index}", "catalog_len": item.catalog_len,
+                         "catalog_sha256": item.catalog_sha256,
+                         "observation_sha256": item.observation_sha256, "in_combat": False,
+                         "floor": 2, "payload": {"offset": len(binary), "length": len(item.row),
+                                                 "row_sha256": item.row_sha256}})
+            binary += item.row
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+    finally:
+        client.close()
+        report = service.close()
+    assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+    assert report["jobs"] == 1 and report["batches"] == 1 and report["batch_rows_max"] == 6
+    finished = {body[0]: body[1] for kind, body in assembler.calls if kind == "finish"}
+    for index, want in enumerate(expected):
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        got = finished[3 + index]["behavior_q"]
+        assert torch.allclose(torch.tensor(got), torch.tensor(behavior), atol=1e-6)
