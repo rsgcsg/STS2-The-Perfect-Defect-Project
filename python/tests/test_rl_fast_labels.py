@@ -132,14 +132,14 @@ def test_audit_game_archives_every_bound_mu_before_scoring(tmp_path):
     assert r7 and all(segment.header["audit_retain_mu"] for segment in r7)
     assert not any(segment.header["audit_retain_mu"] for segment in h.sealed
                    if segment.header["game_instance_id"] == "plain")
-    identity, weights = archive.read(mu(2).snapshot_sha256)
+    identity, weights = archive.read(mu(2).snapshot_sha256, "gen-1")
     assert identity == mu(2).identity() and weights == b"weights-2"
     archive(weighted(2))  # idempotent
     with pytest.raises(HandoffError, match="mu_archive_conflict"):
         archive(weighted(2, b"other bytes"))
     (tmp_path / "mu" / (mu(1).snapshot_sha256 + ".weights")).write_bytes(b"tampered")
     with pytest.raises(HandoffError, match="mu_archive_mismatch"):
-        archive.read(mu(1).snapshot_sha256)
+        archive.read(mu(1).snapshot_sha256, "gen-1")
 
 
 def test_audit_game_fails_loud_without_weights_or_archive(tmp_path):

@@ -127,11 +127,12 @@ def test_full_segment_seals_bootstrap_with_old_mu_tail_and_new_mu_applies_next_s
     plans = [h.step("g1")[0] for _ in range(10)]
     assert h.assembler.offer_mu(mu(2)).accepted  # newer mu arrives mid-segment
     plans += [h.step("g1")[0] for _ in range(54)]
-    assert {p.mu for p in plans} == {mu(1)} and {p.segment_id for p in plans} == {"node-a.1"}
+    assert {p.mu for p in plans} == {mu(1)} and {p.segment_id for p in plans} == {
+        f"{h.assembler.instance_id}.1"}
     assert [p.row_in_segment for p in plans] == list(range(64))
     assert not h.sealed  # a full segment waits for the tail on the successor row
     successor, row = h.step("g1", floor=2)
-    assert successor.mu == mu(2) and successor.segment_id == "node-a.2"
+    assert successor.mu == mu(2) and successor.segment_id == f"{h.assembler.instance_id}.2"
     assert successor.tail is not None and successor.tail.mu == mu(1).snapshot_sha256
     assert successor.tail.floor == 2
     [segment] = h.sealed
@@ -400,10 +401,11 @@ def test_handoff_writes_to_disk_first_and_sends_only_trainable(tmp_path: Path):
     out = context.Queue()
     process = context.Process(target=_receiver, args=(child, 2, out))
     process.start()
-    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path),
-                             ShmSegmentSender(parent, assembler_id="node-a",
-                                              max_inflight_bytes=1))
     h = Harness()
+    instance = h.assembler.instance_id
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance),
+                             ShmSegmentSender(parent, assembler_id=instance,
+                                              max_inflight_bytes=1))
     h.assembler.emit = handoff.submit
     h.assembler.offer_mu(mu(1))
     h.open("g1")
@@ -416,18 +418,19 @@ def test_handoff_writes_to_disk_first_and_sends_only_trainable(tmp_path: Path):
     received = [out.get(timeout=60) for _ in range(2)]
     process.join(timeout=60)
     assert process.exitcode == 0
-    assert received == [(1, "node-a.1", 64, True), (2, "node-a.2", 64, True)]
+    assert received == [(1, f"{instance}.1", 64, True), (2, f"{instance}.2", 64, True)]
     assert handoff.counters == {"written": 3, "handed_off": 2, "truncated_written": 1,
-                                "bytes": handoff.counters["bytes"]}
+                                "rejected_written": 0, "bytes": handoff.counters["bytes"],
+                                "write_failed": 0, "not_handed_off": 0}
     assert len(list((tmp_path / "bootstrap").iterdir())) == 2
     [truncated] = list((tmp_path / "truncated").iterdir())
     assert decode_segment(truncated.read_bytes())[0]["seal"]["kind"] == "truncated"
 
 
 def test_handoff_failure_is_loud_and_sticky(tmp_path: Path):
-    writer = DurableSegmentWriter(tmp_path)
-    handoff = SegmentHandoff(writer)
     h = Harness()
+    writer = DurableSegmentWriter(tmp_path, instance_id=h.assembler.instance_id)
+    handoff = SegmentHandoff(writer)
     h.assembler.offer_mu(mu(1))
     h.open("g1")
     h.step("g1")
@@ -438,7 +441,7 @@ def test_handoff_failure_is_loud_and_sticky(tmp_path: Path):
     with pytest.raises(HandoffError) as raised:
         handoff.close()
     assert str(raised.value.__cause__) == "segment_original_already_exists"
-    assert (tmp_path / "truncated" / "node-a.1.stfs").read_bytes() == segment.data
+    assert (tmp_path / "truncated" / f"{segment.segment_id}.stfs").read_bytes() == segment.data
     with pytest.raises(HandoffError):
         handoff.submit(segment)  # every later caller sees the first failure
 

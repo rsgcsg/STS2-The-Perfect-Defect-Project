@@ -6,13 +6,25 @@ with `receive_segment` or its own reader of the same messages.
 Order per segment (design v2 §2.8): encode -> write `<root>/<kind>/<segment_id>.stfs`
 (temporary file, fsync, rename, directory fsync) -> only then, for trainable
 segments, hand-off. Truncated segments are written and counted, never handed
-off. A write failure stops the hand-off thread and is raised to every later
-caller: nothing is dropped silently and the chain does not fall back.
+off; encoder-refused segments go to `<root>/rejected/<segment_id>.json`.
+Writing and hand-off fail separately: after a hand-off failure (SGD gone) every
+queued and later segment is still written, only not handed off
+(`not_handed_off`); after a write failure every later segment is still tried.
+Either failure is sticky and raised to every later `submit` (after the segment
+was queued) and by `raise_if_failed`: the chain stops loudly, nothing falls back.
+
+What "disk first" does not cover (a crash loses these without a record; no
+duplicate follows, recovery is CP-only): segments sealed and queued but not
+yet written (at most `max_queue`; keep it small), rows of segments not yet
+sealed, and the bytes of a row in flight when its game closes.
+
+`DurableSegmentWriter` serves one assembler instance and refuses to start when
+originals of that instance already exist (a restart must be a new instance).
 
 Same-machine hand-off wire (`stpd/rl-fast-segment-handoff-1`), over one
 `multiprocessing.connection` channel (Unix socket, authkey) per SGD consumer:
 
-    sender -> SGD   {"schema", "handoff_sequence", "assembler_id", "segment_id",
+    sender -> SGD   {"schema", "handoff_sequence", "assembler_id" (the instance id), "segment_id",
                      "training_generation", "mu_snapshot_sha256", "rows",
                      "shm_name", "size", "sha256", "path"}
     SGD -> sender   {"schema", "ack": handoff_sequence}
@@ -25,6 +37,10 @@ and acks; the sender then unlinks the block. Unacknowledged bytes are bounded by
 `max_inflight_bytes`; when full, the hand-off waits (back-pressure, no drop).
 A lost SGD connection is fatal for this sender: segments already on disk stay as
 originals; recovery is CP-only (the live queue is discarded, never re-offered).
+After a training-generation change, trainable segments of the old generation
+that were already queued are still handed off; the SGD side drops them by
+`training_generation` (WP8 acceptance item). `receive_segment` checks the
+message's instance, generation and mu against the segment header.
 """
 from __future__ import annotations
 
@@ -38,9 +54,12 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-from .fast_segment import SealedSegment, canonical_json, decode_segment, sha256
+from .fast_segment import RejectedSegment, SealedSegment, canonical_json, decode_segment, sha256
 
 HANDOFF_SCHEMA = "stpd/rl-fast-segment-handoff-1"
+HANDOFF_KEYS = frozenset({"schema", "handoff_sequence", "assembler_id", "segment_id",
+                          "training_generation", "mu_snapshot_sha256", "rows", "shm_name",
+                          "size", "sha256", "path"})
 SUFFIX = ".stfs"
 
 
@@ -74,18 +93,31 @@ def _durable_write(target: Path, data: bytes, conflict: str) -> None:
     _fsync_directory(target.parent)
 
 
+KINDS = ("bootstrap", "terminal", "truncated", "rejected")
+
+
 class DurableSegmentWriter:
-    """Immutable local originals; an existing file is never overwritten."""
+    """Immutable local originals of one assembler instance; never overwritten."""
 
-    def __init__(self, root: Path | str) -> None:
-        self.root = Path(root)
-        for kind in ("bootstrap", "terminal", "truncated"):
-            (self.root / kind).mkdir(parents=True, exist_ok=True, mode=0o700)
+    def __init__(self, root: Path | str, *, instance_id: str) -> None:
+        if not isinstance(instance_id, str) or not instance_id:
+            raise HandoffError("assembler_instance_required")
+        self.root, self.instance_id = Path(root), instance_id
+        prefix = instance_id + "."
+        for kind in KINDS:
+            directory = self.root / kind
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with os.scandir(directory) as entries:
+                if any(entry.name.lstrip(".").startswith(prefix) for entry in entries):
+                    raise HandoffError("assembler_instance_already_has_originals")
 
-    def path(self, segment: SealedSegment) -> Path:
-        return self.root / segment.kind / (segment.segment_id + SUFFIX)
+    def path(self, segment: SealedSegment | RejectedSegment) -> Path:
+        suffix = ".json" if isinstance(segment, RejectedSegment) else SUFFIX
+        return self.root / segment.kind / (segment.segment_id + suffix)
 
-    def write(self, segment: SealedSegment) -> Path:
+    def write(self, segment: SealedSegment | RejectedSegment) -> Path:
+        if not segment.segment_id.startswith(self.instance_id + "."):
+            raise HandoffError("segment_from_another_assembler_instance")
         target = self.path(segment)
         _durable_write(target, segment.data, "segment_original_already_exists")
         return target
@@ -97,10 +129,13 @@ MU_ARCHIVE_SCHEMA = "stpd/rl-fast-mu-archive-1"
 class DurableMuArchive:
     """Weights of the temporary mu an R7 game used (`episode_open.audit_retain_mu`).
 
-    `<snapshot>.weights` holds the bytes the learner pushed; `<snapshot>.json`
-    (written last, the commit marker) binds them by sha256 to the mu identity.
+    `<snapshot>.weights` holds the bytes the learner pushed;
+    `<snapshot>.<generation digest 16>.json` (written last, the commit marker)
+    binds them by sha256 to the mu identity under that training generation (the
+    same weights may come back under a new generation after a CP restore).
     Archiving the same mu again is a no-op; a different identity or byte digest
-    under the same snapshot is a loud conflict. Kept with the R7 originals.
+    under the same snapshot and generation is a loud conflict. Kept with the R7
+    originals.
     """
 
     def __init__(self, root: Path | str) -> None:
@@ -117,11 +152,12 @@ class DurableMuArchive:
     def __call__(self, handoff: Any) -> None:
         manifest = self.manifest(handoff)
         weights_path = self.root / (handoff.snapshot_sha256 + ".weights")
-        manifest_path = self.root / (handoff.snapshot_sha256 + ".json")
+        manifest_path = self._manifest_path(handoff.snapshot_sha256,
+                                            handoff.training_generation)
         if manifest_path.exists():
             if manifest_path.read_bytes() != manifest:
                 raise HandoffError("mu_archive_conflict")
-            self.read(handoff.snapshot_sha256)
+            self.read(handoff.snapshot_sha256, handoff.training_generation)
             return
         if not weights_path.exists():
             _durable_write(weights_path, handoff.weights, "mu_archive_conflict")
@@ -129,12 +165,19 @@ class DurableMuArchive:
             raise HandoffError("mu_archive_conflict")
         _durable_write(manifest_path, manifest, "mu_archive_conflict")
 
-    def read(self, snapshot_sha256: str) -> tuple[dict[str, Any], bytes]:
+    def _manifest_path(self, snapshot_sha256: str, training_generation: str) -> Path:
+        generation = sha256(training_generation.encode())[:16]
+        return self.root / f"{snapshot_sha256}.{generation}.json"
+
+    def read(self, snapshot_sha256: str,
+             training_generation: str) -> tuple[dict[str, Any], bytes]:
         """(mu identity, weights) for the R7 replay; verified, never repaired."""
-        manifest = json.loads((self.root / (snapshot_sha256 + ".json")).read_bytes())
+        manifest = json.loads(self._manifest_path(snapshot_sha256,
+                                                  training_generation).read_bytes())
         weights = (self.root / (snapshot_sha256 + ".weights")).read_bytes()
         if (manifest.get("schema") != MU_ARCHIVE_SCHEMA
                 or manifest["mu"]["snapshot_sha256"] != snapshot_sha256
+                or manifest["mu"]["training_generation"] != training_generation
                 or manifest["weights_sha256"] != sha256(weights)
                 or manifest["size"] != len(weights)):
             raise HandoffError("mu_archive_mismatch")
@@ -151,7 +194,9 @@ class ShmSegmentSender:
         self.connection, self.assembler_id = connection, assembler_id
         self.max_inflight_bytes, self.ack_timeout = max_inflight_bytes, ack_timeout
         self.sequence = 0
-        self.inflight: dict[int, shared_memory.SharedMemory] = {}
+        # Sent size per block: on macOS `SharedMemory.size` is rounded up to the
+        # page size, so the bound is kept in requested bytes (Linux is exact).
+        self.inflight: dict[int, tuple[shared_memory.SharedMemory, int]] = {}
         self.inflight_bytes = 0
 
     def _drain(self, *, block: bool) -> None:
@@ -162,8 +207,8 @@ class ShmSegmentSender:
             sequence = reply.get("ack") if isinstance(reply, dict) else None
             if reply.get("schema") != HANDOFF_SCHEMA or sequence not in self.inflight:
                 raise HandoffError("sgd_ack_binding")
-            block_ = self.inflight.pop(sequence)
-            self.inflight_bytes -= block_.size
+            block_, sent = self.inflight.pop(sequence)
+            self.inflight_bytes -= sent
             block_.close()
             block_.unlink()
             block = False
@@ -171,6 +216,8 @@ class ShmSegmentSender:
     def send(self, segment: SealedSegment, path: Path) -> int:
         if not segment.trainable:
             raise HandoffError("truncated_segment_never_handed_to_sgd")
+        if segment.header.get("assembler_instance") != self.assembler_id:
+            raise HandoffError("segment_from_another_assembler_instance")
         size = len(segment.data)
         self._drain(block=False)
         while self.inflight and self.inflight_bytes + size > self.max_inflight_bytes:
@@ -193,7 +240,7 @@ class ShmSegmentSender:
             block.close()
             block.unlink()
             raise
-        self.inflight[self.sequence] = block
+        self.inflight[self.sequence] = (block, size)
         self.inflight_bytes += size
         return self.sequence
 
@@ -202,7 +249,7 @@ class ShmSegmentSender:
         try:
             self._drain(block=True)
         finally:
-            for block in self.inflight.values():
+            for block, _ in self.inflight.values():
                 block.close()
                 block.unlink()
             self.inflight.clear()
@@ -216,7 +263,8 @@ def receive_segment(connection: Connection) -> tuple[dict[str, Any], dict[str, A
     The learner then runs `decode_row` on each row and builds rows-v2 groups.
     """
     message = connection.recv()
-    if not isinstance(message, dict) or message.get("schema") != HANDOFF_SCHEMA:
+    if (not isinstance(message, dict) or message.get("schema") != HANDOFF_SCHEMA
+            or set(message) != HANDOFF_KEYS):
         raise HandoffError("handoff_schema")
     block = shared_memory.SharedMemory(name=message["shm_name"])
     try:
@@ -233,7 +281,10 @@ def receive_segment(connection: Connection) -> tuple[dict[str, Any], dict[str, A
         raise HandoffError("handoff_digest")
     header, rows = decode_segment(data)
     if (header["segment_id"] != message["segment_id"] or not header["trainable"]
-            or len(rows) != message["rows"]):
+            or len(rows) != message["rows"]
+            or header["assembler_instance"] != message["assembler_id"]
+            or header["mu"]["training_generation"] != message["training_generation"]
+            or header["mu"]["snapshot_sha256"] != message["mu_snapshot_sha256"]):
         raise HandoffError("handoff_segment_binding")
     connection.send({"schema": HANDOFF_SCHEMA, "ack": message["handoff_sequence"]})
     return message, header, rows
@@ -243,50 +294,73 @@ class SegmentHandoff:
     """Background writer + sender so the assembler never blocks under its lock."""
 
     def __init__(self, writer: DurableSegmentWriter, sender: ShmSegmentSender | None = None,
-                 *, max_queue: int = 256,
-                 on_written: Callable[[SealedSegment, Path], None] | None = None) -> None:
+                 *, max_queue: int = 64,
+                 on_written: Callable[[SealedSegment | RejectedSegment, Path], None] | None = None
+                 ) -> None:
         self.writer, self.sender, self.on_written = writer, sender, on_written
-        self.queue: queue.Queue[SealedSegment | None] = queue.Queue(max_queue)
-        self.error: BaseException | None = None
-        self.counters = {"written": 0, "handed_off": 0, "truncated_written": 0, "bytes": 0}
+        self.queue: queue.Queue[SealedSegment | RejectedSegment | None] = queue.Queue(max_queue)
+        self.write_error: BaseException | None = None
+        self.send_error: BaseException | None = None
+        self.counters = {"written": 0, "handed_off": 0, "truncated_written": 0,
+                         "rejected_written": 0, "bytes": 0, "write_failed": 0,
+                         "not_handed_off": 0}
         self.thread = threading.Thread(target=self._run, name="fast-segment-handoff",
                                        daemon=True)
         self.thread.start()
 
-    def raise_if_failed(self) -> None:
-        if self.error is not None:
-            raise HandoffError("segment_handoff_failed") from self.error
+    @property
+    def error(self) -> BaseException | None:
+        return self.write_error or self.send_error
 
-    def submit(self, segment: SealedSegment) -> None:
-        self.raise_if_failed()
+    def raise_if_failed(self) -> None:
+        if self.write_error is not None:
+            raise HandoffError("segment_write_failed") from self.write_error
+        if self.send_error is not None:
+            raise HandoffError("segment_handoff_failed") from self.send_error
+
+    def submit(self, segment: SealedSegment | RejectedSegment) -> None:
+        """Always queue the segment first (it will be written), then report failures."""
         self.queue.put(segment)
+        self.raise_if_failed()
 
     def _run(self) -> None:
         while True:
             segment = self.queue.get()
             if segment is None:
                 return
-            if self.error is not None:
-                continue  # stay failed; every later caller sees the first error
             try:
                 path = self.writer.write(segment)
-                self.counters["written"] += 1
-                self.counters["bytes"] += len(segment.data)
-                if not segment.trainable:
-                    self.counters["truncated_written"] += 1
-                elif self.sender is not None:
-                    self.sender.send(segment, path)
-                    self.counters["handed_off"] += 1
-                if self.on_written is not None:
-                    self.on_written(segment, path)
             except BaseException as error:  # noqa: BLE001 - recorded and re-raised
-                self.error = error
+                self.counters["write_failed"] += 1
+                self.write_error = self.write_error or error
+                continue
+            self.counters["written"] += 1
+            self.counters["bytes"] += len(segment.data)
+            if isinstance(segment, RejectedSegment):
+                self.counters["rejected_written"] += 1
+            elif not segment.trainable:
+                self.counters["truncated_written"] += 1
+            elif self.sender is not None:
+                if self.send_error is not None:
+                    self.counters["not_handed_off"] += 1
+                else:
+                    try:
+                        self.sender.send(segment, path)
+                        self.counters["handed_off"] += 1
+                    except BaseException as error:  # noqa: BLE001 - recorded, re-raised
+                        self.send_error = error
+                        self.counters["not_handed_off"] += 1
+            if self.on_written is not None:
+                try:
+                    self.on_written(segment, path)
+                except BaseException as error:  # noqa: BLE001 - recorded and re-raised
+                    self.write_error = self.write_error or error
 
     def close(self) -> None:
         self.queue.put(None)
         self.thread.join()
         try:
-            if self.sender is not None and self.error is None:
+            if self.sender is not None and self.send_error is None:
                 self.sender.close()
         finally:
             self.raise_if_failed()

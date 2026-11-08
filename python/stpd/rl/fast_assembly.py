@@ -44,6 +44,20 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
   segments bind is archived (`mu_archive`, weights bound by sha256) before any
   of its rows is scored with it, so the complete-chain replay can rescore.
 
+Instance identity: every start of an assembler is a new instance,
+`<assembler_id>.<random 12 hex>`. Segment ids (`<instance>.<n>`) and the SGD
+lease keys (`<instance>/<handoff_sequence>`) live under it, so a crash restart
+never repeats an id; `DurableSegmentWriter` refuses to start when originals of
+the same instance already exist. A crash loses only what was in memory: games
+open at the crash are unknown to the new instance (their later rows are refused
+-> `not_started`, late outcomes counted), and their unsealed rows are never
+written; see `fast_handoff` for what "disk first" does not cover.
+
+Exception paths keep originals: a segment is encoded before it leaves its game,
+an encoder refusal becomes a `RejectedSegment` original (written to
+`rejected/`, counted, raised), and every public method hands what it sealed to
+`emit` even when it raises.
+
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
 identity is the snapshot digest plus training generation, version and update
@@ -56,13 +70,23 @@ from __future__ import annotations
 
 import copy
 import math
+import secrets
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .fast_segment import MAX_ROWS, ROW_FORMAT, SealedSegment, encode_segment, sha256
+from .fast_segment import (
+    MAX_ROWS,
+    ROW_FORMAT,
+    RejectedSegment,
+    SealedSegment,
+    SegmentFormatError,
+    check_value_distribution,
+    encode_segment,
+    sha256,
+)
 from .heads import checked_terminal_class
 from .reward import REWARD_SPEC
 
@@ -161,10 +185,24 @@ class MuLedger:
         self.latest: MuHandoff | None = None
         self.declined = 0
 
+    def check(self, handoff: MuHandoff) -> None:
+        """Refuse, before any state changes, a resident snapshot under another identity.
+
+        The same snapshot under a new training generation (learner CP restore with
+        unchanged weights) is not a conflict: `offer` registers it under the new one.
+        """
+        resident = self.resident.get(handoff.snapshot_sha256)
+        if (resident is not None and resident != handoff
+                and resident.training_generation == handoff.training_generation):
+            raise AssemblyError("mu_snapshot_identity_changed")
+
     def offer(self, handoff: MuHandoff) -> MuOffer:
+        self.check(handoff)
         if handoff.snapshot_sha256 in self.resident:
-            if self.resident[handoff.snapshot_sha256] != handoff:
-                raise AssemblyError("mu_snapshot_identity_changed")
+            if self.resident[handoff.snapshot_sha256] != handoff:  # new generation
+                self.resident[handoff.snapshot_sha256] = handoff
+                self.latest = handoff
+                return MuOffer(True, self.collect(), True)
             return MuOffer(True, ())
         changed = (self.latest is not None
                    and self.latest.training_generation != handoff.training_generation)
@@ -280,9 +318,14 @@ class _Game:
     pending: tuple[dict[str, Any], bytes] | None = None
 
 
+def _archive_key(handoff: MuHandoff) -> tuple[str, str]:
+    # The same weights under a new generation (CP restore) are bound again.
+    return handoff.snapshot_sha256, handoff.training_generation
+
+
 class FastSegmentAssembler:
     def __init__(self, *, assembler_id: str, compiler_identity: dict[str, Any],
-                 emit: Callable[[SealedSegment], None],
+                 emit: Callable[[SealedSegment | RejectedSegment], None],
                  terminal_labeler: TerminalLabeler | None = public_terminal_label,
                  ledger: MuLedger | None = None, closed_memory: int = 65536,
                  mu_archive: MuArchive | None = None) -> None:
@@ -290,10 +333,11 @@ class FastSegmentAssembler:
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
         self.assembler_id, self.steps = assembler_id, MAX_ROWS
+        self.instance_id = f"{assembler_id}.{secrets.token_hex(6)}"
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.emit, self.terminal_labeler = emit, terminal_labeler
         self.mu_archive = mu_archive
-        self.archived: set[str] = set()
+        self.archived: set[tuple[str, str]] = set()  # (snapshot, training generation)
         self.archive_lock = threading.Lock()
         self.ledger = ledger or MuLedger()
         self.lock = threading.Lock()
@@ -304,7 +348,7 @@ class FastSegmentAssembler:
         self.counters: dict[str, Any] = {
             "rows": 0, "aborted_rows": 0, "forced_steps": 0, "late_discarded": 0,
             "outcomes_without_row": 0, "segments": {"bootstrap": 0, "terminal": 0,
-                                                    "truncated": 0},
+                                                    "truncated": 0, "rejected": 0},
             "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
             "terminal_label_refused": 0, "mu_archived": 0}
 
@@ -318,31 +362,38 @@ class FastSegmentAssembler:
         CP-only restore.
         """
         with self.lock:
+            self.ledger.check(handoff)  # an identity conflict is refused before anything
             audit_open = any(game.audit_retain_mu for game in self.games.values())
         if audit_open:
             self._archive(handoff)
-        sealed: list[SealedSegment] = []
-        with self.lock:
-            latest = self.ledger.latest
-            changed = (latest is not None
-                       and latest.training_generation != handoff.training_generation)
-            collected: tuple[str, ...] = ()
-            if changed:
-                self.counters["generations_discarded"] += 1
-                for game in self.games.values():
-                    for segment in list(game.segments):
-                        if segment.mu.training_generation != handoff.training_generation:
-                            segment.doomed = segment.doomed or ("generation_discarded",
-                                                                segment.mu.training_generation)
-                            sealed.extend(self._try_seal(game, segment))
-            result = self.ledger.offer(handoff)
-            if changed:
-                collected = self.ledger.collect()
-            if not result.accepted:
-                self.counters["mu_declined"] += 1
-            result = MuOffer(result.accepted, result.evicted + collected, changed)
-        self._emit(sealed)
-        return result
+        sealed: list[SealedSegment | RejectedSegment] = []
+        try:
+            with self.lock:
+                return self._offer_mu(handoff, sealed)
+        finally:
+            self._emit(sealed)
+
+    def _offer_mu(self, handoff: MuHandoff,
+                  sealed: list[SealedSegment | RejectedSegment]) -> MuOffer:
+        self.ledger.check(handoff)
+        latest = self.ledger.latest
+        changed = (latest is not None
+                   and latest.training_generation != handoff.training_generation)
+        collected: tuple[str, ...] = ()
+        if changed:
+            self.counters["generations_discarded"] += 1
+            for game in self.games.values():
+                for segment in list(game.segments):
+                    if segment.mu.training_generation != handoff.training_generation:
+                        segment.doomed = segment.doomed or ("generation_discarded",
+                                                            segment.mu.training_generation)
+                        sealed.extend(self._try_seal(game, segment))
+        result = self.ledger.offer(handoff)
+        if changed:
+            collected = self.ledger.collect()
+        if not result.accepted:
+            self.counters["mu_declined"] += 1
+        return MuOffer(result.accepted, result.evicted + collected, changed)
 
     # ------------------------------------------------------------ episodes
     def open_episode(self, message: Mapping[str, Any]) -> None:
@@ -393,12 +444,14 @@ class FastSegmentAssembler:
                 raise AssemblyError("row_payload_binding")
             if type(row.get("request_id")) is not int or type(row.get("floor")) is not int:
                 raise AssemblyError("invalid_row")
+            if game.single_choice == "omit" and row.get("catalog_len") == 1:
+                raise AssemblyError("single_option_row_under_omit")
             current = game.segments[-1] if game.segments else None
             if current is not None and current.terminal is not None:
                 raise AssemblyError("row_after_terminal")
             if (game.audit_retain_mu and (current is None or current.doomed is not None
                                           or len(current.rows) >= self.steps)
-                    and self.ledger.current().snapshot_sha256 not in self.archived):
+                    and _archive_key(self.ledger.current()) not in self.archived):
                 # Loud: an R7 game is never scored with a mu whose weights are not kept.
                 raise AssemblyError("audit_mu_not_archived")
             tail: TailPlan | None = None
@@ -411,7 +464,7 @@ class FastSegmentAssembler:
                     tail = TailPlan(current.segment_id, current.mu.snapshot_sha256, floor)
                 self.ledger.retain(mu.snapshot_sha256)
                 self.segment_counter += 1
-                current = _Segment(f"{self.assembler_id}.{self.segment_counter}",
+                current = _Segment(f"{self.instance_id}.{self.segment_counter}",
                                    game.next_index, mu)
                 game.next_index += 1
                 game.segments.append(current)
@@ -425,157 +478,192 @@ class FastSegmentAssembler:
     def finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
                    outcome_probabilities: list[float],
                    tail_outcome_probabilities: list[float] | None = None) -> None:
-        sealed: list[SealedSegment] = []
-        with self.lock:
-            game = self.games.get(plan.game_instance_id)
-            if game is None or game.inflight != plan or game.pending is None:
-                raise AssemblyError("row_plan_not_in_flight")
-            row, raw = game.pending
-            segment = game.segments[-1]
-            self._check_scored(game, plan, row, scored)
-            values = self._values(outcome_probabilities)
-            tail_values = None
-            if plan.tail is not None:
-                if plan.tail.mu == plan.mu.snapshot_sha256 and tail_outcome_probabilities is None:
-                    tail_values = values if plan.tail.floor == row["floor"] else None
-                else:
-                    tail_values = self._values(tail_outcome_probabilities)
-                if tail_values is None:
-                    raise AssemblyError("tail_value_required_at_tail_floor")
-            meta = {key: copy.deepcopy(row[key]) for key in (
-                "request_id", "step_index", "consumption_id", "catalog_len", "catalog_sha256",
-                "observation_sha256", "in_combat", "floor")}
-            meta.update(payload={"row_sha256": row["payload"]["row_sha256"]},
-                        selected_index=scored["selected_index"],
-                        behavior_q=list(scored["behavior_q"]), selected_q=scored["selected_q"],
-                        applied=copy.deepcopy(dict(scored["applied"])),
-                        outcome_probabilities=values, outcome=None)
-            segment.rows.append(meta)
-            segment.data.append(raw)
-            segment.inflight = False
-            game.inflight = None
-            game.last_step = plan.step_index
-            game.max_floor = max(game.max_floor, row["floor"])
-            game.pending = None
-            self.counters["rows"] += 1
-            if plan.tail is not None:
-                previous = next((s for s in game.segments
-                                 if s.segment_id == plan.tail.segment_id), None)
-                if previous is not None and previous.doomed is None:
-                    previous.bootstrap = {
-                        "mu_snapshot_sha256": plan.tail.mu,
-                        "successor_request_id": plan.request_id,
-                        "successor_step_index": plan.step_index,
-                        "successor_row_sha256": meta["payload"]["row_sha256"],
-                        "floor": plan.tail.floor, "outcome_probabilities": tail_values}
-                    sealed.extend(self._try_seal(game, previous))
-            sealed.extend(self._try_seal(game, segment))
-        self._emit(sealed)
+        sealed: list[SealedSegment | RejectedSegment] = []
+        try:
+            with self.lock:
+                self._finish_row(plan, scored, outcome_probabilities,
+                                 tail_outcome_probabilities, sealed)
+        finally:
+            self._emit(sealed)
+
+    def _finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
+                    outcome_probabilities: list[float],
+                    tail_outcome_probabilities: list[float] | None,
+                    sealed: list[SealedSegment | RejectedSegment]) -> None:
+        game = self.games.get(plan.game_instance_id)
+        if game is None or game.inflight != plan or game.pending is None:
+            raise AssemblyError("row_plan_not_in_flight")
+        row, raw = game.pending
+        segment = game.segments[-1]
+        self._check_scored(game, plan, row, scored)
+        values = self._values(outcome_probabilities, row["floor"])
+        tail_values = None
+        if plan.tail is not None:
+            if plan.tail.mu == plan.mu.snapshot_sha256 and tail_outcome_probabilities is None:
+                tail_values = values if plan.tail.floor == row["floor"] else None
+            else:
+                tail_values = self._values(tail_outcome_probabilities, plan.tail.floor)
+            if tail_values is None:
+                raise AssemblyError("tail_value_required_at_tail_floor")
+        meta = {key: copy.deepcopy(row[key]) for key in (
+            "request_id", "step_index", "consumption_id", "catalog_len", "catalog_sha256",
+            "observation_sha256", "in_combat", "floor")}
+        meta.update(payload={"row_sha256": row["payload"]["row_sha256"]},
+                    selected_index=scored["selected_index"],
+                    behavior_q=list(scored["behavior_q"]), selected_q=scored["selected_q"],
+                    applied=copy.deepcopy(dict(scored["applied"])),
+                    outcome_probabilities=values, outcome=None)
+        segment.rows.append(meta)
+        segment.data.append(raw)
+        segment.inflight = False
+        game.inflight = None
+        game.last_step = plan.step_index
+        game.max_floor = max(game.max_floor, row["floor"])
+        game.pending = None
+        self.counters["rows"] += 1
+        if plan.tail is not None:
+            previous = next((s for s in game.segments
+                             if s.segment_id == plan.tail.segment_id), None)
+            if previous is not None and previous.doomed is None:
+                previous.bootstrap = {
+                    "mu_snapshot_sha256": plan.tail.mu,
+                    "successor_request_id": plan.request_id,
+                    "successor_step_index": plan.step_index,
+                    "successor_row_sha256": meta["payload"]["row_sha256"],
+                    "floor": plan.tail.floor, "outcome_probabilities": tail_values}
+                sealed.extend(self._try_seal(game, previous))
+        sealed.extend(self._try_seal(game, segment))
 
     def abort_row(self, plan: RowPlan, error_code: str) -> None:
         """The service refused this row; nothing enters a segment, the game will close."""
-        sealed: list[SealedSegment] = []
-        with self.lock:
-            game = self.games.get(plan.game_instance_id)
-            if game is None or game.inflight != plan:
-                raise AssemblyError("row_plan_not_in_flight")
-            segment = game.segments[-1]
-            segment.inflight = False
-            game.inflight = None
-            game.pending = None
-            game.failure = f"refused:{error_code}"
-            self.counters["aborted_rows"] += 1
-            if not segment.rows:
-                game.segments.pop()
-                self.ledger.release(segment.mu.snapshot_sha256)
-            for item in list(game.segments):
-                item.doomed = item.doomed or ("not_started", "refused")
-                sealed.extend(self._try_seal(game, item))
-        self._emit(sealed)
+        sealed: list[SealedSegment | RejectedSegment] = []
+        try:
+            with self.lock:
+                self._abort_row(plan, error_code, sealed)
+        finally:
+            self._emit(sealed)
+
+    def _abort_row(self, plan: RowPlan, error_code: str,
+                   sealed: list[SealedSegment | RejectedSegment]) -> None:
+        game = self.games.get(plan.game_instance_id)
+        if game is None or game.inflight != plan:
+            raise AssemblyError("row_plan_not_in_flight")
+        segment = game.segments[-1]
+        segment.inflight = False
+        game.inflight = None
+        game.pending = None
+        game.failure = f"refused:{error_code}"
+        self.counters["aborted_rows"] += 1
+        if not segment.rows:
+            game.segments.pop()
+            self.ledger.release(segment.mu.snapshot_sha256)
+        for item in list(game.segments):
+            item.doomed = item.doomed or ("not_started", "refused")
+            sealed.extend(self._try_seal(game, item))
 
     def step_outcome(self, message: Mapping[str, Any]) -> None:
-        sealed: list[SealedSegment] = []
-        with self.lock:
-            game = self.games.get(str(message.get("game_instance_id")))
-            if game is None:
-                self.counters["late_discarded"] += 1
-                return
-            request = message.get("row_request_id")
-            target = next(((segment, row) for segment in game.segments for row in segment.rows
-                           if row["request_id"] == request), None)
-            status = message.get("status")
-            if status not in ("completed", "not_started", "unknown"):
-                raise AssemblyError("invalid_step_outcome")
-            if status != "completed":
-                game.failure = game.failure or f"{status}:{message.get('reason')}"
-            if target is None:
-                self.counters["outcomes_without_row"] += 1
-            else:
-                segment, row = target
-                if row["outcome"] is not None or message.get("step_index") != row["step_index"]:
-                    raise AssemblyError("step_outcome_binding")
-                row["outcome"] = {key: copy.deepcopy(message[key]) for key in OUTCOME_FIELDS
-                                  if key in message}
-                forced = message.get("forced_steps", 0)
-                if forced and game.single_choice != "omit":
-                    raise AssemblyError("forced_steps_require_single_choice_omit")
-                self.counters["forced_steps"] += forced or 0
-                facts = message.get("public_facts")
-                if isinstance(facts, Mapping):
-                    if type(facts.get("floor")) is int:
-                        game.max_floor = max(game.max_floor, facts["floor"])
-                    if type(facts.get("act")) is int:
-                        game.acts.append(facts["act"])
-                terminal = message.get("terminal")
-                if terminal is not None:
-                    if segment is not game.segments[-1] or row is not segment.rows[-1]:
-                        raise AssemblyError("terminal_not_on_last_row")
-                    segment.terminal = terminal["result"]
-            if status != "completed":
-                for item in list(game.segments):
-                    item.doomed = item.doomed or (str(status), str(message.get("reason")))
+        sealed: list[SealedSegment | RejectedSegment] = []
+        try:
+            with self.lock:
+                self._step_outcome(message, sealed)
+        finally:
+            self._emit(sealed)
+
+    def _step_outcome(self, message: Mapping[str, Any],
+                      sealed: list[SealedSegment | RejectedSegment]) -> None:
+        game = self.games.get(str(message.get("game_instance_id")))
+        if game is None:
+            self.counters["late_discarded"] += 1
+            return
+        status = message.get("status")
+        if status not in ("completed", "not_started", "unknown"):
+            raise AssemblyError("invalid_step_outcome")
+        request = message.get("row_request_id")
+        target = next(((segment, row) for segment in game.segments for row in segment.rows
+                       if row["request_id"] == request), None)
+        # Every check runs before any state changes.
+        forced = message.get("forced_steps", 0)
+        if type(forced) is not int or forced < 0:
+            raise AssemblyError("invalid_forced_steps")
+        if forced and game.single_choice != "omit":
+            raise AssemblyError("forced_steps_require_single_choice_omit")
+        terminal = message.get("terminal")
+        if terminal is not None and (not isinstance(terminal, Mapping)
+                                     or terminal.get("result") not in ("victory", "defeat")):
+            raise AssemblyError("invalid_terminal")
+        if target is not None:
+            segment, row = target
+            if row["outcome"] is not None or message.get("step_index") != row["step_index"]:
+                raise AssemblyError("step_outcome_binding")
+            if terminal is not None and (segment is not game.segments[-1]
+                                         or row is not segment.rows[-1]):
+                raise AssemblyError("terminal_not_on_last_row")
+        if status != "completed":
+            game.failure = game.failure or f"{status}:{message.get('reason')}"
+        if target is None:
+            self.counters["outcomes_without_row"] += 1
+        else:
+            segment, row = target
+            row["outcome"] = {key: copy.deepcopy(message[key]) for key in OUTCOME_FIELDS
+                              if key in message}
+            self.counters["forced_steps"] += forced
+            facts = message.get("public_facts")
+            if isinstance(facts, Mapping):
+                if type(facts.get("floor")) is int:
+                    game.max_floor = max(game.max_floor, facts["floor"])
+                if type(facts.get("act")) is int:
+                    game.acts.append(facts["act"])
+            if terminal is not None:
+                segment.terminal = str(terminal["result"])
+        if status != "completed":
             for item in list(game.segments):
-                sealed.extend(self._try_seal(game, item))
-        self._emit(sealed)
+                item.doomed = item.doomed or (str(status), str(message.get("reason")))
+        for item in list(game.segments):
+            sealed.extend(self._try_seal(game, item))
 
     def close_episode(self, message: Mapping[str, Any]) -> None:
-        sealed: list[SealedSegment] = []
-        with self.lock:
-            instance = str(message.get("game_instance_id"))
-            game = self.games.pop(instance, None)
-            if game is None:
-                self.counters["late_discarded"] += 1
-                return
-            self.closed[instance] = None
-            while len(self.closed) > self.closed_memory:
-                self.closed.popitem(last=False)
-            reason = str(message.get("reason"))
-            if game.inflight is not None:
-                game.segments[-1].inflight = False
-                game.inflight, game.pending = None, None
-            for segment in list(game.segments):
-                if not segment.rows:
-                    game.segments.remove(segment)
-                    self.ledger.release(segment.mu.snapshot_sha256)
-                    continue
-                last = segment is game.segments[-1]
-                if (last and reason == "terminal" and segment.doomed is None
-                        and segment.terminal is not None and segment.completed()):
-                    try:
-                        label = self._label(game, segment)
-                    except ValueError as error:
-                        self.counters["terminal_label_refused"] += 1
-                        segment.doomed = ("terminal_label_refused", str(error))
-                    else:
-                        if label is not None:
-                            sealed.append(self._seal(game, segment, "terminal",
-                                                     terminal=label))
-                            continue
-                        segment.doomed = ("terminal_unlabeled", segment.terminal)
-                cause = segment.doomed or (reason, game.failure or reason)
-                sealed.append(self._seal(game, segment, "truncated",
-                                         truncation={"reason": cause[0], "detail": cause[1]}))
-        self._emit(sealed)
+        sealed: list[SealedSegment | RejectedSegment] = []
+        try:
+            with self.lock:
+                self._close_episode(message, sealed)
+        finally:
+            self._emit(sealed)
+
+    def _close_episode(self, message: Mapping[str, Any],
+                       sealed: list[SealedSegment | RejectedSegment]) -> None:
+        instance = str(message.get("game_instance_id"))
+        game = self.games.pop(instance, None)
+        if game is None:
+            self.counters["late_discarded"] += 1
+            return
+        self.closed[instance] = None
+        while len(self.closed) > self.closed_memory:
+            self.closed.popitem(last=False)
+        reason = str(message.get("reason"))
+        if game.inflight is not None:
+            game.segments[-1].inflight = False
+            game.inflight, game.pending = None, None
+        for segment in list(game.segments):
+            if not segment.rows:
+                game.segments.remove(segment)
+                self.ledger.release(segment.mu.snapshot_sha256)
+                continue
+            last = segment is game.segments[-1]
+            if (last and reason == "terminal" and segment.doomed is None
+                    and segment.terminal is not None and segment.completed()):
+                try:
+                    label = self._label(game, segment)
+                except ValueError as error:
+                    self.counters["terminal_label_refused"] += 1
+                    segment.doomed = ("terminal_label_refused", str(error))
+                else:
+                    if label is not None:
+                        sealed.append(self._seal(game, segment, "terminal", terminal=label))
+                        continue
+                    segment.doomed = ("terminal_unlabeled", segment.terminal)
+            cause = segment.doomed or (reason, game.failure or reason)
+            sealed.append(self._seal(game, segment, "truncated",
+                                     truncation={"reason": cause[0], "detail": cause[1]}))
 
     def report(self) -> dict[str, Any]:
         with self.lock:
@@ -584,7 +672,8 @@ class FastSegmentAssembler:
                 "open_segments": sum(len(g.segments) for g in self.games.values()),
                 "resident_mu": list(self.ledger.resident),
                 "referenced_mu": dict(self.ledger.references),
-                "latest_mu": self.ledger.latest and self.ledger.latest.snapshot_sha256})
+                "latest_mu": self.ledger.latest and self.ledger.latest.snapshot_sha256,
+                "instance_id": self.instance_id})
 
     # -------------------------------------------------------------- inside
     def _check_scored(self, game: _Game, plan: RowPlan, row: Mapping[str, Any],
@@ -614,13 +703,16 @@ class FastSegmentAssembler:
             raise AssemblyError("scored_result_binding")
 
     @staticmethod
-    def _values(values: list[float] | None) -> list[float]:
-        if (not isinstance(values, (list, tuple)) or not values
-                or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
-                       for v in values)
-                or not math.isclose(sum(values), 1.0, abs_tol=1e-4)):
+    def _values(values: list[float] | None, floor: int) -> list[float]:
+        """The learner's distribution and floor-support checks (`check_value_distribution`)."""
+        if not isinstance(values, (list, tuple)) or not values:
             raise AssemblyError("every_mu_value_required_including_forced")
-        return [float(v) for v in values]
+        result = [float(v) if type(v) in (int, float) else v for v in values]
+        try:
+            check_value_distribution(result, floor)
+        except SegmentFormatError as error:
+            raise AssemblyError(str(error)) from error
+        return result
 
     def _label(self, game: _Game, segment: _Segment) -> dict[str, Any] | None:
         if self.terminal_labeler is None:
@@ -638,7 +730,8 @@ class FastSegmentAssembler:
         return {"result": segment.terminal, "class": label["class"],
                 "reward": float(label["reward"])}
 
-    def _try_seal(self, game: _Game, segment: _Segment) -> list[SealedSegment]:
+    def _try_seal(self, game: _Game,
+                  segment: _Segment) -> list[SealedSegment | RejectedSegment]:
         if segment not in game.segments:
             return []
         if segment.doomed is not None and segment.resolved():
@@ -655,12 +748,11 @@ class FastSegmentAssembler:
 
     def _seal(self, game: _Game, segment: _Segment, kind: str, *,
               terminal: dict[str, Any] | None = None,
-              truncation: dict[str, Any] | None = None) -> SealedSegment:
-        game.segments.remove(segment)
-        self.ledger.release(segment.mu.snapshot_sha256)
+              truncation: dict[str, Any] | None = None) -> SealedSegment | RejectedSegment:
         header = {
             "format": "stpd/rl-fast-segment-1", "row_format": ROW_FORMAT,
             "segment_id": segment.segment_id, "assembler_id": self.assembler_id,
+            "assembler_instance": self.instance_id,
             "game_instance_id": game.game_instance_id, "actor_id": game.actor_id,
             "segment_index": segment.index, "start": game.start,
             "audit_retain_mu": game.audit_retain_mu,
@@ -672,17 +764,27 @@ class FastSegmentAssembler:
             "trainable": kind != "truncated",
             "forced_steps": sum((r["outcome"] or {}).get("forced_steps", 0)
                                 for r in segment.rows)}
-        sealed = encode_segment(header, segment.data)
+        result: SealedSegment | RejectedSegment
+        try:
+            result = encode_segment(header, segment.data)
+        except (SegmentFormatError, TypeError, ValueError) as error:
+            # Kept as original (`rejected/`), counted, and raised once emitted.
+            result = RejectedSegment(segment.segment_id, copy.deepcopy(header),
+                                     tuple(segment.data), str(error) or type(error).__name__)
+            kind = "rejected"
+        # Only an encoded (or rejected-and-kept) segment leaves its game.
+        game.segments.remove(segment)
+        self.ledger.release(segment.mu.snapshot_sha256)
         self.counters["segments"][kind] += 1
-        if truncation is not None:
+        if truncation is not None and kind == "truncated":
             by_reason = self.counters["truncated_by_reason"]
             by_reason[truncation["reason"]] = by_reason.get(truncation["reason"], 0) + 1
-        return sealed
+        return result
 
     def _archive(self, handoff: MuHandoff) -> None:
         """Durably keep one mu's weights; outside `self.lock`, before it is bound."""
         with self.archive_lock:
-            if handoff.snapshot_sha256 in self.archived:
+            if _archive_key(handoff) in self.archived:
                 return
             if self.mu_archive is None:
                 raise AssemblyError("audit_mu_archive_unconfigured")
@@ -690,9 +792,19 @@ class FastSegmentAssembler:
                 raise AssemblyError("audit_mu_weights_missing")
             self.mu_archive(handoff)
             with self.lock:
-                self.archived.add(handoff.snapshot_sha256)
+                self.archived.add(_archive_key(handoff))
                 self.counters["mu_archived"] += 1
 
-    def _emit(self, sealed: list[SealedSegment]) -> None:
+    def _emit(self, sealed: list[SealedSegment | RejectedSegment]) -> None:
+        """Hand every sealed segment on, even when one hand-off raises; then raise."""
+        first: BaseException | None = None
         for segment in sealed:
-            self.emit(segment)
+            try:
+                self.emit(segment)
+            except BaseException as error:  # noqa: BLE001 - re-raised after the rest
+                first = first or error
+        if first is not None:
+            raise first
+        rejected = [segment for segment in sealed if isinstance(segment, RejectedSegment)]
+        if rejected:
+            raise AssemblyError(f"segment_rejected:{rejected[0].error}")
