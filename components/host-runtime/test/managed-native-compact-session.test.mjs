@@ -5,6 +5,8 @@ import test from "node:test";
 import { JsonLineProcess, RAW_LINE, isNativeCompactDivergence } from "../src/json-line-process.mjs";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
+import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
+import { createSession, reduce, modelView } from "@rsgcsg/sts2-connector-client/p1-global";
 import { MANAGED_TEXT_MENU_PROFILE, ManagedTextMenuSessionAdapter } from "../src/managed-text-menu-map.mjs";
 import { MANAGED_TEXT_MENU_V2_PROFILE, ManagedTextMenuV2SessionAdapter } from "../src/managed-text-menu-v2.mjs";
 
@@ -174,15 +176,15 @@ test("old chain never sends configure_output and keeps its exact requests", asyn
   ]);
 });
 
-test("compact output rebuilds the same snapshots and receipts as the full writer", async () => {
+for (const shareUnchanged of [false, true]) test(`compact output rebuilds the same snapshots and receipts as the full writer (shareUnchanged ${shareUnchanged})`, async () => {
   const fullNative = fakeNative(), compactNative = fakeNative();
-  const old = session(fullNative), fast = session(compactNative, { sampleRate: 1 });
+  const old = session(fullNative), fast = session(compactNative, { sampleRate: 1, shareUnchanged });
   const oldSnapshot = await old.mount({ seed: "SEED" });
   const fastSnapshot = await fast.mount({ seed: "SEED" });
   assert.deepEqual(compactNative.log, ["start_run", "configure_output"]);
   assert.deepEqual(stable(fastSnapshot), stable(oldSnapshot));
   assert.equal(fast.episodeInstance, "test-instance-1");
-  assert.deepEqual(fast.compactOutput, { reconcileInterval: 64, sampleRate: 1, configured: true });
+  assert.deepEqual(fast.compactOutput, { reconcileInterval: 64, sampleRate: 1, shareUnchanged, configured: true });
   const oldReceipt = await act(old, oldSnapshot), fastReceipt = await act(fast, fastSnapshot);
   assert.equal(fastReceipt.successor.interaction.content.surface.options[0].title, "Opened");
   assert.deepEqual(stable(fastReceipt), stable(oldReceipt));
@@ -411,4 +413,29 @@ test("the JSON-line process hands the native's divergence line over with its exa
   assert.equal((await child.exit).code, 70);
   // An ordinary native error is not a divergence report and gets no raw line.
   assert.equal(isNativeCompactDivergence({ type: "error", message: "x" }), false);
+});
+
+test("design C differential: with shareUnchanged and the light frozen capture, P1 reduce outputs are byte-identical", async () => {
+  const run = async (c) => {
+    const target = session(fakeNative(), { sampleRate: 0, shareUnchanged: c });
+    let state = createSession("differential", "managed", "r1.9");
+    const out = [];
+    const step = (ordinal) => {
+      const { basis } = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal, fullCheck: !c });
+      if (c) assert.ok(Object.isFrozen(basis.snapshot));
+      const reduction = reduce(state, basis);
+      state = reduction.state;
+      // observed_at is the capture clock, the only field that differs between two runs.
+      out.push(JSON.stringify(stable({ observation: reduction.observation, model: modelView(reduction.observation),
+        forced: reduction.forced_choice_id, excluded: reduction.excluded, complete: reduction.complete, state })));
+    };
+    const snapshot = await target.mount({ seed: "SEED" });
+    step(1);
+    await act(target, snapshot);
+    step(2);
+    return out;
+  };
+  const off = await run(false), on = await run(true);
+  assert.equal(off.length, 2);
+  assert.deepEqual(on, off);
 });

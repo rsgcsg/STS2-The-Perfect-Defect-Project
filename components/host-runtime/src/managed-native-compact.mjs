@@ -262,11 +262,22 @@ export class CompactStateReconstructor {
   #start = null;
   #failed = null;
   #frames = 0;
+  #share;
+  /** shareUnchanged: key -> { digest, value } of the last frame's frozen inlined objects. */
+  #inlined = new Map();
 
-  constructor({ reconcileInterval = DEFAULT_RECONCILE_INTERVAL } = {}) {
+  /**
+   * shareUnchanged (design C): the returned state is deep-frozen, and an object whose
+   * carried digest and whose children are unchanged is the same frozen object as in
+   * the previous state, so consumers can cache by identity. Off: a fresh mutable copy
+   * every frame (the old behaviour). Both give the same JSON.
+   */
+  constructor({ reconcileInterval = DEFAULT_RECONCILE_INTERVAL, shareUnchanged = false } = {}) {
     if (!Number.isSafeInteger(reconcileInterval) || reconcileInterval < 1 || reconcileInterval > 1024)
       throw new TypeError("reconcileInterval must be an integer in 1..1024.");
+    if (typeof shareUnchanged !== "boolean") throw new TypeError("shareUnchanged must be a boolean.");
     this.#interval = reconcileInterval;
+    this.#share = shareUnchanged;
   }
 
   get episodeInstance() { return this.#instance; }
@@ -361,7 +372,40 @@ export class CompactStateReconstructor {
     if (objectsRoot(this.#digests) !== frame.objects_root_sha256) diverge("root_mismatch");
     this.#held = frame.seq;
     this.#frames += 1;
-    return this.#inline(frame.skeleton);
+    if (!this.#share) return this.#inline(frame.skeleton);
+    // A reconcile re-anchors on the bodies it carries: nothing is shared across it, so an
+    // unsampled reconcile whose body changed under an unchanged digest gives the same
+    // output with sharing on as off (review S1 of #437).
+    if (kind === "full" || kind === "reconcile") this.#inlined = new Map();
+    const current = new Map();
+    const state = this.#shared(frame.skeleton, current);
+    // Every held key is reachable (checked above), so this drops exactly the removed ones.
+    this.#inlined = current;
+    return state;
+  }
+
+  /** One held key's frozen inlined object: last frame's when its digest and every child are unchanged. */
+  #sharedKey(key, current) {
+    const done = current.get(key);
+    if (done) return done.value;
+    const digest = this.#digests.get(key), previous = this.#inlined.get(key);
+    let same = previous !== undefined && previous.digest === digest;
+    for (const child of this.#children.get(key)) {
+      const value = this.#sharedKey(child, current);
+      if (same && value !== this.#inlined.get(child)?.value) same = false;
+    }
+    const value = same ? previous.value : this.#shared(this.#table.get(key), current);
+    current.set(key, { digest, value });
+    return value;
+  }
+
+  #shared(value, current) {
+    if (Array.isArray(value)) return Object.freeze(value.map(item => this.#shared(item, current)));
+    if (!plain(value)) return value;
+    if (isPlaceholder(value)) return this.#sharedKey(value.$obj, current);
+    const out = {};
+    for (const key in value) out[key] = this.#shared(value[key], current);
+    return Object.freeze(out);
   }
 
   #put(key, body, digest) {

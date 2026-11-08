@@ -2766,7 +2766,10 @@ function validateCompactOutput(value) {
     throw new TypeError("compactOutput.reconcileInterval must be an integer in 1..1024.");
   if (typeof sampleRate !== "number" || !(sampleRate >= 0 && sampleRate <= 1))
     throw new TypeError("compactOutput.sampleRate must be in [0, 1].");
-  return Object.freeze({ reconcileInterval, sampleRate });
+  // Design C: unchanged subtrees stay the same frozen object between steps.
+  const shareUnchanged = value.shareUnchanged ?? false;
+  if (typeof shareUnchanged !== "boolean") throw new TypeError("compactOutput.shareUnchanged must be a boolean.");
+  return Object.freeze({ reconcileInterval, sampleRate, shareUnchanged });
 }
 
 function validateManagedAscension(ascension) {
@@ -2839,6 +2842,7 @@ export class ManagedPlayerEnvironmentSession {
   #performance = new Map();
   #publicEntityAliases = new Map();
   #stateDigest = null;
+  #stateValue = null;
   #compact = null;
   #compactConfigured = false;
   #compactInstance = null;
@@ -3279,7 +3283,8 @@ export class ManagedPlayerEnvironmentSession {
       // A new instance gets a new table and its own check schedule, drawn now,
       // before any of its content has been read.
       this.#compactInstance = {
-        reconstructor: new CompactStateReconstructor({ reconcileInterval: this.#compact.reconcileInterval }),
+        reconstructor: new CompactStateReconstructor({ reconcileInterval: this.#compact.reconcileInterval,
+          shareUnchanged: this.#compact.shareUnchanged }),
         sampled: compactSampleSchedule({ rate: this.#compact.sampleRate, all: this.#compactCheckAll })
       };
     } else if (startsInstance) {
@@ -3309,8 +3314,11 @@ export class ManagedPlayerEnvironmentSession {
         this.#record("map_enrichment", performance.now() - mapReadStarted);
       }
     }
-    const stateDigest = digest(enriched);
-    if (preserveUnchanged && stateDigest === this.#stateDigest) return this.#projection.snapshot;
+    // The state digest only decides preserveUnchanged; compute it only then (same bytes).
+    if (preserveUnchanged && this.#stateValue !== null) {
+      this.#stateDigest ??= digest(this.#stateValue);
+      if (digest(enriched) === this.#stateDigest) return this.#projection.snapshot;
+    }
     this.#sequence += 1;
     const projectionStarted = performance.now();
     this.#projection = projectManagedCandidateDecision({
@@ -3322,7 +3330,7 @@ export class ManagedPlayerEnvironmentSession {
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
     });
-    this.#stateDigest = stateDigest;
+    this.#stateValue = enriched; this.#stateDigest = null;
     this.#record("projection_total", performance.now() - projectionStarted);
     for (const [name, milliseconds] of Object.entries(this.#projection.performance)) {
       if (name === "total_ms") continue;

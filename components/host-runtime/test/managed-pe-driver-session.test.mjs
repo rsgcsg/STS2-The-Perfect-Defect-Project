@@ -546,4 +546,14 @@ test("capture full_check=false (fast chain) returns the same sealed basis; a non
   // The light basis is byte-for-byte what the strict decode makes of it.
   assert.equal(JSON.stringify(decodePublicBasis(structuredClone(light.full.basis))), JSON.stringify(light.full.basis));
   await assert.rejects(driver.handle({ command: "capture", full_check: "no" }), /managed_capture_fields_invalid/u);
+  // The light capture hands out the session's own objects frozen, not copies; the session
+  // keeps working on them (step, successor, next capture), and no consumer can change them.
+  assert.equal(Object.isFrozen(light.full.basis.snapshot.bound_actions.actions[0]), true);
+  assert.throws(() => { light.full.basis.snapshot.status = "observed"; }, TypeError);
+  const step = await driver.handle({ command: "step", mutation_request_id: "light-1",
+    expected_snapshot_id: light.full.basis.snapshot.snapshot_id,
+    bound_action_id: light.full.basis.snapshot.bound_actions.actions[0].bound_action_id });
+  assert.equal(step.receipt.delivery, "delivered");
+  const next = await driver.handle({ command: "capture", full_check: false });
+  assert.notEqual(next.full.basis.snapshot.snapshot_id, light.full.basis.snapshot.snapshot_id);
 });
