@@ -989,29 +989,36 @@ def join_forward_inputs(parts: Sequence[PreparedGroup],
     buckets_out: dict[str, tuple[tuple[int, int], ...]] = {}
     plan["inverse"] = {}
     for key in FORWARD_REDUCTIONS:
-        grouped: dict[int, list[tuple[int, int, int, int, int]]] = {}
+        grouped: dict[int, list[tuple[int, int, int, int, int, int]]] = {}
         for p, layout in enumerate(layouts):
             flat_cursor = row_cursor = 0
-            for bucket_width, count in layout.reductions[key][1]:
+            for number, (bucket_width, count) in enumerate(layout.reductions[key][1]):
                 size = bucket_width * count
                 grouped.setdefault(bucket_width, []).append(
-                    (p, flat_cursor, size, count, row_cursor))
+                    (p, flat_cursor, size, count, row_cursor, number))
                 flat_cursor += size
                 row_cursor += count
         position = 0
-        maps = [torch.empty(len(layout.reductions[key][2]), dtype=torch.long)
-                for layout in layouts]
+        moves: list[dict[int, tuple[int, int]]] = [{} for _ in layouts]  # bucket: shift
         chunks[key] = []
         for bucket_width, items in grouped.items():
-            for p, flat_start, size, count, row_start in items:
-                maps[p][row_start:row_start + count] = torch.arange(position, position + count)
+            for p, flat_start, size, count, row_start, number in items:
+                moves[p][number] = (position - row_start, count)
                 position += count
                 if bucket_width:
                     chunks[key].append((p, flat_start, size))
         buckets_out[key] = tuple((w, sum(item[3] for item in items))
                                  for w, items in grouped.items())
-        plan["inverse"][key] = torch.cat([m[layout.reductions[key][2].long()]
-                                          for m, layout in zip(maps, layouts, strict=True)])
+        inverses = []
+        for move, layout in zip(moves, layouts, strict=True):
+            shifts = [move[start] for start in sorted(move)]  # part bucket order
+            owners = len(layout.reductions[key][2])
+            mapping = torch.arange(owners) + torch.repeat_interleave(
+                torch.tensor([shift for shift, _ in shifts], dtype=torch.long),
+                torch.tensor([count for _, count in shifts], dtype=torch.long),
+                output_size=owners)
+            inverses.append(mapping[layout.reductions[key][2].long()])
+        plan["inverse"][key] = torch.cat(inverses)
     if policy:
         catalogs = [int(t["action_types"].shape[1]) for t in hosts]
         catalog = max(catalogs)

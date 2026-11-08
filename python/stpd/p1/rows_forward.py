@@ -287,10 +287,12 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
                                      for value in group.tensors.values()):
         # A host group (inference): its forward inputs in one pinned non-blocking
         # copy instead of ~50 pageable per-tensor copies (each a stream sync).
-        # The learner's groups are already staged (`stage_batch`): untouched.
+        # int64 here: casting/checking on this thread cost more than it saved
+        # (Friday 1454515); int32 inputs come from `write_forward_inputs` in the
+        # prepare processes. The learner's groups are already staged: untouched.
         from stpd.rl.batch_preparation import stage_group
 
-        group = stage_group(group, device)
+        group = stage_group(group, device, index_dtype=torch.int64)
     layout = group.layout
     nonblocking = model.nonblocking_inputs
 
