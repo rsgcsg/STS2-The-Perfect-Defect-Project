@@ -560,7 +560,9 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
         for source in ready:
             reader = cast(Connection, source)
             try:
+                loading = time.perf_counter()
                 part = pickle.loads(reader.recv_bytes())
+                part["load_seconds"] = time.perf_counter() - loading
             except EOFError:
                 # A prepare worker is gone: its parts never arrive. End this
                 # process so the service fails every outstanding row loudly.
@@ -572,10 +574,13 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             del waiting[part["job"]]
             parts.sort(key=lambda item: item["part"])
             live = [p["group"] for p in parts if p["group"] is not None]
+            joining = time.perf_counter()
             try:
                 group: Any = _join_parts(live) if live else None
             except Exception as failure:  # refused loudly by the service
                 group = failure
+            parts[0]["join_seconds"] = time.perf_counter() - joining
+            parts[0]["load_seconds"] = sum(p["load_seconds"] for p in parts)
             joined.put((parts, group))
 
 
@@ -619,6 +624,8 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         out[0]["device_seconds"] = time.perf_counter() - started
         out[0]["forwards"] = 1 if live and error is None else 0  # parts are joined
         out[0]["forward_rows"] = sum(len(part["kept"]) for part in live)
+        out[0]["load_seconds"] = parts[0].get("load_seconds", 0.0)
+        out[0]["join_seconds"] = parts[0].get("join_seconds", 0.0)
     return out
 
 
@@ -730,6 +737,8 @@ class FastInferenceService:
         self.stats: dict[str, Any] = {"rows": 0, "batches": 0, "jobs": 0, "refused": {},
                                       "attach_refused": 0, "batch_rows_max": 0,
                                       "job_rows_max": 0, "device_seconds": 0.0,
+                                      "load_seconds": 0.0, "join_seconds": 0.0,
+                                      "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0}
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
@@ -1010,6 +1019,7 @@ class FastInferenceService:
         return closing
 
     def _dispatch(self, rows: list[_V3Row]) -> None:
+        dispatching = time.perf_counter()
         parts = min(self.job_parts, len(rows))
         size = -(-len(rows) // parts)
         chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
@@ -1036,6 +1046,7 @@ class FastInferenceService:
                                 (tail.mu, tail.floor) if needs_tail else None))
             self.workers[worker][2].put(pickle.dumps((job_id, part, len(chunks), mu, payload),
                                                      protocol=pickle.HIGHEST_PROTOCOL))
+        self.stats["dispatch_seconds"] += time.perf_counter() - dispatching
 
     def _sender(self, index: int) -> None:
         _, connection, outbox = self.workers[index]
@@ -1054,8 +1065,10 @@ class FastInferenceService:
                 message = self.results.recv_bytes()
             except (EOFError, OSError):
                 break
+            finishing = time.perf_counter()
             for part in pickle.loads(message):
                 self._finish_part(part)
+            self.stats["finish_seconds"] += time.perf_counter() - finishing
         with self.jobs_lock:
             left = list(self.jobs.values())
             self.jobs.clear()
@@ -1077,6 +1090,8 @@ class FastInferenceService:
             rows = job[1][part["part"]]
         if "device_seconds" in part:
             self.stats["device_seconds"] += part["device_seconds"]
+            self.stats["load_seconds"] += part["load_seconds"]
+            self.stats["join_seconds"] += part["join_seconds"]
             self.stats["batches"] += part["forwards"]
             self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"],
                                                part["forward_rows"] * part["forwards"])
