@@ -12,6 +12,14 @@ categories, give ``unclassified`` with the reason. Never a retry, label or train
 - ``wall_limit``: the per-game wall limit stopped a running game (``wall_limit_reached``):
   a censored game, not an unknown of the game. Never rerun; scored at its reached floor
   by the conservative score and listed on its own.
+
+Fast chain (RL5 WP7, ``fast_chain_*`` reasons from ``fast_chain_episodes.apply_close``):
+an action sent and never witnessed (``delivery_unknown``), a start echo that differs
+from the offer and a terminal close without a result are ``environment_gap``; an
+environment-process crash, a native crash, a manager kill (Stop bound, unconfirmed
+close, open delivery, exit without close), a protocol-invalid close and a failed offer
+event are ``infrastructure``. Any other ``fast_chain_unknown:<detail>`` stays
+``unclassified``.
 """
 from __future__ import annotations
 
@@ -35,6 +43,19 @@ INFRASTRUCTURE_HANDOFFS = frozenset({'agent_call_timeout'})
 ENVIRONMENT_RECEIPT_CODES = frozenset({'managed_execution_unknown'})
 SETTLING = 'managed_settling_stalled'
 WALL_LIMIT = 'episode_wall_limit_reached'  # U4-1 executor reason for the same fact
+FAST_CHAIN_ENVIRONMENT_CODES = frozenset({
+    'fast_chain_unknown:delivery_unknown', 'first_frame_start_changed',
+    'fast_chain_terminal_without_result'})
+FAST_CHAIN_INFRASTRUCTURE_CODES = frozenset({
+    'fast_chain_close_reason_invalid', 'fast_chain_unknown:native_crash',
+    'fast_chain_unknown:stop_latency_bound_exceeded',
+    'fast_chain_unknown:fast_env_game_close_unconfirmed',
+    'fast_chain_unknown:fast_env_open_delivery_unknown',
+    'fast_chain_unknown:fast_env_exited_without_close',
+    'fast_chain_unknown:fast_env_not_ready',
+    'fast_chain_unknown:fast_env_ready_identity_changed'})
+FAST_CHAIN_INFRASTRUCTURE_PREFIXES = ('fast_chain_env_crash:', 'fast_chain_unknown:env_crash:',
+                                      'fast_chain_world_offer_event_failed:')
 
 
 def _text(value: Any) -> str | None:
@@ -71,6 +92,12 @@ def classify_unknown(status: str, reason: Any = None,
             signal('save_ledger', code)
         if code in INFRASTRUCTURE_CODES:
             signal('infrastructure', code)
+        if code in FAST_CHAIN_ENVIRONMENT_CODES:
+            signal('environment_gap', code)
+        if code is not None and (code in FAST_CHAIN_INFRASTRUCTURE_CODES
+                                 or code.startswith(FAST_CHAIN_INFRASTRUCTURE_PREFIXES)):
+            signal('infrastructure', code.split(':', 1)[0] if code.startswith(
+                FAST_CHAIN_INFRASTRUCTURE_PREFIXES) else code)
     handoff = codes['handoff_reason']
     if handoff is not None and handoff in INFRASTRUCTURE_HANDOFFS:
         signal('infrastructure', handoff)

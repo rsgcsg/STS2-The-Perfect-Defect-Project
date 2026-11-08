@@ -227,6 +227,9 @@ class _Game:
     fenced: bool = False
     start: EpisodeStart | None = None
     start_mismatch: str | None = None
+    admission_failure: str | None = None
+    hold_slot: bool = False  # a close_slot for this game is being written
+    slot_freed: bool = False
 
 
 @dataclass
@@ -379,7 +382,7 @@ class GameManager:
                 else:
                     game.closed = event
                     self._liveness(event)
-                    if not game.fenced:
+                    if not game.fenced and not game.hold_slot:
                         self._free(game)
             elif kind == "build_output_stopped":
                 self.counters["build_output_stopped"] += 1
@@ -393,7 +396,10 @@ class GameManager:
             self.condition.notify_all()
 
     def _free(self, game: _Game) -> None:
-        self.free.add(game.slot)
+        # Once per game: a slot already handed to a later game is never freed again.
+        if not game.slot_freed:
+            game.slot_freed = True
+            self.free.add(game.slot)
         self.games.pop(game.game_ref, None)
 
     def _liveness(self, close: Mapping[str, Any]) -> None:
@@ -470,11 +476,14 @@ class GameManager:
 
     def play(self, reservation: Reservation, *, seed: str,
              initial_progress: Mapping[str, Any] | None, start: EpisodeStart, r7: bool,
-             deadline_seconds: float) -> dict[str, Any]:
+             deadline_seconds: float,
+             on_opened: Callable[[Mapping[str, Any]], None] | None = None) -> dict[str, Any]:
         """Open on the reserved slot (the world is already durably offered) and wait.
 
         Returns the environment's ``closed`` event, or a synthetic close. Never raises
-        after the open was sent; never sends a second open for this game.
+        after the open was sent; never sends a second open for this game. ``on_opened``
+        runs once, off the reader thread, after a checked ``opened``; if it raises, the
+        game is closed (``close_slot``) and the failure is recorded, never retried.
         """
         if reservation.used:
             reject("fast_chain_reservation_reused")
@@ -512,22 +521,42 @@ class GameManager:
                 return {"event": "open_refused", **game.refused}
             if game.closed is not None:
                 return self._result(game)
-            if game.opened is None:
+            opened = dict(game.opened) if game.opened is not None else None
+            if opened is None:
                 # No answer in time. The registration stays, so a late ``opened`` and
                 # its ``closed`` still route here; the slot is asked to close now.
                 self.counters["open_timeouts"] += 1
             elif game.start_mismatch is not None:
                 self.counters["start_mismatch_close_slot"] += 1
-            else:
+        playing = opened is not None and game.start_mismatch is None
+        if opened is not None and playing and on_opened is not None:
+            try:
+                on_opened(opened)
+            except Exception as error:  # noqa: BLE001 - recorded, typed, never resent
+                game.admission_failure = (getattr(error, "code", None)
+                                          or type(error).__name__)
+                self.counters["instance_admission_close_slot"] += 1
+                playing = False
+        with self.condition:
+            if playing:
                 self._wait(lambda: game.closed is not None, began + deadline_seconds)
                 if game.closed is not None:
                     return self._result(game)
                 self.counters["deadline_close_slot"] += 1
+            if game.closed is not None:
+                return self._result(game)
+            # Keep the slot until close_slot is written, so it can never reach a
+            # later game opened on the same slot.
+            game.hold_slot = True
         # Ask this slot to close at its next boundary.
         with suppress(OSError, ValueError):
             process.send({"cmd": "close_slot", "command_id": f"c{next(self.commands)}",
                           "slot": game.slot})
         with self.condition:
+            game.hold_slot = False
+            if game.closed is not None and not game.fenced:
+                self._free(game)
+                self.condition.notify_all()
             self._wait(lambda: game.closed is not None, self.clock() + self.bound.seconds)
             if game.closed is not None:
                 return self._result(game)
@@ -564,6 +593,8 @@ class GameManager:
             close["slot"], close["game_ref"] = game.slot, game.game_ref
             if game.start_mismatch is not None:
                 close["start_mismatch"] = game.start_mismatch
+            if game.admission_failure is not None:
+                close["instance_admission_failure"] = game.admission_failure
             if close.get("synthetic"):
                 close["cleanup_confirmed"] = self.cleanup_confirmed is True
             self.games.pop(game.game_ref, None)
@@ -659,6 +690,14 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
             row.update(status="unknown", reason=mismatch,
                        cleanup_accepted=native in {"kept", "replaced"})
             return
+        admission = close.get("instance_admission_failure")
+        if admission is not None:
+            # The learner never attested this instance: closed early, its segments are
+            # discarded learner-side (instance_not_attested); never scored or resent.
+            row.update(status="censored",
+                       reason=f"fast_chain_instance_admission_failed:{admission}",
+                       cleanup_accepted=native in {"kept", "replaced"})
+            return
     if reason == "terminal":
         terminal = close.get("terminal")
         if not isinstance(terminal, Mapping) or terminal.get("result") not in {
@@ -689,8 +728,11 @@ class FastChainEpisodeExecutor:
                  episode_seconds: float,
                  before_world_offer: Callable[[dict[str, Any]], None] | None = None,
                  world_offered: Callable[[dict[str, Any]], None] | None = None,
+                 instance_opened: Callable[[dict[str, Any], Mapping[str, Any]], None]
+                 | None = None,
                  reserve_seconds: float = 60) -> None:
         self.configuration, self.manager = configuration, manager
+        self.instance_opened = instance_opened
         # The same frozen starts and progress-lineage check as the old chain (S4).
         self.episode_starts = decode_episode_starts(
             configuration.get("episode_starts", {}),
@@ -724,6 +766,7 @@ class FastChainEpisodeExecutor:
         except BoundaryError as error:
             row.update(status="not_started", reason=error.code)
             return
+        hook = self.instance_opened
         handed = False
         try:
             try:
@@ -751,7 +794,8 @@ class FastChainEpisodeExecutor:
                 reservation, seed=row["seed"],
                 initial_progress=self.configuration.get("initial_progress"), start=start,
                 r7=row.get("training_audit_selected") is True,
-                deadline_seconds=self.episode_seconds + self.manager.bound.seconds)
+                deadline_seconds=self.episode_seconds + self.manager.bound.seconds,
+                on_opened=(None if hook is None else lambda opened: hook(row, opened)))
         finally:
             if not handed:
                 self.manager.release(reservation)

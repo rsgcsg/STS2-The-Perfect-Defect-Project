@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
@@ -652,6 +653,49 @@ def publish_world_offered(row: dict[str, Any], *, exchange: Any, actor: str) -> 
     exchange.publish_event("actor_world_offered", actor=actor,
         intent_id=row["intent_id"], seed=row["seed"], **{
             k: v for k, v in row["segment_admission_owner"].items() if k != "run"}, **extra)
+
+
+FAST_INSTANCE_ADMISSION = "fast_instance_admission"
+FAST_INSTANCE_ADMISSION_FIELDS = ("actor", "intent_id", "seed", "game_instance_id",
+                                  "training_split", "run", "training_generation")
+_LEARNER_REASON = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def fast_instance_admission(row: dict[str, Any], opened: Mapping[str, Any], *,
+                            admission: Any, actor: str) -> None:
+    """Fast chain only: attest one opened instance to the learner, once.
+
+    Sent on the existing learner control connection after the environment's checked
+    ``opened`` (the learner owns the receiving side; C-SCALE, WP8). The request is
+    ``fast_instance_admission`` with exactly :data:`FAST_INSTANCE_ADMISSION_FIELDS`:
+    ``actor``, ``intent_id``, ``seed``, ``game_instance_id``, ``training_split``
+    (always ``TRAIN``) and the ``run``/``training_generation`` the game's
+    ``episode_open`` was admitted under. The learner checks the seed (holdout guard,
+    once per game) and maps ``game_instance_id`` to ``(actor, intent_id)``; the
+    assembler's segments for that instance are keyed by the same id. The reply must
+    be ``{"admitted": true, ...}``. Anything else, or a transport failure, raises: the
+    game is closed and never re-attested (it is a non-mutation request, so the
+    connection does not replay it either). The actor sends no fast-chain
+    ``episode_end``.
+    """
+    owner = row.get("segment_admission_owner") or {}
+    instance = opened.get("game_instance_id")
+    if not isinstance(instance, str) or not instance or not {
+            "run", "training_generation"} <= set(owner):
+        raise BoundaryError("rl_segment", "fast_instance_admission_input_invalid")
+    request = {"actor": actor, "intent_id": row["intent_id"], "seed": row["seed"],
+               "game_instance_id": instance, "training_split": "TRAIN",
+               "run": owner["run"], "training_generation": owner["training_generation"]}
+    try:
+        result = admission.request(FAST_INSTANCE_ADMISSION, **request)
+    except (OSError, EOFError, TimeoutError) as error:
+        raise BoundaryError("rl_segment", "fast_instance_admission_delivery_failed") from error
+    if not isinstance(result, Mapping) or result.get("admitted") is not True:
+        reason = result.get("reason") if isinstance(result, Mapping) else None
+        reason = reason if isinstance(reason, str) and _LEARNER_REASON.fullmatch(
+            reason) else "unspecified"
+        raise BoundaryError("rl_segment", f"fast_instance_admission_refused:{reason}")
+    row["fast_instance_admission"] = {"admitted": True, "game_instance_id": instance}
 
 
 class SegmentManagedExecutor(PipelinedManagedExecutor):
