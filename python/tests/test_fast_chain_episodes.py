@@ -811,10 +811,152 @@ def test_open_carries_retain_originals_by_the_old_chain_rule_and_r7_from_the_sam
     picks = iter([True, False])
     executor = FastChainEpisodeExecutor(
         {"initial_progress": None}, manager=manager, episode_seconds=30,
-        before_world_offer=sampled, r7_select=lambda: next(picks), reserve_seconds=5)
+        before_world_offer=sampled,
+        r7_select=lambda: {"selected": next(picks)}, reserve_seconds=5)
     _play(executor, "a")
     _play(_executor(manager), "b")
     opens = [c for c in _commands(tmp_path) if c["cmd"] == "open"]
     assert [(c["retain_originals"], c["r7"]) for c in opens] == [(True, True),
                                                                (False, False)]
     manager.stop()
+
+
+# -- R7 selection (R7Sampler wired into the fast chain) -------------------------------
+class _Clock:
+    def __init__(self, now: float = 7200.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _r7(tmp_path: Path, clock, **overrides):
+    from spireagent.workbench.fast_chain_episodes import R7Selection
+
+    return R7Selection.from_configuration(
+        {"key": "r7-test-key", "quota": 3, "expected_games": 10, **overrides},
+        work=tmp_path, clock=clock)
+
+
+def test_r7_selection_is_the_sampler_choice_seeded_and_recorded(tmp_path):
+    from stpd.rl.r7_audit import R7Sampler
+
+    clock = _Clock()
+    selection = _r7(tmp_path, clock)
+    reference = R7Sampler(key="r7-test-key", quota=3, expected_games=10)
+    decisions = [selection() for _ in range(10)]
+    assert [d["selected"] for d in decisions] == [reference.select(7200.0)
+                                                  for _ in range(10)]
+    assert [d["ordinal"] for d in decisions] == list(range(10))
+    assert {d["window"] for d in decisions} == {2}
+    assert sum(d["selected"] for d in decisions) == 3
+    state = json.loads((tmp_path / "fast-chain-r7-state.json").read_text())
+    assert (state["window"], state["opened"]) == (2, 10)
+    assert "r7-test-key" not in (tmp_path / "fast-chain-r7-state.json").read_text()
+    report = selection.report()
+    assert report["current"]["chosen_so_far"] == 3 and report["resume"] is None
+
+
+def test_r7_selection_restart_continues_the_window_and_never_resumes_a_stale_one(tmp_path):
+    clock = _Clock()
+    whole = [_r7(tmp_path / "whole", clock)()["selected"] for _ in range(10)]
+    first = _r7(tmp_path / "split", clock)
+    picks = [first()["selected"] for _ in range(4)]
+    restarted = _r7(tmp_path / "split", clock)
+    assert restarted.report()["resume"] == {"resumed": True, "window": 2, "opened": 4}
+    picks += [restarted()["selected"] for _ in range(6)]
+    assert picks == whole  # a restart does not change which ordinals are R7
+    # A later window, or other sampler parameters: not resumed (coverage only).
+    clock.now += 3600
+    later = _r7(tmp_path / "split", clock)
+    assert later.report()["resume"]["resumed"] is False
+    assert later()["ordinal"] == 0
+    other = _r7(tmp_path / "split", clock, quota=1)
+    assert other.report()["resume"] == {"resumed": False, "state_window": 3, "window": 3,
+                                        "same_parameters": False}
+
+
+def test_r7_selection_refuses_bad_configuration_and_unreadable_state(tmp_path):
+    from spireagent.workbench.fast_chain_episodes import R7Selection
+
+    for bad in ({"quota": 1, "expected_games": 10}, {"key": "k", "quota": 11,
+                "expected_games": 10}, {"key": "k", "quota": "1", "expected_games": 10},
+                {"key": "k", "quota": 1, "expected_games": 10, "extra": 1},
+                {"key": "", "quota": 1, "expected_games": 10}, "k"):
+        with pytest.raises(BoundaryError) as error:
+            R7Selection.from_configuration(bad, work=tmp_path)
+        assert error.value.code == "fast_chain_r7_configuration_invalid"
+    (tmp_path / "fast-chain-r7-state.json").write_text("{not json")
+    with pytest.raises(BoundaryError) as error:
+        _r7(tmp_path, _Clock())
+    assert error.value.code == "fast_chain_r7_state_invalid"
+
+
+def test_r7_is_decided_before_admission_and_is_durable_with_the_offer(tmp_path):
+    manager = _manager(tmp_path, 1, [])
+    order: list[str] = []
+    selection = _r7(tmp_path / "r7", _Clock(), quota=10)  # every game is R7
+
+    def select():
+        order.append("r7")
+        return selection()
+
+    select.report = selection.report
+    executor = FastChainEpisodeExecutor(
+        {"initial_progress": None}, manager=manager, episode_seconds=30,
+        before_world_offer=lambda row: order.append("admission"), r7_select=select,
+        reserve_seconds=5)
+    checkpoints: list[dict] = []
+    row = _play(executor, "a", checkpoints)
+    assert order == ["r7", "admission"]
+    offered = next(c for c in checkpoints if c["world_mutation_offered"])
+    assert offered["r7"] == {"selected": True, "window": 2, "ordinal": 0}
+    assert row["r7"]["selected"] is True
+    assert [c["r7"] for c in _commands(tmp_path) if c["cmd"] == "open"] == [True]
+    closed = executor.close()
+    assert closed["r7_sampler"]["current"]["opened"] == 1
+
+
+def test_r7_select_failure_is_not_started_before_any_offer_and_returns_the_slot(tmp_path):
+    manager = _manager(tmp_path, 1, [])
+    admitted: list[str] = []
+
+    def broken():
+        raise ValueError("r7_sampler_clock_went_backwards")
+
+    executor = FastChainEpisodeExecutor(
+        {"initial_progress": None}, manager=manager, episode_seconds=30,
+        before_world_offer=lambda row: admitted.append(row["seed"]), r7_select=broken,
+        reserve_seconds=5)
+    row = _play(executor, "a")
+    assert (row["status"], row["reason"], row["world_mutation_offered"]) == (
+        "not_started", "fast_chain_r7_select_failed:r7_sampler_clock_went_backwards", False)
+    executor.r7_select = lambda: {"selected": "yes"}
+    assert _play(executor, "b")["reason"] == (
+        "fast_chain_r7_select_failed:r7_selected_not_bool")
+    assert admitted == [] and _commands(tmp_path) == []
+    # The slot came back: an unwired executor plays the next game, recorded as not R7.
+    second = _play(_executor(manager), "c")
+    assert second["status"] == "finished"
+    assert second["r7"] == {"selected": False, "sampler": None}
+    assert [c["r7"] for c in _commands(tmp_path) if c["cmd"] == "open"] == [False]
+    manager.stop()
+
+
+def test_actor_fast_chain_configuration_builds_one_r7_selection(tmp_path):
+    from spireagent.workbench.fast_chain_episodes import R7Selection
+    from spireagent.workbench.rl_actor import Actor
+
+    env = tmp_path / "env.json"
+    env.write_text(json.dumps(_env(2)))
+    fake = SimpleNamespace(segment_mode=True, work=tmp_path,
+                           config={"pipeline": {"save_workers": 1, "pending_limit": 2}})
+    base = {"command": ["fast-env"], "env_config": str(env)}
+    assert Actor._fast_chain_configuration(fake, base)["r7"] is None
+    wired = Actor._fast_chain_configuration(
+        fake, {**base, "r7": {"key": "k", "quota": 2, "expected_games": 40}})
+    assert isinstance(wired["r7"], R7Selection)
+    assert wired["r7"].state_path == tmp_path / "fast-chain-r7-state.json"
+    with pytest.raises(BoundaryError) as error:
+        Actor._fast_chain_configuration(fake, {**base, "r7": {"key": "k"}})
+    assert error.value.code == "fast_chain_r7_configuration_invalid"

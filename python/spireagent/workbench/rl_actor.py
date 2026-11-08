@@ -223,7 +223,7 @@ class Actor:
 
         if (not self.segment_mode or not isinstance(value, dict)
                 or set(value) - {"command", "env_config", "step_sync_ms",
-                                 "inference_failure_streak"}
+                                 "inference_failure_streak", "r7"}
                 or not isinstance(value.get("command"), list) or not value["command"]
                 or any(not isinstance(item, str) or not item for item in value["command"])
                 or not isinstance(value.get("env_config"), str)):
@@ -234,7 +234,14 @@ class Actor:
         if pipeline["pending_limit"] < env["slots"]:
             # The ledger admits at most pending_limit unsettled games at once.
             reject("fast_chain_pending_limit_below_slots")
-        return {**value, "env": env}
+        # One R7 selection per actor, shared by every executor build (model versions);
+        # its window count persists under this actor's work directory by default.
+        r7 = None
+        if "r7" in value:
+            from .fast_chain_episodes import R7Selection
+
+            r7 = R7Selection.from_configuration(value["r7"], work=self.work)
+        return {**{k: v for k, v in value.items() if k != "r7"}, "env": env, "r7": r7}
 
     def _stop_before_offer(self) -> bool:
         while True:
@@ -343,7 +350,8 @@ class Actor:
             # After a checked ``opened``: the learner attests the instance once (seed
             # check, game_instance_id -> intent); no fast-chain episode_end is sent.
             instance_opened=partial(fast_instance_admission, admission=self.service,
-                                    actor=self.name))
+                                    actor=self.name),
+            r7_select=self.fast_chain["r7"])
 
     def _fast_chain_stop(self, reason: str) -> None:
         """Bounded Stop of in-flight games on its own thread (never in a handler).

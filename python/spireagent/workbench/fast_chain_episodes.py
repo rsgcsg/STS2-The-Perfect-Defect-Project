@@ -32,6 +32,7 @@ an inference timeout is ``not_started`` (here: a censored game, never unknown).
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
@@ -654,6 +655,106 @@ class GameManager:
         return report
 
 
+# -- R7 selection ------------------------------------------------------------------------
+R7_STATE_SCHEMA = "spireagent/fast-chain-r7-state-1"
+R7_CONFIG_KEYS = frozenset({"key", "quota", "expected_games", "window_seconds", "state_path"})
+
+
+class R7Selection:
+    """One actor's ``open.r7`` decision: ``stpd.rl.r7_audit.R7Sampler`` (D line), persisted.
+
+    Called once per game before its learner admission and world offer (design v2 §2.9:
+    chosen before the game opens). The sampler sees only the clock window and the game
+    ordinal, never the seed, content or model. The decision is written into the ledger
+    row (``r7``) and made durable by the offer checkpoint. After every choice the
+    window's opened count is persisted (atomic replace) so a restarted actor continues
+    the window with ``R7Sampler.resume``; a state written with other sampler
+    parameters, or for an older window, is not resumed (coverage only). An unreadable
+    state file is refused loudly. The key is never written out, only its digest.
+
+    One instance per actor: executors are rebuilt per model version and share it.
+    """
+
+    def __init__(self, sampler: Any, *, state_path: Path,
+                 clock: Callable[[], float] = time.time) -> None:
+        self.sampler, self.state_path, self.clock = sampler, state_path, clock
+        self.lock = threading.Lock()
+        self.identity = {
+            "key_sha256": hashlib.sha256(sampler.key.encode()).hexdigest(),
+            "quota": sampler.quota, "expected_games": sampler.expected_games,
+            "window_seconds": sampler.window_seconds}
+        self.resumed: dict[str, Any] | None = None
+        self._resume()
+
+    @classmethod
+    def from_configuration(cls, value: Any, *, work: Path,
+                           clock: Callable[[], float] = time.time) -> R7Selection:
+        from stpd.rl.r7_audit import R7Sampler
+
+        if (not isinstance(value, dict) or set(value) - R7_CONFIG_KEYS
+                or not {"key", "quota", "expected_games"} <= set(value)
+                or "state_path" in value and (not isinstance(value["state_path"], str)
+                                              or not value["state_path"])):
+            reject("fast_chain_r7_configuration_invalid")
+        try:
+            sampler = R7Sampler(key=value["key"], quota=value["quota"],
+                                expected_games=value["expected_games"],
+                                window_seconds=value.get("window_seconds", 3600.0))
+        except (TypeError, ValueError):
+            reject("fast_chain_r7_configuration_invalid")
+        state = Path(value["state_path"]) if "state_path" in value else (
+            work / "fast-chain-r7-state.json")
+        return cls(sampler, state_path=state, clock=clock)
+
+    def _resume(self) -> None:
+        try:
+            raw = self.state_path.read_bytes()
+        except FileNotFoundError:
+            return
+        try:
+            state = json.loads(raw)
+            fields = {key: state[key] for key in self.identity}
+            window, opened = state["window"], state["opened"]
+            if (state.get("schema") != R7_STATE_SCHEMA or type(window) is not int
+                    or type(opened) is not int or opened < 0):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            reject("fast_chain_r7_state_invalid")
+        now = self.clock()
+        current = int(now // self.sampler.window_seconds)
+        if fields != self.identity or window != current:
+            self.resumed = {"resumed": False, "state_window": window, "window": current,
+                            "same_parameters": fields == self.identity}
+            return
+        self.sampler.resume(now, opened)
+        self.resumed = {"resumed": True, "window": window, "opened": opened}
+
+    def _persist(self) -> None:
+        body = json_bytes({"schema": R7_STATE_SCHEMA, **self.identity,
+                           "window": self.sampler.window, "opened": self.sampler.ordinal})
+        self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = self.state_path.with_name(self.state_path.name + ".tmp")
+        with open(temporary, "wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.state_path)
+
+    def __call__(self) -> dict[str, Any]:
+        """Decide one game; a failure is the caller's typed not_started (never a default)."""
+        with self.lock:
+            selected = self.sampler.select(self.clock())
+            record = {"selected": selected, "window": self.sampler.window,
+                      "ordinal": self.sampler.ordinal - 1}
+            self._persist()
+        return record
+
+    def report(self) -> dict[str, Any]:
+        with self.lock:
+            return {**self.sampler.report(), "resume": self.resumed,
+                    "state_path_name": self.state_path.name}
+
+
 # -- ledger executor ---------------------------------------------------------------------
 def retain_originals(row: Mapping[str, Any]) -> bool:
     """``open.retain_originals``: the old chain's keep-the-original rule at open.
@@ -754,13 +855,14 @@ class FastChainEpisodeExecutor:
                  world_offered: Callable[[dict[str, Any]], None] | None = None,
                  instance_opened: Callable[[dict[str, Any], Mapping[str, Any]], None]
                  | None = None,
-                 r7_select: Callable[[], bool] | None = None,
+                 r7_select: Callable[[], Mapping[str, Any]] | None = None,
                  reserve_seconds: float = 60) -> None:
         self.configuration, self.manager = configuration, manager
         self.instance_opened = instance_opened
-        # R7 is chosen by the manager before open (``stpd.rl.r7_audit.R7Sampler.select``,
-        # D line); with no sampler wired, no game is R7.
-        self.r7_select = r7_select or (lambda: False)
+        # R7 is chosen before learner admission and the world offer by the actor's one
+        # ``R7Selection`` (``stpd.rl.r7_audit.R7Sampler``, D line), recorded in the row.
+        # Not wired (``fast_chain.r7`` absent): no game is R7, and the row says so.
+        self.r7_select = r7_select
         # The same frozen starts and progress-lineage check as the old chain (S4).
         self.episode_starts = decode_episode_starts(
             configuration.get("episode_starts", {}),
@@ -797,6 +899,19 @@ class FastChainEpisodeExecutor:
         hook = self.instance_opened
         handed = False
         try:
+            if self.r7_select is None:
+                row["r7"] = {"selected": False, "sampler": None}
+            else:
+                try:
+                    decision = dict(self.r7_select())
+                    if type(decision.get("selected")) is not bool:
+                        raise ValueError("r7_selected_not_bool")
+                except Exception as error:  # noqa: BLE001 - never a silent R7 default
+                    row.update(status="not_started", reason="fast_chain_r7_select_failed:"
+                               + (getattr(error, "code", None) or str(error)
+                                  or type(error).__name__))
+                    return
+                row["r7"] = decision
             try:
                 self.before_world_offer(row)
             except Exception as error:  # noqa: BLE001 - any admission failure, typed
@@ -821,7 +936,7 @@ class FastChainEpisodeExecutor:
             close = self.manager.play(
                 reservation, seed=row["seed"],
                 initial_progress=self.configuration.get("initial_progress"), start=start,
-                r7=self.r7_select(), retain_originals=retain_originals(row),
+                r7=row["r7"]["selected"], retain_originals=retain_originals(row),
                 deadline_seconds=self.episode_seconds + self.manager.bound.seconds,
                 on_opened=(None if hook is None else lambda opened: hook(row, opened)))
         finally:
@@ -836,7 +951,9 @@ class FastChainEpisodeExecutor:
         return self.manager.admission_closed()
 
     def close(self) -> dict[str, Any] | None:
-        return {"fast_chain_stop": self.manager.stop()}
+        report = getattr(self.r7_select, "report", None)
+        return {"fast_chain_stop": self.manager.stop(),
+                "r7_sampler": None if report is None else report()}
 
     def preserve_report(self, path: Path) -> dict[str, Any]:
         # Fast-chain rows never enter save_pending: originals stay with the environment
