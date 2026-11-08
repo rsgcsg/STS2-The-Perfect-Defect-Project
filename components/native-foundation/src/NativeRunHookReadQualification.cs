@@ -24,8 +24,13 @@ public static class NativeRunHookReadQualification
     private static readonly Guid AuditedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
     private static readonly FieldInfo? Subscribers = typeof(ModHelper).GetField("_runHookSubscribers",
         BindingFlags.Static | BindingFlags.NonPublic);
-    // fast_chain memoizes by patch generation; off = the original live check.
-    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
+    // fast_chain memoizes by patch generation; off runs the original live check directly.
+    public static bool IsUnpatched(MethodBase? method)
+    {
+        if (NativePatchStateCache.Enabled) return NativePatchStateCache.IsUnpatched(method);
+        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
+        catch { return false; }
+    }
 
     private static bool IteratorIsUnpatched(MethodInfo? method)
     {
@@ -74,7 +79,9 @@ public static class NativeRunHookReadQualification
             return run.GetType() == typeof(RunState)
                 && typeof(RunState).Assembly.ManifestModule.ModuleVersionId == AuditedGameMvid
                 && Subscribers?.GetValue(null) is ICollection { Count: 0 }
-                && NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched);
+                && (NativePatchStateCache.Enabled
+                    ? NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched)
+                    : FixedClosureIsUnpatched());
         }
         catch { return false; }
     }
