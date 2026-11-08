@@ -606,3 +606,17 @@ def test_a_dead_prepare_worker_stops_the_service_loudly(vocabulary, model):
     finally:
         client.close()
         service.close()
+
+
+def test_publish_ships_a_model_that_carries_a_compiled_block(vocabulary, model):
+    """A learner-side compiled rows block is a runtime cache, never shipped."""
+    def unpicklable() -> None:
+        pass
+
+    model._rows_block_compiled = unpicklable  # stand-in: a local function cannot pickle
+    try:
+        service = _service(vocabulary, model, FakeAssembler())
+        service.close()
+        assert model._rows_block_compiled is unpicklable
+    finally:
+        del model._rows_block_compiled

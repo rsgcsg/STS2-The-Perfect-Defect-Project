@@ -787,8 +787,13 @@ class FastInferenceService:
         from .rows_scorer import RowsScorer
 
         RowsScorer(model, bf16=self.bf16, compile=self.compile)  # immutable eval snapshot
+        # Ship parameters and construction, not this process's runtime caches
+        # (a torch.compile wrapper set by rows_forward cannot be pickled).
+        shipped = copy.copy(model)
+        shipped.__dict__ = {key: value for key, value in model.__dict__.items()
+                            if not key.startswith("_rows_block")}
         blob = io.BytesIO()
-        torch.save(model, blob)
+        torch.save(shipped, blob)
         key = handoff.snapshot_sha256
         with self.control_lock:
             self._device_control("model", key, blob.getvalue())
