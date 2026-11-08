@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "032275b96a8f31e14f60824d5326a346857c66e12ed3f8389673b73e8550d56a",
-    "artifact_sha256": "e1ebf4173e65c1afbf05f0155bad52ec90d1632df6f49aeb863c4549b22ac019",
-    "artifact_mvid": "1f0fe7b0-525b-4b5b-afc7-18404860ccd2",
+    "source_patch_sha256": "b2136d67f8265ac9f7b79595d611bdd0c40eeedb854bab96cca97df6b822ff90",
+    "artifact_sha256": "8e84356501c1073f2e328324037810aae9b299942f2f38a6e4edffd5652e5d0b",
+    "artifact_mvid": "193bd480-fb67-456e-9fb7-8f2abf4b8552",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "9ecf82b4d504681a45ac6f10792d4c65f51c920bafe266caeb7b205aca40748c",
-        "artifact_sha256": "2d6d24d6136671a064004104d7b9fd85656975c3c4cdba457d7b4624446071e0",
-        "artifact_mvid": "5b13b92a-9478-4afc-916d-f41666b2d87f",
+        "source_patch_sha256": "91bf09c42a5f57f18087ce01ecfce21ad09daa66b1e78a7f1a3bd07dea5ff0e8",
+        "artifact_sha256": "1c19ed291d74cf930712dd6f7c063e385e0bc2701841cf6a6a2c316b3ddf83c3",
+        "artifact_mvid": "3f4f7498-4691-4a5a-bd54-48872fbe0477",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -530,6 +530,13 @@
       "risk": "low",
       "effect": "Under the same fast_chain switch only: each response is serialized with the same JsonSerializerOptions straight to UTF-8 in a reused buffer and written to the standard output stream under the Console.Out lock, instead of a per-response UTF-16 string re-encoded by Console.Out. Same JSON bytes and newline; off is the original path.",
       "regression": "patch-cache-tests JsonLineBytes (decision state, escaping/surrogates/numbers/nesting, buffer reuse, same depth failure); Friday paired replay byte-equal."
+    },
+    {
+      "id": "fast_chain_card_detail_cache",
+      "kind": "native_render_result_cache",
+      "risk": "medium",
+      "effect": "Under the same fast_chain switch only: a complete card detail render is reused when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile or HoverTips, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders, non-canonical hover cards. Every 64th frame renders live and compares byte for byte; a difference is fatal compact_state_divergence.",
+      "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored); Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
     }
   ],
   "admission": {

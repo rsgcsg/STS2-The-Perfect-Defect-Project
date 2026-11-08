@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..7b3cf99
+index 0000000..326dbc7
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,409 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1545,6 +1545,7 @@ index 0000000..7b3cf99
 +            LiveDelegateFlip();
 +            LiveListenerVariablesFlip();
 +            JsonLineBytes();
++            CardDetailCache();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -1835,6 +1836,71 @@ index 0000000..7b3cf99
 +        try { Sts2Headless.NativeJsonLineWriter.Write(new MemoryStream(), nested, options, "\n"); } catch (JsonException) { directThrew = true; }
 +        Check(originalThrew && directThrew, "depth limit must fail the same way");
 +        Same(new() { ["type"] = "after failure" }, "writer usable after a failed response");
++    }
++
++    // fast_chain card detail cache: off is never consulted; a hit equals the live render;
++    // a changed input is a new key; a stale entry is caught at the reconcile frame.
++    static void CardDetailCache()
++    {
++        Type cache = typeof(NativeCardDetailCache);
++        void Frame(long value) => cache.GetField("_frame", Flags)!.SetValue(null, value);
++        var entries = (System.Collections.IDictionary)cache.GetField("Entries", Flags)!.GetValue(null)!;
++        string Render(CardModel card) => JsonSerializer.Serialize(NativePublicCardDetails.CaptureWithUpgradePreview(card, PileType.Deck).PublicCard);
++        Type?[] all;
++        try { all = typeof(CardModel).Module.GetTypes(); } catch (ReflectionTypeLoadException error) { all = error.Types; }
++        MethodInfo canonical = typeof(ModelDb).GetMethod(nameof(ModelDb.Card), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        var damage = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DamageVar);
++        CardModel? card = null;
++        Frame(1);
++        foreach (Type type in all.OfType<Type>().Where(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract).OrderBy(t => t.FullName, StringComparer.Ordinal))
++        {
++            CardModel model = (CardModel)canonical.MakeGenericMethod(type).Invoke(null, null)!;
++            if (!model.DynamicVars.Values.Any(damage.IsInstanceOfType)) continue;
++            CardModel copy = (CardModel)model.ToMutable();
++            SetEnabled(true);
++            long stores = NativeCardDetailCache.Stores;
++            var result = NativePublicCardDetails.CaptureWithUpgradePreview(copy, PileType.Deck);
++            if (result.Complete && NativeCardDetailCache.Stores > stores) { card = copy; break; }
++        }
++        Check(card != null, "a cacheable detached card with a damage variable must exist");
++        SetEnabled(false);
++        long hits = NativeCardDetailCache.Hits, before = NativeCardDetailCache.Stores;
++        string live = Render(card!);
++        Check(Render(card!) == live && NativeCardDetailCache.Hits == hits && NativeCardDetailCache.Stores == before, "off must never consult the card detail cache");
++        SetEnabled(true);
++        Check(Render(card!) == live && NativeCardDetailCache.Hits > hits, "a warm hit must equal the live render");
++        var variable = card!.DynamicVars.Values.First(damage.IsInstanceOfType);
++        FieldInfo baseValue = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar).GetField("_baseValue", Flags)!;
++        decimal own = (decimal)baseValue.GetValue(variable)!;
++        baseValue.SetValue(variable, own + 7m);
++        try
++        {
++            SetEnabled(false); string changedLive = Render(card); SetEnabled(true);
++            Check(changedLive != live && Render(card) == changedLive, "a changed variable must be a new key, never a stale hit");
++        }
++        finally { baseValue.SetValue(variable, own); }
++        Check(Render(card) == live, "restoring the variable serves the original entry");
++        // Corrupt every stored entry: a normal frame serves it, the reconcile frame must stop loudly.
++        foreach (object key in entries.Keys.Cast<object>().ToList())
++        {
++            var entry = (NativeCardDetailCache.Entry)entries[key]!;
++            entries[key] = entry with { Form = entry.Form + " " };
++        }
++        Frame(64);
++        bool diverged = false;
++        try { Render(card); } catch (NativeCompactStateDivergenceException error) { diverged = error.Message.StartsWith("compact_state_divergence", StringComparison.Ordinal); }
++        Check(diverged && NativeCardDetailCache.Divergence != null, "a stale entry must be compact_state_divergence at the reconcile frame");
++        cache.GetProperty("Divergence")!.SetValue(null, null);
++        entries.Clear();
++        // Types whose description reads extra arguments are always rendered live.
++        Type? extra = all.OfType<Type>().FirstOrDefault(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract
++            && t.GetMethods(Flags | BindingFlags.DeclaredOnly).Any(m => m.Name == "AddExtraArgsToDescription"));
++        Check(extra != null, "a card type overriding AddExtraArgsToDescription must exist");
++        Frame(1);
++        long stored = NativeCardDetailCache.Stores;
++        NativePublicCardDetails.CaptureWithUpgradePreview((CardModel)((CardModel)canonical.MakeGenericMethod(extra!).Invoke(null, null)!).ToMutable(), PileType.Deck);
++        Check(NativeCardDetailCache.Stores == stored, "an AddExtraArgsToDescription type must never be stored");
++        SetEnabled(true);
 +    }
 +}
 diff --git a/setup.sh b/setup.sh
@@ -4123,6 +4189,243 @@ index 0000000..6147465
 +    {
 +        _executor.BeforeActionExecuted -= BeforeAction;
 +        _history.Changed -= HistoryChanged;
++    }
++}
+diff --git a/src/Sts2Headless/NativeCardDetailCache.cs b/src/Sts2Headless/NativeCardDetailCache.cs
+new file mode 100644
+index 0000000..fd91a57
+--- /dev/null
++++ b/src/Sts2Headless/NativeCardDetailCache.cs
+@@ -0,0 +1,231 @@
++using System;
++using System.Collections;
++using System.Collections.Generic;
++using System.Globalization;
++using System.Linq;
++using System.Reflection;
++using System.Text;
++using System.Threading;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Models;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>Loud stop: a served card detail differs from the live native rendering.</summary>
++public sealed class NativeCompactStateDivergenceException(string message) : Exception(message);
++
++/// <summary>
++/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>), default off. Memoizes the
++/// formatted public card detail of one card render, keyed by a closed set of live public
++/// inputs read AFTER the native preflight and preview update of that render: runtime type,
++/// preview mode, display pile, combat/pile context, every scalar (and scalar collection)
++/// field of the card, its live keywords, modified costs, and every dynamic variable's
++/// scalar state including its preview value. Values are the game's own rendering results
++/// from an earlier live render with an identical key; this class assembles no text.
++///
++/// Not cached (always rendered live): types that override AddExtraArgsToDescription,
++/// GetDescriptionForPile or HoverTips; enchanted or afflicted cards; a card with a current
++/// target; a variable with a non-scalar field or a capturing delegate; any incomplete
++/// render; a render whose hover cards are not canonical.
++///
++/// Reconcile: every 64th headless frame (every frame in shadow mode,
++/// STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW=1) renders everything live and compares it with the
++/// stored entry byte for byte; a difference is compact_state_divergence, which is fatal.
++/// </summary>
++public static class NativeCardDetailCache
++{
++    private const int ReconcilePeriod = 64;
++    private const int MaxEntries = 8192;
++
++    public sealed record Entry(Dictionary<string, object?> Visible, string Form);  // Form: exact canonical form
++
++    private static readonly bool Shadow =
++        Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW") == "1";
++    private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
++    private static readonly Dictionary<Type, bool> CacheableTypes = new();
++    private static readonly Dictionary<Type, FieldInfo[]> ScalarFields = new();
++    private static int _ownerThread;
++    private static long _frame;
++
++    public static long Hits { get; private set; }
++    public static long Stores { get; private set; }
++    public static long Compares { get; private set; }
++    public static string? Divergence { get; private set; }
++
++    private static bool Active => NativePatchStateCache.Enabled && OwnerThread();
++    private static bool Reconciling => Shadow || _frame % ReconcilePeriod == 0;
++
++    private static bool OwnerThread()
++    {
++        int id = Environment.CurrentManagedThreadId;
++        int owner = Interlocked.CompareExchange(ref _ownerThread, id, 0);
++        return owner == 0 || owner == id;
++    }
++
++    /// <summary>One headless command. Off: no-op.</summary>
++    public static void BeginFrame()
++    {
++        if (!NativePatchStateCache.Enabled) return;
++        _frame++;
++        if (Shadow && _frame % 256 == 0)
++            Console.Error.WriteLine($"[native-card-detail-cache] frames={_frame} compares={Compares} stores={Stores} entries={Entries.Count} divergence={(Divergence == null ? 0 : 1)}");
++    }
++
++    /// <summary>Key of a render, or null when it must be rendered live. Call after preview update.</summary>
++    internal static string? Key(CardModel card, PileType displayPile, CardPreviewMode mode)
++    {
++        if (!Active) return null;
++        Type type = card.GetType();
++        if (!Cacheable(type) || card.Enchantment != null || card.Affliction != null || card.CurrentTarget != null)
++            return null;
++        var key = new StringBuilder(256);
++        key.Append(type.FullName).Append('|').Append((int)mode).Append('|').Append((int)displayPile)
++            .Append('|').Append(card.CombatState != null ? 'c' : 'n').Append('|').Append(card.Pile?.Type.ToString() ?? "-");
++        if (!AppendScalars(key, card)) return null;
++        key.Append("|kw");
++        foreach (var keyword in (card.Keywords ?? Enumerable.Empty<CardKeyword>()).Select(k => (int)k).OrderBy(k => k))
++            key.Append(',').Append(keyword);
++        key.Append("|e").Append(card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString())
++            .Append("|s").Append(card.HasStarCostX ? "X" : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : "-");
++        foreach (DynamicVar variable in card.DynamicVars.Values)
++        {
++            key.Append("|v:").Append(variable.GetType().FullName);
++            if (!AppendScalars(key, variable)) return null;
++        }
++        return key.ToString();
++    }
++
++    /// <summary>A stored detail for this key, outside reconcile frames.</summary>
++    internal static Dictionary<string, object?>? TryServe(string? key)
++    {
++        if (key == null || Reconciling || !Entries.TryGetValue(key, out Entry? entry)) return null;
++        Hits++;
++        return Clone(entry.Visible);
++    }
++
++    /// <summary>After a complete live render with canonical hover cards: store it, or compare it.</summary>
++    internal static void Store(string? key, Dictionary<string, object?> visible)
++    {
++        if (key == null || !Active || !Plain(visible)) return;
++        string json = Canonical(new StringBuilder(512), visible).ToString();
++        if (Entries.TryGetValue(key, out Entry? entry))
++        {
++            Compares++;
++            if (!string.Equals(entry.Form, json, StringComparison.Ordinal))
++            {
++                Divergence = "compact_state_divergence: native card detail cache differs from live render for " + key;
++                throw new NativeCompactStateDivergenceException(Divergence);
++            }
++            return;
++        }
++        if (Entries.Count >= MaxEntries) Entries.Clear();
++        Entries[key] = new Entry(Clone(visible), json);
++        Stores++;
++    }
++
++    private static bool Cacheable(Type type)
++    {
++        if (CacheableTypes.TryGetValue(type, out bool value)) return value;
++        value = true;
++        for (Type? t = type; t != null && t != typeof(CardModel); t = t.BaseType)
++            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile", "get_HoverTips" })
++                if (t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
++                    .Any(method => method.Name == name)) value = false;
++        CacheableTypes[type] = value;
++        return value;
++    }
++
++    private static bool Scalar(Type type) => type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal)
++        || Nullable.GetUnderlyingType(type) is { } inner && Scalar(inner);
++
++    private static FieldInfo[] Fields(Type type)
++    {
++        if (ScalarFields.TryGetValue(type, out FieldInfo[]? fields)) return fields;
++        var list = new List<FieldInfo>();
++        for (Type? t = type; t != null && t != typeof(object); t = t.BaseType)
++            list.AddRange(t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly));
++        fields = list.ToArray();
++        ScalarFields[type] = fields;
++        return fields;
++    }
++
++    // Scalars and scalar collections are key parts. Delegates must be non-capturing.
++    // References to other models (owner, pool, clone links, vars set) are context, not text inputs.
++    private static bool AppendScalars(StringBuilder key, object value)
++    {
++        foreach (FieldInfo field in Fields(value.GetType()))
++        {
++            Type type = field.FieldType;
++            if (Scalar(type))
++            {
++                key.Append(';').Append(field.Name).Append('=').Append(field.GetValue(value));
++                continue;
++            }
++            if (typeof(Delegate).IsAssignableFrom(type))
++            {
++                if (field.GetValue(value) is not Delegate call) continue;
++                if (field.DeclaringType != null && typeof(DynamicVar).IsAssignableFrom(field.DeclaringType))
++                {
++                    if (call.Target != null && call.Target.GetType().Name != "<>c") return false;
++                    key.Append(';').Append(field.Name).Append('=').Append(call.Method.DeclaringType?.FullName)
++                        .Append(':').Append(call.Method.MetadataToken);
++                }
++                continue;
++            }
++            if (type.IsGenericType && field.GetValue(value) is IEnumerable items && type.GetGenericArguments() is [var item] && Scalar(item))
++            {
++                var parts = items.Cast<object?>().Select(element => Convert.ToString(element) ?? "").ToList();
++                if (!typeof(IList).IsAssignableFrom(type)) parts.Sort(StringComparer.Ordinal);
++                key.Append(';').Append(field.Name).Append("=[").Append(string.Join(',', parts)).Append(']');
++                continue;
++            }
++            if (typeof(DynamicVar).IsAssignableFrom(value.GetType()) && field.Name != "_owner") return false;
++        }
++        return true;
++    }
++
++    private static bool Plain(object? value) => value switch
++    {
++        null or string or bool or int or long or decimal => true,
++        Dictionary<string, object?> map => map.Values.All(Plain),
++        List<Dictionary<string, object?>> list => list.All(Plain),
++        _ => false
++    };
++
++    // Exact, type-tagged, length-prefixed form of a plain render: equal iff the values are equal.
++    private static StringBuilder Canonical(StringBuilder text, object? value)
++    {
++        switch (value)
++        {
++            case null: return text.Append('n');
++            case string s: return text.Append('s').Append(s.Length).Append(':').Append(s);
++            case bool b: return text.Append(b ? 't' : 'f');
++            case int i: return text.Append('i').Append(i.ToString(CultureInfo.InvariantCulture)).Append(';');
++            case long l: return text.Append('l').Append(l.ToString(CultureInfo.InvariantCulture)).Append(';');
++            case decimal d: return text.Append('d').Append(d.ToString(CultureInfo.InvariantCulture)).Append(';');
++            case Dictionary<string, object?> map:
++                text.Append('{').Append(map.Count).Append(':');
++                foreach (var (name, item) in map) Canonical(Canonical(text, name), item);
++                return text.Append('}');
++            case List<Dictionary<string, object?>> list:
++                text.Append('[').Append(list.Count).Append(':');
++                foreach (var item in list) Canonical(text, item);
++                return text.Append(']');
++            default: throw new InvalidOperationException("native_card_detail_cache_unplain_value");
++        }
++    }
++
++    private static Dictionary<string, object?> Clone(Dictionary<string, object?> map)
++    {
++        var copy = new Dictionary<string, object?>(map.Count);
++        foreach (var (name, value) in map)
++            copy[name] = value switch
++            {
++                Dictionary<string, object?> child => Clone(child),
++                List<Dictionary<string, object?>> list => list.Select(Clone).ToList(),
++                _ => value
++            };
++        return copy;
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
@@ -6670,10 +6973,10 @@ index 0000000..21f689a
 +}
 diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
 new file mode 100644
-index 0000000..ef9cabc
+index 0000000..d8c4eb7
 --- /dev/null
 +++ b/src/Sts2Headless/NativePublicCardDetails.cs
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,212 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -6693,6 +6996,8 @@ index 0000000..ef9cabc
 +        public bool Complete => Missing.Length == 0;
 +        public Dictionary<string, object?> PublicCard => NativePublicCardDetails.ToPublicCard(Card);
 +        public Dictionary<string, object?>? UpgradePreview { get; init; }
++        // The rendered subject was a readonly canonical card (fast_chain detail cache input).
++        internal bool Canonical { get; init; }
 +        public Dictionary<string, object?> PublicDetail
 +        {
 +            get
@@ -6767,6 +7072,9 @@ index 0000000..ef9cabc
 +        bool addedToPath = false;
 +        CardModel subject = card;
 +        string stage = "canonical_copy";
++        bool canonical = false, canonicalHoverCards = true;
++        string? cacheKey = null;
++        Dictionary<string, object?>? served = null;
 +        try
 +        {
 +            if (path.Count >= 16 || !(addedToPath = path.Add(card)))
@@ -6779,10 +7087,14 @@ index 0000000..ef9cabc
 +                if (!NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(card, out CardModel? display, out string? gap)
 +                    || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
 +                card = display;
++                canonical = true;
 +            }
 +            stage = "preflight";
 +            NativeCardRenderTransaction.Run(card, displayPile, () =>
 +            {
++                stage = "detail_cache";
++                cacheKey = NativeCardDetailCache.Key(card, displayPile, mode);
++                if ((served = NativeCardDetailCache.TryServe(cacheKey)) != null) return true;
 +                stage = "title";
 +                visible["name"] = card.Title;
 +                stage = "description";
@@ -6815,6 +7127,7 @@ index 0000000..ef9cabc
 +                        Result child = Capture(preview.Card, PileType.None, path);
 +                        previews.Add(child.Card);
 +                        if (!child.Complete) missing.Add("native_selector_hover_card_incomplete");
++                        if (!child.Canonical) canonicalHoverCards = false;
 +                    }
 +                    else missing.Add("unqualified_native_card_hover_preview");
 +                }
@@ -6831,6 +7144,7 @@ index 0000000..ef9cabc
 +                visible["name"] = null; visible["description"] = null;
 +                stage = "preview_update";
 +            });
++            if (served != null) return new(served, []) { Canonical = canonical };
 +            stage = "visible_text_projection";
 +            // Same public text as the Reference surface readers: rich-text tags removed,
 +            // inline icons as [file.png], description newlines as spaces.
@@ -6859,7 +7173,7 @@ index 0000000..ef9cabc
 +                && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
 +                missing.Add("native_selector_enchantment_description");
 +        }
-+        catch (Exception error) when (error is not NativeRenderStateViolationException)
++        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException)
 +        {
 +            // Private, opt-in diagnosis of an actual render failure. Type metadata
 +            // avoids invoking a model getter after preflight has rejected it.
@@ -6870,7 +7184,9 @@ index 0000000..ef9cabc
 +            visible["description"] = null;
 +        }
 +        finally { if (addedToPath) path.Remove(subject); }
-+        return new(visible, missing.Distinct(StringComparer.Ordinal).ToArray());
++        string[] gaps = missing.Distinct(StringComparer.Ordinal).ToArray();
++        if (gaps.Length == 0 && canonicalHoverCards) NativeCardDetailCache.Store(cacheKey, visible);
++        return new(visible, gaps) { Canonical = canonical };
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeRelicPresentation.cs b/src/Sts2Headless/NativeRelicPresentation.cs
@@ -9257,7 +9573,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..f07a21d 100644
+index 800f139..c279831 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -9283,27 +9599,36 @@ index 800f139..f07a21d 100644
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -85,7 +93,8 @@ class Program
+@@ -85,7 +93,9 @@ class Program
              try
              {
                  var cmd = JsonSerializer.Deserialize<JsonElement>(line);
 -                result = HandleCommand(sim, cmd);
 +                NativePatchStateCache.Revalidate(); // fast_chain patch-generation sampling point; off = no-op
++                NativeCardDetailCache.BeginFrame(); // fast_chain card detail reconcile clock; off = no-op
 +                result = HandleCommand(ref sim, cmd);
              }
              catch (JsonException ex)
              {
-@@ -93,7 +102,8 @@ class Program
+@@ -93,7 +103,16 @@ class Program
              }
              catch (Exception ex)
              {
 -                result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"{ex.GetType().Name}: {ex.Message}" };
 +                Console.Error.WriteLine(ex);
 +                result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = ex.ToString() };
++            }
++
++            if (NativeCardDetailCache.Divergence is { } divergence)
++            {
++                // Fatal, never retried or replaced by a live answer: the stream has stopped being exact.
++                Console.Error.WriteLine("[native-card-detail-cache] " + divergence);
++                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence", ["message"] = divergence });
++                Environment.Exit(70);
              }
  
              if (result != null)
-@@ -108,17 +118,64 @@ class Program
+@@ -108,17 +127,64 @@ class Program
          }
      }
  
@@ -9370,7 +9695,7 @@ index 800f139..f07a21d 100644
                  );
  
              case "action":
-@@ -232,6 +289,11 @@ class Program
+@@ -232,6 +298,11 @@ class Program
  
      static void WriteLine(Dictionary<string, object?> data)
      {
