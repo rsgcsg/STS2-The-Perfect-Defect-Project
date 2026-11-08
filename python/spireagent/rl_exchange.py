@@ -587,6 +587,15 @@ class Exchange:
         return (self.store.archive.status(owned=True)
                 if isinstance(self.store, ArchivedStore) else None)
 
+    def defer_archive(self) -> bool:
+        """Record archive intents only; the shared publisher copies them (OPS-2)."""
+        from spireagent.storage.async_archive import ArchivedStore
+
+        if not isinstance(self.store, ArchivedStore):
+            return False
+        self.store.archive.defer_to_shared_publisher()
+        return True
+
     def drain_archive(self, timeout: float = 120) -> dict[str, Any] | None:
         from spireagent.storage.async_archive import ArchivedStore
 

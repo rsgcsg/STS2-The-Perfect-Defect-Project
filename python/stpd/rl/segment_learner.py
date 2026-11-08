@@ -104,6 +104,22 @@ from .sgd_process import (
     write_tree,
 )
 
+# The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
+WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
+
+
+def window_end_drop(window_end: str | None, leases: dict[str, Any], episodes: dict[str, Any],
+                    *, fenced: bool) -> dict[str, Any] | None:
+    """RL5 OPS-2 (audit row 23): worlds still in flight after a deadline/budget drain are
+    a normal window close: dropped and counted, never retried; their originals stay in the
+    Store and the final CP is published before this. None = nothing to drop, or not a
+    normal window end (the caller then fails closed with unresolved_worlds_after_drain)."""
+    if fenced or window_end is None or not (leases or episodes):
+        return None
+    keys = sorted(episodes)
+    return {"reason": window_end, "inflight_leases": len(leases), "episodes": len(keys),
+            "episode_keys": keys[:1000], "retried": False}
+
 
 @dataclass(frozen=True)
 class SegmentLearnerIO:
@@ -421,6 +437,7 @@ class SegmentLearner:
         self.episode_ends: dict[str, threading.Event] = {}
         self.source_prefetch_thread: threading.Thread | None = None
         self.stop_fact: dict[str, Any] | None = None
+        self.window_end: str | None = None
         self.stop_epoch = 0
         self.training_discarded_rows = 0
         self.live_work = work
@@ -2744,6 +2761,44 @@ class SegmentLearner:
             # and its replicator must outlive both success and failure events.
             self._close_journal()
 
+    def _window_end(self, deadline: float, initialize_only: bool) -> str | None:
+        """Why the training loop ended, when that is a normal window end: the absolute
+        deadline/compute budget, the version budget, or the watcher's typed window-end
+        stop. Anything else (operator STOP, a failure stop, a fence, unreadable stop
+        facts) is None, and unresolved worlds then stay a failure (fail closed)."""
+        if initialize_only or self.input_fenced:
+            return None
+        stop = self.stop_fact
+        if stop is None:
+            try:
+                stop = self.exchange.stop_request(training_generation=self.generation)
+            except Exception:  # noqa: BLE001 -- an unreadable stop fact is not a window end
+                return None
+        if stop is not None:
+            return stop["reason"] if stop.get("reason") in WINDOW_END_STOPS else None
+        stop_file = self.work / "STOP"
+        if stop_file.exists():
+            # The watcher writes its typed reason and budget into STOP before the socket
+            # stop can arrive; an empty or foreign STOP (operator, signal) fails closed.
+            try:
+                written = json.loads(stop_file.read_bytes() or b"null")
+            except (OSError, ValueError):
+                return None
+            budget = getattr(self.config, "operating_budget", None)
+            reason = written.get("reason") if isinstance(written, dict) else None
+            if (isinstance(reason, str) and reason in WINDOW_END_STOPS
+                    and (budget is None or written.get("budget_id") == budget["id"])):
+                return reason
+            return None
+        if self.version >= self.config.max_versions:
+            return "max_versions"
+        now = time.monotonic()
+        if (now >= deadline
+                or (self.selection_deadline is not None and now >= self.selection_deadline)
+                or (self.deadline_at is not None and time.time() >= self.deadline_at - 600)):
+            return "deadline"
+        return None
+
     def _run(self, *, initialize_only: bool = False,
              on_tick: Callable[[], None] | None = None) -> dict[str, Any]:
         began = time.monotonic()
@@ -2821,6 +2876,7 @@ class SegmentLearner:
                 except SgdProcessFailed as failure:
                     self._sgd_fence(failure)
             training_elapsed = time.monotonic() - began
+            self.window_end = self._window_end(deadline, initialize_only)
             self.active_training_seconds = training_elapsed
             self.active_training_began = None
             with self.condition:
@@ -2842,6 +2898,10 @@ class SegmentLearner:
                         on_tick()
                     with self.condition:
                         self.condition.wait(0.2)
+                if self.window_end is None:
+                    # The socket stop normally lands during the drain; read the facts
+                    # again (same fail-closed table) before classifying what is left.
+                    self.window_end = self._window_end(deadline, initialize_only)
                 if not self.input_fenced:
                     phase = "final_labels"
                     try:
@@ -2878,6 +2938,7 @@ class SegmentLearner:
                 "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
                 "segments": asdict(self.settings),
                 "performance": self.config.frozen()["performance"]},
+            "window_end": self.window_end,
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),
@@ -2891,10 +2952,14 @@ class SegmentLearner:
         if self.sgd is not None:
             summary["sgd_process"] = {"implementation": "alternative:sgd_process",
                                       "exit": self.sgd.exit, "failure": self.sgd_failure}
+        dropped = window_end_drop(self.window_end, self.queue.leases, self.actor_episodes,
+                                  fenced=self.input_fenced)
+        if dropped is not None:
+            summary["dropped_at_window_end"] = dropped
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         if self.input_fenced:
             raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
-        if self.queue.leases or self.actor_episodes:
+        if (self.queue.leases or self.actor_episodes) and "dropped_at_window_end" not in summary:
             raise BoundaryError("rl_learner", "unresolved_worlds_after_drain")
         if self.actor_allocation_pending:
             raise BoundaryError("rl_learner", "unresolved_actor_allocations_after_drain")
