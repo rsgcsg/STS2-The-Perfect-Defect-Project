@@ -25,7 +25,8 @@ export interface FastGameMeta {
   r7: boolean;
   /** Chosen by the manager before open (the 5% sample, evaluation games): keep every original. */
   retain_originals: boolean;
-  /** Whether `nativeLine` will be called (compact output on). */
+  /** Whether `nativeLine` may be called. Always true in the K-game process: compact frames, or with
+   * compact off only the fast_chain native's own divergence report line. */
   native_lines: boolean;
 }
 

@@ -30,7 +30,8 @@ export interface SlotNative {
   release(): Promise<void>;
   taint(): { tainted: boolean; reason: string | null };
   /** Evidence: receives every compact line of the current episode in order, starting
-   * with the lines read while it was mounted; null detaches. No-op without compact output. */
+   * with the lines read while it was mounted; null detaches. Without compact output the only
+   * line can be the native's own compact_state_divergence report. */
   attachLines(listener: ((line: string) => void) | null): void;
   /** The last compact frame read (the state a step is bound to); null without compact output. */
   frame(): FastFrameRef | null;
@@ -129,7 +130,8 @@ export class HostSlotNative implements SlotNative {
               private readonly sampleRate = 1) {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
       if (typeof line !== "string") return;
-      this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
+      // The native's own divergence report is an original line, not a frame a step acted on.
+      if (frame.type === "compact_state") this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
       if (this.#listener) this.#listener(line); else this.#lines.push(line);
     };
   }

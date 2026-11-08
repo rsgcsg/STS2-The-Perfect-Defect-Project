@@ -21,9 +21,11 @@ type StepStatus = "completed" | "interrupted_known" | "not_started" | "unknown";
 
 export interface KernelStats {
   games: number; decisions: number; forced: number; native_steps: number; settle_waits: number; full_checks: number;
+  /** Games and opens ended by compact_state_divergence (Host- or native-detected), counted apart from other unknowns. */
+  compact_divergences: number;
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
 }
-export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
+export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0, compact_divergences: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0 });
 
 /** What every slot of one environment process shares. */
@@ -39,6 +41,8 @@ export interface KernelContext {
   emit(event: string, data: Record<string, unknown>): void;
   /** compact_state_divergence / sampled mismatch: this build's output stops. */
   stopBuildOutput(reason: string, slot: number, gameInstanceId: string | null): void;
+  /** Evidence could not be made durable: loud and fatal for the whole process, never a fallback. */
+  evidenceFailed(slot: number, gameInstanceId: string | null, reason: string): void;
   stopping(): boolean;
   sleep(ms: number): Promise<void>;
 }
@@ -473,12 +477,13 @@ export class SlotKernel {
       const divergence = native.taint().reason === "compact_state_divergence";
       // The lines this mount emitted (a diverging first frame included) outlive the native.
       const lines: string[] = [];
-      if (ctx.config.compact.enabled) { native.attachLines(line => lines.push(line)); native.attachLines(null); }
+      // Compact off, the only line can be the native's own divergence report: kept all the same.
+      native.attachLines(line => lines.push(line)); native.attachLines(null);
       await this.#replaceNative();
-      if (divergence) ctx.stopBuildOutput("compact_state_divergence", this.index, null);
+      if (divergence) { ctx.stats.compact_divergences += 1; ctx.stopBuildOutput("compact_state_divergence", this.index, null); }
       const reason = `reset_failed:${divergence ? "compact_state_divergence" : errorText(error)}`;
       try { await ctx.evidence.refusedOpen({ slot: this.index, game_ref: command.game_ref, start: openStart, reason, native_lines: lines }); }
-      catch (failure) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: null, reason: errorText(failure) }); }
+      catch (failure) { ctx.evidenceFailed(this.index, null, errorText(failure)); }
       return refuse(reason);
     }
     this.gameInstanceId = gameInstanceId;
@@ -489,11 +494,15 @@ export class SlotKernel {
     ctx.link.send({ type: "episode_open", game_instance_id: gameInstanceId, actor_id: ctx.config.inference.actor_id,
       sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart });
     const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
-      start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: ctx.config.compact.enabled });
-    if (ctx.config.compact.enabled) native.attachLines(line => evidence.nativeLine(line));
+      start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: true });
+    // Always attached: compact off, the native's divergence report (#433 S3) is still an original.
+    native.attachLines(line => evidence.nativeLine(line));
     const game = new GameRun(ctx, this, native, gameInstanceId, evidence);
     this.#game = game;
     let reason: CloseReason, detail: string, terminal: { result: "victory" | "defeat" } | null = null, replace = false;
+    // Any evidence failure of this game: its `closed` event says so, so the manager never counts or trains on it.
+    let evidenceFailed = false;
+    const failEvidence = (failure: unknown) => { evidenceFailed = true; ctx.evidenceFailed(this.index, gameInstanceId, errorText(failure)); };
     try {
       ({ reason, detail, terminal } = await game.play());
     } catch (error) {
@@ -510,12 +519,13 @@ export class SlotKernel {
         reason = "unknown"; replace = true;
         if (detail !== "compact_state_divergence") detail = `delivered_successor_unreadable:${detail}`;
       }
+      if (end.options.buildStop === "compact_state_divergence") ctx.stats.compact_divergences += 1;
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
       // The originals the sampled check disagreed with go into this game's evidence, and
       // every original of this game is kept, whatever else the close says.
       if (end.options.sampledMismatch) {
         try { evidence.retainSampledCheckMismatch(end.options.sampledMismatch); }
-        catch (failure) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: gameInstanceId, reason: errorText(failure) }); }
+        catch (failure) { failEvidence(failure); }
       }
     }
     const fullChecks = native.fullChecks();
@@ -533,11 +543,11 @@ export class SlotKernel {
       evidenceDir = await evidence.close({ reason, detail, decisions: game.decisions, native_steps: game.nativeSteps,
         last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace, full_checks: fullChecks });
     }
-    catch (error) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: gameInstanceId, reason: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { failEvidence(error); }
     this.#idle();
     ctx.emit("closed", { slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId, reason, detail,
       decisions: game.decisions, native_steps: game.nativeSteps, last_step_index: game.lastStepIndex, terminal,
-      public_facts: game.lastFacts, native: replace ? "replaced" : "kept", evidence_dir: evidenceDir });
+      public_facts: game.lastFacts, native: replace ? "replaced" : "kept", evidence_dir: evidenceDir, evidence_failed: evidenceFailed });
   }
 
   /** Waits for the current game (bounded by the inference and native request timeouts). */

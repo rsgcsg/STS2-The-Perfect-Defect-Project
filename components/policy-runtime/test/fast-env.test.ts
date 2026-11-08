@@ -12,7 +12,8 @@ import { createGlobalProgramManifest } from "../src/global-program.js";
 import { pyJsonSha256 } from "../src/fast-env/json-bytes.js";
 import { canonicalJson } from "../src/evidence.js";
 import { GlobalHttpFixture } from "./global-runtime-fixtures.js";
-import { FastEnvProcess, requireFastEnvManifest } from "../src/fast-env/process.js";
+import { FastEnvProcess, defaultFastEvidenceSink, requireFastEnvManifest } from "../src/fast-env/process.js";
+import { FastActionEvidenceSink, readFastGameEvidence } from "../src/global-fast-storage.js";
 import { StreamDecisionLink } from "../src/fast-env/link.js";
 import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
@@ -40,6 +41,9 @@ interface NativeHooks {
   taintReason?: () => string | null;
   /** reason_code on the receipt of a native step. */
   receiptReasonCode?: (step: number) => string | null;
+  /** On this native step the native writes its own divergence report (#433 S3, compact on or off);
+   * the Host's receipt is then delivered + compact_state_divergence. */
+  divergenceReportOn?: number;
   /** From this native step on, every capture shows a settling snapshot. */
   settlingAfterStep?: number;
   /** Called when the process asks the native for its CPU time; may hold the read open. */
@@ -94,6 +98,11 @@ class FakeNative implements SlotNative {
     this.source.delivery = this.hooks.delivery?.(step) ?? "delivered";
     this.source.terminalAfterStep = step >= (this.hooks.terminalAfter ?? 1);
     const receipt = await this.transport.step(input, { timeoutMs: 2000 });
+    if (this.hooks.divergenceReportOn === step) {
+      // What the Host tap hands over for the native's report, with or without compact output.
+      this.#emit(NATIVE_DIVERGENCE_LINE);
+      return { ...receipt, reason_code: "compact_state_divergence" };
+    }
     this.#line(`{"frame":"delta","seq":${step}}`);
     const reasonCode = this.hooks.receiptReasonCode?.(step);
     return reasonCode === undefined ? receipt : { ...receipt, reason_code: reasonCode };
@@ -102,7 +111,8 @@ class FakeNative implements SlotNative {
   taint() { const reason = this.hooks.taintReason?.() ?? null; return { tainted: reason !== null, reason }; }
   #lines: string[] = [];
   #listener: ((line: string) => void) | null = null;
-  #line(text: string) { if (!this.hooks.compactLines) return; if (this.#listener) this.#listener(text); else this.#lines.push(text); }
+  #line(text: string) { if (this.hooks.compactLines) this.#emit(text); }
+  #emit(text: string) { if (this.#listener) this.#listener(text); else this.#lines.push(text); }
   attachLines(listener: ((line: string) => void) | null) {
     this.#listener = listener;
     const buffered = this.#lines; this.#lines = [];
@@ -113,6 +123,8 @@ class FakeNative implements SlotNative {
   async nativeCpuMs() { this.cpuReadInFlight = true; try { await this.hooks.onCpuRead?.(); return 1; } finally { this.cpuReadInFlight = false; } }
   async shutdown(force: boolean) { this.shutdowns.push(force); await this.source.close(); }
 }
+
+const NATIVE_DIVERGENCE_LINE = '{"type":"error","code":"compact_state_divergence","message":"card_detail_reconcile"}';
 
 type Policy = (decision: any) => Record<string, unknown> | "silent" | "disconnect";
 
@@ -507,7 +519,63 @@ describe("fast-env failure paths", () => {
     const closed = await h.next(event => event.event === "closed");
     expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
+    // Counted apart from ordinary unknowns (the native-reported #433 S3 path reaches the kernel as this receipt).
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ compact_divergences: 1, build_output_stopped: "compact_state_divergence" });
     await expectBuildStopped(h);
+  });
+
+  it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {
+    const h = await harness({ sink: dir => defaultFastEvidenceSink(dir) });
+    expect(defaultFastEvidenceSink("/unused")).toBeInstanceOf(FastActionEvidenceSink);
+    h.open(0, { r7: true });
+    const closed = await h.next(event => event.event === "closed");
+    const read = await readFastGameEvidence(closed.evidence_dir);
+    expect(read).toMatchObject({ state: "closed", close: { reason: "terminal", retained: ["r7"], sampled_check_mismatch: null } });
+    // An R7 game fully checks every capture, and the close says how many there were.
+    expect(read.close!.full_checks).toBe(h.natives[0]!.fullChecks());
+    expect(read.close!.full_checks).toBeGreaterThan(1);
+    expect(read.steps.length).toBe(closed.decisions);
+    expect(closed.evidence_failed).toBe(false);
+  });
+
+  it("compact off: the native's own divergence report (#433 S3) is still kept as an original", async () => {
+    const h = await harness({ sink: dir => defaultFastEvidenceSink(dir), hooks: () => ({ terminalAfter: 5, divergenceReportOn: 2 }) });
+    expect(h.config.compact.enabled).toBe(false);
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", evidence_failed: false });
+    const read = await readFastGameEvidence(closed.evidence_dir);
+    expect(read.state).toBe("closed");
+    expect(read.native_lines).toEqual([NATIVE_DIVERGENCE_LINE]);
+    expect(read.close!.retained).toEqual(expect.arrayContaining(["close:unknown", "native_replaced", "step:unknown"]));
+  });
+
+  for (const [name, broken] of [
+    ["close", (): FastEvidenceSink => ({ openGame: () => ({ nativeLine() {}, step() {}, async segmentBoundary() {}, retainSampledCheckMismatch() {},
+      async close() { throw new Error("disk_full"); } }), async refusedOpen() { return null; } })],
+    ["boundary", (): FastEvidenceSink => ({ openGame: () => ({ nativeLine() {}, step() {}, async segmentBoundary() { throw new Error("disk_full"); },
+      retainSampledCheckMismatch() {}, async close() { throw new Error("fast_evidence_failed:disk_full"); } }), async refusedOpen() { return null; } })]
+  ] as const) {
+    it(`evidence that cannot be made durable (${name}) is fatal: loud, no further game, exit 1`, async () => {
+      const h = await harness({ sink: broken, hooks: () => ({ terminalAfter: 3 }) });
+      h.open(0);
+      expect(await h.next(event => event.event === "evidence_failed")).toMatchObject({ slot: 0, reason: expect.stringMatching(/disk_full/u) });
+      expect(await h.exit).toBe(1);
+      expect(h.events.at(-1)).toMatchObject({ event: "fatal", reason: expect.stringMatching(/^evidence_failed:.*disk_full/u) });
+      // The game's close is marked, so the manager neither counts nor trains on it.
+      expect(h.events.find(event => event.event === "closed")).toMatchObject({ evidence_dir: null, evidence_failed: true });
+      expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
+    });
+  }
+
+  it("a refused open whose originals cannot be written is fatal too", async () => {
+    const h = await harness({ sink: () => ({ openGame() { throw new Error("unused"); }, async refusedOpen() { throw new Error("disk_full"); } }),
+      hooks: () => ({ resetThrows: true }) });
+    h.open(0);
+    expect(await h.next(event => event.event === "evidence_failed")).toMatchObject({ slot: 0, game_instance_id: null });
+    expect(await h.exit).toBe(1);
+    expect(h.events.at(-1)).toMatchObject({ event: "fatal", reason: "evidence_failed:Error:disk_full" });
   });
 
   it("a divergence before any action of the game is not_started (no outcome in question), native replaced, build output stopped", async () => {
