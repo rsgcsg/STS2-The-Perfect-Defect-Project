@@ -395,7 +395,7 @@ def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
                                     "error": audit_error}
 
 
-def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str, Any],
+def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dict[str, Any],
                     cpu: int | None, keep: int) -> None:
     """Spawned CPU preparation for one sub-group: decode rows, then rows-v2 groups.
 
@@ -417,7 +417,7 @@ def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str,
     # Pipe ends received at spawn are inheritable; the torch_shm_manager this
     # process starts would keep them open and hide this worker's death from the
     # device process (no EOF). Keep them private to this process.
-    for end in (jobs, results):
+    for end in (jobs, *outputs):
         os.set_inheritable(end.fileno(), False)
     torch.multiprocessing.set_sharing_strategy("file_system")
     sent: collections.deque[dict[str, Any]] = collections.deque(maxlen=keep)
@@ -472,7 +472,9 @@ def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str,
         prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts}
-        results.send_bytes(bytes(ForkingPickler.dumps(prepared, pickle.HIGHEST_PROTOCOL)))
+        # every part of one job goes to the same joiner (or the device itself)
+        outputs[job_id % len(outputs)].send_bytes(
+            bytes(ForkingPickler.dumps(prepared, pickle.HIGHEST_PROTOCOL)))
         sent.append(prepared)
 
 
@@ -511,12 +513,79 @@ def _score_joined(scorer: Any, joined: Any, counts: list[int]) -> list[tuple[tor
     return out
 
 
+class _Collector:
+    """Waits for all parts of a job, then joins their groups into one batch."""
+
+    def __init__(self) -> None:
+        self.waiting: dict[int, list[dict[str, Any]]] = {}
+
+    def add(self, part: dict[str, Any]) -> tuple[list[dict[str, Any]], Any] | None:
+        parts = self.waiting.setdefault(part["job"], [])
+        parts.append(part)
+        if len(parts) < part["parts"]:
+            return None
+        del self.waiting[part["job"]]
+        parts.sort(key=lambda item: item["part"])
+        live = [p["group"] for p in parts if p["group"] is not None]
+        joining = time.perf_counter()
+        try:
+            group: Any = _join_parts(live) if live else None
+        except Exception as failure:  # refused loudly by the service
+            group = RuntimeError(f"{type(failure).__name__}: {str(failure)[:200]}")
+        parts[0]["join_seconds"] = time.perf_counter() - joining
+        parts[0]["load_seconds"] = sum(p["load_seconds"] for p in parts)
+        return parts, group
+
+
+def _receive(reader: Connection) -> dict[str, Any]:
+    loading = time.perf_counter()
+    message = cast(dict[str, Any], pickle.loads(reader.recv_bytes()))
+    message["load_seconds"] = time.perf_counter() - loading
+    return message
+
+
+def _join_worker(inputs: list[Connection], output: Connection, keep: int) -> None:
+    """Spawned joiner: maps a job's prepared parts and joins them into one group.
+
+    The joined group goes to the device process as shared memory too, so the
+    device loader maps one group per job instead of mapping and joining every
+    part (the loader thread was the limit). Any prepare worker gone ends this
+    process, so the device process sees it and the service fails loudly.
+    """
+    import collections
+    from multiprocessing.connection import wait
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing
+
+    torch.set_num_threads(1)
+    for end in (*inputs, output):
+        os.set_inheritable(end.fileno(), False)
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    collector = _Collector()
+    sent: collections.deque[Any] = collections.deque(maxlen=keep)
+    while True:
+        for source in wait(inputs):
+            try:
+                part = _receive(cast(Connection, source))
+            except EOFError:
+                return
+            done = collector.add(part)
+            if done is None:
+                continue
+            parts, group = done
+            message = {"joined": True, "parts": parts, "group": group}
+            output.send_bytes(bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
+            sent.append(message)
+
+
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int) -> None:
     """Spawned device process: models and forwards only, no per-row Python work.
 
-    The loading thread reads prepared parts from every prepare worker and joins a
-    job's parts once all are there; the forward thread scores the previous job
+    The loading thread reads joined jobs from the joiners (or, without joiners,
+    prepared parts from every prepare worker, joining a job's parts once all are
+    there); the forward thread scores the previous job
     meanwhile and sends CPU tensors back. The service process does the per-row
     checks, draws and replies (no GIL shared with the forward).
     """
@@ -530,7 +599,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     torch.set_num_threads(threads)
     torch.multiprocessing.set_sharing_strategy("file_system")
     scorers: dict[str, Any] = {}
-    waiting: dict[int, list[dict[str, Any]]] = {}
+    collector = _Collector()
     joined: queue.Queue[tuple[list[dict[str, Any]], Any] | None] = queue.Queue(maxsize=2)
 
     def forward() -> None:
@@ -541,7 +610,9 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
 
     threading.Thread(target=forward, daemon=True, name="rl-inference-3-forward").start()
     control.send_bytes(b"ready")
-    sources = list(inputs)  # every prepare worker, for the whole service life
+    for end in (control, *inputs, output):
+        os.set_inheritable(end.fileno(), False)
+    sources = list(inputs)  # every joiner or prepare worker, for the whole service life
     while True:
         ready = wait([control, *sources])
         if control in ready:  # models first: a published mu is resident before its rows
@@ -558,30 +629,19 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             control.send_bytes(b"ok")
             continue
         for source in ready:
-            reader = cast(Connection, source)
             try:
-                loading = time.perf_counter()
-                part = pickle.loads(reader.recv_bytes())
-                part["load_seconds"] = time.perf_counter() - loading
+                part = _receive(cast(Connection, source))
             except EOFError:
-                # A prepare worker is gone: its parts never arrive. End this
-                # process so the service fails every outstanding row loudly.
+                # A joiner or prepare worker is gone: its parts never arrive. End
+                # this process so the service fails every outstanding row loudly.
                 return
-            parts = waiting.setdefault(part["job"], [])
-            parts.append(part)
-            if len(parts) < part["parts"]:
+            if part.get("joined"):
+                part["parts"][0]["load_seconds"] += part["load_seconds"]
+                joined.put((part["parts"], part["group"]))
                 continue
-            del waiting[part["job"]]
-            parts.sort(key=lambda item: item["part"])
-            live = [p["group"] for p in parts if p["group"] is not None]
-            joining = time.perf_counter()
-            try:
-                group: Any = _join_parts(live) if live else None
-            except Exception as failure:  # refused loudly by the service
-                group = failure
-            parts[0]["join_seconds"] = time.perf_counter() - joining
-            parts[0]["load_seconds"] = sum(p["load_seconds"] for p in parts)
-            joined.put((parts, group))
+            done = collector.add(part)
+            if done is not None:
+                joined.put(done)
 
 
 def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
@@ -691,7 +751,8 @@ class FastInferenceService:
                  address: tuple[str, int] | None = None, authkey: bytes | None = None,
                  max_rows: int = 1024, window_ms: float = 1.0, prepare_workers: int = 2,
                  prepare_cpus: list[int] | None = None, in_flight: int | None = None,
-                 max_job_rows: int = 256, job_parts: int = 1, device: str | None = None,
+                 max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
+                 device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
                  audit_fraction: float = 0.01, failure_dir: str | Path | None = None,
                  encoder_sha256: str | None = None, env_sha256: str | None = None) -> None:
@@ -705,7 +766,7 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_max_rows")
         if prepare_cpus is not None and len(prepare_cpus) != prepare_workers:
             raise ValueError("prepare_cpus_per_worker")
-        if not 1 <= job_parts <= prepare_workers or max_job_rows < 1:
+        if not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0:
             raise ValueError("invalid_rl_inference_3_job_shape")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
@@ -744,33 +805,54 @@ class FastInferenceService:
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
         worker_pipes = [context.Pipe(duplex=True) for _ in range(prepare_workers)]
-        part_pipes = [context.Pipe(duplex=False) for _ in range(prepare_workers)]
+        self.slot_count = max(1, in_flight if in_flight is not None else prepare_workers)
+        # Prepared parts go to joiner j = job % join_workers (pipes[worker][j]),
+        # each joiner sends joined jobs to the device; without joiners every
+        # worker sends its parts to the device, which joins them itself.
+        sinks = max(1, join_workers)
+        part_pipes = [[context.Pipe(duplex=False) for _ in range(sinks)]
+                      for _ in range(prepare_workers)]
+        joined_pipes = [context.Pipe(duplex=False) for _ in range(join_workers)]
+        device_inputs = ([reader for reader, _ in joined_pipes] if join_workers
+                         else [pipes[0][0] for pipes in part_pipes])
         self.device_process = context.Process(
             target=_device_worker, daemon=True, name="rl-inference-3-device",
-            args=(control_child, [reader for reader, _ in part_pipes], results_child,
+            args=(control_child, device_inputs, results_child,
                   self.device, bf16, compile, device_threads))
         self.device_process.start()
-        self.slot_count = max(1, in_flight if in_flight is not None else prepare_workers)
+        self.joiners: list[Any] = []
+        for index, (_, writer) in enumerate(joined_pipes):
+            process = context.Process(target=_join_worker, daemon=True,
+                                      name=f"rl-inference-3-join-{index}",
+                                      args=([pipes[index][0] for pipes in part_pipes], writer,
+                                            self.slot_count + 2))
+            process.start()
+            self.joiners.append(process)
         self.workers: list[tuple[Any, Connection, queue.SimpleQueue[bytes]]] = []
-        for index, ((parent, child), (_, writer)) in enumerate(
+        for index, ((parent, child), pipes) in enumerate(
                 zip(worker_pipes, part_pipes, strict=True)):
             process = context.Process(target=_prepare_worker, daemon=True,
                                       name=f"rl-inference-3-prepare-{index}",
-                                      args=(child, writer, self.vocabulary,
+                                      args=(child, [writer for _, writer in pipes],
+                                            self.vocabulary,
                                             None if prepare_cpus is None else prepare_cpus[index],
                                             self.slot_count + 2))
             process.start()
             child.close()
             self.workers.append((process, parent, queue.SimpleQueue()))
-        for reader, writer in part_pipes:
-            reader.close()
-            writer.close()
+        for pipes in part_pipes:
+            for reader, writer in pipes:
+                reader.close()
+                writer.close()
         control_child.close()
         results_child.close()
         self.control, self.results = control, results
         self.control_lock = threading.Lock()
         if control.recv_bytes() != b"ready":
             raise BoundaryError("rl_inference_3", "device_process_start_failed")
+        for reader, writer in joined_pipes:  # the joiners and the device own them now
+            reader.close()
+            writer.close()
         for _, connection, _ in self.workers:
             if connection.recv_bytes() != b"ready":
                 raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
@@ -1229,6 +1311,10 @@ class FastInferenceService:
             if process.is_alive():
                 process.kill()
             connection.close()
+        for process in self.joiners:  # they end once every prepare worker is gone
+            process.join(5)
+            if process.is_alive():
+                process.kill()
         with self.control_lock, contextlib.suppress(OSError):
             self.control.send_bytes(b"")
         self.device_process.join(10)
