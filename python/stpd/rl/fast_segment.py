@@ -49,7 +49,7 @@ SEAL_KINDS = ("bootstrap", "terminal", "truncated")
 HEADER_KEYS = frozenset({
     "format", "row_format", "segment_id", "assembler_id", "game_instance_id", "actor_id",
     "assembler_instance", "segment_index", "start", "single_choice", "sampling", "mu",
-    "compiler_identity", "rows", "seal", "trainable", "forced_steps"})
+    "compiler_identity", "rows", "seal", "trainable", "forced_steps", "audit_retain_mu"})
 ROW_KEYS = frozenset({
     "request_id", "step_index", "consumption_id", "catalog_len", "catalog_sha256",
     "observation_sha256", "in_combat", "floor", "payload", "selected_index", "behavior_q",
@@ -149,6 +149,8 @@ def validate_header(header: dict[str, Any]) -> None:
         _reject("segment_format")
     if not isinstance(header["mu"], dict) or set(header["mu"]) != MU_KEYS:
         _reject("segment_mu_identity")
+    if type(header["audit_retain_mu"]) is not bool:
+        _reject("segment_audit_flag")
     rows = header["rows"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_ROWS:
         _reject("segment_row_count")

@@ -47,7 +47,7 @@ test("built native act-selection source and retained measured builds remain expl
   );
   assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
-  assert.equal(manifest.expected_build.artifact_sha256, "e8f9ce9d017b59400603d4dc782693c5b76f76f2d04e3f329f22d0bf25458f0c");
+  assert.equal(manifest.expected_build.artifact_sha256, "8060ae8b48455786be2dcdd545fadf97ed72f01b775b5100b7fc4cab9db14bfb");
   assert.equal(manifest.host63_previous_candidate_build.artifact_sha256, "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f");
   assert.equal(manifest.host63_previous_candidate_build.artifact_mvid, "1df7d09d-d37e-43b8-b166-894ae4adbbd2");
   assert.equal(manifest.host61_previous_candidate_build.artifact_sha256, "dec31cfc3da83f25890057737c25dbabeac23074652d514d4672a9cdb511d4a8");
@@ -61,7 +61,7 @@ test("built native act-selection source and retained measured builds remain expl
   assert.equal(manifest.pre_m2c_godot_stub_build.artifact_sha256, "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4"), true);
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
-  assert.equal(manifest.expected_build.artifact_mvid, "0e9e78f6-0a66-4d39-96dc-0aea7be4dee0");
+  assert.equal(manifest.expected_build.artifact_mvid, "789b0780-d6a5-48cb-beb5-3d0bfc61d9db");
   assert.equal(manifest.pre_m2e_round3_build.artifact_mvid, "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8");
   assert.equal(manifest.host54_previous_candidate_build.artifact_mvid, "76bdb43e-d8ff-48b2-bea8-f7fc7925faf1");
   assert.equal(manifest.pre_m2d_enchanted_deck_build.artifact_mvid, "2d7dafda-95de-4631-9f13-63cf8610bfe9");
@@ -168,6 +168,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",
     "src/Sts2Headless/NativeCallingBellRewards.cs",
     "src/Sts2Headless/NativeCardDeliveryObservation.cs",
+    "src/Sts2Headless/NativeCardDetailCache.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.cs",
     "src/Sts2Headless/NativeCardRenderTransaction.cs",
@@ -183,6 +184,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeEventOptionAdmission.cs",
     "src/Sts2Headless/NativeEventPresentationSupport.cs",
     "src/Sts2Headless/NativeHandSelection.cs",
+    "src/Sts2Headless/NativeJsonLineWriter.cs",
     "src/Sts2Headless/NativeKaiserDeathPresentation.cs",
     "src/Sts2Headless/NativeMapReadProjection.cs",
     "src/Sts2Headless/NativeMerchantPotionCost.cs",
@@ -261,24 +263,24 @@ test("Linux x64 selects only its exact native and independently pinned candidate
   const original = managedCandidateSourcePatch(ROOT, manifest);
   const x86 = managedCandidateSourcePatch(ROOT, selected);
   const { from, to, occurrences } = baseline.source_patch_mvid;
-  assert.equal(occurrences, 7);
+  assert.equal(occurrences, 8);
   assert.equal(original.split(`"${from}"`).length - 1, occurrences);
   assert.equal(x86.split(`"${to}"`).length - 1, occurrences);
   assert.equal(x86.replaceAll(`"${to}"`, `"${from}"`), original,
-    "the only platform source delta is the seven exact native MVID literals");
+    "the only platform source delta is the eight exact native MVID literals");
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_sha256, "e8f9ce9d017b59400603d4dc782693c5b76f76f2d04e3f329f22d0bf25458f0c");
-  assert.equal(manifest.expected_build.artifact_mvid, "0e9e78f6-0a66-4d39-96dc-0aea7be4dee0");
+  assert.equal(manifest.expected_build.artifact_sha256, "8060ae8b48455786be2dcdd545fadf97ed72f01b775b5100b7fc4cab9db14bfb");
+  assert.equal(manifest.expected_build.artifact_mvid, "789b0780-d6a5-48cb-beb5-3d0bfc61d9db");
   assert.equal(baseline.status, "candidate_built_unqualified");
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "2f5e1eb8bdf4b9804f5038f5eb470b6710013cfb7d520ab1cfa9699085376e5a"
     && build.artifact_mvid === "de8e7321-721a-41c9-afa6-41167813edc9"));
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "a96c61b76831c1076eefaeb0d35c62c97d8bcebb692b2ea020963253b501dace"
     && build.artifact_mvid === "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd"));
   assert.equal(selected.expected_build.source_patch_sha256,
-    "7573daa446337e679ced094370722cc38e73d75350788c2f8da76e7d50062498");
+    "0225fee4aa08bed13c0543ef04526eed6472dfb04685f024df75d656f5746a31");
   assert.equal(selected.expected_build.artifact_sha256,
-    "0d49180e9d825024f99bc8b42a295478057ecc27e2cb72c52384e392b316407e");
-  assert.equal(selected.expected_build.artifact_mvid, "30e1853f-42cb-4416-8fe6-4b45dd4d2eca");
+    "2a04e347307c3eace3d8d1e1820c6d8b8f4b53387f93f01a2c34786bf41b666d");
+  assert.equal(selected.expected_build.artifact_mvid, "6dadf3a9-19e6-4e4b-82a0-e55e208bf9db");
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "bb5513fd995595c1fc4aef25ad145255d226baea7192525f254f99ed0a93dd04"
     && build.artifact_mvid === "739f4182-a6e6-49fa-8589-ddb3af127a61"));
   assert.equal(baseline.historical_builds[0].artifact_sha256,
@@ -297,7 +299,7 @@ test("Linux x64 selects only its exact native and independently pinned candidate
     assert.throws(() => selectManagedCandidateManifest(manifest, { ...disk, ...change }), /refuses this game identity/u);
   }
   assert.throws(() => managedCandidateSourcePatch(ROOT, { ...selected,
-    source_patch_mvid: { ...selected.source_patch_mvid, occurrences: 6 } }), /MVID count/u);
+    source_patch_mvid: { ...selected.source_patch_mvid, occurrences: 7 } }), /MVID count/u);
   assert.throws(() => managedCandidateSourcePatch(ROOT, { ...selected,
     source_patch_mvid: { ...selected.source_patch_mvid, to: "00000000-0000-0000-0000-000000000000" } }), /patch SHA/u);
 });
