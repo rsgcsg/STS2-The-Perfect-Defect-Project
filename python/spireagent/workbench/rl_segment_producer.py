@@ -629,6 +629,31 @@ from .managed_evaluation import _phase  # noqa: E402
 from .managed_pipeline import PipelinedManagedExecutor  # noqa: E402
 
 
+def open_learner_episode(row: dict[str, Any], *, exchange: Any, admission: Any, actor: str,
+                         budget_id: str | None) -> None:
+    """Learner admission of one game before its world offer (both chains)."""
+    from .managed_retention import training_audit_selected
+
+    if exchange.admission_pause(budget_id) is not None:
+        raise BoundaryError("rl_segment", "sampling_audit_admission_paused")
+    row["training_audit_selected"] = training_audit_selected(
+        row, audit_every=row["retention"]["audit_every"])
+    result = admission.request("episode_open", actor=actor, episode=row["intent_id"])
+    row["segment_admission_owner"] = {
+        k: result[k] for k in ("run", "training_generation", "budget_id") if k in result}
+    row["segment_episode_admitted"] = result.get("admitted") is True
+    if not row["segment_episode_admitted"]:
+        raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+
+
+def publish_world_offered(row: dict[str, Any], *, exchange: Any, actor: str) -> None:
+    """The watcher's durable offer fact; fast-chain rows add their slot and game ref."""
+    extra = {k: row[k] for k in ("fast_chain_slot", "fast_chain_game_ref") if k in row}
+    exchange.publish_event("actor_world_offered", actor=actor,
+        intent_id=row["intent_id"], seed=row["seed"], **{
+            k: v for k, v in row["segment_admission_owner"].items() if k != "run"}, **extra)
+
+
 class SegmentManagedExecutor(PipelinedManagedExecutor):
     def __init__(
         self,
@@ -659,23 +684,11 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         self.binary_spools: dict[str, Any] = {}
 
     def _before_world_offer(self, row: dict[str, Any]) -> None:
-        from .managed_retention import training_audit_selected
-
-        if self.exchange.admission_pause(self.budget_id) is not None:
-            raise BoundaryError("rl_segment", "sampling_audit_admission_paused")
-        row["training_audit_selected"] = training_audit_selected(
-            row, audit_every=row["retention"]["audit_every"])
-        result = self.admission.request("episode_open", actor=self.actor, episode=row["intent_id"])
-        row["segment_admission_owner"] = {
-            k: result[k] for k in ("run", "training_generation", "budget_id") if k in result}
-        row["segment_episode_admitted"] = result.get("admitted") is True
-        if not row["segment_episode_admitted"]:
-            raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+        open_learner_episode(row, exchange=self.exchange, admission=self.admission,
+                             actor=self.actor, budget_id=self.budget_id)
 
     def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
-        self.exchange.publish_event("actor_world_offered", actor=self.actor,
-            intent_id=row["intent_id"], seed=row["seed"], **{
-                k: v for k, v in row["segment_admission_owner"].items() if k != "run"})
+        publish_world_offered(row, exchange=self.exchange, actor=self.actor)
 
     def _end_episode(self, connection: Any, **fields: Any) -> dict[str, Any]:
         # The actor owns the actual accepted episode admission, including a new
