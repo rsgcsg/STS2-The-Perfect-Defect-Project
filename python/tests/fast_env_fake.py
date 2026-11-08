@@ -83,6 +83,10 @@ for raw in sys.stdin:
         slot = command["slot"]
         if "close" in plan:
             def finish(slot=slot, plan=plan, game=game):
+                if "evidence_event" in plan:  # WP2 sink failure event naming this game
+                    emit({"event": "evidence_failed", "slot": slot,
+                          "game_instance_id": game["game_instance_id"],
+                          "reason": plan["evidence_event"]})
                 close(slot, **plan["close"])
                 if plan.get("late_close"):
                     emit({"event": "closed", "slot": slot, "game_ref": game["game_ref"],
