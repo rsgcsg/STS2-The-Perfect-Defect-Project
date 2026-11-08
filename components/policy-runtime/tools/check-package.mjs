@@ -15,9 +15,10 @@ try {
   for (const name of ["bin/policy-runtime.mjs", "bin/policy-port.mjs", "dist/index.js", "dist/index.d.ts", "package-identity.json", "npm-shrinkwrap.json", "LICENSE"]) assert.ok(first.files.includes(name), `missing package file ${name}`);
   assert.ok(first.files.some((name) => name === "node_modules/@rsgcsg/sts2-connector-client/dist/textMenu.js"), "text menu SDK missing from Runtime package");
   assert.ok(first.files.some((name) => name === "node_modules/zod/package.json"), "locked Zod missing from Runtime package");
+  assert.ok(first.files.includes("dist/fast-env/process.js"), "missing fast-env package file dist/fast-env/process.js");
   for (const name of ["bin/sts2-p1.mjs", "dist/p1-global/cli.js", "node_modules/@rsgcsg/sts2-connector-client/dist/p1Global/reducer.js"])
     assert.ok(first.files.includes(name), `missing P1 package file ${name}`);
-  assert.ok(first.files.every((name) => /^(?:bin\/[^/]+\.mjs|dist\/(?:p1-global\/)?[^/]+\.(?:js|d\.ts|js\.map)|node_modules\/@rsgcsg\/sts2-connector-client\/(?:package\.json|dist\/[A-Za-z0-9._/-]+\.(?:js|d\.ts|js\.map))|node_modules\/zod\/[A-Za-z0-9._/-]+|README\.md|LICENSE|package\.json|package-identity\.json|npm-shrinkwrap\.json)$/u.test(name)), "unexpected source or local package data");
+  assert.ok(first.files.every((name) => /^(?:bin\/[^/]+\.mjs|dist\/(?:p1-global\/|fast-env\/)?[^/]+\.(?:js|d\.ts|js\.map)|node_modules\/@rsgcsg\/sts2-connector-client\/(?:package\.json|dist\/[A-Za-z0-9._/-]+\.(?:js|d\.ts|js\.map))|node_modules\/zod\/[A-Za-z0-9._/-]+|README\.md|LICENSE|package\.json|package-identity\.json|npm-shrinkwrap\.json)$/u.test(name)), "unexpected source or local package data");
   npm(["install", first.tarball, "--ignore-scripts", "--no-audit", "--no-fund"], root);
   const installed = path.join(root, "node_modules", "@rsgcsg", "sts2-policy-runtime");
   assert.ok(!realpathSync(installed).startsWith(`${realpathSync(componentRoot)}${path.sep}`));

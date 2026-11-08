@@ -128,7 +128,11 @@
           "description": "L1. score = today (one-option rows are sent and kept). omit = the environment executes the only BoundAction itself (the game still revalidates it), sends no row and reports it in the next step_outcome.forced_steps. Default score; omit changes training data, so it is a method switch.",
           "enum": ["score", "omit"]
         },
-        "start": {"$ref": "#/$defs/start"}
+        "start": {"$ref": "#/$defs/start"},
+        "audit_retain_mu": {
+          "description": "R7 audit game, chosen before it opens: the service archives every temporary mu this game's segments bind (weights bound by sha256) before scoring a row with it, so the complete chain can rescore the replay. Carries no game information. Absent = false.",
+          "type": "boolean"
+        }
       }
     },
     "row": {
@@ -253,7 +257,7 @@
         "status": {"enum": ["completed", "not_started", "unknown"]},
         "reason": {"enum": ["inference_timeout", "response_binding_mismatch", "refused",
                             "stop_before_send", "delivery_unknown", "native_crash",
-                            "compact_state_divergence"]},
+                            "compact_state_divergence", "native_not_delivered"]},
         "receipt_sha256": {"$ref": "#/$defs/sha256"},
         "public_facts": {"$ref": "#/$defs/public_facts"},
         "forced_steps": {
@@ -274,7 +278,13 @@
         {"if": {"properties": {"status": {"const": "completed"}}},
          "then": {"required": ["receipt_sha256", "public_facts", "terminal"],
                   "not": {"required": ["reason"]}},
-         "else": {"required": ["reason"], "not": {"required": ["receipt_sha256"]}}}
+         "else": {"required": ["reason"], "not": {"required": ["receipt_sha256"]}}},
+        {"if": {"required": ["reason"], "properties": {"reason": {"enum": ["inference_timeout", "response_binding_mismatch",
+                                                                          "refused", "stop_before_send", "native_not_delivered"]}}},
+         "then": {"properties": {"status": {"const": "not_started"}}}},
+        {"if": {"required": ["reason"], "properties": {"reason": {"enum": ["delivery_unknown", "native_crash",
+                                                                          "compact_state_divergence"]}}},
+         "then": {"properties": {"status": {"const": "unknown"}}}}
       ]
     },
     "episode_close": {

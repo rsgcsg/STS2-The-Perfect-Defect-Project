@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
-    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
-    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
+    "source_patch_sha256": "f6401726ccac1e10666e30427074c9eb253e1bb7e7fdfcd800d0c2f0521ce99b",
+    "artifact_sha256": "8060ae8b48455786be2dcdd545fadf97ed72f01b775b5100b7fc4cab9db14bfb",
+    "artifact_mvid": "789b0780-d6a5-48cb-beb5-3d0bfc61d9db",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -102,12 +102,12 @@
       "source_patch_mvid": {
         "from": "57785517-0b16-42b9-8b36-bad6fb28384b",
         "to": "58d08aa0-fa59-4264-b2a5-0a6a2c396c99",
-        "occurrences": 7
+        "occurrences": 8
       },
       "expected_build": {
-        "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
-        "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
-        "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+        "source_patch_sha256": "0225fee4aa08bed13c0543ef04526eed6472dfb04685f024df75d656f5746a31",
+        "artifact_sha256": "2a04e347307c3eace3d8d1e1820c6d8b8f4b53387f93f01a2c34786bf41b666d",
+        "artifact_mvid": "6dadf3a9-19e6-4e4b-82a0-e55e208bf9db",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -163,6 +163,13 @@
           "artifact_mvid": "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host63 Sphere r1.9 Linux build used by the RL4.2 long run; original source/package immutable, not current Soul Nexus source."
+        },
+        {
+          "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
+          "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
+          "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host64 Soul Nexus Linux build (RL5 P2 and the P-REWRITE equivalence corpus); original source/package immutable, not current fast_chain source."
         }
       ]
     }
@@ -502,14 +509,34 @@
       "risk": "medium",
       "effect": "TestMode replaces only native ShowScreen with the bound real minigame. Publish masks and items discovered from cleared occupied cells before type/ref allocation. Original SetTool/CellClicked/reveal/complete/rewards own all effects. Preserve parent and current child tasks, including awaited Curse reveal; explicit r1.9 public input, no hidden inventory or renderer.",
       "regression": "u1-native-tests sphere-empty, sphere-visible, sphere-reward, sphere-curse-pending; real NDJSON pipe/PB1/P1 r1.9 completion and old-profile parent refusal."
-    }
-,
+    },
     {
       "id": "native_soul_nexus_death_node_callsite",
       "kind": "harmony_presentation_callsite",
       "risk": "low",
       "effect": "Only the single exact NCombatRoom.GetCreatureNode(Creature) call in SoulNexus.AfterDeath (its Died handler, used only to reset a spine animation) is remapped. An absent combat-room scene yields null only in TestMode; all other cases call the original method. Native death, removal, combat end, rewards and RNG unchanged; exact call-count drift fails.",
       "regression": "u1-native-tests soul-nexus-play (original lethal play on the original elite is witnessed and ends combat; old build reproduces the unwitnessed play) and soul-nexus-survives (ordinary non-lethal play recorded in native history)."
+    },
+    {
+      "id": "fast_chain_patch_generation_read_cache",
+      "kind": "native_read_qualification_cache",
+      "risk": "medium",
+      "effect": "Default off; only the Managed entry point enables it (STS2_HEADLESS_FAST_CHAIN=1, accepted once per process). Memoizes only the metadata/patch-state part of native read qualification, keyed by the patch-owner generation sampled before each command and after initialization; live object facts (subscribers, listeners, variable owners and delegates, field values) are read every time. Off is the original live check byte for byte; Mod and Reference Host never enable it.",
+      "regression": "patch-cache-tests/PatchCacheTests.csproj (58 checks: generation invalidation, thread drop, off-is-live, single Configure, and live-fact flips for run-hook subscribers, a foreign calculated-variable delegate and Weak/Vulnerable variable owners); managed-reward-native.test.mjs enable-site check."
+    },
+    {
+      "id": "fast_chain_direct_utf8_response_writer",
+      "kind": "native_response_serialization",
+      "risk": "low",
+      "effect": "Under the same fast_chain switch only: each response is serialized with the same JsonSerializerOptions straight to UTF-8 in a reused buffer and written to the standard output stream under the Console.Out lock, instead of a per-response UTF-16 string re-encoded by Console.Out. Same JSON bytes and newline; off is the original path.",
+      "regression": "patch-cache-tests JsonLineBytes (decision state, escaping/surrogates/numbers/nesting, buffer reuse, same depth failure); Friday paired replay byte-equal."
+    },
+    {
+      "id": "fast_chain_card_detail_cache",
+      "kind": "native_render_result_cache",
+      "risk": "medium",
+      "effect": "Under the same fast_chain switch only: the two costly game text calls of a card render (title, and the pile or upgrade-preview description) reuse an earlier live result when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Costs, hover tips, hover cards and text projection are rendered live every time. Only card types on a whitelist frozen from shadow job 1454482 and bound to the current game module version are cached; any other type, or any game version change, renders live. Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile, GetDescriptionForUpgradePreview, HoverTips or Title, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders. Every 64th frame renders live and compares; a difference is fatal compact_state_divergence.",
+      "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored), CardDetailExclusions, CardDetailOwnerFlip (owner strength change gives a new key, served equals live); a game update requires rerunning shadow mode and refreezing the whitelist; Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
     }
   ],
   "admission": {
@@ -688,6 +715,12 @@
     "source_patch_sha256": "0137fdda669e1f959f9e4d231f7fbf95f09269ffacbf84803d4ca63ceb9d2d5a",
     "artifact_sha256": "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f",
     "artifact_mvid": "1df7d09d-d37e-43b8-b166-894ae4adbbd2",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_fast_chain_patch_cache_build": {
+    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
+    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
+    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

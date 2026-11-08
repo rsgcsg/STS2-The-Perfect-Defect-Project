@@ -27,22 +27,39 @@ namespace STS2Platform.NativeFoundation;
 
 public static partial class NativeCardPreviewReadQualification
 {
-    private static bool RenderMethodsUnpatched(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
+    private static bool RenderMethodsUnpatched(Type type) =>
+        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive)
+            : RenderMethodsUnpatchedLive(type);
+    private static bool RenderMethodsUnpatchedLive(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
         .All(IsUnpatched) && type.GetConstructors(NativeMembers).All(IsUnpatched);
-    private static bool RenderIteratorUnpatched(MethodInfo? method)
+    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null || !NativePatchStateCache.Enabled ? RenderIteratorUnpatchedLive(method)
+        : NativePatchStateCache.Memo<MethodInfo>(nameof(RenderIteratorUnpatched), method, RenderIteratorUnpatchedLive);
+    private static bool RenderIteratorUnpatchedLive(MethodInfo? method)
     {
         if (!IsUnpatched(method)) return false;
         Type? iterator = method!.GetCustomAttribute<IteratorStateMachineAttribute>()?.StateMachineType;
         return iterator == null || RenderMethodsUnpatched(iterator);
     }
-    private static bool RenderGettersUnpatched(Type type, params string[] names) => names.All(name =>
+    private static bool RenderGettersUnpatched(Type type, params string[] names) => NativePatchStateCache.Enabled
+        ? RenderGettersUnpatchedMemo(type, names) : RenderGettersUnpatchedLive(type, names);
+    private static bool RenderGettersUnpatchedMemo(Type type, string[] names) =>
+        NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
+    private static bool RenderGettersUnpatchedLive(Type type, string[] names) => names.All(name =>
         IsUnpatched(type.GetProperty(name, NativeMembers)?.GetMethod));
     private static bool NativeRenderMethod(MethodInfo? method) => method != null
         && method.Module == typeof(CardModel).Module && RenderIteratorUnpatched(method);
 
+    // Depends on the card's runtime type only (metadata and patch state).
     private static bool RenderCardDispatchQualified(CardModel card)
     {
         Type type = card.GetType();
+        return NativePatchStateCache.Enabled
+            ? NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive)
+            : RenderCardDispatchQualifiedLive(type);
+    }
+
+    private static bool RenderCardDispatchQualifiedLive(Type type)
+    {
         if (type.Module != typeof(CardModel).Module || type.Namespace != "MegaCrit.Sts2.Core.Models.Cards") return false;
         // The original game's overrides are its display semantics. Check the
         // effective methods, not a small card list or a constant-IL approximation.
@@ -77,7 +94,9 @@ public static partial class NativeCardPreviewReadQualification
             for (Type? current = type; current != null && typeof(DynamicVar).IsAssignableFrom(current); current = current.BaseType)
             {
                 if (!RenderMethodsUnpatched(current)) return false;
-                foreach (FieldInfo field in current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
+                foreach (FieldInfo field in NativePatchStateCache.Enabled
+                             ? NativePatchStateCache.DelegateFields(current, NativeMembers | BindingFlags.DeclaredOnly)
+                             : current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
                     if (typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) is Delegate callback
                         && !(current == typeof(CalculatedVar) && field.Name == "_multiplierCalc"
                             && owner is CardModel card && RenderMultiplierQualified(card, callback))) return false;
@@ -113,6 +132,9 @@ public static partial class NativeCardPreviewReadQualification
             && NativeRenderMethod(character.GetType().GetProperty("CardPool", NativeMembers)?.GetMethod);
     }
     private static bool RenderFixedClosureUnpatched() =>
+        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive)
+            : RenderFixedClosureUnpatchedLive();
+    private static bool RenderFixedClosureUnpatchedLive() =>
         MethodsUnpatched(typeof(CardModel), "get_TitleLocString", "get_Title", "get_Description", "get_Type", "get_Rarity",
             "get_IsUpgraded", "get_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "get_Pile", "get_UpgradePreviewType", "get_IsEnchantmentPreview",
             "get_DynamicVars", "get_EnergyCost", "get_CurrentStarCost", "get_BaseStarCost", "get_TemporaryStarCost", "get_CanonicalStarCost",
@@ -141,7 +163,9 @@ public static partial class NativeCardPreviewReadQualification
     private static bool NoFormattingCallbacks(object value)
     {
         for (Type? current = value.GetType(); current != null && current != typeof(object); current = current.BaseType)
-            foreach (FieldInfo field in current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
+            foreach (FieldInfo field in NativePatchStateCache.Enabled
+                         ? NativePatchStateCache.DelegateFields(current, NativeMembers | BindingFlags.DeclaredOnly)
+                         : current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
                 if (!field.IsStatic && typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) != null) return false;
         return true;
     }
@@ -189,6 +213,18 @@ public static partial class NativeCardPreviewReadQualification
     private static bool RenderCombatListenerQualified(AbstractModel model)
     {
         Type current = model.GetType();
+        if (!(NativePatchStateCache.Enabled
+                ? NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)
+                : RenderCombatListenerTypeQualified(current))) return false;
+        if (model is WeakPower or VulnerablePower)
+            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
+                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
+        return true;
+    }
+
+    // The listener's runtime-type part only (metadata and patch state).
+    private static bool RenderCombatListenerTypeQualified(Type current)
+    {
         if (current.Assembly != typeof(CardModel).Assembly) return false;
         // Vanilla listeners only, with unpatched render hooks. The native hand/pile UI
         // evaluates these same hooks whenever it draws a card, so a vanilla override is
@@ -200,9 +236,6 @@ public static partial class NativeCardPreviewReadQualification
             if (method == null || !IsUnpatched(method)) return false;
             if (method.DeclaringType?.Assembly != typeof(CardModel).Assembly) return false;
         }
-        if (model is WeakPower or VulnerablePower)
-            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
-                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
         return true;
     }
 
@@ -214,7 +247,19 @@ public static partial class NativeCardPreviewReadQualification
         gap = "native_card_render_combat_hook_closure_unqualified";
         if (combat.GetType() != typeof(CombatState) || !NativeRunHookReadQualification.Preflight(run)
             || typeof(ModHelper).GetField("_combatHookSubscribers", NativeMembers)?.GetValue(null) is not ICollection { Count: 0 }
-            || !RenderIteratorUnpatched(typeof(CombatState).GetMethod("IterateHookListeners", NativeMembers))
+            || !(NativePatchStateCache.Enabled
+                ? NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)
+                : RenderCombatFixedClosureUnpatched())) return false;
+        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
+        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
+        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
+        gap = null;
+        return true;
+    }
+
+    // The fixed (metadata and patch state) part of the combat hook closure.
+    private static bool RenderCombatFixedClosureUnpatched() =>
+        !(!RenderIteratorUnpatched(typeof(CombatState).GetMethod("IterateHookListeners", NativeMembers))
             || !RenderIteratorUnpatched(typeof(ModHelper).GetMethod("IterateAllCombatStateSubscribers", NativeMembers))
             || !RenderIteratorUnpatched(typeof(Hook).GetMethod("IterateCombatHookListeners", NativeMembers))
             || !MethodsUnpatched(typeof(CombatState), "Contains", "get_RunState", "get_Players", "get_PlayerCreatures", "get_Creatures",
@@ -238,13 +283,7 @@ public static partial class NativeCardPreviewReadQualification
             || !RenderMethodsUnpatched(typeof(StrengthPower)) || !RenderMethodsUnpatched(typeof(DexterityPower))
             || !RenderMethodsUnpatched(typeof(FrailPower)) || !RenderMethodsUnpatched(typeof(PaperKrane))
             || !RenderMethodsUnpatched(typeof(PaperPhrog)) || !RenderMethodsUnpatched(typeof(DebilitatePower))
-            || !RenderMethodsUnpatched(typeof(CrueltyPower))) return false;
-        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
-        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
-        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
-        gap = null;
-        return true;
-    }
+            || !RenderMethodsUnpatched(typeof(CrueltyPower)));
 
     public static bool TryPreflightRender(CardModel card, CardPreviewMode mode, PileType displayPile,
         out string? gap, bool refreshPreview = true)

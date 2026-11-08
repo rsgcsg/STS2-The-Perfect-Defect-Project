@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
@@ -629,6 +630,86 @@ from .managed_evaluation import _phase  # noqa: E402
 from .managed_pipeline import PipelinedManagedExecutor  # noqa: E402
 
 
+def open_learner_episode(row: dict[str, Any], *, exchange: Any, admission: Any, actor: str,
+                         budget_id: str | None) -> None:
+    """Learner admission of one game before its world offer (both chains)."""
+    from .managed_retention import training_audit_selected
+
+    if exchange.admission_pause(budget_id) is not None:
+        raise BoundaryError("rl_segment", "sampling_audit_admission_paused")
+    row["training_audit_selected"] = training_audit_selected(
+        row, audit_every=row["retention"]["audit_every"])
+    result = admission.request("episode_open", actor=actor, episode=row["intent_id"])
+    row["segment_admission_owner"] = {
+        k: result[k] for k in ("run", "training_generation", "budget_id") if k in result}
+    row["segment_episode_admitted"] = result.get("admitted") is True
+    if not row["segment_episode_admitted"]:
+        raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+
+
+def publish_world_offered(row: dict[str, Any], *, exchange: Any, actor: str) -> None:
+    """The watcher's durable offer fact; fast-chain rows add their slot and game ref."""
+    extra = {k: row[k] for k in ("fast_chain_slot", "fast_chain_game_ref") if k in row}
+    exchange.publish_event("actor_world_offered", actor=actor,
+        intent_id=row["intent_id"], seed=row["seed"], **{
+            k: v for k, v in row["segment_admission_owner"].items() if k != "run"}, **extra)
+
+
+FAST_INSTANCE_ADMISSION = "fast_instance_admission"
+FAST_INSTANCE_ADMISSION_FIELDS = ("actor", "intent_id", "seed", "game_instance_id",
+                                  "training_split", "run", "training_generation")
+_LEARNER_REASON = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def fast_instance_admission(row: dict[str, Any], opened: Mapping[str, Any], *,
+                            admission: Any, actor: str) -> None:
+    """Fast chain only: attest one opened instance to the learner, once.
+
+    Sent on the existing learner control connection after the environment's checked
+    ``opened`` (the learner owns the receiving side; C-SCALE, WP8). The request is
+    ``fast_instance_admission`` with exactly :data:`FAST_INSTANCE_ADMISSION_FIELDS`:
+    ``actor``, ``intent_id``, ``seed``, ``game_instance_id``, ``training_split``
+    (always ``TRAIN``) and the ``run``/``training_generation`` the game's
+    ``episode_open`` was admitted under. The learner checks the seed (holdout guard,
+    once per game) and maps ``game_instance_id`` to ``(actor, intent_id)``; the
+    assembler's segments for that instance are keyed by the same id. The reply must
+    be ``{"admitted": true, ...}``. Anything else, or a transport failure, raises: the
+    game is closed (censored ``fast_chain_instance_admission_failed:<code>``) and never
+    re-attested (it is a non-mutation request, so the connection does not replay it
+    either). The actor sends no fast-chain ``episode_end``.
+
+    For the learner side (C-SCALE, WP8):
+
+    - ``fast_instance_admission_delivery_failed`` means the outcome is unknown: the
+      request may have been applied and only the reply lost. The learner must handle
+      an instance it attested whose game the actor then closed: such an instance (and
+      any instance the actor never confirms) is treated as truncated, never as a
+      clean attested game.
+    - The environment emits rows and seals segments while this request is in flight
+      (about one segment per 1.5 s). Whether segments sealed before attestation are
+      buffered (bounded) or discarded is the learner's decision; discarding biases
+      the sample against game openings.
+    """
+    owner = row.get("segment_admission_owner") or {}
+    instance = opened.get("game_instance_id")
+    if not isinstance(instance, str) or not instance or not {
+            "run", "training_generation"} <= set(owner):
+        raise BoundaryError("rl_segment", "fast_instance_admission_input_invalid")
+    request = {"actor": actor, "intent_id": row["intent_id"], "seed": row["seed"],
+               "game_instance_id": instance, "training_split": "TRAIN",
+               "run": owner["run"], "training_generation": owner["training_generation"]}
+    try:
+        result = admission.request(FAST_INSTANCE_ADMISSION, **request)
+    except (OSError, EOFError, TimeoutError) as error:
+        raise BoundaryError("rl_segment", "fast_instance_admission_delivery_failed") from error
+    if not isinstance(result, Mapping) or result.get("admitted") is not True:
+        reason = result.get("reason") if isinstance(result, Mapping) else None
+        reason = reason if isinstance(reason, str) and _LEARNER_REASON.fullmatch(
+            reason) else "unspecified"
+        raise BoundaryError("rl_segment", f"fast_instance_admission_refused:{reason}")
+    row["fast_instance_admission"] = {"admitted": True, "game_instance_id": instance}
+
+
 class SegmentManagedExecutor(PipelinedManagedExecutor):
     def __init__(
         self,
@@ -659,23 +740,11 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         self.binary_spools: dict[str, Any] = {}
 
     def _before_world_offer(self, row: dict[str, Any]) -> None:
-        from .managed_retention import training_audit_selected
-
-        if self.exchange.admission_pause(self.budget_id) is not None:
-            raise BoundaryError("rl_segment", "sampling_audit_admission_paused")
-        row["training_audit_selected"] = training_audit_selected(
-            row, audit_every=row["retention"]["audit_every"])
-        result = self.admission.request("episode_open", actor=self.actor, episode=row["intent_id"])
-        row["segment_admission_owner"] = {
-            k: result[k] for k in ("run", "training_generation", "budget_id") if k in result}
-        row["segment_episode_admitted"] = result.get("admitted") is True
-        if not row["segment_episode_admitted"]:
-            raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+        open_learner_episode(row, exchange=self.exchange, admission=self.admission,
+                             actor=self.actor, budget_id=self.budget_id)
 
     def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
-        self.exchange.publish_event("actor_world_offered", actor=self.actor,
-            intent_id=row["intent_id"], seed=row["seed"], **{
-                k: v for k, v in row["segment_admission_owner"].items() if k != "run"})
+        publish_world_offered(row, exchange=self.exchange, actor=self.actor)
 
     def _end_episode(self, connection: Any, **fields: Any) -> dict[str, Any]:
         # The actor owns the actual accepted episode admission, including a new

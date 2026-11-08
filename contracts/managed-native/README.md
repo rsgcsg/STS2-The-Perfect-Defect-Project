@@ -27,7 +27,8 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    writes them: no `native_ref`, no index, draw pile ordered by visible content only.
    A pile is structural, not a view name: on the hot path any table placeholder inside
    a pile container (a skeleton `draw_pile`/`discard_pile`/`exhaust_pile`, or any object
-   with `ordering_semantics`) diverges, and view names containing pile, draw, discard
+   with `ordering_semantics`) diverges, an object with `ordering_semantics` is itself
+   never a table body (under any key or view), and view names containing pile, draw, discard
    or exhaust are refused by the schema. The wire never says which instance is in a
    pile.
 5. **Delta by output bytes.** A key is upserted iff the sha256 of its body's emitted
@@ -57,12 +58,15 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    would have carried. Any carried key not upserted must keep its digest, and the key
    sets must match.
 9. **Instances.** `episode_instance` is new for every run, in-process restart and
-   save load; its first frame is `full` and carries `start` (`new_run` or
+   save load; its first frame is `full`, has `seq` 0 and carries `start` (`new_run` or
    `from_save` with the save digest: S4 hook). `seq` increases by one; `base_seq`
-   names the held frame.
+   names the held frame. A delta removes only held keys and never removes and upserts
+   the same key; a reconcile's `removed` keys are held and absent, its `upserted` keys
+   are present with a changed digest.
 10. **Divergence fails closed.** Wrong base, seq gap, digest/root/reconcile mismatch,
-    unresolved placeholder, cycle, orphan, key/ref mismatch, placeholder in a pile or
-    overdue reconcile =
+    unresolved placeholder, cycle, orphan, key/ref mismatch, placeholder in a pile,
+    tabled pile, overdue reconcile, or writer bookkeeping that breaks rules 5 and 9
+    (removed key not held, removed and upserted, unchanged upsert, bad full `seq`/`start`) =
     `compact_state_divergence`: no action is sent on that state (`not_started`), the
     game is closed, originals are kept and this build's output stops (same rule as an
     R7 mismatch). No resync-and-continue and no switch back to the old chain.
