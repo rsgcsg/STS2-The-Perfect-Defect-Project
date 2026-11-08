@@ -33,6 +33,12 @@ function withTimeout(promise, timeoutMs, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
+/** The exact stdout line a managed-native-compact-1 frame was parsed from. Attached
+ * (non-enumerable, never serialised) only to compact_state messages, which exist
+ * only after the fast_chain Host sent configure_output; other messages are untouched.
+ * Compact body digests are over these emitted bytes, so the sampled check needs them. */
+export const RAW_LINE = Symbol.for("sts2.host-runtime/raw-line");
+
 export class JsonLineProcess {
   #child;
   #stdout;
@@ -111,6 +117,9 @@ export class JsonLineProcess {
     } catch {
       this.#recordDiagnostic("stdout", line);
       return;
+    }
+    if (parsed !== null && typeof parsed === "object" && parsed.type === "compact_state") {
+      Object.defineProperty(parsed, RAW_LINE, { value: line, enumerable: false });
     }
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve(parsed);
