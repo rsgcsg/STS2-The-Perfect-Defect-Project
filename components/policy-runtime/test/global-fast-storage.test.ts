@@ -171,6 +171,45 @@ describe("fast-chain WP6 evidence", () => {
     expect(text).toContain("\"kind\":\"close\"");
   });
 
+  it("keeps every native line of a refused open as a failure, and reads it back", async () => {
+    const dir = await root();
+    const sink = new FastActionEvidenceSink(dir);
+    const lines = [line(0), line(1)];
+    const locator = await sink.refusedOpen({ slot: 2, game_ref: "ref/9", start: { kind: "from_save", save_sha256: "4".repeat(64), act: 2, floor: 18 },
+      reason: "reset_failed:compact_state_divergence", native_lines: lines });
+    expect(locator!.startsWith(join(dir, "refused-open-ref_9-"))).toBe(true);
+    expect((await readdir(locator!)).sort()).toEqual([FAST_ACTIONS_FILE, FAST_NATIVE_LINES_FILE]);
+    const read = await readFastGameEvidence(locator!);
+    expect(read).toMatchObject({ state: "refused", open: null, close: null, steps: [], native_lines: lines,
+      refused: { kind: "refused_open", slot: 2, game_ref: "ref/9", start: { kind: "from_save", act: 2, floor: 18 },
+        reason: "reset_failed:compact_state_divergence", retained: ["refused_open:reset_failed:compact_state_divergence"] } });
+    // Two refusals of the same game_ref never share or overwrite a directory; no lines is still a record.
+    const second = await sink.refusedOpen({ slot: 2, game_ref: "ref/9", start: { kind: "new_run" }, reason: "native_start_changed", native_lines: [] });
+    expect(second).not.toBe(locator);
+    expect((await readFastGameEvidence(second!)).native_lines).toEqual([]);
+    // A changed refusal record or original is refused by the reader.
+    await writeFile(join(second!, FAST_ACTIONS_FILE), `${await readFile(join(second!, FAST_ACTIONS_FILE), "utf8")}{}\n`);
+    await expect(readFastGameEvidence(second!)).rejects.toThrow("fast_evidence_refused_open");
+    await writeFile(join(locator!, FAST_NATIVE_LINES_FILE), Buffer.from("changed"));
+    await expect(readFastGameEvidence(locator!)).rejects.toThrow("fast_evidence_originals_file");
+  });
+
+  it("a failed refused-open write is loud and sticks: later refusals and every game's boundary and close report it", async () => {
+    const dir = await root();
+    const blocker = join(dir, "file");
+    await writeFile(blocker, "not a directory");
+    const sink = new FastActionEvidenceSink(blocker);
+    const refused = { slot: 0, game_ref: "r", start: { kind: "new_run" } as const, reason: "reset_failed:x", native_lines: [line(0)] };
+    await expect(sink.refusedOpen(refused)).rejects.toThrow();
+    await expect(sink.refusedOpen(refused)).rejects.toThrow(/^fast_evidence_failed:/u);
+    const game = sink.openGame(meta());
+    // The hot path (Host line tap, step) is never interrupted; the durability points report it.
+    game.nativeLine(line(0));
+    game.step(step(1, line(0)));
+    await expect(game.segmentBoundary({ first_row_id: 1, last_row_id: 1 })).rejects.toThrow(/^fast_evidence_failed:/u);
+    await expect(game.close(closed())).rejects.toThrow(/^fast_evidence_failed:/u);
+  });
+
   it("names the retain reasons from the manager choice and the close only", () => {
     const none = new Set<FastStepRecord["status"]>(["completed"]);
     expect(fastRetainReasons({ r7: false, retain_originals: false }, closed(), none)).toEqual([]);

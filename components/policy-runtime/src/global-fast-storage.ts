@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { gunzip, gzip } from "node:zlib";
@@ -35,6 +35,15 @@ export interface FastEvidenceCloseRecord extends FastGameClose {
   retained: string[];
   native_lines: FastOriginalsFile | null;
   input_lines: FastOriginalsFile | null;
+}
+/** A mount (reset / load_map) that failed before the game existed (#427 `refusedOpen`). */
+export interface FastRefusedOpen { slot: number; game_ref: string; start: FastGameMeta["start"]; reason: string; native_lines: string[] }
+/** Its one-line `actions.jsonl`; a refused open is a failure, so its native lines are always kept. */
+export interface FastRefusedOpenRecord extends Omit<FastRefusedOpen, "native_lines"> {
+  kind: "refused_open";
+  schema: typeof FAST_EVIDENCE_SCHEMA;
+  retained: string[];
+  native_lines: FastOriginalsFile;
 }
 export type FastStepLine = Omit<FastStepRecord, "input_line"> & { kind: "step" };
 export interface FastBoundaryLine { kind: "boundary"; first_row_id: number; last_row_id: number; steps: number }
@@ -77,9 +86,33 @@ async function writeOriginals(directory: string, name: string, lines: readonly s
 
 /** The production sink of the fast chain; the hot path only buffers strings. */
 export class FastActionEvidenceSink implements FastEvidenceSink {
+  /** First failed refused-open write; it sticks to the sink (later refusals and every game's
+   * boundary/close report it). The per-game hot-path calls never throw for it, so a Host line
+   * tap is never interrupted. */
+  #failure: string | null = null;
   constructor(private readonly root: string) {}
   openGame(meta: FastGameMeta): FastGameEvidence {
-    return new FastGameActionEvidence(this.root, meta);
+    return new FastGameActionEvidence(this.root, meta, () => this.#failure);
+  }
+
+  async refusedOpen(refused: FastRefusedOpen): Promise<string | null> {
+    if (this.#failure !== null) throw new Error(`fast_evidence_failed:${this.#failure}`);
+    const directory = join(this.root, gameDirectoryName(`refused-open-${refused.game_ref}-${randomUUID()}`));
+    try {
+      await mkdir(this.root, { recursive: true, mode: 0o700 });
+      await mkdir(directory, { mode: 0o700 });
+      const native_lines = await writeOriginals(directory, FAST_NATIVE_LINES_FILE, refused.native_lines);
+      const { native_lines: _lines, ...rest } = refused;
+      const record: FastRefusedOpenRecord = { kind: "refused_open", schema: FAST_EVIDENCE_SCHEMA, ...rest,
+        retained: [`refused_open:${refused.reason}`], native_lines };
+      // The record is written last: its presence means the originals are durable.
+      await writeOnce(join(directory, FAST_ACTIONS_FILE), Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
+      await syncDirectory(directory);
+    } catch (error) {
+      this.#failure = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+    return directory;
   }
 }
 
@@ -96,7 +129,7 @@ class FastGameActionEvidence implements FastGameEvidence {
   #closed = false;
   #busy = false;
 
-  constructor(root: string, private readonly meta: FastGameMeta) {
+  constructor(root: string, private readonly meta: FastGameMeta, private readonly sinkFailure: () => string | null) {
     this.#root = root;
     this.#directory = join(root, gameDirectoryName(meta.game_instance_id));
     this.#pending = [JSON.stringify({ kind: "open", schema: FAST_EVIDENCE_SCHEMA, ...meta })];
@@ -150,7 +183,10 @@ class FastGameActionEvidence implements FastGameEvidence {
   #usable(call: string): void {
     if (this.#failure !== null) throw new Error(`fast_evidence_failed:${this.#failure}`);
     if (this.#closed) throw new Error(`fast_evidence_closed:${call}`);
-    if (this.#busy && call !== "native_line" && call !== "step") throw new Error(`fast_evidence_concurrent:${call}`);
+    if (call === "native_line" || call === "step") return;
+    const sink = this.sinkFailure();
+    if (sink !== null) throw new Error(`fast_evidence_failed:${sink}`);
+    if (this.#busy) throw new Error(`fast_evidence_concurrent:${call}`);
   }
 
   async #guard(work: () => Promise<void>): Promise<void> {
@@ -182,13 +218,15 @@ class FastGameActionEvidence implements FastGameEvidence {
 }
 
 export interface FastGameEvidenceRead {
-  open: FastGameMeta & { kind: "open"; schema: string };
+  /** null only for a refused open (`refused` set, no steps). */
+  open: (FastGameMeta & { kind: "open"; schema: string }) | null;
+  refused: FastRefusedOpenRecord | null;
   steps: FastStepLine[];
   boundaries: FastBoundaryLine[];
   close: FastEvidenceCloseRecord | null;
   /** closed = whole game durable; unsatisfied = no close (crash): steps after the last boundary
    * (and a torn last line) are not satisfied and the game counts as unknown/env_crash. */
-  state: "closed" | "unsatisfied";
+  state: "closed" | "unsatisfied" | "refused";
   /** Steps covered by a durable boundary (all steps when closed). */
   satisfied_steps: number;
   torn_tail: boolean;
@@ -214,7 +252,16 @@ export async function readFastGameEvidence(directory: string): Promise<FastGameE
   const torn = text !== "" && !text.endsWith("\n");
   const raw = text.split("\n");
   raw.pop();
-  let open: FastGameEvidenceRead["open"] | null = null, close: FastEvidenceCloseRecord | null = null;
+  const first = raw.length > 0 ? JSON.parse(raw[0]!) as { kind?: unknown; schema?: unknown } : null;
+  if (first?.kind === "refused_open") {
+    const refused = first as FastRefusedOpenRecord;
+    if (refused.schema !== FAST_EVIDENCE_SCHEMA || torn || raw.length !== 1 || refused.retained.length === 0)
+      throw new Error("fast_evidence_refused_open");
+    const natives = await readOriginals(directory, refused.native_lines, FAST_NATIVE_LINES_FILE);
+    return { open: null, refused, steps: [], boundaries: [], close: null, state: "refused", satisfied_steps: 0, torn_tail: false,
+      native_lines: natives, input_lines: null };
+  }
+  let open: FastGameEvidenceRead["open"] = null, close: FastEvidenceCloseRecord | null = null;
   const steps: FastStepLine[] = [], boundaries: FastBoundaryLine[] = [];
   let satisfied = 0;
   for (const [index, line] of raw.entries()) {
@@ -253,6 +300,6 @@ export async function readFastGameEvidence(directory: string): Promise<FastGameE
       .map(line => JSON.parse(line) as { row_id: number | null; step_index: number | null; line: string });
     satisfied = steps.length;
   }
-  return { open, steps, boundaries, close, state: close !== null ? "closed" : "unsatisfied", satisfied_steps: satisfied,
+  return { open, refused: null, steps, boundaries, close, state: close !== null ? "closed" : "unsatisfied", satisfied_steps: satisfied,
     torn_tail: torn, native_lines: natives, input_lines: inputs };
 }
