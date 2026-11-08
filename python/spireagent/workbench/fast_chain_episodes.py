@@ -59,7 +59,7 @@ EVENT_SCHEMA = "sts2.policy-runtime/fast-env-event-1"
 CLOSE_REASONS = frozenset({"terminal", "not_started", "unknown", "stop", "budget",
                            "env_crash"})
 EVENTS = frozenset({"ready", "opened", "open_refused", "closed", "build_output_stopped",
-                    "status", "stopped", "fatal"})
+                    "status", "stopped", "fatal", "evidence_failed"})
 _MAX_EVENT_BYTES = 1 << 20
 
 
@@ -231,6 +231,7 @@ class _Game:
     start: EpisodeStart | None = None
     start_mismatch: str | None = None
     admission_failure: str | None = None
+    evidence_failure: str | None = None  # an ``evidence_failed`` event named this game
     hold_slot: bool = False  # a close_slot for this game is being written
     slot_freed: bool = False
 
@@ -391,6 +392,16 @@ class GameManager:
                 self.counters["build_output_stopped"] += 1
                 self.unavailable = self.unavailable or (
                     "fast_env_build_output_stopped:" + str(event.get("reason")))
+            elif kind == "evidence_failed":
+                # The environment's evidence sink failed (WP2 #438: a ``fatal`` follows).
+                # Loud; the named game is excluded from statistics at close.
+                self.counters["evidence_failed_events"] += 1
+                game = self.instances.get(str(event.get("game_instance_id")))
+                if game is not None and game.evidence_failure is None:
+                    game.evidence_failure = str(event.get("reason"))
+                print(f"fast_env evidence_failed slot={event.get('slot')} "
+                      f"game={event.get('game_instance_id')} reason={event.get('reason')}",
+                      file=sys.stderr, flush=True)
             elif kind == "stopped":
                 self.stopped = True
             elif kind == "fatal":
@@ -605,6 +616,8 @@ class GameManager:
                 close["start_mismatch"] = game.start_mismatch
             if game.admission_failure is not None:
                 close["instance_admission_failure"] = game.admission_failure
+            if game.evidence_failure is not None:
+                close["evidence_failure_event"] = game.evidence_failure
             if close.get("synthetic"):
                 close["cleanup_confirmed"] = self.cleanup_confirmed is True
             self.games.pop(game.game_ref, None)
@@ -684,6 +697,9 @@ class R7Selection:
             "quota": sampler.quota, "expected_games": sampler.expected_games,
             "window_seconds": sampler.window_seconds}
         self.resumed: dict[str, Any] | None = None
+        # Coverage from what actually happened to chosen games (the sampler's own report
+        # counts ordinals: one chosen before a failed admission never ran).
+        self.coverage: Counter[str] = Counter()
         self._resume()
 
     @classmethod
@@ -749,9 +765,15 @@ class R7Selection:
             self._persist()
         return record
 
+    def count(self, stage: str) -> None:
+        """One chosen game reached ``stage`` (offered, opened, finished, censored, ...)."""
+        with self.lock:
+            self.coverage[stage] += 1
+
     def report(self) -> dict[str, Any]:
         with self.lock:
-            return {**self.sampler.report(), "resume": self.resumed,
+            return {"sampler_ordinals": self.sampler.report(), "resume": self.resumed,
+                    "r7_games": dict(self.coverage),
                     "state_path_name": self.state_path.name}
 
 
@@ -784,7 +806,7 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
     row["fast_chain_slot"] = close.get("slot")
     row["fast_chain_close"] = {k: close.get(k) for k in (
         "reason", "detail", "decisions", "native_steps", "last_step_index", "terminal",
-        "public_facts", "native", "evidence_dir", "synthetic")}
+        "public_facts", "native", "evidence_dir", "evidence_failed", "synthetic")}
     if close.get("event") == "open_not_sent":
         row.update(status="censored", reason="fast_chain_open_not_sent:" + str(
             close.get("reason")), cleanup_accepted=True)
@@ -813,6 +835,25 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
             row.update(status="unknown", reason=mismatch,
                        cleanup_accepted=native in {"kept", "replaced"})
             return
+        # WP2 #438: ``closed.evidence_failed`` (absent = false; true => evidence_dir null),
+        # or an ``evidence_failed`` event naming this game. Its record is incomplete:
+        # never scored, never trained on, counted on its own and reported loudly.
+        flag = close.get("evidence_failed", False)
+        if type(flag) is not bool:
+            row.update(status="unknown", reason="fast_chain_close_evidence_failed_invalid",
+                       cleanup_accepted=native in {"kept", "replaced"})
+            return
+        if flag or close.get("evidence_failure_event") is not None:
+            row["evidence_failed"] = {"close_flag": flag,
+                                      "event": close.get("evidence_failure_event"),
+                                      "evidence_dir": close.get("evidence_dir")}
+            row.update(status="censored", reason=f"fast_chain_evidence_failed:{reason}",
+                       training_excluded=True,
+                       cleanup_accepted=native in {"kept", "replaced"})
+            print(f"fast_chain game {row['game_instance_id']} evidence_failed "
+                  f"(close {reason}); excluded from statistics and training",
+                  file=sys.stderr, flush=True)
+            return
         admission = close.get("instance_admission_failure")
         if admission is not None:
             # Closed early; never scored, never resent. Whether the learner attested
@@ -838,6 +879,10 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
                    cleanup_accepted=native in {"kept", "replaced"})
         return
     # unknown or env_crash: the native process must be gone (replaced or killed).
+    if close.get("evidence_failed") is True or close.get("evidence_failure_event") is not None:
+        row["evidence_failed"] = {"close_flag": close.get("evidence_failed") is True,
+                                  "event": close.get("evidence_failure_event"),
+                                  "evidence_dir": close.get("evidence_dir")}
     cleanup = (native == "replaced" if not close.get("synthetic")
                else close.get("cleanup_confirmed") is True)
     row.update(status="unknown", reason=f"fast_chain_{reason}:{detail}",
@@ -923,6 +968,7 @@ class FastChainEpisodeExecutor:
             row.update(world_mutation_offered=True, fast_chain_slot=reservation.slot,
                        fast_chain_game_ref=reservation.game_ref, status="running")
             checkpoint()  # Durable offer BEFORE open; a lost reply is never reoffered.
+            self._r7_count(row, "offered")
             try:
                 self.world_offered(row)
             except Exception as error:  # noqa: BLE001
@@ -943,9 +989,20 @@ class FastChainEpisodeExecutor:
             if not handed:
                 self.manager.release(reservation)
         apply_close(row, close, start=start)
+        if close.get("opened") is not None:
+            self._r7_count(row, "opened")
+        self._r7_count(row, "status:" + str(row["status"]))
+        if "evidence_failed" in row:
+            with self.manager.condition:
+                self.manager.counters["evidence_failed_games"] += 1
         row["fast_chain_close_record"] = artifacts.put("fast-chain-close.json",
                                                        json_bytes(close))
         checkpoint()
+
+    def _r7_count(self, row: Mapping[str, Any], stage: str) -> None:
+        count = getattr(self.r7_select, "count", None)
+        if count is not None and (row.get("r7") or {}).get("selected") is True:
+            count(stage)
 
     def admission_closed(self) -> str | None:
         return self.manager.admission_closed()

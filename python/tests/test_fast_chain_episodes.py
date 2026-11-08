@@ -448,7 +448,9 @@ def test_actor_fast_chain_configuration_is_opt_in_and_checked(tmp_path):
     env = tmp_path / "env.json"
     env.write_text(json.dumps(_env(8)))
     actor = object.__new__(Actor)
-    actor.segment_mode = True
+    actor.segment_mode, actor.work = True, tmp_path
+    actor.base = {"retention": {"tier": "trajectory", "purpose": "training",
+                                "audit_every": 20}}
     actor.config = {"pipeline": {"save_workers": 1, "pending_limit": 8}}
     value = actor._fast_chain_configuration({"command": ["node", "p.js"],
                                              "env_config": str(env)})
@@ -854,7 +856,8 @@ def test_r7_selection_is_the_sampler_choice_seeded_and_recorded(tmp_path):
     assert (state["window"], state["opened"]) == (2, 10)
     assert "r7-test-key" not in (tmp_path / "fast-chain-r7-state.json").read_text()
     report = selection.report()
-    assert report["current"]["chosen_so_far"] == 3 and report["resume"] is None
+    assert report["sampler_ordinals"]["current"]["chosen_so_far"] == 3
+    assert report["resume"] is None and report["r7_games"] == {}
 
 
 def test_r7_selection_restart_continues_the_window_and_never_resumes_a_stale_one(tmp_path):
@@ -901,7 +904,7 @@ def test_r7_is_decided_before_admission_and_is_durable_with_the_offer(tmp_path):
         order.append("r7")
         return selection()
 
-    select.report = selection.report
+    select.report, select.count = selection.report, selection.count
     executor = FastChainEpisodeExecutor(
         {"initial_progress": None}, manager=manager, episode_seconds=30,
         before_world_offer=lambda row: order.append("admission"), r7_select=select,
@@ -914,7 +917,9 @@ def test_r7_is_decided_before_admission_and_is_durable_with_the_offer(tmp_path):
     assert row["r7"]["selected"] is True
     assert [c["r7"] for c in _commands(tmp_path) if c["cmd"] == "open"] == [True]
     closed = executor.close()
-    assert closed["r7_sampler"]["current"]["opened"] == 1
+    assert closed["r7_sampler"]["sampler_ordinals"]["current"]["opened"] == 1
+    assert closed["r7_sampler"]["r7_games"] == {"offered": 1, "opened": 1,
+                                                "status:finished": 1}
 
 
 def test_r7_select_failure_is_not_started_before_any_offer_and_returns_the_slot(tmp_path):
@@ -949,7 +954,8 @@ def test_actor_fast_chain_configuration_builds_one_r7_selection(tmp_path):
 
     env = tmp_path / "env.json"
     env.write_text(json.dumps(_env(2)))
-    fake = SimpleNamespace(segment_mode=True, work=tmp_path,
+    retention = {"tier": "trajectory", "purpose": "training", "audit_every": 20}
+    fake = SimpleNamespace(segment_mode=True, work=tmp_path, base={"retention": retention},
                            config={"pipeline": {"save_workers": 1, "pending_limit": 2}})
     base = {"command": ["fast-env"], "env_config": str(env)}
     assert Actor._fast_chain_configuration(fake, base)["r7"] is None
@@ -960,3 +966,60 @@ def test_actor_fast_chain_configuration_builds_one_r7_selection(tmp_path):
     with pytest.raises(BoundaryError) as error:
         Actor._fast_chain_configuration(fake, {**base, "r7": {"key": "k"}})
     assert error.value.code == "fast_chain_r7_configuration_invalid"
+
+    # S1: the user's 5% clean-original sample; any other audit_every is refused, loudly.
+    fake.base = {"retention": {**retention, "audit_every": 100}}
+    with pytest.raises(BoundaryError) as error:
+        Actor._fast_chain_configuration(fake, base)
+    assert error.value.code == "fast_chain_retention_audit_every_must_be_20"
+
+
+def test_r7_coverage_counts_games_that_ran_not_ordinals_burned_before_admission(tmp_path):
+    manager = _manager(tmp_path, 1, [])
+    selection = _r7(tmp_path / "r7", _Clock(), quota=10)  # every ordinal is chosen
+    refuse = iter([True, False])
+
+    def admission(row):
+        if next(refuse):
+            raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+
+    executor = FastChainEpisodeExecutor(
+        {"initial_progress": None}, manager=manager, episode_seconds=30,
+        before_world_offer=admission, r7_select=selection, reserve_seconds=5)
+    assert _play(executor, "a")["status"] == "not_started"
+    assert _play(executor, "b")["status"] == "finished"
+    report = executor.close()["r7_sampler"]
+    assert report["sampler_ordinals"]["current"]["chosen_so_far"] == 2  # ordinals
+    assert report["r7_games"] == {"offered": 1, "opened": 1, "status:finished": 1}
+
+
+def test_evidence_failed_close_is_censored_excluded_and_counted(tmp_path):
+    games = [
+        {"seed": "flag", "close": {"reason": "terminal", "terminal": {"result": "victory"},
+                                   "evidence_failed": True, "evidence_dir": None}},
+        {"seed": "event", "evidence_event": "disk_full",
+         "close": {"reason": "terminal", "terminal": {"result": "defeat"}}},
+        {"seed": "bad", "close": {"reason": "terminal", "terminal": {"result": "defeat"},
+                                  "evidence_failed": "yes"}},
+        {"seed": "absent", "close": {"reason": "terminal", "terminal": {"result": "defeat"}}},
+    ]
+    manager = _manager(tmp_path, 1, games)
+    executor = _executor(manager)
+    flag, event, bad, absent = (_play(executor, s) for s in ("flag", "event", "bad", "absent"))
+    assert (flag["status"], flag["reason"], flag["training_excluded"]) == (
+        "censored", "fast_chain_evidence_failed:terminal", True)
+    assert "observed_result" not in flag
+    assert flag["evidence_failed"] == {"close_flag": True, "event": None, "evidence_dir": None}
+    assert (event["status"], event["evidence_failed"]["event"]) == ("censored", "disk_full")
+    assert (bad["status"], bad["reason"]) == ("unknown", "fast_chain_close_evidence_failed_invalid")
+    assert absent["status"] == "finished" and "evidence_failed" not in absent
+    report = executor.close()["fast_chain_stop"]["counters"]
+    assert report["evidence_failed_games"] == 2 and report["evidence_failed_events"] == 1
+
+
+def test_evidence_failed_on_an_unknown_close_stays_unknown_and_is_recorded():
+    row: dict = {}
+    apply_close(row, {"reason": "unknown", "detail": "delivery_unknown", "native": "replaced",
+                      "evidence_failed": True, "evidence_dir": None},
+                start=EpisodeStart.new_run("a"))
+    assert row["status"] == "unknown" and row["evidence_failed"]["close_flag"] is True

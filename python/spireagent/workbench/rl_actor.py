@@ -219,7 +219,7 @@ class Actor:
 
     def _fast_chain_configuration(self, value: Any) -> dict[str, Any]:
         from .fast_chain_episodes import load_env_config
-        from .managed_retention import pipeline_configuration
+        from .managed_retention import pipeline_configuration, retention_configuration
 
         if (not self.segment_mode or not isinstance(value, dict)
                 or set(value) - {"command", "env_config", "step_sync_ms",
@@ -229,6 +229,11 @@ class Actor:
                 or not isinstance(value.get("env_config"), str)):
             reject("fast_chain_configuration_invalid")
         env = load_env_config(Path(value["env_config"]))
+        # User rule (design v2 §2.8): clean fast-chain originals are sampled at 5%, so a
+        # fast-chain execution must freeze audit_every=20; anything else is refused,
+        # never rewritten. The old chain keeps whatever its execution says.
+        if retention_configuration(self.base)["audit_every"] != 20:
+            reject("fast_chain_retention_audit_every_must_be_20")
         pipeline = pipeline_configuration({"pipeline": self.config.get("pipeline", {
             "save_workers": 1, "pending_limit": 2})})
         if pipeline["pending_limit"] < env["slots"]:
