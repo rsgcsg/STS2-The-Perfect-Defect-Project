@@ -39,6 +39,8 @@ interface NativeHooks {
   receiptReasonCode?: (step: number) => string | null;
   /** From this native step on, every capture shows a settling snapshot. */
   settlingAfterStep?: number;
+  /** Called when the process asks the native for its CPU time. */
+  onCpuRead?: () => void;
 }
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
@@ -99,7 +101,7 @@ class FakeNative implements SlotNative {
     if (listener) for (const line of buffered) listener(line);
   }
   frame() { return this.hooks.compactLines ? { episode_instance: "fake", seq: this.source.steps, objects_root_sha256: "b".repeat(64), line_sha256: "c".repeat(64) } : null; }
-  async nativeCpuMs() { return null; }
+  async nativeCpuMs() { this.hooks.onCpuRead?.(); return 1; }
   async shutdown(force: boolean) { this.shutdowns.push(force); await this.source.close(); }
 }
 
@@ -539,6 +541,24 @@ describe("fast-env failure paths", () => {
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "native_crash" })]);
     expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "unknown" })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
+  });
+
+  it("status never reads native metrics during a game (one request at a time on the Host channel)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    const h = await harness({ hooks: () => ({ stepGate: () => gate, onCpuRead: () => { reads += 1; } }) });
+    h.open(0);
+    await h.next(event => event.event === "opened");
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).slots).toEqual([expect.objectContaining({ state: "running", native_cpu_ms: null })]);
+    expect(reads).toBe(0);
+    release();
+    await h.next(event => event.event === "closed");
+    h.send({ cmd: "status" });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(h.events.filter(event => event.event === "status").at(-1).slots).toEqual([expect.objectContaining({ state: "idle", native_cpu_ms: 1 })]);
+    expect(reads).toBe(1);
   });
 
   it("close_slot for another game or an idle slot is ignored and counted; the matching one stops the game; open clears it", async () => {
