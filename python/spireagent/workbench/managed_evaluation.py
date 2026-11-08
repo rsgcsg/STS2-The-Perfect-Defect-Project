@@ -13,9 +13,10 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NoReturn
 
 from sts2_platform_evidence import verify_agent_session_run_evidence
@@ -33,12 +34,19 @@ from stpd.p1 import export
 
 from .agent_task_outcome import project
 from .developer import ROOT
+from .episode_start import EpisodeStart, decode_episode_starts, require_loaded_identity
 from .global_evidence_store import (
     publish_global_evidence,
     publish_global_runtime,
     verify_global_artifact,
 )
-from .local_environment import SCENARIO, _audit, _candidate_audit, _verify_host
+from .local_environment import (
+    SCENARIO,
+    _audit,
+    _candidate_audit,
+    _verify_host,
+    managed_load_map,
+)
 from .local_model_registration import global_environment_manifest
 from .local_models import JSON_LIMIT, RuntimeClient
 from .managed_model_target import runtime_arguments
@@ -86,7 +94,7 @@ def _phase(row: dict[str, Any], name: str, *, detail: bool = False) -> Iterator[
         phases[name] = phases.get(name, 0.0) + time.monotonic() - began
 
 
-def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
+def _finish_runtime(process: subprocess.Popen | _EmbeddedRuntime, stdout: Path, row: dict[str, Any],
                     artifacts: Any, deadline: float, cleanup_seconds: float, *,
                     on_started: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """Observe the existing Runtime owner and send one exact-run Stop on handoff.
@@ -160,6 +168,76 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
             raise error from None
     process.wait(timeout=cleanup_seconds)
     return startup
+
+
+# The released Runtime/Host pair that carries the same-process launcher. Empty
+# until the P-REWRITE integration release pins it (rc.65 was released unused),
+# so "in_process" is refused loudly instead of guessed from file presence.
+IN_PROCESS_RUNTIME_VERSIONS: frozenset[str] = frozenset()
+IN_PROCESS_HOST_VERSIONS: frozenset[str] = frozenset()
+INPROCESS_REQUEST_SCHEMA = "sts2.policy-runtime/inprocess-runtime-request-1"
+INPROCESS_STOP_SCHEMA = "sts2.policy-runtime/inprocess-runtime-stop-1"
+INPROCESS_EXIT_SCHEMA = "sts2.policy-runtime/inprocess-runtime-exit-1"
+
+
+class _EmbeddedRuntime:
+    """The Runtime half of the same-process launcher, seen through its own lines.
+
+    It offers the ``Popen`` surface ``_finish_runtime`` and cleanup use. Exit is
+    the Runtime's own exit line; the process itself lives until the Host's
+    manager close. A launcher that dies first is a failed Runtime, never a
+    guessed outcome.
+    """
+
+    def __init__(self, process: subprocess.Popen, stdout: Path) -> None:
+        self._process = process
+        self._stdout = stdout
+        self.returncode: int | None = None
+        self.args = process.args
+
+    def start(self, argv: Sequence[str]) -> None:
+        assert self._process.stdin is not None
+        self._process.stdin.write(json_bytes({"schema": INPROCESS_REQUEST_SCHEMA,
+                                              "argv": list(argv)}))
+        self._process.stdin.flush()
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        raw = self._stdout.read_bytes()
+        if len(raw) > JSON_LIMIT:
+            reject("runtime_stdout_too_large")
+        for line in raw.split(b"\n"):
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict) and value.get("schema") == INPROCESS_EXIT_SCHEMA:
+                code = value.get("code")
+                self.returncode = code if type(code) is int else 1
+        if self.returncode is None and self._process.poll() is not None:
+            self.returncode = 1
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout or 0.0)
+            time.sleep(0.05)
+        return self.returncode  # type: ignore[return-value]
+
+    def terminate(self) -> None:
+        """The same owner Stop a separate Runtime runs on SIGTERM."""
+        stdin = self._process.stdin
+        if stdin is None or stdin.closed:
+            return
+        try:
+            with suppress(OSError):
+                stdin.write(json_bytes({"schema": INPROCESS_STOP_SCHEMA}))
+                stdin.flush()
+        finally:
+            with suppress(OSError):
+                stdin.close()
 
 
 def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
@@ -240,6 +318,9 @@ def require_prepared_identity(
 class ManagedEpisodeExecutor:
     """One independent Host/Runtime/Agent per call; safe for separate worker threads."""
 
+    # Replaced in __init__ by the decoded frozen ``episode_starts``; never mutated.
+    episode_starts: Mapping[str, EpisodeStart] = MappingProxyType({})
+
     def __init__(
         self, configuration: dict[str, Any], *, episode_seconds: float, cleanup_seconds: float
     ) -> None:
@@ -254,6 +335,13 @@ class ManagedEpisodeExecutor:
         mode = configuration.get("inference", {"mode": "per_actor"})
         if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
             reject("unsupported_inference_implementation")
+        # "in_process" runs Host and Runtime in one process (RL5 S1 ③a-1); the
+        # Runtime's client exchanges enter the Host service's own dispatch.
+        self.managed_transport = configuration.get("managed_transport", "http")
+        if self.managed_transport not in {"http", "in_process"}:
+            reject("invalid_managed_transport")
+        if self.managed_transport == "in_process" and mode["mode"] != "per_actor":
+            reject("in_process_transport_requires_per_actor_inference")
         self.settling_timeout_ms = configuration.get("settling_timeout_ms", 120000)
         if self.settling_timeout_ms is not None and (
                 type(self.settling_timeout_ms) is not int
@@ -284,6 +372,11 @@ class ManagedEpisodeExecutor:
         self.producer = source_identity(ROOT)
         if self.producer != Producer.decode(configuration["producer"]):
             reject("frozen_execution_source_changed")
+        # S4: every save start is decoded and its progress lineage checked once, here;
+        # a bad entry fails the whole execution loudly before any Host process.
+        self.episode_starts = decode_episode_starts(
+            configuration.get("episode_starts", {}),
+            initial_progress=configuration.get("initial_progress"))
         self.episode_seconds = episode_seconds
         self.cleanup_seconds = cleanup_seconds
         self.host = Path(configuration["host_directory"]).resolve()
@@ -365,6 +458,13 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.64",
         }:
             reject("runtime_decision_durability_required")
+        if self.managed_transport == "in_process" and (
+                runtime_version not in IN_PROCESS_RUNTIME_VERSIONS
+                or json.loads((self.host / "package.json").read_bytes()).get("version")
+                not in IN_PROCESS_HOST_VERSIONS
+                or not (self.runtime / "managed-inprocess-host.js").is_file()
+                or not (self.host / "src/managed-host-service-tool.mjs").is_file()):
+            reject("in_process_transport_unsupported")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
@@ -442,6 +542,17 @@ class ManagedEpisodeExecutor:
     def _before_world_offer(self, row: dict[str, Any]) -> None:
         return None
 
+    def _episode_start(self, row: dict[str, Any], manifest: Mapping[str, Any]) -> EpisodeStart:
+        """S4 hook: today's seeded reset unless the frozen execution names a save start.
+
+        ``episode_starts`` (decoded in ``__init__``) maps a slot seed to one
+        ``spireagent/managed-save-start-1``; a save's descendants keep its seed.
+        """
+        start = self.episode_starts.get(row["seed"]) or EpisodeStart.new_run(row["seed"])
+        start.require_scenario(character=manifest["character"],
+                               ascension=manifest["ascension"])
+        return start
+
     def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
         """Observe the existing durable offer, before its possibly unknown effect."""
         return None
@@ -460,8 +571,26 @@ class ManagedEpisodeExecutor:
         private = artifacts.root / "private"
         private.mkdir(mode=0o700)
         client_path, manager_path = private / "client.json", private / "manager.json"
-        launch = manager = runtime_process = None
+        launch = manager = None
+        runtime_process: subprocess.Popen[bytes] | _EmbeddedRuntime | None = None
+        transport = getattr(self, "managed_transport", "http")
+        in_process = transport == "in_process"
+        if transport != "http":  # the default old chain keeps its rows unchanged
+            row["managed_transport"] = transport
+        embedder = None
+        if in_process:
+            (private / "runtime.stdout").touch(mode=0o600, exist_ok=False)
+            embedder = [str(self.runtime / "managed-inprocess-host.js"), "--host-package",
+                        str(self.host), "--runtime-stdout", str(private / "runtime.stdout"), "--"]
         started = time.monotonic()
+        try:
+            # S4: decided before any Host process; nothing to clean up on refusal.
+            start = self._episode_start(row, manifest)
+        except BoundaryError as error:
+            row.update(host_kind="managed", status="not_started", reason=error.code,
+                       cleanup_accepted=True, elapsed_seconds=time.monotonic() - started)
+            checkpoint()
+            return
         row.update(host_kind="managed", status="preparing", reason=None,
                    preservation_store=self.preparation["store"],
                    read_concurrency=self.read_concurrency,
@@ -481,24 +610,38 @@ class ManagedEpisodeExecutor:
                         language=self.configuration.get("language", "en"),
                         timeout_ms=60000,
                         startup_timeout=min(120, self.episode_seconds),
+                        **({"embedder": embedder} if embedder else {}),
                     )
                 client = self.api.ManagedHostServiceClient.from_attachment(client_path)
                 manager = self.api.ManagedHostServiceManager.from_attachment(manager_path)
                 ready = client.ready()
                 row["host_service_instance_id"] = ready["service_instance_id"]
                 row["host_service_pid"] = launch.pid
+                if start.kind != "new_run":  # old-chain rows stay byte-identical
+                    row["episode_start"] = start.record()
                 self._before_world_offer(row)
                 row["world_mutation_offered"] = True
                 checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
                 self._world_offer_checkpointed(row)
-                with _phase(row, "host_reset", detail=True):
-                    reset = manager.reset(
-                        row["seed"],
-                        expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
-                        expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
-                        initial_progress=self.configuration["initial_progress"],
-                    )
-                row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
+                if start.kind == "new_run":
+                    with _phase(row, "host_reset", detail=True):
+                        reset = manager.reset(
+                            row["seed"],
+                            expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                            expected_game_continuity_id=ready["episode"].get(
+                                "game_continuity_id"),
+                            initial_progress=self.configuration["initial_progress"],
+                        )
+                    row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
+                else:
+                    # This executor always owns a fresh Host process, so the Host's
+                    # fresh-process rule holds; a lost reply stays unknown (offered).
+                    with _phase(row, "host_load_map", detail=True):
+                        loaded = managed_load_map(manager, **start.load_request(
+                            expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                            expected_game_continuity_id=ready["episode"].get(
+                                "game_continuity_id")))
+                    row["load_map"] = artifacts.put("managed-load-map.json", json_bytes(loaded))
                 ready = client.ready()
                 reply = manager.request({"command": "episode_identity"})
                 result = reply.get("result") if isinstance(reply, Mapping) else None
@@ -512,9 +655,14 @@ class ManagedEpisodeExecutor:
                 # world keeps its original proof next to the typed reason.
                 row["episode_identity"] = artifacts.put(
                     "episode-identity.json", json_bytes(identity))
-                require_prepared_identity(
-                    identity, seed=row["seed"],
-                    initial_progress=self.configuration["initial_progress"])
+                if start.kind == "new_run":
+                    require_prepared_identity(
+                        identity, seed=row["seed"],
+                        initial_progress=self.configuration["initial_progress"])
+                else:
+                    row["initial_progress_proof"] = require_loaded_identity(
+                        identity, start=start,
+                        initial_progress=self.configuration["initial_progress"])
                 target = {
                     "input_profile": "public-basis-1",
                     "profile_sha256": hashlib.sha256(
@@ -618,18 +766,22 @@ class ManagedEpisodeExecutor:
                         args.extend(["--adapter-env-key", name])
             row.update(status="running", actor_started=True)
             checkpoint()
-            with (
-                _phase(row, "execute"), (private / "runtime.stdout").open("xb") as stdout,
-                (private / "runtime.stderr").open("xb") as stderr,
-            ):
+            with _phase(row, "execute"), ExitStack() as files:
                 runtime_started = time.monotonic()
-                runtime_process = subprocess.Popen(
-                    args,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    env=environment,
-                )
+                if in_process:
+                    # Same CLI arguments; its stderr is the Host log of this process.
+                    runtime_process = _EmbeddedRuntime(launch.process, private / "runtime.stdout")
+                    runtime_process.start(args[2:])
+                else:
+                    stdout = files.enter_context((private / "runtime.stdout").open("xb"))
+                    stderr = files.enter_context((private / "runtime.stderr").open("xb"))
+                    runtime_process = subprocess.Popen(
+                        args,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        env=environment,
+                    )
                 row["runtime_process_started_monotonic"] = runtime_started
                 startup = _finish_runtime(
                     runtime_process, private / "runtime.stdout", row, artifacts,
