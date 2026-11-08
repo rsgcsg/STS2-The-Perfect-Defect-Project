@@ -16,10 +16,15 @@ and one execution kernel. This module is the Python owner of that process:
 - an environment process crash makes every game it carried unknown, and the process
   group is killed to confirm no native child survives; the manager is then broken and
   the actor stops (an operator restarts it; no silent fallback to the old chain);
-- Stop: ``stop``, wait at most the Stop latency bound, then kill; a game still open is
-  unknown ``stop_latency_bound_exceeded``;
-- inference liveness: a streak of ``inference_timeout`` closes, or an explicit probe,
-  refuses admission before any world offer.
+- Stop: admission closes first (an open not yet written is censored, never sent);
+  ``stop`` closes in-flight games at their next boundary (censored ``stop``); past the
+  Stop latency bound the group is killed and a game still open is unknown
+  ``stop_latency_bound_exceeded``; a sent game left unclosed by an exit is resolved
+  at once (unknown), never at its deadline;
+- inference liveness: an explicit probe, or a streak of ``inference_timeout`` closes,
+  refuses admission before any world offer; without a probe the streak lock lifts
+  after ``inference_retry_seconds`` for one trial game (one more timeout relocks);
+- only ascension 0 is admitted (terminal labels use the A0 table).
 
 Failure semantics follow ``stpd/rl-inference-3`` and design v2 §2.6: nothing is resent;
 an inference timeout is ``not_started`` (here: a censored game, never unknown).
@@ -33,6 +38,7 @@ import os
 import secrets
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter
@@ -44,7 +50,7 @@ from typing import IO, Any, NoReturn
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 
-from .episode_start import EpisodeStart, require_first_frame_start
+from .episode_start import EpisodeStart, decode_episode_starts, require_first_frame_start
 
 CONFIG_SCHEMA = "sts2.policy-runtime/fast-env-config-1"
 COMMAND_SCHEMA = "sts2.policy-runtime/fast-env-command-1"
@@ -105,6 +111,10 @@ def _positive(value: Any) -> bool:
 class FastEnvProcess:
     """One NDJSON child: commands on stdin, events on stdout, diagnostics to a file."""
 
+    # After the process exits, wait this long for stdout EOF (every written event read).
+    # Only a native child that inherited stdout can hold EOF back past it.
+    eof_grace_seconds = 3.0
+
     def __init__(self, argv: Sequence[str], *, stderr: Path,
                  on_event: Callable[[dict[str, Any]], None],
                  on_exit: Callable[[str], None]) -> None:
@@ -137,7 +147,9 @@ class FastEnvProcess:
 
     def _watch(self) -> None:
         code = self.process.wait()
-        self._reader.join(timeout=0.2)  # let already-written events land first
+        # Every event the process wrote is read before its exit is judged (a normal
+        # stop's last closed/stopped must not look like a crash).
+        self._reader.join(timeout=self.eof_grace_seconds)
         self._report_exit(f"fast_env_exited:{code}")
 
     def _read(self) -> None:
@@ -196,7 +208,11 @@ class FastEnvProcess:
         return False
 
     def close(self) -> None:
-        self._watcher.join(timeout=5)
+        self._watcher.join(timeout=self.eof_grace_seconds + 5)
+        for stream in (self.process.stdin, self.process.stdout):
+            if stream is not None:
+                with suppress(OSError):
+                    stream.close()
         self._stderr.close()
 
 
@@ -209,6 +225,8 @@ class _Game:
     refused: dict[str, Any] | None = None
     closed: dict[str, Any] | None = None
     fenced: bool = False
+    start: EpisodeStart | None = None
+    start_mismatch: str | None = None
 
 
 @dataclass
@@ -232,7 +250,7 @@ class GameManager:
                  step_sync_ms: float = 4, ready_seconds: float = 300,
                  open_seconds: float = 300, inference_failure_streak: int = 3,
                  inference_probe: Callable[[], bool] | None = None,
-                 probe_interval_seconds: float = 5,
+                 probe_interval_seconds: float = 5, inference_retry_seconds: float = 60,
                  clock: Callable[[], float] = time.monotonic) -> None:
         if type(inference_failure_streak) is not int or inference_failure_streak < 1:
             reject("fast_chain_inference_streak_invalid")
@@ -244,6 +262,8 @@ class GameManager:
         self.ready_seconds, self.open_seconds = ready_seconds, open_seconds
         self.streak_limit, self.probe = inference_failure_streak, inference_probe
         self.probe_interval, self.clock = probe_interval_seconds, clock
+        self.inference_retry = inference_retry_seconds
+        self.inference_down_at: float | None = None
         self.condition = threading.Condition()
         self.free = set(range(self.slots))
         self.games: dict[str, _Game] = {}
@@ -291,6 +311,9 @@ class GameManager:
         with self.condition:
             # The first cause names the games; the exit this kill causes is not a crash.
             self.kill_reason = reason = self.kill_reason or reason
+            # No open is written from here on (play checks this under the lock).
+            self.unavailable = self.unavailable or reason
+            self.condition.notify_all()
         process = self.process
         confirmed = process.kill_group() if process is not None else True
         with self.condition:
@@ -307,10 +330,16 @@ class GameManager:
         with self.condition:
             self.exit_reason = reason
             expected = self.stopped or self.kill_reason is not None
+            unresolved = any(game.closed is None for game in self.games.values())
             self.condition.notify_all()
         if not expected:
             # A crash: every game this process carried is unknown; only it is isolated.
             self._kill("env_crash:" + reason)
+        elif unresolved:
+            # An expected exit left a sent game unclosed (WP2 closes every game before
+            # ``stopped``): resolve it now as unknown, group killed to confirm, never
+            # at its far-away deadline.
+            self._kill("fast_env_exited_without_close")
 
     # -- events ----------------------------------------------------------------------
     def _event(self, event: dict[str, Any]) -> None:
@@ -328,6 +357,13 @@ class GameManager:
                 else:
                     game.opened = event
                     self.instances[instance] = game
+                    if game.start is not None:
+                        try:
+                            # Checked on arrival, before the world produces more rows;
+                            # a missing echo fails closed.
+                            require_first_frame_start(event.get("start"), start=game.start)
+                        except BoundaryError as error:
+                            game.start_mismatch = error.code
             elif kind == "open_refused":
                 game = self.opens.pop(str(event.get("command_id")), None)
                 if game is None:
@@ -363,8 +399,9 @@ class GameManager:
     def _liveness(self, close: Mapping[str, Any]) -> None:
         if close.get("detail") == "inference_timeout":
             self.inference_failures += 1
-            if self.inference_failures >= self.streak_limit:
+            if self.inference_failures >= self.streak_limit and not self.inference_down:
                 self.inference_down = True
+                self.inference_down_at = self.clock()
         else:
             self.inference_failures = 0
 
@@ -379,16 +416,31 @@ class GameManager:
         return None
 
     def _inference_unavailable(self) -> bool:
+        """Probe when one is wired; otherwise a timeout streak locks admission until
+        ``inference_retry_seconds`` pass, then lets one trial game through: one more
+        inference timeout locks it again (the streak counter stays one short)."""
+        now = self.clock()
         if self.probe is not None:
-            now = self.clock()
-            if self.probed_at is None or now - self.probed_at >= self.probe_interval:
-                self.probed_at = now
+            with self.condition:
+                due = self.probed_at is None or now - self.probed_at >= self.probe_interval
+                if due:
+                    self.probed_at = now
+            if due:
                 alive = bool(self.probe())
                 with self.condition:
                     self.inference_down = not alive
+                    self.inference_down_at = None if alive else now
                     if alive:
                         self.inference_failures = 0
-        return self.inference_down
+        else:
+            with self.condition:
+                if (self.inference_down and self.inference_down_at is not None
+                        and now - self.inference_down_at >= self.inference_retry):
+                    self.inference_down, self.inference_down_at = False, None
+                    self.inference_failures = self.streak_limit - 1
+                    self.counters["inference_retry_trials"] += 1
+        with self.condition:
+            return self.inference_down
 
     def reserve(self, timeout: float = 60) -> Reservation:
         """One free slot, before any world offer. Refusals are ``not_started``."""
@@ -421,29 +473,33 @@ class GameManager:
              deadline_seconds: float) -> dict[str, Any]:
         """Open on the reserved slot (the world is already durably offered) and wait.
 
-        Returns the environment's ``closed`` event, or a synthetic unknown close. Never
-        raises after the open was sent; never sends a second open for this game.
+        Returns the environment's ``closed`` event, or a synthetic close. Never raises
+        after the open was sent; never sends a second open for this game.
         """
         if reservation.used:
             reject("fast_chain_reservation_reused")
         reservation.used = True
         command_id = f"c{next(self.commands)}"
-        game = _Game(reservation.game_ref, reservation.slot, command_id)
+        game = _Game(reservation.game_ref, reservation.slot, command_id, start=start)
         with self.condition:
-            if self.exit_reason is not None or self.process is None:
-                # Nothing was sent: no world exists for this offer (censored, not unknown).
+            if (self.unavailable is not None or self.exit_reason is not None
+                    or self.process is None):
+                # Stopping, fenced, output stopped, killed or exited: nothing is sent,
+                # so no world exists for this offer (censored, not unknown).
+                self.free.add(game.slot)
+                self.condition.notify_all()
                 return {"event": "open_not_sent", "slot": game.slot,
                         "game_ref": game.game_ref,
                         "reason": self.unavailable or self.exit_reason}
             self.games[game.game_ref] = game
             self.opens[command_id] = game
+            process = self.process
         try:
-            self.process.send({"cmd": "open", "command_id": command_id,
-                               "slot": game.slot, "game_ref": game.game_ref, "seed": seed,
-                               "initial_progress": (dict(initial_progress)
-                                                    if initial_progress is not None
-                                                    else None),
-                               "start": start.env_start(), "r7": r7})
+            process.send({"cmd": "open", "command_id": command_id,
+                          "slot": game.slot, "game_ref": game.game_ref, "seed": seed,
+                          "initial_progress": (dict(initial_progress)
+                                               if initial_progress is not None else None),
+                          "start": start.env_start(), "r7": r7})
         except (OSError, ValueError):
             # The open may or may not have been read: unknown, and the group is killed.
             self._kill("fast_env_open_delivery_unknown")
@@ -454,16 +510,23 @@ class GameManager:
                        or game.closed is not None, began + self.open_seconds)
             if game.refused is not None:
                 return {"event": "open_refused", **game.refused}
-            if game.opened is None and game.closed is None:
-                self.opens.pop(command_id, None)
-            self._wait(lambda: game.closed is not None, began + deadline_seconds)
             if game.closed is not None:
                 return self._result(game)
-        # Past the deadline: ask this slot to close at its next boundary.
-        self.counters["deadline_close_slot"] += 1
+            if game.opened is None:
+                # No answer in time. The registration stays, so a late ``opened`` and
+                # its ``closed`` still route here; the slot is asked to close now.
+                self.counters["open_timeouts"] += 1
+            elif game.start_mismatch is not None:
+                self.counters["start_mismatch_close_slot"] += 1
+            else:
+                self._wait(lambda: game.closed is not None, began + deadline_seconds)
+                if game.closed is not None:
+                    return self._result(game)
+                self.counters["deadline_close_slot"] += 1
+        # Ask this slot to close at its next boundary.
         with suppress(OSError, ValueError):
-            self.process.send({"cmd": "close_slot", "command_id": f"c{next(self.commands)}",
-                               "slot": game.slot})
+            process.send({"cmd": "close_slot", "command_id": f"c{next(self.commands)}",
+                          "slot": game.slot})
         with self.condition:
             self._wait(lambda: game.closed is not None, self.clock() + self.bound.seconds)
             if game.closed is not None:
@@ -499,6 +562,8 @@ class GameManager:
                 close["opened"] = {k: game.opened.get(k) for k in (
                     "game_instance_id", "start", "native", "mount_ms")}
             close["slot"], close["game_ref"] = game.slot, game.game_ref
+            if game.start_mismatch is not None:
+                close["start_mismatch"] = game.start_mismatch
             if close.get("synthetic"):
                 close["cleanup_confirmed"] = self.cleanup_confirmed is True
             self.games.pop(game.game_ref, None)
@@ -570,6 +635,7 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
         row.update(status="censored", reason="fast_chain_open_not_sent:" + str(
             close.get("reason")), cleanup_accepted=True)
         return
+
     if close.get("event") == "open_refused":
         # The environment refused the open; its native child was replaced if it started.
         row.update(status="censored", reason="fast_chain_open_refused:" + str(
@@ -579,12 +645,18 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
         row.update(status="unknown", reason="fast_chain_close_reason_invalid",
                    cleanup_accepted=False)
         return
-    opened = (close.get("opened") or {}).get("start")
-    if reason not in {"unknown", "env_crash"} and opened is not None:
-        try:
-            require_first_frame_start(opened, start=start)
-        except BoundaryError as error:
-            row.update(status="unknown", reason=error.code,
+    if reason not in {"unknown", "env_crash"}:
+        # Fail closed: the opened echo is the fast chain's only proof that the world
+        # began as offered; a missing echo or missing ``start`` is a mismatch too.
+        mismatch = close.get("start_mismatch")
+        if mismatch is None:
+            try:
+                require_first_frame_start((close.get("opened") or {}).get("start"),
+                                          start=start)
+            except BoundaryError as error:
+                mismatch = error.code
+        if mismatch is not None:
+            row.update(status="unknown", reason=mismatch,
                        cleanup_accepted=native in {"kept", "replaced"})
             return
     if reason == "terminal":
@@ -619,6 +691,10 @@ class FastChainEpisodeExecutor:
                  world_offered: Callable[[dict[str, Any]], None] | None = None,
                  reserve_seconds: float = 60) -> None:
         self.configuration, self.manager = configuration, manager
+        # The same frozen starts and progress-lineage check as the old chain (S4).
+        self.episode_starts = decode_episode_starts(
+            configuration.get("episode_starts", {}),
+            initial_progress=configuration.get("initial_progress"))
         self.episode_seconds, self.reserve_seconds = episode_seconds, reserve_seconds
         self.before_world_offer = before_world_offer or (lambda row: None)
         self.world_offered = world_offered or (lambda row: None)
@@ -631,35 +707,54 @@ class FastChainEpisodeExecutor:
         row.update(host_kind="managed", chain="fast_chain", status="preparing", reason=None,
                    world_mutation_offered=False, cleanup_accepted=True)
         row["scenario"] = {"character": manifest["character"], "ascension": manifest["ascension"]}
+        if manifest["ascension"] != 0:
+            # The fast chain's terminal labels use the A0 table only, and the encoder /
+            # assembler never see the ascension: the actor is the only place to refuse.
+            row.update(status="not_started",
+                       reason=f"fast_chain_ascension_unsupported:{manifest['ascension']}")
+            print(f"fast_chain refuses ascension {manifest['ascension']} (A0 only)",
+                  file=sys.stderr, flush=True)
+            return
         try:
-            starts = self.configuration.get("episode_starts", {})
-            if not isinstance(starts, Mapping):
-                reject("invalid_episode_starts")
-            start = EpisodeStart.decode(starts.get(row["seed"]), seed=row["seed"])
+            start = (self.episode_starts.get(row["seed"])
+                     or EpisodeStart.new_run(row["seed"]))
             start.require_scenario(character=manifest["character"],
                                    ascension=manifest["ascension"])
             reservation = self.manager.reserve(self.reserve_seconds)
         except BoundaryError as error:
             row.update(status="not_started", reason=error.code)
             return
+        handed = False
         try:
-            self.before_world_offer(row)
-        except (BoundaryError, OSError, ValueError, TimeoutError) as error:
-            self.manager.release(reservation)
-            row.update(status="not_started", reason=getattr(error, "code", None)
-                       or type(error).__name__)
-            return
-        if start.kind != "new_run":
-            row["episode_start"] = start.record()
-        row.update(world_mutation_offered=True, fast_chain_slot=reservation.slot,
-                   fast_chain_game_ref=reservation.game_ref, status="running")
-        checkpoint()  # Durable offer BEFORE open; a lost reply is never reoffered.
-        self.world_offered(row)
-        close = self.manager.play(
-            reservation, seed=row["seed"],
-            initial_progress=self.configuration.get("initial_progress"), start=start,
-            r7=row.get("training_audit_selected") is True,
-            deadline_seconds=self.episode_seconds + self.manager.bound.seconds)
+            try:
+                self.before_world_offer(row)
+            except Exception as error:  # noqa: BLE001 - any admission failure, typed
+                row.update(status="not_started", reason=getattr(error, "code", None)
+                           or type(error).__name__)
+                return
+            if start.kind != "new_run":
+                row["episode_start"] = start.record()
+            row.update(world_mutation_offered=True, fast_chain_slot=reservation.slot,
+                       fast_chain_game_ref=reservation.game_ref, status="running")
+            checkpoint()  # Durable offer BEFORE open; a lost reply is never reoffered.
+            try:
+                self.world_offered(row)
+            except Exception as error:  # noqa: BLE001
+                # Offered but no open was ever sent: the slot comes back; the offered
+                # row stays unknown (its watcher fact may be partial), never reoffered.
+                row.update(status="unknown", reason="fast_chain_world_offer_event_failed:"
+                           + type(error).__name__)
+                checkpoint()
+                return
+            handed = True
+            close = self.manager.play(
+                reservation, seed=row["seed"],
+                initial_progress=self.configuration.get("initial_progress"), start=start,
+                r7=row.get("training_audit_selected") is True,
+                deadline_seconds=self.episode_seconds + self.manager.bound.seconds)
+        finally:
+            if not handed:
+                self.manager.release(reservation)
         apply_close(row, close, start=start)
         row["fast_chain_close_record"] = artifacts.put("fast-chain-close.json",
                                                        json_bytes(close))

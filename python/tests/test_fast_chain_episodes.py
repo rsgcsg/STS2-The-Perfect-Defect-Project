@@ -365,7 +365,13 @@ def _save_start(seed: str) -> dict:
                      "source_room_type": "MonsterRoom",
                      "parent_runtime_instance_id": "r", "parent_game_continuity_id": "g"},
             "lineage": {"initial_progress_sha256": "progress", "character": "Defect",
-                        "ascension": 0, "parent_intent_id": "p"}}
+                        "ascension": 0, "parent_intent_id": "p"},
+            "parent_identity": {"adapter_runtime_instance_id": "r",
+                                "episode_provenance": {"origin": {"kind": "seed"},
+                                                       "verdict": "provenance_pass",
+                                                       "actual_seed": seed},
+                                "initial_progress": {"progress_sha256": "progress",
+                                                     "run_unlock_state_matches": True}}}
 
 
 def test_save_start_reaches_the_open_and_the_echoed_start_is_checked(tmp_path):
@@ -386,8 +392,14 @@ def test_save_start_reaches_the_open_and_the_echoed_start_is_checked(tmp_path):
 
 @pytest.mark.parametrize("close,expected", [
     ({"reason": "weird"}, ("unknown", "fast_chain_close_reason_invalid")),
-    ({"reason": "terminal", "terminal": None, "native": "kept"},
+    ({"reason": "terminal", "terminal": None, "native": "kept",
+      "opened": {"start": {"kind": "new_run"}}},
      ("unknown", "fast_chain_terminal_without_result")),
+    # M3 fail closed: no opened echo, or an echo without ``start``, is a mismatch.
+    ({"reason": "terminal", "terminal": {"result": "victory"}, "native": "kept"},
+     ("unknown", "first_frame_start_changed")),
+    ({"reason": "terminal", "terminal": {"result": "victory"}, "native": "kept",
+      "opened": {"start": None}}, ("unknown", "first_frame_start_changed")),
     ({"reason": "env_crash", "detail": "native_crash", "native": "replaced"},
      ("unknown", "fast_chain_env_crash:native_crash")),
     ({"event": "open_not_sent", "reason": "env_crash:x"},
@@ -464,3 +476,123 @@ def test_actor_announce_adds_fast_chain_facts_only_for_fast_rows(tmp_path):
     assert (fast["game_instance_id"], fast["fast_chain_slot"], fast["close_reason"],
             fast["close_detail"]) == ("gi", 1, "unknown", "native_crash")
     assert "game_instance_id" not in old and "close_reason" not in old
+
+
+# -- review fixes (REVIEW-PR419-421) -----------------------------------------------------
+def test_m1_open_after_stop_began_is_never_sent_and_is_censored_at_once(tmp_path):
+    manager = _manager(tmp_path, 1, [], stop_delay=2)
+    reservation = manager.reserve(5)
+    stopper = threading.Thread(target=manager.stop)
+    stopper.start()
+    while manager.unavailable is None:
+        time.sleep(0.01)
+    began = time.monotonic()
+    close = manager.play(reservation, seed="a", initial_progress=None,
+                         start=EpisodeStart.new_run("a"), r7=False, deadline_seconds=60)
+    row: dict = {}
+    apply_close(row, close, start=EpisodeStart.new_run("a"))
+    assert time.monotonic() - began < 1
+    assert row["status"] == "censored" and row["reason"].startswith(
+        "fast_chain_open_not_sent:")
+    stopper.join(10)
+    assert [c["cmd"] for c in _commands(tmp_path)] == ["stop"]
+
+
+def test_m1_exit_with_a_sent_game_unclosed_resolves_it_now_not_at_its_deadline(tmp_path):
+    games = [{"close": {"reason": "terminal", "terminal": {"result": "victory"}},
+              "after": 60, "survive_stop": True}]
+    manager = _manager(tmp_path, 1, games)
+    rows: dict = {}
+    player = threading.Thread(target=lambda: rows.setdefault(
+        "a", _play(_executor(manager, episode_seconds=120), "a")))
+    player.start()
+    while not manager.instances:
+        time.sleep(0.01)
+    began = time.monotonic()
+    report = manager.stop()
+    player.join(10)
+    assert not player.is_alive() and time.monotonic() - began < 5
+    assert (rows["a"]["status"], rows["a"]["reason"]) == (
+        "unknown", "fast_chain_unknown:fast_env_exited_without_close")
+    assert report["cleanup_confirmed"] is True and not _native_alive(tmp_path)
+
+
+def test_m2_save_start_lineage_is_checked_like_the_old_chain(tmp_path):
+    manager = _manager(tmp_path, 1, [])
+    changed = _save_start("a")
+    # A consistent save whose progress is not this actor's configured progress.
+    changed["lineage"]["initial_progress_sha256"] = "other"
+    changed["parent_identity"]["initial_progress"]["progress_sha256"] = "other"
+    with pytest.raises(BoundaryError, match="loaded_initial_progress_lineage_changed"):
+        _executor(manager, starts={"a": changed})
+    parent = _save_start("a")
+    parent["parent_identity"]["episode_provenance"]["actual_seed"] = "b"
+    with pytest.raises(BoundaryError, match="save_parent_identity_changed"):
+        _executor(manager, starts={"a": parent})
+    assert _commands(tmp_path) == []
+    manager.stop()
+
+
+def test_m3_opened_without_start_is_refused_on_arrival(tmp_path):
+    games = [{"close": {"reason": "terminal", "terminal": {"result": "victory"}},
+              "after": 30, "echo_start": None}]
+    manager = _manager(tmp_path, 1, games)
+    began = time.monotonic()
+    row = _play(_executor(manager, episode_seconds=60), "a")
+    # Not at the close 30 s later: close_slot goes out as soon as ``opened`` lands.
+    assert time.monotonic() - began < 5
+    assert (row["status"], row["reason"]) == ("unknown", "first_frame_start_changed")
+    assert [c["cmd"] for c in _commands(tmp_path)] == ["open", "close_slot"]
+    assert manager.counters["start_mismatch_close_slot"] == 1
+    manager.stop()
+
+
+def test_m4_offer_hook_failures_return_the_slot(tmp_path):
+    manager = _manager(tmp_path, 1, [])
+
+    def broken_admission(row):
+        raise KeyError("intent_id")
+
+    def broken_watcher(row):
+        raise RuntimeError("watcher down")
+
+    first = _play(_executor(manager, before=broken_admission), "a")
+    assert (first["status"], first["reason"], first["world_mutation_offered"]) == (
+        "not_started", "KeyError", False)
+    assert manager.free == {0}
+    second = _play(_executor(manager, offered=broken_watcher), "b")
+    assert (second["status"], second["reason"]) == (
+        "unknown", "fast_chain_world_offer_event_failed:RuntimeError")
+    assert manager.free == {0} and _commands(tmp_path) == []
+    assert _play(_executor(manager), "c")["status"] == "finished"
+    manager.stop()
+
+
+def test_fast_chain_refuses_nonzero_ascension_before_any_offer(tmp_path, capsys):
+    manager = _manager(tmp_path, 1, [])
+    offered: list[str] = []
+    row = {"seed": "a", "intent_id": "intent-a", "selection_id": "model"}
+    _executor(manager, before=lambda r: offered.append(r["seed"]))(
+        row, {"character": "Defect", "ascension": 10}, _Artifacts(), lambda: None)
+    assert (row["status"], row["reason"], row["world_mutation_offered"]) == (
+        "not_started", "fast_chain_ascension_unsupported:10", False)
+    assert offered == [] and _commands(tmp_path) == [] and manager.free == {0}
+    assert "refuses ascension 10" in capsys.readouterr().err
+    manager.stop()
+
+
+def test_inference_streak_without_probe_unlocks_for_one_trial_after_retry(tmp_path):
+    timeout = {"close": {"reason": "not_started", "detail": "inference_timeout"}}
+    manager = _manager(tmp_path, 1, [timeout, timeout, timeout], streak=2)
+    now = [0.0]
+    manager.clock, manager.inference_retry = (lambda: now[0]), 60
+    executor = _executor(manager)
+    _play(executor, "a")
+    _play(executor, "b")
+    assert manager.admission_closed() == "inference_service_unavailable_before_offer"
+    now[0] = 61
+    assert manager.admission_closed() is None  # one trial game
+    _play(executor, "c")  # it times out too: locked again at once
+    assert manager.admission_closed() == "inference_service_unavailable_before_offer"
+    assert manager.counters["inference_retry_trials"] == 1
+    manager.stop()

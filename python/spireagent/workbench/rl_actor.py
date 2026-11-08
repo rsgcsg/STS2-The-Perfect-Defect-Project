@@ -270,7 +270,9 @@ class Actor:
         return self.segment_stop_reason is not None
 
     def _signal(self, number: int, _frame: Any) -> None:
-        """Batch schedulers warn before the limit; finish the current game, start no more."""
+        """Batch schedulers warn before the limit: start no more games. The old chain
+        finishes the current game; the fast chain closes in-flight games at their next
+        boundary (censored ``stop``) within its Stop bound."""
         self.signalled = number
         if getattr(self, "fast_chain", None) is not None:
             self._fast_chain_stop("signal")
@@ -336,9 +338,15 @@ class Actor:
                                   actor=self.name))
 
     def _fast_chain_stop(self, reason: str) -> None:
-        """Bounded Stop of in-flight games on its own thread (never in a handler)."""
+        """Bounded Stop of in-flight games on its own thread (never in a handler).
+
+        Started once; in-flight games are closed at their next boundary (censored
+        ``stop``), not played to the end; past the Stop bound the group is killed.
+        """
         manager = getattr(self.executor, "manager", None)
-        if self.fast_chain is not None and manager is not None:
+        if (self.fast_chain is not None and manager is not None
+                and not getattr(self, "_fast_chain_stopping", False)):
+            self._fast_chain_stopping = True
             threading.Thread(target=manager.stop, args=(reason,), name="fast-chain-stop",
                              daemon=True).start()
 

@@ -96,7 +96,8 @@ for raw in sys.stdin:
             continue
         time.sleep(scenario.get("stop_delay", 0))
         for slot in list(open_games):
-            close(slot, reason="stop", detail="stop_before_send")
+            if not open_games[slot]["plan"].get("survive_stop"):  # a contract breach
+                close(slot, reason="stop", detail="stop_before_send")
         emit({"event": "stopped", "games_closed": 0})
         native.kill()
         native.wait()
