@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "b2a5bd4a44ca0e6714835dbd0331527c3eaddcb5fdd0f902b004983ae65c88b6",
-    "artifact_sha256": "2cd63a724eb89433e2f2d27dc24f7781895aedbbf1631351bc1f0efbacbd98b6",
-    "artifact_mvid": "5b583717-2b99-4cf7-93f1-20292d65e94c",
+    "source_patch_sha256": "bd206763e9785467721f131a35793febe5241ab31e0581f28edf5584ab5f8e58",
+    "artifact_sha256": "db9fe05ca169f64b9bc200cab302db11c58a146d2b13e7b9a95223dbe7401f8d",
+    "artifact_mvid": "98673af8-996a-4307-b224-e0d953e4610f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "e305c14baea71bb44feff5eece82e6cb4a6ab749dd200570bcec766fad1f3d66",
-        "artifact_sha256": "d25d633cdf0899e931f7352c7a024dad544a0098f64ed468fe2afe19f06bd05c",
-        "artifact_mvid": "b55c7306-2cfd-47a4-b278-2b643cfb85f2",
+        "source_patch_sha256": "3fbbd1c3fd2eb6071809febcfe755b7e84b3c09a194a8707aeb166aa555f269b",
+        "artifact_sha256": "1fc66a2dfc60d84ed3c92db05c16f19b6bc0630e811d8cb808173ad532d25b13",
+        "artifact_mvid": "b242fff0-cd99-49d0-afe1-0413048e7195",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -509,14 +509,20 @@
       "risk": "medium",
       "effect": "TestMode replaces only native ShowScreen with the bound real minigame. Publish masks and items discovered from cleared occupied cells before type/ref allocation. Original SetTool/CellClicked/reveal/complete/rewards own all effects. Preserve parent and current child tasks, including awaited Curse reveal; explicit r1.9 public input, no hidden inventory or renderer.",
       "regression": "u1-native-tests sphere-empty, sphere-visible, sphere-reward, sphere-curse-pending; real NDJSON pipe/PB1/P1 r1.9 completion and old-profile parent refusal."
-    }
-,
+    },
     {
       "id": "native_soul_nexus_death_node_callsite",
       "kind": "harmony_presentation_callsite",
       "risk": "low",
       "effect": "Only the single exact NCombatRoom.GetCreatureNode(Creature) call in SoulNexus.AfterDeath (its Died handler, used only to reset a spine animation) is remapped. An absent combat-room scene yields null only in TestMode; all other cases call the original method. Native death, removal, combat end, rewards and RNG unchanged; exact call-count drift fails.",
       "regression": "u1-native-tests soul-nexus-play (original lethal play on the original elite is witnessed and ends combat; old build reproduces the unwitnessed play) and soul-nexus-survives (ordinary non-lethal play recorded in native history)."
+    },
+    {
+      "id": "fast_chain_patch_generation_read_cache",
+      "kind": "native_read_qualification_cache",
+      "risk": "medium",
+      "effect": "Default off; only the Managed entry point enables it (STS2_HEADLESS_FAST_CHAIN=1, accepted once per process). Memoizes only the metadata/patch-state part of native read qualification, keyed by the patch-owner generation sampled before each command and after initialization; live object facts (subscribers, listeners, variable owners and delegates, field values) are read every time. Off is the original live check byte for byte; Mod and Reference Host never enable it.",
+      "regression": "patch-cache-tests/PatchCacheTests.csproj (58 checks: generation invalidation, thread drop, off-is-live, single Configure, and live-fact flips for run-hook subscribers, a foreign calculated-variable delegate and Weak/Vulnerable variable owners); managed-reward-native.test.mjs enable-site check."
     }
   ],
   "admission": {

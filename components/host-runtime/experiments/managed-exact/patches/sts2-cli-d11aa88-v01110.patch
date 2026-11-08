@@ -1490,16 +1490,17 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..3e9ee6e
+index 0000000..f47e430
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,312 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
 +using HarmonyLib;
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Commands;
++using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
 +using MegaCrit.Sts2.Core.Models;
 +using MegaCrit.Sts2.Core.Runs;
@@ -1534,11 +1535,15 @@ index 0000000..3e9ee6e
 +        Check(start.GetValueOrDefault("type") as string == "decision", "native setup: " + JsonSerializer.Serialize(start));
 +        try
 +        {
++            ConfigureOnce();
 +            OffIsLive();
 +            Generations();
 +            ObservationEquality();
 +            CallScopes();
 +            DelegateFieldFilter();
++            LiveSubscribersFlip();
++            LiveDelegateFlip();
++            LiveListenerVariablesFlip();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -1701,6 +1706,104 @@ index 0000000..3e9ee6e
 +        scope.GetMethod("Finalizer", Flags)!.Invoke(null, new[] { prefix[2], null });
 +        NativePatchStateCache.Revalidate();
 +        Check(NativePatchStateCache.Generation == generation, "a closed call-scope frame changed the patch generation");
++    }
++
++    // The switch is accepted once per process; a second call fails and changes nothing.
++    static void ConfigureOnce()
++    {
++        NativePatchStateCache.Configure(false);
++        bool threw = false;
++        try { NativePatchStateCache.Configure(true); }
++        catch (InvalidOperationException error) { threw = error.Message == "native_patch_state_cache_configured_twice"; }
++        Check(threw && !NativePatchStateCache.Enabled, "a second Configure must fail and leave the switch unchanged");
++    }
++
++    // Live facts stay outside the memo: with a warm cache, a mod run-hook subscriber
++    // must flip the run-hook preflight at once, and removing it must flip it back.
++    static void LiveSubscribersFlip()
++    {
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        var field = typeof(MegaCrit.Sts2.Core.Modding.ModHelper).GetField("_runHookSubscribers", Flags)!;
++        var subscribers = (System.Collections.IList)field.GetValue(null)!;
++        Type element = field.FieldType.GetGenericArguments()[0];
++        object? foreign = element.IsValueType ? System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(element) : null;
++        foreach (bool enabled in new[] { true, false })
++        {
++            SetEnabled(enabled); NativePatchStateCache.Revalidate();
++            Check(NativeRunHookReadQualification.Preflight(run) && NativeRunHookReadQualification.Preflight(run), "clean run must qualify (warm)");
++            subscribers.Add(foreign);
++            try { Check(!NativeRunHookReadQualification.Preflight(run), $"a mod subscriber must disqualify at once (enabled={enabled})"); }
++            finally { subscribers.RemoveAt(subscribers.Count - 1); }
++            Check(NativeRunHookReadQualification.Preflight(run), "removing the subscriber must qualify again");
++        }
++        SetEnabled(true);
++    }
++
++    // Live facts stay outside the memo: with a warm cache, a foreign delegate in a
++    // card's calculated variable must disqualify the render at once, and restoring
++    // the game's own multiplier must qualify it again.
++    static void LiveDelegateFlip()
++    {
++        Type?[] all;
++        try { all = typeof(CardModel).Module.GetTypes(); } catch (ReflectionTypeLoadException error) { all = error.Types; }
++        var calculated = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedVar);
++        FieldInfo multiplier = calculated.GetField("_multiplierCalc", Flags)!;
++        MethodInfo canonical = typeof(ModelDb).GetMethod(nameof(ModelDb.Card), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        CardModel? card = null;
++        object? variable = null;
++        foreach (Type type in all.OfType<Type>().Where(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract).OrderBy(t => t.FullName, StringComparer.Ordinal))
++        {
++            CardModel model = (CardModel)canonical.MakeGenericMethod(type).Invoke(null, null)!;
++            if (!model.DynamicVars.Values.Any(value => calculated.IsInstanceOfType(value))) continue;
++            CardModel copy = (CardModel)model.ToMutable();
++            object candidate = copy.DynamicVars.Values.First(value => calculated.IsInstanceOfType(value));
++            SetEnabled(false);
++            if (multiplier.GetValue(candidate) is Delegate && NativeCardPreviewReadQualification.TryPreflightRender(copy, CardPreviewMode.Normal, MegaCrit.Sts2.Core.Entities.Cards.PileType.None, out _))
++            { card = copy; variable = candidate; break; }
++        }
++        Check(card != null && variable != null, "a qualified detached card with a calculated variable must exist");
++        var own = (Delegate)multiplier.GetValue(variable)!;
++        Func<CardModel, MegaCrit.Sts2.Core.Entities.Creatures.Creature?, decimal> injected = (_, _) => 1m;
++        foreach (bool enabled in new[] { true, false })
++        {
++            SetEnabled(enabled); NativePatchStateCache.Revalidate();
++            bool Render(out string? gap) => NativeCardPreviewReadQualification.TryPreflightRender(card!, CardPreviewMode.Normal, MegaCrit.Sts2.Core.Entities.Cards.PileType.None, out gap);
++            Check(Render(out _) && Render(out _), "own multiplier must qualify (warm)");
++            multiplier.SetValue(variable, Delegate.CreateDelegate(multiplier.FieldType, injected.Target, injected.Method));
++            try { Check(!Render(out string? gap) && gap == "native_card_render_current_values_unqualified", $"a foreign delegate must disqualify at once (enabled={enabled})"); }
++            finally { multiplier.SetValue(variable, own); }
++            Check(Render(out _), "restoring the game's multiplier must qualify again");
++        }
++        SetEnabled(true);
++    }
++
++    // Live facts stay outside the memo: a Weak/Vulnerable combat listener's current
++    // variables are read live under a warm type memo; a variable that no longer
++    // belongs to the listener must disqualify it at once.
++    static void LiveListenerVariablesFlip()
++    {
++        MethodInfo canonical = typeof(ModelDb).GetMethods(BindingFlags.Static | BindingFlags.Public)
++            .Single(method => method.Name == "Power" && method.IsGenericMethodDefinition && method.GetParameters().Length == 0);
++        FieldInfo vars = typeof(PowerModel).GetField("_dynamicVars", Flags)!;
++        FieldInfo inner = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVarSet).GetField("_vars", Flags)!;
++        FieldInfo owner = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar).GetField("_owner", Flags)!;
++        foreach (Type type in new[] { typeof(MegaCrit.Sts2.Core.Models.Powers.WeakPower), typeof(MegaCrit.Sts2.Core.Models.Powers.VulnerablePower) })
++        {
++            var power = (PowerModel)((PowerModel)canonical.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
++            var other = (PowerModel)((PowerModel)canonical.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
++            var values = (System.Collections.IDictionary)inner.GetValue(vars.GetValue(power))!;
++            object variable = values.Values.Cast<object>().First();
++            foreach (bool enabled in new[] { true, false })
++            {
++                SetEnabled(enabled); NativePatchStateCache.Revalidate();
++                Check(Q("RenderCombatListenerQualified", power) && Q("RenderCombatListenerQualified", power), type.Name + " must qualify (warm)");
++                owner.SetValue(variable, other);
++                try { Check(!Q("RenderCombatListenerQualified", power), $"{type.Name}: a foreign variable owner must disqualify at once (enabled={enabled})"); }
++                finally { owner.SetValue(variable, power); }
++                Check(Q("RenderCombatListenerQualified", power), type.Name + ": restoring the owner must qualify again");
++            }
++        }
++        SetEnabled(true);
 +    }
 +}
 diff --git a/setup.sh b/setup.sh
@@ -6199,10 +6302,10 @@ index 0000000..c17040a
 +}
 diff --git a/src/Sts2Headless/NativePatchStateCache.cs b/src/Sts2Headless/NativePatchStateCache.cs
 new file mode 100644
-index 0000000..41f2d9b
+index 0000000..5bf325e
 --- /dev/null
 +++ b/src/Sts2Headless/NativePatchStateCache.cs
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,199 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Reflection;
@@ -6237,8 +6340,19 @@ index 0000000..41f2d9b
 +{
 +    public static bool Enabled { get; private set; }
 +
-+    /// <summary>Process start only, before any read; the Managed entry point is the only caller.</summary>
-+    public static void Configure(bool enabled) => Enabled = enabled;
++    private static int _configured;
++
++    /// <summary>
++    /// Process start only, before any read; the Managed entry point is the only caller.
++    /// Accepted once per process: a second call fails loudly and changes nothing, so the
++    /// switch can never be flipped while answers are cached.
++    /// </summary>
++    public static void Configure(bool enabled)
++    {
++        if (Interlocked.Exchange(ref _configured, 1) != 0)
++            throw new InvalidOperationException("native_patch_state_cache_configured_twice");
++        Enabled = enabled;
++    }
 +
 +    // Sampling (rare) is serialized by Gate; the hot path takes no lock. Each thread keeps
 +    // its own answers tagged with the generation they were computed in, and drops them as

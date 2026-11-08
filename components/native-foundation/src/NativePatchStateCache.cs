@@ -32,8 +32,19 @@ public static class NativePatchStateCache
 {
     public static bool Enabled { get; private set; }
 
-    /// <summary>Process start only, before any read; the Managed entry point is the only caller.</summary>
-    public static void Configure(bool enabled) => Enabled = enabled;
+    private static int _configured;
+
+    /// <summary>
+    /// Process start only, before any read; the Managed entry point is the only caller.
+    /// Accepted once per process: a second call fails loudly and changes nothing, so the
+    /// switch can never be flipped while answers are cached.
+    /// </summary>
+    public static void Configure(bool enabled)
+    {
+        if (Interlocked.Exchange(ref _configured, 1) != 0)
+            throw new InvalidOperationException("native_patch_state_cache_configured_twice");
+        Enabled = enabled;
+    }
 
     // Sampling (rare) is serialized by Gate; the hot path takes no lock. Each thread keeps
     // its own answers tagged with the generation they were computed in, and drops them as

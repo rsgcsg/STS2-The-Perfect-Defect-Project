@@ -47,8 +47,10 @@ export function textBoundaryErrors(relative, contents) {
     ]) ownershipText = ownershipText.replaceAll(prose, "");
     if (readQualificationFiles.has(normalized)) {
       ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
-        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo")
-        .replace(/\bHarmony\.GetAllPatchedMethods(?=\s*\()/gu, "readPatchedMethods");
+        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");
+      // Only the patch-generation cache reads the set of patched methods.
+      if (normalized === "components/native-foundation/src/NativePatchStateCache.cs")
+        ownershipText = ownershipText.replace(/\bHarmony\.GetAllPatchedMethods(?=\s*\()/gu, "readPatchedMethods");
     }
     // This process-local preview uses only exclusion attributes; no JSON I/O.
     if (normalized === "components/native-foundation/src/NativeDetachedCardPreview.cs") {
