@@ -13,23 +13,31 @@ a score. A missing or retired mu is a typed error, never a substitute.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import json
 import os
+import pickle
+import queue
 import signal
+import socket
+import struct
 import sys
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
+from dataclasses import dataclass
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import torch
 
 from spireagent.json_boundary import BoundaryError
 
-from .data import json_bytes
+from .data import digest, json_bytes
 from .local_inference import CentralInferencePool, tcp_nodelay
 from .text_cache import TextVectorCache
 
@@ -309,3 +317,557 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# stpd/rl-inference-3 (P-REWRITE WP4, fast_chain only; the S2-1 service above is
+# the old chain and is unchanged). One message = u32 envelope length, the
+# envelope (json_bytes), then the binary section that score_request rows point
+# into. Rows from every connection share one batch queue (no per-connection or
+# 8-row cap); CPU decode/validate/prepare runs in spawned processes while the
+# previous batch is on the device; segments and the per-segment mu belong to
+# the WP5 assembler, which the service calls around every row.
+# ---------------------------------------------------------------------------
+V3_SCHEMA = "stpd/rl-inference-3"
+V3_REFUSALS = frozenset({"MU_NOT_RESIDENT", "EPISODE_NOT_OPEN", "IDENTITY_MISMATCH",
+                         "ROW_DECODE_FAILED", "NONFINITE_SCORES", "SERVICE_STOPPING"})
+_ENVELOPE = struct.Struct("<I")
+V3_MAX_MESSAGE = 256 * 1024 * 1024
+
+
+def pack_message(envelope: dict[str, Any], binary: bytes | bytearray = b"") -> bytes:
+    body = json_bytes(envelope)
+    return _ENVELOPE.pack(len(body)) + body + bytes(binary)
+
+
+def unpack_message(data: bytes) -> tuple[dict[str, Any], memoryview]:
+    if len(data) < _ENVELOPE.size:
+        raise BoundaryError("rl_inference_3", "message_truncated")
+    (length,) = _ENVELOPE.unpack_from(data)
+    if _ENVELOPE.size + length > len(data):
+        raise BoundaryError("rl_inference_3", "message_truncated")
+    try:
+        envelope = json.loads(data[_ENVELOPE.size:_ENVELOPE.size + length])
+    except ValueError as error:
+        raise BoundaryError("rl_inference_3", "envelope_json") from error
+    if not isinstance(envelope, dict) or envelope.get("schema") != V3_SCHEMA:
+        raise BoundaryError("rl_inference_3", "envelope_schema")
+    return envelope, memoryview(data)[_ENVELOPE.size + length:]
+
+
+def python_env_sha256() -> str:
+    """Interpreter plus every installed distribution and version (S2 r4)."""
+    import importlib.metadata
+    import platform
+
+    packages = sorted({(d.metadata["Name"] or "").lower(): d.version
+                       for d in importlib.metadata.distributions()}.items())
+    return digest(json_bytes({"python": sys.version,
+                              "implementation": platform.python_implementation(),
+                              "machine": platform.machine(), "packages": packages}))
+
+
+def _prepare_worker(connection: Connection, vocabulary: dict[str, Any],
+                    cpu: int | None) -> None:
+    """Spawned CPU preparation: decode + validate rows, then the rows-v2 group."""
+    if cpu is not None:
+        os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
+    torch.set_num_threads(1)
+    from .frame_compiler import FrameCompiler
+    from .rows_encoder_wire import decode_row
+    from .rows_scorer import prepare
+
+    compiler = FrameCompiler(vocabulary)
+    connection.send_bytes(b"ready")
+    while True:
+        try:
+            message = connection.recv_bytes()
+        except EOFError:
+            return
+        if not message:
+            return
+        rows = pickle.loads(message)  # [(raw, row_sha256, catalog_len, floor)]
+        frames, floors, failed = [], [], {}
+        for index, (raw, sha, catalog_len, floor) in enumerate(rows):
+            try:
+                frame = decode_row(raw, validator=compiler, expected_sha256=sha)
+            except ValueError:
+                failed[index] = "ROW_DECODE_FAILED"
+                continue
+            if len(frame.choices) != catalog_len:  # #418 review S5
+                failed[index] = "IDENTITY_MISMATCH"
+                continue
+            frames.append(frame)
+            floors.append(floor)
+        try:
+            group = prepare(frames, floors) if frames else None
+        except ValueError:
+            group, failed = None, {i: "ROW_DECODE_FAILED" for i in range(len(rows))}
+        # Plain pickle copies tensor data; no shared-memory handles cross the pipe.
+        connection.send_bytes(pickle.dumps((group, failed, [len(f.choices) for f in frames]),
+                                           protocol=pickle.HIGHEST_PROTOCOL))
+
+
+class _PreparePool:
+    """Spawned preparation processes; batches complete in submission order."""
+
+    def __init__(self, vocabulary: dict[str, Any], workers: int,
+                 cpus: list[int] | None) -> None:
+        import multiprocessing
+
+        context: Any = multiprocessing.get_context("spawn")
+        self.workers = []
+        for index in range(workers):
+            parent, child = context.Pipe(duplex=True)
+            process = context.Process(target=_prepare_worker, daemon=True,
+                                      name=f"rl-inference-3-prepare-{index}",
+                                      args=(child, vocabulary,
+                                            None if cpus is None else cpus[index]))
+            process.start()
+            child.close()
+            if parent.recv_bytes() != b"ready":
+                raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
+            self.workers.append((process, parent, threading.Lock()))
+        self.next = 0
+
+    def run(self, rows: list[tuple[bytes, str, int, int]]) -> Future:
+        process, connection, lock = self.workers[self.next % len(self.workers)]
+        self.next += 1
+        answer: Future = Future()
+
+        def call() -> None:
+            try:
+                with lock:
+                    connection.send_bytes(pickle.dumps(rows, protocol=pickle.HIGHEST_PROTOCOL))
+                    result = pickle.loads(connection.recv_bytes())
+                answer.set_result(result)
+            except BaseException as error:  # a dead worker fails its batch loudly
+                answer.set_exception(BoundaryError("rl_inference_3", "prepare_worker_died"))
+                answer.exception().__cause__ = error  # type: ignore[union-attr]
+
+        threading.Thread(target=call, daemon=True, name="rl-inference-3-prepare-call").start()
+        return answer
+
+    def close(self) -> None:
+        for process, connection, lock in self.workers:
+            with lock, contextlib.suppress(OSError):
+                connection.send_bytes(b"")
+            process.join(5)
+            if process.is_alive():
+                process.kill()
+            connection.close()
+
+
+def _begin_refusal(error: BaseException) -> str:
+    """Refusal code for an assembler `begin_row` rejection."""
+    if type(error).__name__ == "MuNotResident":
+        return "MU_NOT_RESIDENT"
+    code = error.args[0] if error.args else ""
+    if code in {"episode_not_open", "episode_already_failed", "row_after_terminal"}:
+        return "EPISODE_NOT_OPEN"
+    return "IDENTITY_MISMATCH"
+
+
+@dataclass
+class _V3Row:
+    link: _V3Link
+    packet: _V3Packet
+    index: int
+    row: dict[str, Any]
+    raw: bytes
+    sampling: dict[str, Any]
+    plan: Any = None
+
+
+@dataclass
+class _V3Packet:
+    packet_id: int
+    results: list[dict[str, Any] | None]
+    remaining: int
+
+
+class _V3Link:
+    def __init__(self, connection: Connection) -> None:
+        self.connection = connection
+        self.send_lock = threading.Lock()
+        self.attached = False
+        self.aggregator_id: str | None = None
+        self.last_request_id = 0
+
+    def send(self, envelope: dict[str, Any]) -> None:
+        with self.send_lock:
+            self.connection.send_bytes(pack_message(envelope))
+
+
+class FastInferenceService:
+    """`stpd/rl-inference-3` scorer for many node aggregators on one device.
+
+    `assembler` is the WP5 `FastSegmentAssembler` (or anything with its
+    open_episode / begin_row / finish_row / abort_row / step_outcome /
+    close_episode / offer_mu methods). Models are published per mu handoff;
+    a mu the assembler evicts is dropped here.
+    """
+
+    def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
+                 assembler: Any, *, training_generation: str,
+                 address: tuple[str, int] | None = None, authkey: bytes | None = None,
+                 max_rows: int = 1024, window_ms: float = 1.0, prepare_workers: int = 2,
+                 prepare_cpus: list[int] | None = None, in_flight: int | None = None,
+                 prepare_chunk_rows: int = 8,
+                 bf16: bool = True, compile: bool = False, encoder_sha256: str | None = None,
+                 env_sha256: str | None = None) -> None:
+        from multiprocessing.connection import Listener
+
+        from .rows_encoder import encoder_digest
+        from .rows_encoder_wire import FORMAT
+
+        if type(max_rows) is not int or not 1 <= max_rows <= 4096:
+            raise ValueError("invalid_rl_inference_3_max_rows")
+        if prepare_cpus is not None and len(prepare_cpus) != prepare_workers:
+            raise ValueError("prepare_cpus_per_worker")
+        self.vocabulary = copy.deepcopy(vocabulary)
+        self.compiler_identity = copy.deepcopy(compiler_identity)
+        self.assembler = assembler
+        self.training_generation = training_generation
+        self.max_rows, self.window = max_rows, window_ms / 1000
+        self.bf16, self.compile = bf16, compile
+        self.expected_encoder = {"implementation": "python",
+                                 "sha256": encoder_sha256 or encoder_digest()}
+        self.row_format = FORMAT
+        self.env_sha256 = env_sha256 or python_env_sha256()
+        self.service_instance = "svc-" + os.urandom(8).hex()
+        self.models: dict[str, Any] = {}
+        self.sampling: dict[str, dict[str, Any]] = {}
+        self._compiler: Any = None  # device thread only (tail rows)
+        self.scorers: dict[str, Any] = {}
+        self.model_lock = threading.Lock()
+        self.queue: queue.Queue[_V3Row | None] = queue.Queue()
+        self.stopping = threading.Event()
+        self.stats: dict[str, Any] = {"rows": 0, "batches": 0, "refused": {},
+                                      "attach_refused": 0, "batch_rows_max": 0,
+                                      "device_seconds": 0.0, "prepare_wait_seconds": 0.0}
+        self.prepare = _PreparePool(self.vocabulary, prepare_workers, prepare_cpus)
+        # A batch is split over the prepare workers (CPU decode+prepare is per
+        # row; one worker per batch would bound latency by the batch size); each
+        # chunk is one device forward. in_flight bounds prepared-but-unscored chunks.
+        self.workers = prepare_workers
+        self.chunk_rows = max(1, prepare_chunk_rows)
+        self.inflight: queue.Queue[tuple[list[_V3Row], Future] | None] = queue.Queue(
+            maxsize=max(1, in_flight if in_flight is not None else 2 * prepare_workers))
+        self.auth = authkey or os.urandom(32)
+        ip = socket.gethostbyname(socket.gethostname())
+        self.listener = Listener(address or (ip, 0), authkey=self.auth)
+        self.address = cast(tuple[str, int], self.listener.address)
+        self.links: list[threading.Thread] = []
+        self.threads = [threading.Thread(target=self._accept, daemon=True,
+                                         name="rl-inference-3-accept"),
+                        threading.Thread(target=self._batch, daemon=True,
+                                         name="rl-inference-3-batch"),
+                        threading.Thread(target=self._device, daemon=True,
+                                         name="rl-inference-3-device")]
+        for thread in self.threads:
+            thread.start()
+
+    # -- mu ------------------------------------------------------------------
+    def publish(self, model: Any, handoff: Any) -> bool:
+        """Offer a mu to the assembler; keep the model only when accepted."""
+        from .rows_scorer import RowsScorer
+
+        scorer = RowsScorer(model, bf16=self.bf16, compile=self.compile)
+        offer = self.assembler.offer_mu(handoff)
+        with self.model_lock:
+            if offer.accepted:
+                self.models[handoff.snapshot_sha256] = model
+                self.scorers[handoff.snapshot_sha256] = scorer
+            for key in offer.evicted:
+                self.models.pop(key, None)
+                self.scorers.pop(key, None)
+            if getattr(offer, "generation_changed", False):
+                self.training_generation = handoff.training_generation
+        return bool(offer.accepted)
+
+    # -- links ---------------------------------------------------------------
+    def _accept(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                connection = self.listener.accept()
+            except (AuthenticationError, EOFError, ConnectionError):
+                continue
+            except OSError:
+                return
+            if self.stopping.is_set():
+                connection.close()
+                return
+            tcp_nodelay(connection)
+            thread = threading.Thread(target=self._link, args=(_V3Link(connection),),
+                                      daemon=True, name="rl-inference-3-link")
+            self.links[:] = [item for item in self.links if item.is_alive()]
+            self.links.append(thread)
+            thread.start()
+
+    def _link(self, link: _V3Link) -> None:
+        try:
+            while not self.stopping.is_set():
+                data = link.connection.recv_bytes(V3_MAX_MESSAGE)
+                envelope, binary = unpack_message(data)
+                request_id = envelope.get("request_id")
+                kind = envelope.get("kind")
+                if kind == "score_request":
+                    self._score_request(link, envelope, binary)
+                    continue
+                if kind == "step_outcome":  # names its row; carries no request_id
+                    if not link.attached:
+                        raise BoundaryError("rl_inference_3", "attach_required")
+                    self.assembler.step_outcome(envelope)
+                    continue
+                if type(request_id) is not int or request_id <= link.last_request_id:
+                    raise BoundaryError("rl_inference_3", "request_id_order")
+                link.last_request_id = request_id
+                if kind == "attach":
+                    self._attach(link, envelope)
+                elif not link.attached:
+                    raise BoundaryError("rl_inference_3", "attach_required")
+                elif kind == "episode_open":
+                    self.assembler.open_episode(envelope)
+                    self.sampling[envelope["game_instance_id"]] = envelope["sampling"]
+                elif kind == "episode_close":
+                    self.assembler.close_episode(envelope)
+                    self.sampling.pop(str(envelope.get("game_instance_id")), None)
+                else:
+                    raise BoundaryError("rl_inference_3", "unexpected_message")
+        except EOFError:
+            pass  # the aggregator closed the link
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            # A failed link owns only its own rows (they time out on the
+            # environment side as not_started); nothing is retried here.
+            print(json.dumps({"rl_inference_3_link_closed": type(error).__name__,
+                              "code": getattr(error, "code", None)}), file=sys.stderr,
+                  flush=True)
+        finally:
+            link.connection.close()
+
+    def _attach(self, link: _V3Link, envelope: dict[str, Any]) -> None:
+        checks = (envelope.get("chain") == "fast_chain",
+                  envelope.get("python_env_sha256") == self.env_sha256,
+                  envelope.get("compiler_identity") == self.compiler_identity,
+                  envelope.get("encoder") == self.expected_encoder,
+                  envelope.get("row_format") == self.row_format,
+                  not link.attached)
+        if not all(checks):
+            self.stats["attach_refused"] += 1
+            names = ("chain", "python_env_sha256", "compiler_identity", "encoder",
+                     "row_format", "attach_once")
+            raise BoundaryError("rl_inference_3", "attach_identity_differs:" + ",".join(
+                name for name, ok in zip(names, checks, strict=True) if not ok))
+        link.attached, link.aggregator_id = True, envelope.get("aggregator_id")
+        link.send({"schema": V3_SCHEMA, "kind": "attached", "request_id": envelope["request_id"],
+                   "service_instance": self.service_instance,
+                   "training_generation": self.training_generation,
+                   "max_rows_per_packet": self.max_rows})
+
+    def _score_request(self, link: _V3Link, envelope: dict[str, Any],
+                       binary: memoryview) -> None:
+        if not link.attached:
+            raise BoundaryError("rl_inference_3", "attach_required")
+        rows = envelope.get("rows")
+        if (type(envelope.get("packet_id")) is not int or not isinstance(rows, list)
+                or not 1 <= len(rows) <= self.max_rows):
+            raise BoundaryError("rl_inference_3", "invalid_score_request")
+        packet = _V3Packet(envelope["packet_id"], [None] * len(rows), len(rows))
+        for index, row in enumerate(rows):
+            request_id = row.get("request_id") if isinstance(row, dict) else None
+            if type(request_id) is not int or request_id <= link.last_request_id:
+                raise BoundaryError("rl_inference_3", "request_id_order")
+            link.last_request_id = request_id
+            payload = row.get("payload") or {}
+            offset, length = payload.get("offset"), payload.get("length")
+            if (type(offset) is not int or type(length) is not int or offset < 0
+                    or length < 1 or offset + length > len(binary)):
+                raise BoundaryError("rl_inference_3", "row_payload_range")
+            sampling = self.sampling.get(str(row.get("game_instance_id")))
+            item = _V3Row(link, packet, index, row, bytes(binary[offset:offset + length]),
+                          sampling or {})
+            if self.stopping.is_set():
+                self._refuse(item, "SERVICE_STOPPING", abort=False)
+                continue
+            if sampling is None:
+                self._refuse(item, "EPISODE_NOT_OPEN", abort=False)
+                continue
+            try:
+                item.plan = self.assembler.begin_row(row, item.raw)
+            except ValueError as error:  # AssemblyError: the plan was not created
+                self._refuse(item, _begin_refusal(error), abort=False)
+                continue
+            self.queue.put(item)
+
+    # -- batching ------------------------------------------------------------
+    def _batch(self) -> None:
+        while True:
+            first = self.queue.get()
+            if first is None:
+                self.inflight.put(None)
+                return
+            batch = [first]
+            deadline = time.perf_counter() + self.window
+            while len(batch) < self.max_rows:
+                remaining = deadline - time.perf_counter()
+                try:
+                    item = self.queue.get(timeout=max(remaining, 0)) if remaining > 0 \
+                        else self.queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    self.queue.put(None)
+                    break
+                batch.append(item)
+            # One forward per mu: a segment boundary after a publish can mix two
+            # mu in one window; each group is prepared and scored on its own.
+            groups: dict[str, list[_V3Row]] = {}
+            for item in batch:
+                groups.setdefault(item.plan.mu.snapshot_sha256, []).append(item)
+            for members in groups.values():
+                size = max(self.chunk_rows, -(-len(members) // self.workers))
+                for start in range(0, len(members), size):
+                    chunk = members[start:start + size]
+                    rows = [(item.raw, item.row["payload"]["row_sha256"],
+                             item.row["catalog_len"], item.row["floor"]) for item in chunk]
+                    self.inflight.put((chunk, self.prepare.run(rows)))  # bounded: in_flight
+
+    def _device(self) -> None:
+        while True:
+            job = self.inflight.get()
+            if job is None:
+                return
+            batch, prepared = job
+            waited = time.perf_counter()
+            try:
+                group, failed, lengths = prepared.result()
+            except Exception:
+                for item in batch:
+                    self._refuse(item, "ROW_DECODE_FAILED")
+                continue
+            self.stats["prepare_wait_seconds"] += time.perf_counter() - waited
+            good = [item for index, item in enumerate(batch) if index not in failed]
+            for index, code in failed.items():
+                self._refuse(batch[index], code)
+            if group is not None:
+                self._forward(good, group, lengths)
+
+    def _forward(self, rows: list[_V3Row], group: Any, lengths: list[int]) -> None:
+        started = time.perf_counter()
+        key = rows[0].plan.mu.snapshot_sha256
+        with self.model_lock:
+            scorer = self.scorers.get(key)
+        if scorer is None:
+            for item in rows:
+                self._refuse(item, "MU_NOT_RESIDENT")
+            return
+        outputs = scorer.forward(group, lengths)
+        tails = self._tails(rows)
+        self.stats["device_seconds"] += time.perf_counter() - started
+        self.stats["batches"] += 1
+        self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"], len(rows))
+        for index, (item, output) in enumerate(zip(rows, outputs, strict=True)):
+            tail = tails.get(index)
+            if output is None:
+                self._refuse(item, "NONFINITE_SCORES")
+            elif isinstance(tail, str):
+                self._refuse(item, tail)
+            else:
+                self._scored(item, output, tail)
+
+    def _tails(self, rows: list[_V3Row]) -> dict[int, list[float] | str]:
+        """Previous segment mu's value at the tail floor, when the row's own does not serve.
+
+        Only a full segment's successor row after a publish (or a floor rise on
+        it) needs this, so it runs per row on the device thread.
+        """
+        from .frame_compiler import FrameCompiler
+        from .rows_encoder_wire import decode_row
+
+        need = [i for i, item in enumerate(rows) if item.plan.tail is not None and (
+            item.plan.tail.mu != item.plan.mu.snapshot_sha256
+            or item.plan.tail.floor != item.row["floor"])]
+        out: dict[int, list[float] | str] = {}  # values, or a refusal code
+        if not need:
+            return out
+        if self._compiler is None:
+            self._compiler = FrameCompiler(self.vocabulary)
+        for i in need:
+            item = rows[i]
+            with self.model_lock:
+                scorer = self.scorers.get(item.plan.tail.mu)
+            if scorer is None:
+                out[i] = "MU_NOT_RESIDENT"
+                continue
+            frame = decode_row(item.raw, validator=self._compiler,
+                               expected_sha256=item.row["payload"]["row_sha256"])
+            value = scorer.score([frame], [item.plan.tail.floor])[0]
+            out[i] = "NONFINITE_SCORES" if value is None else value.outcome_probabilities
+        return out
+
+    def _scored(self, item: _V3Row, output: Any, tail: list[float] | None) -> None:
+        from .sampling import distribution, draw
+
+        row, plan, sampling = item.row, item.plan, item.sampling
+        decision_class = "combat" if row["in_combat"] else "noncombat"
+        policy = sampling["classes"][decision_class]
+        _, behavior = distribution(output.scores, policy["temperature"], policy["uniform_mix"])
+        selected = draw(behavior, sampling["seed"], row["consumption_id"])
+        scored = {"request_id": row["request_id"], "game_instance_id": row["game_instance_id"],
+                  "catalog_sha256": row["catalog_sha256"], "status": "scored",
+                  "mu_snapshot_sha256": plan.mu.snapshot_sha256,
+                  "segment_id": plan.segment_id, "row_in_segment": plan.row_in_segment,
+                  "selected_index": selected, "behavior_q": behavior,
+                  "selected_q": behavior[selected],
+                  "applied": {"arm_id": sampling["arm_id"],
+                              "decision_class": decision_class,
+                              "temperature": policy["temperature"],
+                              "uniform_mix": policy["uniform_mix"]}}
+        try:
+            self.assembler.finish_row(plan, scored, output.outcome_probabilities, tail)
+        except ValueError:
+            self._refuse(item, "IDENTITY_MISMATCH")
+            return
+        self.stats["rows"] += 1
+        self._complete(item, scored)
+
+    def _refuse(self, item: _V3Row, code: str, *, abort: bool = True) -> None:
+        if abort and item.plan is not None:
+            # A plan that is already resolved raises; the refusal stands.
+            with contextlib.suppress(ValueError):
+                self.assembler.abort_row(item.plan, code)
+        refused = self.stats["refused"]
+        refused[code] = refused.get(code, 0) + 1
+        self._complete(item, {"request_id": item.row.get("request_id"),
+                              "game_instance_id": item.row.get("game_instance_id"),
+                              "catalog_sha256": item.row.get("catalog_sha256"),
+                              "status": "refused", "error_code": code})
+
+    def _complete(self, item: _V3Row, result: dict[str, Any]) -> None:
+        packet = item.packet
+        with item.link.send_lock:
+            packet.results[item.index] = result
+            packet.remaining -= 1
+            done = packet.remaining == 0
+        if done:
+            # A gone link drops the response; its rows time out as not_started.
+            with contextlib.suppress(OSError, ValueError):
+                item.link.send({"schema": V3_SCHEMA, "kind": "score_response",
+                                "packet_id": packet.packet_id, "results": packet.results})
+
+    def close(self) -> dict[str, Any]:
+        self.stopping.set()
+        try:
+            with socket.create_connection(self.address, timeout=2):
+                pass
+        except OSError:
+            pass
+        self.listener.close()
+        self.queue.put(None)
+        for thread in self.threads[1:]:
+            thread.join(60)
+        self.prepare.close()
+        batches = self.stats["batches"]
+        return {"schema": V3_SCHEMA, "service_instance": self.service_instance, **self.stats,
+                "batch_rows_mean": self.stats["rows"] / batches if batches else 0}

@@ -1,0 +1,398 @@
+"""rl-inference-3 service + node aggregator, end to end on CPU (P-REWRITE WP4)."""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import tempfile
+import threading
+from dataclasses import dataclass
+from multiprocessing.connection import Client
+from typing import Any
+
+import pytest
+import torch
+from test_p1_input_v2 import public_state
+
+from spireagent.json_boundary import BoundaryError
+from stpd.p1.data import digest, json_bytes
+from stpd.p1.fast_aggregator import LINK_SCHEMA, NodeAggregator
+from stpd.p1.frame_compiler import FrameCompiler
+from stpd.p1.inference_service import (
+    V3_MAX_MESSAGE,
+    V3_SCHEMA,
+    FastInferenceService,
+    pack_message,
+    unpack_message,
+)
+from stpd.p1.input import V2_INPUT_SPEC
+from stpd.p1.model import MStd, MStdExecution
+from stpd.p1.rows_encoder import RowsEncoder
+from stpd.p1.rows_scorer import RowsScorer
+from stpd.p1.sampling import distribution, draw
+from stpd.p1.vocabulary import public_vocabulary
+
+ENV = "e" * 64
+MU = "a" * 64
+SAMPLING = {"mode": "temperature_uniform", "seed": "draw-seed-1", "arm_id": "control",
+            "classes": {"combat": {"temperature": 1.0, "uniform_mix": 0.0},
+                        "noncombat": {"temperature": 1.5, "uniform_mix": 0.05}}}
+
+
+@dataclass(frozen=True)
+class Handoff:
+    snapshot_sha256: str
+    training_generation: str = "gen-1"
+    version: int = 1
+    updates: int = 0
+
+
+@dataclass(frozen=True)
+class Offer:
+    accepted: bool
+    evicted: tuple[str, ...] = ()
+    generation_changed: bool = False
+
+
+@dataclass(frozen=True)
+class Plan:
+    game_instance_id: str
+    request_id: int
+    step_index: int
+    segment_id: str
+    row_in_segment: int
+    mu: Handoff
+    tail: Any = None
+
+
+class FakeAssembler:
+    """The WP5 call surface with one segment per game; records every call."""
+
+    def __init__(self) -> None:
+        self.games: dict[str, list[Plan]] = {}
+        self.calls: list[tuple[str, Any]] = []
+        self.mu: Handoff | None = None
+        self.lock = threading.Lock()
+
+    def offer_mu(self, handoff: Handoff) -> Offer:
+        self.mu = handoff
+        return Offer(True)
+
+    def open_episode(self, message: dict[str, Any]) -> None:
+        self.games[message["game_instance_id"]] = []
+        self.calls.append(("open", message["game_instance_id"]))
+
+    def begin_row(self, row: dict[str, Any], row_bytes: bytes) -> Plan:
+        if row["game_instance_id"] not in self.games:
+            raise ValueError("episode_not_open")
+        assert self.mu is not None
+        plans = self.games[row["game_instance_id"]]
+        plan = Plan(row["game_instance_id"], row["request_id"], row["step_index"],
+                    f"seg-{row['game_instance_id']}", len(plans), self.mu)
+        plans.append(plan)
+        return plan
+
+    def finish_row(self, plan: Plan, scored: dict[str, Any], values: list[float],
+                   tail: list[float] | None = None) -> None:
+        with self.lock:
+            self.calls.append(("finish", (plan.request_id, scored, values)))
+
+    def abort_row(self, plan: Plan, code: str) -> None:
+        with self.lock:
+            self.calls.append(("abort", (plan.request_id, code)))
+
+    def step_outcome(self, message: dict[str, Any]) -> None:
+        self.calls.append(("outcome", message))
+
+    def close_episode(self, message: dict[str, Any]) -> None:
+        self.calls.append(("close", message))
+        self.games.pop(message["game_instance_id"], None)
+
+
+@pytest.fixture(scope="module")
+def vocabulary() -> dict[str, Any]:
+    return public_vocabulary(V2_INPUT_SPEC)
+
+
+@pytest.fixture(scope="module")
+def model(vocabulary: dict[str, Any]) -> MStd:
+    torch.manual_seed(3)
+    model = MStd(vocabulary, MStdExecution(
+        implementation="experimental-packed-v1", microbatch_size=4,
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1))
+    model.enable_rl4_heads(7)
+    return model.eval().requires_grad_(False)
+
+
+def _service(vocabulary: dict[str, Any], model: MStd, assembler: Any,
+             **options: Any) -> FastInferenceService:
+    identity = FrameCompiler(vocabulary).identity
+    service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
+                                   address=("127.0.0.1", 0), env_sha256=ENV,
+                                   prepare_workers=1, **options)
+    assert service.publish(model, Handoff(MU))
+    return service
+
+
+def _observations(count: int) -> list[dict[str, Any]]:
+    out = []
+    for index in range(count):
+        observation = public_state()
+        observation["status"] = {"hp": index, "cards": [{"id": index, "x": [1]}]}
+        out.append(observation)
+    return out
+
+
+def _decision_line(row_id: int, game: str, step: int, observation: dict[str, Any], *,
+                   catalog_len: int | None = None) -> bytes:
+    """The WP2 kernel's field order: the routing head first, then the input."""
+    catalog = observation["catalog"]
+    head = (f'{{"schema":"{LINK_SCHEMA}","type":"decision","row_id":{row_id},'
+            f'"game_instance_id":"{game}","step_index":{step},"consumption_id":"c-{game}-{step}",'
+            f'"catalog_len":{len(catalog) if catalog_len is None else catalog_len},'
+            f'"catalog_sha256":"{digest(json_bytes(catalog))}","observation_sha256":"{"0" * 64}",'
+            f'"in_combat":false,"floor":3,')
+    body = json.dumps({"input_spec": V2_INPUT_SPEC, "observation": observation,
+                       "catalog": catalog})
+    return (head + '"input":' + body + "}\n").encode()
+
+
+class FakeEnv:
+    def __init__(self, path: str) -> None:
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.connect(path)
+        self.reader = self.socket.makefile("rb")
+
+    def send(self, message: dict[str, Any]) -> None:
+        self.socket.sendall(json.dumps({"schema": LINK_SCHEMA, **message}).encode() + b"\n")
+
+    def reply(self) -> dict[str, Any]:
+        self.socket.settimeout(60)
+        return json.loads(self.reader.readline())
+
+
+def _aggregator(vocabulary: dict[str, Any], service: FastInferenceService, path: str,
+                **options: Any) -> NodeAggregator:
+    return NodeAggregator(vocabulary, service_address=service.address, authkey=service.auth,
+                          socket_path=path, aggregator_id="node-1", python_env_sha256=ENV,
+                          encoder_workers=1, **options)
+
+
+def test_message_codec_round_trip_and_truncation():
+    data = pack_message({"schema": V3_SCHEMA, "kind": "x"}, b"\x00\x01")
+    envelope, binary = unpack_message(data)
+    assert envelope == {"schema": V3_SCHEMA, "kind": "x"} and bytes(binary) == b"\x00\x01"
+    for bad in (data[:3], data[:8]):
+        with pytest.raises(BoundaryError, match="message_truncated"):
+            unpack_message(bad)
+    with pytest.raises(BoundaryError, match="envelope_schema"):
+        unpack_message(pack_message({"schema": "other"}))
+
+
+def test_node_aggregator_scores_rows_end_to_end(vocabulary, model):
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler)
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = _aggregator(vocabulary, service, path)
+    try:
+        env = FakeEnv(path)
+        env.send({"type": "hello", "env_process_id": "env-1", "slots": 2, "p1_revision": "x",
+                  "input_spec": V2_INPUT_SPEC})
+        observations = _observations(3)
+        for game in ("g1", "g2"):
+            env.send({"type": "episode_open", "game_instance_id": game, "actor_id": "actor-1",
+                      "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
+        replies = {}
+        row_id = 0
+        for step, observation in enumerate(observations):
+            sent = {}
+            for game in ("g1", "g2"):
+                row_id += 1
+                env.socket.sendall(_decision_line(row_id, game, step, observation))
+                sent[row_id] = game
+            for _ in sent:
+                reply = env.reply()
+                replies[reply["row_id"]] = reply
+            for rid, game in sent.items():
+                env.send({"type": "step_outcome", "row_id": rid, "game_instance_id": game,
+                          "step_index": step, "status": "completed", "receipt_sha256": "b" * 64,
+                          "public_facts": {"act": 1, "floor": 3, "hp": 50, "max_hp": 70},
+                          "terminal": None})
+        for game in ("g1", "g2"):
+            env.send({"type": "episode_close", "game_instance_id": game, "reason": "terminal",
+                      "last_step_index": 2})
+
+        # Same scores and draw as the scorer run directly on the reference frames.
+        compiler = FrameCompiler(vocabulary)
+        frames = [compiler.compile(observation) for observation in observations]
+        expected = RowsScorer(model, bf16=False).score(frames, [3] * len(frames))
+        policy = SAMPLING["classes"]["noncombat"]
+        for rid, reply in replies.items():
+            step = (rid - 1) // 2
+            assert reply["type"] == "scored" and reply["schema"] == LINK_SCHEMA
+            _, q = distribution(expected[step].scores, policy["temperature"],
+                                policy["uniform_mix"])
+            game = "g1" if rid % 2 else "g2"
+            assert reply["game_instance_id"] == game
+            assert reply["catalog_sha256"] == digest(json_bytes(observations[step]["catalog"]))
+            assert reply["behavior_q"] == pytest.approx(q, abs=1e-6)
+            assert reply["selected_index"] == draw(reply["behavior_q"], SAMPLING["seed"],
+                                                   f"c-{game}-{step}")
+            assert reply["selected_q"] == reply["behavior_q"][reply["selected_index"]]
+            assert reply["applied"] == {"arm_id": "control", "decision_class": "noncombat",
+                                        "temperature": 1.5, "uniform_mix": 0.05}
+            assert reply["mu_snapshot_sha256"] == MU and reply["row_in_segment"] == step
+        deadline = threading.Event()
+        for _ in range(200):
+            if sum(kind == "close" for kind, _ in assembler.calls) == 2:
+                break
+            deadline.wait(0.05)
+        outcomes = [body for kind, body in assembler.calls if kind == "outcome"]
+        assert len(outcomes) == 6
+        # step_outcome carries the service-side request id of its row.
+        finished = {body[0] for kind, body in assembler.calls if kind == "finish"}
+        assert {o["row_request_id"] for o in outcomes} == finished
+        assert all(o["schema"] == V3_SCHEMA and "row_id" not in o for o in outcomes)
+    finally:
+        stats = aggregator.close()
+        report = service.close()
+    assert stats["rows"] == 6 and stats["failure"] is None and stats["pending"] == 0
+    assert report["rows"] == 6 and report["refused"] == {}
+
+
+def test_binding_difference_is_refused_before_the_service(vocabulary, model):
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler)
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = _aggregator(vocabulary, service, path)
+    try:
+        env = FakeEnv(path)
+        env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
+                  "input_spec": V2_INPUT_SPEC})
+        env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
+                  "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
+        observation = _observations(1)[0]
+        env.socket.sendall(_decision_line(1, "g1", 0, observation, catalog_len=9))
+        reply = env.reply()
+        assert reply == {"schema": LINK_SCHEMA, "type": "refused", "row_id": 1,
+                         "game_instance_id": "g1", "error_code": "IDENTITY_MISMATCH",
+                         "catalog_sha256": digest(json_bytes(observation["catalog"]))}
+        broken = _decision_line(2, "g1", 1, observation).replace(b'"input":{', b'"input":{,')
+        env.socket.sendall(broken)
+        assert env.reply()["error_code"] == "ROW_DECODE_FAILED"
+    finally:
+        stats = aggregator.close()
+        service.close()
+    assert stats["refused_here"] == {"IDENTITY_MISMATCH": 1, "ROW_DECODE_FAILED": 1}
+    assert stats["rows"] == 0
+    assert not any(kind == "finish" for kind, _ in assembler.calls)
+
+
+def _attach(service: FastInferenceService, encoder_identity: dict[str, Any],
+            changes: dict[str, Any] | None = None) -> Any:
+    client = Client(service.address, authkey=service.auth)
+    identity = RowsEncoder(service.vocabulary).identity
+    message = {"schema": V3_SCHEMA, "kind": "attach", "request_id": 1, "aggregator_id": "n",
+               "chain": "fast_chain", "python_env_sha256": ENV,
+               "compiler_identity": service.compiler_identity, "encoder": encoder_identity,
+               "row_format": identity["row_format"], **(changes or {})}
+    client.send_bytes(pack_message(message))
+    return client
+
+
+def test_attach_refuses_any_identity_difference(vocabulary, model):
+    service = _service(vocabulary, model, FakeAssembler())
+    encoder = RowsEncoder(vocabulary).identity["encoder"]
+    try:
+        for changes in ({"encoder": {**encoder, "sha256": "f" * 64}},
+                        {"row_format": "stpd/rows-v2-row-0"}, {"python_env_sha256": "d" * 64},
+                        {"compiler_identity": {**service.compiler_identity,
+                                               "compiler_sha256": "c" * 64}}):
+            client = _attach(service, encoder, changes)
+            with pytest.raises(EOFError):
+                client.recv_bytes(V3_MAX_MESSAGE)  # closed loudly, never attached
+            client.close()
+        client = _attach(service, encoder)
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        assert envelope["kind"] == "attached" and envelope["max_rows_per_packet"] == 1024
+        client.close()
+    finally:
+        report = service.close()
+    assert report["attach_refused"] == 4
+
+
+def test_many_connections_share_batches_without_starvation(vocabulary, model):
+    """48 connections (above the old 32) each get their row scored; batches span them."""
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, window_ms=50.0)
+    encoder = RowsEncoder(vocabulary)
+    observation = _observations(1)[0]
+    encoded = encoder.encode(json.dumps(observation).encode())
+    clients = []
+    try:
+        for index in range(48):
+            client = _attach(service, encoder.identity["encoder"])
+            assert unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0]["kind"] == "attached"
+            game = f"g{index}"
+            client.send_bytes(pack_message({
+                "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2,
+                "game_instance_id": game, "actor_id": "a", "sampling": SAMPLING,
+                "single_choice": "score", "start": {"kind": "new_run"}}))
+            clients.append((client, game))
+        for client, game in clients:
+            row = {"request_id": 3, "game_instance_id": game, "step_index": 0,
+                   "consumption_id": "c", "catalog_len": encoded.catalog_len,
+                   "catalog_sha256": encoded.catalog_sha256,
+                   "observation_sha256": encoded.observation_sha256, "in_combat": False,
+                   "floor": 2, "payload": {"offset": 0, "length": len(encoded.row),
+                                           "row_sha256": encoded.row_sha256}}
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": [row]}, encoded.row))
+        for client, game in clients:
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            [result] = envelope["results"]
+            assert result["status"] == "scored" and result["game_instance_id"] == game
+    finally:
+        for client, _ in clients:
+            client.close()
+        report = service.close()
+    assert report["rows"] == 48 and report["batch_rows_max"] > 8
+
+
+def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler)
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    client = _attach(service, encoder.identity["encoder"])
+    try:
+        unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        client.send_bytes(pack_message({
+            "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2,
+            "game_instance_id": "g1", "actor_id": "a", "sampling": SAMPLING,
+            "single_choice": "score", "start": {"kind": "new_run"}}))
+        garbage = b"\x00" * 40
+        rows = []
+        for request_id, game, data, catalog_len in ((3, "g1", garbage, 2),
+                                                    (4, "nope", encoded.row, 2),
+                                                    (5, "g1", encoded.row, 5)):
+            rows.append({"request_id": request_id, "game_instance_id": game, "step_index": 0,
+                         "consumption_id": "c", "catalog_len": catalog_len,
+                         "catalog_sha256": encoded.catalog_sha256,
+                         "observation_sha256": encoded.observation_sha256, "in_combat": False,
+                         "floor": 0, "payload": {"offset": 0, "length": len(data),
+                                                 "row_sha256": digest(data)}})
+        for row, data in zip(rows, (garbage, encoded.row, encoded.row), strict=True):
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": row["request_id"], "rows": [row]},
+                                           data))
+        codes = {}
+        for _ in rows:
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            codes[envelope["packet_id"]] = envelope["results"][0]["error_code"]
+        assert codes == {3: "ROW_DECODE_FAILED", 4: "EPISODE_NOT_OPEN", 5: "IDENTITY_MISMATCH"}
+    finally:
+        client.close()
+        service.close()
+    aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
+    assert aborted == {3: "ROW_DECODE_FAILED", 5: "IDENTITY_MISMATCH"}
