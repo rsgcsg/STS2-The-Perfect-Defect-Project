@@ -2839,6 +2839,7 @@ export class ManagedPlayerEnvironmentSession {
   #performance = new Map();
   #publicEntityAliases = new Map();
   #stateDigest = null;
+  #stateValue = null;
   #compact = null;
   #compactConfigured = false;
   #compactInstance = null;
@@ -3281,8 +3282,11 @@ export class ManagedPlayerEnvironmentSession {
         this.#record("map_enrichment", performance.now() - mapReadStarted);
       }
     }
-    const stateDigest = digest(enriched);
-    if (preserveUnchanged && stateDigest === this.#stateDigest) return this.#projection.snapshot;
+    // The state digest only decides preserveUnchanged; compute it only then (same bytes).
+    if (preserveUnchanged && this.#stateValue !== null) {
+      this.#stateDigest ??= digest(this.#stateValue);
+      if (digest(enriched) === this.#stateDigest) return this.#projection.snapshot;
+    }
     this.#sequence += 1;
     const projectionStarted = performance.now();
     this.#projection = projectManagedCandidateDecision({
@@ -3294,7 +3298,7 @@ export class ManagedPlayerEnvironmentSession {
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
     });
-    this.#stateDigest = stateDigest;
+    this.#stateValue = enriched; this.#stateDigest = null;
     this.#record("projection_total", performance.now() - projectionStarted);
     for (const [name, milliseconds] of Object.entries(this.#projection.performance)) {
       if (name === "total_ms") continue;
