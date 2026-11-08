@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
-    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
-    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
+    "source_patch_sha256": "0c494646fe980c401f0c353bd204b2589af62814470bc876dadc66a883f41a3b",
+    "artifact_sha256": "45a49975b937d29fc8b955aa7bdd59889fbcc136b9974e9e94493d1a6f44eed8",
+    "artifact_mvid": "9a3fe0e2-ea48-4334-8f2a-4b76b4dbe300",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
-        "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
-        "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+        "source_patch_sha256": "50cd72847d954f3bcba5e0e5f09f7c4e9f748038751d50a85f160bde704baae0",
+        "artifact_sha256": "377710ac222512a5adb14aae83b1124f01eff735e3352b3ef5dad5c47c61be19",
+        "artifact_mvid": "ba70e0a6-5fa7-4c69-ad0c-fe9a98dc6fa2",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -163,6 +163,13 @@
           "artifact_mvid": "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host63 Sphere r1.9 Linux build used by the RL4.2 long run; original source/package immutable, not current Soul Nexus source."
+        },
+        {
+          "source_patch_sha256": "459717c6469001a6ee3a8aa98264c9f98eb09aa8564de6661d9536cbcb05ff44",
+          "artifact_sha256": "3f17adefc358d02aa552fee7491130e02c74fa008a6029734cbe9f17de4ded08",
+          "artifact_mvid": "c4124848-4597-4c9a-8665-a0dfa97dd9e3",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host64 Soul Nexus Linux build (RL5 P2 and the P-REWRITE equivalence corpus); original source/package immutable, not current fast_chain source."
         }
       ]
     }
@@ -688,6 +695,12 @@
     "source_patch_sha256": "0137fdda669e1f959f9e4d231f7fbf95f09269ffacbf84803d4ca63ceb9d2d5a",
     "artifact_sha256": "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f",
     "artifact_mvid": "1df7d09d-d37e-43b8-b166-894ae4adbbd2",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_fast_chain_patch_cache_build": {
+    "source_patch_sha256": "d0e29a5ec4683eea52a445ceb83741166792f1d53b93cd89ee0918bdb5af6bd0",
+    "artifact_sha256": "eb9185b38f0eb4cb04b433db07f19f480b98d49137380f9884c40db52da49466",
+    "artifact_mvid": "7a38fc3d-3526-4df5-8ca6-3faf155763a4",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

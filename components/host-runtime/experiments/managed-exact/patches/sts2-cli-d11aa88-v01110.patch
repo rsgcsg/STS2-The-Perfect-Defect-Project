@@ -1469,6 +1469,240 @@ index 0000000..4eff354
 +        finally {binding.Dispose();synchronizer.Dispose();SaveManager.ClearInstanceForTesting();Set(manager,"<State>k__BackingField",null);}
 +    }
 +}
+diff --git a/patch-cache-tests/PatchCacheTests.csproj b/patch-cache-tests/PatchCacheTests.csproj
+new file mode 100644
+index 0000000..dbbd3a0
+--- /dev/null
++++ b/patch-cache-tests/PatchCacheTests.csproj
+@@ -0,0 +1,13 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework>
++    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
++    <CandidateRoot Condition="'$(CandidateRoot)' == ''">$(MSBuildThisFileDirectory)..</CandidateRoot>
++    <OutputPath>../src/Sts2Headless/bin/PatchCacheTests/</OutputPath>
++  </PropertyGroup>
++  <ItemGroup>
++    <ProjectReference Include="$(CandidateRoot)/src/Sts2Headless/Sts2Headless.csproj" />
++    <Reference Include="sts2"><HintPath>../lib/sts2.dll</HintPath><Private>true</Private></Reference>
++    <Reference Include="0Harmony"><HintPath>../lib/0Harmony.dll</HintPath><Private>true</Private></Reference>
++  </ItemGroup>
++</Project>
+diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
+new file mode 100644
+index 0000000..3e9ee6e
+--- /dev/null
++++ b/patch-cache-tests/Program.cs
+@@ -0,0 +1,209 @@
++using System.Reflection;
++using System.Runtime.Loader;
++using System.Text.Json;
++using HarmonyLib;
++using MegaCrit.Sts2.Core.CardSelection;
++using MegaCrit.Sts2.Core.Commands;
++using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Runs;
++using STS2Platform.NativeFoundation;
++
++// fast_chain patch-generation cache counterexamples (STS2_HEADLESS_FAST_CHAIN).
++// Each check compares the memoized answer with the original live Harmony check.
++class Program
++{
++    const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
++    static readonly Type Simulator = typeof(NativePatchStateCache).Assembly.GetType("Sts2Headless.RunSimulator")!;
++    static readonly Type Qualification = typeof(NativeCardPreviewReadQualification);
++    static object sim = null!;
++    static int checks;
++    static void Check(bool yes, string reason) { if (!yes) throw new Exception(reason); checks++; }
++    static object? Call(string name, params object?[] args) => Simulator.GetMethod(name, Flags)!.Invoke(sim, args);
++    static void SetEnabled(bool value) => typeof(NativePatchStateCache).GetProperty("Enabled")!.SetValue(null, value);
++    static bool Q(string name, params object[] args) => (bool)Qualification.GetMethod(name, Flags)!.Invoke(null, args)!;
++    // One observation as a command sees it: the Program loop samples, then the command runs.
++    static string State() { NativePatchStateCache.Revalidate(); return JsonSerializer.Serialize(Call("DetectDecisionPoint")); }
++    public static bool NoOpPrefix() => true;
++    public static void NoOpPostfix() { }
++
++    static void Main(string[] args)
++    {
++        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
++        AssemblyLoadContext.Default.Resolving += (_, n) => File.Exists(Path.Combine(root, "lib", n.Name + ".dll"))
++            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", n.Name + ".dll")) : null;
++        sim = Activator.CreateInstance(Simulator)!;
++        SetEnabled(false);
++        var start = (Dictionary<string, object?>)Call("StartRun", "Defect", 0, "PATCHCACHE_COMPONENT", "zh", null)!;
++        Check(start.GetValueOrDefault("type") as string == "decision", "native setup: " + JsonSerializer.Serialize(start));
++        try
++        {
++            OffIsLive();
++            Generations();
++            ObservationEquality();
++            CallScopes();
++            DelegateFieldFilter();
++            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
++        }
++        finally { Call("CleanUp"); }
++    }
++
++    // Off: the cache is never consulted; generation, hits and misses never move.
++    static void OffIsLive()
++    {
++        SetEnabled(false);
++        long generation = NativePatchStateCache.Generation, hits = NativePatchStateCache.Hits, misses = NativePatchStateCache.Misses;
++        MethodBase title = typeof(CardModel).GetMethod("get_Title", Flags | BindingFlags.DeclaredOnly)!;
++        Check(NativePatchStateCache.IsUnpatched(title) == NativePatchStateCache.IsUnpatchedLive(title), "off answer differs from live");
++        Check(Q("RenderFixedClosureUnpatched") && Q("CopyClosureUnpatched"), "baseline closures must qualify");
++        NativePatchStateCache.Revalidate();
++        Check(NativePatchStateCache.Generation == generation && NativePatchStateCache.Hits == hits
++            && NativePatchStateCache.Misses == misses, "off mode touched the cache");
++    }
++
++    static void Generations()
++    {
++        SetEnabled(true);
++        NativePatchStateCache.Refresh();
++        MethodBase title = typeof(CardModel).GetMethod("get_Title", Flags | BindingFlags.DeclaredOnly)!;
++        MethodBase description = typeof(CardModel).GetMethod("get_Description", Flags | BindingFlags.DeclaredOnly)!;
++        MethodBase unrelated = typeof(Program).GetMethod(nameof(Unrelated), Flags)!;
++        var harmony = new Harmony("spireagent.wp1.patch-cache-counterexample");
++        try
++        {
++            Check(NativePatchStateCache.IsUnpatched(title) && Q("RenderFixedClosureUnpatched"), "filled cache must qualify");
++            long hits = NativePatchStateCache.Hits;
++            Check(Q("RenderFixedClosureUnpatched") && NativePatchStateCache.Hits > hits, "second read must hit the cache");
++
++            // 1. A patch on a closure member: invisible until the next sampling point
++            //    (documented boundary), then every dependent answer flips.
++            long generation = NativePatchStateCache.Generation;
++            harmony.Patch(title, prefix: new HarmonyMethod(typeof(Program), nameof(NoOpPrefix)));
++            Check(!NativePatchStateCache.IsUnpatchedLive(title), "live check must see the new patch");
++            Check(NativePatchStateCache.IsUnpatched(title), "inside one span the sampled generation stays (documented)");
++            NativePatchStateCache.Revalidate();
++            Check(NativePatchStateCache.Generation == generation + 1, "a new patch must start a generation");
++            Check(!NativePatchStateCache.IsUnpatched(title), "patched method still cached as unpatched");
++            Check(!Q("RenderFixedClosureUnpatched") && !Q("MethodsUnpatched", typeof(CardModel), new[] { "get_Title" }),
++                "dependent closure still cached as qualified");
++            Check(Q("CopyClosureUnpatched"), "an independent closure must stay qualified");
++
++            // 2. A second patch kind on an already patched method changes no answer.
++            generation = NativePatchStateCache.Generation;
++            harmony.Patch(title, postfix: new HarmonyMethod(typeof(Program), nameof(NoOpPostfix)));
++            NativePatchStateCache.Revalidate();
++            Check(NativePatchStateCache.Generation == generation && !NativePatchStateCache.IsUnpatched(title),
++                "same patched set must keep the generation and answer");
++
++            // 3. A patch elsewhere still invalidates (the set changed); answers are recomputed live.
++            harmony.Patch(unrelated, prefix: new HarmonyMethod(typeof(Program), nameof(NoOpPrefix)));
++            NativePatchStateCache.Revalidate();
++            Check(NativePatchStateCache.Generation == generation + 1, "unrelated patch must start a generation");
++            Check(!Q("RenderFixedClosureUnpatched") && Q("CopyClosureUnpatched"), "recomputed answers differ from live");
++
++            // 4. Removing the last owner flips the answer back after sampling.
++            harmony.Unpatch(title, HarmonyPatchType.All, harmony.Id);
++            Check(NativePatchStateCache.IsUnpatchedLive(title), "live check must see the removal");
++            NativePatchStateCache.Revalidate();
++            Check(NativePatchStateCache.IsUnpatched(title) && Q("RenderFixedClosureUnpatched"), "removed patch still cached");
++
++            // 5. Patch and unpatch between two samples: same state, same answers.
++            generation = NativePatchStateCache.Generation;
++            harmony.Patch(description, prefix: new HarmonyMethod(typeof(Program), nameof(NoOpPrefix)));
++            harmony.Unpatch(description, HarmonyPatchType.All, harmony.Id);
++            NativePatchStateCache.Revalidate();
++            Check(NativePatchStateCache.Generation == generation && NativePatchStateCache.IsUnpatched(description)
++                && Q("RenderFixedClosureUnpatched"), "net-unchanged patch state must keep the answers");
++
++            // 6. Another thread never sees a stale answer: its own answers are dropped
++            //    when the global generation moves.
++            bool otherBefore = false, otherAfter = true;
++            var reader = new Thread(() => otherBefore = NativePatchStateCache.IsUnpatched(title));
++            reader.Start(); reader.Join();
++            harmony.Patch(title, prefix: new HarmonyMethod(typeof(Program), nameof(NoOpPrefix)));
++            NativePatchStateCache.Revalidate();
++            reader = new Thread(() => otherAfter = NativePatchStateCache.IsUnpatched(title));
++            reader.Start(); reader.Join();
++            Check(otherBefore && !otherAfter, "another thread kept a stale answer");
++            harmony.Unpatch(title, HarmonyPatchType.All, harmony.Id);
++            NativePatchStateCache.Revalidate();
++
++            // 7. An exception is never cached.
++            int calls = 0;
++            for (int i = 0; i < 2; i++)
++            {
++                try { NativePatchStateCache.Memo("throws", null, null, () => { calls++; throw new InvalidOperationException(); }); }
++                catch (InvalidOperationException) { }
++            }
++            Check(calls == 2, "a thrown predicate was cached");
++        }
++        finally
++        {
++            harmony.UnpatchAll(harmony.Id);
++            NativePatchStateCache.Revalidate();
++        }
++        Check(NativePatchStateCache.IsUnpatched(title) && Q("RenderFixedClosureUnpatched"), "cleanup must restore qualification");
++    }
++
++    static void Unrelated() { }
++
++    // The production observation is byte-identical with the cache on and off, before,
++    // during and after a closure patch made between two observations.
++    static void ObservationEquality()
++    {
++        MethodBase description = typeof(CardModel).GetMethod("get_Description", Flags | BindingFlags.DeclaredOnly)!;
++        var harmony = new Harmony("spireagent.wp1.patch-cache-observation");
++        try
++        {
++            SetEnabled(true); string onBefore = State(); string onBeforeHit = State();
++            SetEnabled(false); string offBefore = State();
++            Check(onBefore == offBefore && onBeforeHit == offBefore, "observation differs with the cache on");
++            harmony.Patch(description, prefix: new HarmonyMethod(typeof(Program), nameof(NoOpPrefix)));
++            SetEnabled(true); string onPatched = State();
++            SetEnabled(false); string offPatched = State();
++            Check(onPatched == offPatched, "patched observation differs with the cache on");
++            harmony.UnpatchAll(harmony.Id);
++            SetEnabled(true); string onAfter = State();
++            SetEnabled(false); string offAfter = State();
++            Check(onAfter == offAfter && onAfter == offBefore, "restored observation differs");
++            Console.WriteLine($"patch-cache observation patched_changed={onPatched != offBefore}");
++        }
++        finally { harmony.UnpatchAll(harmony.Id); SetEnabled(true); NativePatchStateCache.Revalidate(); }
++    }
++
++    // The delegate-field filter keeps exactly the delegate-typed fields, in reflection order.
++    static void DelegateFieldFilter()
++    {
++        const BindingFlags declared = Flags | BindingFlags.DeclaredOnly;
++        foreach (Type type in new[] { typeof(CardModel), typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.CalculatedVar), typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar), typeof(Program) })
++        {
++            FieldInfo[] want = type.GetFields(declared).Where(field => typeof(Delegate).IsAssignableFrom(field.FieldType)).ToArray();
++            Check(want.SequenceEqual(NativePatchStateCache.DelegateFields(type, declared)), "delegate fields differ for " + type.Name);
++        }
++        Check(NativePatchStateCache.DelegateFields(typeof(Program), declared).Single().Name == nameof(Probe), "probe delegate field missing");
++    }
++    static Action? Probe = null;
++
++    // Call-scope selector patches are installed once; entering and leaving a frame
++    // changes no Harmony state, so it never changes a generation or an answer.
++    static void CallScopes()
++    {
++        SetEnabled(true);
++        NativePatchStateCache.Refresh();
++        MethodBase upgrade = AccessTools.DeclaredMethod(typeof(CardSelectCmd), nameof(CardSelectCmd.FromDeckForUpgrade));
++        Check(!NativePatchStateCache.IsUnpatchedLive(upgrade) && !NativePatchStateCache.IsUnpatched(upgrade),
++            "call-scope patched selector must read as patched, cached and live");
++        Type scope = Simulator.Assembly.GetType("Sts2Headless.DeckUpgradeCallScope")!;
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        Player player = run.Players[0];
++        long generation = NativePatchStateCache.Generation;
++        object?[] prefix = { player, default(CardSelectorPrefs), null };
++        scope.GetMethod("Prefix", Flags)!.Invoke(null, prefix);
++        NativePatchStateCache.Revalidate();
++        Check(NativePatchStateCache.Generation == generation && Q("RenderFixedClosureUnpatched") == Q("RenderFixedClosureUnpatchedLive"),
++            "an open call-scope frame changed the patch generation");
++        scope.GetMethod("Finalizer", Flags)!.Invoke(null, new[] { prefix[2], null });
++        NativePatchStateCache.Revalidate();
++        Check(NativePatchStateCache.Generation == generation, "a closed call-scope frame changed the patch generation");
++    }
++}
 diff --git a/setup.sh b/setup.sh
 index ef00d6f..c00c031 100755
 --- a/setup.sh
@@ -3759,10 +3993,10 @@ index 0000000..6147465
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..85112ee
+index 0000000..8869f96
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,311 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -3792,22 +4026,35 @@ index 0000000..85112ee
 +
 +public static partial class NativeCardPreviewReadQualification
 +{
-+    private static bool RenderMethodsUnpatched(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
++    private static bool RenderMethodsUnpatched(Type type) =>
++        NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive);
++    private static bool RenderMethodsUnpatchedLive(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
 +        .All(IsUnpatched) && type.GetConstructors(NativeMembers).All(IsUnpatched);
-+    private static bool RenderIteratorUnpatched(MethodInfo? method)
++    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null ? RenderIteratorUnpatchedLive(method)
++        : NativePatchStateCache.Memo<MethodInfo>(nameof(RenderIteratorUnpatched), method, RenderIteratorUnpatchedLive);
++    private static bool RenderIteratorUnpatchedLive(MethodInfo? method)
 +    {
 +        if (!IsUnpatched(method)) return false;
 +        Type? iterator = method!.GetCustomAttribute<IteratorStateMachineAttribute>()?.StateMachineType;
 +        return iterator == null || RenderMethodsUnpatched(iterator);
 +    }
-+    private static bool RenderGettersUnpatched(Type type, params string[] names) => names.All(name =>
++    private static bool RenderGettersUnpatched(Type type, params string[] names) => !NativePatchStateCache.Enabled
++        ? RenderGettersUnpatchedLive(type, names)
++        : NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
++    private static bool RenderGettersUnpatchedLive(Type type, string[] names) => names.All(name =>
 +        IsUnpatched(type.GetProperty(name, NativeMembers)?.GetMethod));
 +    private static bool NativeRenderMethod(MethodInfo? method) => method != null
 +        && method.Module == typeof(CardModel).Module && RenderIteratorUnpatched(method);
 +
++    // Depends on the card's runtime type only (metadata and patch state).
 +    private static bool RenderCardDispatchQualified(CardModel card)
 +    {
 +        Type type = card.GetType();
++        return NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive);
++    }
++
++    private static bool RenderCardDispatchQualifiedLive(Type type)
++    {
 +        if (type.Module != typeof(CardModel).Module || type.Namespace != "MegaCrit.Sts2.Core.Models.Cards") return false;
 +        // The original game's overrides are its display semantics. Check the
 +        // effective methods, not a small card list or a constant-IL approximation.
@@ -3842,7 +4089,9 @@ index 0000000..85112ee
 +            for (Type? current = type; current != null && typeof(DynamicVar).IsAssignableFrom(current); current = current.BaseType)
 +            {
 +                if (!RenderMethodsUnpatched(current)) return false;
-+                foreach (FieldInfo field in current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
++                foreach (FieldInfo field in NativePatchStateCache.Enabled
++                             ? NativePatchStateCache.DelegateFields(current, NativeMembers | BindingFlags.DeclaredOnly)
++                             : current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
 +                    if (typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) is Delegate callback
 +                        && !(current == typeof(CalculatedVar) && field.Name == "_multiplierCalc"
 +                            && owner is CardModel card && RenderMultiplierQualified(card, callback))) return false;
@@ -3878,6 +4127,8 @@ index 0000000..85112ee
 +            && NativeRenderMethod(character.GetType().GetProperty("CardPool", NativeMembers)?.GetMethod);
 +    }
 +    private static bool RenderFixedClosureUnpatched() =>
++        NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive);
++    private static bool RenderFixedClosureUnpatchedLive() =>
 +        MethodsUnpatched(typeof(CardModel), "get_TitleLocString", "get_Title", "get_Description", "get_Type", "get_Rarity",
 +            "get_IsUpgraded", "get_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "get_Pile", "get_UpgradePreviewType", "get_IsEnchantmentPreview",
 +            "get_DynamicVars", "get_EnergyCost", "get_CurrentStarCost", "get_BaseStarCost", "get_TemporaryStarCost", "get_CanonicalStarCost",
@@ -3906,7 +4157,9 @@ index 0000000..85112ee
 +    private static bool NoFormattingCallbacks(object value)
 +    {
 +        for (Type? current = value.GetType(); current != null && current != typeof(object); current = current.BaseType)
-+            foreach (FieldInfo field in current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
++            foreach (FieldInfo field in NativePatchStateCache.Enabled
++                         ? NativePatchStateCache.DelegateFields(current, NativeMembers | BindingFlags.DeclaredOnly)
++                         : current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
 +                if (!field.IsStatic && typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) != null) return false;
 +        return true;
 +    }
@@ -3954,6 +4207,16 @@ index 0000000..85112ee
 +    private static bool RenderCombatListenerQualified(AbstractModel model)
 +    {
 +        Type current = model.GetType();
++        if (!NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)) return false;
++        if (model is WeakPower or VulnerablePower)
++            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
++                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
++        return true;
++    }
++
++    // The listener's runtime-type part only (metadata and patch state).
++    private static bool RenderCombatListenerTypeQualified(Type current)
++    {
 +        if (current.Assembly != typeof(CardModel).Assembly) return false;
 +        // Vanilla listeners only, with unpatched render hooks. The native hand/pile UI
 +        // evaluates these same hooks whenever it draws a card, so a vanilla override is
@@ -3965,9 +4228,6 @@ index 0000000..85112ee
 +            if (method == null || !IsUnpatched(method)) return false;
 +            if (method.DeclaringType?.Assembly != typeof(CardModel).Assembly) return false;
 +        }
-+        if (model is WeakPower or VulnerablePower)
-+            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
-+                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
 +        return true;
 +    }
 +
@@ -3979,7 +4239,17 @@ index 0000000..85112ee
 +        gap = "native_card_render_combat_hook_closure_unqualified";
 +        if (combat.GetType() != typeof(CombatState) || !NativeRunHookReadQualification.Preflight(run)
 +            || typeof(ModHelper).GetField("_combatHookSubscribers", NativeMembers)?.GetValue(null) is not ICollection { Count: 0 }
-+            || !RenderIteratorUnpatched(typeof(CombatState).GetMethod("IterateHookListeners", NativeMembers))
++            || !NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)) return false;
++        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
++        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
++        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
++        gap = null;
++        return true;
++    }
++
++    // The fixed (metadata and patch state) part of the combat hook closure.
++    private static bool RenderCombatFixedClosureUnpatched() =>
++        !(!RenderIteratorUnpatched(typeof(CombatState).GetMethod("IterateHookListeners", NativeMembers))
 +            || !RenderIteratorUnpatched(typeof(ModHelper).GetMethod("IterateAllCombatStateSubscribers", NativeMembers))
 +            || !RenderIteratorUnpatched(typeof(Hook).GetMethod("IterateCombatHookListeners", NativeMembers))
 +            || !MethodsUnpatched(typeof(CombatState), "Contains", "get_RunState", "get_Players", "get_PlayerCreatures", "get_Creatures",
@@ -4003,13 +4273,7 @@ index 0000000..85112ee
 +            || !RenderMethodsUnpatched(typeof(StrengthPower)) || !RenderMethodsUnpatched(typeof(DexterityPower))
 +            || !RenderMethodsUnpatched(typeof(FrailPower)) || !RenderMethodsUnpatched(typeof(PaperKrane))
 +            || !RenderMethodsUnpatched(typeof(PaperPhrog)) || !RenderMethodsUnpatched(typeof(DebilitatePower))
-+            || !RenderMethodsUnpatched(typeof(CrueltyPower))) return false;
-+        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
-+        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
-+        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
-+        gap = null;
-+        return true;
-+    }
++            || !RenderMethodsUnpatched(typeof(CrueltyPower)));
 +
 +    public static bool TryPreflightRender(CardModel card, CardPreviewMode mode, PileType displayPile,
 +        out string? gap, bool refreshPreview = true)
@@ -4046,10 +4310,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..1730d21
+index 0000000..e4c97ed
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,410 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -4081,15 +4345,16 @@ index 0000000..1730d21
 +    internal const BindingFlags NativeMembers = BindingFlags.Instance | BindingFlags.Static
 +        | BindingFlags.Public | BindingFlags.NonPublic;
 +
-+    public static bool IsUnpatched(MethodBase? method)
-+    {
-+        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
-+        catch { return false; }
-+    }
++    // fast_chain memoizes by patch generation; off = the original live check.
++    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
 +
 +    private static readonly ConditionalWeakTable<Type, ILookup<string, MethodInfo>> MethodTables = new();
 +
-+    internal static bool MethodsUnpatched(Type owner, params string[] names)
++    internal static bool MethodsUnpatched(Type owner, params string[] names) => !NativePatchStateCache.Enabled
++        ? MethodsUnpatchedLive(owner, names)
++        : NativePatchStateCache.Memo(nameof(MethodsUnpatched), owner, string.Join('\u001f', names), () => MethodsUnpatchedLive(owner, names));
++
++    private static bool MethodsUnpatchedLive(Type owner, string[] names)
 +    {
 +        // CLR method metadata is immutable for each loaded Type. Reuse only
 +        // that table; every requested overload's Harmony state remains live.
@@ -4098,10 +4363,13 @@ index 0000000..1730d21
 +        return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
 +    }
 +
-+    private static bool FixedConstructorsUnpatched(Type type) =>
-+        type.GetConstructors(NativeMembers).All(IsUnpatched);
++    private static bool FixedConstructorsUnpatched(Type type) => NativePatchStateCache.Memo(nameof(FixedConstructorsUnpatched), type,
++        static current => current.GetConstructors(NativeMembers).All(IsUnpatched));
 +
-+    private static bool CloneLambdaUnpatched(Type owner)
++    private static bool CloneLambdaUnpatched(Type owner) =>
++        NativePatchStateCache.Memo(nameof(CloneLambdaUnpatched), owner, CloneLambdaUnpatchedLive);
++
++    private static bool CloneLambdaUnpatchedLive(Type owner)
 +    {
 +        MethodInfo[] exact = owner.GetNestedType("<>c", BindingFlags.NonPublic)?
 +            .GetMethods(NativeMembers).Where(method => method.Name.StartsWith("<Clone>b__", StringComparison.Ordinal)).ToArray()
@@ -4110,6 +4378,9 @@ index 0000000..1730d21
 +    }
 +
 +    private static bool BaseImplementation(Type current, Type owner, string method) =>
++        NativePatchStateCache.Memo(nameof(BaseImplementation), current, owner, () => BaseImplementationLive(current, owner, method), method);
++
++    private static bool BaseImplementationLive(Type current, Type owner, string method) =>
 +        current.GetMethod(method, NativeMembers) is { } effective
 +        && effective.DeclaringType == owner && IsUnpatched(effective);
 +
@@ -4226,6 +4497,9 @@ index 0000000..1730d21
 +    // the existing canonical-instance binding. Framework collection/decimal
 +    // primitives are the trusted CLR boundary, not a native plugin callback.
 +    private static bool CopyClosureUnpatched() =>
++        NativePatchStateCache.Memo(nameof(CopyClosureUnpatched), null, null, CopyClosureUnpatchedLive);
++
++    private static bool CopyClosureUnpatchedLive() =>
 +        MethodsUnpatched(typeof(AbstractModel), "MutableClone", "get_IsMutable", "set_IsMutable", "AssertMutable", "AfterCloned")
 +        && MethodsUnpatched(typeof(CardModel), "DeepCloneFields", "AfterCloned", "GetKeywordsWithSources", "get_LocalKeywords",
 +            "get_DynamicVars", "get_Enchantment", "get_Affliction", "get_EnergyCost", "get_CanonicalEnergyCost", "get_HasEnergyCostX",
@@ -4240,6 +4514,9 @@ index 0000000..1730d21
 +        && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 +
 +    private static bool CopyAfterClonedQualified(Type type) =>
++        NativePatchStateCache.Memo(nameof(CopyAfterClonedQualified), type, CopyAfterClonedQualifiedLive);
++
++    private static bool CopyAfterClonedQualifiedLive(Type type) =>
 +        BaseImplementation(type, typeof(CardModel), "AfterCloned")
 +        // Exact v0.111.0 SovereignBlade only calls base.AfterCloned and clears
 +        // its copied CreatedThroughForge presentation state. No scope/run write.
@@ -4343,6 +4620,9 @@ index 0000000..1730d21
 +    }
 +
 +    private static bool UpgradeClosureQualified(Type type) =>
++        NativePatchStateCache.Memo(nameof(UpgradeClosureQualified), type, UpgradeClosureQualifiedLive);
++
++    private static bool UpgradeClosureQualifiedLive(Type type) =>
 +            type.GetMethod("OnUpgrade", NativeMembers) is { } upgrade
 +                && (upgrade.DeclaringType == typeof(CardModel)
 +                    || upgrade.DeclaringType == type && NativeUpgradeMethodInventory.Contains(type.Name))
@@ -4432,7 +4712,10 @@ index 0000000..1730d21
 +
 +    private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
 +
-+    private static bool SingletonListUnpatched(Type element)
++    private static bool SingletonListUnpatched(Type element) =>
++        NativePatchStateCache.Memo(nameof(SingletonListUnpatched), element, SingletonListUnpatchedLive);
++
++    private static bool SingletonListUnpatchedLive(Type element)
 +    {
 +        Type? fixedType = typeof(CardModel).Assembly.GetType("<>z__ReadOnlySingleElementList`1")?.MakeGenericType(element);
 +        return fixedType != null && fixedType.GetMethods(NativeMembers).All(IsUnpatched)
@@ -5914,6 +6197,195 @@ index 0000000..c17040a
 +        return purchase();
 +    }
 +}
+diff --git a/src/Sts2Headless/NativePatchStateCache.cs b/src/Sts2Headless/NativePatchStateCache.cs
+new file mode 100644
+index 0000000..89bcd05
+--- /dev/null
++++ b/src/Sts2Headless/NativePatchStateCache.cs
+@@ -0,0 +1,183 @@
++using System;
++using System.Collections.Generic;
++using System.Reflection;
++using System.Runtime.CompilerServices;
++using System.Threading;
++using HarmonyLib;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>
++/// fast_chain only (STS2_HEADLESS_FAST_CHAIN=1, default off). Memoizes native read
++/// qualification answers that are functions of loaded CLR metadata and the Harmony
++/// patch state only, by patch generation. Off: every caller takes its original live
++/// path and this class is never consulted.
++///
++/// Generation: a new generation starts, and every cached answer is dropped, when the
++/// set of methods that currently have at least one Harmony owner differs from the set
++/// sampled last. Sampling points: native initialization end (after every install
++/// block) and every Program command before it is handled. A Harmony change made
++/// INSIDE a command is observed at the next command; in this process the only Harmony
++/// writers are the initialization install blocks, which end with <see cref="Refresh"/>. The call-scope selector
++/// patches (DeckUpgradeCallScope, NativeSelectorCallScope) are installed once there;
++/// their per-call frames are [ThreadStatic] values and never change Harmony state.
++///
++/// Live object facts (field values, delegates, listeners, formatter roster, combat
++/// or TestMode state) are never cached; only the metadata/patch part is.
++/// </summary>
++public static class NativePatchStateCache
++{
++    public static bool Enabled { get; private set; } =
++        Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1";
++
++    // Sampling (rare) is serialized by Gate; the hot path takes no lock. Each thread keeps
++    // its own answers tagged with the generation they were computed in, and drops them as
++    // soon as it sees a newer global generation.
++    private static readonly object Gate = new();
++    private static HashSet<MethodBase>? _snapshot;
++    private static long _generation;
++    [ThreadStatic] private static Local? _local;
++
++    public static long Generation => Volatile.Read(ref _generation);
++    public static long Hits { get; private set; }
++    public static long Misses { get; private set; }
++    public static long Invalidations { get; private set; }
++
++    /// <summary>The original live check: Harmony owners of exactly this method.</summary>
++    public static bool IsUnpatchedLive(MethodBase? method)
++    {
++        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
++        catch { return false; }
++    }
++
++    public static bool IsUnpatched(MethodBase? method)
++    {
++        if (!Enabled) return IsUnpatchedLive(method);
++        if (method == null) return false;
++        Local local = Begin(out long generation);
++        if (local.Unpatched.TryGetValue(method, out bool hit)) { Hits++; return hit; }
++        bool value = IsUnpatchedLive(method);
++        Misses++;
++        if (generation == Volatile.Read(ref _generation)) local.Unpatched[method] = value;
++        return value;
++    }
++
++    /// <summary>
++    /// Memoizes a predicate whose answer depends only on (a, b, c) metadata and patch state.
++    /// Keys compare strings by value and every other argument by reference. An exception
++    /// is never cached; it propagates to the original caller's handler.
++    /// </summary>
++    public static bool Memo(string id, object? a, object? b, Func<bool> compute, object? c = null)
++    {
++        if (!Enabled) return compute();
++        Local local = Begin(out long generation);
++        var key = new Key(id, a, b, c);
++        if (local.Pure.TryGetValue(key, out bool hit)) { Hits++; return hit; }
++        bool value = compute();
++        Misses++;
++        if (generation == Volatile.Read(ref _generation)) local.Pure[key] = value;
++        return value;
++    }
++
++    /// <summary>Same as <see cref="Memo(string, object?, object?, Func{bool}, object?)"/> for a one-argument
++    /// predicate, without allocating a closure on a hit.</summary>
++    public static bool Memo<T>(string id, T argument, Func<T, bool> compute) where T : class
++    {
++        if (!Enabled) return compute(argument);
++        Local local = Begin(out long generation);
++        var key = new Key(id, argument, null, null);
++        if (local.Pure.TryGetValue(key, out bool hit)) { Hits++; return hit; }
++        bool value = compute(argument);
++        Misses++;
++        if (generation == Volatile.Read(ref _generation)) local.Pure[key] = value;
++        return value;
++    }
++
++    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Type, BindingFlags), FieldInfo[]> DelegateFieldCache = new();
++
++    /// <summary>
++    /// The fields of <paramref name="type"/> (for <paramref name="flags"/>, in reflection order) whose
++    /// declared type is a delegate type. Pure metadata: loaded field declarations never change in a
++    /// process, so this needs no generation. Callers still read every value live.
++    /// </summary>
++    public static FieldInfo[] DelegateFields(Type type, BindingFlags flags) =>
++        DelegateFieldCache.GetOrAdd((type, flags), static key => Array.FindAll(
++            key.Item1.GetFields(key.Item2), field => typeof(Delegate).IsAssignableFrom(field.FieldType)));
++
++    /// <summary>Sampling point: start a new generation if the patched-method set changed.</summary>
++    public static void Revalidate()
++    {
++        if (!Enabled) return;
++        HashSet<MethodBase> current = PatchedWithOwners();
++        lock (Gate)
++        {
++            if (_snapshot != null && _snapshot.SetEquals(current)) return;
++            Drop(current);
++        }
++    }
++
++    /// <summary>Unconditional new generation (end of native initialization).</summary>
++    public static void Refresh()
++    {
++        if (!Enabled) return;
++        HashSet<MethodBase> current = PatchedWithOwners();
++        lock (Gate) Drop(current);
++    }
++
++    private static Local Begin(out long generation)
++    {
++        generation = Volatile.Read(ref _generation);
++        if (generation == 0)
++        {
++            Revalidate(); // first use before any sampling point
++            generation = Volatile.Read(ref _generation);
++        }
++        Local local = _local ??= new Local();
++        if (local.Generation != generation)
++        {
++            local.Unpatched.Clear();
++            local.Pure.Clear();
++            local.Generation = generation;
++        }
++        return local;
++    }
++
++    private static void Drop(HashSet<MethodBase> current)
++    {
++        _snapshot = current;
++        Volatile.Write(ref _generation, _generation + 1);
++        Invalidations++;
++    }
++
++    private static HashSet<MethodBase> PatchedWithOwners()
++    {
++        var current = new HashSet<MethodBase>(ReferenceEqualityComparer.Instance);
++        foreach (MethodBase method in Harmony.GetAllPatchedMethods())
++        {
++            // A method whose patch info cannot be read counts as patched, as the
++            // live check would answer for it; the set still changes with it.
++            if (!IsUnpatchedLive(method)) current.Add(method);
++        }
++        return current;
++    }
++
++    private sealed class Local
++    {
++        internal long Generation = -1;
++        internal readonly Dictionary<MethodBase, bool> Unpatched = new(ReferenceEqualityComparer.Instance);
++        internal readonly Dictionary<Key, bool> Pure = new(KeyComparer.Instance);
++    }
++
++    private readonly record struct Key(string Id, object? A, object? B, object? C);
++
++    private sealed class KeyComparer : IEqualityComparer<Key>
++    {
++        internal static readonly KeyComparer Instance = new();
++        private static bool Same(object? x, object? y) =>
++            x is string left && y is string right ? string.Equals(left, right, StringComparison.Ordinal) : ReferenceEquals(x, y);
++        private static int Hash(object? value) =>
++            value is string text ? StringComparer.Ordinal.GetHashCode(text) : value == null ? 0 : RuntimeHelpers.GetHashCode(value);
++        public bool Equals(Key x, Key y) => string.Equals(x.Id, y.Id, StringComparison.Ordinal) && Same(x.A, y.A) && Same(x.B, y.B) && Same(x.C, y.C);
++        public int GetHashCode(Key key) => HashCode.Combine(StringComparer.Ordinal.GetHashCode(key.Id), Hash(key.A), Hash(key.B), Hash(key.C));
++    }
++}
 diff --git a/src/Sts2Headless/NativePlayWindowAdmission.cs b/src/Sts2Headless/NativePlayWindowAdmission.cs
 new file mode 100644
 index 0000000..d5a2588
@@ -6417,10 +6889,10 @@ index 0000000..322cbcb
 +}
 diff --git a/src/Sts2Headless/NativeRunHookReadQualification.cs b/src/Sts2Headless/NativeRunHookReadQualification.cs
 new file mode 100644
-index 0000000..9e2ddd1
+index 0000000..e9875aa
 --- /dev/null
 +++ b/src/Sts2Headless/NativeRunHookReadQualification.cs
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,108 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -6447,11 +6919,8 @@ index 0000000..9e2ddd1
 +    private static readonly Guid AuditedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
 +    private static readonly FieldInfo? Subscribers = typeof(ModHelper).GetField("_runHookSubscribers",
 +        BindingFlags.Static | BindingFlags.NonPublic);
-+    public static bool IsUnpatched(MethodBase? method)
-+    {
-+        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
-+        catch { return false; }
-+    }
++    // fast_chain memoizes by patch generation; off = the original live check.
++    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
 +
 +    private static bool IteratorIsUnpatched(MethodInfo? method)
 +    {
@@ -6500,13 +6969,17 @@ index 0000000..9e2ddd1
 +            return run.GetType() == typeof(RunState)
 +                && typeof(RunState).Assembly.ManifestModule.ModuleVersionId == AuditedGameMvid
 +                && Subscribers?.GetValue(null) is ICollection { Count: 0 }
-+                && IteratorReadClosureIsUnpatched()
-+                && IteratorIsUnpatched(typeof(RunState).GetMethod(nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }))
-+                && IteratorIsUnpatched(typeof(ModHelper).GetMethod(nameof(ModHelper.IterateAllRunStateSubscribers)))
-+                && IsUnpatched(typeof(RunState).GetMethod("Contains", BindingFlags.Static | BindingFlags.NonPublic));
++                && NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched);
 +        }
 +        catch { return false; }
 +    }
++
++    // The fixed (metadata and patch state) part of Preflight.
++    private static bool FixedClosureIsUnpatched() =>
++        IteratorReadClosureIsUnpatched()
++        && IteratorIsUnpatched(typeof(RunState).GetMethod(nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }))
++        && IteratorIsUnpatched(typeof(ModHelper).GetMethod(nameof(ModHelper.IterateAllRunStateSubscribers)))
++        && IsUnpatched(typeof(RunState).GetMethod("Contains", BindingFlags.Static | BindingFlags.NonPublic));
 +
 +    public static bool TryCaptureListeners(IRunState run, out IReadOnlyList<AbstractModel> listeners, out string? gap)
 +    {
@@ -8569,20 +9042,21 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..32ce83c 100644
+index 800f139..c8af1f7 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
-@@ -1,7 +1,9 @@
+@@ -1,7 +1,10 @@
  using System.Reflection;
  using System.Runtime.Loader;
 +using System.Security.Cryptography;
  using System.Text.Json;
  using System.Text.Json.Serialization;
 +using MegaCrit.Sts2.Core.Runs;
++using STS2Platform.NativeFoundation;
  
  namespace Sts2Headless;
  
-@@ -41,6 +43,9 @@ class Program
+@@ -41,6 +44,9 @@ class Program
  
      static void Main(string[] args)
      {
@@ -8592,16 +9066,17 @@ index 800f139..32ce83c 100644
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -85,7 +90,7 @@ class Program
+@@ -85,7 +91,8 @@ class Program
              try
              {
                  var cmd = JsonSerializer.Deserialize<JsonElement>(line);
 -                result = HandleCommand(sim, cmd);
++                NativePatchStateCache.Revalidate(); // fast_chain patch-generation sampling point; off = no-op
 +                result = HandleCommand(ref sim, cmd);
              }
              catch (JsonException ex)
              {
-@@ -93,7 +98,8 @@ class Program
+@@ -93,7 +100,8 @@ class Program
              }
              catch (Exception ex)
              {
@@ -8611,7 +9086,7 @@ index 800f139..32ce83c 100644
              }
  
              if (result != null)
-@@ -108,17 +114,64 @@ class Program
+@@ -108,17 +116,64 @@ class Program
          }
      }
  
@@ -8679,7 +9154,7 @@ index 800f139..32ce83c 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..5b46c1d 100644
+index 6b9de4a..8069b8f 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -13242,8 +13717,12 @@ index 6b9de4a..5b46c1d 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +4185,15 @@ public class RunSimulator
+@@ -3149,17 +4183,19 @@ public class RunSimulator
+         {
+             Console.Error.WriteLine($"[WARN] ModelIdSerializationCache.Init: {ex.Message}");
          }
++        // fast_chain: every Harmony install block above has run; start a new generation.
++        NativePatchStateCache.Refresh();
      }
  
 -    private Player? CreatePlayer(string characterName)
@@ -13264,7 +13743,7 @@ index 6b9de4a..5b46c1d 100644
              _ => null
          };
      }
-@@ -3263,42 +4297,169 @@ public class RunSimulator
+@@ -3263,42 +4299,169 @@ public class RunSimulator
          }
      }
  
@@ -13456,7 +13935,7 @@ index 6b9de4a..5b46c1d 100644
      /// <summary>
      /// Card selector that creates a pending selection decision point.
      /// When the game needs the player to choose cards (upgrade, remove, transform, bundle pick),
-@@ -3306,6 +4467,12 @@ public class RunSimulator
+@@ -3306,6 +4469,12 @@ public class RunSimulator
      /// </summary>
      internal class HeadlessCardSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
      {
@@ -13469,7 +13948,7 @@ index 6b9de4a..5b46c1d 100644
          // Pending card selection — set by game engine, read by main loop
          public List<CardModel>? PendingOptions { get; private set; }
          public int PendingMinSelect { get; private set; }
-@@ -3313,36 +4480,278 @@ public class RunSimulator
+@@ -3313,36 +4482,278 @@ public class RunSimulator
          public string PendingPrompt { get; private set; } = "";
          private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
  
@@ -13766,7 +14245,7 @@ index 6b9de4a..5b46c1d 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4766,36 @@ public class RunSimulator
+@@ -3357,15 +4768,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -13807,7 +14286,7 @@ index 6b9de4a..5b46c1d 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4805,110 @@ public class RunSimulator
+@@ -3375,55 +4807,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -13952,7 +14431,7 @@ index 6b9de4a..5b46c1d 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4932,108 @@ public class RunSimulator
+@@ -3447,178 +4934,108 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -14223,7 +14702,7 @@ index 6b9de4a..5b46c1d 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +5049,6 @@ public class RunSimulator
+@@ -3634,42 +5051,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -14266,7 +14745,7 @@ index 6b9de4a..5b46c1d 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +5056,79 @@ public class RunSimulator
+@@ -3677,85 +5058,79 @@ public class RunSimulator
          }
      }
  
@@ -14415,7 +14894,7 @@ index 6b9de4a..5b46c1d 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3774,11 +5147,12 @@ public class RunSimulator
+@@ -3774,11 +5149,12 @@ public class RunSimulator
              var sim = _bundleSimRef;
              if (sim != null)
              {
@@ -14431,7 +14910,7 @@ index 6b9de4a..5b46c1d 100644
                  return false;
              }
  
-@@ -3789,16 +5163,12 @@ public class RunSimulator
+@@ -3789,16 +5165,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -14450,7 +14929,7 @@ index 6b9de4a..5b46c1d 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5196,54 @@ public class RunSimulator
+@@ -3826,36 +5198,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -14524,7 +15003,7 @@ index 6b9de4a..5b46c1d 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5255,12 @@ public class RunSimulator
+@@ -3867,13 +5257,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -14541,7 +15020,7 @@ index 6b9de4a..5b46c1d 100644
              }
          }
          catch { }
-@@ -3896,15 +5283,126 @@ public class RunSimulator
+@@ -3896,15 +5285,126 @@ public class RunSimulator
      {
          try
          {
