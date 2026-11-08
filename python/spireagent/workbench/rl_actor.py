@@ -322,7 +322,11 @@ class Actor:
         from functools import partial
 
         from .fast_chain_episodes import FastChainEpisodeExecutor, GameManager
-        from .rl_segment_producer import open_learner_episode, publish_world_offered
+        from .rl_segment_producer import (
+            fast_instance_admission,
+            open_learner_episode,
+            publish_world_offered,
+        )
 
         assert self.fast_chain is not None
         manager = GameManager(self.fast_chain["command"], self.fast_chain["env"],
@@ -335,7 +339,11 @@ class Actor:
                                        admission=self.service, actor=self.name,
                                        budget_id=self.config.get("budget_id")),
             world_offered=partial(publish_world_offered, exchange=self.exchange,
-                                  actor=self.name))
+                                  actor=self.name),
+            # After a checked ``opened``: the learner attests the instance once (seed
+            # check, game_instance_id -> intent); no fast-chain episode_end is sent.
+            instance_opened=partial(fast_instance_admission, admission=self.service,
+                                    actor=self.name))
 
     def _fast_chain_stop(self, reason: str) -> None:
         """Bounded Stop of in-flight games on its own thread (never in a handler).
