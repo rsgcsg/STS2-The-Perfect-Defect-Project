@@ -30,7 +30,7 @@ from stpd.p1.input import V2_INPUT_SPEC
 from stpd.p1.model import MStd, MStdExecution
 from stpd.p1.rows_encoder import RowsEncoder
 from stpd.p1.rows_encoder_wire import decode_row
-from stpd.p1.rows_scorer import RowsScorer
+from stpd.p1.rows_scorer import RowScores, RowsScorer
 from stpd.p1.sampling import distribution, draw
 from stpd.p1.vocabulary import public_vocabulary
 
@@ -647,3 +647,35 @@ def test_an_arena_slice_too_small_stops_the_service_loudly(vocabulary, model, ca
         client.close()
         service.close()
     assert "rl_inference_3_arena_overflow" in capfd.readouterr().err
+
+
+def test_rows_conversion_matches_the_per_row_rule():
+    """The vectorized RowsScorer.rows keeps the per-row values and finiteness rule."""
+    import math
+
+    generator = torch.Generator().manual_seed(7)
+    rows, width = 9, 6
+    scores = torch.randn(rows, width, generator=generator)
+    logits = torch.randn(rows, 3, generator=generator)
+    probabilities = logits.softmax(-1)
+    hp = torch.randn(rows, generator=generator)
+    lengths = [6, 3, 0, 4, 2, 6, 5, 1, 3]
+    scores[1, 4] = float("nan")  # padding past the catalog: still scored
+    scores[3, 2] = float("inf")  # inside the catalog: refused
+    logits[4, 1] = float("nan")
+    logits[5, 0] = float("-inf")  # -inf outcome logit is allowed
+    logits[6, 2] = float("inf")
+    hp[7] = float("nan")
+    got = RowsScorer.rows((scores, probabilities, logits, hp), lengths)
+    for row, count in enumerate(lengths):
+        values = scores[row, :count]
+        refused = (count < 1 or not bool(torch.isfinite(values).all())
+                   or bool(logits[row].isnan().any()) or bool(logits[row].isposinf().any())
+                   or not math.isfinite(float(hp[row])))
+        if refused:
+            assert got[row] is None
+        else:
+            assert got[row] == RowScores(values.tolist(), probabilities[row].tolist(),
+                                         float(hp[row]))
+    assert [row is None for row in got] == [False, False, True, True, True, False, True, True,
+                                             False]

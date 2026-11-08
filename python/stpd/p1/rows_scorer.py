@@ -14,7 +14,6 @@ measures that difference.
 """
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -73,21 +72,30 @@ class RowsScorer:
              ) -> list[RowScores | None]:
         """Per-row scores from `forward_tensors`; None for a row that is not finite."""
         scores_cpu, probabilities_cpu, logits_cpu, hp_cpu = tensors
+        count_rows = len(catalog_lengths)
         out: list[RowScores | None] = []
-        for row, count in enumerate(catalog_lengths):
-            values = scores_cpu[row, :count]
-            if count < 1:  # an empty catalog is never a decision
+        if count_rows == 0:
+            return out
+        # One vectorized pass per batch (was ~5 small tensor ops per row); the
+        # values and the finiteness rule are unchanged: real catalog positions
+        # finite, outcome logits never NaN or +inf, hp finite.
+        scores_cpu = scores_cpu[:count_rows]
+        width = scores_cpu.shape[1]
+        counts = torch.tensor(list(catalog_lengths), dtype=torch.long)
+        real = torch.arange(width).unsqueeze(0) < counts.unsqueeze(1)
+        bad = (~torch.isfinite(scores_cpu) & real).any(1)
+        logits = logits_cpu[:count_rows].reshape(count_rows, -1)
+        bad |= (logits.isnan() | logits.isposinf()).any(1)
+        bad |= ~torch.isfinite(hp_cpu[:count_rows].reshape(count_rows))
+        scores_list = scores_cpu.tolist()
+        probabilities_list = probabilities_cpu[:count_rows].tolist()
+        hp_list = hp_cpu[:count_rows].reshape(count_rows).tolist()
+        for row, (count, failed) in enumerate(zip(catalog_lengths, bad.tolist(), strict=True)):
+            if count < 1 or failed:  # an empty catalog is never a decision
                 out.append(None)
                 continue
-            # Same finiteness rule as forward_rl4(check_finite=True): real catalog
-            # positions finite, outcome logits never NaN or +inf, hp finite.
-            if (not bool(torch.isfinite(values).all()) or bool(logits_cpu[row].isnan().any())
-                    or bool(logits_cpu[row].isposinf().any())
-                    or not math.isfinite(float(hp_cpu[row]))):
-                out.append(None)
-                continue
-            out.append(RowScores(values.tolist(), probabilities_cpu[row].tolist(),
-                                 float(hp_cpu[row])))
+            out.append(RowScores(scores_list[row][:count], probabilities_list[row],
+                                 hp_list[row]))
         return out
 
     def forward(self, group: Any, catalog_lengths: Sequence[int]) -> list[RowScores | None]:
