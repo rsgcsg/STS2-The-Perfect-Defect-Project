@@ -30,7 +30,8 @@ export interface SlotNative {
   release(): Promise<void>;
   taint(): { tainted: boolean; reason: string | null };
   /** Evidence: receives every compact line of the current episode in order, starting
-   * with the lines read while it was mounted; null detaches. No-op without compact output. */
+   * with the lines read while it was mounted; null detaches. Without compact output the only
+   * line can be the native's own compact_state_divergence report. */
   attachLines(listener: ((line: string) => void) | null): void;
   /** The last compact frame read (the state a step is bound to); null without compact output. */
   frame(): FastFrameRef | null;
