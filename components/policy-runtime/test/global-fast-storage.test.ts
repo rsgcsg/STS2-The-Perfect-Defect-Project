@@ -244,11 +244,16 @@ describe("fast-chain WP6 evidence", () => {
     const game = new FastActionEvidenceSink(dir).openGame(meta());
     game.nativeLine(line(0));
     game.step(step(1, line(0)));
-    game.retainSampledCheckMismatch();
-    await game.close(closed());
+    const mismatch = { capture_ordinal: 4, cause: "basis_differs_from_bytes", capture: { handle: "h", total_bytes: 3 } as any,
+      serialized_observation: "{\"x\":1}", basis: { snapshot: { status: "ready" } } as any };
+    game.retainSampledCheckMismatch(mismatch);
+    await game.close(closed({ full_checks: 3 }));
     const read = await readFastGameEvidence(join(dir, "g_1_a"));
     expect(read.close!.retained).toEqual(["sampled_check_mismatch"]);
     expect(read.native_lines).toEqual([line(0)]);
+    // The mismatching originals themselves are stored, and the close carries full_checks.
+    expect(read.sampled_check_mismatches).toEqual([mismatch]);
+    expect(read.close).toMatchObject({ full_checks: 3, sampled_check_mismatch: { path: "sampled-check-mismatch.jsonl.gz", count: 1 } });
     expect(fastRetainReasons({ r7: false, retain_originals: false }, closed(), new Set(["completed"]), { sampled_check_mismatch: true }))
       .toEqual(["sampled_check_mismatch"]);
   });

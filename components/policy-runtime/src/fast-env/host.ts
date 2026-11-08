@@ -129,7 +129,8 @@ export class HostSlotNative implements SlotNative {
               private readonly sampleRate = 1) {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
       if (typeof line !== "string") return;
-      this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
+      // The native's own divergence report is an original line, not a frame a step acted on.
+      if (frame.type === "compact_state") this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
       if (this.#listener) this.#listener(line); else this.#lines.push(line);
     };
   }
