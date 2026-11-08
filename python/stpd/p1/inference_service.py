@@ -729,7 +729,9 @@ class FastInferenceService:
             max(1, in_flight if in_flight is not None else prepare_workers))
         self.auth = authkey or os.urandom(32)
         ip = socket.gethostbyname(socket.gethostname())
-        self.listener = Listener(address or (ip, 0), authkey=self.auth)
+        # Listener's default backlog is 1: aggregators connecting together would
+        # sit in SYN retries for seconds; every node may (re)attach at once.
+        self.listener = Listener(address or (ip, 0), authkey=self.auth, backlog=256)
         self.address = cast(tuple[str, int], self.listener.address)
         self.links: list[threading.Thread] = []
         self.threads = [threading.Thread(target=self._accept, daemon=True,
