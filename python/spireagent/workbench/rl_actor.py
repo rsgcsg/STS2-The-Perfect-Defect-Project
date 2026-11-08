@@ -210,6 +210,31 @@ class Actor:
             self.actor_pool = ActorInferencePool(SegmentConnection(remote), scorer)
             self.local_attachment = self.actor_pool.attachment()
             self.service = ActorControlConnection(self.actor_pool)
+        # RL5 P-REWRITE WP7, explicit opt-in (default absent = the old chain unchanged):
+        # K games per environment process. A failed start or run stops loudly; never
+        # a fallback to the old chain.
+        self.fast_chain: dict[str, Any] | None = None
+        if "fast_chain" in configuration:
+            self.fast_chain = self._fast_chain_configuration(configuration["fast_chain"])
+
+    def _fast_chain_configuration(self, value: Any) -> dict[str, Any]:
+        from .fast_chain_episodes import load_env_config
+        from .managed_retention import pipeline_configuration
+
+        if (not self.segment_mode or not isinstance(value, dict)
+                or set(value) - {"command", "env_config", "step_sync_ms",
+                                 "inference_failure_streak"}
+                or not isinstance(value.get("command"), list) or not value["command"]
+                or any(not isinstance(item, str) or not item for item in value["command"])
+                or not isinstance(value.get("env_config"), str)):
+            reject("fast_chain_configuration_invalid")
+        env = load_env_config(Path(value["env_config"]))
+        pipeline = pipeline_configuration({"pipeline": self.config.get("pipeline", {
+            "save_workers": 1, "pending_limit": 2})})
+        if pipeline["pending_limit"] < env["slots"]:
+            # The ledger admits at most pending_limit unsettled games at once.
+            reject("fast_chain_pending_limit_below_slots")
+        return {**value, "env": env}
 
     def _stop_before_offer(self) -> bool:
         while True:
@@ -245,8 +270,12 @@ class Actor:
         return self.segment_stop_reason is not None
 
     def _signal(self, number: int, _frame: Any) -> None:
-        """Batch schedulers warn before the limit; finish the current game, start no more."""
+        """Batch schedulers warn before the limit: start no more games. The old chain
+        finishes the current game; the fast chain closes in-flight games at their next
+        boundary (censored ``stop``) within its Stop bound."""
         self.signalled = number
+        if getattr(self, "fast_chain", None) is not None:
+            self._fast_chain_stop("signal")
 
     def _executor(self, record: dict[str, Any], package: Path) -> str:
         from .managed_pipeline import PipelinedManagedExecutor
@@ -270,7 +299,9 @@ class Actor:
         path.write_bytes(json_bytes(execution))
         if self.executor is not None:
             self.executor.close()
-        if self.segment_mode:
+        if self.fast_chain is not None:
+            self.executor = self._fast_chain_executor(execution)
+        elif self.segment_mode:
             from .rl_segment_producer import SegmentManagedExecutor
 
             self.executor = SegmentManagedExecutor(execution,
@@ -286,6 +317,49 @@ class Actor:
         self.timing["executor_prepare"] += time.monotonic() - began
         self.counts["executor_builds"] += 1
         return selection
+
+    def _fast_chain_executor(self, execution: dict[str, Any]) -> Any:
+        from functools import partial
+
+        from .fast_chain_episodes import FastChainEpisodeExecutor, GameManager
+        from .rl_segment_producer import open_learner_episode, publish_world_offered
+
+        assert self.fast_chain is not None
+        manager = GameManager(self.fast_chain["command"], self.fast_chain["env"],
+            work=self.work / "fast-env", step_sync_ms=self.fast_chain.get("step_sync_ms", 4),
+            inference_failure_streak=self.fast_chain.get("inference_failure_streak", 3))
+        manager.start()  # Loud on failure: BoundaryError fast_env_start_failed.
+        return FastChainEpisodeExecutor(execution, manager=manager,
+            episode_seconds=self.config["episode_seconds"],
+            before_world_offer=partial(open_learner_episode, exchange=self.exchange,
+                                       admission=self.service, actor=self.name,
+                                       budget_id=self.config.get("budget_id")),
+            world_offered=partial(publish_world_offered, exchange=self.exchange,
+                                  actor=self.name))
+
+    def _fast_chain_stop(self, reason: str) -> None:
+        """Bounded Stop of in-flight games on its own thread (never in a handler).
+
+        Started once; in-flight games are closed at their next boundary (censored
+        ``stop``), not played to the end; past the Stop bound the group is killed.
+        """
+        manager = getattr(self.executor, "manager", None)
+        if (self.fast_chain is not None and manager is not None
+                and not getattr(self, "_fast_chain_stopping", False)):
+            self._fast_chain_stopping = True
+            threading.Thread(target=manager.stop, args=(reason,), name="fast-chain-stop",
+                             daemon=True).start()
+
+    def _fast_chain_stop_before_offer(self) -> bool:
+        if (self.work / "STOP").exists() or self.signalled is not None:
+            self._fast_chain_stop("stop_requested")
+        if self._stop_before_offer():
+            return True
+        closed = self.executor.admission_closed()
+        if closed is not None:
+            self.segment_stop_reason = "fast_chain:" + closed
+            return True
+        return False
 
     def _ledger(self, selection: str) -> Any:
         from stpd.evaluation.suites import diagnostic_reference_manifest
@@ -341,6 +415,12 @@ class Actor:
                             segment_budget_close=row.get("segment_budget_close") is True,
                             cleanup_accepted=row.get("cleanup_accepted") is True,
                             segment_prefix_close=bool(row.get("segment_delivery")))
+                if row.get("chain") == "fast_chain":
+                    close = row.get("fast_chain_close") or {}
+                    game.update(game_instance_id=row.get("game_instance_id"),
+                                fast_chain_slot=row.get("fast_chain_slot"),
+                                close_reason=close.get("reason"),
+                                close_detail=close.get("detail"))
             if slot["status"] in {"unknown", "save_failed"}:
                 # Diagnostic close facts only (U3): reason + last receipt reach
                 # the durable learner event/WAL and the watcher even when this
@@ -408,11 +488,16 @@ class Actor:
                 if ledger is None:
                     continue
                 step = time.monotonic()
-                result = ledger.run_managed(workers=1, max_episodes=self.config["games_per_ledger"],
+                fast = self.fast_chain is not None
+                workers = self.fast_chain["env"]["slots"] if self.fast_chain is not None else 1
+                result = ledger.run_managed(
+                    workers=workers,
+                    max_episodes=self.config["games_per_ledger"],
                     limits=SuiteLimits(150, episode_seconds, 120,
                                        max(1, deadline - time.monotonic() - 120), 1, 30),
                     executor=self.executor,
-                    should_stop=self._stop_before_offer if self.segment_mode else None)
+                    should_stop=(self._fast_chain_stop_before_offer if fast
+                                 else self._stop_before_offer if self.segment_mode else None))
                 self.timing["ledger_run"] += time.monotonic() - step
                 step = time.monotonic()
                 self._announce(record, [s for s in ledger.slots() if s["status"] != "not_started"])
@@ -426,12 +511,17 @@ class Actor:
                 if self._unknown_limit():
                     status = "stopped_unknown_limit"
                     break
+                if fast and self.executor.admission_closed() is not None:
+                    status = "stopped_fast_chain:" + str(self.executor.admission_closed())
+                    break
         finally:
             for number, handler in previous.items():
                 signal.signal(number, handler)
             self.prefetch.stop()
             if self.executor is not None:
-                self.executor.close()
+                closed = self.executor.close()
+                if self.fast_chain is not None:
+                    self.fast_chain_stop = closed
             if self.service is not None:
                 self.service.close()
                 self.actor_pool.close()
@@ -445,6 +535,8 @@ class Actor:
                    "timing": dict(self.timing),
                    "model_fetch_seconds": self.prefetch.fetch_seconds,
                    "model_prefetch_events": self.prefetch.events, "games": self.games}
+        if self.fast_chain is not None:
+            summary["fast_chain"] = getattr(self, "fast_chain_stop", None)
         if self.segment_mode:
             summary["local_mu"] = self.actor_pool.scorer.report()
             summary["segment_timing"] = self.actor_pool.timing_report()
