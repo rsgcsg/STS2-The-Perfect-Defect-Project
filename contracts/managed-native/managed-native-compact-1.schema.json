@@ -16,7 +16,7 @@
       "description": "<native_ref>#<view>. The view names the position kind the old writer emitted the body at (hand, deck, relic, potion, enemy, orb, pet, map_point, reward, ...), because one native object can be written with different field sets at different positions. Pile views are never table views: draw, discard and exhaust piles stay inline in the skeleton exactly as today's FairPileProjection writes them (no native_ref, no index, draw pile ordered by visible content only).",
       "type": "string",
       "pattern": "^native-[1-9][0-9]*#[a-z][a-z0-9_]{0,31}$",
-      "not": {"pattern": "#[a-z0-9_]*pile[a-z0-9_]*$"}
+      "not": {"pattern": "#[a-z0-9_]*(pile|draw|discard|exhaust)[a-z0-9_]*$"}
     },
     "object_body": {
       "description": "Exactly the object the old full writer emits at that position. Only objects whose old body carries a native_ref field may be tabled, and that native_ref must equal the ref in the key; anything else stays inline in the skeleton.",

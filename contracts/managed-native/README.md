@@ -25,7 +25,10 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    `native_ref` field, and that field must equal the ref in the key. Draw, discard and
    exhaust piles stay inline in the skeleton exactly as today's `FairPileProjection`
    writes them: no `native_ref`, no index, draw pile ordered by visible content only.
-   No pile view is ever a table view, so the wire never says which instance is in a
+   A pile is structural, not a view name: on the hot path any table placeholder inside
+   a pile container (a skeleton `draw_pile`/`discard_pile`/`exhaust_pile`, or any object
+   with `ordering_semantics`) diverges, and view names containing pile, draw, discard
+   or exhaust are refused by the schema. The wire never says which instance is in a
    pile.
 5. **Delta by output bytes.** A key is upserted iff the sha256 of its body's emitted
    bytes differs from what was last sent for that key, or nothing is on record for it;
@@ -41,7 +44,8 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    table after the frame, keys in byte order; the native computes it from its current
    bodies.
 7. **Hot path and sampled checks.** On every frame the Host checks seq and base,
-   key/`native_ref` binding, reachability and cycles, that the reconcile point is not
+   key/`native_ref` binding, no placeholder inside a pile, reachability and cycles,
+   that the reconcile point is not
    overdue, and the root over its carried digests; it does not re-hash bodies. Schema
    validation and per-body digests over the raw bytes run on the sampled path (about 1%
    of steps chosen before the game, every R7 game). The reference test runs both on
@@ -57,7 +61,8 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
    `from_save` with the save digest: S4 hook). `seq` increases by one; `base_seq`
    names the held frame.
 10. **Divergence fails closed.** Wrong base, seq gap, digest/root/reconcile mismatch,
-    unresolved placeholder, cycle, orphan, key/ref mismatch or overdue reconcile =
+    unresolved placeholder, cycle, orphan, key/ref mismatch, placeholder in a pile or
+    overdue reconcile =
     `compact_state_divergence`: no action is sent on that state (`not_started`), the
     game is closed, originals are kept and this build's output stops (same rule as an
     R7 mismatch). No resync-and-continue and no switch back to the old chain.

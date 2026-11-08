@@ -98,6 +98,22 @@ def _placeholders(value: Any, found: list[str]) -> None:
             _placeholders(item, found)
 
 
+PILES = frozenset({"draw_pile", "discard_pile", "exhaust_pile"})
+
+
+def _check_piles(value: Any, in_pile: bool = False) -> None:
+    """Fair piles carry no instance: no table placeholder inside any pile container."""
+    if isinstance(value, dict):
+        if set(value) == {"$obj"} and in_pile:
+            raise Divergence("pile_placeholder")
+        in_pile = in_pile or "ordering_semantics" in value
+        for key, item in value.items():
+            _check_piles(item, in_pile or key in PILES)
+    elif isinstance(value, list):
+        for item in value:
+            _check_piles(item, in_pile)
+
+
 def _reachable(skeleton: Any, table: dict[str, Any]) -> set[str]:
     """Keys reachable from the skeleton; a placeholder cycle diverges."""
     seen: set[str] = set()
@@ -134,7 +150,8 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
                 reconcile_interval: int = 64) -> list[dict[str, Any]]:
     """Host side: rebuild each full state from raw compact lines, failing closed.
 
-    Hot path (every frame): sequence and base, key/native_ref binding, reachability
+    Hot path (every frame): sequence and base, key/native_ref binding, no placeholder
+    inside a pile, reachability
     and cycles, reconcile point due, and the root over the carried digests (bodies are
     not re-hashed). Sampled path (about 1% of steps, every R7 game, and every frame in
     this test): schema and each body's digest over its exact emitted bytes.
@@ -185,6 +202,9 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
             anchor = frame["seq"]
         else:
             table, digests = dict(frame["objects"]), dict(frame["object_digests"])
+        _check_piles(frame["skeleton"])
+        for body in table.values():
+            _check_piles(body)
         if set(table) - _reachable(frame["skeleton"], table):
             raise Divergence("orphan_object")
         if _root(digests) != frame["objects_root_sha256"]:
@@ -258,16 +278,23 @@ def test_native_compact_reappearing_object_is_resent() -> None:
     ("invalid-stale-bookkeeping.jsonl", "reconcile_mismatch"),
     ("invalid-wrong-base.jsonl", "base_mismatch"),
     ("invalid-orphan.jsonl", "orphan_object"),
-    ("invalid-pile-card-in-table.jsonl", "schema_invalid"),
 ])
 def test_native_compact_divergence_fails_closed(name: str, reason: str) -> None:
     with pytest.raises(Divergence, match=reason):
         reconstruct(_raw(name))
 
 
-def test_native_compact_pile_card_rejected_on_hot_path() -> None:
-    with pytest.raises(Divergence, match="object_key_ref_mismatch"):
-        reconstruct(_raw("invalid-pile-card-in-table.jsonl"), sampled=False)
+@pytest.mark.parametrize(("name", "hot", "sampled"), [
+    ("invalid-pile-card-in-table.jsonl", "object_key_ref_mismatch", "schema_invalid"),
+    ("invalid-pile-key-with-ref.jsonl", "pile_placeholder", "schema_invalid"),
+    ("invalid-pile-card-other-view.jsonl", "pile_placeholder", "pile_placeholder"),
+    ("invalid-discard-view.jsonl", "pile_placeholder", "schema_invalid"),
+])
+def test_native_compact_pile_cards_never_tabled(name: str, hot: str, sampled: str) -> None:
+    with pytest.raises(Divergence, match=hot):
+        reconstruct(_raw(name), sampled=False)
+    with pytest.raises(Divergence, match=sampled):
+        reconstruct(_raw(name))
 
 
 def test_native_compact_reachability_cycles_and_reconcile_due() -> None:
