@@ -40,6 +40,25 @@ SCHEMA = "stpd/p1-local-inference-1"
 MAX_BYTES = 64 * 1024 * 1024
 
 
+def tcp_nodelay(connection: Connection) -> bool:
+    """Disable Nagle on a TCP connection; loopback/Unix sockets are left alone.
+
+    multiprocessing sends a large frame as header + body, which Nagle plus
+    delayed ACK can hold for ~40 ms per scoring round trip across nodes.
+    """
+    try:
+        duplicate = socket.socket(fileno=os.dup(connection.fileno()))
+    except OSError:
+        return False
+    try:
+        if duplicate.family not in {socket.AF_INET, socket.AF_INET6}:
+            return False
+        duplicate.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return True
+    finally:
+        duplicate.close()  # closes only the duplicate descriptor
+
+
 @dataclass
 class _Request:
     model: str
@@ -429,6 +448,9 @@ class CentralInferencePool(LocalInferencePool):
     background publisher. Actor-local CPU remains the default selection.
     """
 
+    # Read-only/owned operations that carry no control input key.
+    unkeyed_operations: frozenset[str] = frozenset({"status", "receipt"})
+
     def __init__(self, model: Any, identity: dict[str, Any], *, control: Any,
                  max_batch: int = 40, window_ms: float = 2,
                  address: tuple[str, int] | None = None, segment_steps: int = 64,
@@ -531,6 +553,9 @@ class CentralInferencePool(LocalInferencePool):
                 # Never synchronize the training/default stream or the device.
                 self.cuda_stream.synchronize()
 
+    def _touch(self, key: str) -> None:
+        """Score-time use hook (under model_lock); the learner pool needs none."""
+
     def publish(self, model: Any, identity: dict[str, Any]) -> None:
         if any(parameter.requires_grad for parameter in model.parameters()):
             raise ValueError("RL_inference_requires_immutable_snapshot")
@@ -572,7 +597,7 @@ class CentralInferencePool(LocalInferencePool):
                     raise ValueError("RL inference binding differs")
                 try:
                     if value["operation"] != "score":
-                        if value["operation"] not in {"status", "receipt"}:
+                        if value["operation"] not in self.unkeyed_operations:
                             from spireagent.rl_exchange import control_input, input_key
 
                             if value.get("input_key") != input_key(control_input(value)):
@@ -581,8 +606,14 @@ class CentralInferencePool(LocalInferencePool):
                     else:
                         key = value["snapshot_sha256"]
                         with self.model_lock:
-                            model = self.models[key]
-                            bound_projection(model.vocabulary, value["input_projection"])
+                            model = self.models.get(key)
+                            if model is not None:
+                                self._touch(key)
+                        if model is None:
+                            from spireagent.json_boundary import BoundaryError
+
+                            raise BoundaryError("rl_mu", "MU_NOT_RESIDENT")
+                        bound_projection(model.vocabulary, value["input_projection"])
                         frame = self.compiler.decode(value["compiled_input"],
                             expected_identity=self.compiler_identity)
                         answer: Future = Future()
@@ -719,6 +750,8 @@ class SegmentConnection:
             self.attachment = {**latest, "rendezvous": rendezvous}
         self.connection = Client(tuple(self.attachment["address"]),
                                  authkey=bytes.fromhex(os.environ[AUTH_ENV]))
+        if self.attachment.get("role") == "inference_service":
+            tcp_nodelay(self.connection)
         self.request_id = 0
 
     def request(self, operation: str, **fields: Any) -> dict[str, Any]:
