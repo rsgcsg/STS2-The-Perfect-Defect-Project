@@ -1558,3 +1558,50 @@ def test_unscored_evaluation_is_neither_a_regression_verdict_nor_a_reference(
                                              'reason': 'no_counted_games'}
     assert 'protocol_skipped' not in third
     assert third['paired_regression'] is True and owner.state['stop'] is None
+
+
+def test_archiver_lag_is_visible_and_a_slow_final_drain_reports_not_fails(owner, monkeypatch):
+    """Review M4: watch-state carries the archiver's backlog, age, rate and error, with
+    one attention per episode; the final drain is sized from the backlog and a slow tail
+    is reported in archive-final.json (originals kept), not a watcher failure."""
+    import json as json_module
+
+    from spireagent.storage.async_archive import ArchivedStore
+    from spireagent.storage.blobs import StoreError
+
+    view = {"pending": 3, "oldest_pending_seconds": 10.0, "copied_records": 0,
+            "copied_bytes": 0, "last_error": None, "publisher_alive": True}
+    waits = []
+
+    class Archive:
+        def backlog(self):
+            return dict(view)
+
+        def wait_for_publisher(self, *, timeout):
+            waits.append(timeout)
+            raise StoreError("shared_archive_incomplete", "retain")
+
+    store = ArchivedStore.__new__(ArchivedStore)
+    store.archive = Archive()
+    monkeypatch.setattr(owner.exchange, "store", store, raising=False)
+    alarms = []
+    monkeypatch.setattr(owner, "telemetry", lambda kind, **fields: alarms.append(
+        fields.get("reason", kind)))
+    first = owner.archiver_check()
+    assert first["pending"] == 3 and first["alarm"] is None and alarms == []
+    assert owner.archiver_check() == first  # 300 s cadence: no second listing
+    view.update(oldest_pending_seconds=4000.0, copied_records=3600, copied_bytes=7200)
+    owner.state["archiver"]["at"] -= 3600
+    record = owner.archiver_check()
+    assert record["alarm"] == "archive_backlog_too_old"
+    assert record["records_per_hour"] == pytest.approx(3600)
+    assert record["bytes_per_hour"] == pytest.approx(7200) and owner.state["archiver"] == record
+    owner.state["archiver"]["at"] -= 3600
+    owner.archiver_check()
+    assert alarms == ["archive_backlog_too_old"]  # one attention per episode
+    view.update(pending=1000, copied_records=3600)
+    owner.final_archive_drain()
+    assert waits == [500.0]  # no copies since the last check: 0.5 s per pending intent
+    final = json_module.loads((owner.work / "archive-final.json").read_bytes())
+    assert final["full_readback"] is False and final["error"] == "shared_archive_incomplete"
+    assert alarms[-1] == "archive_final_drain_incomplete"

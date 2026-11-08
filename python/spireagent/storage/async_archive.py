@@ -145,6 +145,10 @@ class Archive:
         # upload belong to the one shared publisher (publisher.lock: the learner, and
         # the watcher's final drain), not to hundreds of actor processes.
         self.intents_only = False
+        # Throughput of this process's copies (records + manifest payload bytes), for the
+        # dedicated archiver's in-window telemetry (OPS-2 review M4).
+        self.copied_records = 0
+        self.copied_bytes = 0
 
     def defer_to_shared_publisher(self) -> None:
         with self.lock:
@@ -306,6 +310,12 @@ class Archive:
                 "completed_at": time.time(), "full_readback": True,
                 "artifacts": artifacts, "archive": self.binding}))
             pending.unlink(missing_ok=True)  # The completed receipt retains the exact intent.
+            size = len(raw)
+            if key.startswith("manifests/"):
+                size += sum(payload.size for payload in Manifest.from_bytes(raw).payloads)
+            with self.lock:
+                self.copied_records += 1
+                self.copied_bytes += size
 
     def _unexpected_error(self, error: Exception, intent: str | None = None) -> None:
         self.last_error = {"stage": "shared_archive", "error_type": type(error).__name__,
@@ -447,7 +457,37 @@ class Archive:
             for key in self.source.blobs.keys(prefix):
                 self.offer(key, self.source.blobs.get(key), start=False)
 
+    def backlog(self) -> dict[str, Any]:
+        """Cheap in-window view of the shared outbox for the dedicated archiver: only
+        pending/ is listed (completed intents leave it) and each pending intent stat'ed."""
+        now = time.time()
+        ages = []
+        for key in self.queue.keys("pending/"):
+            with suppress(FileNotFoundError):  # completed between listing and stat
+                ages.append(now - (self.queue.root / key).stat().st_mtime)
+        with self.lock:
+            copied, size = self.copied_records, self.copied_bytes
+        return {"pending": len(ages), "oldest_pending_seconds": max(ages, default=0.0),
+                "copied_records": copied, "copied_bytes": size,
+                "last_error": self.last_error,
+                "publisher_alive": self.thread is not None and self.thread.is_alive()}
+
+    def wait_for_publisher(self, *, timeout: float) -> dict[str, Any]:
+        """Final drain by the running publisher thread itself (no second copier in this
+        process, review L2). Returns the global status; never raises on a timeout."""
+        deadline = time.monotonic() + timeout
+        while True:
+            self.wake.set()
+            status = self.status(owned=False)
+            if status["full_readback"] or time.monotonic() >= deadline:
+                return status
+            if self.thread is None or not self.thread.is_alive():
+                return self.drain(timeout=max(1, deadline - time.monotonic()), owned=False)
+            time.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
+
     def status(self, *, owned: bool = False) -> dict[str, Any]:
+        if owned and self.intents_only:
+            self._refresh_owned()  # stat per own intent, no lock: the archiver's progress
         with self.lock:
             planned, done, verified_at = len(self.owned), len(self.owned_done), self.verified_at
         if not owned:

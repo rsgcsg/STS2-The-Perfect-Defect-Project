@@ -147,9 +147,14 @@ class Actor:
                 or retention["score_eligible"]):
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
-        # OPS-2: no NFS archive lock or R2 upload on the actor's hot path; originals stay
-        # in the shared Store, the learner's publisher and the watcher's drain copy them.
-        self.exchange.defer_archive()
+        # OPS-2: no NFS archive lock or R2 upload on the actor's hot path, but only when
+        # the plan says a dedicated archiver (SegmentWatcher) consumes the shared outbox.
+        # Otherwise the actor copies its own intents as before: never a silent loss.
+        publisher = configuration.get("archive_publisher")
+        if publisher not in {None, "shared"}:
+            reject("explicit_archive_publisher_required")
+        if publisher == "shared":
+            self.exchange.defer_archive()
         self.name = configuration["actor"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.name):
             reject("invalid_actor_name")

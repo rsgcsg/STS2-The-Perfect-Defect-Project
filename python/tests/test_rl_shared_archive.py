@@ -5,6 +5,8 @@ transport contract; these tests do not claim gameplay or cloud availability.
 """
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -757,3 +759,47 @@ def test_intent_only_actor_leaves_copy_to_the_one_dedicated_archiver(tmp_path):
     final = archiver.status()
     assert final["pending"] == 0 and final["full_readback"]
     assert archive.get_manifest(model.artifact_id).artifact_id == model.artifact_id
+    # The archiver's in-window view and its own thread finish the tail (review M4/L2);
+    # the intent-only status now reflects the archiver's receipts (review L1).
+    view = archiver.backlog()
+    assert view["pending"] == 0 and view["copied_records"] > 0 and view["copied_bytes"] > 0
+    assert view["publisher_alive"] and view["last_error"] is None
+    assert archiver.wait_for_publisher(timeout=5)["full_readback"]
+    assert exchange.archive_status()["full_readback"]
+
+
+def test_archiver_backlog_reports_oldest_pending_age(tmp_path):
+    binding, hot, _archive = peers(tmp_path)
+    exchange = Exchange(binding, "backlog")
+    exchange.defer_archive()
+    model = publish_model(hot)
+    exchange.publish_model({"run": exchange.run, "version": 0,
+        "model_artifact_id": model.artifact_id, "model_sha256": model.payload("weights").sha256})
+    pending = list((Path(binding["directory"]) / ".archive/pending").iterdir())
+    old = time.time() - 4000
+    os.utime(pending[0], (old, old))
+    view = Archive(Path(binding["directory"]), binding["archive"]).backlog()
+    assert view["pending"] == len(pending) and view["oldest_pending_seconds"] >= 3999
+    assert view["publisher_alive"] is False  # nobody is copying: visible, not silent
+
+
+@pytest.mark.parametrize("publisher", [None, "shared", "learner"])
+def test_actor_defers_only_when_its_plan_names_the_shared_archiver(tmp_path, publisher):
+    """Review M3: only a SegmentWatcher plan (which starts the archiver) sets
+    archive_publisher; any other launcher keeps the actor's own copy (no silent loss)."""
+    from spireagent.workbench.rl_actor import Actor
+
+    binding, _hot, _archive = peers(tmp_path)
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps({"peer": binding, "retention": {
+        "tier": "trajectory", "purpose": "training", "audit_every": 100}}))
+    config = {"schema": "spireagent/rl-actor-config-1", "actor": "a-1",
+              "execution": str(execution), "peer": binding, "run": "switch"}
+    if publisher is not None:
+        config["archive_publisher"] = publisher
+    if publisher == "learner":
+        with pytest.raises(BoundaryError, match="explicit_archive_publisher_required"):
+            Actor(config, tmp_path / "actor")
+        return
+    actor = Actor(config, tmp_path / "actor")
+    assert actor.exchange.store.archive.intents_only is (publisher == "shared")

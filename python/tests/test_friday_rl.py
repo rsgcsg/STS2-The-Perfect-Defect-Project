@@ -1419,3 +1419,16 @@ def test_actor_result_records_node_nfs_state_loss(rl, monkeypatch):
     monkeypatch.setattr(rl.subprocess, 'run', undecodable)
     assert rl.node_nfs_counts() is None  # any failure is a missing fact, never a lost result
     assert seen['errors'] == 'replace' and seen['timeout'] <= 5
+
+
+def test_prepare_marks_shared_archiver_only_when_asked(rl, inputs, tmp_path):
+    """Review M3: SegmentWatcher plans say archive_publisher=shared; others do not."""
+    plan, _file = prepared(rl, inputs)
+    configs = [json.loads(Path(ref['path']).read_bytes()) for ref in plan['actors']]
+    assert all('archive_publisher' not in config for config in configs)
+    execution, learner, _output = inputs
+    shared = rl.prepare(execution, learner, tmp_path / 'shared', archive_publisher='shared')
+    assert all(json.loads(Path(ref['path']).read_bytes())['archive_publisher'] == 'shared'
+               for ref in shared['actors'])
+    with pytest.raises(ValueError, match='explicit_archive_publisher_required'):
+        rl.prepare(execution, learner, tmp_path / 'other', archive_publisher='learner')

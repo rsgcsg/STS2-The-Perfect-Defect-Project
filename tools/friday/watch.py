@@ -2172,7 +2172,7 @@ class SegmentWatcher(Watcher):
             python=Path(self.config['learner_python']),
             episode_seconds=self.config.get('episode_seconds', 14400),
             supervisor=self.config.get('learner_supervisor'),
-            dataplane=self.config.get('dataplane')))
+            dataplane=self.config.get('dataplane'), shared_archiver=True))
         script.chmod(0o700)
         attempt = {'root': str(root), 'generation': generation, 'config': str(configuration),
                    'checkpoint': cp, 'actor_plans': [], 'replaced': [], 'active_seconds': 0,
@@ -2350,7 +2350,7 @@ class SegmentWatcher(Watcher):
             episode_seconds=self.config.get('episode_seconds', 14400), max_games=100000,
             games_per_ledger=10, runtime_source=Path(self.config['runtime_source']),
             seed_namespace=f'ops-{self.work.name}-{attempt["generation"]}-replacement-{number}',
-            segment_inference=self.work / 'inference.json')
+            segment_inference=self.work / 'inference.json', archive_publisher='shared')
         replacement = {'plan': str(root / 'plan.json'), 'replaces': terminal}
         attempt.setdefault('replacements', []).append(replacement)
         attempt['replaced'].extend(row['actor'] for row in terminal)
@@ -3120,6 +3120,66 @@ class SegmentWatcher(Watcher):
             self.exchange.store.archive.start_publisher()
             self.telemetry('archiver_started', root=str(self.exchange.store.archive.root))
 
+    def archiver_check(self, *, force: bool = False) -> dict[str, Any] | None:
+        """In-window archiver telemetry in watch-state (review M4): backlog, oldest pending
+        age, bytes/h and last error; one attention per episode when the backlog is older
+        than ``archive_backlog_alarm_seconds`` or an error persists across two checks.
+        Backpressure stays off the actor hot path; this only makes lag visible."""
+        from spireagent.storage.async_archive import ArchivedStore
+
+        if not isinstance(self.exchange.store, ArchivedStore):
+            return None
+        now = time.time()
+        prior = self.state.get('archiver') or {}
+        if not force and now - prior.get('at', 0) < self.config.get(
+                'archive_check_seconds', 300):
+            return prior
+        view = self.exchange.store.archive.backlog()
+        elapsed = now - prior['at'] if 'at' in prior else None
+        rate = ((view['copied_bytes'] - prior.get('copied_bytes', 0)) * 3600 / elapsed
+                if elapsed else None)
+        error = view['last_error']
+        old = view['oldest_pending_seconds'] > self.config.get(
+            'archive_backlog_alarm_seconds', 1800)
+        stuck = error is not None and prior.get('last_error') == error
+        record = {**view, 'at': now, 'bytes_per_hour': rate,
+                  'records_per_hour': ((view['copied_records'] - prior.get('copied_records', 0))
+                                       * 3600 / elapsed if elapsed else None),
+                  'alarm': ('archive_backlog_too_old' if old else
+                            'archive_error_persists' if stuck else None)}
+        self.state['archiver'] = record
+        self.persist()
+        if record['alarm'] is not None and prior.get('alarm') != record['alarm']:
+            self.telemetry('attention', reason=record['alarm'], pending=view['pending'],
+                           oldest_pending_seconds=view['oldest_pending_seconds'],
+                           publisher_alive=view['publisher_alive'], last_error=error)
+        return record
+
+    def final_archive_drain(self) -> None:
+        """The running archiver finishes the fleet's tail (actors no longer drain at
+        exit). The wait is sized from the backlog and measured rate (120-1800 s). A slow
+        tail is reported in archive-final.json with originals kept, not a watcher
+        failure; ``async_archive --operation drain`` resumes it."""
+        from spireagent.storage.async_archive import ArchivedStore
+        from spireagent.storage.blobs import StoreError
+
+        if not isinstance(self.exchange.store, ArchivedStore):
+            return
+        record = self.archiver_check(force=True) or {}
+        rate = record.get('records_per_hour') or 0
+        pending = record.get('pending', 0)
+        estimate = 2 * pending * 3600 / rate if rate > 0 else pending * 0.5
+        timeout = min(1800.0, max(120.0, estimate))
+        try:
+            status = self.exchange.store.archive.wait_for_publisher(timeout=timeout)
+        except StoreError as error:
+            status = {'full_readback': False, 'error': getattr(error, 'code', str(error))}
+        status = {**status, 'drain_timeout_seconds': timeout}
+        save(self.work / 'archive-final.json', status)
+        if not status.get('full_readback'):
+            self.telemetry('attention', reason='archive_final_drain_incomplete',
+                           pending=status.get('pending'), timeout_seconds=timeout)
+
     def run(self):
         import secrets
 
@@ -3134,14 +3194,14 @@ class SegmentWatcher(Watcher):
         try:
             while True:
                 self.tick_segment()
+                self.archiver_check()
                 if self.state['stop'] and self.state['active'] is None:
                     pending = self.state['pending']
                     if pending is None or pending['stage'] in {'failed', 'submission_intent'}:
                         from spireagent.storage.async_archive import ArchivedStore
 
                         if isinstance(self.exchange.store, ArchivedStore):
-                            status = self.exchange.store.archive.drain(timeout=120, owned=False)
-                            save(self.work / 'archive-final.json', status)
+                            self.final_archive_drain()
                             self.retain_segment_checkpoints()
                         return self.state
                 time.sleep(self.config.get('poll_seconds', 30))

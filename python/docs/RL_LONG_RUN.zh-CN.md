@@ -295,7 +295,7 @@ model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即
 `publisher.lock`、在窗口内复制所有pending intent，窗口结束再做最终drain（`archive-final.json`）。
 actor进程只写durable pending intent（`put_if_absent`，不加锁），不起复制线程、不在NFS锁里传R2、
 退出时不drain（summary里`archive.publisher=shared`）；原件一直在共享Store。learner在dataplane下用自己
-节点本地的outbox，不做共享outbox的消费者。
+节点本地的outbox，不做共享outbox的消费者。只有计划里写了`archive_publisher: shared`的actor才这样做（SegmentWatcher的learner启动`learn --shared-archiver`和补位计划会写）；别的启动方式actor照旧自己复制，不会静默丢R2副本。watcher每`archive_check_seconds`（默认300）把archiver的pending数、最老pending时长、bytes/h、last_error写进watch-state的`archiver`，最老pending超过`archive_backlog_alarm_seconds`（默认1800）或错误连续两次不变就报一次attention。最终drain由archiver线程自己做，等待时间按backlog和实测速率算（120–1800 s）；没清完就写进`archive-final.json`并报`archive_final_drain_incomplete`，原件保留，用`async_archive --operation drain`续，不算watcher失败。
 
 ### 每两小时固定 Managed 评估
 
