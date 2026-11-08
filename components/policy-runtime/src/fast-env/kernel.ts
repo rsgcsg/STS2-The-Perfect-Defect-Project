@@ -10,6 +10,7 @@ import { supportsProfileValue, type AgentManifest } from "../agent-session-contr
 import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
+import { pyJsonSha256 } from "./json-bytes.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
 import type { SlotNative, SlotNativeFactory } from "./host.js";
@@ -112,7 +113,7 @@ class GameRun {
     }
     return { row_id: row?.rowId ?? null, step_index: row?.stepIndex ?? null, consumption_id: row?.consumptionId ?? null,
       occurrence: prepared.reduction.observation.envelope.occurrence, snapshot_id: String(prepared.source.full.basis.snapshot.snapshot_id),
-      frame: prepared.source.frame, observation_sha256: row?.observationSha ?? null, catalog_sha256: row?.catalogSha ?? globalDigest(catalog),
+      frame: prepared.source.frame, observation_sha256: row?.observationSha ?? null, catalog_sha256: row?.catalogSha ?? pyJsonSha256(catalog),
       catalog_len: catalog.length, selected_index: index, choice_json: choiceJson, same_content_ordinal: ordinal,
       status: "not_started", native_steps: [], input_line: row?.inputLine ?? null };
   }
@@ -261,8 +262,10 @@ class GameRun {
       const rowId = this.ctx.nextRowId(), stepIndex = this.decisions;
       const view = modelView(observation) as unknown as Record<string, any>;
       const observationJson = JSON.stringify(view), catalogJson = JSON.stringify(catalog);
-      const catalogSha = globalDigest(catalog), inCombat = view.combat?.availability === "available";
-      const observationSha = sha256(observationJson);
+      // The repo-wide definitions: digest(json_bytes(observation)) / digest(json_bytes(catalog)),
+      // the values the encoder and segment validation compute from this line.
+      const catalogSha = pyJsonSha256(catalog), inCombat = view.combat?.availability === "available";
+      const observationSha = pyJsonSha256(view);
       const row = { row_id: rowId, game_instance_id: this.gameInstanceId, catalog_sha256: catalogSha, catalog_len: catalog.length, in_combat: inCombat };
       const consumptionId = `consumption-${randomUUID().replaceAll("-", "")}`;
       const line = `{"schema":${JSON.stringify(FAST_ENV_LINK_SCHEMA)},"type":"decision","row_id":${rowId},`

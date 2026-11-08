@@ -3315,7 +3315,8 @@ export async function startManagedPlayerEnvironmentSession({
   identityMode = "crypto",
   validateSdk = true,
   quietDiagnostics = false,
-  compactOutput = null
+  compactOutput = null,
+  fastChain = false
 }) {
   validateManagedAscension(ascension);
   compactOutput = validateCompactOutput(compactOutput);
@@ -3324,7 +3325,8 @@ export async function startManagedPlayerEnvironmentSession({
     candidateDirectory,
     diskIdentity,
     requestTimeoutMs,
-    quietDiagnostics
+    quietDiagnostics,
+    fastChain
   });
   const environmentFingerprint = digest({
     candidate_id: runtime.manifest.candidate_id,

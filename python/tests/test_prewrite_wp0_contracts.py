@@ -219,7 +219,8 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
                 if key not in digests or key in frame["objects"]:
                     raise Divergence("reconcile_mismatch")
             for key in frame["upserted"]:
-                if key not in frame["objects"] or digests.get(key) == frame["object_digests"].get(key):
+                unchanged = digests.get(key) == frame["object_digests"].get(key)
+                if key not in frame["objects"] or unchanged:
                     raise Divergence("reconcile_mismatch")
             carried = {key: value for key, value in digests.items()
                        if key not in frame["removed"]}

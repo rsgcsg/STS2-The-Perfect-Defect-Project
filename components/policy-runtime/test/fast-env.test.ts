@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
 import { ReferenceGlobalTransport } from "../src/global-transport.js";
 import { createGlobalProgramManifest } from "../src/global-program.js";
+import { pyJsonSha256 } from "../src/fast-env/json-bytes.js";
 import { GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { FastEnvProcess, requireFastEnvManifest } from "../src/fast-env/process.js";
 import { StreamDecisionLink } from "../src/fast-env/link.js";
@@ -399,6 +400,9 @@ describe("fast-env K-game process", () => {
         frame: { episode_instance: "fake", seq: index }, native_steps: [expect.objectContaining({ fold_index: 0, delivery: "delivered",
           receipt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) })] });
       expect(record.input_line).toBe(JSON.stringify(decisions[index]));
+      // Recomputed from the line the encoder parses: digest(json_bytes(observation)) / digest(json_bytes(catalog)).
+      expect(decisions[index].observation_sha256).toBe(pyJsonSha256(decisions[index].input.observation));
+      expect(decisions[index].catalog_sha256).toBe(pyJsonSha256(decisions[index].input.observation.catalog));
       expect(JSON.parse(record.choice_json)).not.toHaveProperty("choice_id");
       expect(record.choice_json).not.toMatch(/bound_action_id/u);
       expect(Number.isSafeInteger(record.occurrence)).toBe(true);
