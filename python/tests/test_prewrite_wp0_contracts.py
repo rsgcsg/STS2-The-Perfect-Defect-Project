@@ -146,6 +146,16 @@ def _inline(value: Any, table: dict[str, Any]) -> Any:
     return value
 
 
+def _valid_start(start: Any) -> bool:
+    if not isinstance(start, dict):
+        return False
+    if start.get("kind") == "new_run":
+        return len(start) == 1
+    return (start.get("kind") == "from_save" and len(start) == 2
+            and isinstance(start.get("save_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", start["save_sha256"]) is not None)
+
+
 def reconstruct(lines: list[str], *, sampled: bool = True,
                 reconcile_interval: int = 64) -> list[dict[str, Any]]:
     """Host side: rebuild each full state from raw compact lines, failing closed.
@@ -172,6 +182,10 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
                 if frame["object_digests"].get(key) != _sha(raw):
                     raise Divergence("object_digest_mismatch")
         if frame["frame"] == "full":
+            if frame["seq"] != 0:
+                raise Divergence("full_seq_nonzero")
+            if not _valid_start(frame.get("start")):
+                raise Divergence("start_invalid")
             table, digests, instance, anchor = {}, {}, frame["episode_instance"], frame["seq"]
         elif held is None or frame["episode_instance"] != instance or frame["base_seq"] != held:
             raise Divergence("base_mismatch")
@@ -182,15 +196,32 @@ def reconstruct(lines: list[str], *, sampled: bool = True,
         for key, body in frame["objects"].items():
             if not isinstance(body, dict) or body.get("native_ref") != key.split("#")[0]:
                 raise Divergence("object_key_ref_mismatch")
+            if "ordering_semantics" in body:  # a pile container is never tabled, under any key
+                raise Divergence("pile_tabled")
         if set(frame["objects"]) != set(frame["object_digests"]):
             raise Divergence("digest_set_mismatch")
         if frame["frame"] == "delta":
+            for key in frame["removed"]:  # writer bookkeeping must match the Host's (rules 5, 9)
+                if key not in digests:
+                    raise Divergence("removed_not_held")
+                if key in frame["objects"]:
+                    raise Divergence("removed_and_upserted")
+            for key, value in frame["object_digests"].items():  # rule 5 is an iff
+                if digests.get(key) == value:
+                    raise Divergence("noop_upsert")
             for key in frame["removed"]:  # the Host forgets the key; it must come back as an upsert
                 table.pop(key, None)
                 digests.pop(key, None)
             table.update(frame["objects"])
             digests.update(frame["object_digests"])
         elif frame["frame"] == "reconcile":
+            for key in frame["removed"]:
+                if key not in digests or key in frame["objects"]:
+                    raise Divergence("reconcile_mismatch")
+            for key in frame["upserted"]:
+                unchanged = digests.get(key) == frame["object_digests"].get(key)
+                if key not in frame["objects"] or unchanged:
+                    raise Divergence("reconcile_mismatch")
             carried = {key: value for key, value in digests.items()
                        if key not in frame["removed"]}
             for key, value in frame["object_digests"].items():
@@ -278,10 +309,18 @@ def test_native_compact_reappearing_object_is_resent() -> None:
     ("invalid-stale-bookkeeping.jsonl", "reconcile_mismatch"),
     ("invalid-wrong-base.jsonl", "base_mismatch"),
     ("invalid-orphan.jsonl", "orphan_object"),
+    ("invalid-removed-not-held.jsonl", "removed_not_held"),
+    ("invalid-removed-and-upserted.jsonl", "removed_and_upserted"),
+    ("invalid-noop-upsert.jsonl", "noop_upsert"),
+    ("invalid-reconcile-removed-not-held.jsonl", "reconcile_mismatch"),
+    ("invalid-reconcile-upserted-unchanged.jsonl", "reconcile_mismatch"),
+    ("invalid-full-seq-nonzero.jsonl", "full_seq_nonzero"),
 ])
 def test_native_compact_divergence_fails_closed(name: str, reason: str) -> None:
     with pytest.raises(Divergence, match=reason):
         reconstruct(_raw(name))
+    with pytest.raises(Divergence, match=reason):
+        reconstruct(_raw(name), sampled=False)
 
 
 @pytest.mark.parametrize(("name", "hot", "sampled"), [
@@ -289,12 +328,21 @@ def test_native_compact_divergence_fails_closed(name: str, reason: str) -> None:
     ("invalid-pile-key-with-ref.jsonl", "pile_placeholder", "schema_invalid"),
     ("invalid-pile-card-other-view.jsonl", "pile_placeholder", "pile_placeholder"),
     ("invalid-discard-view.jsonl", "pile_placeholder", "schema_invalid"),
+    ("invalid-pile-container-tabled.jsonl", "pile_tabled", "pile_tabled"),
 ])
 def test_native_compact_pile_cards_never_tabled(name: str, hot: str, sampled: str) -> None:
     with pytest.raises(Divergence, match=hot):
         reconstruct(_raw(name), sampled=False)
     with pytest.raises(Divergence, match=sampled):
         reconstruct(_raw(name))
+
+
+def test_native_compact_start_is_checked_on_both_paths() -> None:
+    # The hot path checks the start itself; the sampled path's schema already refuses it.
+    with pytest.raises(Divergence, match="start_invalid"):
+        reconstruct(_raw("invalid-start-without-save-digest.jsonl"), sampled=False)
+    with pytest.raises(Divergence, match="schema_invalid"):
+        reconstruct(_raw("invalid-start-without-save-digest.jsonl"))
 
 
 def test_native_compact_reachability_cycles_and_reconcile_due() -> None:

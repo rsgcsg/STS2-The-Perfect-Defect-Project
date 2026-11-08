@@ -254,13 +254,16 @@ export async function startManagedHostService(started, {
     return true;
   };
 
-  async function dispatch(request, response) {
+  async function dispatch(request, response, { inProcess = false } = {}) {
     try {
       if (closing) { request.resume(); error(response, 409, "managed_service_closing"); return; }
-      const denied = localRequestError(request);
+      // The loopback Host/Origin fence guards sockets; an in-process caller has none.
+      const denied = inProcess ? null : localRequestError(request);
       if (denied) { request.resume(); error(response, 403, denied); return; }
       const role = authorize(request, clientToken, managerToken);
       if (role == null) { request.resume(); error(response, 401, "managed_service_unauthorized"); return; }
+      // Manager lifecycle (reset/close/recover/status) stays on the HTTP attach point.
+      if (inProcess && role !== "client") { request.resume(); error(response, 403, "managed_service_inprocess_client_only"); return; }
       if (request.method === "GET" && request.url === "/v1/ready") {
         json(response, 200, ready()); return;
       }
@@ -446,9 +449,57 @@ export async function startManagedHostService(started, {
     return serviceClose;
   }
 
+  /**
+   * Same-process client attach point. The request runs the same dispatch as
+   * HTTP (bearer role, service-instance header, content type, body bounds,
+   * command allowlist, preconditions, result wrapper); only the socket is
+   * absent. The reply is the exact JSON body bytes HTTP would have sent.
+   */
+  async function inProcessRequest({ method, route, authorization, serviceInstanceId: offeredService,
+    contentType, body }) {
+    if ((method !== "GET" && method !== "POST") || typeof route !== "string"
+      || (body !== undefined && typeof body !== "string")) {
+      throw new Error("managed_service_inprocess_request_invalid");
+    }
+    const bytes = body === undefined ? null : Buffer.from(body, "utf8");
+    const headers = {};
+    const rawHeaders = [];
+    const header = (name, value) => {
+      if (value === undefined) return;
+      headers[name] = value;
+      rawHeaders.push(name, value);
+    };
+    header("authorization", authorization);
+    header("x-sts2-managed-service-id", offeredService);
+    header("content-type", contentType);
+    if (bytes) header("content-length", String(bytes.byteLength));
+    const request = {
+      method, url: route, headers, rawHeaders,
+      resume() {},
+      async *[Symbol.asyncIterator]() { if (bytes && bytes.byteLength) yield bytes; }
+    };
+    let status = null;
+    let reply = null;
+    const listeners = [];
+    const response = {
+      destroyed: false, writableFinished: false,
+      writeHead(code) { status = code; },
+      end(value) {
+        reply = Buffer.from(value);
+        this.writableFinished = true;
+        for (const listener of listeners.splice(0)) listener();
+      },
+      once(event, listener) { if (event === "finish") listeners.push(listener); }
+    };
+    await dispatch(request, response, { inProcess: true });
+    if (status === null || reply === null) throw new Error("managed_service_inprocess_reply_missing");
+    return { status, bytes: reply };
+  }
+
   return {
     server, driver, endpoint, serviceInstanceId, clientToken, managerToken,
     ready, get cleanupError() { return cleanupError; },
+    inProcess: Object.freeze({ serviceInstanceId, request: inProcessRequest }),
     async close({ force = true } = {}) {
       closing = true;
       const stopped = nativeClosed ? Promise.resolve() : driver.shutdown({ force });

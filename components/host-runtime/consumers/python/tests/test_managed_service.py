@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -187,6 +188,38 @@ class ManagedServiceClientTests(unittest.TestCase):
                     index = observed[0].index("--diagnostics-file")
                     self.assertEqual(observed[0][index + 1], str(diagnostic.resolve()))
                     self.assertFalse(diagnostic.exists(), "Only the original CLI writes diagnostics")
+
+    def test_launch_embedder_runs_the_same_tool_arguments_with_a_stdin_pipe(self):
+        package = self.directory / "package"
+        (package / "tools").mkdir(parents=True)
+        (package / "tools/managed-host-service.mjs").write_text("// fixture")
+        observed = []
+        def spawn(args, **options):
+            observed.append((args, options))
+            self.attachment("client")
+            self.attachment("manager")
+            return Mock(pid=123, poll=lambda: None)
+        kwargs = {"host_package_dir": package, "candidate_dir": self.directory / "candidate",
+                  "client_attachment": self.directory / "client.json",
+                  "manager_attachment": self.directory / "manager.json"}
+        with patch("sts2_headless.managed_service.subprocess.Popen", side_effect=spawn):
+            launch_managed_host_service(**kwargs, log_file=self.directory / "log-plain")
+            for path in (self.directory / "client.json", self.directory / "manager.json"):
+                path.unlink()
+            launch_managed_host_service(**kwargs, log_file=self.directory / "log-embedded",
+                                        embedder=["/runtime/managed-inprocess-host.js", "--x", "y", "--"])
+        (plain, plain_options), (embedded, embedded_options) = observed
+        tool = str((package / "tools/managed-host-service.mjs").resolve())
+        self.assertEqual(plain[1], tool)
+        self.assertEqual(embedded[1:6], ["/runtime/managed-inprocess-host.js", "--x", "y", "--", tool])
+        self.assertEqual(embedded[0], plain[0])
+        self.assertEqual(embedded[6:], plain[2:])
+        self.assertEqual(plain_options["stdin"], subprocess.DEVNULL)
+        self.assertEqual(embedded_options["stdin"], subprocess.PIPE)
+        for invalid in ("one-string", [], ["ok", ""]):
+            with self.subTest(embedder=invalid), self.assertRaises(ManagedHostServiceError):
+                launch_managed_host_service(**kwargs, log_file=self.directory / "log-bad",
+                                            embedder=invalid)
 
     def test_wrong_role_and_insecure_attachment_fail(self):
         path = self.attachment("manager")

@@ -10,6 +10,11 @@ import {
 import { completePublicUpgradePreview } from "@rsgcsg/sts2-connector-client/p1-global";
 import { crystalSphereSurface } from "./managed-crystal-sphere.mjs";
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
+import { RAW_LINE } from "./json-line-process.mjs";
+import {
+  COMPACT_FORMAT, CompactStateDivergence, CompactStateReconstructor, compactSampleSchedule,
+  DEFAULT_RECONCILE_INTERVAL, DEFAULT_SAMPLE_RATE
+} from "./managed-native-compact.mjs";
 
 const ACTION_LIMIT = 512;
 const CARD_ALTERNATIVE_OUTCOMES = new Set(["do_nothing", "end_selection_and_complete_reward", "end_selection_and_do_not_complete_reward"]);
@@ -2751,6 +2756,19 @@ function receipt({ requestId, delivery, action, reasonCode, detail, retry, succe
   return value;
 }
 
+/** fast_chain only: null keeps today's full native output byte for byte. */
+function validateCompactOutput(value) {
+  if (value == null) return null;
+  if (!plainObject(value)) throw new TypeError("compactOutput must be an object or null.");
+  const reconcileInterval = value.reconcileInterval ?? DEFAULT_RECONCILE_INTERVAL;
+  const sampleRate = value.sampleRate ?? DEFAULT_SAMPLE_RATE;
+  if (!Number.isSafeInteger(reconcileInterval) || reconcileInterval < 1 || reconcileInterval > 1024)
+    throw new TypeError("compactOutput.reconcileInterval must be an integer in 1..1024.");
+  if (typeof sampleRate !== "number" || !(sampleRate >= 0 && sampleRate <= 1))
+    throw new TypeError("compactOutput.sampleRate must be in [0, 1].");
+  return Object.freeze({ reconcileInterval, sampleRate });
+}
+
 function validateManagedAscension(ascension) {
   if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
     throw new Error("managed_ascension_invalid");
@@ -2821,6 +2839,11 @@ export class ManagedPlayerEnvironmentSession {
   #performance = new Map();
   #publicEntityAliases = new Map();
   #stateDigest = null;
+  #compact = null;
+  #compactConfigured = false;
+  #compactInstance = null;
+  #compactCheckAll = false;
+  #compactInstances = new Set();
 
   constructor({
     process,
@@ -2830,7 +2853,8 @@ export class ManagedPlayerEnvironmentSession {
     language = "en",
     ascension = 0,
     identityMode = "crypto",
-    validateSdk = true
+    validateSdk = true,
+    compactOutput = null
   }) {
     if (process == null || typeof process.request !== "function") {
       throw new TypeError("ManagedPlayerEnvironmentSession requires a JSON-line process.");
@@ -2844,6 +2868,16 @@ export class ManagedPlayerEnvironmentSession {
     this.#ascension = ascension;
     this.#identityMode = identityMode;
     this.#validateSdk = validateSdk;
+    this.#compact = validateCompactOutput(compactOutput);
+  }
+
+  /** The native episode instance of the current compact run (null on the old chain). */
+  get episodeInstance() {
+    return this.#compactInstance?.reconstructor.episodeInstance ?? null;
+  }
+
+  get compactOutput() {
+    return this.#compact == null ? null : { ...this.#compact, configured: this.#compactConfigured };
   }
 
   get tainted() {
@@ -2877,20 +2911,21 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
-  async mount({ seed, reset = false, initialProgress = null, timeoutMs = 10_000 }) {
+  async mount({ seed, reset = false, initialProgress = null, timeoutMs = 10_000, compactCheckAll = false }) {
     if (typeof seed !== "string" || seed.length === 0) throw new TypeError("mount requires seed.");
     if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot mount another run.");
     const mountStarted = performance.now();
     initialProgress = validateInitialProgress(initialProgress);
+    this.#compactCheckAll = compactCheckAll === true;
     try {
-      const state = await this.#process.request({
+      const state = await this.#nativeState({
         cmd: reset ? "reset_run" : "start_run",
         character: this.#character,
         seed,
         lang: this.#language,
         ascension: this.#ascension,
         ...(initialProgress == null ? {} : { initial_progress: initialProgress })
-      }, timeoutMs);
+      }, timeoutMs, { startsInstance: "new_run" });
       this.#record("mount_transport_and_native", performance.now() - mountStarted);
       this.#ledger.clear();
       this.#publicEntityAliases.clear();
@@ -2905,7 +2940,8 @@ export class ManagedPlayerEnvironmentSession {
       }
       return snapshot;
     } catch (cause) {
-      if (initialProgress != null) {
+      if (cause instanceof CompactStateDivergence) this.#taintCompact();
+      else if (initialProgress != null) {
         this.#tainted = true;
         this.#taintReason = "initial_progress_mount_failed_replace_process";
         this.#projection = null;
@@ -2920,12 +2956,14 @@ export class ManagedPlayerEnvironmentSession {
     this.#ledger.clear();
     this.#publicEntityAliases.clear();
     try {
-      const state = await this.#process.request({ cmd: "load_save", path, lang: this.#language }, timeoutMs);
+      const state = await this.#nativeState({ cmd: "load_save", path, lang: this.#language }, timeoutMs,
+        { startsInstance: "from_save" });
       if (state?.type !== "decision" || state.decision !== "map_select") {
         throw new Error("managed_map_restore_not_map");
       }
       return await this.#setState(state, timeoutMs);
     } catch (cause) {
+      if (cause instanceof CompactStateDivergence) { this.#taintCompact(); throw cause; }
       this.#tainted = true;
       this.#taintReason = "map_restore_failed";
       throw cause;
@@ -2939,6 +2977,8 @@ export class ManagedPlayerEnvironmentSession {
   observe() {
     if (this.#taintReason === "successor_projection_failed")
       throw new Error("managed_session_tainted_after_successor_projection_failure");
+    if (this.#taintReason === "compact_state_divergence")
+      throw new Error("managed_session_tainted_after_compact_state_divergence");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
   }
@@ -2946,7 +2986,13 @@ export class ManagedPlayerEnvironmentSession {
   async refreshSettling({ timeoutMs = 10_000 } = {}) {
     const snapshot = this.observe();
     if (this.#tainted || snapshot.status !== "settling") return snapshot;
-    const state = await this.#process.request({ cmd: "observe_decision" }, timeoutMs);
+    let state;
+    try {
+      state = await this.#nativeState({ cmd: "observe_decision" }, timeoutMs);
+    } catch (cause) {
+      if (cause instanceof CompactStateDivergence) this.#taintCompact();
+      throw cause;
+    }
     if (state?.type !== "decision") throw new Error("managed_observe_decision_failed");
     return this.#setState(state, timeoutMs, true);
   }
@@ -3008,16 +3054,17 @@ export class ManagedPlayerEnvironmentSession {
     }
     if (this.#tainted) {
       const projectionFailed = this.#taintReason === "successor_projection_failed";
+      const diverged = this.#taintReason === "compact_state_divergence";
       const value = this.#makeReceipt({
         requestId,
         delivery: "not_delivered",
         action: unknownAction(boundActionId),
-        reasonCode: projectionFailed
+        reasonCode: diverged ? "runtime_tainted_after_compact_state_divergence" : projectionFailed
           ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Mutation authority is closed until the process is replaced.",
-        retry: { allowed: false, reason: projectionFailed
-          ? "successor_projection_failure_requires_process_replacement"
-          : "unknown_delivery_requires_process_replacement" },
+        retry: { allowed: false, reason: diverged ? "compact_state_divergence_requires_process_replacement"
+          : projectionFailed ? "successor_projection_failure_requires_process_replacement"
+            : "unknown_delivery_requires_process_replacement" },
         successor: null
       });
       this.#ledger.set(requestId, { requestKey, receipt: value });
@@ -3070,6 +3117,29 @@ export class ManagedPlayerEnvironmentSession {
       this.#ledger.set(requestId, { requestKey, receipt: value });
       return value;
     }
+    if (this.#compactConfigured && plainObject(successor)
+        && (successor.type === "compact_state" || successor.type === "decision")) {
+      try {
+        if (successor.type === "decision") throw new CompactStateDivergence("legacy_state_after_configure");
+        successor = this.#compactState(successor, { startsInstance: false });
+      } catch (error) {
+        if (!(error instanceof CompactStateDivergence)) throw error;
+        // The native answered with a state, so the exact input was delivered; that
+        // state cannot be trusted, so nothing is ever sent on it (fail closed).
+        this.#taintCompact();
+        const value = this.#makeReceipt({
+          requestId,
+          delivery: "delivered",
+          action: binding.action,
+          reasonCode: "compact_state_divergence",
+          detail: error.message,
+          retry: { allowed: false, reason: "compact_state_divergence_requires_process_replacement" },
+          successor: null
+        });
+        this.#ledger.set(requestId, { requestKey, receipt: value });
+        return value;
+      }
+    }
     if (!plainObject(successor) || successor.type !== "decision") {
       this.#tainted = true;
       this.#taintReason = "unknown";
@@ -3120,6 +3190,67 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
+  #taintCompact() {
+    // observe/read refuse on this reason and submit refuses on taint, so no
+    // binding of the last trusted projection can be used again.
+    this.#tainted = true;
+    this.#taintReason = "compact_state_divergence";
+  }
+
+  /** A state-returning native request. Without compactOutput it is exactly the old
+   * request. With it, the first mount turns compact output on and every state reply
+   * must be a compact frame; it is rebuilt to the full state before anything reads it. */
+  async #nativeState(payload, timeoutMs, { startsInstance = false } = {}) {
+    if (this.#compact == null) return this.#process.request(payload, timeoutMs);
+    let reply = await this.#process.request(payload, timeoutMs);
+    if (!this.#compactConfigured) {
+      if (!startsInstance) throw new Error("managed_compact_output_not_configured");
+      // Today's full reply to the first mount is never projected: the run is
+      // re-read as a compact full frame so one writer serves the whole game.
+      if (!plainObject(reply) || reply.type !== "decision") return reply;
+      const configureStarted = performance.now();
+      reply = await this.#process.request({
+        cmd: "configure_output", format: COMPACT_FORMAT, reconcile_interval: this.#compact.reconcileInterval
+      }, timeoutMs);
+      this.#record("compact_configure_output", performance.now() - configureStarted);
+      if (!plainObject(reply) || reply.type !== "compact_state") {
+        throw new CompactStateDivergence("configure_output_refused",
+          plainObject(reply) ? String(reply.type ?? "unknown") : "non_object");
+      }
+      this.#compactConfigured = true;
+    }
+    if (plainObject(reply) && reply.type === "compact_state") return this.#compactState(reply, { startsInstance });
+    if (plainObject(reply) && reply.type === "decision") {
+      // A full-format state after configure_output would be a silent fallback.
+      throw new CompactStateDivergence("legacy_state_after_configure");
+    }
+    return reply;
+  }
+
+  #compactState(frame, { startsInstance }) {
+    const started = performance.now();
+    if (frame.frame === "full") {
+      if (!startsInstance) throw new CompactStateDivergence("unexpected_full_frame");
+      // The native says how this instance began; it must be what was asked, under a fresh instance id.
+      if (frame.start?.kind !== startsInstance) throw new CompactStateDivergence("start_mismatch", String(frame.start?.kind ?? "missing"));
+      if (this.#compactInstances.has(frame.episode_instance)) throw new CompactStateDivergence("instance_reused");
+      if (typeof frame.episode_instance === "string") this.#compactInstances.add(frame.episode_instance);
+      // A new instance gets a new table and its own check schedule, drawn now,
+      // before any of its content has been read.
+      this.#compactInstance = {
+        reconstructor: new CompactStateReconstructor({ reconcileInterval: this.#compact.reconcileInterval }),
+        sampled: compactSampleSchedule({ rate: this.#compact.sampleRate, all: this.#compactCheckAll })
+      };
+    } else if (startsInstance) {
+      throw new CompactStateDivergence("instance_start_not_full");
+    }
+    if (this.#compactInstance == null) throw new CompactStateDivergence("base_mismatch", "no_instance");
+    const sampled = this.#compactInstance.sampled(frame.seq);
+    const state = this.#compactInstance.reconstructor.accept(frame, { line: frame[RAW_LINE] ?? null, sampled });
+    this.#record(sampled ? "compact_reconstruct_sampled" : "compact_reconstruct", performance.now() - started);
+    return state;
+  }
+
   async #setState(state, timeoutMs, preserveUnchanged = false) {
     let enriched = state;
     if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
@@ -3168,9 +3299,11 @@ export async function startManagedPlayerEnvironmentSession({
   requestTimeoutMs = 10_000,
   identityMode = "crypto",
   validateSdk = true,
-  quietDiagnostics = false
+  quietDiagnostics = false,
+  compactOutput = null
 }) {
   validateManagedAscension(ascension);
+  compactOutput = validateCompactOutput(compactOutput);
   const runtime = await startManagedCandidateRuntime({
     root,
     candidateDirectory,
@@ -3194,7 +3327,8 @@ export async function startManagedPlayerEnvironmentSession({
       language,
       ascension,
       identityMode,
-      validateSdk
+      validateSdk,
+      compactOutput
     }),
     runtime,
     environmentFingerprint

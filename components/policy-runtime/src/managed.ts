@@ -19,6 +19,53 @@ export type ManagedTarget = { serviceInstanceId: string; runtimeInstanceId: stri
 export type ManagedGlobalTransport = GlobalTransport & { readonly startupEnvironment: ManagedStartupEnvironment };
 type PrivateControl = { token: string; epoch: string; runtimeId: string; continuityId: string };
 
+/** One request/response exchange with the attached Managed Host service. */
+export interface ManagedServiceChannel {
+  readonly kind: "http" | "in_process";
+  request(input: { method: "GET" | "POST"; route: string; headers: Record<string, string>; body?: string;
+    signal: AbortSignal; maxResponseBytes: number }): Promise<{ ok: boolean; status: number; bytes: Buffer }>;
+}
+/** The Host service's same-process client attach point (`service.inProcess`). */
+export interface ManagedInProcessService {
+  readonly serviceInstanceId: string;
+  request(input: { method: "GET" | "POST"; route: string; authorization: string; serviceInstanceId?: string;
+    contentType?: string; body?: string }): Promise<{ status: number; bytes: Uint8Array }>;
+}
+
+function httpChannel(endpoint: string): ManagedServiceChannel {
+  return { kind: "http", async request({ method, route, headers, body, signal, maxResponseBytes }) {
+    const response = await fetch(`${endpoint}${route}`, { method, headers, ...(body === undefined ? {} : { body }), signal });
+    const chunks: Uint8Array[] = []; let size = 0;
+    for await (const chunk of response.body ?? []) {
+      signal.throwIfAborted(); size += chunk.byteLength;
+      if (size > maxResponseBytes) throw new Error("Managed service response is oversized");
+      chunks.push(chunk);
+    }
+    return { ok: response.ok, status: response.status, bytes: Buffer.concat(chunks) };
+  } };
+}
+
+/**
+ * Same-process transport: the request enters the Host service's own dispatch
+ * (same bearer role, service header, body bounds and allowlist) and returns the
+ * exact body bytes HTTP would carry. Abort before the call means nothing was
+ * offered; once offered, the Host owns the request and an abort only stops
+ * waiting, which the caller classifies exactly as an HTTP abort after send.
+ */
+export function inProcessManagedChannel(service: ManagedInProcessService): ManagedServiceChannel {
+  return { kind: "in_process", async request({ method, route, headers, body, signal, maxResponseBytes }) {
+    signal.throwIfAborted();
+    const authorization = headers.authorization;
+    if (!authorization) throw new Error("Managed in-process request lacks its bearer");
+    const reply = await abortable(service.request({ method, route, authorization,
+      ...(headers["x-sts2-managed-service-id"] === undefined ? {} : { serviceInstanceId: headers["x-sts2-managed-service-id"] }),
+      ...(headers["content-type"] === undefined ? {} : { contentType: headers["content-type"] }),
+      ...(body === undefined ? {} : { body }) }), signal);
+    if (reply.bytes.byteLength > maxResponseBytes) throw new Error("Managed service response is oversized");
+    return { ok: reply.status >= 200 && reply.status < 300, status: reply.status, bytes: Buffer.from(reply.bytes) };
+  } };
+}
+
 function object(value: unknown, label: string): Json {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Json;
@@ -112,7 +159,8 @@ export class ManagedServicePolicyClient implements PolicyConnector {
                       readonly binding: ManagedEnvironmentBinding,
                       readonly bindingSha256: string,
                       private readonly target: ManagedTarget,
-                      runId: string) {
+                      runId: string,
+                      private readonly channel: ManagedServiceChannel = httpChannel(attachment.endpoint)) {
     if (!/^run-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(runId)) {
       throw new Error("Managed Runtime run ID is invalid");
     }
@@ -146,14 +194,9 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     signal.throwIfAborted();
     if (options.beforeSend) await abortable(options.beforeSend(), signal);
     signal.throwIfAborted();
-    const response = await fetch(`${this.attachment.endpoint}${route}`, { method, headers, ...(encoded === undefined ? {} : { body: encoded }), signal });
-    const chunks: Uint8Array[] = []; let size = 0;
-    for await (const chunk of response.body ?? []) {
-      signal.throwIfAborted(); size += chunk.byteLength;
-      if (size > (options.maxResponseBytes ?? MAX_JSON_BYTES)) throw new Error("Managed service response is oversized");
-      chunks.push(chunk);
-    }
-    const bytes = Buffer.concat(chunks);
+    const response = await this.channel.request({ method, route, headers, ...(encoded === undefined ? {} : { body: encoded }),
+      signal, maxResponseBytes: options.maxResponseBytes ?? MAX_JSON_BYTES });
+    const bytes = response.bytes;
     if (options.onResponseBytes) await abortable(Promise.resolve(options.onResponseBytes(bytes)), signal);
     const value = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), "Managed service response");
     if (!response.ok) throw new Error(`Managed service rejected request: ${String(value.error ?? response.status)}`);
@@ -341,11 +384,18 @@ export class ManagedServicePolicyClient implements PolicyConnector {
   private globalTarget() { return this.globalIdentity ? { service_instance_id: this.target.serviceInstanceId,
     runtime_instance_id: this.target.runtimeInstanceId, game_continuity_id: this.target.gameContinuityId } : null; }
 
-  /** Same service, client bearer and actual opaque control epoch; no synthetic TTL lease. */
-  static async attachGlobal(bindingPath: string, attachmentPath: string, target: ManagedTarget, runId: string): Promise<ManagedGlobalTransport> {
+  /**
+   * Same service, client bearer and actual opaque control epoch; no synthetic TTL lease.
+   * An optional in-process service replaces only the socket: it must be the very
+   * service named by the verified attachment, and every check below is unchanged.
+   */
+  static async attachGlobal(bindingPath: string, attachmentPath: string, target: ManagedTarget, runId: string,
+                            inProcess?: ManagedInProcessService): Promise<ManagedGlobalTransport> {
     const verified = await loadManagedAttachment(bindingPath, attachmentPath, "public-basis-1");
     if (verified.attachment.service_instance_id !== target.serviceInstanceId) throw new Error("Managed service target drift");
-    const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target, runId);
+    if (inProcess && inProcess.serviceInstanceId !== verified.attachment.service_instance_id) throw new Error("Managed in-process service differs from attachment");
+    const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target, runId,
+      inProcess ? inProcessManagedChannel(inProcess) : undefined);
     return { kind: "managed", negotiate: signal => client.negotiateGlobal(signal), capture: options => client.captureGlobal(options),
       get startupEnvironment() {
         const admitted = client.globalTarget();
