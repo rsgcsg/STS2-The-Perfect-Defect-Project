@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { decodePublicBasis, PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE, PUBLIC_BASIS_PROFILE, PUBLIC_BASIS_READ_PROFILE } from '@rsgcsg/sts2-connector-client';
+import { checkPublicBasisLight, decodePublicBasis, PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE, PUBLIC_BASIS_PROFILE, PUBLIC_BASIS_READ_PROFILE } from '@rsgcsg/sts2-connector-client';
 
 /** Called synchronously inside the existing driver actor. Observe and Read copy one
- * already materialized projection; no process request, await or live refresh occurs. */
-export function captureManagedPublicBasis(session, { generationId, gameContinuityId, ordinal, settledRelicCounters = false }) {
+ * already materialized projection; no process request, await or live refresh occurs.
+ * fullCheck=false (fast chain, unsampled step) keeps every semantic gate but skips the
+ * strict shape decode; the sampled steps and R7 games get the full decode. */
+export function captureManagedPublicBasis(session, { generationId, gameContinuityId, ordinal, settledRelicCounters = false, fullCheck = true }) {
   const snapshot = structuredClone(session.observe());
   const reads = snapshot.reads.map(listed => {
     try { return { read_id: listed.read_id, kind: listed.kind,
@@ -15,7 +17,7 @@ export function captureManagedPublicBasis(session, { generationId, gameContinuit
   if (snapshot.completeness.status !== 'complete' || snapshot.completeness.missing.length) missing.push('snapshot:partial');
   const settled = settledRelicCounters ? session.settledRelicCounters(snapshot.snapshot_id) : null;
   if (settled) missing.push(...settled.missing.map(value => `settled_relic_counters:${value}`));
-  const basis = decodePublicBasis({ schema: PUBLIC_BASIS_SCHEMA, revision: settled ? '3' : '1', capture_scope: PUBLIC_BASIS_SCOPE,
+  const basis = (fullCheck ? decodePublicBasis : checkPublicBasisLight)({ schema: PUBLIC_BASIS_SCHEMA, revision: settled ? '3' : '1', capture_scope: PUBLIC_BASIS_SCOPE,
     capture_status: missing.length ? 'partial' : 'complete', snapshot, reads, missing,
     ...(settled ? { settled_relic_counters: settled } : {}) });
   const serializedObservation = JSON.stringify(basis), bytes = Buffer.from(serializedObservation);

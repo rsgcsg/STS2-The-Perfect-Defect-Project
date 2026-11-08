@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { decodePublicBasis } from "@rsgcsg/sts2-connector-client";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
@@ -531,4 +532,18 @@ test("actual frozen-run readback is required before prepared mount becomes avail
   assert.equal(driver.status().taint_reason, "initial_progress_mount_failed_replace_process");
   await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress: initialProgressInput() }), /tainted/u);
   assert.equal(calls.filter(call => ["start_run", "reset_run"].includes(call.cmd)).length, 1);
+});
+
+test("capture full_check=false (fast chain) returns the same sealed basis; a non-boolean is refused", async () => {
+  const { driver } = fixture();
+  await driver.handle({ command: "reset", seed: "SEED" });
+  const strict = await driver.handle({ command: "capture" });
+  const light = await driver.handle({ command: "capture", full_check: false });
+  // Reads carry their own observed_at, so compare the sealed shape, not the bytes.
+  assert.equal(light.full.basis.snapshot.snapshot_id, strict.full.basis.snapshot.snapshot_id);
+  assert.deepEqual(light.full.basis.missing, strict.full.basis.missing);
+  assert.equal(light.full.basis.capture_status, strict.full.basis.capture_status);
+  // The light basis is byte-for-byte what the strict decode makes of it.
+  assert.equal(JSON.stringify(decodePublicBasis(structuredClone(light.full.basis))), JSON.stringify(light.full.basis));
+  await assert.rejects(driver.handle({ command: "capture", full_check: "no" }), /managed_capture_fields_invalid/u);
 });

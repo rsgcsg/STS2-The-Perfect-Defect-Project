@@ -19,8 +19,11 @@ export interface SlotNative {
   reset(input: { seed: string; initialProgress: Record<string, unknown> | null; r7: boolean }): Promise<NativeEpisode>;
   /** Loads a Host map save (Host `load_map`; this process must be fresh) and claims control. */
   loadSave(input: { save: Record<string, unknown>; r7: boolean }): Promise<NativeEpisode>;
-  /** A sealed, verified public basis of the current state. */
+  /** A sealed public basis of the current state: light-checked every capture, fully
+   * verified on the sampled ones (throws SampledCheckFailure when that disagrees). */
   capture(): Promise<FullPublicBasis>;
+  /** How many captures of the current episode got the full check so far. */
+  fullChecks(): number;
   /** Submits one Host BoundAction. Resolves with the Host's original receipt object. */
   step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown>;
   /** Gives control back between games. */
@@ -44,6 +47,45 @@ export interface NativeEpisode {
 export interface SlotNativeFactory {
   start(): Promise<SlotNative>;
   readonly hostVersion: string;
+}
+
+/** A sampled full check (byte re-hash, JSON re-parse, strict decode, basis equality)
+ * disagreed with what the light check accepted. The kernel stops this build's output. */
+export class SampledCheckFailure extends Error {
+  /** The originals the light path accepted, exactly as the Host returned them. */
+  readonly mismatch: SampledCheckMismatch;
+  constructor(cause: unknown, original: FullPublicBasis, ordinal: number) {
+    const text = cause instanceof Error ? cause.message : String(cause);
+    super(`sampled_check_failed:${text}`, { cause });
+    this.name = "SampledCheckFailure";
+    this.mismatch = { capture_ordinal: ordinal, cause: text, capture: original.capture,
+      serialized_observation: original.serializedObservation, basis: original.basis };
+  }
+}
+
+/** One sampled full check that disagreed: the Host's handle, bytes and light basis. */
+export interface SampledCheckMismatch {
+  capture_ordinal: number;
+  cause: string;
+  capture: FullPublicBasis["capture"];
+  serialized_observation: string;
+  basis: FullPublicBasis["basis"];
+}
+
+/** The per-episode offset of the full-check draw: derived from the episode's own id, so a
+ * re-run or an audit recomputes exactly which captures were fully checked. */
+export function captureSampleOffset(episodeId: string): number {
+  return createHash("sha256").update(`fast-env-full-check-v1\n${episodeId}`, "utf8").digest().readUInt32BE(0);
+}
+
+/** Which captures of one episode get the full check (design v2 §2.7), fixed before the
+ * first capture: the first capture always, every capture for R7, else about `rate`. A
+ * null offset (no episode id to derive it from) checks every capture. */
+export function captureSampleSchedule(rate: number, all: boolean, offset: number | null): (ordinal: number) => boolean {
+  if (all || rate >= 1 || offset === null) return () => true;
+  if (rate <= 0) return ordinal => ordinal === 0;
+  const threshold = Math.round(rate * 0x1_0000_0000);
+  return ordinal => ordinal === 0 || (Math.imul(ordinal ^ offset, 0x9e3779b1) >>> 0) < threshold;
 }
 
 const MANAGER = { principal: "manager", sharedService: true } as const;
@@ -78,7 +120,13 @@ export class HostSlotNative implements SlotNative {
   #lines: string[] = [];
   #listener: ((line: string) => void) | null = null;
   #last: { line: string; episode_instance: string; seq: number; objects_root_sha256: string; sha?: string } | null = null;
-  constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>) {
+  #sampled: (ordinal: number) => boolean = () => true;
+  #captures = 0;
+  #fullChecks = 0;
+  #r7 = false;
+  #drawKey: string | null = null;
+  constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>,
+              private readonly sampleRate = 1) {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
       if (typeof line !== "string") return;
       this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
@@ -87,7 +135,12 @@ export class HostSlotNative implements SlotNative {
   }
 
   /** A new episode starts with an empty line buffer and no listener. */
-  #beginEpisode(): void { this.#lines = []; this.#listener = null; this.#last = null; }
+  #beginEpisode(r7: boolean, drawKey: string): void {
+    this.#lines = []; this.#listener = null; this.#last = null;
+    this.#captures = 0; this.#fullChecks = 0; this.#r7 = r7; this.#drawKey = drawKey; this.#sampled = () => true;
+  }
+
+  fullChecks(): number { return this.#fullChecks; }
 
   attachLines(listener: ((line: string) => void) | null): void {
     this.#listener = listener;
@@ -108,7 +161,7 @@ export class HostSlotNative implements SlotNative {
 
   async reset(input: { seed: string; initialProgress: Record<string, unknown> | null; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
-    this.#beginEpisode();
+    this.#beginEpisode(input.r7, `seed:${input.seed}`);
     await this.driver.handle({ command: "reset", request_id: rid(), seed: input.seed,
       ...(input.initialProgress ? { initial_progress: input.initialProgress } : {}),
       ...(input.r7 ? { compact_check_all: true } : {}),
@@ -118,7 +171,7 @@ export class HostSlotNative implements SlotNative {
 
   async loadSave(input: { save: Record<string, unknown>; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
-    this.#beginEpisode();
+    this.#beginEpisode(input.r7, `save:${createHash("sha256").update(canonicalJson(input.save), "utf8").digest("hex")}`);
     await this.driver.handle({ command: "load_map", request_id: rid(), save: input.save,
       ...(input.r7 ? { compact_check_all: true } : {}),
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: null }, MANAGER);
@@ -132,19 +185,33 @@ export class HostSlotNative implements SlotNative {
     if (claim?.type !== "claim_control_result") throw new Error("fast_env_claim_result_drift");
     if (typeof claim.control_token !== "string" || claim.control_epoch == null) throw new Error("fast_env_claim_result_drift");
     this.#control = { token: claim.control_token, epoch: claim.control_epoch };
-    return { gameInstanceId: this.started.session.episodeInstance ?? null, start: this.started.session.episodeStart ?? null };
+    const episodeId: string | null = this.started.session.episodeInstance ?? null;
+    // Fixed after mount and before the first capture: no model choice can move it. The
+    // compact episode id when there is one, else what the open itself named (seed / save).
+    const drawKey = episodeId === null ? this.#drawKey : `episode:${episodeId}`;
+    this.#sampled = captureSampleSchedule(this.sampleRate, this.#r7, drawKey === null ? null : captureSampleOffset(drawKey));
+    return { gameInstanceId: episodeId, start: this.started.session.episodeStart ?? null };
   }
 
   async capture(): Promise<FullPublicBasis> {
-    const result = await this.driver.handle({ command: "capture", request_id: rid(),
+    // The Host always runs the light check here (every semantic gate, no strict shape
+    // decode); the sampled captures re-hash the bytes, re-parse them and decode strictly.
+    const result = await this.driver.handle({ command: "capture", request_id: rid(), full_check: false,
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: this.#continuity }, CLIENT);
     if (result?.type !== "capture_result") throw new Error("fast_env_capture_response_type");
-    // Same verification as the Managed transport today (slice 3 makes this sampled).
-    const verified = await verifyPublicBasis(result.full.capture, result.full.serializedObservation);
-    if (canonicalJson(verified.basis) !== canonicalJson(result.full.basis)
-        || verified.capture.game_continuity_id !== this.#continuity
-        || verified.capture.session.runtime_instance_id !== this.runtimeInstanceId) throw new Error("fast_env_capture_world_drift");
-    return verified;
+    const full = result.full as FullPublicBasis;
+    if (full.capture.game_continuity_id !== this.#continuity
+        || full.capture.session.runtime_instance_id !== this.runtimeInstanceId
+        || full.capture.source_snapshot_id !== full.basis.snapshot.snapshot_id
+        || typeof full.serializedObservation !== "string") throw new Error("fast_env_capture_world_drift");
+    const ordinal = this.#captures++;
+    if (!this.#sampled(ordinal)) return full;
+    this.#fullChecks += 1;
+    try {
+      const verified = await verifyPublicBasis(full.capture, full.serializedObservation);
+      if (canonicalJson(verified.basis) !== canonicalJson(full.basis)) throw new Error("basis_differs_from_bytes");
+      return verified;
+    } catch (error) { throw new SampledCheckFailure(error, full, ordinal); }
   }
 
   async step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown> {
@@ -195,7 +262,8 @@ export async function hostSlotNativeFactory(config: FastEnvConfig): Promise<Slot
         requestTimeoutMs: config.host.request_timeout_ms, quietDiagnostics: true, fastChain: true,
         ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate } } : {})
       });
-      return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }));
+      return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }),
+        config.checks.sample_rate);
     }
   };
 }
