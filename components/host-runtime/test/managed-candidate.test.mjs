@@ -267,7 +267,7 @@ test("Linux x64 selects only its exact native and independently pinned candidate
   assert.equal(original.split(`"${from}"`).length - 1, occurrences);
   assert.equal(x86.split(`"${to}"`).length - 1, occurrences);
   assert.equal(x86.replaceAll(`"${to}"`, `"${from}"`), original,
-    "the only platform source delta is the seven exact native MVID literals");
+    "the only platform source delta is the eight exact native MVID literals");
   assert.equal(manifest.exact_game.platform, "darwin");
   assert.equal(manifest.expected_build.artifact_sha256, "8060ae8b48455786be2dcdd545fadf97ed72f01b775b5100b7fc4cab9db14bfb");
   assert.equal(manifest.expected_build.artifact_mvid, "789b0780-d6a5-48cb-beb5-3d0bfc61d9db");
