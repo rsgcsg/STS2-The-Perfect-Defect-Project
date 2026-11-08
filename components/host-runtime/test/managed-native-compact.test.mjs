@@ -336,12 +336,30 @@ test("shareUnchanged across the 64-frame reconcile: same bytes as off, unchanged
   assert.equal(states.at(-1).hand[1].title, "S140");
   const consumer = new CompactStateReconstructor({ shareUnchanged: true });
   const shared = lines.map(line => consumer.accept(JSON.parse(line)));
-  // The unchanged card is one object for the whole episode, through both reconciles (re-sent, same digest).
-  assert.ok(shared.every(state => state.hand[0] === shared[0].hand[0]));
+  // The unchanged card is one object within each reconcile window; a reconcile re-anchors it.
+  for (const [from, to] of [[0, 63], [64, 127], [128, 140]]) {
+    assert.ok(shared.slice(from, to + 1).every(state => state.hand[0] === shared[from].hand[0]));
+    if (from > 0) assert.notEqual(shared[from].hand[0], shared[from - 1].hand[0]);
+  }
   assert.ok(shared.slice(1).every((state, index) => state.hand[1] !== shared[index].hand[1]));
   // A late delta (no reconcile at 64) still diverges with sharing on.
   const late = writer();
   const overdue = [late.frame("full", skeleton, { "native-1#hand": card("native-1"), "native-2#hand": card("native-2", "S0") })];
   for (let seq = 1; seq <= 64; seq += 1) overdue.push(late.frame("delta", skeleton, { "native-2#hand": card("native-2", `S${seq}`) }));
   divergence(() => reconstruct(overdue, { sampled: false }), "reconcile_overdue");
+});
+
+test("a reconcile whose body changed under an unchanged digest: sharing on gives the same output as off (review S1 of #437)", () => {
+  const w = writer();
+  const skeleton = { hand: [{ $obj: "native-1#hand" }] };
+  const lines = [w.frame("full", skeleton, { "native-1#hand": card("native-1") })];
+  for (let seq = 1; seq < 64; seq += 1) lines.push(w.frame("delta", skeleton, {}));
+  // The writer's own bookkeeping went wrong: a changed body under the old digest.
+  const reconcile = JSON.parse(w.frame("reconcile", skeleton, { "native-1#hand": card("native-1") }));
+  reconcile.objects["native-1#hand"].title = "Changed";
+  lines.push(JSON.stringify(reconcile));
+  const states = reconstruct(lines, { sampled: false }); // asserts on == off byte for byte
+  assert.equal(states.at(-1).hand[0].title, "Changed");
+  // A sampled reconcile re-hashes the emitted body and diverges, with sharing on or off.
+  assert.throws(() => reconstruct(lines, { sampled: true }), error => error instanceof CompactStateDivergence);
 });

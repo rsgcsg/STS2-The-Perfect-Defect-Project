@@ -373,7 +373,10 @@ export class CompactStateReconstructor {
     this.#held = frame.seq;
     this.#frames += 1;
     if (!this.#share) return this.#inline(frame.skeleton);
-    if (kind === "full") this.#inlined = new Map();
+    // A reconcile re-anchors on the bodies it carries: nothing is shared across it, so an
+    // unsampled reconcile whose body changed under an unchanged digest gives the same
+    // output with sharing on as off (review S1 of #437).
+    if (kind === "full" || kind === "reconcile") this.#inlined = new Map();
     const current = new Map();
     const state = this.#shared(frame.skeleton, current);
     // Every held key is reachable (checked above), so this drops exactly the removed ones.
