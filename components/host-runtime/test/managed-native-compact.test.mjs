@@ -101,7 +101,13 @@ for (const [name, reason] of [
   ["invalid-missed-upsert.jsonl", "root_mismatch"],
   ["invalid-stale-bookkeeping.jsonl", "reconcile_mismatch"],
   ["invalid-wrong-base.jsonl", "base_mismatch"],
-  ["invalid-orphan.jsonl", "orphan_object"]
+  ["invalid-orphan.jsonl", "orphan_object"],
+  ["invalid-removed-not-held.jsonl", "removed_not_held"],
+  ["invalid-removed-and-upserted.jsonl", "removed_and_upserted"],
+  ["invalid-noop-upsert.jsonl", "noop_upsert"],
+  ["invalid-reconcile-removed-not-held.jsonl", "reconcile_mismatch"],
+  ["invalid-reconcile-upserted-unchanged.jsonl", "reconcile_mismatch"],
+  ["invalid-full-seq-nonzero.jsonl", "full_seq_nonzero"]
 ]) {
   test(`divergence fails closed: ${name}`, () => {
     divergence(() => reconstruct(raw(name)), reason);
@@ -121,6 +127,11 @@ for (const [name, hot, sampled] of [
     divergence(() => reconstruct(raw(name)), sampled);
   });
 }
+
+test("the start is checked on both paths: invalid-start-without-save-digest.jsonl", () => {
+  divergence(() => reconstruct(raw("invalid-start-without-save-digest.jsonl"), { sampled: false }), "start_invalid");
+  divergence(() => reconstruct(raw("invalid-start-without-save-digest.jsonl")), "schema_invalid");
+});
 
 test("reachability, cycles and reconcile due", () => {
   const first = JSON.parse(raw("compact-episode.jsonl")[0]);
