@@ -2785,9 +2785,10 @@ class SegmentLearner:
             except (OSError, ValueError):
                 return None
             budget = getattr(self.config, "operating_budget", None)
-            if (isinstance(written, dict) and written.get("reason") in WINDOW_END_STOPS
+            reason = written.get("reason") if isinstance(written, dict) else None
+            if (isinstance(reason, str) and reason in WINDOW_END_STOPS
                     and (budget is None or written.get("budget_id") == budget["id"])):
-                return written["reason"]
+                return reason
             return None
         if self.version >= self.config.max_versions:
             return "max_versions"
