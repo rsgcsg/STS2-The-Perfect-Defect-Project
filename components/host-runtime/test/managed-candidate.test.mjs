@@ -276,7 +276,7 @@ test("Linux x64 selects only its exact native and independently pinned candidate
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "a96c61b76831c1076eefaeb0d35c62c97d8bcebb692b2ea020963253b501dace"
     && build.artifact_mvid === "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd"));
   assert.equal(selected.expected_build.source_patch_sha256,
-    "9ecf82b4d504681a45ac6f10792d4c65f51c920bafe266caeb7b205aca40748c");
+    "a6f2f566e16e7e775854e6d98f5b2ac0c63d2be69ae5172508eb747129b272e3");
   assert.equal(selected.expected_build.artifact_sha256,
     "2d6d24d6136671a064004104d7b9fd85656975c3c4cdba457d7b4624446071e0");
   assert.equal(selected.expected_build.artifact_mvid, "5b13b92a-9478-4afc-916d-f41666b2d87f");

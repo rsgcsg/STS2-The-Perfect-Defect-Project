@@ -1490,7 +1490,7 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..7b3cf99
+index 0000000..82fa961
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
 @@ -0,0 +1,343 @@
@@ -1823,7 +1823,7 @@ index 0000000..7b3cf99
 +        SetEnabled(false);
 +        var state = (Dictionary<string, object?>)Call("DetectDecisionPoint")!;
 +        Same(state, "decision state");
-+        Same(new() { ["type"] = "x", ["text"] = "造成 6 点伤害。<b>\"q\"</b>&\u2028", ["lone"] = "\ud800", ["skip"] = null,
++        Same(new() { ["type"] = "x", ["text"] = "造成 6 点伤害。<b>\"q\"</b>&\u2028", ["lone"] = "\ud800", ["pair"] = "\ud83d\ude00", ["skip"] = null,
 +            ["n"] = new object?[] { 1, -2L, 0.1, 1e300, double.Epsilon, 3.5m, true, null },
 +            ["nested"] = new Dictionary<string, object?> { ["a"] = new List<Dictionary<string, object?>> { new() { ["b"] = "c" } } } }, "edge values");
 +        Same(new() { ["type"] = "small" }, "buffer reuse after a large response");
