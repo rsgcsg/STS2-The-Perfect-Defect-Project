@@ -367,27 +367,32 @@ def python_env_sha256() -> str:
                               "machine": platform.machine(), "packages": packages}))
 
 
-def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any) -> tuple[Any, str | None]:
+def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
+                    ) -> tuple[Any, str | None, dict[str, Any] | None]:
     """Hot path: decode with the row layout's own structure checks only.
 
     An audited row (design §2.7: fixed before the game opens, about 1%, plus every
     R7 game) also recomputes `row_sha256` and runs the full index/shape validator.
-    Returns (frame or None, refusal code); `audit_mismatch` means only the audit
-    caught it, which stops this build's output.
+    Returns (frame or None, refusal code, mismatch detail); `audit_mismatch`
+    means only the audit caught it, which stops this build's output. The detail
+    (expected vs recomputed digest, validator error) is kept with the original.
     """
-    from .rows_encoder_wire import decode_row
+    from .rows_encoder_wire import decode_row, row_sha256
 
     try:
         return decode_row(raw, validator=compiler if audit_sha else None,
-                          expected_sha256=audit_sha), None
-    except ValueError:
+                          expected_sha256=audit_sha), None, None
+    except ValueError as error:
         if audit_sha is None:
-            return None, "ROW_DECODE_FAILED"
+            return None, "ROW_DECODE_FAILED", None
+        audit_error = str(error)[:500]
     try:
         decode_row(raw, validator=None, expected_sha256=None)
     except ValueError:
-        return None, "ROW_DECODE_FAILED"
-    return None, "audit_mismatch"
+        return None, "ROW_DECODE_FAILED", None
+    return None, "audit_mismatch", {"expected_row_sha256": audit_sha,
+                                    "recomputed_row_sha256": row_sha256(raw),
+                                    "error": audit_error}
 
 
 def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str, Any],
@@ -417,9 +422,9 @@ def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str,
         frames, floors, kept, failed, audit = [], [], [], {}, []
         tails: dict[str, list[tuple[int, Any, int]]] = {}
         for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
-            frame, code = _audited_decode(raw, audit_sha, compiler)
+            frame, code, detail = _audited_decode(raw, audit_sha, compiler)
             if code == "audit_mismatch":
-                audit.append(index)
+                audit.append((index, detail))
                 code = "ROW_DECODE_FAILED"
             if frame is None:
                 failed[index] = code
@@ -454,6 +459,12 @@ def _prepare_worker(jobs: Connection, results: Connection, vocabulary: dict[str,
              "kept": kept, "lengths": [len(frame.choices) for frame in frames],
              "failed": failed, "audit": audit, "tails": tail_parts},
             protocol=pickle.HIGHEST_PROTOCOL))
+
+
+def audit_pick(game_instance_id: str, step_index: Any, threshold: int) -> bool:
+    """Reproducible spot-check pick: seeded by the game id and step, no unseeded random."""
+    pick = hashlib.sha256(f"rl-inference-3-audit\0{game_instance_id}\0{step_index}".encode())
+    return int.from_bytes(pick.digest()[:8], "big") < threshold
 
 
 def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
@@ -650,10 +661,12 @@ class FastInferenceService:
         self.env_sha256 = env_sha256 or python_env_sha256()
         self.service_instance = "svc-" + os.urandom(8).hex()
         # Spot checks (design §2.7): a row is audited when its game is marked
-        # (R7) or the service's secret seed picks it; fixed before the game opens.
+        # (R7) or a digest seeded by the game id and step picks it, so the pick
+        # is fixed before the game opens and reproducible (#434 review).
+        self.audit_fraction = audit_fraction
         self.audit_threshold = int(audit_fraction * 2 ** 64)
-        self.audit_seed = os.urandom(16).hex()
         self.full_audit: set[str] = set()
+        self.audits: dict[str, int] = {}  # full checks per game
         self.failure_dir = Path(failure_dir) if failure_dir is not None else None
         self.audit_failed = threading.Event()
         self.sampling: dict[str, dict[str, Any]] = {}
@@ -757,8 +770,11 @@ class FastInferenceService:
         game = str(row.get("game_instance_id"))
         if game in self.full_audit:
             return True
-        pick = hashlib.sha256(f"{self.audit_seed}\0{game}\0{row.get('step_index')}".encode())
-        return int.from_bytes(pick.digest()[:8], "big") < self.audit_threshold
+        return audit_pick(game, row.get("step_index"), self.audit_threshold)
+
+    def audit_count(self, game_instance_id: str) -> int:
+        """Rows of this game that got the full check (row hash + validator)."""
+        return self.audits.get(game_instance_id, 0)
 
     # -- links ---------------------------------------------------------------
     def _accept(self) -> None:
@@ -875,7 +891,10 @@ class FastInferenceService:
             except ValueError as error:  # AssemblyError: the plan was not created
                 self._refuse(item, _begin_refusal(error), abort=False)
                 continue
-            self.stats["audited"] += item.audit
+            if item.audit:
+                self.stats["audited"] += 1
+                game = str(row.get("game_instance_id"))
+                self.audits[game] = self.audits.get(game, 0) + 1
             self.queue.put(item)
 
     # -- batching (adaptive: a job waits for a slot, so jobs grow under load) --
@@ -999,7 +1018,7 @@ class FastInferenceService:
         for index, code in part["failed"].items():
             self._refuse(rows[index], code)
         if part["audit"]:
-            self._audit_failure([rows[index] for index in part["audit"]])
+            self._audit_failure([(rows[index], detail) for index, detail in part["audit"]])
         kept = [rows[index] for index in part["kept"]]
         if part["error"] is not None:
             code, message = part["error"]
@@ -1037,21 +1056,24 @@ class FastInferenceService:
         if done:
             self.slots.release()
 
-    def _audit_failure(self, rows: list[_V3Row]) -> None:
+    def _audit_failure(self, rows: list[tuple[_V3Row, dict[str, Any] | None]]) -> None:
         """A spot check differs: stop this build's output, keep the originals (§2.7)."""
         self.audit_failed.set()
         self.stats["audit_failures"] += len(rows)
-        for item in rows:
-            meta = {"rl_inference_3_audit_mismatch": {
+        for item, detail in rows:
+            meta = {"rl_inference_3_audit_mismatch": {"detail": detail, **{
                 key: item.row.get(key) for key in ("game_instance_id", "step_index",
-                                                   "consumption_id", "catalog_sha256")}}
+                                                   "consumption_id", "catalog_sha256")}}}
             print(json.dumps(meta), file=sys.stderr, flush=True)
             if self.failure_dir is not None:
                 self.failure_dir.mkdir(parents=True, exist_ok=True)
                 name = f"audit-{self.service_instance}-{item.row.get('request_id')}"
                 (self.failure_dir / f"{name}.row").write_bytes(item.raw)
                 (self.failure_dir / f"{name}.json").write_bytes(json_bytes(
-                    {"row": item.row, "aggregator_id": item.link.aggregator_id}))
+                    {"row": item.row, "aggregator_id": item.link.aggregator_id,
+                     "mismatch": detail,
+                     "game_full_checks": self.audits.get(str(item.row.get("game_instance_id")),
+                                                         0)}))
 
     def _scored(self, item: _V3Row, output: Any, tail: list[float] | None) -> None:
         from .sampling import distribution, draw
@@ -1137,4 +1159,5 @@ class FastInferenceService:
         self.control.close()
         batches = self.stats["batches"]
         return {"schema": V3_SCHEMA, "service_instance": self.service_instance, **self.stats,
+                "audited_games": len(self.audits),
                 "batch_rows_mean": self.stats["rows"] / batches if batches else 0}

@@ -22,6 +22,7 @@ from stpd.p1.inference_service import (
     V3_MAX_MESSAGE,
     V3_SCHEMA,
     FastInferenceService,
+    audit_pick,
     pack_message,
     unpack_message,
 )
@@ -461,9 +462,23 @@ def test_row_hash_is_a_spot_check_and_a_mismatch_stops_the_build(vocabulary, mod
         assert len(kept) == 2 and kept[0].endswith(".json") and kept[1].endswith(".row")
         with open(os.path.join(failures, kept[1]), "rb") as handle:
             assert handle.read() == encoded.row
+        with open(os.path.join(failures, kept[0]), "rb") as handle:
+            mismatch = json.loads(handle.read())["mismatch"]
+        assert mismatch["expected_row_sha256"] == wrong
+        assert mismatch["recomputed_row_sha256"] == encoded.row_sha256
+        assert service.audit_count("g1") == 2
     assert report["audited"] == 2 and report["audit_failures"] == 1
+
     aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
     assert aborted == {4: "ROW_DECODE_FAILED"}
+
+
+def test_audit_pick_is_reproducible_and_about_the_fraction():
+    threshold = int(0.01 * 2 ** 64)
+    picks = [audit_pick(f"g{game}", step, threshold) for game in range(100) for step in range(100)]
+    assert picks == [audit_pick(f"g{game}", step, threshold)
+                     for game in range(100) for step in range(100)]
+    assert 60 <= sum(picks) <= 140
 
 
 @dataclass(frozen=True)
