@@ -683,3 +683,64 @@ test("performance is exact-episode manager diagnostics and never an Agent capabi
     assert.equal(native.calls.filter(r => r.cmd === "action").length, before);
   } finally { await service.close(); }
 });
+
+test("in-process client attach point runs the same dispatch with no manager authority", async () => {
+  const native = fixture(); const service = await startManagedHostService(native.started, { hostIdentity });
+  const local = (token, route, body = undefined, extra = {}) => service.inProcess.request({
+    method: body === undefined ? "GET" : "POST", route, authorization: `Bearer ${token}`,
+    ...(body === undefined ? {} : { serviceInstanceId: service.serviceInstanceId,
+      contentType: "application/json", body: JSON.stringify(body) }), ...extra });
+  const parsed = (reply) => ({ status: reply.status, body: JSON.parse(Buffer.from(reply.bytes).toString("utf8")) });
+  try {
+    await reset(service);
+    assert.equal(service.inProcess.serviceInstanceId, service.serviceInstanceId);
+    assert.ok(Object.isFrozen(service.inProcess));
+    const http = await fetch(`${service.endpoint}/v1/ready`, { headers: { authorization: `Bearer ${service.clientToken}` } });
+    const httpBytes = Buffer.from(await http.arrayBuffer());
+    const ready = await local(service.clientToken, "/v1/ready");
+    assert.equal(ready.status, 200);
+    assert.deepEqual(Buffer.from(ready.bytes), httpBytes);
+    const continuity = parsed(ready).body.episode.game_continuity_id;
+    const captured = parsed(await local(service.clientToken, "/v1/command", { command: "capture", request_id: "c1",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: continuity }));
+    assert.equal(captured.status, 200);
+    assert.equal(captured.body.result.type, "capture_result");
+    for (const [route, body] of [["/v1/admin/status", undefined], ["/v1/admin/close", { request_id: "close" }],
+      ["/v1/admin/reset", { request_id: "r", seed: "SEED", expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: continuity }]]) {
+      const denied = parsed(await local(service.managerToken, route, body));
+      assert.deepEqual([denied.status, denied.body.error], [403, "managed_service_inprocess_client_only"]);
+    }
+    assert.equal(parsed(await local("wrong", "/v1/ready")).status, 401);
+    assert.equal(parsed(await local(service.clientToken, "/v1/command", { command: "observe", request_id: "s" },
+      { serviceInstanceId: "stale" })).status, 409);
+    assert.equal(parsed(await local(service.clientToken, "/v1/command", { command: "observe", request_id: "p",
+      padding: "x".repeat(65 * 1024) })).status, 413);
+    assert.equal(parsed(await local(service.clientToken, "/v1/command", { command: "close", request_id: "k" })).status, 403);
+    await assert.rejects(service.inProcess.request({ method: "PUT", route: "/v1/ready", authorization: "x" }),
+      /managed_service_inprocess_request_invalid/);
+    assert.equal(native.stopCount, 0);
+    assert.equal(service.driver.closed, false);
+  } finally { await service.close(); }
+});
+
+test("a compact-diverged session surfaces its own public error code (review S3)", async () => {
+  const native = fixture();
+  const real = native.started.session;
+  let diverged = false;
+  // Only the error mapping is under test; the divergence itself is covered by the compact tests.
+  const observe = real.observe.bind(real);
+  real.observe = () => {
+    if (diverged) throw new Error("managed_session_tainted_after_compact_state_divergence");
+    return observe();
+  };
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    assert.equal((await reset(service)).status, 200);
+    diverged = true;
+    const refused = await command(service, service.clientToken, { command: "observe" });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, "managed_session_tainted_after_compact_state_divergence");
+  } finally {
+    await service.close();
+  }
+});

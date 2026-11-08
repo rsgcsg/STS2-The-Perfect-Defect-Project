@@ -219,16 +219,21 @@ export class ManagedTextMenuSessionAdapter {
   }
 
   #rejectTainted(requestId, fingerprint) {
-    const projectionFailed = this.#session.taintReason === "successor_projection_failed";
-    const successor = projectionFailed ? null : this.#remember(this.#session.observe());
+    const reason = this.#session.taintReason;
+    const projectionFailed = reason === "successor_projection_failed";
+    // A diverged compact state is never projected again: observe would refuse it.
+    const diverged = reason === "compact_state_divergence";
+    const successor = projectionFailed || diverged ? null : this.#remember(this.#session.observe());
     return this.#save(requestId, fingerprint, this.#result(requestId, {
       status: "not_applied", effect_domain: null, native_delivery: null,
-      action: null, reason_code: projectionFailed
-        ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
-      detail: projectionFailed
-        ? "A delivered action had no trustworthy successor projection; mutation authority is closed."
-        : "Unknown native delivery closed mutation authority for this Managed session.",
-      retry: projectionFailed ? "never" : "reobserve", successor
+      action: null, reason_code: diverged ? "runtime_tainted_after_compact_state_divergence"
+        : projectionFailed ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+      detail: diverged
+        ? "The compact native state diverged from the Host's reconstruction; mutation authority is closed."
+        : projectionFailed
+          ? "A delivered action had no trustworthy successor projection; mutation authority is closed."
+          : "Unknown native delivery closed mutation authority for this Managed session.",
+      retry: projectionFailed || diverged ? "never" : "reobserve", successor
     }));
   }
 

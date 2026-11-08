@@ -257,8 +257,10 @@ export class ManagedTextMenuV2SessionAdapter {
     if (this.#session.tainted === true) {
       return this.#result(requestId, { status: "not_applied", effect_domain: null,
         native_delivery: null, action: null,
-        reason_code: this.#session.taintReason === "successor_projection_failed"
-          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+        reason_code: this.#session.taintReason === "compact_state_divergence"
+          ? "runtime_tainted_after_compact_state_divergence"
+          : this.#session.taintReason === "successor_projection_failed"
+            ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Managed mutation authority is closed.", retry: "never", successor: null });
     }
     const source = this.#session.observe();
