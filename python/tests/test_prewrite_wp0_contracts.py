@@ -391,6 +391,25 @@ def test_inference_valid_and_invalid_messages() -> None:
         assert not validator.is_valid(message), name
 
 
+_NOT_STARTED_REASONS = ("inference_timeout", "response_binding_mismatch", "refused",
+                        "stop_before_send", "native_not_delivered")
+_UNKNOWN_REASONS = ("delivery_unknown", "native_crash", "compact_state_divergence")
+
+
+def test_inference_step_outcome_reason_fixes_its_status() -> None:
+    validator = _inference()
+    base = json.loads((INFERENCE / "invalid.json").read_bytes())["not_started_with_receipt"]
+    base = {key: value for key, value in base.items() if key != "receipt_sha256"}
+    for reason in _NOT_STARTED_REASONS + _UNKNOWN_REASONS:
+        right = "not_started" if reason in _NOT_STARTED_REASONS else "unknown"
+        wrong = "unknown" if right == "not_started" else "not_started"
+        assert validator.is_valid({**base, "status": right, "reason": reason}), reason
+        assert not validator.is_valid({**base, "status": wrong, "reason": reason}), reason
+    assert set(_NOT_STARTED_REASONS + _UNKNOWN_REASONS) == set(
+        json.loads((PYTHON / "schemas" / "rl-inference-3.schema.json").read_bytes())
+        ["$defs"]["step_outcome"]["properties"]["reason"]["enum"])
+
+
 def check_binding(row: dict[str, Any], result: dict[str, Any], open_instances: set[str],
                   segment_mu: str | None, sampling: dict[str, Any],
                   validator: Draft202012Validator) -> str:
