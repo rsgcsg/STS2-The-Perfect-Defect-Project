@@ -1,6 +1,7 @@
 import { mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { CloseReason, PublicFacts } from "./contracts.js";
+import type { SampledCheckMismatch } from "./host.js";
 
 /**
  * Per-game evidence seam of the K-game process. The record format, durability and
@@ -84,6 +85,8 @@ export interface FastGameClose {
   public_facts: PublicFacts | null;
   /** The native was replaced after this game (unknown delivery, crash, divergence). */
   native_replaced: boolean;
+  /** Captures of this game that got the sampled full check (design v2 §2.7). */
+  full_checks: number;
 }
 
 export interface FastGameEvidence {
@@ -96,6 +99,9 @@ export interface FastGameEvidence {
    * sink may fsync here. Row ids of one game increase but are not contiguous (they are
    * numbered per process). */
   segmentBoundary(range: { first_row_id: number; last_row_id: number }): Promise<void>;
+  /** A sampled full check of this game disagreed (the build's output stops): the sink
+   * records the mismatching originals and keeps every original of this game. Before close. */
+  retainSampledCheckMismatch(mismatch: SampledCheckMismatch): void;
   /** Exactly once per opened game. Resolves with a locator for the game's evidence. */
   close(closed: FastGameClose): Promise<string | null>;
 }
@@ -137,8 +143,14 @@ export class MinimalJsonlEvidenceSink implements FastEvidenceSink {
     const lines: string[] = [JSON.stringify({ kind: "game_open", ...meta })];
     const natives: string[] = [];
     const directory = this.directory;
+    let keepAll = meta.retain_originals || meta.r7;
+    const unkept: string[] = [];
     return {
-      nativeLine(line) { if (meta.retain_originals || meta.r7) natives.push(line); },
+      nativeLine(line) { (keepAll ? natives : unkept).push(line); },
+      retainSampledCheckMismatch(mismatch) {
+        lines.push(JSON.stringify({ kind: "sampled_check_mismatch", ...mismatch }));
+        if (!keepAll) { keepAll = true; natives.push(...unkept.splice(0)); }
+      },
       step(record) { lines.push(JSON.stringify({ kind: "step", ...record, input_line: null })); },
       async segmentBoundary(range) { lines.push(JSON.stringify({ kind: "boundary", ...range })); },
       async close(closed) {

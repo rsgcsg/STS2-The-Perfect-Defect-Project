@@ -199,54 +199,40 @@ const snapshotSchema: z.ZodTypeAny = z.object({
     unknown_field_behavior: z.string().min(1)
   }).strict()
 }).strict().superRefine((value, context) => {
-  for (const message of nativeCardSelectionProblems(value)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message });
-  }
-  const boundActionIds = value.bound_actions.actions.map((item) => item.bound_action_id);
-  const referentIds = new Set(value.referents.map((item) => item.referent_id));
-  if (new Set(boundActionIds).size !== boundActionIds.length) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "bound action ids must be unique" });
-  }
-  if (referentIds.size !== value.referents.length) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "referent ids must be unique" });
-  }
-  if (value.bound_actions.actions.some((item) => item.interaction_id !== value.interaction.interaction_id)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "bound action interaction must match the current interaction" });
-  }
-  if (value.bound_actions.actions.some((item) => item.subject_referent_id && !referentIds.has(item.subject_referent_id))) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "every bound action subject must be a current referent" });
-  }
-  if (value.bound_actions.actions.some((item) => item.arguments.some((argument) => !referentIds.has(argument.referent_id)))) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "every bound action argument must be a current referent" });
-  }
+  for (const message of playerSnapshotInvariantProblems(value)) context.addIssue({ code: z.ZodIssueCode.custom, message });
+});
+
+/** Snapshot catalog and binding invariants, without the strict shape decode.
+ * The strict snapshot decoder applies exactly these; the fast-chain per-step
+ * light check (design v2 §2.7) calls them directly on Host-built objects. */
+export function playerSnapshotInvariantProblems(value: any): string[] {
+  const problems: string[] = [...nativeCardSelectionProblems(value)];
+  const boundActionIds = value.bound_actions.actions.map((item: any) => item.bound_action_id);
+  const referentIds = new Set(value.referents.map((item: any) => item.referent_id));
+  if (new Set(boundActionIds).size !== boundActionIds.length) problems.push("bound action ids must be unique");
+  if (referentIds.size !== value.referents.length) problems.push("referent ids must be unique");
+  if (value.bound_actions.actions.some((item: any) => item.interaction_id !== value.interaction.interaction_id))
+    problems.push("bound action interaction must match the current interaction");
+  if (value.bound_actions.actions.some((item: any) => item.subject_referent_id && !referentIds.has(item.subject_referent_id)))
+    problems.push("every bound action subject must be a current referent");
+  if (value.bound_actions.actions.some((item: any) => item.arguments.some((argument: any) => !referentIds.has(argument.referent_id))))
+    problems.push("every bound action argument must be a current referent");
   if (value.bound_actions.materialized_count !== value.bound_actions.actions.length
       || value.bound_actions.materialized_count > value.bound_actions.total_count
-      || value.bound_actions.materialized_count > value.bound_actions.limit) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "bound action projection counts are inconsistent" });
-  }
+      || value.bound_actions.materialized_count > value.bound_actions.limit)
+    problems.push("bound action projection counts are inconsistent");
   if (value.bound_actions.status === "complete"
-      && value.bound_actions.materialized_count !== value.bound_actions.total_count) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "complete bound action projection must materialize every action" });
-  }
-  const actionReady = value.bound_actions.status === "complete"
-    && value.bound_actions.actions.length > 0;
-  if ((value.status === "interactive") !== actionReady) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "interactive status must exactly match a complete non-empty bound action projection"
-    });
-  }
-  if (value.bound_actions.status !== "complete"
-      && value.interaction.capabilities.length > 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "an incomplete bound action projection cannot advertise interaction capabilities"
-    });
-  }
-  if (value.reads.some((item) => item.target_referent_id && !referentIds.has(item.target_referent_id))) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "every targeted read must reference a current referent" });
-  }
-});
+      && value.bound_actions.materialized_count !== value.bound_actions.total_count)
+    problems.push("complete bound action projection must materialize every action");
+  const actionReady = value.bound_actions.status === "complete" && value.bound_actions.actions.length > 0;
+  if ((value.status === "interactive") !== actionReady)
+    problems.push("interactive status must exactly match a complete non-empty bound action projection");
+  if (value.bound_actions.status !== "complete" && value.interaction.capabilities.length > 0)
+    problems.push("an incomplete bound action projection cannot advertise interaction capabilities");
+  if (value.reads.some((item: any) => item.target_referent_id && !referentIds.has(item.target_referent_id)))
+    problems.push("every targeted read must reference a current referent");
+  return problems;
+}
 
 const capabilitiesSchema = z.object({
   protocol_version: z.literal(SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL),

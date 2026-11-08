@@ -1,6 +1,7 @@
 import { gameOver } from "./fixtures/managed-game-over.mjs";
 import { shopInventory } from "./fixtures/managed-shop.mjs";
 import assert from "node:assert/strict";
+import { decodePublicBasis } from "@rsgcsg/sts2-connector-client";
 import test from "node:test";
 import {
   decodePlayerRead,
@@ -1267,6 +1268,11 @@ test("missing or failed native deck details keep the sealed basis partial withou
     const captured = captureManagedPublicBasis(session, { generationId: "generation-1", gameContinuityId: "continuity-1", ordinal: 1 });
     assert.equal(captured.basis.capture_status, "partial");
     assert.ok(captured.basis.missing.includes(`read:${detail.read_id}:partial`));
+    // Fast chain light check: same basis bytes, every semantic gate, no strict shape decode.
+    const light = captureManagedPublicBasis(session, { generationId: "generation-1", gameContinuityId: "continuity-1", ordinal: 2, fullCheck: false });
+    assert.equal(light.basis.capture_status, captured.basis.capture_status);
+    assert.deepEqual(light.basis.missing, captured.basis.missing);
+    assert.equal(JSON.stringify(decodePublicBasis(structuredClone(light.basis))), JSON.stringify(light.basis));
   }
 });
 
