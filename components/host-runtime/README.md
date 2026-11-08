@@ -280,6 +280,17 @@ lost, malformed, truncated, uncorrelated or generic failure replies raise
 it had been rejected. Only a validated explicit Host rejection is known not
 applied.
 
+The same service also exposes `service.inProcess`, a client-only attach point
+for an embedder that runs Policy Runtime in the Host's own process. A request
+through it runs the same dispatch as HTTP (bearer role, service-instance header,
+content type, body bounds, command allowlist, preconditions, result wrapper)
+and returns the exact JSON body bytes HTTP would send; only the socket and its
+loopback Host/Origin fence are absent. Manager operations stay on HTTP and are
+refused in-process (`managed_service_inprocess_client_only`). The tool body is
+`src/managed-host-service-tool.mjs`, shared by `tools/managed-host-service.mjs`
+and such an embedder; `launch_managed_host_service(..., embedder=[...])` starts
+the embedder with the tool's exact arguments and a stdin pipe for its caller.
+
 Authenticated `GET /v1/ready` reports the same service, candidate, exact game,
 runtime, environment and current episode identity to every client. Its
 `text_menu_contracts` entries describe the current v1/v2 snapshot and receipt

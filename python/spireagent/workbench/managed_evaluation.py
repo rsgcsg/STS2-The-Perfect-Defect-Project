@@ -13,8 +13,8 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -86,7 +86,7 @@ def _phase(row: dict[str, Any], name: str, *, detail: bool = False) -> Iterator[
         phases[name] = phases.get(name, 0.0) + time.monotonic() - began
 
 
-def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
+def _finish_runtime(process: subprocess.Popen | _EmbeddedRuntime, stdout: Path, row: dict[str, Any],
                     artifacts: Any, deadline: float, cleanup_seconds: float, *,
                     on_started: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """Observe the existing Runtime owner and send one exact-run Stop on handoff.
@@ -160,6 +160,76 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
             raise error from None
     process.wait(timeout=cleanup_seconds)
     return startup
+
+
+# The released Runtime/Host pair that carries the same-process launcher. Empty
+# until the P-REWRITE integration release pins it (rc.65 was released unused),
+# so "in_process" is refused loudly instead of guessed from file presence.
+IN_PROCESS_RUNTIME_VERSIONS: frozenset[str] = frozenset()
+IN_PROCESS_HOST_VERSIONS: frozenset[str] = frozenset()
+INPROCESS_REQUEST_SCHEMA = "sts2.policy-runtime/inprocess-runtime-request-1"
+INPROCESS_STOP_SCHEMA = "sts2.policy-runtime/inprocess-runtime-stop-1"
+INPROCESS_EXIT_SCHEMA = "sts2.policy-runtime/inprocess-runtime-exit-1"
+
+
+class _EmbeddedRuntime:
+    """The Runtime half of the same-process launcher, seen through its own lines.
+
+    It offers the ``Popen`` surface ``_finish_runtime`` and cleanup use. Exit is
+    the Runtime's own exit line; the process itself lives until the Host's
+    manager close. A launcher that dies first is a failed Runtime, never a
+    guessed outcome.
+    """
+
+    def __init__(self, process: subprocess.Popen, stdout: Path) -> None:
+        self._process = process
+        self._stdout = stdout
+        self.returncode: int | None = None
+        self.args = process.args
+
+    def start(self, argv: Sequence[str]) -> None:
+        assert self._process.stdin is not None
+        self._process.stdin.write(json_bytes({"schema": INPROCESS_REQUEST_SCHEMA,
+                                              "argv": list(argv)}))
+        self._process.stdin.flush()
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        raw = self._stdout.read_bytes()
+        if len(raw) > JSON_LIMIT:
+            reject("runtime_stdout_too_large")
+        for line in raw.split(b"\n"):
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict) and value.get("schema") == INPROCESS_EXIT_SCHEMA:
+                code = value.get("code")
+                self.returncode = code if type(code) is int else 1
+        if self.returncode is None and self._process.poll() is not None:
+            self.returncode = 1
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout or 0.0)
+            time.sleep(0.05)
+        return self.returncode  # type: ignore[return-value]
+
+    def terminate(self) -> None:
+        """The same owner Stop a separate Runtime runs on SIGTERM."""
+        stdin = self._process.stdin
+        if stdin is None or stdin.closed:
+            return
+        try:
+            with suppress(OSError):
+                stdin.write(json_bytes({"schema": INPROCESS_STOP_SCHEMA}))
+                stdin.flush()
+        finally:
+            with suppress(OSError):
+                stdin.close()
 
 
 def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
@@ -254,6 +324,13 @@ class ManagedEpisodeExecutor:
         mode = configuration.get("inference", {"mode": "per_actor"})
         if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
             reject("unsupported_inference_implementation")
+        # "in_process" runs Host and Runtime in one process (RL5 S1 ③a-1); the
+        # Runtime's client exchanges enter the Host service's own dispatch.
+        self.managed_transport = configuration.get("managed_transport", "http")
+        if self.managed_transport not in {"http", "in_process"}:
+            reject("invalid_managed_transport")
+        if self.managed_transport == "in_process" and mode["mode"] != "per_actor":
+            reject("in_process_transport_requires_per_actor_inference")
         self.settling_timeout_ms = configuration.get("settling_timeout_ms", 120000)
         if self.settling_timeout_ms is not None and (
                 type(self.settling_timeout_ms) is not int
@@ -365,6 +442,13 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.64",
         }:
             reject("runtime_decision_durability_required")
+        if self.managed_transport == "in_process" and (
+                runtime_version not in IN_PROCESS_RUNTIME_VERSIONS
+                or json.loads((self.host / "package.json").read_bytes()).get("version")
+                not in IN_PROCESS_HOST_VERSIONS
+                or not (self.runtime / "managed-inprocess-host.js").is_file()
+                or not (self.host / "src/managed-host-service-tool.mjs").is_file()):
+            reject("in_process_transport_unsupported")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
@@ -460,7 +544,16 @@ class ManagedEpisodeExecutor:
         private = artifacts.root / "private"
         private.mkdir(mode=0o700)
         client_path, manager_path = private / "client.json", private / "manager.json"
-        launch = manager = runtime_process = None
+        launch = manager = None
+        runtime_process: subprocess.Popen[bytes] | _EmbeddedRuntime | None = None
+        transport = getattr(self, "managed_transport", "http")
+        in_process = transport == "in_process"
+        row["managed_transport"] = transport
+        embedder = None
+        if in_process:
+            (private / "runtime.stdout").touch(mode=0o600, exist_ok=False)
+            embedder = [str(self.runtime / "managed-inprocess-host.js"), "--host-package",
+                        str(self.host), "--runtime-stdout", str(private / "runtime.stdout"), "--"]
         started = time.monotonic()
         row.update(host_kind="managed", status="preparing", reason=None,
                    preservation_store=self.preparation["store"],
@@ -481,6 +574,7 @@ class ManagedEpisodeExecutor:
                         language=self.configuration.get("language", "en"),
                         timeout_ms=60000,
                         startup_timeout=min(120, self.episode_seconds),
+                        **({"embedder": embedder} if embedder else {}),
                     )
                 client = self.api.ManagedHostServiceClient.from_attachment(client_path)
                 manager = self.api.ManagedHostServiceManager.from_attachment(manager_path)
@@ -618,18 +712,22 @@ class ManagedEpisodeExecutor:
                         args.extend(["--adapter-env-key", name])
             row.update(status="running", actor_started=True)
             checkpoint()
-            with (
-                _phase(row, "execute"), (private / "runtime.stdout").open("xb") as stdout,
-                (private / "runtime.stderr").open("xb") as stderr,
-            ):
+            with _phase(row, "execute"), ExitStack() as files:
                 runtime_started = time.monotonic()
-                runtime_process = subprocess.Popen(
-                    args,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    env=environment,
-                )
+                if in_process:
+                    # Same CLI arguments; its stderr is the Host log of this process.
+                    runtime_process = _EmbeddedRuntime(launch.process, private / "runtime.stdout")
+                    runtime_process.start(args[2:])
+                else:
+                    stdout = files.enter_context((private / "runtime.stdout").open("xb"))
+                    stderr = files.enter_context((private / "runtime.stderr").open("xb"))
+                    runtime_process = subprocess.Popen(
+                        args,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        env=environment,
+                    )
                 row["runtime_process_started_monotonic"] = runtime_started
                 startup = _finish_runtime(
                     runtime_process, private / "runtime.stdout", row, artifacts,
