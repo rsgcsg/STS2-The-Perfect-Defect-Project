@@ -192,8 +192,21 @@ class Actor:
             remote = dict(self.config["segments"]["inference"])
             if "rendezvous" in self.config["segments"]:
                 remote["rendezvous"] = self.config["segments"]["rendezvous"]
-            scorer = (RemoteMuScorer(remote) if remote.get("role") == "learner_central"
-                      else LocalMuScorer(self.exchange, work / "mu"))
+            scoring = self.config["segments"].get("scoring_service")
+            if scoring is not None:
+                # RL5 S2-1, explicit opt-in: control stays on the learner
+                # channel; only scores go to the standalone service. No
+                # fallback to local mu when the service is unavailable.
+                service = json.loads(Path(scoring).read_bytes())
+                if service.get("role") != "inference_service":
+                    reject("scoring_service_attachment_role_differs")
+                scorer: LocalMuScorer | RemoteMuScorer = RemoteMuScorer(
+                    {**service, "rendezvous": scoring}, exchange=self.exchange,
+                    cache_root=work / "mu")
+            elif remote.get("role") == "learner_central":
+                scorer = RemoteMuScorer(remote)
+            else:
+                scorer = LocalMuScorer(self.exchange, work / "mu")
             self.actor_pool = ActorInferencePool(SegmentConnection(remote), scorer)
             self.local_attachment = self.actor_pool.attachment()
             self.service = ActorControlConnection(self.actor_pool)

@@ -294,6 +294,7 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
                 auto_excluded: list[str], window: dict[str, Any] | None,
                 acknowledgements: dict[str, str],
                 evaluation_episode_seconds: int = 1800,
+                evaluation_wall_seconds: int | None = None,
                 nodes: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = copy.deepcopy(prior)
     if held_job:
@@ -322,8 +323,22 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
         if cfg['evaluation'].get('episode_seconds', evaluation_episode_seconds) \
                 < evaluation_episode_seconds:
             cfg['evaluation']['episode_seconds'] = evaluation_episode_seconds
+        # OPS-2 (audit row 21): an explicit job wall below the release's default is raised.
+        if evaluation_wall_seconds is not None and cfg['evaluation'].get(
+                'wall_seconds', evaluation_wall_seconds) < evaluation_wall_seconds:
+            cfg['evaluation']['wall_seconds'] = evaluation_wall_seconds
     # The predecessor's auto-excluded nodes are written into the config in both modes, so
-    # every submission path (and a reader of the config) sees them (U4 7b).
+    # every submission path (and a reader of the config) sees them (U4 7b). With in-window
+    # re-admission (OPS-2, canary_lanes > 0) they are carried as ``inherited_node_exclusions``
+    # instead: still excluded from every submission by the watcher, but they keep their
+    # cooldown and come back through the canary rather than staying out a whole window.
+    inherited = auto_inherited(cfg, auto_excluded, (nodes or {}).get('auto_records'),
+                               (nodes or {}).get('strikes'))
+    if inherited is not None:
+        cfg['inherited_node_exclusions'] = inherited
+        auto_excluded = []
+    else:
+        cfg.pop('inherited_node_exclusions', None)
     extra = set(exclude) | set(auto_excluded)
     if mode == 'same_window':
         # previous_window_state stays as it is (#391 refuses a continuation that drops it).
@@ -337,8 +352,39 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
         cfg['training_seconds'] = window['training_seconds']
     cfg['exclude_nodes'] = sorted(set(cfg.get('exclude_nodes', [])) | extra)
     cfg.pop('readmit_nodes', None)  # a request applies once, to its own continuation
-    apply_node_plan(cfg, prior, auto_excluded=auto_excluded, **(nodes or {}))
+    plan = {k: v for k, v in (nodes or {}).items() if k != 'strikes'}
+    apply_node_plan(cfg, prior, auto_excluded=auto_excluded, **plan)
     return cfg
+
+
+def auto_inherited(cfg: dict[str, Any], auto_excluded: list[str],
+                   records: dict[str, Any] | None,
+                   strikes: dict[str, int] | None) -> dict[str, Any] | None:
+    """Predecessor auto exclusions as watcher-managed records, or None (old behaviour).
+
+    Each keeps its exclusion time, strike and cooldown end, so a node judged bad 30 min
+    before the swap is not probed at once, and one judged bad 6 h ago canaries at start."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))  # as phase_b: this release's rules
+    import watch
+
+    settings = watch.node_exclusion_settings(cfg)
+    if settings is None or settings['canary_lanes'] < 1:
+        return None
+    inherited = {}
+    for node in sorted(auto_excluded):
+        record = dict((records or {}).get(node) or {})
+        strike = record.get('strike') or (strikes or {}).get(node) or 1
+        at = record.get('at')
+        due = record.get('cooldown_until')
+        if 'cooldown_until' not in record:  # recorded before OPS-2: first-strike cooldown
+            cooldown = watch.node_cooldown(settings, strike)
+            due = at + cooldown if type(at) in (int, float) and cooldown is not None else None
+        inherited[node] = {'kind': 'node_unknown_exclusion', 'at': at, 'strike': strike,
+                           'cooldown_until': due, 'inherited': True,
+                           **{k: record[k] for k in ('window_unknown', 'window_attempts',
+                                                     'total_attempts', 'total_unknown')
+                              if k in record}}
+    return inherited
 
 
 # ------------------------------------------------------------ node exclusion plan (OPS)
@@ -346,7 +392,6 @@ def build_watch(mode: str, prior: dict[str, Any], *, previous_ref: dict[str, str
 # deterministic: config, predecessor state and command line only). Re-admission is an
 # explicit operator decision backed by evidence (a node check), applied only here, at a
 # natural restart; the watcher drops the node from its inherited auto exclusion once.
-HEALTH_SOURCES = ('auto_node_unknown_exclusion', 'operator', 'static_unrecorded')
 READMISSION_LIMIT = 2  # the same node re-admitted twice and excluded again: ask, not probe
 
 
@@ -356,7 +401,8 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                     max_excluded_nodes: int | None = None, name: str = '',
                     auto_records: dict[str, Any] | None = None,
                     partition_nodes: list[str] | None = None,
-                    nfs_checks: dict[str, Any] | None = None) -> None:
+                    node_reasons: dict[str, str] | None = None,
+                    slurm_facts: dict[str, dict[str, Any]] | None = None) -> None:
     """Provenance, re-admission, evaluation pool and the #386 cap, in that order.
 
     With a pool, evaluations run only there: ``evaluation.exclude_nodes`` is every other
@@ -381,14 +427,24 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
         else:
             provenance[node] = {'source': 'operator', 'reason': exclude_reason or 'unrecorded',
                                 'added_by': f'release_swap {name}'.strip()}
+    relabel_static(cfg, provenance, node_reasons or {}, slurm_facts or {}, name)
     history = list(cfg.get('node_readmissions') or [])
-    unknown = sorted(set(readmit) - set(cfg['exclude_nodes']))
+    inherited = cfg.get('inherited_node_exclusions') or {}
+    for node in sorted(set(readmit) & set(inherited)):
+        # A watcher-managed exclusion re-admitted by hand: an ordinary backed request.
+        provenance[node] = {'source': 'auto_node_unknown_exclusion',
+                            'since': inherited[node].get('at'),
+                            'detail': {k: v for k, v in inherited[node].items()
+                                       if k in ('window_unknown', 'window_attempts',
+                                                'total_attempts', 'total_unknown')}}
+    unknown = sorted(set(readmit) - set(cfg['exclude_nodes']) - set(inherited))
     if unknown:
         raise SwapError('readmit_node_not_excluded', ', '.join(unknown))
     if readmit and not readmit_evidence:
         raise SwapError('readmit_evidence_required', 'pass --readmit-evidence <node check>')
     requests = []
     for node in sorted(set(readmit)):
+        inherited.pop(node, None)
         before = provenance.pop(node)
         if before.get('source') == 'evaluation_pool':
             raise SwapError('readmit_node_is_evaluation_pool', node)
@@ -398,14 +454,13 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
                             f'{READMISSION_LIMIT} times and excluded again; diagnose first')
         row = {'node': node, 'by': f'release_swap {name}'.strip(), 'evidence': readmit_evidence,
                'excluded_as': before}
-        if nfs_checks and node in nfs_checks:
-            row['nfs_check'] = nfs_checks[node]
         history.append(row)
         requests.append({'node': node, 'evidence': readmit_evidence})
     for node in sorted(set(eval_nodes)):
         # A node #386 just judged bad joins the pool only through a backed re-admission;
         # otherwise a new window (fresh watcher state) would evaluate on it unexamined.
-        if (provenance.get(node) or {}).get('source') == 'auto_node_unknown_exclusion':
+        if ((provenance.get(node) or {}).get('source') == 'auto_node_unknown_exclusion'
+                or node in inherited):
             raise SwapError('eval_node_auto_excluded_needs_readmission',
                             f'{node}: pass --readmit {node} --readmit-evidence <node check>')
     cfg['exclude_nodes'] = [n for n in cfg['exclude_nodes'] if n not in set(readmit)]
@@ -442,86 +497,47 @@ def apply_node_plan(cfg: dict[str, Any], prior: dict[str, Any], *, auto_excluded
     cfg['exclude_node_provenance'] = {n: provenance[n] for n in cfg['exclude_nodes']}
 
 
-NFS_ACK_PREFIX = 'nfs_state_loss:'
-NFS_RECENT_SECONDS = 6 * 3600
-KTHREAD_EINTR = re.compile(r'^(\S+) .*nfs4_schedule_state_manager: kthread_run: -4')
+# OPS F2 (#409: refuse to re-admit a node with ``kthread_run: -4`` in the last 6 h) is
+# removed (NODE-HEALTH-REVIEW 11-08 §2): -4 is EINTR left when our own actors are killed
+# during an NFS state recovery (every -4 burst matches a mass actor teardown), so it kept
+# recovering nodes out (smp-9-10 19 h) and missed nodes that were going bad (smp-9-4,
+# smp-c01 had none). The watcher's cooldown + real-game canary is the evidence instead.
+HEALTH_CLASS_SOURCES = ('auto_node_unknown_exclusion', 'operator', 'slurm_unavailable',
+                        'static_unrecorded', 'slow_node')
 
 
-def node_nfs_state_loss(node: str, *, partition: str, now: float) -> dict[str, Any]:
-    """OPS F2: a 1-core read-only probe on ``node``; ``kthread_run: -4`` (NFS client state
-    manager failure, seen at every bad-node stop) in the last 6 h. Anything that is not a
-    clean read of the whole 6 h is reported, never guessed: an empty kernel log, or one
-    whose oldest line is newer than 6 h on a node up for longer (the ring buffer wrapped),
-    is ``unavailable``. The step runs in ``/tmp`` so a stuck NFS client cannot hang it."""
-    command = ['srun', '--partition=' + partition, '--nodelist=' + node, '--nodes=1',
-               '--ntasks=1', '--cpus-per-task=1', '--mem=256M', '--time=2', '--immediate=120',
-               '--chdir=/tmp', '--job-name=rl4-node-nfs-check',
-               'sh', '-c', 'cat /proc/uptime && dmesg --time-format iso']
-    try:
-        out = subprocess.run(command, capture_output=True, timeout=300, check=False)
-    except (OSError, subprocess.SubprocessError) as error:
-        return {'status': 'unavailable', 'reason': type(error).__name__, 'checked_at': now}
-    stdout = out.stdout.decode('utf-8', errors='replace')
-    if out.returncode != 0:
-        return {'status': 'unavailable', 'reason': f'rc={out.returncode}',
-                'detail': safe(out.stderr.decode('utf-8', errors='replace').strip()[-200:]),
-                'checked_at': now}
-    first, _, kernel = stdout.partition('\n')
-    try:
-        uptime = float(first.split()[0])
-    except (IndexError, ValueError):
-        return {'status': 'unavailable', 'reason': 'uptime_unreadable', 'checked_at': now}
-    recent, oldest = [], None
-    for line in kernel.splitlines():
-        stamp = line.split(' ', 1)[0]
-        try:
-            at = datetime.fromisoformat(stamp.replace(',', '.')).timestamp()
-        except ValueError:
-            if KTHREAD_EINTR.match(line):
-                return {'status': 'unavailable', 'reason': 'kernel_time_unparsed',
-                        'checked_at': now}
-            continue  # a wrapped continuation line carries no stamp
-        oldest = at if oldest is None else min(oldest, at)
-        if KTHREAD_EINTR.match(line) and now - at <= NFS_RECENT_SECONDS:
-            recent.append(at)
-    window = {'window_seconds': NFS_RECENT_SECONDS, 'uptime_seconds': uptime,
-              'oldest_line_at': oldest, 'checked_at': now}
-    if recent:
-        return {'status': 'state_loss', 'recent': recent, **window}
-    if oldest is None or (oldest > now - NFS_RECENT_SECONDS and uptime > NFS_RECENT_SECONDS):
-        return {'status': 'unavailable', 'reason': 'kernel_log_window_incomplete', **window}
-    return {'status': 'clean', 'recent': [], **window}
-
-
-def readmission_nfs_checks(nodes: list[str], acknowledged: dict[str, str], *, partition: str,
-                           now: float, dry_run: bool = False) -> dict[str, Any]:
-    """Refuse to re-admit a node with recent NFS state loss (or an unreadable check)
-    unless ``--acknowledge nfs_state_loss:<node>=<reason>`` names it."""
-    checks = {}
-    for node in nodes:
-        if dry_run:  # a dry run submits no Slurm job: the check is recorded as not run
-            print(f'   node NFS check {node}: skipped (dry run, no probe submitted)')
-            checks[node] = {'status': 'skipped_dry_run', 'checked_at': now}
+def relabel_static(cfg: dict[str, Any], provenance: dict[str, Any],
+                   reasons: dict[str, str], facts: dict[str, dict[str, Any]],
+                   name: str) -> None:
+    """Split unrecorded static exclusions: a node outside the actor node types is a
+    hardware-class constraint (``actor_node_types`` already keeps actors off it; it stays
+    excluded for CPU steps and evaluations); a DOWN/DRAIN node is ``slurm_unavailable``;
+    ``--node-reason NODE=REASON`` records an operator reason. Only Slurm facts read at
+    prepare and the command line decide; a node Slurm does not report stays unrecorded."""
+    types = set(cfg.get('actor_node_types') or []) | ({cfg['actor_constraint']}
+                                                    if cfg.get('actor_constraint') else set())
+    for node, reason in reasons.items():
+        if node not in provenance:
+            raise SwapError('node_reason_for_a_node_that_is_not_excluded', node)
+        provenance[node] = {'source': 'operator', 'reason': reason,
+                            'added_by': f'release_swap {name}'.strip(), 'was': provenance[node]}
+    for node, value in provenance.items():
+        if value.get('source') != 'static_unrecorded' or node not in facts:
             continue
-        check = node_nfs_state_loss(node, partition=partition, now=now)
-        print(f"   node NFS check {node}: {check['status']}"
-              + (f" ({len(check['recent'])} kthread_run -4 in 6 h)" if check.get('recent') else ''))
-        if check['status'] != 'clean':
-            if node not in acknowledged:
-                code = ('readmit_node_recent_nfs_state_loss' if check['status'] == 'state_loss'
-                        else 'readmit_node_nfs_check_unavailable')
-                raise SwapError(code, f'{node}: diagnose, or pass --acknowledge '
-                                f'{NFS_ACK_PREFIX}{node}=<reason>')
-            check = {**check, 'acknowledged': acknowledged[node]}
-        checks[node] = check
-    return checks
+        features = [f for f in facts[node].get('features', '').split(',') if f]
+        state = facts[node].get('state') or ''
+        if types and not types & set(features):
+            provenance[node] = {'source': 'hardware_class', 'features': ','.join(features)}
+        elif any(word in state for word in ('DOWN', 'DRAIN', 'FAIL', 'NOT_RESPONDING')):
+            provenance[node] = {'source': 'slurm_unavailable', 'state': state}
 
 
 def refuse_node_plan_on_close(mode: str, args: argparse.Namespace) -> None:
     """A close-only watch keeps its config, so any node-plan option would be ignored."""
     used = [flag for flag, value in (('--readmit', args.readmit), ('--eval-node', args.eval_node),
                                      ('--max-excluded-nodes', args.max_excluded_nodes),
-                                     ('--exclude-reason', args.exclude_reason))
+                                     ('--exclude-reason', args.exclude_reason),
+                                     ('--node-reason', getattr(args, 'node_reason', [])))
             if value not in (None, [])]
     if mode == 'close_window' and used:
         raise SwapError('node_plan_needs_a_continuation',
@@ -580,6 +596,10 @@ def exclusion_summary(cfg: dict[str, Any], facts: dict[str, dict[str, Any]]) -> 
                                                                 key=lambda kv: -kv[1]))]
     if named:
         lines.append(f'  actor-type nodes excluded ({len(named)}): ' + ' '.join(sorted(named)))
+    for node, record in sorted((cfg.get('inherited_node_exclusions') or {}).items()):
+        due = record.get('cooldown_until')
+        lines.append(f"- watcher-managed exclusion {node}: strike {record.get('strike')}, "
+                     + (f'canary from {stamp(due)}' if due else 'out for this window'))
     for row in cfg.get('readmit_nodes') or []:
         lines.append(f"- re-admitted {row['node']} (evidence {row['evidence']}); the watcher "
                      'drops its inherited auto exclusion once; #386 watches it again')
@@ -1105,17 +1125,16 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
     auto_records = (previous.get('node_exclusion') or {}).get('excluded', {})
     auto = sorted(auto_records)
     refuse_node_plan_on_close(mode, args)
+    reasons = dict(r.split('=', 1) for r in args.node_reason)
     plan = {'exclude_reason': args.exclude_reason, 'readmit': args.readmit,
             'readmit_evidence': args.readmit_evidence, 'eval_nodes': args.eval_node,
             'max_excluded_nodes': args.max_excluded_nodes, 'name': args.name,
-            'auto_records': auto_records}
+            'auto_records': auto_records, 'node_reasons': reasons,
+            'strikes': (previous.get('node_exclusion') or {}).get('strikes') or {}}
+    if mode != 'close_window':
+        plan['slurm_facts'] = node_facts(sorted(set(prior.get('exclude_nodes') or [])
+                                                | set(args.exclude_node)))
     acknowledged = dict(a.split('=', 1) for a in args.acknowledge)
-    nfs_acks = {k.split(':', 1)[1]: v for k, v in acknowledged.items()
-                if k.startswith(NFS_ACK_PREFIX)}
-    if args.readmit and mode != 'close_window':
-        plan['nfs_checks'] = readmission_nfs_checks(
-            sorted(set(args.readmit)), nfs_acks, partition=prior.get('actor_partition', 'smp'),
-            now=now, dry_run=args.dry_run)
     pooled = args.eval_node or any(
         (p or {}).get('source') == 'evaluation_pool'
         for p in (prior.get('exclude_node_provenance') or {}).values())
@@ -1126,9 +1145,9 @@ def _prepare(args, steps, watch, evaluate, decision, previous, prior, previous_r
                       execution=final / 'execution.json', learner=final / 'learner.json',
                       cp_id=cp and cp['checkpoint_artifact_id'], held_job=held,
                       exclude=args.exclude_node, auto_excluded=auto, window=window,
-                      acknowledgements={k: v for k, v in acknowledged.items()
-                                        if not k.startswith(NFS_ACK_PREFIX)},
+                      acknowledgements=acknowledged,
                       evaluation_episode_seconds=watch.EVALUATION_EPISODE_SECONDS,
+                      evaluation_wall_seconds=watch.EVALUATION_WALL_SECONDS,
                       nodes=plan)
     episodes = [(c.get('evaluation') or {}).get('episode_seconds',
                                                 watch.EVALUATION_EPISODE_SECONDS)
@@ -1294,9 +1313,9 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument('--max-excluded-nodes', type=int, choices=range(0, 17),
                          metavar='0..16', help='node_unknown_exclusion.max_nodes')
     prepare.add_argument('--acknowledge', action='append', default=[],
-                         help='diagnosed integrity finding KEY=RECORD_SHA256, or '
-                              'nfs_state_loss:NODE=REASON to re-admit a node whose 1-core '
-                              'check found kthread_run -4 in the last 6 h (OPS F2)')
+                         help='diagnosed integrity finding KEY=RECORD_SHA256')
+    prepare.add_argument('--node-reason', action='append', default=[], metavar='NODE=REASON',
+                         help='why a static exclusion exists (exclude_node_provenance)')
     prepare.add_argument('--expect-mode', choices=('same_window', 'new_window', 'close_window'))
     prepare.add_argument('--launch-margin', type=float, default=1800,
                          help='seconds the lead needs to review and launch (default 1800)')

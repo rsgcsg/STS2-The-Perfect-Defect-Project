@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -681,6 +682,11 @@ def test_held_step_stop_keeps_worker_processes_alive_and_uses_existing_markers(
     assert (root / "login-launch/STOP").is_file()
     assert (root / "learner/STOP").is_file()
     assert value["stopping"] == "normal-stop"
+    # The typed reason and budget travel in learner/STOP itself, and the first one stays.
+    written = json.loads((root / "learner/STOP").read_bytes())
+    assert written == {"reason": "normal-stop", "budget_id": owner.config.get("budget_id")}
+    owner.stop_attempt(value, "absolute_deadline")
+    assert json.loads((root / "learner/STOP").read_bytes())["reason"] == "normal-stop"
     cancellations = []
     monkeypatch.setattr(watch.subprocess, "run", lambda command, **kwargs:
         (cancellations.append(command) or SimpleNamespace(returncode=0)))

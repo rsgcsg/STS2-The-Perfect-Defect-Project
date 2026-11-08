@@ -274,6 +274,9 @@ UNKNOWN_WINDOW_DEFAULTS: dict[str, Any] = {
     'min_denominator': 100}
 EVALUATION_EPISODE_SECONDS = 1800  # evaluate.py's maximum; 900 s cut deep games (U4-1).
 EVALUATION_WAIT_ALARM_SECONDS = 1200  # OPS 11-07: queued eval/prepare -> typed attention
+# Evaluation job wall (OPS-2, audit row 21): evaluation-0007 hit 2:05 in its snapshot
+# with the games done; Act-3-deep games keep getting longer, so 3 h by default.
+EVALUATION_WALL_SECONDS = 10800
 EVALUATION_RESULT_GRACE_SECONDS = 900  # terminal job, result not yet visible on NFS
 SELECTION_SCORES = ('conservative', 'finished_mean', 'paired_max_floor')
 UNKNOWN_STATUSES = frozenset({'unknown', 'save_failed'})
@@ -364,9 +367,32 @@ def unknown_over_limit(unknown: int, total: int, config: dict[str, Any]) -> bool
 # Chosen from the RL4.2 c11 replay (python/tests/fixtures/friday_c11_node_unknown_replay.json):
 # before the 03:42 global stop healthy nodes peak at 2/30 unknown in any window,
 # while the two bad nodes cross 25% about 32 and 15 minutes earlier.
+#
+# OPS-2 (NODE-HEALTH-REVIEW 11-08): a bad node is a state that passes in hours, so
+# - ``max_nodes`` bounds the nodes isolated *at the same time* (excluded or in canary);
+# - an excluded node returns in-window: a cooldown by strike (2/4/8 h; past the list it
+#   stays out until the window ends), then ``canary_lanes`` real actors pinned to it;
+#   ``canary_games`` closes with no node-state failure put it back in full use, one
+#   failure is the next strike. ``canary_lanes`` 0 keeps the old whole-window exclusion;
+# - a slow node (median saved-game time > ``slow_ratio`` x the fleet's) is its own
+#   verdict: no new placements, no signal, not counted in ``max_nodes``.
 NODE_EXCLUSION_DEFAULTS: dict[str, Any] = {
     'window_attempts': 30, 'min_attempts': 20, 'node_fraction': .25,
-    'fleet_median_max': .10, 'max_nodes': 4}
+    'fleet_median_max': .10, 'max_nodes': 4,
+    'cooldown_seconds': [7200, 14400, 28800], 'canary_lanes': 2, 'canary_games': 10,
+    'slow_ratio': 2.0, 'slow_min_games': 20, 'canary_start_seconds': 3600}
+# Which closes count toward a node. The bad-node state does not classify as
+# ``infrastructure`` (c13f 11-08: 823 of 826 bad-node unknowns are
+# ``runtime_execution_or_release_unknown`` -> ``unclassified``), so narrowing to that
+# category would stop detection. Only the categories that follow the game, not the node,
+# are left to the global gate; anything else (infrastructure, unclassified, save_ledger)
+# counts. Isolation is reversible (cooldown + canary), so the open side is the safe side.
+GAME_SIDE_CATEGORIES = frozenset({'environment_gap', 'wall_limit'})
+
+
+def node_state_failure(status: Any, unknown_class: dict[str, Any] | None) -> bool:
+    return (status in {'unknown', 'save_failed'}
+            and (unknown_class or {}).get('category') not in GAME_SIDE_CATEGORIES)
 
 
 def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -377,8 +403,10 @@ def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict) or set(raw) - NODE_EXCLUSION_DEFAULTS.keys():
         raise ValueError('explicit_node_unknown_exclusion_settings_required')
     value = {**NODE_EXCLUSION_DEFAULTS, **raw}
-    ints = ('window_attempts', 'min_attempts', 'max_nodes')
-    fractions = ('node_fraction', 'fleet_median_max')
+    ints = ('window_attempts', 'min_attempts', 'max_nodes', 'canary_lanes', 'canary_games',
+            'slow_min_games', 'canary_start_seconds')
+    fractions = ('node_fraction', 'fleet_median_max', 'slow_ratio')
+    cooldown = value['cooldown_seconds']
     if (any(type(value[k]) is not int for k in ints)
             or any(type(value[k]) not in (int, float) or not math.isfinite(value[k])
                    for k in fractions)
@@ -386,9 +414,49 @@ def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
             or not 1 <= value['min_attempts'] <= value['window_attempts']
             or not 0 < value['node_fraction'] <= 1
             or not 0 <= value['fleet_median_max'] < value['node_fraction']
-            or not 0 <= value['max_nodes'] <= 16):
+            or not 0 <= value['max_nodes'] <= 16
+            or not 0 <= value['canary_lanes'] <= 4 or not 1 <= value['canary_games'] <= 100
+            or not 1 < value['slow_ratio'] <= 100 or not 5 <= value['slow_min_games'] <= 1000
+            or not 600 <= value['canary_start_seconds'] <= 14400
+            or not isinstance(cooldown, list) or not 1 <= len(cooldown) <= 8
+            or any(type(c) is not int or not 600 <= c <= 86400 for c in cooldown)
+            or cooldown != sorted(cooldown)):
         raise ValueError('explicit_node_unknown_exclusion_settings_required')
     return value
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def node_slow_decisions(durations: dict[str, list[float]], slow: Any,
+                        settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Throughput verdict, separate from the unknown verdict: a node whose median saved-game
+    time exceeds ``slow_ratio`` x the median of the other nodes' medians (>= 3 other nodes
+    with ``slow_min_games`` each). Typed decisions only; no scheduler effect here."""
+    ready = {n: _median(v) for n, v in durations.items() if len(v) >= settings['slow_min_games']}
+    decisions = []
+    for node in sorted(ready):
+        if node in slow:
+            continue
+        others = [m for n, m in ready.items() if n != node and n not in slow]
+        if len(others) < 3:
+            continue
+        fleet = _median(others)
+        if fleet > 0 and ready[node] / fleet > settings['slow_ratio']:
+            decisions.append({'kind': 'node_slow', 'node': node,
+                              'node_median_seconds': ready[node],
+                              'fleet_median_seconds': fleet, 'ratio': ready[node] / fleet,
+                              'games': len(durations[node])})
+    return decisions
+
+
+def node_cooldown(settings: dict[str, Any], strike: int) -> int | None:
+    """Seconds before a node's ``strike``-th exclusion may canary; None = rest of window."""
+    cooldown = settings['cooldown_seconds']
+    return cooldown[strike - 1] if 1 <= strike <= len(cooldown) else None
 
 
 def node_exclusion_decisions(windows: dict[str, list[int]], excluded: Any,
@@ -1309,6 +1377,15 @@ def read_segment_config(path: Path) -> dict[str, Any]:
         gpu_successor.settings(value['gpu_successor'], value.get('gpu', 'a100'))
         if not value.get('held_job_id'):
             raise ValueError('gpu_successor_requires_held_job_id')
+    inherited = value.get('inherited_node_exclusions', {})
+    if (not isinstance(inherited, dict) or not node_list_valid(list(inherited))
+            or any(not isinstance(r, dict) or type(r.get('strike')) is not int
+                   or r.get('cooldown_until') is not None
+                   and type(r['cooldown_until']) not in (int, float)
+                   for r in inherited.values())
+            or inherited and node_exclusion_settings(value) is None
+            or set(inherited) & set(value.get('exclude_nodes') or [])):
+        raise ValueError('explicit_inherited_node_exclusions_required')
     readmit = value.get('readmit_nodes', [])
     if (not isinstance(readmit, list) or not all(isinstance(r, dict) for r in readmit)
             or not node_list_valid([r.get('node') for r in readmit])):
@@ -1515,6 +1592,7 @@ class SegmentWatcher(Watcher):
         if hashed(frozen_config) != hashlib.sha256(json_bytes(config)).hexdigest():
             raise ValueError('watch_resume_configuration_changed')
         config_reference = {'path': str(frozen_config), 'sha256': hashed(frozen_config)}
+        created = not self.state_path.exists()
         self.state: dict[str, Any] = (json.loads(self.state_path.read_bytes()) if self.state_path.exists() else previous or
             {'config_sha256': hashlib.sha256(json_bytes(config)).hexdigest(), 'attempts': [],
              'active': None, 'stop': None, 'training_seconds': 0., 'games_total': 0,
@@ -1536,6 +1614,8 @@ class SegmentWatcher(Watcher):
             self.state['stop'] = None  # Explicit continuation; original state remains pinned above.
             self.close_inherited_failed_evaluation()
             self.apply_readmissions()
+        if created:
+            self.seed_inherited_exclusions()
         if self.state['config_sha256'] != hashlib.sha256(json_bytes(config)).hexdigest():
             raise ValueError('watch_resume_configuration_changed')
         self.signalled = self.maintenance_requested = False
@@ -1719,6 +1799,13 @@ class SegmentWatcher(Watcher):
                                               or 'learner_failed_requires_diagnosis')
                 if event['kind'] == 'finished':
                     attempt['finished'] = True
+                    if event.get('dropped_at_window_end') and 'dropped_at_window_end' \
+                            not in attempt:
+                        # OPS-2: a normal window close; reported, counted, never retried.
+                        attempt['dropped_at_window_end'] = event['dropped_at_window_end']
+                        self.telemetry('worlds_dropped_at_window_end', **{
+                            k: v for k, v in event['dropped_at_window_end'].items()
+                            if k != 'episode_keys'})
             if event['kind'] == 'actor_retired':
                 unresolved.update(event['unresolved_episodes'])
                 self.state['unresolved_admission_generations'].update({
@@ -1754,11 +1841,7 @@ class SegmentWatcher(Watcher):
                         at = event.get('at')
                         fact['closed_at'] = (at if type(at) in (int, float) and math.isfinite(at)
                                              else time.time())
-                    if not fact.get('closed') and node_exclusion_settings(self.config):
-                        # Node attribution waits for the actor's scheduler placement.
-                        self.state.setdefault('node_exclusion', {}).setdefault(
-                            'pending', []).append([event['actor'], int(
-                                game['status'] in {'unknown', 'save_failed'})])
+                    newly_closed = not fact.get('closed')
                     fact.update(actor=event['actor'], closed=True, status=game['status'])
                     if game['status'] in {'unknown', 'save_failed'}:
                         # Diagnostic only (U3): classify without the node-local summary.
@@ -1768,6 +1851,16 @@ class SegmentWatcher(Watcher):
                         # Typed at close from the recorded facts (card U4 A); never a retry.
                         fact['unknown_class'] = classify_unknown(
                             game['status'], game.get('reason'), game.get('failure'))
+                    if newly_closed and node_exclusion_settings(self.config):
+                        # Node attribution waits for the actor's scheduler placement:
+                        # [actor, node-state failure, saved-game seconds or None].
+                        elapsed = game.get('elapsed_seconds')
+                        self.state.setdefault('node_exclusion', {}).setdefault(
+                            'pending', []).append([event['actor'], int(node_state_failure(
+                                game['status'], fact.get('unknown_class'))),
+                                elapsed if game['status'] in {'saved', 'finished'}
+                                and type(elapsed) in (int, float) and math.isfinite(elapsed)
+                                and elapsed > 0 else None])
                     if not fact.get('generation') and game.get('training_generation'):
                         fact['generation'] = game['training_generation']
                     if game.get('world_mutation_offered'):
@@ -1880,6 +1973,21 @@ class SegmentWatcher(Watcher):
             nodes.setdefault('events', []).append(event)
             print(json.dumps({'kind': 'node_readmitted', 'node': node}), file=sys.stderr,
                   flush=True)
+
+    def seed_inherited_exclusions(self) -> None:
+        """Once, when this work dir's state is created: release_swap's carried auto
+        exclusions (OPS-2) join this watch's in-window exclusions with their strike and
+        cooldown end; an in-place restart never re-adds a node the canary re-admitted."""
+        inherited = self.config.get('inherited_node_exclusions') or {}
+        if not inherited:
+            return
+        nodes = self.state.setdefault('node_exclusion', {})
+        excluded = nodes.setdefault('excluded', {})
+        strikes = nodes.setdefault('strikes', {})
+        for node, record in sorted(inherited.items()):
+            if node not in excluded:
+                excluded[node] = {**record, 'signalled_actors': []}
+            strikes[node] = max(strikes.get(node, 0), record.get('strike') or 1)
 
     def unknown_class(self, intent: str, fact: dict[str, Any]) -> dict[str, Any]:
         """Close-time typed category, plus the node; a #386 auto-excluded node's
@@ -2228,7 +2336,8 @@ class SegmentWatcher(Watcher):
         """Configured exclusions plus this run's typed automatic node exclusions.
         Every submission (actors, CPU steps, evaluations) starts from this list."""
         nodes = [*(self.config.get('exclude_nodes') or []),
-                 *self.state.get('node_exclusion', {}).get('excluded', {})]
+                 *self.state.get('node_exclusion', {}).get('excluded', {}),
+                 *self.state.get('node_exclusion', {}).get('slow', {})]
         return list(dict.fromkeys(nodes)) or None
 
     def evaluation_exclude_nodes(self) -> list[str] | None:
@@ -2244,8 +2353,9 @@ class SegmentWatcher(Watcher):
         are always added."""
         evaluation = self.config.get('evaluation') or {}
         if evaluation.get('exclude_nodes') is not None:
-            auto = self.state.get('node_exclusion', {}).get('excluded', {})
-            nodes = [*evaluation['exclude_nodes'], *auto]
+            auto = self.state.get('node_exclusion', {})
+            nodes = [*evaluation['exclude_nodes'], *auto.get('excluded', {}),
+                     *auto.get('slow', {})]
         else:
             nodes = list(self.actor_exclude_nodes() or [])
         if evaluation.get('avoid_actor_nodes'):
@@ -2271,28 +2381,54 @@ class SegmentWatcher(Watcher):
                 actor_nodes.setdefault(row['actor'], row['node'])
         windows = nodes.setdefault('windows', {})
         totals = nodes.setdefault('totals', {})
+        durations = nodes.setdefault('durations', {})
+        excluded = nodes.setdefault('excluded', {})
+        canaries = {actor: node for node, record in excluded.items()
+                    for actor in (record.get('canary') or {}).get('actors', [])}
         waiting = []
-        for actor, unknown in nodes.get('pending', []):
+        for entry in nodes.get('pending', []):
+            actor, unknown = entry[0], entry[1]
+            elapsed = entry[2] if len(entry) > 2 else None  # states before OPS-2: 2 fields
             node = actor_nodes.get(actor)
             if node is None:
-                waiting.append([actor, unknown])
+                waiting.append(entry)
                 continue
             windows[node] = (windows.get(node, []) + [unknown])[-settings['window_attempts']:]
             total = totals.setdefault(node, [0, 0])
             total[0] += 1
             total[1] += unknown
+            if elapsed is not None:
+                durations[node] = (durations.get(node, []) + [elapsed])[
+                    -settings['window_attempts']:]
+            if canaries.get(actor) == node:
+                canary = excluded[node]['canary']
+                canary['closes'] += 1
+                canary['failures'] += unknown
         # Closes whose actor never shows a placement stay unattributed, counted once.
         overflow = max(0, len(waiting) - 10000)
         nodes['unattributed'] = nodes.get('unattributed', 0) + overflow
         nodes['pending'] = waiting[overflow:]
-        excluded = nodes.setdefault('excluded', {})
         logged = nodes.setdefault('logged', {})
+        strikes = nodes.setdefault('strikes', {})
+        slow = nodes.setdefault('slow', {})
+        for decision in node_slow_decisions(durations, slow, settings):
+            record = {**decision, 'at': time.time(),
+                      'action': 'no_new_placements_running_actors_continue'}
+            slow[decision['node']] = record
+            nodes.setdefault('events', []).append(record)
+            self.persist()
+            self.telemetry('attention', reason='node_slow', **{
+                k: v for k, v in record.items() if k != 'kind'})
         for decision in node_exclusion_decisions(windows, excluded, settings):
             node = decision['node']
             record = {**decision, 'at': time.time(), 'total_attempts': totals[node][0],
                       'total_unknown': totals[node][1], 'settings': settings,
                       'configured_exclude_nodes': self.config.get('exclude_nodes') or []}
             if decision['kind'] == 'node_unknown_exclusion':
+                strikes[node] = strikes.get(node, 0) + 1
+                cooldown = node_cooldown(settings, strikes[node])
+                record.update(strike=strikes[node], cooldown_until=(
+                    record['at'] + cooldown if cooldown is not None else None))
                 excluded[node] = {**record, 'signalled_actors': []}
             elif logged.get(node) == decision['kind']:
                 continue  # one typed record per node and outcome, not one per tick
@@ -2307,12 +2443,222 @@ class SegmentWatcher(Watcher):
                            else 'node_excluded', reason=decision['kind'], **{
                                k: v for k, v in record.items() if k != 'kind'})
         for node, record in excluded.items():
+            pinned = set((record.get('canary') or {}).get('actors', []))
             for row in rows:
                 if (row.get('node') == node and not row['terminal']
+                        and row['actor'] not in pinned
                         and row['actor'] not in record['signalled_actors']):
                     self.signal_once(row['array_job_id'])
                     record['signalled_actors'].append(row['actor'])
                     self.persist()
+
+    def node_readmission_step(self, attempt: dict[str, Any], rows: list[dict[str, Any]],
+                              settings: dict[str, Any]) -> None:
+        """In-window return of an auto-excluded node: cooldown -> canary -> full use.
+
+        After its cooldown a node gets ``canary_lanes`` extra actors pinned to it
+        (``--nodelist``); they are never replaced. ``canary_games`` closes without a
+        node-state failure re-admit it (typed ``node_readmitted``, the exclusion period
+        stays isolated) and this attempt's pending actor arrays may use it again. One
+        failure signals the canary actors (finish the game, offer no more) and starts the
+        next strike's cooldown. No game is retried; closes keep their original facts."""
+        if settings['canary_lanes'] < 1:
+            return
+        nodes = self.state['node_exclusion']
+        excluded = nodes.get('excluded', {})
+        now = time.time()
+        for node in sorted(excluded):
+            record = excluded[node]
+            canary = record.get('canary')
+            if canary is None:
+                due = record.get('cooldown_until')
+                if (due is None or now < due or now + 1800 >= self.config['deadline_at']
+                        or self.state.get('stop')):
+                    continue
+                self.start_canary(attempt, node, record, settings, rows)
+                continue
+            ended = {row['actor'] for row in rows if row['terminal']}
+            lanes_ended = (canary['closes'] < settings['canary_games']
+                           and set(canary['actors']) <= ended)
+            lanes = [row for row in rows if row['actor'] in canary['actors']]
+            # A canary still PENDING after the start deadline (node full, DRAIN/DOWN) is a
+            # failed canary: cancel only its own array, stop counting its lanes, strike.
+            never_started = (canary['closes'] == 0 and not lanes_ended
+                             and now - canary['started_at'] >= settings['canary_start_seconds']
+                             and all(row['state'] == 'PENDING' for row in lanes))
+            if never_started:
+                self.cancel_canary(canary)
+                attempt.setdefault('cancelled_canary_actors', []).extend(canary['actors'])
+            if canary['failures'] > 0 or lanes_ended or never_started:
+                # Lanes that end before their sample (crash, wall) are not evidence of a
+                # healthy node: fail closed, the next strike's cooldown, a new canary.
+                for row in rows:
+                    if (row['actor'] in canary['actors'] and not row['terminal']
+                            and row['actor'] not in record['signalled_actors']):
+                        self.signal_once(row['array_job_id'])
+                        record['signalled_actors'].append(row['actor'])
+                nodes['strikes'][node] = nodes['strikes'].get(node, 0) + 1
+                cooldown = node_cooldown(settings, nodes['strikes'][node])
+                record.setdefault('canaries', []).append({**canary, 'ended_at': now,
+                    'outcome': 'not_started' if never_started
+                    else 'lanes_ended_early' if lanes_ended and not canary['failures']
+                    else 'failed'})
+                record.update(canary=None, strike=nodes['strikes'][node],
+                              cooldown_until=now + cooldown if cooldown is not None else None)
+                event = {'kind': 'node_canary_failed', 'node': node, 'at': now,
+                         'closes': canary['closes'], 'failures': canary['failures'],
+                         'strike': record['strike'], 'cooldown_until': record['cooldown_until']}
+                nodes.setdefault('events', []).append(event)
+                self.persist()
+                self.telemetry('attention', reason='node_canary_failed', **{
+                    k: v for k, v in event.items() if k != 'kind'})
+            elif canary['closes'] >= settings['canary_games']:
+                excluded.pop(node)
+                evidence = {'kind': 'canary', 'closes': canary['closes'], 'failures': 0,
+                            'plan': canary['plan'], 'strike': record.get('strike')}
+                nodes.setdefault('readmitted', {}).setdefault(node, []).append(
+                    {'excluded_at': record.get('at'), 'readmitted_at': now,
+                     'evidence': evidence})
+                nodes.get('windows', {}).pop(node, None)
+                nodes.get('logged', {}).pop(node, None)
+                event = {'kind': 'node_readmitted', 'node': node, 'at': now,
+                         'excluded_at': record.get('at'), 'evidence': evidence}
+                nodes.setdefault('events', []).append(event)
+                self.persist()
+                self.telemetry('node_readmitted', **{k: v for k, v in event.items()
+                                                    if k != 'kind'})
+                self.release_pending_exclusion(attempt, node)
+
+    def start_canary(self, attempt: dict[str, Any], node: str, record: dict[str, Any],
+                     settings: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        import rl
+
+        lanes = settings['canary_lanes']
+        # Extra lanes stay inside the run's explicit CPU budget (actors + learner CPUs):
+        # every canary lane still running counts, including those of re-admitted nodes.
+        budget = self.config.get('cpu_budget', 500)
+        pinned = set(attempt.get('canary_actors', [])) - set(
+            attempt.get('cancelled_canary_actors', []))
+        active = sum(1 for row in rows if row['actor'] in pinned and not row['terminal'])
+        active += sum(lanes for r in self.state['node_exclusion']['excluded'].values()
+                      if r.get('canary') and not set(r['canary']['actors'])
+                      & {row['actor'] for row in rows})  # submitted, not yet in sacct
+        if self.config['actors'] + self.config.get('cpus', 32) + active + lanes > budget:
+            if record.get('canary_waiting') != 'cpu_budget':
+                record['canary_waiting'] = 'cpu_budget'
+                self.persist()
+                self.telemetry('attention', reason='node_canary_waits_for_cpu_budget',
+                               node=node, cpu_budget=budget)
+            return
+        number = len(record.get('canaries', [])) + 1
+        root = Path(attempt['root']) / f'canary-{node}-{record.get("strike", 1)}-{number}'
+        config = Path(attempt['root']) / 'learner/learner-config.json'
+        rl.prepare(Path(self.config['execution']), config, root, actors=lanes,
+            wall_seconds=max(300, min(79200, int(self.config['deadline_at'] - time.time() - 600))),
+            episode_seconds=self.config.get('episode_seconds', 14400), max_games=100000,
+            games_per_ledger=10, runtime_source=Path(self.config['runtime_source']),
+            seed_namespace=(f'ops-{self.work.name}-{attempt["generation"]}-canary-{node}-'
+                            f'{record.get("strike", 1)}-{number}'),
+            segment_inference=self.work / 'inference.json', archive_publisher='shared')
+        plan = rl.load_plan(root / 'plan.json')
+        record.pop('canary_waiting', None)
+        record['canary'] = {'plan': str(root / 'plan.json'), 'started_at': time.time(),
+                            'actors': [a['actor'] for a in plan['actors']],
+                            'closes': 0, 'failures': 0}
+        attempt.setdefault('canary_actors', []).extend(record['canary']['actors'])
+        self.persist()  # Never synthesize a second plan after an uncertain submit.
+        try:
+            rl.submit(root / 'plan.json',
+                additional_to=[Path(p) for p in attempt['actor_plans']],
+                partition=self.config.get('actor_partition', 'smp'),
+                constraint=self.config.get('actor_constraint'),
+                node_types=self.config.get('actor_node_types'),
+                memory_gb=self.config.get('actor_memory_gb', 4), nodelist=[node])
+        except ValueError as error:
+            if (root / 'submission-intent.json').exists():
+                raise  # an uncertain submission is reconciled, never resubmitted
+            # Refused before any scheduler effect (fair share, capacity): no canary ran.
+            record.setdefault('canaries', []).append({**record['canary'], 'ended_at':
+                                                      time.time(), 'outcome': 'not_submitted',
+                                                      'error': str(error)})
+            record['canary'] = None
+            record['cooldown_until'] = time.time() + 1800  # look again in 30 min
+            self.persist()
+            self.telemetry('attention', reason='node_canary_not_submitted', node=node,
+                           error=str(error))
+            return
+        attempt['actor_plans'].append(str(root / 'plan.json'))
+        refs = [{'path': p, 'sha256': hashed(Path(p))} for p in attempt['actor_plans'][1:]]
+        save(Path(attempt['root']) / 'actor-allocations.json', {'plans': refs})
+        event = {'kind': 'node_canary_started', 'node': node, 'at': time.time(),
+                 'strike': record.get('strike'), 'lanes': lanes, 'plan': str(root / 'plan.json')}
+        self.state['node_exclusion'].setdefault('events', []).append(event)
+        self.persist()
+        self.telemetry('node_canary_started', **{k: v for k, v in event.items() if k != 'kind'})
+
+    def cancel_canary(self, canary: dict[str, Any]) -> None:
+        """``scancel`` our own never-started canary array (nothing else). Its lanes ran
+        no game, so nothing is retried; a failed cancel only alarms."""
+        submission = read_published(Path(canary['plan']).parent / 'submission.json')
+        if submission is None:
+            return
+        job = str(submission['job_id']).split(';')[0]
+        try:
+            result = subprocess.run(['scancel', job], check=False, capture_output=True,
+                                    timeout=60)
+            code: Any = result.returncode
+        except (OSError, subprocess.SubprocessError) as error:
+            code = type(error).__name__
+        if code != 0:
+            self.telemetry('attention', reason='node_canary_cancel_failed', job_id=job,
+                           outcome=code)
+
+    def release_pending_exclusion(self, attempt: dict[str, Any], node: str) -> None:
+        """A re-admitted node is usable by this attempt's still-pending actor elements:
+        ``scontrol update`` of their ExcNodeList to the current list (our own arrays only;
+        idempotent). The outcome is recorded; a failure only alarms."""
+        import rl
+
+        current = self.actor_exclude_nodes() or []
+        # Canary arrays are pinned by --nodelist to the node under test: an ExcNodeList
+        # naming that node would make them unschedulable, so they are never updated.
+        canary_plans = {r['canary']['plan'] for r in
+                        self.state['node_exclusion'].get('excluded', {}).values()
+                        if r.get('canary')}
+        canary_plans |= {c['plan'] for r in
+                         self.state['node_exclusion'].get('excluded', {}).values()
+                         for c in r.get('canaries', [])}
+        canary_plans |= {e['evidence']['plan'] for rows in
+                         self.state['node_exclusion'].get('readmitted', {}).values()
+                         for e in rows if e.get('evidence', {}).get('plan')}
+        outcomes = []
+        for plan in attempt['actor_plans']:
+            if plan in canary_plans:
+                continue
+            submission = read_published(Path(plan).parent / 'submission.json')
+            if submission is None:
+                continue
+            job = str(submission['job_id']).split(';')[0]
+            pending = [row for row in rl.actor_accounting(Path(plan))
+                       if row['state'] == 'PENDING']
+            if not pending:
+                continue
+            try:
+                result = subprocess.run(['scontrol', 'update', f'JobId={job}',
+                                         'ExcNodeList=' + ','.join(current)],
+                                        check=False, capture_output=True, timeout=60)
+            except (OSError, subprocess.SubprocessError) as error:
+                outcomes.append({'job_id': job, 'error_type': type(error).__name__})
+            else:
+                outcomes.append({'job_id': job, 'pending': len(pending),
+                                 'exit_code': result.returncode})
+        self.state['node_exclusion'].setdefault('events', []).append(
+            {'kind': 'pending_exclusion_released', 'node': node, 'at': time.time(),
+             'outcomes': outcomes})
+        self.persist()
+        if any(o.get('exit_code') != 0 for o in outcomes):
+            self.telemetry('attention', reason='pending_exclusion_release_incomplete',
+                           node=node, outcomes=outcomes)
 
     def replace_actors(self, attempt: dict[str, Any]) -> None:
         import rl
@@ -2324,8 +2670,15 @@ class SegmentWatcher(Watcher):
                 for row in rl.actor_accounting(Path(plan), with_node=settings is not None)]
         if settings is not None:
             self.account_nodes(rows, settings)
-        terminal = [row for row in rows if row['terminal']
+            self.node_readmission_step(attempt, rows, settings)
+        # Canary lanes are extra, pinned capacity: recorded when terminal, never replaced.
+        pinned = set(attempt.get('canary_actors', []))
+        ended = [row for row in rows if row['terminal'] and row['actor'] in pinned]
+        terminal = [row for row in rows if row['terminal'] and row['actor'] not in pinned
                     and row['actor'] not in attempt['replaced']]
+        if ended:
+            self.state['terminal_actors'] = sorted(set(self.state['terminal_actors'])
+                                                   | {row['actor'] for row in ended})
         if not terminal:
             return
         self.state['terminal_actors'] = sorted(set(self.state['terminal_actors'])
@@ -2427,7 +2780,18 @@ class SegmentWatcher(Watcher):
         if not (root / 'login-launch/STOP').exists():
             save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():
-            (root / 'learner/STOP').touch()
+            # The typed reason travels in the file itself (atomic replace), because the
+            # learner sees this file before the socket stop below can reach it. Only a
+            # window-end reason with this budget lets in-flight worlds close as dropped;
+            # an empty STOP (operator touch, signal) stays fail closed.
+            learner_stop = root / 'learner/STOP'
+            try:
+                prior = json.loads(learner_stop.read_bytes() or b'null')
+            except (OSError, ValueError):
+                prior = None
+            if not isinstance(prior, dict) or 'reason' not in prior:
+                save(learner_stop, {'reason': attempt.get('first_stopping', reason),
+                                    'budget_id': self.config.get('budget_id')})
         # Numeric steps share the held allocation. Cooperative generation/file
         # Stop leaves their CPU pools and resource tracker alive for drain/CP.
         # A step-wide USR1 also reaches descendants; hard cancellation remains
@@ -2936,7 +3300,8 @@ class SegmentWatcher(Watcher):
             '--checkpoint', cp['checkpoint_artifact_id'], '--execution',
             shlex.quote(cfg['execution']), '--manifest', shlex.quote(cfg['manifest']['path']),
             '--output', shlex.quote(str(root / 'round')), '--workers', str(cfg.get('workers', 4)),
-            '--seeds', str(cfg.get('seeds', 50)), '--wall-seconds', str(cfg.get('wall_seconds', 7200)),
+            '--seeds', str(cfg.get('seeds', 50)),
+            '--wall-seconds', str(cfg.get('wall_seconds', EVALUATION_WALL_SECONDS)),
             '--episode-seconds', str(cfg.get('episode_seconds', EVALUATION_EPISODE_SECONDS))]
         command.extend(['--deadline-at', str(self.config['deadline_at'])])
         script.write_text(prefix + 'exec ' + ' '.join(command) + '\n')

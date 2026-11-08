@@ -319,9 +319,15 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
 def submit(path: Path, *, dry_run: bool = False,
            additional_to: list[Path] | None = None, memory_gb: int = 4,
            exclude_nodes: list[str] | None = None, partition: str = 'smp',
-           constraint: str | None = None, node_types: list[str] | None = None) -> dict[str, Any]:
+           constraint: str | None = None, node_types: list[str] | None = None,
+           nodelist: list[str] | None = None) -> dict[str, Any]:
     if partition not in {'smp', 'general', 'debug'}:
         raise ValueError('supported_Friday_CPU_partition_required')
+    # OPS-2 canary: a few extra lanes pinned to one re-admission candidate node.
+    if nodelist is not None and (len(nodelist) != 1 or exclude_nodes is not None
+                                 or not isinstance(nodelist[0], str)
+                                 or not NAME.fullmatch(nodelist[0])):
+        raise ValueError('canary_nodelist_names_exactly_one_node_without_exclusions')
     if (type(memory_gb) is not int or memory_gb < 1
             or exclude_nodes is not None and (not exclude_nodes
                 or any(not isinstance(node, str) or not NAME.fullmatch(node)
@@ -414,13 +420,15 @@ def submit(path: Path, *, dry_run: bool = False,
             f'--array=0-{count - 1}%{count}',
             *(['--constraint=' + constraint] if constraint else []),
             f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err',
-            *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []), str(script)]
+            *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []),
+            *(['--nodelist=' + nodelist[0]] if nodelist else []), str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
             'cores': count, 'idle_smp_cores': idle, 'queued_smp_jobs': queued,
             'node_types': selected_types, 'idle_selected_cores': idle_selected,
             'dry_run': dry_run, 'memory_gb_per_actor': memory_gb,
             'partition': partition,
-            'excluded_nodes': exclude_nodes or [], 'cross_actor_immediate_unknown_stop': False,
+            'excluded_nodes': exclude_nodes or [], 'nodelist': nodelist or [],
+            'cross_actor_immediate_unknown_stop': False,
             **({'additional_to': parents} if parents else {})}
         if not dry_run:
             save(root / 'submission-intent.json', {**result, 'at': time.time()})
