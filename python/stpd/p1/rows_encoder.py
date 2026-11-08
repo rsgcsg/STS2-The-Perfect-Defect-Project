@@ -5,33 +5,40 @@ This is the fast_chain encoder (P-REWRITE WP3). It produces exactly the frame
 for element, and is checked against it (`verify_every`, tests, R7 double runs).
 It adds no semantics: no new field, order, legality or hidden input. Until the
 WP8 version step makes it the single production implementation, the reference
-in `input.py` / `input_order.py` / `tensor_input.py` stays the oracle.
+in `input.py` / `input_order.py` / `tensor_input.py` stays the frozen oracle.
 
 Correspondence with the reference (one structure, read side by side):
 
     _Encoder._visit            == input.project.visit, v2 symmetric branch only
-                                  (relation is never None, so the v1/sorted
-                                  branches are not reachable and not copied)
-    _Assembly views/pending    == project(): views extension, pending loop,
-                                  reference-only nodes, roles
-    _Assembly positions        == input_order.order_frame(sorted_positions=False)
-    _Assembly tensors          == tensor_input.compile_frame + reduction
+                                  (relation is never None for v2, so the v1 and
+                                  sorted branches are unreachable and not copied)
+    _Encoder._assemble, part 1 == project(): alias views, view extension, pending
+                                  loop with reference-only nodes, roles
+    _Encoder._order_positions  == input_order.order_frame(sorted_positions=False)
+    _Encoder._assemble, part 2 == tensor_input.compile_frame; _reduction ==
+                                  tensor_input.reduction
+    _Encoder._hashes           == frame_compiler.observation_hashes
     identity_paths, unordered_domains, public_field_path, signed_log and the
-    InputEncoding tokenizer cache are imported from the reference, not copied.
+    InputEncoding tokenizer are imported from the reference, not copied.
 
-The only addition is caching. A subtree (every top-level value and every list
-element that is a dict or list) is visited once per distinct content and replayed
-afterwards. Its cache key holds everything the reference visit of that subtree
-reads: the subtree's own JSON bytes in insertion order (declaration order within
-one entity follows dict insertion order), its kind path, and the identity
-relation scope of its source path (see `_Encoder._scope`). Row numbers,
-positions of the subtree root, parent edges, alias views, pending references,
-ordering positions and text indices are always assembled per observation.
+The only additions are caches:
+* Subtree units. Every top-level value and every list element that itself
+  contains a dict or list is visited once per distinct content and replayed
+  afterwards. The key holds everything the reference visit of that subtree
+  reads: its typed value in insertion order (marshal v2 bytes; declaration order
+  within one entity follows dict insertion order), its kind path, and the identity
+  relation scope of its source path (`_Encoder._scope`). Row numbers, the root's
+  position and parent edge, alias views, pending references, ordering positions,
+  text indices and reductions are always assembled per observation.
+* Relation results, memoized per complete identity_paths input signature.
+* Sorted JSON bytes of top-level values, so the two observation hashes are the
+  sha256 of exactly `json_bytes(observation)` / `json_bytes(catalog)`.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import marshal
 import math
 import re
 from collections import OrderedDict
@@ -45,7 +52,8 @@ import torch
 
 from spireagent.json_boundary import BoundaryError
 
-from .frame_compiler import FrameCompiler, compiler_digest, observation_hashes
+from .data import json_bytes
+from .frame_compiler import FrameCompiler, compiler_digest
 from .input import is_v2_encoding, public_field_path, signed_log, validate_input_spec
 from .input_identity import identity_paths
 from .input_order import unordered_domains
@@ -54,18 +62,18 @@ from .rows_encoder_wire import encode_row
 from .tensor_input import Reduction, TensorFrame
 
 IMPLEMENTATION = "stpd/p1-rows-encoder-cached-1"
-DEFAULT_CACHE_BYTES = 256 * 1024 * 1024
+DEFAULT_CACHE_BYTES = 512 * 1024 * 1024
+MAX_TEXTS = 2_000_000  # interned text table bound; reaching it clears the unit cache
+MAX_RELATION_CONTEXTS = 256
 _INDEX = re.compile(r"\[\d+\]")
 _READ_INDEX = re.compile(r"^\$\.extra_reads\[(\d+)\]")
 _CONSTANT = frozenset({"schema", "profile", "revision"})
 _I64 = np.int64
-_EMPTY_I = np.zeros(0, dtype=_I64)
-_EMPTY_F = np.zeros(0, dtype=np.float32)
-_EMPTY_B = np.zeros(0, dtype=bool)
+_UNSET = object()
 
 
 def encoder_digest() -> str:
-    """Bind this implementation and the reference compiler it must equal."""
+    """Bind this implementation, the row codec and the reference compiler identity."""
     root = Path(__file__).parent
     sources = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                for name in ("rows_encoder.py", "rows_encoder_wire.py")}
@@ -75,45 +83,53 @@ def encoder_digest() -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def _array(values: list[Any], dtype: Any) -> np.ndarray:
-    return np.array(values, dtype=dtype) if values else np.zeros(0, dtype=dtype)
+def _nested(item: Any) -> bool:
+    """Cache unit policy for list elements: containers that themselves nest."""
+    if isinstance(item, dict):
+        return any(isinstance(value, (dict, list)) for value in item.values())
+    if isinstance(item, list):
+        return any(isinstance(value, (dict, list)) for value in item)
+    return False
 
 
-@dataclass(frozen=True, slots=True)
+def _rows(values: list[Any], width: int) -> np.ndarray:
+    return np.array(values, dtype=_I64).reshape(-1, width) if values else np.zeros(
+        (0, width), dtype=_I64)
+
+
 class _Unit:
     """One visited subtree in local rows (root = row 0); immutable once cached.
 
-    Entry arrays keep each entity's own list order (the reference appends an
+    Entry rows keep each entity's own list order (the reference appends an
     entity's identities/text/numeric/children only during that entity's visit).
     `decl` and `pend` keep the visit's time order, which fixes alias-view order
-    and the creation order of reference-only nodes.
+    and the creation order of reference-only nodes. Text values are ids into the
+    owning encoder's interned text table.
     """
-    n: int
-    kinds: tuple[str, ...]
-    kind_idx: tuple[int, ...]
-    positions: tuple[int, ...]
-    id_row: np.ndarray
-    id_val: np.ndarray
-    id_field: np.ndarray
-    num_row: np.ndarray
-    num_field: np.ndarray
-    num_val: np.ndarray  # float32 signed_log value; 0 where missing
-    num_missing: np.ndarray
-    txt_row: np.ndarray
-    txt_field: np.ndarray
-    txt_local: np.ndarray  # index into txt_uniq
-    txt_uniq: tuple[str, ...]  # sorted unique text values of this subtree
-    tree_row: np.ndarray
-    tree_dst: np.ndarray
-    decl: tuple[tuple[int, str], ...]
-    pend: tuple[tuple[int, str], ...]
-    nbytes: int
+
+    __slots__ = ("n", "kinds", "kind_idx", "positions", "ids", "nums", "num_vals", "texts",
+                 "tree", "decl", "pend", "nbytes", "json")
+
+    def __init__(self, n: int, kinds: tuple[str, ...], kind_idx: tuple[int, ...],
+                 positions: tuple[int, ...], ids: np.ndarray, nums: np.ndarray,
+                 num_vals: np.ndarray, texts: np.ndarray, tree: np.ndarray,
+                 decl: tuple[tuple[int, str], ...], pend: tuple[tuple[int, str], ...]) -> None:
+        self.n, self.kinds, self.kind_idx, self.positions = n, kinds, kind_idx, positions
+        self.ids = ids            # [k, 3] row, ids index, field index
+        self.nums = nums          # [k, 3] row, field index, missing (0/1)
+        self.num_vals = num_vals  # [k] float32 signed_log value, 0 where missing
+        self.texts = texts        # [k, 3] row, field index, text id
+        self.tree = tree          # [k, 2] parent row, child row
+        self.decl, self.pend = decl, pend
+        self.nbytes = 120 * n + 80 * (len(decl) + len(pend)) + sum(
+            array.nbytes for array in (ids, nums, num_vals, texts, tree))
+        self.json: bytes | None = None  # sorted JSON bytes, top-level units only
 
 
 class _Builder:
     """Mutable rows of one subtree being visited; child units are spliced in."""
 
-    __slots__ = ("kinds", "kind_idx", "positions", "ids", "nums", "texts", "tree",
+    __slots__ = ("kinds", "kind_idx", "positions", "ids", "nums", "num_vals", "texts", "tree",
                  "decl", "pend", "frags")
 
     def __init__(self) -> None:
@@ -121,21 +137,21 @@ class _Builder:
         self.kind_idx: list[int] = []
         self.positions: list[int] = []
         self.ids: list[tuple[int, int, int]] = []
-        self.nums: list[tuple[int, int, float, bool]] = []
-        self.texts: list[tuple[int, int, str]] = []
+        self.nums: list[tuple[int, int, int]] = []
+        self.num_vals: list[float] = []
+        self.texts: list[tuple[int, int, int]] = []
         self.tree: list[tuple[int, int]] = []
         self.decl: list[tuple[int, str]] = []
         self.pend: list[tuple[int, str]] = []
         self.frags: list[tuple[_Unit, int]] = []
 
-    def replay(self, unit: _Unit, position: int, parent: int | None) -> None:
+    def replay(self, unit: _Unit, position: int, parent: int) -> None:
         offset = len(self.kinds)
         self.kinds.extend(unit.kinds)
         self.kind_idx.extend(unit.kind_idx)
         self.positions.extend(unit.positions)
         self.positions[offset] = position
-        if parent is not None:
-            self.tree.append((parent, offset))
+        self.tree.append((parent, offset))
         if unit.decl:
             self.decl.extend((row + offset, alias) for row, alias in unit.decl)
         if unit.pend:
@@ -143,66 +159,29 @@ class _Builder:
         self.frags.append((unit, offset))
 
     def finish(self) -> _Unit:
+        ids, nums, texts = _rows(self.ids, 3), _rows(self.nums, 3), _rows(self.texts, 3)
+        tree = _rows(self.tree, 2)
+        num_vals = np.array(self.num_vals, dtype=np.float32)
         frags = self.frags
-        lengths: dict[str, list[int]] = {}
-
-        def joined(name: str, own: np.ndarray, shift: bool) -> np.ndarray:
-            parts = [own] + [getattr(unit, name) for unit, _ in frags]
-            if not frags:
-                return own
-            out = np.concatenate(parts)
-            if shift:
-                key = name.split("_")[0]
-                if key not in lengths:
-                    lengths[key] = [len(own)] + [len(getattr(unit, name)) for unit, _ in frags]
-                out += np.repeat(np.array([0] + [offset for _, offset in frags], dtype=_I64),
-                                 lengths[key])
-            return out
-
-        ids = np.array(self.ids, dtype=_I64).reshape(-1, 3)
-        nums = self.nums
-        tree = np.array(self.tree, dtype=_I64).reshape(-1, 2)
-        texts = self.texts
-        uniq_set = {text for _, _, text in texts}
-        for unit, _ in frags:
-            uniq_set.update(unit.txt_uniq)
-        uniq = tuple(sorted(uniq_set))
-        lookup = {text: i for i, text in enumerate(uniq)}
-        local_parts = [_array([lookup[text] for _, _, text in texts], _I64)]
-        for unit, _ in frags:
-            if len(unit.txt_local):
-                local_parts.append(np.array([lookup[text] for text in unit.txt_uniq],
-                                            dtype=_I64)[unit.txt_local])
-            else:
-                local_parts.append(_EMPTY_I)
-        txt_local = np.concatenate(local_parts) if frags else local_parts[0]
-        tree_dst = joined("tree_dst", tree[:, 1].copy(), False)
         if frags:
-            # Child edges shift by the owning fragment offset, exactly like rows.
-            counts = [len(tree)] + [len(unit.tree_dst) for unit, _ in frags]
-            tree_dst += np.repeat(np.array([0] + [o for _, o in frags], dtype=_I64), counts)
-        unit = _Unit(
-            n=len(self.kinds), kinds=tuple(self.kinds), kind_idx=tuple(self.kind_idx),
-            positions=tuple(self.positions),
-            id_row=joined("id_row", ids[:, 0].copy(), True),
-            id_val=joined("id_val", ids[:, 1].copy(), False),
-            id_field=joined("id_field", ids[:, 2].copy(), False),
-            num_row=joined("num_row", _array([e[0] for e in nums], _I64), True),
-            num_field=joined("num_field", _array([e[1] for e in nums], _I64), False),
-            num_val=joined("num_val", _array([e[2] for e in nums], np.float32), False),
-            num_missing=joined("num_missing", _array([e[3] for e in nums], bool), False),
-            txt_row=joined("txt_row", _array([e[0] for e in texts], _I64), True),
-            txt_field=joined("txt_field", _array([e[1] for e in texts], _I64), False),
-            txt_local=txt_local, txt_uniq=uniq,
-            tree_row=joined("tree_row", tree[:, 0].copy(), True), tree_dst=tree_dst,
-            decl=tuple(self.decl), pend=tuple(self.pend), nbytes=0)
-        size = 64 * unit.n + sum(len(text) + 56 for text in uniq) + 64 * (
-            len(unit.decl) + len(unit.pend)) + sum(
-            getattr(unit, name).nbytes for name in (
-                "id_row", "id_val", "id_field", "num_row", "num_field", "num_val",
-                "num_missing", "txt_row", "txt_field", "txt_local", "tree_row", "tree_dst"))
-        object.__setattr__(unit, "nbytes", size)
-        return unit
+            offsets = np.array([0] + [offset for _, offset in frags], dtype=_I64)
+
+            def joined(own: np.ndarray, name: str, columns: tuple[int, ...]) -> np.ndarray:
+                parts = [own] + [getattr(unit, name) for unit, _ in frags]
+                out = np.concatenate(parts)
+                shift = np.repeat(offsets, [len(part) for part in parts])
+                for column in columns:
+                    out[:, column] += shift
+                return out
+
+            ids = joined(ids, "ids", (0,))
+            nums = joined(nums, "nums", (0,))
+            texts = joined(texts, "texts", (0,))
+            tree = joined(tree, "tree", (0, 1))
+            num_vals = np.concatenate([num_vals] + [unit.num_vals for unit, _ in frags])
+        return _Unit(len(self.kinds), tuple(self.kinds), tuple(self.kind_idx),
+                     tuple(self.positions), ids, nums, num_vals, texts, tree,
+                     tuple(self.decl), tuple(self.pend))
 
 
 class _Cache:
@@ -224,34 +203,51 @@ class _Cache:
         self.items.move_to_end(key)
         return unit
 
+    @staticmethod
+    def _cost(key: tuple[Any, ...], unit: _Unit) -> int:
+        return unit.nbytes + len(key[-1]) + 240 + (len(unit.json) if unit.json else 0)
+
     def put(self, key: tuple[Any, ...], unit: _Unit) -> None:
-        cost = unit.nbytes + len(key[-1]) + 200
+        cost = self._cost(key, unit)
         if cost > self.limit:
             return
         self.items[key] = unit
         self.size += cost
         while self.size > self.limit:
             old_key, old = self.items.popitem(last=False)
-            self.size -= old.nbytes + len(old_key[-1]) + 200
+            self.size -= self._cost(old_key, old)
+
+    def clear(self) -> None:
+        self.items.clear()
+        self.size = 0
 
 
 def _reduction(counts: np.ndarray, values: np.ndarray) -> Reduction:
-    """tensor_input.reduction over CSR rows (values grouped by owner, in order)."""
+    """tensor_input.reduction over CSR rows: owner i holds the next counts[i] values.
+
+    Buckets follow the first appearance of each width; owners keep row order
+    within a bucket and each bucket concatenates its owners' values in order.
+    """
     owners_total = len(counts)
     if owners_total == 0:
         return Reduction((), torch.zeros(0, dtype=torch.long))
     widths, first = np.unique(counts, return_index=True)
     widths = widths[np.argsort(first, kind="stable")]
-    entry_width = np.repeat(counts, counts)
+    rank = np.zeros(int(widths.max()) + 1, dtype=_I64)
+    rank[widths] = np.arange(len(widths), dtype=_I64)
+    owner_rank = rank[counts]
+    order = np.argsort(owner_rank, kind="stable")
+    lengths = counts[order]
+    starts = (np.cumsum(counts) - counts)[order]
+    flat = values[np.repeat(starts - (np.cumsum(lengths) - lengths), lengths)
+                  + np.arange(int(lengths.sum()), dtype=_I64)]
+    owners = np.bincount(owner_rank, minlength=len(widths))
+    ends = np.cumsum(widths * owners)
     buckets = []
-    order = []
-    for width in widths.tolist():
-        owners = np.flatnonzero(counts == width)
-        buckets.append((width, len(owners), torch.from_numpy(
-            np.ascontiguousarray(values[entry_width == width], dtype=_I64))))
-        order.append(owners)
+    for width, rows, end in zip(widths.tolist(), owners.tolist(), ends.tolist(), strict=True):
+        buckets.append((width, rows, torch.from_numpy(flat[end - width * rows:end].copy())))
     inverse = np.empty(owners_total, dtype=_I64)
-    inverse[np.concatenate(order)] = np.arange(owners_total, dtype=_I64)
+    inverse[order] = np.arange(owners_total, dtype=_I64)
     return Reduction(tuple(buckets), torch.from_numpy(inverse))
 
 
@@ -285,7 +281,10 @@ class RowsEncoder:
         tables = self._encoding.tables
         self._kinds, self._fields, self._ids = tables["kinds"], tables["fields"], tables["ids"]
         self._cache = _Cache(cache_bytes)
-        self._tokens: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._relations: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+        self._text_ids: dict[str, int] = {}
+        self._texts: list[str] = []
+        self._tokens: list[tuple[np.ndarray, np.ndarray] | None] = []
         self._verify_every = verify_every
         self._count = 0
         self.identity = {**self._reference.identity,
@@ -297,16 +296,20 @@ class RowsEncoder:
     def cache_stats(self) -> dict[str, int]:
         cache = self._cache
         return {"hits": cache.hits, "misses": cache.misses, "units": len(cache.items),
-                "bytes": cache.size}
+                "bytes": cache.size, "texts": len(self._texts)}
 
     def encode(self, raw: bytes | bytearray | memoryview) -> EncodedRow:
-        """Encode one observation given as its JSON bytes (JSON types only)."""
+        """Encode one observation given as its JSON bytes."""
         try:
             observation = json.loads(bytes(raw))
         except (UnicodeDecodeError, ValueError) as error:
             raise BoundaryError("p1_rows_encoder", "invalid_public_json") from error
-        bindings = observation_hashes(observation)
-        frame = self.frame(observation)
+        if not isinstance(observation, dict):
+            raise BoundaryError("p1_frame_compiler", "public_observation_and_catalog_required")
+        encoder = _Encoder(self, observation)
+        frame = encoder.run()
+        self._check(observation, frame)
+        bindings = encoder.hashes()
         row = encode_row(frame)
         run = observation.get("run")
         floor = ((run or {}).get("content") or {}).get("floor") if isinstance(run, dict) else None
@@ -322,20 +325,38 @@ class RowsEncoder:
     def frame(self, observation: dict[str, Any]) -> TensorFrame:
         """The reference TensorFrame for a json.loads observation (JSON types only)."""
         frame = _Encoder(self, observation).run()
+        self._check(observation, frame)
+        return frame
+
+    def _check(self, observation: dict[str, Any], frame: TensorFrame) -> None:
         self._count += 1
         if self._verify_every and self._count % self._verify_every == 0:
             expected = self._reference.compile(observation)
             if encode_row(expected) != encode_row(frame):
                 raise BoundaryError("p1_rows_encoder", "rows_encoder_reference_mismatch")
-        return frame
 
-    def tokens(self, text: str) -> tuple[np.ndarray, np.ndarray]:
-        value = self._tokens.get(text)
+    def text_id(self, text: str) -> int:
+        index = self._text_ids.get(text)
+        if index is None:
+            index = self._text_ids[text] = len(self._texts)
+            self._texts.append(text)
+            self._tokens.append(None)
+        return index
+
+    def tokens(self, index: int) -> tuple[np.ndarray, np.ndarray]:
+        value = self._tokens[index]
         if value is None:
-            ids, numbers = self._encoding.tokenize(text)
+            ids, numbers = self._encoding.tokenize(self._texts[index])
             value = (np.array(ids, dtype=_I64), np.array(numbers, dtype=np.float32))
-            self._tokens[text] = value
+            self._tokens[index] = value
         return value
+
+    def _bound(self) -> None:
+        if len(self._texts) >= MAX_TEXTS:
+            self._cache.clear()
+            self._text_ids.clear()
+            self._texts.clear()
+            self._tokens.clear()
 
 
 class _Encoder:
@@ -344,7 +365,9 @@ class _Encoder:
     def __init__(self, owner: RowsEncoder, observation: dict[str, Any]) -> None:
         self.owner = owner
         self.observation = observation
-        self.relation: Callable[[str], str | None] | None = None
+        self.relation: Callable[[str], Any] | None = None
+        self.top: dict[str, _Unit] = {}
+        self.elements: dict[int, _Unit] = {}  # id(list element) -> its unit
         self._scene: tuple[Any, ...] | None = None
         self._reads: list[tuple[Any, bool]] | None = None
 
@@ -354,7 +377,27 @@ class _Encoder:
         if (observation.get("profile"), observation.get("revision")) != (
                 spec["profile"], spec["revision"]):
             raise ValueError("P1 M-std observation differs from bound InputSpec revision")
-        self.relation = identity_paths(observation)
+        self.owner._bound()
+        fresh = identity_paths(observation)
+        # identity_paths reads only revision, scene native_kind, event tooltip
+        # cards and each read's kind/content shape; equal inputs, equal results.
+        context = (*self._scene_signature(), tuple(self._read_signature()))
+        relations = self.owner._relations
+        memo = relations.get(context)
+        if memo is None:
+            memo = relations[context] = {}
+            if len(relations) > MAX_RELATION_CONTEXTS:
+                relations.popitem(last=False)
+        else:
+            relations.move_to_end(context)
+
+        def relation(path: str) -> Any:
+            value = memo.get(path, _UNSET)
+            if value is _UNSET:
+                value = memo[path] = fresh(path)
+            return value
+
+        self.relation = relation
         root = _Builder()
         self._visit(root, observation, "$", 0, None, "$")
         return self._assemble(root.finish())
@@ -363,9 +406,11 @@ class _Encoder:
         """Everything identity_paths(observation)(p) reads for p under source_path.
 
         Derived from input_identity.identity_paths (tests pin its digest):
-        * under $.extra_reads[i]: the exact path, read i's kind/content-is-dict
-          (exact typed card/shop roots are per index) and whether any read is a
-          surface card with dict content (adds the display_owner reference path);
+        * under $.extra_reads[i]: the path below read i (exact nested indices),
+          read i's kind/content-is-dict (its exact typed card/shop roots are
+          `extra_reads[i]...` and match only paths of read i, whatever i is) and
+          whether any read is a surface card with dict content (adds the
+          display_owner reference path);
         * under $.scene: the exact path, revision, native_kind and the exact event
           tooltip card roots (all native/revision-dependent paths are surface paths);
         * elsewhere: the index-normalized path only; no declared, reference or card
@@ -373,10 +418,11 @@ class _Encoder:
         """
         if source_path.startswith("$.extra_reads"):
             reads = self._read_signature()
+            surface = any(kind == "surface_card" and is_dict for kind, is_dict in reads)
             match = _READ_INDEX.match(source_path)
-            detail: Any = reads[int(match[1])] if match else tuple(reads)
-            return ("x", source_path, detail,
-                    any(kind == "surface_card" and is_dict for kind, is_dict in reads))
+            if match is None:
+                return ("x", source_path, tuple(reads), surface)
+            return ("x", source_path[match.end():], reads[int(match[1])], surface)
         if source_path.startswith("$.scene"):
             return ("s", source_path, *self._scene_signature())
         return ("n", _INDEX.sub("[]", source_path))
@@ -401,13 +447,11 @@ class _Encoder:
             self._scene = (observation.get("revision"), native, tuple(tips))
         return self._scene
 
-    def _child(self, b: _Builder, item: Any, path: str, position: int, parent: int,
-               source_path: str) -> None:
-        if not isinstance(item, (dict, list)):
-            self._visit(b, item, path, position, parent, source_path)
-            return
-        raw = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-        key = (path, self._scope(source_path), raw)
+    def _unit(self, b: _Builder, item: Any, path: str, position: int, parent: int,
+              source_path: str) -> _Unit:
+        # marshal v2 has no back-references, so its bytes are a pure function of
+        # the typed value in insertion order and decode back to it exactly.
+        key = (path, self._scope(source_path), marshal.dumps(item, 2))
         cache = self.owner._cache
         unit = cache.get(key)
         if unit is None:
@@ -416,16 +460,19 @@ class _Encoder:
             unit = sub.finish()
             cache.put(key, unit)
         b.replay(unit, position, parent)
+        return unit
 
     def _visit(self, b: _Builder, value: Any, path: str, position: int,
                parent: int | None, source_path: str) -> None:
         # input.project.visit; v2: relation is not None and views are symmetric.
         relation = self.relation
         assert relation is not None
-        fields = self.owner._fields
+        owner = self.owner
+        fields = owner._fields
+        text_id = owner.text_id
         row = len(b.kinds)
         b.kinds.append(path)
-        b.kind_idx.append(self.owner._kinds.get(path, 0))
+        b.kind_idx.append(owner._kinds.get(path, 0))
         b.positions.append(position)
         if parent is not None:
             b.tree.append((parent, row))
@@ -435,11 +482,11 @@ class _Encoder:
             for key, role in field_roles.items():
                 if role == "declared":
                     b.decl.append((row, value[key]))
+            top = path == "$"
             for key, item in sorted(value.items()):
-                if key == "envelope" and path == "$":
+                if top and (key == "envelope" or key in _CONSTANT):
                     continue
-                if (key in _CONSTANT and path == "$") or (
-                        key == "choice_id" and path == "$.catalog[]"):
+                if key == "choice_id" and path == "$.catalog[]":
                     continue
                 role = field_roles.get(key)
                 if role == "declared" and isinstance(item, str):
@@ -447,42 +494,54 @@ class _Encoder:
                 field = fields.get(key, 0)
                 if role == "reference" and isinstance(item, str):
                     b.pend.append((row, item))
-                    b.texts.append((row, field, "<REF>"))
+                    b.texts.append((row, field, text_id("<REF>")))
                     continue
                 if isinstance(item, (dict, list)):
-                    self._child(b, item, public_field_path(path, key), 0, row,
-                                public_field_path(source_path, key))
+                    child_path = public_field_path(path, key)
+                    child_source = public_field_path(source_path, key)
+                    if top:
+                        self.top[key] = self._unit(b, item, child_path, 0, row, child_source)
+                    else:
+                        self._visit(b, item, child_path, 0, row, child_source)
                 elif item is None:
-                    b.texts.append((row, field, "<MISSING>"))
-                    b.nums.append((row, field, 0.0, True))
+                    b.texts.append((row, field, text_id("<MISSING>")))
+                    b.nums.append((row, field, 1))
+                    b.num_vals.append(0.0)
                 elif type(item) is bool:
-                    b.texts.append((row, field, "true" if item else "false"))
+                    b.texts.append((row, field, text_id("true" if item else "false")))
                 elif type(item) in {int, float}:
                     if not math.isfinite(item):
                         raise ValueError("non-finite public numeric field")
-                    b.nums.append((row, field, signed_log(float(item)), False))
+                    b.nums.append((row, field, 0))
+                    b.num_vals.append(signed_log(float(item)))
                 elif isinstance(item, str):
                     if key.endswith("_id"):
-                        b.ids.append((row, self.owner._ids.get(item, 0), field))
+                        b.ids.append((row, owner._ids.get(item, 0), field))
                     else:
-                        b.texts.append((row, field, item))
+                        b.texts.append((row, field, text_id(item)))
                 else:
                     raise ValueError("unsupported public field")
         elif isinstance(value, list):
             item_path = path + "[]"
             for i, item in enumerate(value):
-                self._child(b, item, item_path, i, row, source_path + f"[{i}]")
+                if _nested(item):
+                    self.elements[id(item)] = self._unit(b, item, item_path, i, row,
+                                                         source_path + f"[{i}]")
+                else:
+                    self._visit(b, item, item_path, i, row, source_path + f"[{i}]")
         elif isinstance(value, str) and relation(source_path) == "reference":
             b.pend.append((row, value))
-            b.texts.append((row, fields.get("value", 0), "<REF>"))
+            b.texts.append((row, fields.get("value", 0), text_id("<REF>")))
         elif value is None:
             field = fields.get("value", 0)
-            b.texts.append((row, field, "<MISSING>"))
-            b.nums.append((row, field, 0.0, True))
+            b.texts.append((row, field, text_id("<MISSING>")))
+            b.nums.append((row, field, 1))
+            b.num_vals.append(0.0)
         elif type(value) in {int, float}:
-            b.nums.append((row, fields.get("value", 0), signed_log(float(value)), False))
+            b.nums.append((row, fields.get("value", 0), 0))
+            b.num_vals.append(signed_log(float(value)))
         else:
-            b.texts.append((row, fields.get("value", 0), str(value)))
+            b.texts.append((row, fields.get("value", 0), text_id(str(value))))
 
     # -- project() tail, order_frame, compile_frame -------------------------
     def _assemble(self, root: _Unit) -> TensorFrame:
@@ -490,7 +549,7 @@ class _Encoder:
         kinds = list(root.kinds)
         kind_idx = list(root.kind_idx)
         positions = list(root.positions)
-        # Alias views in first-declaration order (aliases.setdefault + members).
+        # project(): views in first-declaration order (aliases.setdefault + members).
         aliases: dict[str, int] = {}
         views: dict[str, list[int]] = {}
         for row, alias in root.decl:
@@ -498,18 +557,12 @@ class _Encoder:
             members = views.setdefault(alias, [])
             if row not in members:
                 members.append(row)
-        view_src: list[int] = []
-        view_dst: list[int] = []
+        edges: list[tuple[int, int]] = []
         for members in views.values():
             if len(members) > 1:
-                for row in members:
-                    for other in members:
-                        if other != row:
-                            view_src.append(row)
-                            view_dst.append(other)
-        extra_text: list[tuple[int, int, str]] = []
-        pend_src: list[int] = []
-        pend_dst: list[int] = []
+                edges.extend((row, other) for row in members for other in members
+                             if other != row)
+        extra_texts: list[tuple[int, int, int]] = []
         for row, alias in root.pend:
             if alias not in aliases:
                 # Reference-only node: public owner identity without an entity body.
@@ -517,98 +570,84 @@ class _Encoder:
                 kinds.append("public_reference_only")
                 kind_idx.append(owner._kinds.get("public_reference_only", 0))
                 positions.append(0)
-                extra_text.append((aliases[alias], owner._fields.get("availability", 0),
-                                   "reference_only"))
+                extra_texts.append((aliases[alias], owner._fields.get("availability", 0),
+                                    owner.text_id("reference_only")))
                 views[alias] = [aliases[alias]]
-            for target in views[alias]:
-                pend_src.append(row)
-                pend_dst.append(target)
+            edges.extend((row, target) for target in views[alias])
         count = len(kinds)
         choices = observation["catalog"]
-        sources: list[list[int]] = []
-        targets: list[list[int]] = []
-        for choice in choices:
-            sources.append(list(views.get(choice.get("subject"), [])))
-            targets.append(list(views.get(choice.get("target"), [])))
-        ref_src = np.concatenate([root.tree_row, _array(view_src, _I64), _array(pend_src, _I64)])
-        ref_dst = np.concatenate([root.tree_dst, _array(view_dst, _I64), _array(pend_dst, _I64)])
-        order = np.argsort(ref_src, kind="stable")
-        ref_dst = ref_dst[order]
-        ref_counts = np.bincount(ref_src, minlength=count).astype(_I64)
+        sources = [views.get(choice.get("subject"), []) for choice in choices]
+        targets = [views.get(choice.get("target"), []) for choice in choices]
+        # Refs per entity: tree children, then view extensions, then pending views.
+        refs = np.concatenate([root.tree, _rows(edges, 2)]) if edges else root.tree
+        ref_order = np.argsort(refs[:, 0], kind="stable")
+        ref_dst = refs[ref_order, 1]
+        ref_counts = np.bincount(refs[:, 0], minlength=count).astype(_I64)
         ref_offsets = np.concatenate([[0], np.cumsum(ref_counts)])
         self._order_positions(kinds, positions, ref_dst, ref_offsets)
 
-        # compile_frame
-        texts_set = set(root.txt_uniq)
-        texts_set.update(text for _, _, text in extra_text)
-        texts = sorted(texts_set)
-        token_arrays = [owner.tokens(text) for text in texts]
+        # compile_frame: sorted distinct texts, identities/numbers/text by row.
+        texts = np.concatenate([root.texts, _rows(extra_texts, 3)]) if extra_texts else root.texts
+        texts = texts[np.argsort(texts[:, 0], kind="stable")]
+        interned = np.unique(texts[:, 2])
+        strings = owner._texts
+        by_text = sorted(range(len(interned)), key=lambda i: strings[interned[i]])
+        rank = np.empty(len(interned), dtype=_I64)
+        rank[by_text] = np.arange(len(interned), dtype=_I64)
+        text_index = rank[np.searchsorted(interned, texts[:, 2])]
+        token_arrays = [owner.tokens(int(interned[i])) for i in by_text]
         lengths = np.array([len(ids) for ids, _ in token_arrays], dtype=_I64)
         width = int(lengths.max()) if len(lengths) else 0
-        text_ids = np.zeros((len(texts), width), dtype=_I64)
-        text_numbers = np.zeros((len(texts), width, 1), dtype=np.float32)
-        if len(texts):
+        text_ids = np.zeros((len(lengths), width), dtype=_I64)
+        text_numbers = np.zeros((len(lengths), width, 1), dtype=np.float32)
+        if len(lengths):
             real = np.arange(width)[None, :] < lengths[:, None]
             text_ids[real] = np.concatenate([ids for ids, _ in token_arrays])
             text_numbers[..., 0][real] = np.concatenate([nums for _, nums in token_arrays])
-
-        id_order = np.argsort(root.id_row, kind="stable")
-        id_rows = root.id_row[id_order]
-        num_order = np.argsort(root.num_row, kind="stable")
-        num_rows = root.num_row[num_order]
-        num_missing = root.num_missing[num_order]
-        num_field = root.num_field[num_order]
-        present = ~num_missing
+        ids = root.ids[np.argsort(root.ids[:, 0], kind="stable")]
+        num_order = np.argsort(root.nums[:, 0], kind="stable")
+        nums = root.nums[num_order]
+        missing = nums[:, 2].astype(bool)
+        present = ~missing
         present_count = int(present.sum())
         number_index = np.where(present, np.cumsum(present) - 1,
-                                present_count + np.cumsum(num_missing) - 1).astype(_I64)
+                                present_count + np.cumsum(missing) - 1).astype(_I64)
 
-        lookup = {text: i for i, text in enumerate(texts)}
-        txt_global = np.array([lookup[text] for text in root.txt_uniq], dtype=_I64)
-        txt_rows = np.concatenate([root.txt_row, _array([e[0] for e in extra_text], _I64)])
-        txt_fields = np.concatenate([root.txt_field, _array([e[1] for e in extra_text], _I64)])
-        txt_index = np.concatenate([
-            txt_global[root.txt_local] if len(root.txt_local) else _EMPTY_I,
-            _array([lookup[e[2]] for e in extra_text], _I64)])
-        txt_order = np.argsort(txt_rows, kind="stable")
-        txt_rows = txt_rows[txt_order]
-
-        def tensor(values: np.ndarray) -> torch.Tensor:
+        def column(values: np.ndarray) -> torch.Tensor:
             return torch.from_numpy(np.ascontiguousarray(values, dtype=_I64))
 
         tensors = {
             "text_ids": torch.from_numpy(text_ids),
             "text_numbers": torch.from_numpy(text_numbers),
             "text_lengths": torch.from_numpy(lengths),
-            "identities": tensor(root.id_val[id_order]),
-            "identity_fields": tensor(root.id_field[id_order]),
-            "kinds": tensor(np.array(kind_idx, dtype=_I64)),
-            "positions": tensor(np.array(positions, dtype=_I64)),
-            "number_fields": tensor(num_field[present]),
-            "missing_fields": tensor(num_field[num_missing]),
-            "text_fields": tensor(txt_fields[txt_order]),
-            "text_indices": tensor(txt_index[txt_order]),
-            "actions": tensor(np.array([owner._encoding.index("actions", c["kind"])
+            "identities": column(ids[:, 1]),
+            "identity_fields": column(ids[:, 2]),
+            "kinds": column(np.array(kind_idx, dtype=_I64)),
+            "positions": column(np.array(positions, dtype=_I64)),
+            "number_fields": column(nums[present, 1]),
+            "missing_fields": column(nums[missing, 1]),
+            "text_fields": column(texts[:, 1]),
+            "text_indices": column(text_index),
+            "actions": column(np.array([owner._encoding.index("actions", c["kind"])
                                         for c in choices], dtype=_I64).reshape(-1)),
             "numbers": torch.from_numpy(np.ascontiguousarray(
-                root.num_val[num_order][present], dtype=np.float32)),
+                root.num_vals[num_order][present], dtype=np.float32)),
         }
 
-        def counts_of(rows: np.ndarray) -> np.ndarray:
+        def per_row(rows: np.ndarray) -> np.ndarray:
             return np.bincount(rows, minlength=count).astype(_I64)
 
-        def role_reduction(rows: list[list[int]]) -> Reduction:
-            role_counts = np.array([len(r) for r in rows], dtype=_I64)
-            flat = np.array([v for r in rows for v in r], dtype=_I64)
-            return _reduction(role_counts, flat)
+        def roles(rows: list[list[int]]) -> Reduction:
+            return _reduction(np.array([len(r) for r in rows], dtype=_I64),
+                              np.array([v for r in rows for v in r], dtype=_I64))
 
         reductions = {
-            "ids": _reduction(counts_of(id_rows), np.arange(len(id_rows), dtype=_I64)),
-            "numbers": _reduction(counts_of(num_rows), number_index),
-            "text": _reduction(counts_of(txt_rows), np.arange(len(txt_rows), dtype=_I64)),
+            "ids": _reduction(per_row(ids[:, 0]), np.arange(len(ids), dtype=_I64)),
+            "numbers": _reduction(per_row(nums[:, 0]), number_index),
+            "text": _reduction(per_row(texts[:, 0]), np.arange(len(texts), dtype=_I64)),
             "refs": _reduction(ref_counts, ref_dst),
-            "source": role_reduction(sources),
-            "target": role_reduction(targets),
+            "source": roles(sources),
+            "target": roles(targets),
         }
         return TensorFrame(tensors, reductions, tuple(c["choice_id"] for c in choices), count)
 
@@ -645,3 +684,42 @@ class _Encoder:
             if is_set and members:
                 for member in members:
                     positions[member] = 0
+
+    def hashes(self) -> dict[str, str]:
+        """frame_compiler.observation_hashes from cached sorted top-level bytes."""
+        observation = self.observation
+        if not isinstance(observation.get("catalog"), list):
+            raise BoundaryError("p1_frame_compiler", "public_observation_and_catalog_required")
+        if any(not isinstance(choice, dict) or not isinstance(choice.get("choice_id"), str)
+               for choice in observation["catalog"]):
+            raise BoundaryError("p1_frame_compiler", "invalid_public_catalog")
+        parts = []
+        catalog = b""
+        try:
+            for key in sorted(observation):
+                value = observation[key]
+                unit = self.top.get(key)
+                encoded = json_bytes(value) if unit is None else self._json(unit, value)
+                if key == "catalog":
+                    catalog = encoded
+                parts.append(json_bytes(key) + b":" + encoded)
+        except (TypeError, ValueError) as error:
+            raise BoundaryError("p1_frame_compiler", "invalid_public_json") from error
+        whole = b"{" + b",".join(parts) + b"}"  # json_bytes: sorted keys, compact
+        return {"observation_sha256": hashlib.sha256(whole).hexdigest(),
+                "catalog_sha256": hashlib.sha256(catalog).hexdigest()}
+
+    def _json(self, unit: _Unit, value: Any) -> bytes:
+        """json_bytes(value), kept on its unit; a list joins its elements' bytes."""
+        if unit.json is None:
+            if isinstance(value, list):
+                parts = []
+                for item in value:
+                    element = self.elements.get(id(item))
+                    parts.append(json_bytes(item) if element is None
+                                 else self._json(element, item))
+                unit.json = b"[" + b",".join(parts) + b"]"
+            else:
+                unit.json = json_bytes(value)
+            self.owner._cache.size += len(unit.json)
+        return unit.json
