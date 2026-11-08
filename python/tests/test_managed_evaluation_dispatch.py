@@ -1640,8 +1640,8 @@ def test_in_process_is_refused_on_the_current_release_even_with_its_files(
     """The released pin sets are empty: rc.64 plus launcher files never admits in_process."""
     from spireagent.workbench import managed_evaluation as backend
 
-    assert backend.IN_PROCESS_RUNTIME_VERSIONS == frozenset()
-    assert backend.IN_PROCESS_HOST_VERSIONS == frozenset()
+    assert frozenset() == backend.IN_PROCESS_RUNTIME_VERSIONS
+    assert frozenset() == backend.IN_PROCESS_HOST_VERSIONS
     actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
     monkeypatch.setattr(backend, "source_identity", lambda _: actual)
     monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
@@ -1660,7 +1660,8 @@ def test_in_process_is_refused_on_the_current_release_even_with_its_files(
         "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
         "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
         "agent_adapter": backend.export.adapter_identity()}
-    error, reason = ((BoundaryError, "in_process_transport_unsupported") if transport == "in_process"
-                     else (RuntimeError, "admitted_runtime_before_world_audit"))
+    error, reason = (
+        (BoundaryError, "in_process_transport_unsupported") if transport == "in_process"
+        else (RuntimeError, "admitted_runtime_before_world_audit"))
     with pytest.raises(error, match=reason):
         backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
