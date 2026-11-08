@@ -8,6 +8,7 @@ keep these fixtures passing; their own implementations are tested in their PRs.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -30,16 +31,20 @@ def _validator(path: Path) -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
+def _raw(name: str) -> list[str]:
+    return (NATIVE / "fixtures" / name).read_bytes().decode("utf-8").splitlines()
+
+
 def _lines(name: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in (NATIVE / "fixtures" / name).read_text().splitlines()]
+    return [json.loads(line) for line in _raw(name)]
 
 
-def _dumps(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+def _dumps(value: Any, ascii_only: bool = False) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=ascii_only)
 
 
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
+def _sha(data: str | bytes) -> str:
+    return hashlib.sha256(data.encode() if isinstance(data, str) else data).hexdigest()
 
 
 # managed-native-compact-1 reference consumer ---------------------------------
@@ -49,20 +54,70 @@ class Divergence(Exception):
     """compact_state_divergence: the game is closed, originals kept, build output stopped."""
 
 
+_WS = re.compile(r"[ \t\n\r]*")
+_DECODER = json.JSONDecoder()
+
+
+def _members(line: str, i: int) -> list[tuple[str, int, int]]:
+    """(key, value start, value end) of the JSON object starting at line[i]."""
+    out = []
+    i = _WS.match(line, i + 1).end()  # type: ignore[union-attr]
+    while line[i] != "}":
+        key, i = _DECODER.raw_decode(line, i)
+        i = _WS.match(line, i).end()  # type: ignore[union-attr]
+        start = _WS.match(line, i + 1).end()  # type: ignore[union-attr]
+        _, end = _DECODER.raw_decode(line, start)
+        out.append((key, start, end))
+        i = _WS.match(line, end).end()  # type: ignore[union-attr]
+        if line[i] == ",":
+            i = _WS.match(line, i + 1).end()  # type: ignore[union-attr]
+    return out
+
+
+def body_bytes(line: str) -> dict[str, bytes]:
+    """The exact bytes of each table body as the writer emitted them in this line."""
+    for key, start, _ in _members(line, _WS.match(line, 0).end()):  # type: ignore[union-attr]
+        if key == "objects":
+            return {name: line[s:e].encode() for name, s, e in _members(line, start)}
+    raise Divergence("schema_invalid")
+
+
 def _root(digests: dict[str, str]) -> str:
     return _sha("".join(f"{key}\t{digests[key]}\n" for key in sorted(digests)))
 
 
-def _placeholders(value: Any, found: set[str]) -> None:
+def _placeholders(value: Any, found: list[str]) -> None:
     if isinstance(value, dict):
         if set(value) == {"$obj"}:
-            found.add(value["$obj"])
+            found.append(value["$obj"])
             return
         for item in value.values():
             _placeholders(item, found)
     elif isinstance(value, list):
         for item in value:
             _placeholders(item, found)
+
+
+def _reachable(skeleton: Any, table: dict[str, Any]) -> set[str]:
+    """Keys reachable from the skeleton; a placeholder cycle diverges."""
+    seen: set[str] = set()
+
+    def visit(key: str, path: tuple[str, ...]) -> None:
+        if key in path:
+            raise Divergence("placeholder_cycle")
+        if key not in table:
+            raise Divergence("unresolved_placeholder")
+        found: list[str] = []
+        _placeholders(table[key], found)
+        seen.add(key)
+        for child in found:
+            visit(child, path + (key,))
+
+    roots: list[str] = []
+    _placeholders(skeleton, roots)
+    for key in roots:
+        visit(key, ())
+    return seen
 
 
 def _inline(value: Any, table: dict[str, Any]) -> Any:
@@ -75,52 +130,62 @@ def _inline(value: Any, table: dict[str, Any]) -> Any:
     return value
 
 
-def reconstruct(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Host side: rebuild each full state from compact frames, failing closed."""
+def reconstruct(lines: list[str], *, sampled: bool = True,
+                reconcile_interval: int = 64) -> list[dict[str, Any]]:
+    """Host side: rebuild each full state from raw compact lines, failing closed.
+
+    Hot path (every frame): sequence and base, key/native_ref binding, reachability
+    and cycles, reconcile point due, and the root over the carried digests (bodies are
+    not re-hashed). Sampled path (about 1% of steps, every R7 game, and every frame in
+    this test): schema and each body's digest over its exact emitted bytes.
+    """
     validator = _validator(NATIVE / "managed-native-compact-1.schema.json")
     table: dict[str, Any] = {}
     digests: dict[str, str] = {}
     held: int | None = None
+    anchor = 0
     instance: str | None = None
     states = []
-    for frame in frames:
-        validator.validate(frame)
+    for line in lines:
+        frame = json.loads(line)
+        if sampled:
+            if not validator.is_valid(frame):
+                raise Divergence("schema_invalid")
+            for key, raw in body_bytes(line).items():
+                if frame["object_digests"].get(key) != _sha(raw):
+                    raise Divergence("object_digest_mismatch")
         if frame["frame"] == "full":
-            table, digests, instance = {}, {}, frame["episode_instance"]
+            table, digests, instance, anchor = {}, {}, frame["episode_instance"], frame["seq"]
         elif held is None or frame["episode_instance"] != instance or frame["base_seq"] != held:
             raise Divergence("base_mismatch")
         elif frame["seq"] != held + 1:
             raise Divergence("seq_gap")
+        elif frame["frame"] == "delta" and frame["seq"] - anchor >= reconcile_interval:
+            raise Divergence("reconcile_overdue")
         for key, body in frame["objects"].items():
-            if frame["object_digests"].get(key) != _sha(_dumps(body)):
-                raise Divergence("object_digest_mismatch")
-            if body.get("native_ref", key.split("#")[0]) != key.split("#")[0]:
+            if not isinstance(body, dict) or body.get("native_ref") != key.split("#")[0]:
                 raise Divergence("object_key_ref_mismatch")
         if set(frame["objects"]) != set(frame["object_digests"]):
             raise Divergence("digest_set_mismatch")
         if frame["frame"] == "delta":
-            for key in frame["removed"]:
+            for key in frame["removed"]:  # the Host forgets the key; it must come back as an upsert
                 table.pop(key, None)
                 digests.pop(key, None)
             table.update(frame["objects"])
             digests.update(frame["object_digests"])
         elif frame["frame"] == "reconcile":
-            carried = {key: value for key, value in digests.items() if key not in frame["removed"]}
+            carried = {key: value for key, value in digests.items()
+                       if key not in frame["removed"]}
             for key, value in frame["object_digests"].items():
                 if key not in frame["upserted"] and carried.get(key) != value:
                     raise Divergence("reconcile_mismatch")
             if set(carried) - set(frame["object_digests"]):
                 raise Divergence("reconcile_mismatch")
             table, digests = dict(frame["objects"]), dict(frame["object_digests"])
+            anchor = frame["seq"]
         else:
             table, digests = dict(frame["objects"]), dict(frame["object_digests"])
-        referenced: set[str] = set()
-        _placeholders(frame["skeleton"], referenced)
-        for body in table.values():
-            _placeholders(body, referenced)
-        if referenced - set(table):
-            raise Divergence("unresolved_placeholder")
-        if set(table) - referenced:
+        if set(table) - _reachable(frame["skeleton"], table):
             raise Divergence("orphan_object")
         if _root(digests) != frame["objects_root_sha256"]:
             raise Divergence("root_mismatch")
@@ -145,14 +210,47 @@ def rename(states: list[dict[str, Any]]) -> list[str]:
     return [_dumps(walk(state)) for state in states]
 
 
+def _sealed_full(frame: dict[str, Any]) -> str:
+    """Re-seal a mutated full frame (digests and root over this writer's own bytes)."""
+    frame["object_digests"] = {key: _sha(_dumps(body)) for key, body in frame["objects"].items()}
+    frame["objects_root_sha256"] = _root(frame["object_digests"])
+    return _dumps(frame)
+
+
 def test_native_compact_schema_and_reconstruction_equal_legacy() -> None:
-    frames = _lines("compact-episode.jsonl")
-    assert [frame["frame"] for frame in frames] == ["full", "delta", "reconcile"]
-    assert rename(reconstruct(frames)) == rename(_lines("legacy-episode.jsonl"))
+    lines = _raw("compact-episode.jsonl")
+    assert [json.loads(line)["frame"] for line in lines] == ["full", "delta", "delta", "reconcile"]
+    legacy = _lines("legacy-episode.jsonl")
+    assert rename(reconstruct(lines)) == rename(legacy)
     # Ref numbers differ between the two writers; equality holds only after renaming.
-    assert reconstruct(frames) != _lines("legacy-episode.jsonl")
-    fact = frames[2]["facts"]["combat_end"][0]
+    assert reconstruct(lines) != legacy
+    # Piles stay inline exactly as FairPileProjection writes them: no native ref anywhere.
+    assert "native-" not in _dumps([state.get("draw_pile") for state in reconstruct(lines)])
+    fact = json.loads(lines[3])["facts"]["combat_end"][0]
     assert fact["result"] == "victory" and fact["hp_start"] - fact["hp_end"] == 4
+
+
+def test_native_compact_digest_is_over_emitted_bytes() -> None:
+    plain, escaped = _raw("compact-episode.jsonl"), _raw("compact-episode-escaped.jsonl")
+    assert plain != escaped and reconstruct(escaped) == reconstruct(plain)
+    # Escaped bytes with digests of the unescaped bytes: a re-serialising consumer would accept.
+    mixed = []
+    for plain_line, escaped_line in zip(plain, escaped, strict=True):
+        frame, source = json.loads(escaped_line), json.loads(plain_line)
+        frame["object_digests"] = source["object_digests"]
+        frame["objects_root_sha256"] = source["objects_root_sha256"]
+        mixed.append(_dumps(frame, ascii_only=True))
+    with pytest.raises(Divergence, match="object_digest_mismatch"):
+        reconstruct(mixed)
+    assert rename(reconstruct(mixed, sampled=False)) == rename(reconstruct(plain))  # hot path only
+
+
+def test_native_compact_reappearing_object_is_resent() -> None:
+    frames = _lines("compact-episode.jsonl")
+    card = "native-12#hand"
+    assert card in frames[1]["removed"] and card in frames[2]["objects"]
+    with pytest.raises(Divergence, match="unresolved_placeholder"):
+        reconstruct(_raw("invalid-reappear-not-resent.jsonl"))
 
 
 @pytest.mark.parametrize(("name", "reason"), [
@@ -160,14 +258,38 @@ def test_native_compact_schema_and_reconstruction_equal_legacy() -> None:
     ("invalid-stale-bookkeeping.jsonl", "reconcile_mismatch"),
     ("invalid-wrong-base.jsonl", "base_mismatch"),
     ("invalid-orphan.jsonl", "orphan_object"),
+    ("invalid-pile-card-in-table.jsonl", "schema_invalid"),
 ])
 def test_native_compact_divergence_fails_closed(name: str, reason: str) -> None:
     with pytest.raises(Divergence, match=reason):
-        reconstruct(_lines(name))
+        reconstruct(_raw(name))
+
+
+def test_native_compact_pile_card_rejected_on_hot_path() -> None:
+    with pytest.raises(Divergence, match="object_key_ref_mismatch"):
+        reconstruct(_raw("invalid-pile-card-in-table.jsonl"), sampled=False)
+
+
+def test_native_compact_reachability_cycles_and_reconcile_due() -> None:
+    first = json.loads(_raw("compact-episode.jsonl")[0])
+    island = copy.deepcopy(first)
+    for ref, other in (("native-90", "native-91"), ("native-91", "native-90")):
+        island["objects"][f"{ref}#enemy"] = {"native_ref": ref, "next": {"$obj": f"{other}#enemy"}}
+    with pytest.raises(Divergence, match="orphan_object"):
+        reconstruct([_sealed_full(island)])
+    cycle = copy.deepcopy(first)
+    relic = next(key for key in cycle["objects"] if key.endswith("#relic"))
+    player = next(key for key in cycle["objects"] if key.endswith("#player"))
+    cycle["objects"][relic]["owner"] = {"$obj": player}
+    with pytest.raises(Divergence, match="placeholder_cycle"):
+        reconstruct([_sealed_full(cycle)])
+    with pytest.raises(Divergence, match="reconcile_overdue"):
+        reconstruct(_raw("compact-episode.jsonl"), reconcile_interval=2)
+    assert len(reconstruct(_raw("compact-episode.jsonl"), reconcile_interval=3)) == 4
 
 
 def test_native_compact_rename_must_be_a_bijection() -> None:
-    collapsed = reconstruct(_lines("invalid-not-bijective.jsonl"))
+    collapsed = reconstruct(_raw("invalid-not-bijective.jsonl"))
     assert rename(collapsed) != rename(_lines("legacy-episode.jsonl"))
 
 
@@ -195,7 +317,8 @@ def test_inference_valid_and_invalid_messages() -> None:
 
 
 def check_binding(row: dict[str, Any], result: dict[str, Any], open_instances: set[str],
-                  segment_mu: str | None, validator: Draft202012Validator) -> str:
+                  segment_mu: str | None, sampling: dict[str, Any],
+                  validator: Draft202012Validator) -> str:
     """Environment side, before a position becomes a BoundAction.
 
     accept: map selected_index to this game's BoundAction. discard_late: the game
@@ -218,6 +341,12 @@ def check_binding(row: dict[str, Any], result: dict[str, Any], open_instances: s
         return "not_started"
     if segment_mu is not None and result["mu_snapshot_sha256"] != segment_mu:
         return "not_started"
+    decision_class = "combat" if row["in_combat"] else "noncombat"
+    expected = sampling["classes"][decision_class]
+    if result["applied"] != {"arm_id": sampling["arm_id"], "decision_class": decision_class,
+                             "temperature": expected["temperature"],
+                             "uniform_mix": expected["uniform_mix"]}:
+        return "not_started"
     return "accept"
 
 
@@ -227,7 +356,7 @@ def test_inference_response_binding_scenarios() -> None:
     assert {item["verdict"] for item in scenarios} == {"accept", "discard_late", "not_started"}
     for item in scenarios:
         verdict = check_binding(item["row"], item["response"], set(item["open_instances"]),
-                                item["segment_mu"], validator)
+                                item["segment_mu"], item["sampling"], validator)
         assert verdict == item["verdict"], item["name"]
 
 

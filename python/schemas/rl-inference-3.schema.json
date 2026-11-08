@@ -16,7 +16,7 @@
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
     "game_instance_id": {
-      "description": "One run in one environment process slot. New on every in-process restart and save load (same value as the native episode_instance). The second member of the response identity triple.",
+      "description": "One run in one environment process slot. New on every in-process restart and save load (same value as the native episode_instance). The second member of the response identity triple. Opaque: never encodes and is never derived from a game seed or world identity, and is never model input. Seed pairing and holdout bookkeeping stay on the environment side.",
       "$ref": "#/$defs/id"
     },
     "request_id": {
@@ -46,7 +46,7 @@
       "required": ["mode", "seed", "arm_id", "classes"],
       "properties": {
         "mode": {"const": "temperature_uniform"},
-        "seed": {"type": "string", "minLength": 1, "maxLength": 128},
+        "seed": {"description": "The actor draw seed used with consumption_id (sampling.py). Independent of the game seed and world identity.", "type": "string", "minLength": 1, "maxLength": 128},
         "arm_id": {"$ref": "#/$defs/id"},
         "classes": {
           "type": "object", "additionalProperties": false,
@@ -115,7 +115,7 @@
     },
     "episode_open": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema", "kind", "request_id", "game_instance_id", "actor_id", "world_key",
+      "required": ["schema", "kind", "request_id", "game_instance_id", "actor_id",
                    "sampling", "single_choice", "start"],
       "properties": {
         "schema": {"const": "stpd/rl-inference-3"},
@@ -123,7 +123,6 @@
         "request_id": {"$ref": "#/$defs/request_id"},
         "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
         "actor_id": {"$ref": "#/$defs/id"},
-        "world_key": {"$ref": "#/$defs/id"},
         "sampling": {"$ref": "#/$defs/sampling"},
         "single_choice": {
           "description": "L1. score = today (one-option rows are sent and kept). omit = the environment executes the only BoundAction itself (the game still revalidates it), sends no row and reports it in the next step_outcome.forced_steps. Default score; omit changes training data, so it is a method switch.",

@@ -13,13 +13,16 @@
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "native_ref": {"type": "string", "pattern": "^native-[1-9][0-9]*$"},
     "object_key": {
-      "description": "<native_ref>#<view>. The view names the position kind the old writer emitted the body at (hand, draw_pile, deck, relic, potion, enemy, orb, pet, map_point, reward, ...), because one native object can be written with different field sets at different positions.",
+      "description": "<native_ref>#<view>. The view names the position kind the old writer emitted the body at (hand, deck, relic, potion, enemy, orb, pet, map_point, reward, ...), because one native object can be written with different field sets at different positions. Pile views are never table views: draw, discard and exhaust piles stay inline in the skeleton exactly as today's FairPileProjection writes them (no native_ref, no index, draw pile ordered by visible content only).",
       "type": "string",
-      "pattern": "^native-[1-9][0-9]*#[a-z][a-z0-9_]{0,31}$"
+      "pattern": "^native-[1-9][0-9]*#[a-z][a-z0-9_]{0,31}$",
+      "not": {"pattern": "#[a-z0-9_]*pile[a-z0-9_]*$"}
     },
     "object_body": {
-      "description": "Exactly the object the old full writer emits at that position, including its native_ref field when the old writer has one.",
-      "type": "object"
+      "description": "Exactly the object the old full writer emits at that position. Only objects whose old body carries a native_ref field may be tabled, and that native_ref must equal the ref in the key; anything else stays inline in the skeleton.",
+      "type": "object",
+      "required": ["native_ref"],
+      "properties": {"native_ref": {"$ref": "#/$defs/native_ref"}}
     },
     "objects": {
       "type": "object",
@@ -27,7 +30,7 @@
       "additionalProperties": {"$ref": "#/$defs/object_body"}
     },
     "object_digests": {
-      "description": "sha256 of each body's exact UTF-8 bytes as written in this line (compact JSON, no insignificant whitespace). Computed from output bytes only, never from internal dirty flags.",
+      "description": "sha256 of the exact UTF-8 byte slice of each body's JSON value inside this line, as the writer emitted it (whatever escaping and number format the writer uses), never of a re-serialisation. Computed from output bytes only, never from internal dirty flags.",
       "type": "object",
       "propertyNames": {"$ref": "#/$defs/object_key"},
       "additionalProperties": {"$ref": "#/$defs/sha256"}
@@ -55,8 +58,8 @@
         "combat_index": {"type": "integer", "minimum": 1},
         "act": {"type": "integer", "minimum": 1},
         "floor": {"type": "integer", "minimum": 0},
-        "room_kind": {"enum": ["monster", "elite", "boss", "event"]},
-        "encounter_id": {"type": "string", "minLength": 1},
+        "room_kind": {"description": "event = a combat started by an event.", "enum": ["monster", "elite", "boss", "event"]},
+        "encounter_id": {"description": "Id of the encounter that just ended (every monster in it has already been shown), never a pre-rolled future encounter.", "type": "string", "minLength": 1},
         "result": {"enum": ["victory", "defeat"]},
         "hp_start": {"type": "integer", "minimum": 0},
         "hp_end": {"type": "integer", "minimum": 0},
@@ -96,7 +99,7 @@
         },
         "seq": {"type": "integer", "minimum": 0},
         "skeleton": {
-          "description": "Today's full state tree with every table object replaced in place by {\"$obj\": key}. Always complete in every frame: decision kind, stage, option lists and their order, and every other field outside object bodies.",
+          "description": "Today's full state tree with every table object replaced in place by {\"$obj\": key}. Always complete in every frame: decision kind, stage, option lists and their order, piles, and every other field outside object bodies. Every table key is reachable from here; placeholders never form a cycle.",
           "type": "object",
           "required": ["type", "decision"],
           "properties": {"type": {"const": "decision"}, "decision": {"type": "string", "minLength": 1}}
@@ -134,7 +137,7 @@
       "unevaluatedProperties": false
     },
     "reconcile": {
-      "description": "Once per reconcile_interval steps. objects holds the whole table; upserted and removed state what a delta frame would have said, so the Host can prove its carried table matches the full one.",
+      "description": "At most reconcile_interval frames after the last full or reconcile frame. objects holds the whole table; upserted and removed state what a delta frame would have said, so the Host can prove its carried table matches the full one.",
       "allOf": [{"$ref": "#/$defs/frame_base"}],
       "required": ["base_seq", "upserted", "removed"],
       "properties": {
@@ -153,7 +156,7 @@
       "properties": {
         "cmd": {"const": "configure_output"},
         "format": {"const": "managed-native-compact-1"},
-        "reconcile_interval": {"type": "integer", "minimum": 1, "maximum": 1024}
+        "reconcile_interval": {"description": "Counted in frames (state outputs) of one episode instance: a reconcile frame comes no later than this many frames after the last full or reconcile frame. The native may write one earlier.", "type": "integer", "minimum": 1, "maximum": 1024}
       }
     }
   }

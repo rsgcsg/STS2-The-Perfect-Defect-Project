@@ -14,37 +14,60 @@ counterexamples: `python/tests/test_prewrite_wp0_contracts.py` with `fixtures/`
 2. **One field set.** The inlined state contains exactly the fields today's full
    writer emits. New fields go only in `facts` and pass the Connector
    fair-projection review before any consumer reads them.
-3. **Skeleton and table.** `skeleton` is today's tree with each object that has a
-   `native_ref` at a known position replaced by `{"$obj": "<native_ref>#<view>"}`;
-   bodies may hold placeholders too. Inlining every placeholder recursively gives
-   the state. Every placeholder resolves; every table key is referenced (no orphans).
-   The skeleton is complete in every frame (decision kind, stage, option lists and order).
-4. **Delta by output bytes.** A key is upserted iff the sha256 of its body's exact
-   written bytes differs from what was last sent, or it is new; it is removed iff no
-   placeholder references it. Internal dirty flags never decide membership, so a
+3. **Skeleton and table.** `skeleton` is today's tree with each tabled object replaced
+   in place by `{"$obj": "<native_ref>#<view>"}`; bodies may hold placeholders too.
+   Inlining every placeholder recursively gives the state. Every table key is reachable
+   from the skeleton, every placeholder resolves and placeholders never form a cycle.
+   The skeleton is complete in every frame (decision kind, stage, option lists and
+   order, piles).
+4. **Only ref-carrying objects are tabled (fair information).** An object goes into
+   the table only if the body today's writer emits at that position carries a
+   `native_ref` field, and that field must equal the ref in the key. Draw, discard and
+   exhaust piles stay inline in the skeleton exactly as today's `FairPileProjection`
+   writes them: no `native_ref`, no index, draw pile ordered by visible content only.
+   No pile view is ever a table view, so the wire never says which instance is in a
+   pile.
+5. **Delta by output bytes.** A key is upserted iff the sha256 of its body's emitted
+   bytes differs from what was last sent for that key, or nothing is on record for it;
+   it is removed iff it is no longer reachable. Removing a key deletes its last-sent
+   record on both sides (writer and Host), so an object that becomes reachable again
+   is always re-sent in full. Internal dirty flags never decide membership, so a
    hidden-field change produces no upsert. Downstream reads only the reconstructed
    state, never delta membership or digests.
-5. **Per-step check.** `objects_root_sha256` covers the whole table after the frame,
-   computed by the native from the current bodies. The Host compares it with the root
-   of its carried digests (no body hashing on the hot path).
-6. **Reconcile point.** Every `reconcile_interval` steps (default 64) the native
-   writes a `reconcile` frame from a fresh full traversal: the whole table plus the
-   `upserted`/`removed` a delta would have carried. Any carried key not upserted
-   must keep its digest, and the key sets must match.
-7. **Instances.** `episode_instance` is new for every run, in-process restart and
+6. **Digest bytes.** A body digest is the sha256 of the exact UTF-8 byte slice of that
+   body's JSON value inside the emitted line, with whatever escaping and number format
+   the writer uses; it is never computed over a re-serialisation. The root
+   `objects_root_sha256` is the sha256 of the lines `"<key>\t<digest>\n"` of the whole
+   table after the frame, keys in byte order; the native computes it from its current
+   bodies.
+7. **Hot path and sampled checks.** On every frame the Host checks seq and base,
+   key/`native_ref` binding, reachability and cycles, that the reconcile point is not
+   overdue, and the root over its carried digests; it does not re-hash bodies. Schema
+   validation and per-body digests over the raw bytes run on the sampled path (about 1%
+   of steps chosen before the game, every R7 game). The reference test runs both on
+   every frame.
+8. **Reconcile point.** `reconcile_interval` counts frames (state outputs) of one
+   episode instance. A `reconcile` frame comes no later than that many frames after the
+   last `full` or `reconcile` frame (the native may write one earlier). It is built
+   from a fresh full traversal: the whole table plus the `upserted`/`removed` a delta
+   would have carried. Any carried key not upserted must keep its digest, and the key
+   sets must match.
+9. **Instances.** `episode_instance` is new for every run, in-process restart and
    save load; its first frame is `full` and carries `start` (`new_run` or
    `from_save` with the save digest: S4 hook). `seq` increases by one; `base_seq`
    names the held frame.
-8. **Divergence fails closed.** Wrong base, seq gap, digest/root/reconcile mismatch,
-   unresolved placeholder or orphan = `compact_state_divergence`: no action is sent
-   on that state (`not_started`), the game is closed, originals are kept and this
-   build's output stops (same rule as an R7 mismatch). No resync-and-continue and no
-   switch back to the old chain.
-9. **Text cache** (native internal). Key = model id, upgrade/enchant, every current
-   DynamicVar value, language and formatting context; the value is what the game's
-   own formatter returned. A miss calls the formatter; the cache never builds text.
-10. **combat_end fact.** Written once, in the first frame after a combat ends; all
-    fields are player-visible; used for the single-combat reward only, not model input.
+10. **Divergence fails closed.** Wrong base, seq gap, digest/root/reconcile mismatch,
+    unresolved placeholder, cycle, orphan, key/ref mismatch or overdue reconcile =
+    `compact_state_divergence`: no action is sent on that state (`not_started`), the
+    game is closed, originals are kept and this build's output stops (same rule as an
+    R7 mismatch). No resync-and-continue and no switch back to the old chain.
+11. **Text cache** (native internal). Key = model id, upgrade/enchant, every current
+    DynamicVar value, language and formatting context; the value is what the game's
+    own formatter returned. A miss calls the formatter; the cache never builds text.
+12. **combat_end fact.** Written once, in the first frame after a combat ends; all
+    fields are player-visible; `encounter_id` is the encounter that just ended (all its
+    monsters already shown), never a pre-rolled future one; `room_kind: event` is a
+    combat started by an event. Used for the single-combat reward only, not model input.
 
 ## Equivalence (T1)
 

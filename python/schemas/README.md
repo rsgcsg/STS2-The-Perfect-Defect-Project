@@ -24,9 +24,14 @@ is closed and versioned.
   `tests/test_prewrite_wp0_contracts.py`:
   - the service scores and draws a catalog position only; legality stays with the game
     and Connector, and a score is never resent;
+  - nothing seed-derived reaches the inference side: `game_instance_id` and
+    `sampling.seed` are opaque, never derived from a game seed or world identity and
+    never model input; seed pairing and holdout bookkeeping stay on the environment side;
   - before a position becomes a BoundAction the environment checks the identity triple
-    (request id, game instance id, catalog sha256), the q vector and the segment mu;
-    any mismatch or `refused` = `not_started`, the game is closed, nothing is retried;
+    (request id, game instance id, catalog sha256), the q vector, the segment mu and
+    `applied` (arm id, decision class, T, eps equal to this game's `episode_open`
+    sampling for that class); any mismatch or `refused` = `not_started`, the game is
+    closed, nothing is retried;
   - inference timeout (no reply in time) = `not_started` and the game is closed; a reply
     for a closed game instance (timeout, restart, save load) is counted and discarded;
     a native action that was sent and not confirmed = `unknown` and the game is closed;

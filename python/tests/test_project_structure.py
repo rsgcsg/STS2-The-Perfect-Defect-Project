@@ -73,6 +73,7 @@ class ProjectStructureTest(unittest.TestCase):
                 "research-action-v0.schema.json",
                 "research-state-v0.schema.json",
                 "research-transition-v0.schema.json",
+                "rl-inference-3.schema.json",
                 "training-input-manifest-v1.schema.json",
             },
         )

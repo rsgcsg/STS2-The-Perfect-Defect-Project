@@ -63,8 +63,7 @@
    "kind": "from_save",
    "origin_game_instance_id": "env-1:slot-4:run-2",
    "save_sha256": "157dca92e4250458339d4b835250d44c238f3355e1b7986195188ee434e9baff"
-  },
-  "world_key": "seed-456"
+  }
  },
  "episode_open_new_run": {
   "actor_id": "actor-7",
@@ -90,8 +89,7 @@
   "single_choice": "score",
   "start": {
    "kind": "new_run"
-  },
-  "world_key": "seed-123"
+  }
  },
  "score_request": {
   "kind": "score_request",
