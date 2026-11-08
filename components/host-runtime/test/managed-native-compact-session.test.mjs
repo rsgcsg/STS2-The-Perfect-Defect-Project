@@ -5,6 +5,8 @@ import test from "node:test";
 import { JsonLineProcess, RAW_LINE } from "../src/json-line-process.mjs";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
+import { MANAGED_TEXT_MENU_PROFILE, ManagedTextMenuSessionAdapter } from "../src/managed-text-menu-map.mjs";
+import { MANAGED_TEXT_MENU_V2_PROFILE, ManagedTextMenuV2SessionAdapter } from "../src/managed-text-menu-v2.mjs";
 
 const sha = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 const REF = /^native-[1-9][0-9]*$/u;
@@ -207,6 +209,46 @@ test("a diverged successor is delivered, never acted on and closes mutation", as
   assert.equal(later.reason_code, "runtime_tainted_after_compact_state_divergence");
   await assert.rejects(fast.mount({ seed: "SEED", reset: true }), /tainted/u);
   assert.deepEqual(native.log, ["start_run", "configure_output", "action"]);
+});
+
+test("text-menu consumers report a diverged session as such, never as unknown (review S3)", async () => {
+  const native = fakeNative({ mutateLine: (line) => {
+    const frame = JSON.parse(line); frame.objects_root_sha256 = "0".repeat(64); return JSON.stringify(frame);
+  } });
+  const fast = session(native, { sampleRate: 0 });
+  const snapshot = await fast.mount({ seed: "SEED" });
+  await act(fast, snapshot);
+  assert.equal(fast.taintReason, "compact_state_divergence");
+  for (const [Adapter, profile] of [[ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE],
+    [ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE]]) {
+    // observe() refuses a diverged state, so the rejection must not reach it.
+    const result = await new Adapter(fast).submit({ request_id: `t-${profile}`, expected_snapshot_id: "s",
+      action_id: "a", input_profile: profile });
+    assert.equal(result.status, "not_applied", profile);
+    assert.equal(result.reason_code, "runtime_tainted_after_compact_state_divergence", profile);
+    assert.equal(result.retry, "never", profile);
+    assert.equal(result.successor, null, profile);
+  }
+  assert.deepEqual(native.log, ["start_run", "configure_output", "action"]);
+});
+
+test("the evidence tap sees every compact line before it is checked, the diverging one too", async () => {
+  const native = fakeNative({ mutateLine: (line) => {
+    const frame = JSON.parse(line); frame.objects_root_sha256 = "0".repeat(64); return JSON.stringify(frame);
+  } });
+  const fast = session(native, { sampleRate: 0 });
+  const seen = [];
+  fast.compactLineTap = (line, frame) => seen.push([line, frame.seq]);
+  const snapshot = await fast.mount({ seed: "SEED" });
+  await act(fast, snapshot);
+  assert.deepEqual(seen.map(([, seq]) => seq), [0, 1]);
+  assert.equal(JSON.parse(seen[1][0]).objects_root_sha256, "0".repeat(64));
+  assert.throws(() => { fast.compactLineTap = 1; }, /function or null/u);
+  const old = session(fakeNative());
+  const legacy = [];
+  old.compactLineTap = (line) => legacy.push(line);
+  await act(old, await old.mount({ seed: "SEED" }));
+  assert.deepEqual(legacy, []);
 });
 
 test("the sampled path checks emitted bytes; the hot path does not re-hash bodies", async () => {
