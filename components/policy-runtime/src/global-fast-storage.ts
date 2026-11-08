@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readFile, type FileHandle } from "node:fs/promises"
 import { join } from "node:path";
 import { gunzip, gzip } from "node:zlib";
 import { promisify } from "node:util";
-import type { FastEvidenceSink, FastGameClose, FastGameEvidence, FastGameMeta, FastStepRecord }
+import type { FastEvidenceSink, FastGameClose, FastGameEvidence, FastGameMeta, FastRefusedOpen, FastStepRecord }
   from "./fast-env/evidence-sink.js";
 
 /**
@@ -36,9 +36,7 @@ export interface FastEvidenceCloseRecord extends FastGameClose {
   native_lines: FastOriginalsFile | null;
   input_lines: FastOriginalsFile | null;
 }
-/** A mount (reset / load_map) that failed before the game existed (#427 `refusedOpen`). */
-export interface FastRefusedOpen { slot: number; game_ref: string; start: FastGameMeta["start"]; reason: string; native_lines: string[] }
-/** Its one-line `actions.jsonl`; a refused open is a failure, so its native lines are always kept. */
+/** The one-line `actions.jsonl` of a refused open (#427 `FastRefusedOpen`); a refused open is a failure, so its native lines are always kept. */
 export interface FastRefusedOpenRecord extends Omit<FastRefusedOpen, "native_lines"> {
   kind: "refused_open";
   schema: typeof FAST_EVIDENCE_SCHEMA;
