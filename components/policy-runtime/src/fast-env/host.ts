@@ -124,6 +124,7 @@ export class HostSlotNative implements SlotNative {
   #captures = 0;
   #fullChecks = 0;
   #r7 = false;
+  #drawKey: string | null = null;
   constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>,
               private readonly sampleRate = 1) {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
@@ -134,9 +135,9 @@ export class HostSlotNative implements SlotNative {
   }
 
   /** A new episode starts with an empty line buffer and no listener. */
-  #beginEpisode(r7: boolean): void {
+  #beginEpisode(r7: boolean, drawKey: string): void {
     this.#lines = []; this.#listener = null; this.#last = null;
-    this.#captures = 0; this.#fullChecks = 0; this.#r7 = r7; this.#sampled = () => true;
+    this.#captures = 0; this.#fullChecks = 0; this.#r7 = r7; this.#drawKey = drawKey; this.#sampled = () => true;
   }
 
   fullChecks(): number { return this.#fullChecks; }
@@ -160,7 +161,7 @@ export class HostSlotNative implements SlotNative {
 
   async reset(input: { seed: string; initialProgress: Record<string, unknown> | null; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
-    this.#beginEpisode(input.r7);
+    this.#beginEpisode(input.r7, `seed:${input.seed}`);
     await this.driver.handle({ command: "reset", request_id: rid(), seed: input.seed,
       ...(input.initialProgress ? { initial_progress: input.initialProgress } : {}),
       ...(input.r7 ? { compact_check_all: true } : {}),
@@ -170,7 +171,7 @@ export class HostSlotNative implements SlotNative {
 
   async loadSave(input: { save: Record<string, unknown>; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
-    this.#beginEpisode(input.r7);
+    this.#beginEpisode(input.r7, `save:${createHash("sha256").update(canonicalJson(input.save), "utf8").digest("hex")}`);
     await this.driver.handle({ command: "load_map", request_id: rid(), save: input.save,
       ...(input.r7 ? { compact_check_all: true } : {}),
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: null }, MANAGER);
@@ -185,8 +186,10 @@ export class HostSlotNative implements SlotNative {
     if (typeof claim.control_token !== "string" || claim.control_epoch == null) throw new Error("fast_env_claim_result_drift");
     this.#control = { token: claim.control_token, epoch: claim.control_epoch };
     const episodeId: string | null = this.started.session.episodeInstance ?? null;
-    // Fixed after mount and before the first capture: no model choice can move it.
-    this.#sampled = captureSampleSchedule(this.sampleRate, this.#r7, episodeId === null ? null : captureSampleOffset(episodeId));
+    // Fixed after mount and before the first capture: no model choice can move it. The
+    // compact episode id when there is one, else what the open itself named (seed / save).
+    const drawKey = episodeId === null ? this.#drawKey : `episode:${episodeId}`;
+    this.#sampled = captureSampleSchedule(this.sampleRate, this.#r7, drawKey === null ? null : captureSampleOffset(drawKey));
     return { gameInstanceId: episodeId, start: this.started.session.episodeStart ?? null };
   }
 

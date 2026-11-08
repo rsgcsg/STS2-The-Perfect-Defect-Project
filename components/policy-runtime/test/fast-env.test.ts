@@ -722,11 +722,11 @@ describe("HostSlotNative", () => {
     expect(canonicalJson(failure.mismatch.basis)).toBe(canonicalJson(sent.basis));
     expect(failure.mismatch.capture).toEqual(sent.capture);
     serve = () => good;
-    // No episode id to derive the draw from: every capture is fully checked.
+    // Compact output off (no episode id): the draw comes from the open's seed, still sampled.
     started.session.episodeInstance = null;
     await native.reset({ seed: "s", initialProgress: null, r7: false });
     await native.capture(); await native.capture();
-    expect(native.fullChecks()).toBe(2);
+    expect(native.fullChecks()).toBe(1);
     started.session.episodeInstance = "e";
     await native.reset({ seed: "s", initialProgress: null, r7: true });
     await native.capture(); serve = drifted;
