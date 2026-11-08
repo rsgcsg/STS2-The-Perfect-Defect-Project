@@ -233,6 +233,7 @@ export function playerSnapshotInvariantProblems(value: any): string[] {
     problems.push("every targeted read must reference a current referent");
   return problems;
 }
+
 const capabilitiesSchema = z.object({
   protocol_version: z.literal(SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL),
   snapshot_schema: z.literal("sts2.player-environment/snapshot-1"),
