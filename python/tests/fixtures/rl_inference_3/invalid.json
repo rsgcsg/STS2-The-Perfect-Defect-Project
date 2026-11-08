@@ -189,6 +189,33 @@
    "kind": "new_run"
   }
  },
+ "episode_open_audit_flag_not_boolean": {
+  "actor_id": "actor-7",
+  "game_instance_id": "env-3:slot-1:run-4",
+  "kind": "episode_open",
+  "request_id": 2,
+  "sampling": {
+   "arm_id": "control",
+   "classes": {
+    "combat": {
+     "temperature": 1.0,
+     "uniform_mix": 0
+    },
+    "noncombat": {
+     "temperature": 1.0,
+     "uniform_mix": 0
+    }
+   },
+   "mode": "temperature_uniform",
+   "seed": "actor-7"
+  },
+  "schema": "stpd/rl-inference-3",
+  "single_choice": "score",
+  "start": {
+   "kind": "new_run"
+  },
+  "audit_retain_mu": "yes"
+ },
  "unknown_with_native_not_delivered": {
   "game_instance_id": "env-3:slot-2:run-9",
   "kind": "step_outcome",
