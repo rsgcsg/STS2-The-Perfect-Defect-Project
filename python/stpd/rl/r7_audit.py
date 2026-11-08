@@ -9,9 +9,10 @@ legality. Running the replay itself is integration work (WP8).
 Verdicts (`R7Report.stops_output`): a `divergence` stops this build's output
 (originals kept, owner investigates, trained data is not re-judged). Two
 classes are reported but never stop output: `display_text_number` (only
-numbers inside display strings differ, S1-A1 §4) and `score_drift` (scores
-differ beyond tolerance: CPU fp32 replay vs GPU forward; R4, the lead judges by
-learning, not bit equality).
+numbers differ, and only on a whitelisted display-only path, `DISPLAY_ONLY_TEXT`)
+and `score_drift` (finite scores differ beyond tolerance: CPU fp32 replay vs
+GPU forward; R4, the lead judges by learning, not bit equality). A non-finite
+score and a record of the wrong shape are divergences.
 
 Comparators:
 - `compare_action_records`: per step de-handled input, content hash (compared
@@ -51,6 +52,18 @@ NATIVE_REF = re.compile(r"^native-[1-9][0-9]*$")
 DIGITS = re.compile(r"\d+")
 NOT_COMPARED = frozenset({"facts", "diagnostics"})
 
+# Display-only text whose numbers may differ between two runs of one seed, by
+# scene family (S1-A1 §4: the event body, e.g. the Trial's "474号进入者", which
+# the native draws per process). Card, power, relic, option, label and every
+# other text is model input (`FrameCompiler` -> `text_numbers`): a number change
+# there is a divergence. A path not listed here fails closed. The table is the
+# lead's to extend, with the evidence that the text is display-only.
+DISPLAY_ONLY_TEXT: Mapping[str, frozenset[str]] = {"event": frozenset({"$.scene.prompt"})}
+
+RECORD_KEYS = frozenset({"steps", "decisions", "native_steps", "terminal"})
+STEP_KEYS = frozenset({"step_index", "input", "content_sha256", "choice", "receipt",
+                       "native_steps", "scores", "selected_score"})
+
 
 # --------------------------------------------------------------------- sampler
 @dataclass
@@ -62,7 +75,14 @@ class R7Sampler:
     by the sampler's own RNG). `select()` is called once per game, before it
     opens, and depends only on the window and the ordinal: never on the seed,
     the game content, the model or anything the inference side sees. If fewer
-    games open than expected, fewer are chosen; the report says so.
+    games open than expected, fewer are chosen; the report says so. Games
+    opened beyond `expected_games` are never chosen; the report counts them as
+    `overflow` (raise `expected_games` when it is not 0).
+
+    A restarted manager continues a window with `resume(now, opened)`, the
+    games it already opened in it (the launcher persists that count). Without
+    it the ordinals restart at 0 and the window may choose more than `quota`;
+    this changes coverage only, never which information the choice uses.
 
     `key` is the sampler's own secret (not a game seed); one sampler per game
     manager, whose share of the global 10-20/h the launcher sets as `quota`.
@@ -76,6 +96,7 @@ class R7Sampler:
     chosen: frozenset[int] = frozenset()
     ordinal: int = 0
     history: list[dict[str, Any]] = field(default_factory=list)
+    resumed_at: int | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.key, str) or not self.key or type(self.expected_games) is not int
@@ -88,19 +109,31 @@ class R7Sampler:
         if self.window is not None:
             self.history.append({"window": self.window, "opened": self.ordinal,
                                  "chosen": len(self.chosen),
-                                 "replayed_by_ordinal": sorted(i for i in self.chosen
-                                                               if i < self.ordinal)})
+                                 "chosen_and_opened": sorted(i for i in self.chosen
+                                                             if i < self.ordinal),
+                                 "overflow": max(0, self.ordinal - self.expected_games),
+                                 "resumed_at": self.resumed_at})
         rng = random.Random(hashlib.sha256(f"{self.key}\0r7\0{window}".encode()).digest())
         count = int(self.quota) + int(rng.random() < self.quota - int(self.quota))
-        self.window, self.ordinal = window, 0
+        self.window, self.ordinal, self.resumed_at = window, 0, None
         self.chosen = frozenset(rng.sample(range(self.expected_games), count))
 
-    def select(self, now: float) -> bool:
+    def _enter(self, now: float) -> None:
         window = int(now // self.window_seconds)
         if window != self.window:
             if self.window is not None and window < self.window:
                 raise ValueError("r7_sampler_clock_went_backwards")
             self._roll(window)
+
+    def resume(self, now: float, opened: int) -> None:
+        """After a restart: `opened` games of the current window were already opened."""
+        if self.window is not None or type(opened) is not int or opened < 0:
+            raise ValueError("r7_sampler_resume_only_before_first_select")
+        self._enter(now)
+        self.ordinal = self.resumed_at = opened
+
+    def select(self, now: float) -> bool:
+        self._enter(now)
         chosen = self.ordinal in self.chosen
         self.ordinal += 1
         return chosen
@@ -108,7 +141,9 @@ class R7Sampler:
     def report(self) -> dict[str, Any]:
         current = {"window": self.window, "opened": self.ordinal,
                    "chosen_so_far": sum(1 for i in self.chosen if i < self.ordinal),
-                   "chosen": len(self.chosen)}
+                   "chosen": len(self.chosen),
+                   "overflow": max(0, self.ordinal - self.expected_games),
+                   "resumed_at": self.resumed_at}
         return {"quota": self.quota, "expected_games": self.expected_games,
                 "history": list(self.history), "current": current}
 
@@ -150,10 +185,42 @@ def _differences(left: Any, right: Any, path: str = "$") -> list[tuple[str, Any,
     return [] if left == right else [(path, left, right)]
 
 
-def _only_display_numbers(differences: list[tuple[str, Any, Any]]) -> bool:
+def _family(value: Any) -> Any:
+    scene = value.get("scene") if isinstance(value, Mapping) else None
+    return scene.get("family") if isinstance(scene, Mapping) else None
+
+
+def _only_display_numbers(differences: list[tuple[str, Any, Any]], left: Any,
+                          right: Any) -> bool:
+    """Only digits differ, and only on `DISPLAY_ONLY_TEXT` paths of this scene family."""
+    family = _family(left)
+    paths = DISPLAY_ONLY_TEXT.get(family, frozenset()) if family == _family(right) else ()
     return bool(differences) and all(
-        isinstance(a, str) and isinstance(b, str) and DIGITS.sub("#", a) == DIGITS.sub("#", b)
-        for _, a, b in differences)
+        path in paths and isinstance(a, str) and isinstance(b, str)
+        and DIGITS.sub("#", a) == DIGITS.sub("#", b)
+        for path, a, b in differences)
+
+
+def _number(value: Any) -> bool:
+    return type(value) in (int, float)
+
+
+def _record_shape(record: Any) -> str | None:
+    """The first shape problem of one R7 record, or None."""
+    if not isinstance(record, Mapping) or not set(record) >= RECORD_KEYS:
+        return "record_keys"
+    if not isinstance(record["steps"], list):
+        return "steps"
+    for index, step in enumerate(record["steps"]):
+        if not isinstance(step, Mapping) or not set(step) >= STEP_KEYS:
+            return f"steps[{index}].keys"
+        choice, scores = step["choice"], step["scores"]
+        if (type(step["step_index"]) is not int or not isinstance(choice, Mapping)
+                or not {"content", "occurrence"} <= set(choice)
+                or not isinstance(scores, list) or not all(_number(v) for v in scores)
+                or not _number(step["selected_score"])):
+            return f"steps[{index}].types"
+    return None
 
 
 @dataclass
@@ -207,6 +274,13 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
     here); `content_sha256` is the content hash each chain computed itself.
     """
     report = R7Report()
+    for side, record in (("fast", fast), ("replay", replay)):
+        problem = _record_shape(record)
+        if problem is not None:
+            report.findings.append(Finding(None, "record_shape", "divergence",
+                                           {"side": side, "problem": problem}))
+    if report.findings:
+        return report
     ambiguous_seen = False
     fast_steps, replay_steps = list(fast["steps"]), list(replay["steps"])
     for left, right in zip(fast_steps, replay_steps, strict=False):
@@ -218,7 +292,7 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
             break
         differences = _differences(dehandle(left["input"]), dehandle(right["input"]))
         if differences:
-            if _only_display_numbers(differences):
+            if _only_display_numbers(differences, left["input"], right["input"]):
                 report.findings.append(Finding(step, "input", "display_text_number",
                                                [d[0] for d in differences]))
             else:
@@ -240,7 +314,10 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
         if left["native_steps"] != right["native_steps"]:
             report.findings.append(Finding(step, "native_steps", "divergence",
                                            [left["native_steps"], right["native_steps"]]))
-        if not _scores_close(left["scores"], right["scores"], score_tolerance):
+        if not all(math.isfinite(v) for side in (left, right)
+                   for v in (*side["scores"], side["selected_score"])):
+            report.findings.append(Finding(step, "non_finite_score", "divergence"))
+        elif not _scores_close(left["scores"], right["scores"], score_tolerance):
             kind = ("score_multiset" if len(left["scores"]) == len(right["scores"])
                     else "score_count")
             report.findings.append(Finding(step, kind, "score_drift" if kind == "score_multiset"
@@ -324,6 +401,8 @@ def compare_encoded_row(fast_row: bytes, fast_row_sha256: str, reference: bytes,
         decoded = decode_row(fast_row, validator=validator, expected_sha256=fast_row_sha256)
     except ValueError as error:
         return Finding(None, "encoded_row", "divergence", {"decode": str(error)})
+    # The reference bytes were just encoded here from the observation: there is
+    # no recorded digest to bind them to (the fast row above is bound to its own).
     expected = decode_row(reference, validator=validator, expected_sha256=None)
     if decoded.choices != expected.choices or decoded.entity_count != expected.entity_count:
         return Finding(None, "encoded_row", "divergence", "choices_or_entity_count")

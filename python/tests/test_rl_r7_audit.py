@@ -30,8 +30,32 @@ def test_sampler_quota_per_window_and_decided_before_open():
     assert sum(nxt) == 15 and nxt != picks
     history = sampler.report()["history"]
     assert history == [{"window": 0, "opened": 600, "chosen": 15,
-                        "replayed_by_ordinal": history[0]["replayed_by_ordinal"]}]
-    assert len(history[0]["replayed_by_ordinal"]) == 15
+                        "chosen_and_opened": history[0]["chosen_and_opened"],
+                        "overflow": 0, "resumed_at": None}]
+    assert len(history[0]["chosen_and_opened"]) == 15
+
+
+def test_sampler_reports_overflow_beyond_expected_games():
+    sampler = R7Sampler(key="k", quota=3, expected_games=100)
+    picks = [sampler.select(0.0) for _ in range(300)]
+    assert sum(picks) == 3 and not any(picks[100:])  # beyond expected: never chosen ...
+    assert sampler.report()["current"]["overflow"] == 200  # ... and said so
+    sampler.select(3600.0)
+    assert sampler.report()["history"][0]["overflow"] == 200
+
+
+def test_sampler_resume_continues_the_window_after_a_restart():
+    reference = R7Sampler(key="k", quota=3, expected_games=100)
+    picks = [reference.select(100.0) for _ in range(100)]
+    restarted = R7Sampler(key="k", quota=3, expected_games=100)
+    restarted.resume(200.0, 40)  # the launcher persisted 40 opened games in this window
+    assert [restarted.select(200.0) for _ in range(60)] == picks[40:]
+    assert sum(picks[:40]) + sum(picks[40:]) == 3  # no ordinal is chosen twice
+    assert restarted.report()["current"]["resumed_at"] == 40
+    with pytest.raises(ValueError, match="resume_only_before_first_select"):
+        restarted.resume(200.0, 1)
+    with pytest.raises(ValueError, match="resume_only_before_first_select"):
+        R7Sampler(key="k", quota=3, expected_games=100).resume(0.0, -1)
 
 
 def test_sampler_fractional_share_and_short_window():
@@ -114,14 +138,70 @@ def test_divergence_stops_output_at_the_first_fork(mutate, kind):
     assert [(f.step, f.kind) for f in report.findings if f.category == "divergence"] == [(1, kind)]
 
 
-def test_display_text_numbers_listed_separately():
+def _event(record: dict[str, Any], step: int, prompt: str) -> None:
+    record["steps"][step]["input"]["scene"] = {"family": "event", "prompt": prompt}
+
+
+def test_card_text_number_change_is_a_divergence():
     fast, replay = _record(), _record()
-    replay["steps"][2]["input"]["hand"][0]["text"] = "Deal 9 damage."
+    replay["steps"][2]["input"]["hand"][0]["text"] = "Deal 9 damage."  # model input
+    report = compare_action_records(fast, replay)
+    assert report.stops_output
+    assert [(f.step, f.kind, f.category) for f in report.findings] == [(2, "input",
+                                                                       "divergence")]
+
+
+def test_event_body_number_is_listed_separately():
+    fast, replay = _record(), _record()
+    _event(fast, 2, "You meet entrant 474.")
+    _event(replay, 2, "You meet entrant 184.")
     report = compare_action_records(fast, replay)
     assert not report.stops_output
     assert report.counts() == {"display_text_number": 1}
-    replay["steps"][2]["input"]["hand"][0]["text"] = "Deal 9 block."
+    assert report.findings[0].detail == ["$.scene.prompt"]
+    _event(replay, 2, "You meet rival 184.")  # more than a number differs
     assert compare_action_records(fast, replay).stops_output
+    _event(replay, 2, "You meet entrant 184.")
+    replay["steps"][2]["input"]["scene"]["family"] = "combat"  # not the whitelisted family
+    assert compare_action_records(fast, replay).stops_output
+    for record in (fast, replay):
+        record["steps"][2]["input"]["scene"]["family"] = "shop"
+    assert compare_action_records(fast, replay).stops_output
+    _event(replay, 2, "You meet entrant 184.")
+    _event(fast, 2, "You meet entrant 474.")
+    replay["steps"][2]["input"]["hand"][0]["text"] = "Deal 9 damage."  # mixed with model input
+    assert compare_action_records(fast, replay).stops_output
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf")])
+def test_non_finite_score_is_a_divergence(score):
+    fast, replay = _record(), _record()
+    replay["steps"][1]["scores"] = [0.2, score, 0.3]
+    report = compare_action_records(fast, replay)
+    assert report.stops_output and report.findings[0].kind == "non_finite_score"
+    fast, replay = _record(), _record()
+    fast["steps"][1]["selected_score"] = score
+    assert compare_action_records(fast, replay).findings[0].kind == "non_finite_score"
+
+
+@pytest.mark.parametrize(("mutate", "problem"), [
+    (lambda r: r.pop("terminal"), "record_keys"),
+    (lambda r: r.update(steps={}), "steps"),
+    (lambda r: r["steps"][1].pop("receipt"), "steps[1].keys"),
+    (lambda r: r["steps"][2]["choice"].pop("occurrence"), "steps[2].types"),
+    (lambda r: r["steps"][0].update(scores=["0.5"]), "steps[0].types"),
+    (lambda r: r["steps"][0].update(selected_score=None), "steps[0].types"),
+    (lambda r: r["steps"][3].update(step_index="3"), "steps[3].types"),
+])
+def test_malformed_record_is_a_typed_divergence(mutate, problem):
+    fast, replay = _record(), _record()
+    mutate(replay)
+    report = compare_action_records(fast, replay)
+    assert report.stops_output
+    assert [f.as_dict() for f in report.findings] == [{
+        "step": None, "kind": "record_shape", "category": "divergence",
+        "detail": {"side": "replay", "problem": problem}}]
+    assert compare_action_records(replay, fast).findings[0].detail["side"] == "fast"
 
 
 def test_score_drift_reported_not_stopping():
