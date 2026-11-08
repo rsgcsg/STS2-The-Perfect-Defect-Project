@@ -348,4 +348,3 @@ def test_receiver_checks_keys_instance_generation_and_mu(tmp_path: Path):
         for block in blocks:
             block.close()
             block.unlink()
-
