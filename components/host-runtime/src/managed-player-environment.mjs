@@ -2844,6 +2844,7 @@ export class ManagedPlayerEnvironmentSession {
   #compactInstance = null;
   #compactCheckAll = false;
   #compactInstances = new Set();
+  #compactLineTap = null;
 
   constructor({
     process,
@@ -2874,6 +2875,18 @@ export class ManagedPlayerEnvironmentSession {
   /** The native episode instance of the current compact run (null on the old chain). */
   get episodeInstance() {
     return this.#compactInstance?.reconstructor.episodeInstance ?? null;
+  }
+
+  /** Evidence hook (fast_chain): called with the exact emitted line of every compact
+   * frame, before it is checked, so a diverging frame reaches the originals too. */
+  set compactLineTap(listener) {
+    if (listener != null && typeof listener !== "function") throw new TypeError("compactLineTap must be a function or null");
+    this.#compactLineTap = listener ?? null;
+  }
+
+  /** How the native says the current compact instance began (its first full frame's `start`); null on the old chain. */
+  get episodeStart() {
+    return this.#compactInstance?.reconstructor.start ?? null;
   }
 
   get compactOutput() {
@@ -2950,8 +2963,9 @@ export class ManagedPlayerEnvironmentSession {
     }
   }
 
-  async restoreMapSave({ path, timeoutMs = 10_000 }) {
+  async restoreMapSave({ path, timeoutMs = 10_000, compactCheckAll = false }) {
     if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot restore a run.");
+    this.#compactCheckAll = compactCheckAll === true;
     this.#projection = null;
     this.#ledger.clear();
     this.#publicEntityAliases.clear();
@@ -3229,6 +3243,7 @@ export class ManagedPlayerEnvironmentSession {
 
   #compactState(frame, { startsInstance }) {
     const started = performance.now();
+    this.#compactLineTap?.(frame[RAW_LINE] ?? null, frame);
     if (frame.frame === "full") {
       if (!startsInstance) throw new CompactStateDivergence("unexpected_full_frame");
       // The native says how this instance began; it must be what was asked, under a fresh instance id.
@@ -3300,7 +3315,8 @@ export async function startManagedPlayerEnvironmentSession({
   identityMode = "crypto",
   validateSdk = true,
   quietDiagnostics = false,
-  compactOutput = null
+  compactOutput = null,
+  fastChain = false
 }) {
   validateManagedAscension(ascension);
   compactOutput = validateCompactOutput(compactOutput);
@@ -3309,7 +3325,8 @@ export async function startManagedPlayerEnvironmentSession({
     candidateDirectory,
     diskIdentity,
     requestTimeoutMs,
-    quietDiagnostics
+    quietDiagnostics,
+    fastChain
   });
   const environmentFingerprint = digest({
     candidate_id: runtime.manifest.candidate_id,

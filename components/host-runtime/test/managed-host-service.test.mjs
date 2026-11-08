@@ -722,3 +722,25 @@ test("in-process client attach point runs the same dispatch with no manager auth
     assert.equal(service.driver.closed, false);
   } finally { await service.close(); }
 });
+
+test("a compact-diverged session surfaces its own public error code (review S3)", async () => {
+  const native = fixture();
+  const real = native.started.session;
+  let diverged = false;
+  // Only the error mapping is under test; the divergence itself is covered by the compact tests.
+  const observe = real.observe.bind(real);
+  real.observe = () => {
+    if (diverged) throw new Error("managed_session_tainted_after_compact_state_divergence");
+    return observe();
+  };
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    assert.equal((await reset(service)).status, 200);
+    diverged = true;
+    const refused = await command(service, service.clientToken, { command: "observe" });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, "managed_session_tainted_after_compact_state_divergence");
+  } finally {
+    await service.close();
+  }
+});
