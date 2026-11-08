@@ -33,6 +33,7 @@ from stpd.p1 import export
 
 from .agent_task_outcome import project
 from .developer import ROOT
+from .episode_start import EpisodeStart, require_loaded_identity
 from .global_evidence_store import (
     publish_global_evidence,
     publish_global_runtime,
@@ -235,6 +236,15 @@ def require_prepared_identity(
     if (proof.get("run_unlock_state_matches") is not True
             or proof.get("progress_sha256") != initial_progress["progress_sha256"]):
         reject("prepared_initial_progress_changed")
+
+
+def _load_map(manager: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """One manager ``load-map``. The Host consumer has no named wrapper yet; its own
+    ``_admin`` keeps the request-id correlation and the unknown-on-lost-reply rule."""
+    named = getattr(manager, "load_map", None)
+    reply: dict[str, Any] = (named(**body) if callable(named)
+                             else manager._admin("/v1/admin/load-map", body))
+    return reply
 
 
 class ManagedEpisodeExecutor:
@@ -442,6 +452,20 @@ class ManagedEpisodeExecutor:
     def _before_world_offer(self, row: dict[str, Any]) -> None:
         return None
 
+    def _episode_start(self, row: dict[str, Any], manifest: Mapping[str, Any]) -> EpisodeStart:
+        """S4 hook: today's seeded reset unless the frozen execution names a save start.
+
+        ``episode_starts`` maps a slot seed to one ``spireagent/managed-save-start-1``;
+        the seed of a save's descendants is its parent's seed.
+        """
+        starts = self.configuration.get("episode_starts", {})
+        if not isinstance(starts, Mapping):
+            reject("invalid_episode_starts")
+        start = EpisodeStart.decode(starts.get(row["seed"]), seed=row["seed"])
+        start.require_scenario(character=manifest["character"],
+                               ascension=manifest["ascension"])
+        return start
+
     def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
         """Observe the existing durable offer, before its possibly unknown effect."""
         return None
@@ -487,18 +511,34 @@ class ManagedEpisodeExecutor:
                 ready = client.ready()
                 row["host_service_instance_id"] = ready["service_instance_id"]
                 row["host_service_pid"] = launch.pid
+                # S4: how this world begins is decided before the offer; a bad
+                # save start is not_started, never a partly prepared world.
+                start = self._episode_start(row, manifest)
+                if start.kind != "new_run":  # old-chain rows stay byte-identical
+                    row["episode_start"] = start.record()
                 self._before_world_offer(row)
                 row["world_mutation_offered"] = True
                 checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
                 self._world_offer_checkpointed(row)
-                with _phase(row, "host_reset", detail=True):
-                    reset = manager.reset(
-                        row["seed"],
-                        expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
-                        expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
-                        initial_progress=self.configuration["initial_progress"],
-                    )
-                row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
+                if start.kind == "new_run":
+                    with _phase(row, "host_reset", detail=True):
+                        reset = manager.reset(
+                            row["seed"],
+                            expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                            expected_game_continuity_id=ready["episode"].get(
+                                "game_continuity_id"),
+                            initial_progress=self.configuration["initial_progress"],
+                        )
+                    row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
+                else:
+                    # This executor always owns a fresh Host process, so the Host's
+                    # fresh-process rule holds; a lost reply stays unknown (offered).
+                    with _phase(row, "host_load_map", detail=True):
+                        loaded = _load_map(manager, start.load_request(
+                            expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                            expected_game_continuity_id=ready["episode"].get(
+                                "game_continuity_id")))
+                    row["load_map"] = artifacts.put("managed-load-map.json", json_bytes(loaded))
                 ready = client.ready()
                 reply = manager.request({"command": "episode_identity"})
                 result = reply.get("result") if isinstance(reply, Mapping) else None
@@ -512,9 +552,14 @@ class ManagedEpisodeExecutor:
                 # world keeps its original proof next to the typed reason.
                 row["episode_identity"] = artifacts.put(
                     "episode-identity.json", json_bytes(identity))
-                require_prepared_identity(
-                    identity, seed=row["seed"],
-                    initial_progress=self.configuration["initial_progress"])
+                if start.kind == "new_run":
+                    require_prepared_identity(
+                        identity, seed=row["seed"],
+                        initial_progress=self.configuration["initial_progress"])
+                else:
+                    row["initial_progress_proof"] = require_loaded_identity(
+                        identity, start=start,
+                        initial_progress=self.configuration["initial_progress"])
                 target = {
                     "input_profile": "public-basis-1",
                     "profile_sha256": hashlib.sha256(
