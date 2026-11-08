@@ -29,11 +29,15 @@ Byte layout:
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
 from dataclasses import dataclass
 from typing import Any
+
+from .heads import CLASS_FLOORS, OUTCOME_CLASSES
+from .segment_validation import _probabilities as learner_distribution_check
 
 FORMAT = "stpd/rl-fast-segment-1"
 ROW_FORMAT = "stpd/rows-v2-row-1"
@@ -44,8 +48,8 @@ MAX_SEGMENT_BYTES = 256 * 1024 * 1024
 SEAL_KINDS = ("bootstrap", "terminal", "truncated")
 HEADER_KEYS = frozenset({
     "format", "row_format", "segment_id", "assembler_id", "game_instance_id", "actor_id",
-    "segment_index", "start", "single_choice", "sampling", "mu", "compiler_identity",
-    "rows", "seal", "trainable", "forced_steps"})
+    "assembler_instance", "segment_index", "start", "single_choice", "sampling", "mu",
+    "compiler_identity", "rows", "seal", "trainable", "forced_steps"})
 ROW_KEYS = frozenset({
     "request_id", "step_index", "consumption_id", "catalog_len", "catalog_sha256",
     "observation_sha256", "in_combat", "floor", "payload", "selected_index", "behavior_q",
@@ -100,6 +104,27 @@ class SealedSegment:
         return sha256(self.data)
 
 
+def supported(outcome_class: int, floor: int) -> bool:
+    """`heads.outcome_mask` for one (class, floor): only classes at or above the floor."""
+    return CLASS_FLOORS[outcome_class] >= min(floor, 48)
+
+
+def check_value_distribution(values: Any, floor: int) -> None:
+    """The learner's own checks, before a segment is called trainable.
+
+    `segment_validation._probabilities` (51 classes, finite, >= 0, mass within
+    1e-5) and the floor support of `segment_targets` / `heads.outcome_mask`
+    (no mass below the observed floor).
+    """
+    try:
+        learner_distribution_check(values)
+    except ValueError as error:
+        raise SegmentFormatError("segment_mu_value_distribution") from error
+    if type(floor) is not int or floor < 0 or any(
+            value != 0 and not supported(index, floor) for index, value in enumerate(values)):
+        _reject("segment_mu_value_floor_support")
+
+
 def _check_q(row: dict[str, Any]) -> None:
     q = row["behavior_q"]
     index = row["selected_index"]
@@ -110,11 +135,10 @@ def _check_q(row: dict[str, Any]) -> None:
             or type(index) is not int or not 0 <= index < len(q)
             or q[index] != row["selected_q"] or not q[index] > 0):
         _reject("segment_behavior_q_invalid")
-    probabilities = row["outcome_probabilities"]
-    if (not isinstance(probabilities, list) or not probabilities
-            or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
-                   for v in probabilities)):
-        _reject("segment_mu_value_required_including_forced")
+    check_value_distribution(row["outcome_probabilities"], row["floor"])
+    forced = (row["outcome"] or {}).get("forced_steps", 0)
+    if type(forced) is not int or forced < 0:
+        _reject("segment_forced_steps")
 
 
 def validate_header(header: dict[str, Any]) -> None:
@@ -151,19 +175,23 @@ def validate_header(header: dict[str, Any]) -> None:
                 or set(tail) != BOOTSTRAP_KEYS
                 or type(tail["successor_request_id"]) is not int
                 or tail["successor_step_index"] <= rows[-1]["step_index"]
-                or not isinstance(tail["outcome_probabilities"], list)
-                or not tail["outcome_probabilities"]
                 or tail.get("mu_snapshot_sha256") != header["mu"]["snapshot_sha256"]
                 or type(tail.get("floor")) is not int
                 or tail["floor"] < max(row["floor"] for row in rows)
                 or (rows[-1]["outcome"] or {}).get("terminal") is not None):
             _reject("segment_bootstrap_seal")
+        check_value_distribution(tail["outcome_probabilities"], tail["floor"])
     elif kind == "terminal":
         terminal = seal["terminal"]
         if (not completed or seal["bootstrap"] is not None or seal["truncation"] is not None
                 or not isinstance(terminal, dict) or set(terminal) != {"result", "class", "reward"}
                 or (rows[-1]["outcome"] or {}).get("terminal") != {"result": terminal["result"]}):
             _reject("segment_terminal_seal")
+        label = terminal["class"]
+        if type(label) is not int or not 0 <= label < OUTCOME_CLASSES:
+            _reject("segment_terminal_class")
+        if not all(supported(label, row["floor"]) for row in rows):
+            _reject("terminal_before_observed_floor")
     else:
         truncation = seal["truncation"]
         if (seal["bootstrap"] is not None or seal["terminal"] is not None
@@ -174,6 +202,42 @@ def validate_header(header: dict[str, Any]) -> None:
     forced = sum((row["outcome"] or {}).get("forced_steps", 0) for row in rows)
     if header["forced_steps"] != forced:
         _reject("segment_forced_steps")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return repr(value)
+
+
+@dataclass(frozen=True)
+class RejectedSegment:
+    """A segment the encoder refused, kept as original (never trained, never sent).
+
+    `data` is `stpd/rl-fast-segment-rejected-1`: canonical JSON with the
+    header as the assembler held it (non-JSON values by repr), the error code
+    and every row's exact bytes (base64).
+    """
+
+    segment_id: str
+    header: dict[str, Any]
+    rows: tuple[bytes, ...]
+    error: str
+    kind: str = "rejected"
+    trainable: bool = False
+
+    @property
+    def data(self) -> bytes:
+        return canonical_json({
+            "format": "stpd/rl-fast-segment-rejected-1", "error": self.error,
+            "header": _json_safe(self.header),
+            "rows_base64": [base64.b64encode(row).decode() for row in self.rows]})
 
 
 def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
