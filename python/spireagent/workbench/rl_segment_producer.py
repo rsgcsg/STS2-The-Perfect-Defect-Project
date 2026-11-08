@@ -674,9 +674,21 @@ def fast_instance_admission(row: dict[str, Any], opened: Mapping[str, Any], *,
     once per game) and maps ``game_instance_id`` to ``(actor, intent_id)``; the
     assembler's segments for that instance are keyed by the same id. The reply must
     be ``{"admitted": true, ...}``. Anything else, or a transport failure, raises: the
-    game is closed and never re-attested (it is a non-mutation request, so the
-    connection does not replay it either). The actor sends no fast-chain
-    ``episode_end``.
+    game is closed (censored ``fast_chain_instance_admission_failed:<code>``) and never
+    re-attested (it is a non-mutation request, so the connection does not replay it
+    either). The actor sends no fast-chain ``episode_end``.
+
+    For the learner side (C-SCALE, WP8):
+
+    - ``fast_instance_admission_delivery_failed`` means the outcome is unknown: the
+      request may have been applied and only the reply lost. The learner must handle
+      an instance it attested whose game the actor then closed: such an instance (and
+      any instance the actor never confirms) is treated as truncated, never as a
+      clean attested game.
+    - The environment emits rows and seals segments while this request is in flight
+      (about one segment per 1.5 s). Whether segments sealed before attestation are
+      buffered (bounded) or discarded is the learner's decision; discarding biases
+      the sample against game openings.
     """
     owner = row.get("segment_admission_owner") or {}
     instance = opened.get("game_instance_id")

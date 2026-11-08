@@ -96,8 +96,9 @@ def classify_unknown(status: str, reason: Any = None,
             signal('environment_gap', code)
         if code is not None and (code in FAST_CHAIN_INFRASTRUCTURE_CODES
                                  or code.startswith(FAST_CHAIN_INFRASTRUCTURE_PREFIXES)):
-            signal('infrastructure', code.split(':', 1)[0] if code.startswith(
-                FAST_CHAIN_INFRASTRUCTURE_PREFIXES) else code)
+            prefix = next((item for item in FAST_CHAIN_INFRASTRUCTURE_PREFIXES
+                           if code.startswith(item)), None)
+            signal('infrastructure', prefix[:-1] if prefix is not None else code)
     handoff = codes['handoff_reason']
     if handoff is not None and handoff in INFRASTRUCTURE_HANDOFFS:
         signal('infrastructure', handoff)

@@ -203,7 +203,9 @@ class FastEnvProcess:
             except ProcessLookupError:
                 return True
             except PermissionError:
-                return False
+                # macOS answers EPERM while a killed member is still an unreaped
+                # zombie (reparented to init): still present, keep polling.
+                pass
             time.sleep(0.02)
         return False
 
@@ -476,7 +478,7 @@ class GameManager:
 
     def play(self, reservation: Reservation, *, seed: str,
              initial_progress: Mapping[str, Any] | None, start: EpisodeStart, r7: bool,
-             deadline_seconds: float,
+             deadline_seconds: float, retain_originals: bool = False,
              on_opened: Callable[[Mapping[str, Any]], None] | None = None) -> dict[str, Any]:
         """Open on the reserved slot (the world is already durably offered) and wait.
 
@@ -508,7 +510,8 @@ class GameManager:
                           "slot": game.slot, "game_ref": game.game_ref, "seed": seed,
                           "initial_progress": (dict(initial_progress)
                                                if initial_progress is not None else None),
-                          "start": start.env_start(), "r7": r7})
+                          "start": start.env_start(), "r7": r7,
+                          "retain_originals": retain_originals})
         except (OSError, ValueError):
             # The open may or may not have been read: unknown, and the group is killed.
             self._kill("fast_env_open_delivery_unknown")
@@ -519,8 +522,10 @@ class GameManager:
                        or game.closed is not None, began + self.open_seconds)
             if game.refused is not None:
                 return {"event": "open_refused", **game.refused}
-            if game.closed is not None:
+            if game.closed is not None and game.opened is None:
                 return self._result(game)
+            # A game that opened is attested even if it already closed (a short game
+            # still has segments the learner must be able to account for).
             opened = dict(game.opened) if game.opened is not None else None
             if opened is None:
                 # No answer in time. The registration stays, so a late ``opened`` and
@@ -548,10 +553,14 @@ class GameManager:
             # Keep the slot until close_slot is written, so it can never reach a
             # later game opened on the same slot.
             game.hold_slot = True
+            # The environment ignores (and counts) a close_slot naming another
+            # instance; an open that was never answered has no instance to name.
+            instance = (game.opened or {}).get("game_instance_id")
         # Ask this slot to close at its next boundary.
         with suppress(OSError, ValueError):
             process.send({"cmd": "close_slot", "command_id": f"c{next(self.commands)}",
-                          "slot": game.slot})
+                          "slot": game.slot,
+                          **({"game_instance_id": instance} if instance else {})})
         with self.condition:
             game.hold_slot = False
             if game.closed is not None and not game.fenced:
@@ -646,6 +655,19 @@ class GameManager:
 
 
 # -- ledger executor ---------------------------------------------------------------------
+def retain_originals(row: Mapping[str, Any]) -> bool:
+    """``open.retain_originals``: the old chain's keep-the-original rule at open.
+
+    The same facts ``managed_retention.preservation_route`` uses before any result:
+    every evaluation game, and a training game the open-time 1/``audit_every`` sample
+    chose (``training_audit_selected``, set by learner admission; 5% at 20). Abnormal
+    closes are kept by the environment's sink at close regardless (WP2).
+    """
+    retention = row.get("retention") or {}
+    return (retention.get("purpose") == "evaluation"
+            or row.get("training_audit_selected") is True)
+
+
 _CENSORED = {"stop", "budget", "not_started"}
 
 
@@ -692,8 +714,10 @@ def apply_close(row: dict[str, Any], close: Mapping[str, Any], *, start: Episode
             return
         admission = close.get("instance_admission_failure")
         if admission is not None:
-            # The learner never attested this instance: closed early, its segments are
-            # discarded learner-side (instance_not_attested); never scored or resent.
+            # Closed early; never scored, never resent. Whether the learner attested
+            # the instance is not known here: after a delivery failure it may have
+            # (the reply was lost). The learner treats any instance the actor closed
+            # this way as truncated (FAST_INSTANCE_ADMISSION, C-SCALE WP8).
             row.update(status="censored",
                        reason=f"fast_chain_instance_admission_failed:{admission}",
                        cleanup_accepted=native in {"kept", "replaced"})
@@ -730,9 +754,13 @@ class FastChainEpisodeExecutor:
                  world_offered: Callable[[dict[str, Any]], None] | None = None,
                  instance_opened: Callable[[dict[str, Any], Mapping[str, Any]], None]
                  | None = None,
+                 r7_select: Callable[[], bool] | None = None,
                  reserve_seconds: float = 60) -> None:
         self.configuration, self.manager = configuration, manager
         self.instance_opened = instance_opened
+        # R7 is chosen by the manager before open (``stpd.rl.r7_audit.R7Sampler.select``,
+        # D line); with no sampler wired, no game is R7.
+        self.r7_select = r7_select or (lambda: False)
         # The same frozen starts and progress-lineage check as the old chain (S4).
         self.episode_starts = decode_episode_starts(
             configuration.get("episode_starts", {}),
@@ -793,7 +821,7 @@ class FastChainEpisodeExecutor:
             close = self.manager.play(
                 reservation, seed=row["seed"],
                 initial_progress=self.configuration.get("initial_progress"), start=start,
-                r7=row.get("training_audit_selected") is True,
+                r7=self.r7_select(), retain_originals=retain_originals(row),
                 deadline_seconds=self.episode_seconds + self.manager.bound.seconds,
                 on_opened=(None if hook is None else lambda opened: hook(row, opened)))
         finally:

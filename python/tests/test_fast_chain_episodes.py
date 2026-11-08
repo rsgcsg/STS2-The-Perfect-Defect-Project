@@ -95,6 +95,14 @@ def _play(executor: FastChainEpisodeExecutor, seed: str, checkpoints=None) -> di
     return row
 
 
+def _wait_opened(manager: GameManager, count: int, seconds: float = 10) -> None:
+    """Wait for ``count`` opened games (no wall-clock guess about scheduling)."""
+    deadline = time.monotonic() + seconds
+    while len(manager.instances) < count:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
 def _parallel(executor, seeds: list[str]) -> dict[str, dict]:
     rows: dict[str, dict] = {}
     threads = [threading.Thread(target=lambda s=s: rows.__setitem__(s, _play(executor, s)))
@@ -156,7 +164,7 @@ def test_stop_latency_bound_is_met_by_a_cooperative_process(tmp_path):
                for s in ("a", "b")]
     for thread in threads:
         thread.start()
-    time.sleep(0.5)
+    _wait_opened(manager, 2)
     report = manager.stop()
     for thread in threads:
         thread.join(10)
@@ -175,7 +183,7 @@ def test_stop_latency_bound_exceeded_kills_and_leaves_games_unknown(tmp_path):
                for s in ("a", "b")]
     for thread in threads:
         thread.start()
-    time.sleep(0.5)
+    _wait_opened(manager, 2)
     began = time.monotonic()
     report = manager.stop()
     for thread in threads:
@@ -192,10 +200,10 @@ def test_stop_latency_bound_exceeded_kills_and_leaves_games_unknown(tmp_path):
 
 
 def test_one_native_crash_closes_only_that_game_and_its_slot_is_reused(tmp_path):
-    games = [{"close": {"reason": "unknown", "detail": "native_crash",
-                        "native": "replaced"}, "after": 0.1},
-             {"close": {"reason": "terminal", "terminal": {"result": "defeat"}},
-              "after": 0.6},
+    games = [{"seed": "crash", "close": {"reason": "unknown", "detail": "native_crash",
+                                         "native": "replaced"}, "after": 0.1},
+             {"seed": "other", "close": {"reason": "terminal",
+                                         "terminal": {"result": "defeat"}}, "after": 0.6},
              {"close": {"reason": "terminal", "terminal": {"result": "victory"}},
               "after": 0.1}]
     manager = _manager(tmp_path, 2, games)
@@ -220,9 +228,9 @@ def test_unknown_close_that_keeps_its_native_is_not_accepted_cleanup(tmp_path):
 
 
 def test_one_hung_game_is_fenced_others_finish_then_only_it_is_unknown(tmp_path):
-    games = [{"ignore_close_slot": True},
-             {"close": {"reason": "terminal", "terminal": {"result": "defeat"}},
-              "after": 2.5}]
+    games = [{"seed": "hung", "ignore_close_slot": True},
+             {"seed": "other", "close": {"reason": "terminal",
+                                         "terminal": {"result": "defeat"}}, "after": 2.5}]
     manager = _manager(tmp_path, 2, games)
     short = _executor(manager, episode_seconds=0.2)  # the hung game passes its deadline
     executor = _executor(manager)
@@ -253,7 +261,7 @@ def test_one_hung_game_is_fenced_others_finish_then_only_it_is_unknown(tmp_path)
 
 
 def test_env_crash_makes_its_games_unknown_and_refuses_before_any_new_offer(tmp_path):
-    games = [{"exit_after": 0.3}, {}]
+    games = [{"exit_after": 1.0}, {}]  # both opens land before the crash
     manager = _manager(tmp_path, 2, games)
     executor = _executor(manager)
     rows = _parallel(executor, ["a", "b"])
@@ -543,7 +551,10 @@ def test_m3_opened_without_start_is_refused_on_arrival(tmp_path):
     # Not at the close 30 s later: close_slot goes out as soon as ``opened`` lands.
     assert time.monotonic() - began < 5
     assert (row["status"], row["reason"]) == ("unknown", "first_frame_start_changed")
-    assert [c["cmd"] for c in _commands(tmp_path)] == ["open", "close_slot"]
+    commands = _commands(tmp_path)
+    assert [c["cmd"] for c in commands] == ["open", "close_slot"]
+    # close_slot names the instance it means (the environment ignores any other).
+    assert commands[1]["game_instance_id"] == row["game_instance_id"]
     assert manager.counters["start_mismatch_close_slot"] == 1
     manager.stop()
 
@@ -714,7 +725,7 @@ def test_a_close_slot_never_reaches_the_next_game_on_the_same_slot(tmp_path):
     ({"reason": "unknown", "detail": "stop_latency_bound_exceeded", "synthetic": True},
      "infrastructure", "fast_chain_unknown:stop_latency_bound_exceeded"),
     ({"reason": "unknown", "detail": "env_crash:fast_env_exited:3", "synthetic": True},
-     "infrastructure", "fast_chain_unknown"),
+     "infrastructure", "fast_chain_unknown:env_crash"),
     ({"reason": "weird"}, "infrastructure", "fast_chain_close_reason_invalid"),
     ({"reason": "unknown", "detail": "something_new", "native": "replaced"},
      "unclassified", "no_classifying_fact"),
@@ -735,3 +746,75 @@ def test_offer_event_failure_is_typed_infrastructure():
     value = classify_unknown("unknown", "fast_chain_world_offer_event_failed:RuntimeError")
     assert (value["category"], value["rule"]) == (
         "infrastructure", "fast_chain_world_offer_event_failed")
+
+
+# -- review fixes (REVIEW-PR426-427) -----------------------------------------------------
+def test_s1_a_slot_closing_while_its_close_slot_is_written_is_not_reused_until_written(
+        tmp_path):
+    # Two threads: the game closes on its own while its close_slot write is blocked.
+    # The slot must stay held (no reserve succeeds) until the write returns; without
+    # ``hold_slot`` the reserve below gets the slot and this test fails.
+    games = [{"close": {"reason": "terminal", "terminal": {"result": "victory"}},
+              "after": 0.3},
+             {"close": {"reason": "terminal", "terminal": {"result": "defeat"}}}]
+    manager = _manager(tmp_path, 1, games)
+    assert manager.process is not None
+    real_send = manager.process.send
+    writing, release = threading.Event(), threading.Event()
+
+    def blocking_send(command):
+        if command["cmd"] == "close_slot":
+            writing.set()
+            assert release.wait(10)
+        real_send(command)
+
+    manager.process.send = blocking_send  # type: ignore[method-assign]
+
+    def failing(row, opened):
+        raise BoundaryError("rl_segment", "fast_instance_admission_delivery_failed")
+
+    rows: dict = {}
+    player = threading.Thread(target=lambda: rows.setdefault("a", _play(
+        _executor(manager, before=_owner, instance_opened=failing), "a")))
+    player.start()
+    assert writing.wait(5)
+    deadline = time.monotonic() + 5
+    while not any(g.closed is not None for g in manager.instances.values()):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    with pytest.raises(FastEnvUnavailable, match="no_free_slot"):
+        manager.reserve(0.3)
+    release.set()
+    player.join(10)
+    assert not player.is_alive()
+    assert rows["a"]["reason"].startswith("fast_chain_instance_admission_failed:")
+    second = _play(_executor(manager), "b")
+    assert (second["status"], second.get("observed_result")) == ("finished", "defeat")
+    assert [c["cmd"] for c in _commands(tmp_path)] == ["open", "close_slot", "open"]
+    manager.stop()
+
+
+def test_open_carries_retain_originals_by_the_old_chain_rule_and_r7_from_the_sampler(
+        tmp_path):
+    from spireagent.workbench.fast_chain_episodes import retain_originals
+
+    assert retain_originals({"retention": {"purpose": "evaluation"}}) is True
+    assert retain_originals({"retention": {"purpose": "training"},
+                             "training_audit_selected": True}) is True
+    assert retain_originals({"retention": {"purpose": "training"},
+                             "training_audit_selected": False}) is False
+    manager = _manager(tmp_path, 1, [])
+
+    def sampled(row):
+        row.update(retention={"purpose": "training"}, training_audit_selected=True)
+
+    picks = iter([True, False])
+    executor = FastChainEpisodeExecutor(
+        {"initial_progress": None}, manager=manager, episode_seconds=30,
+        before_world_offer=sampled, r7_select=lambda: next(picks), reserve_seconds=5)
+    _play(executor, "a")
+    _play(_executor(manager), "b")
+    opens = [c for c in _commands(tmp_path) if c["cmd"] == "open"]
+    assert [(c["retain_originals"], c["r7"]) for c in opens] == [(True, True),
+                                                               (False, False)]
+    manager.stop()
