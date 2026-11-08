@@ -140,6 +140,32 @@ class Archive:
         self.filesystem_snapshot: dict[str, Any] = {}
         self.filesystem_checked = 0.0
         self.inventory_snapshot: dict[str, Any] = {}
+        # RL5 OPS-2: a process that only records intents (Friday actors). Its offers
+        # still write the durable pending intent; the copy, its NFS lock and the R2
+        # upload belong to the one shared publisher (publisher.lock: the learner, and
+        # the watcher's final drain), not to hundreds of actor processes.
+        self.intents_only = False
+
+    def defer_to_shared_publisher(self) -> None:
+        with self.lock:
+            if self.thread is not None:
+                raise StoreError("archive_publisher_already_started")
+            self.intents_only = True
+
+    def start_publisher(self) -> bool:
+        """Start this process's publisher loop without an offer (OPS-2: the watcher is
+        the run's dedicated archiver; it takes publisher.lock and serves every intent)."""
+        with self.lock:
+            if self.intents_only:
+                raise StoreError("intent_only_process_cannot_publish")
+            if self.thread is not None:
+                return False
+            (self.queue.root / "publisher.lock").touch(exist_ok=True)
+            self.thread = threading.Thread(target=self._loop,
+                name="shared-store-archive", daemon=True)
+            self.thread.start()
+        self.wake.set()
+        return True
 
     def offer(self, key: str, raw: bytes, *, start: bool = True) -> str:
         safe_key(key)
@@ -153,7 +179,7 @@ class Archive:
             self.owned.add(identity)
             if completed:
                 self.owned_done.add(identity)
-            if start and self.thread is None:
+            if start and not self.intents_only and self.thread is None:
                 (self.queue.root / "publisher.lock").touch(exist_ok=True)
                 self.thread = threading.Thread(target=self._loop,
                     name="shared-store-archive", daemon=True)
@@ -433,7 +459,8 @@ class Archive:
         return {"schema": SCHEMA, "planned": planned, "completed": done,
                 "pending": planned - done, "full_readback": done == planned,
                 "verified_at": verified_at,
-                "last_error": self.last_error, "archive": self.binding}
+                "last_error": self.last_error, "archive": self.binding,
+                **({"publisher": "shared"} if self.intents_only else {})}
 
     def drain(self, *, timeout: float = 120, owned: bool = True) -> dict[str, Any]:
         deadline = time.monotonic() + timeout

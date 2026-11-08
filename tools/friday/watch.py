@@ -3109,6 +3109,17 @@ class SegmentWatcher(Watcher):
                 self.replace_actors(attempt)
         self.persist()
 
+    def start_archiver(self) -> None:
+        """OPS-2: the watcher is the run's one shared-outbox consumer. Actors only record
+        intents (no NFS lock or R2 upload in their hot path); the learner keeps its own
+        node-local outbox. This thread takes publisher.lock and copies every pending
+        intent during the window; the final drain below still runs at the end."""
+        from spireagent.storage.async_archive import ArchivedStore
+
+        if isinstance(self.exchange.store, ArchivedStore):
+            self.exchange.store.archive.start_publisher()
+            self.telemetry('archiver_started', root=str(self.exchange.store.archive.root))
+
     def run(self):
         import secrets
 
@@ -3119,6 +3130,7 @@ class SegmentWatcher(Watcher):
         os.environ[AUTH_ENV] = secrets.token_hex(32)
         for number in (signal.SIGUSR1, signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_: setattr(self, 'signalled', True))
+        self.start_archiver()
         try:
             while True:
                 self.tick_segment()

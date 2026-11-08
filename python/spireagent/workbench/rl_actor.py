@@ -147,6 +147,9 @@ class Actor:
                 or retention["score_eligible"]):
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
+        # OPS-2: no NFS archive lock or R2 upload on the actor's hot path; originals stay
+        # in the shared Store, the learner's publisher and the watcher's drain copy them.
+        self.exchange.defer_archive()
         self.name = configuration["actor"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.name):
             reject("invalid_actor_name")
@@ -427,11 +430,7 @@ class Actor:
         if self.segment_mode:
             summary["local_mu"] = self.actor_pool.scorer.report()
             summary["segment_timing"] = self.actor_pool.timing_report()
-        try:
-            archive = self.exchange.drain_archive()
-        except StoreError as error:
-            archive = self.exchange.archive_status()
-            summary.update(status="archive_incomplete", archive_error=error.code)
+        archive = self.exchange.archive_status()  # intents only: nothing to drain here
         if archive is not None:
             summary["archive"] = archive
         (self.work / "actor-summary.json").write_bytes(json_bytes(summary))
@@ -470,7 +469,8 @@ def main() -> None:
         configuration["actor"] = args.actor
     summary = Actor(configuration, args.work.resolve()).run()
     print(json.dumps({k: summary[k] for k in ("actor", "status", "counts")}))
-    if summary.get("archive", {}).get("full_readback") is False:
+    archive = summary.get("archive", {})
+    if archive.get("full_readback") is False and archive.get("publisher") != "shared":
         raise SystemExit(1)
 
 

@@ -730,3 +730,30 @@ def test_same_budget_deadline_cold_peer_archives_identical_control_bytes(tmp_pat
     assert second.run_deadline(20000, budget_id='two') == 20000
     with pytest.raises(BoundaryError, match='run_deadline_cannot_be_reset'):
         second.run_deadline(20001, budget_id='two')
+
+
+def test_intent_only_actor_leaves_copy_to_the_one_dedicated_archiver(tmp_path):
+    """RL5 OPS-2: an actor process records durable intents only (no thread, no NFS lock,
+    no R2 upload); the watcher's archiver takes publisher.lock and copies every intent
+    with the same full readback. Originals stay in the shared Store throughout."""
+    binding, hot, archive = peers(tmp_path)
+    exchange = Exchange(binding, "intent-only")
+    assert exchange.defer_archive() is True
+    model = publish_model(hot)
+    exchange.publish_model({"run": exchange.run, "version": 0,
+        "model_artifact_id": model.artifact_id, "model_sha256": model.payload("weights").sha256})
+    service = hot.archive
+    assert service.thread is None and service.intents_only
+    status = exchange.archive_status()
+    assert status["publisher"] == "shared" and status["pending"] > 0
+    assert not (Path(binding["directory"]) / ".archive/locks").exists()  # no lock taken
+    with pytest.raises(StoreError, match="intent_only_process_cannot_publish"):
+        service.start_publisher()
+    archiver = Archive(Path(binding["directory"]), binding["archive"])  # watcher process
+    assert archiver.start_publisher() is True and archiver.start_publisher() is False
+    deadline = time.monotonic() + 10
+    while archiver.status()["pending"] and time.monotonic() < deadline:
+        time.sleep(.05)
+    final = archiver.status()
+    assert final["pending"] == 0 and final["full_readback"]
+    assert archive.get_manifest(model.artifact_id).artifact_id == model.artifact_id

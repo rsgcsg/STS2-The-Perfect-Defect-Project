@@ -291,6 +291,11 @@ archive健康消费磁盘可用量、站点usage配额、inode、积压及观察
 model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即删；成功μ发布仅释放本次临时导出
 副本，规范Store不变。完整CP全入R2，本地仅冷却已远端逐字读回的旧payload，保最近3份及评估/
 回滚引用；共享chunk、活reader、未保全数据不删。结束走原archive drain，不靠人工cron。
+共享outbox（`exchange/.archive`）只有一个消费者（RL5 OPS-2）：watcher启动时起archiver线程，持
+`publisher.lock`、在窗口内复制所有pending intent，窗口结束再做最终drain（`archive-final.json`）。
+actor进程只写durable pending intent（`put_if_absent`，不加锁），不起复制线程、不在NFS锁里传R2、
+退出时不drain（summary里`archive.publisher=shared`）；原件一直在共享Store。learner在dataplane下用自己
+节点本地的outbox，不做共享outbox的消费者。
 
 ### 每两小时固定 Managed 评估
 
