@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "b2136d67f8265ac9f7b79595d611bdd0c40eeedb854bab96cca97df6b822ff90",
-    "artifact_sha256": "8e84356501c1073f2e328324037810aae9b299942f2f38a6e4edffd5652e5d0b",
-    "artifact_mvid": "193bd480-fb67-456e-9fb7-8f2abf4b8552",
+    "source_patch_sha256": "33df1bba37dadce2cf10d49829fcfb538f0031f791af2d7fd94b9d439aa263ce",
+    "artifact_sha256": "a6653b7f50b610182d5e41b544af966f2dea5a79cbaa6c113423d94eb30d856c",
+    "artifact_mvid": "09ba5553-218b-40fb-9e09-9db463c7004b",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "91bf09c42a5f57f18087ce01ecfce21ad09daa66b1e78a7f1a3bd07dea5ff0e8",
-        "artifact_sha256": "1c19ed291d74cf930712dd6f7c063e385e0bc2701841cf6a6a2c316b3ddf83c3",
-        "artifact_mvid": "3f4f7498-4691-4a5a-bd54-48872fbe0477",
+        "source_patch_sha256": "fa20093af055eba7ae2a18c4545c9c1a1ddf1fc6423469ac4ea946fb11b480bc",
+        "artifact_sha256": "5061101c604fcc896b678ca3067436778194c1c306c88be4de3e298b4340ff32",
+        "artifact_mvid": "5db5ff66-ab7c-4e25-b1e0-bf8b73fd5bc3",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -535,7 +535,7 @@
       "id": "fast_chain_card_detail_cache",
       "kind": "native_render_result_cache",
       "risk": "medium",
-      "effect": "Under the same fast_chain switch only: a complete card detail render is reused when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile or HoverTips, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders, non-canonical hover cards. Every 64th frame renders live and compares byte for byte; a difference is fatal compact_state_divergence.",
+      "effect": "Under the same fast_chain switch only: the two costly game text calls of a card render (title, and the pile or upgrade-preview description) reuse an earlier live result when a later render of a card has the identical closed key of live public inputs read after the native preflight and preview update (runtime type, mode, pile, combat/pile context, card scalar fields, live keywords, modified costs, every dynamic variable's scalar and preview state). Costs, hover tips, hover cards and text projection are rendered live every time. Excluded and always live: types overriding AddExtraArgsToDescription, GetDescriptionForPile, HoverTips or Title, enchanted/afflicted/targeted cards, capturing delegates, incomplete renders. Every 64th frame renders live and compares; a difference is fatal compact_state_divergence.",
       "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored); Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
     }
   ],

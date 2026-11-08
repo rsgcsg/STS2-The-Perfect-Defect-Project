@@ -17,8 +17,6 @@ public static class NativePublicCardDetails
         public bool Complete => Missing.Length == 0;
         public Dictionary<string, object?> PublicCard => NativePublicCardDetails.ToPublicCard(Card);
         public Dictionary<string, object?>? UpgradePreview { get; init; }
-        // The rendered subject was a readonly canonical card (fast_chain detail cache input).
-        internal bool Canonical { get; init; }
         public Dictionary<string, object?> PublicDetail
         {
             get
@@ -93,9 +91,7 @@ public static class NativePublicCardDetails
         bool addedToPath = false;
         CardModel subject = card;
         string stage = "canonical_copy";
-        bool canonical = false, canonicalHoverCards = true;
-        string? cacheKey = null;
-        Dictionary<string, object?>? served = null;
+        string? cacheKey = null, rawTitle = null, rawDescription = null;
         try
         {
             if (path.Count >= 16 || !(addedToPath = path.Add(card)))
@@ -108,19 +104,20 @@ public static class NativePublicCardDetails
                 if (!NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(card, out CardModel? display, out string? gap)
                     || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
                 card = display;
-                canonical = true;
             }
             stage = "preflight";
             NativeCardRenderTransaction.Run(card, displayPile, () =>
             {
                 stage = "detail_cache";
                 cacheKey = NativeCardDetailCache.Key(card, displayPile, mode);
-                if ((served = NativeCardDetailCache.TryServe(cacheKey)) != null) return true;
+                var served = NativeCardDetailCache.TryServe(cacheKey);
                 stage = "title";
-                visible["name"] = card.Title;
+                visible["name"] = rawTitle = served != null ? served.Title : card.Title;
                 stage = "description";
-                visible["description"] = mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
+                visible["description"] = rawDescription = served != null ? served.Description
+                    : mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
                     : card.GetDescriptionForPile(displayPile, card.CurrentTarget);
+                if (served != null) cacheKey = null;
                 stage = "energy_cost";
                 visible["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
                 stage = "star_cost";
@@ -148,7 +145,6 @@ public static class NativePublicCardDetails
                         Result child = Capture(preview.Card, PileType.None, path);
                         previews.Add(child.Card);
                         if (!child.Complete) missing.Add("native_selector_hover_card_incomplete");
-                        if (!child.Canonical) canonicalHoverCards = false;
                     }
                     else missing.Add("unqualified_native_card_hover_preview");
                 }
@@ -165,7 +161,6 @@ public static class NativePublicCardDetails
                 visible["name"] = null; visible["description"] = null;
                 stage = "preview_update";
             });
-            if (served != null) return new(served, []) { Canonical = canonical };
             stage = "visible_text_projection";
             // Same public text as the Reference surface readers: rich-text tags removed,
             // inline icons as [file.png], description newlines as spaces.
@@ -206,7 +201,7 @@ public static class NativePublicCardDetails
         }
         finally { if (addedToPath) path.Remove(subject); }
         string[] gaps = missing.Distinct(StringComparer.Ordinal).ToArray();
-        if (gaps.Length == 0 && canonicalHoverCards) NativeCardDetailCache.Store(cacheKey, visible);
-        return new(visible, gaps) { Canonical = canonical };
+        if (gaps.Length == 0) NativeCardDetailCache.Store(cacheKey, rawTitle, rawDescription);
+        return new(visible, gaps);
     }
 }

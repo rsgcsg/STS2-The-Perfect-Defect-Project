@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -17,17 +16,22 @@ public sealed class NativeCompactStateDivergenceException(string message) : Exce
 
 /// <summary>
 /// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>), default off. Memoizes the
-/// formatted public card detail of one card render, keyed by a closed set of live public
+/// two costly game text calls of one card render, the title and the pile (or upgrade
+/// preview) description, keyed by a closed set of live public
 /// inputs read AFTER the native preflight and preview update of that render: runtime type,
 /// preview mode, display pile, combat/pile context, every scalar (and scalar collection)
 /// field of the card, its live keywords, modified costs, and every dynamic variable's
 /// scalar state including its preview value. Values are the game's own rendering results
 /// from an earlier live render with an identical key; this class assembles no text.
+/// Everything else (costs, target type, hover tips and hover cards, text projection, gaps)
+/// is rendered live every time: hover tips may read state outside the card, e.g. an
+/// enemy power's countdown. Combat modifiers (strength, dexterity, relics, counters) reach
+/// the description only through variable preview values (in the key) or
+/// AddExtraArgsToDescription (excluded); no card type overrides another description path.
 ///
 /// Not cached (always rendered live): types that override AddExtraArgsToDescription,
-/// GetDescriptionForPile or HoverTips; enchanted or afflicted cards; a card with a current
-/// target; a variable with a non-scalar field or a capturing delegate; any incomplete
-/// render; a render whose hover cards are not canonical.
+/// GetDescriptionForPile, HoverTips or Title; enchanted or afflicted cards; a card with a current
+/// target; a variable with a non-scalar field or a capturing delegate; any incomplete render.
 ///
 /// Reconcile: every 64th headless frame (every frame in shadow mode,
 /// STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW=1) renders everything live and compares it with the
@@ -38,7 +42,7 @@ public static class NativeCardDetailCache
     private const int ReconcilePeriod = 64;
     private const int MaxEntries = 8192;
 
-    public sealed record Entry(Dictionary<string, object?> Visible, string Form);  // Form: exact canonical form
+    public sealed record Entry(string? Title, string? Description);
 
     private static readonly bool Shadow =
         Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW") == "1";
@@ -96,23 +100,23 @@ public static class NativeCardDetailCache
         return key.ToString();
     }
 
-    /// <summary>A stored detail for this key, outside reconcile frames.</summary>
-    internal static Dictionary<string, object?>? TryServe(string? key)
+    /// <summary>The stored title and description for this key, outside reconcile frames.</summary>
+    internal static Entry? TryServe(string? key)
     {
         if (key == null || Reconciling || !Entries.TryGetValue(key, out Entry? entry)) return null;
         Hits++;
-        return Clone(entry.Visible);
+        return entry;
     }
 
-    /// <summary>After a complete live render with canonical hover cards: store it, or compare it.</summary>
-    internal static void Store(string? key, Dictionary<string, object?> visible)
+    /// <summary>After a complete live render: store its title and description, or compare them.</summary>
+    internal static void Store(string? key, string? title, string? description)
     {
-        if (key == null || !Active || !Plain(visible)) return;
-        string json = Canonical(new StringBuilder(512), visible).ToString();
+        if (key == null || !Active) return;
         if (Entries.TryGetValue(key, out Entry? entry))
         {
             Compares++;
-            if (!string.Equals(entry.Form, json, StringComparison.Ordinal))
+            if (!string.Equals(entry.Title, title, StringComparison.Ordinal)
+                || !string.Equals(entry.Description, description, StringComparison.Ordinal))
             {
                 Divergence = "compact_state_divergence: native card detail cache differs from live render for " + key;
                 throw new NativeCompactStateDivergenceException(Divergence);
@@ -120,7 +124,7 @@ public static class NativeCardDetailCache
             return;
         }
         if (Entries.Count >= MaxEntries) Entries.Clear();
-        Entries[key] = new Entry(Clone(visible), json);
+        Entries[key] = new Entry(title, description);
         Stores++;
     }
 
@@ -129,7 +133,7 @@ public static class NativeCardDetailCache
         if (CacheableTypes.TryGetValue(type, out bool value)) return value;
         value = true;
         for (Type? t = type; t != null && t != typeof(CardModel); t = t.BaseType)
-            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile", "get_HoverTips" })
+            foreach (string name in new[] { "AddExtraArgsToDescription", "GetDescriptionForPile", "get_HoverTips", "get_Title" })
                 if (t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
                     .Any(method => method.Name == name)) value = false;
         CacheableTypes[type] = value;
@@ -183,49 +187,5 @@ public static class NativeCardDetailCache
             if (typeof(DynamicVar).IsAssignableFrom(value.GetType()) && field.Name != "_owner") return false;
         }
         return true;
-    }
-
-    private static bool Plain(object? value) => value switch
-    {
-        null or string or bool or int or long or decimal => true,
-        Dictionary<string, object?> map => map.Values.All(Plain),
-        List<Dictionary<string, object?>> list => list.All(Plain),
-        _ => false
-    };
-
-    // Exact, type-tagged, length-prefixed form of a plain render: equal iff the values are equal.
-    private static StringBuilder Canonical(StringBuilder text, object? value)
-    {
-        switch (value)
-        {
-            case null: return text.Append('n');
-            case string s: return text.Append('s').Append(s.Length).Append(':').Append(s);
-            case bool b: return text.Append(b ? 't' : 'f');
-            case int i: return text.Append('i').Append(i.ToString(CultureInfo.InvariantCulture)).Append(';');
-            case long l: return text.Append('l').Append(l.ToString(CultureInfo.InvariantCulture)).Append(';');
-            case decimal d: return text.Append('d').Append(d.ToString(CultureInfo.InvariantCulture)).Append(';');
-            case Dictionary<string, object?> map:
-                text.Append('{').Append(map.Count).Append(':');
-                foreach (var (name, item) in map) Canonical(Canonical(text, name), item);
-                return text.Append('}');
-            case List<Dictionary<string, object?>> list:
-                text.Append('[').Append(list.Count).Append(':');
-                foreach (var item in list) Canonical(text, item);
-                return text.Append(']');
-            default: throw new InvalidOperationException("native_card_detail_cache_unplain_value");
-        }
-    }
-
-    private static Dictionary<string, object?> Clone(Dictionary<string, object?> map)
-    {
-        var copy = new Dictionary<string, object?>(map.Count);
-        foreach (var (name, value) in map)
-            copy[name] = value switch
-            {
-                Dictionary<string, object?> child => Clone(child),
-                List<Dictionary<string, object?>> list => list.Select(Clone).ToList(),
-                _ => value
-            };
-        return copy;
     }
 }
