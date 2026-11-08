@@ -41,7 +41,8 @@ def adapter_identity() -> dict[str, str]:
                      "data.py", "execution.py",
                      "spec.py",
                      "input_order.py", "sampling.py",
-                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
+                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
+                     "inference_service.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
