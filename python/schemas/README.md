@@ -18,6 +18,30 @@ is closed and versioned.
   cache bound to exact corpus, serializer, input profile, and Qwen identity;
 - `training-input-manifest-v1.schema.json`: one content-addressed training-host handoff that
   separates canonical research data from derived model views and caches.
+- `rl-inference-3.schema.json`: the P-REWRITE `fast_chain` wire between a node
+  aggregator and the GPU inference service (`stpd/rl-inference-3`; the old chain keeps
+  `stpd/rl-inference-2`). Rules beyond the schema, executable in
+  `tests/test_prewrite_wp0_contracts.py`:
+  - the service scores and draws a catalog position only; legality stays with the game
+    and Connector, and a score is never resent;
+  - nothing seed-derived reaches the inference side: `game_instance_id` and
+    `sampling.seed` are opaque, never derived from a game seed or world identity and
+    never model input; seed pairing and holdout bookkeeping stay on the environment side;
+  - before a position becomes a BoundAction the environment checks the identity triple
+    (request id, game instance id, catalog sha256), the q vector, the segment mu and
+    `applied` (arm id, decision class, T, eps equal to this game's `episode_open`
+    sampling for that class); any mismatch or `refused` = `not_started`, the game is
+    closed, nothing is retried;
+  - inference timeout (no reply in time) = `not_started` and the game is closed; a reply
+    for a closed game instance (timeout, restart, save load) is counted and discarded;
+    a native action that was sent and not confirmed = `unknown` and the game is closed;
+  - Stop releases control only after every in-flight row resolved (reply or timeout);
+  - mu is fixed within a 64-row segment; the service evicts a mu only when no open
+    segment references it; a segment of a game closed as `not_started`/`unknown` is
+    sealed truncated, kept as original and not given to SGD;
+  - a sealed segment is written to local disk before it is handed to SGD;
+  - `single_choice: omit` (L1) and arms other than `control` change training data and
+    need their own approval; the defaults are `score` and `control`.
 
 Rules:
 
