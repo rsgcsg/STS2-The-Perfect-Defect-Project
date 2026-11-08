@@ -1,0 +1,204 @@
+{
+ "attach": {
+  "aggregator_id": "node-fc430-17",
+  "chain": "fast_chain",
+  "compiler_identity": {
+   "compiler_sha256": "e996bb0ea465fae70d3e3c66b3b6e02d33d2f1eb76d5958720578b6cf359cc2e",
+   "input_spec": {
+    "profile": "synthetic"
+   },
+   "vocabulary_sha256": "0c7e0de28a70f3c4f8d98ff2d64cbfbbe4c49c80a79096f5edc783417d8edc27"
+  },
+  "encoder": {
+   "implementation": "python",
+   "sha256": "9ff94c3eb0c1d350b76101c553e6e70c1178b96fc7fd738182e39e2a3f1b9ebe"
+  },
+  "kind": "attach",
+  "python_env_sha256": "b77349bf1fa9b26d45d545d7d64dad96737e9cfbb3cbb5f5d10fb77b0fcc44ad",
+  "request_id": 1,
+  "row_format": "stpd/rows-v2-row-1",
+  "schema": "stpd/rl-inference-3"
+ },
+ "attached": {
+  "kind": "attached",
+  "max_rows_per_packet": 512,
+  "request_id": 1,
+  "schema": "stpd/rl-inference-3",
+  "service_instance": "svc-a100-0",
+  "training_generation": "gen-1"
+ },
+ "episode_close": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "episode_close",
+  "last_step_index": 3,
+  "reason": "not_started",
+  "request_id": 15,
+  "schema": "stpd/rl-inference-3"
+ },
+ "episode_open_from_save": {
+  "actor_id": "actor-8",
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "episode_open",
+  "request_id": 3,
+  "sampling": {
+   "arm_id": "explore-high",
+   "classes": {
+    "combat": {
+     "temperature": 1.4,
+     "uniform_mix": 0.005
+    },
+    "noncombat": {
+     "temperature": 2.5,
+     "uniform_mix": 0.01
+    }
+   },
+   "mode": "temperature_uniform",
+   "seed": "actor-8"
+  },
+  "schema": "stpd/rl-inference-3",
+  "single_choice": "omit",
+  "start": {
+   "act": 3,
+   "floor": 34,
+   "kind": "from_save",
+   "origin_game_instance_id": "env-1:slot-4:run-2",
+   "save_sha256": "157dca92e4250458339d4b835250d44c238f3355e1b7986195188ee434e9baff"
+  }
+ },
+ "episode_open_new_run": {
+  "actor_id": "actor-7",
+  "game_instance_id": "env-3:slot-1:run-4",
+  "kind": "episode_open",
+  "request_id": 2,
+  "sampling": {
+   "arm_id": "control",
+   "classes": {
+    "combat": {
+     "temperature": 1.0,
+     "uniform_mix": 0
+    },
+    "noncombat": {
+     "temperature": 1.0,
+     "uniform_mix": 0
+    }
+   },
+   "mode": "temperature_uniform",
+   "seed": "actor-7"
+  },
+  "schema": "stpd/rl-inference-3",
+  "single_choice": "score",
+  "start": {
+   "kind": "new_run"
+  }
+ },
+ "score_request": {
+  "kind": "score_request",
+  "packet_id": 5,
+  "rows": [
+   {
+    "catalog_len": 3,
+    "catalog_sha256": "38a5c6d754d3cd8f726bc7ecf7cb875d3fbb97097fdbb8ca4479a90de483f6b8",
+    "consumption_id": "c-40",
+    "floor": 7,
+    "game_instance_id": "env-3:slot-1:run-4",
+    "in_combat": true,
+    "observation_sha256": "c44a2668b044fa0d65c9dfc988494cd1b3e9e9c1b5aba21bd79dd4ce5c6eda2c",
+    "payload": {
+     "length": 20480,
+     "offset": 0,
+     "row_sha256": "0f719b1f3a428a4dd53c61b3bdc5c2ec279c2e6139f160b3bbb8df8e7efdead8"
+    },
+    "request_id": 12,
+    "step_index": 40
+   },
+   {
+    "catalog_len": 2,
+    "catalog_sha256": "268cb41d72ca830e053aa6338d2f627e537c771364370f7d69a737d5b47d8195",
+    "consumption_id": "c-3",
+    "floor": 1,
+    "game_instance_id": "env-3:slot-2:run-9",
+    "in_combat": false,
+    "observation_sha256": "3a7e5a75ffb6134a135441b1fd9a23072303addea66b37472f6f6a2f08353398",
+    "payload": {
+     "length": 18000,
+     "offset": 20480,
+     "row_sha256": "4568437f50f4fba02636d5b089556984a0544019977a130c7fdc2fce24bb4fa0"
+    },
+    "request_id": 13,
+    "step_index": 3
+   }
+  ],
+  "schema": "stpd/rl-inference-3"
+ },
+ "score_response": {
+  "kind": "score_response",
+  "packet_id": 5,
+  "results": [
+   {
+    "applied": {
+     "arm_id": "control",
+     "decision_class": "combat",
+     "temperature": 1.0,
+     "uniform_mix": 0
+    },
+    "behavior_q": [
+     0.25,
+     0.5,
+     0.25
+    ],
+    "catalog_sha256": "38a5c6d754d3cd8f726bc7ecf7cb875d3fbb97097fdbb8ca4479a90de483f6b8",
+    "game_instance_id": "env-3:slot-1:run-4",
+    "mu_snapshot_sha256": "07b888486f8ec285deacf5ec2a521ed235a834539c6b96df0fe9af5e5b752e83",
+    "request_id": 12,
+    "row_in_segment": 40,
+    "segment_id": "seg-g1-1",
+    "selected_index": 1,
+    "selected_q": 0.5,
+    "status": "scored"
+   },
+   {
+    "catalog_sha256": "268cb41d72ca830e053aa6338d2f627e537c771364370f7d69a737d5b47d8195",
+    "error_code": "MU_NOT_RESIDENT",
+    "game_instance_id": "env-3:slot-2:run-9",
+    "request_id": 13,
+    "status": "refused"
+   }
+  ],
+  "schema": "stpd/rl-inference-3"
+ },
+ "step_outcome_completed": {
+  "forced_steps": 0,
+  "game_instance_id": "env-3:slot-1:run-4",
+  "kind": "step_outcome",
+  "public_facts": {
+   "act": 1,
+   "floor": 7,
+   "hp": 52,
+   "max_hp": 80
+  },
+  "receipt_sha256": "4a412169f36d3ceed126c804e8231260c12ed6fb27f782fd4b9cb52677cc30f9",
+  "row_request_id": 12,
+  "schema": "stpd/rl-inference-3",
+  "status": "completed",
+  "step_index": 40,
+  "terminal": null
+ },
+ "step_outcome_not_started": {
+  "game_instance_id": "env-3:slot-2:run-9",
+  "kind": "step_outcome",
+  "reason": "refused",
+  "row_request_id": 13,
+  "schema": "stpd/rl-inference-3",
+  "status": "not_started",
+  "step_index": 3
+ },
+ "step_outcome_unknown": {
+  "game_instance_id": "env-3:slot-1:run-4",
+  "kind": "step_outcome",
+  "reason": "delivery_unknown",
+  "row_request_id": 14,
+  "schema": "stpd/rl-inference-3",
+  "status": "unknown",
+  "step_index": 41
+ }
+}
