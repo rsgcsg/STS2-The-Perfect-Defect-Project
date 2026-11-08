@@ -36,9 +36,11 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
 - the environment's outcome fields are copied unchanged, including `combat_end`,
   which nothing here reads before the Connector fair-projection review;
 - a natural terminal is labelled by `public_terminal_label` (lead decision
-  2026-11-09): the old chain's reward v2 and checked class from public facts
-  only; Bosses cleared = public act advances. A label refused by the class
-  check seals `truncated` (`terminal_label_refused`, counted). Missing
+  2026-11-09): the old chain's `boss_clearance`, `episode_reward` (A0) and
+  `checked_terminal_class`, called directly on public facts only (Bosses
+  cleared = public act advances). A label the old chain refuses seals
+  `truncated` (`terminal_label_refused`, counted); a labeler that breaks its
+  contract seals `truncated` (`terminal_label_invalid`) and raises. Missing
   auxiliary labels never truncate: no auxiliary rows are produced here;
 - `episode_open.audit_retain_mu` (R7 games): every temporary mu such a game's
   segments bind is archived (`mu_archive`, weights bound by sha256) before any
@@ -77,6 +79,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from stpd.p1.trajectory import boss_clearance
+
 from .fast_segment import (
     MAX_ROWS,
     ROW_FORMAT,
@@ -88,7 +92,7 @@ from .fast_segment import (
     sha256,
 )
 from .heads import checked_terminal_class
-from .reward import REWARD_SPEC
+from .reward import episode_reward
 
 OUTCOME_FIELDS = ("status", "reason", "receipt_sha256", "public_facts", "forced_steps",
                   "combat_end", "terminal")
@@ -96,40 +100,36 @@ SINGLE_CHOICE = ("score", "omit")
 TerminalLabeler = Callable[[Mapping[str, Any]], "Mapping[str, Any] | None"]
 MuArchive = Callable[["MuHandoff"], None]
 TERMINAL_RESULTS = {"victory": "win", "defeat": "loss"}
-# Old chain: episode_reward divides by REWARD_SPEC finish_floors[ascension] and
-# checked_terminal_class accepts only the 48-floor (A0) class table, so only A0
-# terminals are labelled there; the inference side does not know the ascension.
-LABEL_FINISH_FLOOR = REWARD_SPEC["finish_floors"]["0"]
-
-
-def public_bosses_cleared(acts: list[int]) -> int:
-    """Old chain `boss_clearance` restricted to its public act-advance witness."""
-    cleared: set[int] = set()
-    previous = None
-    for act in acts:
-        if previous is not None and act == previous + 1 and previous not in cleared:
-            cleared.add(previous)
-        previous = act
-    return len(cleared)
+# The fast chain serves A0 only (lead decision 2026-11-09); the gate is WP7's
+# (actor side, ascension != 0 refused at game open). The inference side does not
+# know the ascension, and the old chain's class table is the A0 one.
+LABEL_ASCENSION = 0
 
 
 def public_terminal_label(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Reward v2 and its checked class from public facts (no combat_end, no Store).
+    """The old chain's label path, called directly, on public facts only.
 
-    Same arithmetic as `reward.episode_reward` + `heads.checked_terminal_class` on
-    the old chain: win = 1; loss = 0.5 * min(floor / 48, 1) ** 2 + 0.1 * Bosses,
-    with the Golden Compass floor-35 class told apart by the act advances.
-    Raises ValueError when the class check refuses the reward.
+    `trajectory.boss_clearance` over the public act sequence (its act-advance
+    witness) -> `reward.episode_reward` for an A0 natural terminal ->
+    `heads.checked_terminal_class`. No combat_end, no Store. Raises ValueError
+    when the old chain gives no reward or its class check refuses it.
     """
-    result = TERMINAL_RESULTS[context["result"]]
-    floor = context["max_floor"]
-    if result == "win":
-        reward = float(REWARD_SPEC["win"])
-    else:
-        reward = REWARD_SPEC["loss_floor_scale"] * min(floor / LABEL_FINISH_FLOOR, 1.0) ** 2
-        reward += REWARD_SPEC["boss_bonus"] * public_bosses_cleared(list(context["acts"]))
-    return {"class": checked_terminal_class(result=result, floor=floor, reward=reward),
-            "reward": reward}
+    result = TERMINAL_RESULTS.get(str(context.get("result")))
+    floor, acts = context.get("max_floor"), context.get("acts")
+    if result is None or type(floor) is not int or not isinstance(acts, list):
+        raise ValueError("terminal_label_context")
+    observations = [{"index": index, "observation": {"run": {"content": {"act": act}}}}
+                    for index, act in enumerate(acts)]
+    reward, disposition = episode_reward({
+        "identity": {"ascension": LABEL_ASCENSION},
+        "outcome": {"status": "finished", "unknown": False,
+                    "terminal": {"status": "observed", "result": result},
+                    "max_observed_floor": floor,
+                    "boss_clearance": boss_clearance(observations)}})
+    if reward is None or disposition != result:
+        raise ValueError(f"terminal_reward_{disposition}")
+    return {"class": checked_terminal_class(result=disposition, floor=floor, reward=reward),
+            "reward": float(reward)}
 
 
 class AssemblyError(ValueError):
@@ -412,18 +412,38 @@ class FastSegmentAssembler:
                     or set(sampling.get("classes") or {}) != {"combat", "noncombat"}):
                 raise AssemblyError("invalid_episode_open")
             start = copy.deepcopy(dict(message["start"]))
-            first_act = start.get("act", 1) if start.get("kind") == "from_save" else 1
-            if type(first_act) is not int or first_act < 1:
+            if start.get("kind") == "from_save":
+                # rl-inference-3 requires both: never a default act (a made-up Boss witness).
+                first_act, first_floor = start.get("act"), start.get("floor")
+                if (type(first_act) is not int or first_act < 1
+                        or type(first_floor) is not int or first_floor < 0):
+                    raise AssemblyError("invalid_episode_open")
+            elif start.get("kind") == "new_run":
+                first_act, first_floor = 1, 0
+            else:
                 raise AssemblyError("invalid_episode_open")
+            if audit and self.mu_archive is None:
+                raise AssemblyError("audit_mu_archive_unconfigured")
             game = _Game(instance, str(message["actor_id"]), copy.deepcopy(dict(sampling)),
                          str(message["single_choice"]), start, audit, acts=[first_act])
-            if type(start.get("floor")) is int:
-                game.max_floor = start["floor"]
+            game.max_floor = first_floor
             self.games[instance] = game
-            current = self.ledger.latest
-        if audit and current is not None:
-            # A mu offered from now on is archived by offer_mu before it can be bound.
-            self._archive(current)
+        if not audit:
+            return
+        # A mu offered from now on is archived by offer_mu before it can be bound;
+        # one that arrived while this game was opening is archived here.
+        try:
+            while True:
+                with self.lock:
+                    current = self.ledger.latest
+                    if current is None or _archive_key(current) in self.archived:
+                        return
+                self._archive(current)
+        except BaseException:
+            with self.lock:  # a failed open leaves no game behind
+                if self.games.get(instance) is game and not game.segments:
+                    del self.games[instance]
+            raise
 
     def begin_row(self, row: Mapping[str, Any], row_bytes: bytes) -> RowPlan:
         """Bind a request row to its segment and mu before the forward pass."""
@@ -643,6 +663,7 @@ class FastSegmentAssembler:
         if game.inflight is not None:
             game.segments[-1].inflight = False
             game.inflight, game.pending = None, None
+        broken: BaseException | None = None
         for segment in list(game.segments):
             if not segment.rows:
                 game.segments.remove(segment)
@@ -653,9 +674,15 @@ class FastSegmentAssembler:
                     and segment.terminal is not None and segment.completed()):
                 try:
                     label = self._label(game, segment)
-                except ValueError as error:
+                except AssemblyError as error:  # labeler broke its contract: loud
+                    broken = broken or error
+                    segment.doomed = ("terminal_label_invalid", str(error))
+                except ValueError as error:  # the old chain refused the label
                     self.counters["terminal_label_refused"] += 1
                     segment.doomed = ("terminal_label_refused", str(error))
+                except Exception as error:  # noqa: BLE001 - original kept, then raised
+                    broken = broken or error
+                    segment.doomed = ("terminal_label_invalid", type(error).__name__)
                 else:
                     if label is not None:
                         sealed.append(self._seal(game, segment, "terminal", terminal=label))
@@ -664,6 +691,8 @@ class FastSegmentAssembler:
             cause = segment.doomed or (reason, game.failure or reason)
             sealed.append(self._seal(game, segment, "truncated",
                                      truncation={"reason": cause[0], "detail": cause[1]}))
+        if broken is not None:
+            raise broken
 
     def report(self) -> dict[str, Any]:
         with self.lock:

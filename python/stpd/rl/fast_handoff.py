@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import secrets
 import threading
 from collections.abc import Callable
 from multiprocessing import resource_tracker, shared_memory
@@ -76,8 +77,12 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _durable_write(target: Path, data: bytes, conflict: str) -> None:
-    """Temporary file, fsync, rename, directory fsync; never overwrites."""
-    temporary = target.with_name("." + target.name + ".tmp")
+    """Temporary file, fsync, rename, directory fsync; never overwrites.
+
+    The temporary name is unique per write, so a crash leftover (kept, never an
+    original: only a renamed file is) never blocks a later write of the target.
+    """
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         view = memoryview(data)
@@ -136,16 +141,25 @@ class DurableMuArchive:
     Archiving the same mu again is a no-op; a different identity or byte digest
     under the same snapshot and generation is a loud conflict. Kept with the R7
     originals.
+
+    `snapshot_of(weights)` recomputes the snapshot identity from the pushed bytes
+    (`segment_learner` digests weights, heads and numerical settings; the pushed
+    format is WP4's). It is required: bytes that are not that snapshot are
+    refused on write and on read, never archived "correctly" under its name.
     """
 
-    def __init__(self, root: Path | str) -> None:
-        self.root = Path(root) / "mu"
+    def __init__(self, root: Path | str, *, snapshot_of: Callable[[bytes], str]) -> None:
+        if not callable(snapshot_of):
+            raise HandoffError("mu_archive_requires_snapshot_check")
+        self.root, self.snapshot_of = Path(root) / "mu", snapshot_of
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def manifest(self, handoff: Any) -> bytes:
         weights = handoff.weights
         if not isinstance(weights, bytes):
             raise HandoffError("mu_archive_weights_missing")
+        if self.snapshot_of(weights) != handoff.snapshot_sha256:
+            raise HandoffError("mu_archive_weights_not_snapshot")
         return canonical_json({"schema": MU_ARCHIVE_SCHEMA, "mu": handoff.identity(),
                                "weights_sha256": sha256(weights), "size": len(weights)})
 
@@ -172,16 +186,22 @@ class DurableMuArchive:
     def read(self, snapshot_sha256: str,
              training_generation: str) -> tuple[dict[str, Any], bytes]:
         """(mu identity, weights) for the R7 replay; verified, never repaired."""
-        manifest = json.loads(self._manifest_path(snapshot_sha256,
-                                                  training_generation).read_bytes())
-        weights = (self.root / (snapshot_sha256 + ".weights")).read_bytes()
-        if (manifest.get("schema") != MU_ARCHIVE_SCHEMA
-                or manifest["mu"]["snapshot_sha256"] != snapshot_sha256
-                or manifest["mu"]["training_generation"] != training_generation
-                or manifest["weights_sha256"] != sha256(weights)
-                or manifest["size"] != len(weights)):
+        try:
+            manifest = json.loads(self._manifest_path(snapshot_sha256,
+                                                      training_generation).read_bytes())
+            weights = (self.root / (snapshot_sha256 + ".weights")).read_bytes()
+            mu = manifest["mu"]
+            valid = (manifest.get("schema") == MU_ARCHIVE_SCHEMA
+                     and mu["snapshot_sha256"] == snapshot_sha256
+                     and mu["training_generation"] == training_generation
+                     and manifest["weights_sha256"] == sha256(weights)
+                     and manifest["size"] == len(weights)
+                     and self.snapshot_of(weights) == snapshot_sha256)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise HandoffError("mu_archive_mismatch") from error
+        if not valid:
             raise HandoffError("mu_archive_mismatch")
-        return manifest["mu"], weights
+        return mu, weights
 
 
 class ShmSegmentSender:
