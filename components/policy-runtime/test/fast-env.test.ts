@@ -39,6 +39,8 @@ interface NativeHooks {
   receiptReasonCode?: (step: number) => string | null;
   /** From this native step on, every capture shows a settling snapshot. */
   settlingAfterStep?: number;
+  /** Called when the process asks the native for its CPU time. */
+  onCpuRead?: () => void;
 }
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
@@ -99,7 +101,7 @@ class FakeNative implements SlotNative {
     if (listener) for (const line of buffered) listener(line);
   }
   frame() { return this.hooks.compactLines ? { episode_instance: "fake", seq: this.source.steps, objects_root_sha256: "b".repeat(64), line_sha256: "c".repeat(64) } : null; }
-  async nativeCpuMs() { return null; }
+  async nativeCpuMs() { this.hooks.onCpuRead?.(); return 1; }
   async shutdown(force: boolean) { this.shutdowns.push(force); await this.source.close(); }
 }
 
@@ -477,22 +479,33 @@ describe("fast-env failure paths", () => {
     expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
   };
 
-  it("a capture that fails on a compact-divergent native: row unknown/compact_state_divergence, game not_started, native replaced, build output stopped", async () => {
+  it("a delivered action whose successor frame diverges: row and game unknown/compact_state_divergence, native replaced, build output stopped", async () => {
     const h = await harness({ hooks: () => ({ captureThrows: capture => capture === 2, taintReason: () => "compact_state_divergence" }) });
     h.open(0);
     const closed = await h.next(event => event.event === "closed");
-    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "unknown" })]);
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
     await expectBuildStopped(h);
   });
 
-  it("a receipt carrying reason_code compact_state_divergence ends the game the same way", async () => {
+  it("a delivered receipt carrying reason_code compact_state_divergence ends the game the same way (unknown)", async () => {
     const h = await harness({ hooks: () => ({ terminalAfter: 5, receiptReasonCode: () => "compact_state_divergence" }) });
     h.open(0);
     const closed = await h.next(event => event.event === "closed");
-    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
+    await expectBuildStopped(h);
+  });
+
+  it("a divergence before any action of the game is not_started (no outcome in question), native replaced, build output stopped", async () => {
+    const h = await harness({ hooks: () => ({ captureThrows: capture => capture === 1, taintReason: () => "compact_state_divergence" }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 0, decisions: 0 });
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([]);
+    expect(h.natives[0]!.source.steps).toBe(0);
     await expectBuildStopped(h);
   });
 
@@ -528,6 +541,24 @@ describe("fast-env failure paths", () => {
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "native_crash" })]);
     expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "unknown" })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
+  });
+
+  it("status never reads native metrics during a game (one request at a time on the Host channel)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    const h = await harness({ hooks: () => ({ stepGate: () => gate, onCpuRead: () => { reads += 1; } }) });
+    h.open(0);
+    await h.next(event => event.event === "opened");
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).slots).toEqual([expect.objectContaining({ state: "running", native_cpu_ms: null })]);
+    expect(reads).toBe(0);
+    release();
+    await h.next(event => event.event === "closed");
+    h.send({ cmd: "status" });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(h.events.filter(event => event.event === "status").at(-1).slots).toEqual([expect.objectContaining({ state: "idle", native_cpu_ms: 1 })]);
+    expect(reads).toBe(1);
   });
 
   it("close_slot for another game or an idle slot is ignored and counted; the matching one stops the game; open clears it", async () => {

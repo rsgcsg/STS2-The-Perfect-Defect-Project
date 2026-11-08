@@ -495,10 +495,12 @@ export class SlotKernel {
       ({ reason, detail } = end);
       replace = end.options.replaceNative === true || native.taint().tainted;
       // Delivered, then no readable successor (settling stalled, incomplete capture, capacity,
-      // missing facts): the effect is not known, so the game is unknown and the native goes.
-      // A compact divergence stays not_started: it stops this build's output loudly instead.
-      if (game.awaitingSuccessor && reason === "not_started" && detail !== "compact_state_divergence") {
-        reason = "unknown"; detail = `delivered_successor_unreadable:${detail}`; replace = true;
+      // missing facts, or a successor frame that diverged): the effect is not known, so the
+      // game is unknown and the native goes. A divergence before any delivered action (no
+      // action's outcome is in question) stays not_started; both stop this build's output.
+      if (game.awaitingSuccessor && reason === "not_started") {
+        reason = "unknown"; replace = true;
+        if (detail !== "compact_state_divergence") detail = `delivered_successor_unreadable:${detail}`;
       }
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
     }
@@ -532,7 +534,9 @@ export class SlotKernel {
     if (native) await native.shutdown(false).catch(() => native.shutdown(true).catch(() => undefined));
   }
 
-  async nativeCpuMs(): Promise<number | null> { return this.#native ? this.#native.nativeCpuMs() : null; }
+  /** Only between games: the Host's native channel carries one request at a time, so a
+   * metrics read during a game would collide with a step and make its delivery unknown. */
+  async nativeCpuMs(): Promise<number | null> { return this.#native && this.state === "idle" ? this.#native.nativeCpuMs() : null; }
 }
 
 export { ResponseBinding };
