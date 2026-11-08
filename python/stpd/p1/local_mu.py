@@ -260,7 +260,10 @@ class RemoteMuScorer:
         # scorer never reads a model from them.
         self.exchange, self.cache_root = exchange, cache_root
         self.node_cache: NodeMuCache | None = None
+        # Snapshots this service instance (pool_id) has loaded for us. A
+        # service restart has a new pool_id, so nothing carries over.
         self.adopted: set[str] = set()
+        self.adopted_pool: str | None = None
         # Scores do not wait for commits or grants. One actor-owned, serialized
         # score channel can therefore serve policy and old-mu tails without
         # opening/authenticating a new TCP connection for every row. Control
@@ -286,23 +289,40 @@ class RemoteMuScorer:
                 # Reconnect via the original rendezvous on the next new request;
                 # no outstanding or unknown score is resent.
                 self.remote.close()
-            if self.service and key not in self.adopted:
-                # One owned load request per new mu. A lost reply is not
-                # resent: this begin fails and the World follows normal Stop.
-                try:
-                    loaded = self.remote.request("adopt", identity=identity)
-                except BaseException:
-                    self.remote.close()
-                    raise
-                if loaded.get("snapshot_sha256") != key:
-                    raise ValueError("inference_service_adopted_other_mu")
-                self.adopted.add(key)
+            if self.service:
+                self._service_adopt(identity)
             self.identities = {k: v for k, v in self.identities.items()
                                if k == key or self.references.get(k, 0)}
             self.adopted &= set(self.identities) | {key}
             self.identities[key] = copy.deepcopy(identity)
             if retain:
                 self.references[key] = self.references.get(key, 0) + 1
+
+    def _service_adopt(self, identity: dict[str, Any]) -> None:
+        """One owned load request per (service instance, mu); caller holds score_lock.
+
+        A lost reply is not resent: the caller's begin/score fails and the
+        World follows normal Stop. A later, independent request may adopt again.
+        """
+        from spireagent.json_boundary import BoundaryError
+
+        remote = self.remote
+        try:
+            if remote.connection is None:
+                remote._connect()  # rereads the service rendezvous (new pool on restart)
+            if remote.attachment.get("pool_id") != self.adopted_pool:
+                self.adopted, self.adopted_pool = set(), remote.attachment.get("pool_id")
+            key = identity["snapshot_sha256"]
+            if key in self.adopted:
+                return
+            loaded = remote.request("adopt", identity=identity)
+        except BaseException:
+            remote.close()
+            raise
+        if loaded.get("snapshot_sha256") != key:
+            remote.close()
+            raise BoundaryError("rl_mu", "INFERENCE_SERVICE_ADOPTED_OTHER_MU")
+        self.adopted.add(key)
 
     def retain_mu(self, snapshot_sha256: str) -> None:
         with self.lock:
@@ -328,6 +348,10 @@ class RemoteMuScorer:
                 raise ValueError("actor_mu_owner_closed")
             remote = self.remote
             try:
+                if self.service:
+                    # After a service restart or eviction this is a fresh load
+                    # request for the named mu, not a resend of any score.
+                    self._service_adopt(self.identities[snapshot_sha256])
                 if not policy:
                     # A tail may outlive a learner. Read its generation before
                     # asking for values; never substitute a replacement's mu.
@@ -352,9 +376,11 @@ class RemoteMuScorer:
                 scored = MuScore(snapshot_sha256,
                     tuple(result["scores"]) if policy else None,
                     tuple(result["outcome_probabilities"]))
-            except BaseException:
+            except BaseException as error:
                 # Preserve the old context-manager cleanup on every failure,
                 # including malformed or mismatched replies. Never resend it.
+                if getattr(error, "code", None) == "MU_NOT_RESIDENT":
+                    self.adopted.discard(snapshot_sha256)
                 remote.close()
                 raise
         with self.lock:
@@ -364,6 +390,7 @@ class RemoteMuScorer:
     def report(self) -> dict[str, Any]:
         with self.lock:
             return {"backend": "service" if self.service else "central",
+                    "device": self.attachment.get("inference_stream", {}).get("device"),
                     "requests": self.requests, "retained": dict(self.references)}
 
     def close(self) -> None:

@@ -553,6 +553,9 @@ class CentralInferencePool(LocalInferencePool):
                 # Never synchronize the training/default stream or the device.
                 self.cuda_stream.synchronize()
 
+    def _touch(self, key: str) -> None:
+        """Score-time use hook (under model_lock); the learner pool needs none."""
+
     def publish(self, model: Any, identity: dict[str, Any]) -> None:
         if any(parameter.requires_grad for parameter in model.parameters()):
             raise ValueError("RL_inference_requires_immutable_snapshot")
@@ -604,6 +607,8 @@ class CentralInferencePool(LocalInferencePool):
                         key = value["snapshot_sha256"]
                         with self.model_lock:
                             model = self.models.get(key)
+                            if model is not None:
+                                self._touch(key)
                         if model is None:
                             from spireagent.json_boundary import BoundaryError
 
