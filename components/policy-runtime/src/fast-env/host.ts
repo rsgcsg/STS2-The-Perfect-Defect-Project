@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { verifyPublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
 import { canonicalJson } from "../evidence.js";
 import type { FastEnvConfig } from "./contracts.js";
+import type { FastFrameRef } from "./evidence-sink.js";
 
 /**
  * One slot's native game, driven in-process through the Host's own driver
@@ -25,6 +26,11 @@ export interface SlotNative {
   /** Gives control back between games. */
   release(): Promise<void>;
   taint(): { tainted: boolean; reason: string | null };
+  /** Evidence: receives every compact line of the current episode in order, starting
+   * with the lines read while it was mounted; null detaches. No-op without compact output. */
+  attachLines(listener: ((line: string) => void) | null): void;
+  /** The last compact frame read (the state a step is bound to); null without compact output. */
+  frame(): FastFrameRef | null;
   nativeCpuMs(): Promise<number | null>;
   shutdown(force: boolean): Promise<void>;
 }
@@ -68,12 +74,40 @@ async function loadHost(hostPackage: string): Promise<HostModules> {
 class HostSlotNative implements SlotNative {
   #control: { token: string; epoch: number } | null = null;
   #continuity: string | null = null;
-  constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>) {}
+  #lines: string[] = [];
+  #listener: ((line: string) => void) | null = null;
+  #last: { line: string; episode_instance: string; seq: number; objects_root_sha256: string; sha?: string } | null = null;
+  constructor(private readonly started: any, private readonly driver: InstanceType<HostModules["ManagedPeDriverSession"]>) {
+    started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
+      if (typeof line !== "string") return;
+      this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
+      if (this.#listener) this.#listener(line); else this.#lines.push(line);
+    };
+  }
+
+  /** A new episode starts with an empty line buffer and no listener. */
+  #beginEpisode(): void { this.#lines = []; this.#listener = null; this.#last = null; }
+
+  attachLines(listener: ((line: string) => void) | null): void {
+    this.#listener = listener;
+    if (!listener) { this.#lines = []; return; }
+    const buffered = this.#lines;
+    this.#lines = [];
+    for (const line of buffered) listener(line);
+  }
+
+  frame(): FastFrameRef | null {
+    const last = this.#last;
+    if (!last) return null;
+    last.sha ??= createHash("sha256").update(last.line, "utf8").digest("hex");
+    return { episode_instance: last.episode_instance, seq: last.seq, objects_root_sha256: last.objects_root_sha256, line_sha256: last.sha };
+  }
 
   get runtimeInstanceId(): string { return this.started.runtime.adapterRuntimeInstanceId; }
 
   async reset(input: { seed: string; initialProgress: Record<string, unknown> | null; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
+    this.#beginEpisode();
     await this.driver.handle({ command: "reset", request_id: rid(), seed: input.seed,
       ...(input.initialProgress ? { initial_progress: input.initialProgress } : {}),
       ...(input.r7 ? { compact_check_all: true } : {}),
@@ -83,6 +117,7 @@ class HostSlotNative implements SlotNative {
 
   async loadSave(input: { save: Record<string, unknown>; r7: boolean }): Promise<NativeEpisode> {
     if (this.#control) await this.release();
+    this.#beginEpisode();
     await this.driver.handle({ command: "load_map", request_id: rid(), save: input.save,
       ...(input.r7 ? { compact_check_all: true } : {}),
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: null }, MANAGER);

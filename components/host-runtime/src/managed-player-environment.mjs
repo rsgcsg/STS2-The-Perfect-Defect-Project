@@ -2844,6 +2844,7 @@ export class ManagedPlayerEnvironmentSession {
   #compactInstance = null;
   #compactCheckAll = false;
   #compactInstances = new Set();
+  #compactLineTap = null;
 
   constructor({
     process,
@@ -2877,6 +2878,13 @@ export class ManagedPlayerEnvironmentSession {
   }
 
   /** How the native says the current compact instance began (its first full frame's `start`); null on the old chain. */
+  /** Evidence hook (fast_chain): called with the exact emitted line of every compact
+   * frame, before it is checked, so a diverging frame reaches the originals too. */
+  set compactLineTap(listener) {
+    if (listener != null && typeof listener !== "function") throw new TypeError("compactLineTap must be a function or null");
+    this.#compactLineTap = listener ?? null;
+  }
+
   get episodeStart() {
     return this.#compactInstance?.reconstructor.start ?? null;
   }
@@ -3235,6 +3243,7 @@ export class ManagedPlayerEnvironmentSession {
 
   #compactState(frame, { startsInstance }) {
     const started = performance.now();
+    this.#compactLineTap?.(frame[RAW_LINE] ?? null, frame);
     if (frame.frame === "full") {
       if (!startsInstance) throw new CompactStateDivergence("unexpected_full_frame");
       // The native says how this instance began; it must be what was asked, under a fresh instance id.

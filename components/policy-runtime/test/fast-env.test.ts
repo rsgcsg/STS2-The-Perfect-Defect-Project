@@ -13,7 +13,7 @@ import { GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { FastEnvProcess, requireFastEnvManifest } from "../src/fast-env/process.js";
 import { StreamDecisionLink } from "../src/fast-env/link.js";
 import { ResponseBinding } from "../src/fast-env/binding.js";
-import { MinimalJsonlEvidenceSink } from "../src/fast-env/evidence-sink.js";
+import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
 import type { NativeEpisode, SlotNative, SlotNativeFactory } from "../src/fast-env/host.js";
@@ -30,6 +30,8 @@ interface NativeHooks {
   captureThrows?: (capture: number) => boolean;
   stepGate?: () => Promise<void>;
   resetThrows?: boolean;
+  /** Emit a fake compact line on every mount and step (evidence tap). */
+  compactLines?: boolean;
 }
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
@@ -48,6 +50,8 @@ class FakeNative implements SlotNative {
   get runtimeInstanceId() { return this.source.capabilities.host.runtime_instance_id as string; }
   async reset(): Promise<NativeEpisode> {
     if (this.hooks.resetThrows) throw new Error("fixture_reset_failed");
+    this.#lines = []; this.#listener = null;
+    this.#line('{"frame":"full","seq":0}');
     this.source.basis = p1Fixture("synthetic-complete-combat");
     this.source.steps = 0;
     this.source.terminalAfterStep = (this.hooks.terminalAfter ?? 1) <= 1;
@@ -69,10 +73,21 @@ class FakeNative implements SlotNative {
     if (this.hooks.stepThrows?.(step)) throw new Error("fixture_native_lost");
     this.source.delivery = this.hooks.delivery?.(step) ?? "delivered";
     this.source.terminalAfterStep = step >= (this.hooks.terminalAfter ?? 1);
-    return this.transport.step(input, { timeoutMs: 2000 });
+    const receipt = await this.transport.step(input, { timeoutMs: 2000 });
+    this.#line(`{"frame":"delta","seq":${step}}`);
+    return receipt;
   }
   async release() { await this.transport.release(); }
   taint() { return { tainted: false, reason: null }; }
+  #lines: string[] = [];
+  #listener: ((line: string) => void) | null = null;
+  #line(text: string) { if (!this.hooks.compactLines) return; if (this.#listener) this.#listener(text); else this.#lines.push(text); }
+  attachLines(listener: ((line: string) => void) | null) {
+    this.#listener = listener;
+    const buffered = this.#lines; this.#lines = [];
+    if (listener) for (const line of buffered) listener(line);
+  }
+  frame() { return this.hooks.compactLines ? { episode_instance: "fake", seq: this.source.steps, objects_root_sha256: "b".repeat(64), line_sha256: "c".repeat(64) } : null; }
   async nativeCpuMs() { return null; }
   async shutdown(force: boolean) { this.shutdowns.push(force); await this.source.close(); }
 }
@@ -90,7 +105,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup().catch(() => undefined); });
 
 async function harness(options: { slots?: number; hooks?: (index: number) => NativeHooks; policy?: Policy; timeoutMs?: number;
-  edit?: (config: any) => void } = {}) {
+  edit?: (config: any) => void; sink?: (directory: string) => FastEvidenceSink } = {}) {
   const natives: FakeNative[] = [];
   let created = 0;
   const probe = await new FakeNative(-1, {}).init();
@@ -126,7 +141,7 @@ async function harness(options: { slots?: number; hooks?: (index: number) => Nat
   const commands = new PassThrough();
   const events: any[] = [];
   const waiters: { match: (event: any) => boolean; resolve: (event: any) => void }[] = [];
-  proc = new FastEnvProcess({ config, manifest, factory, link, evidence: new MinimalJsonlEvidenceSink(config.evidence.directory), commands,
+  proc = new FastEnvProcess({ config, manifest, factory, link, evidence: options.sink?.(config.evidence.directory) ?? new MinimalJsonlEvidenceSink(config.evidence.directory), commands,
     write: line => { const event = JSON.parse(line); events.push(event);
       for (const waiter of [...waiters]) if (waiter.match(event)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(event); } },
     sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 5))) });
@@ -216,7 +231,7 @@ describe("fast-env K-game process", () => {
       receipt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/u), public_facts: { act: 1, floor: 4, hp: 0, max_hp: 75 }, terminal: { result: "defeat" } })]);
     expect(linkOf(h.linkMessages, "episode_close", gid)).toEqual([expect.objectContaining({ reason: "terminal", last_step_index: 0 })]);
     const evidence = (await readFile(closed.evidence_dir, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(evidence.map(record => record.kind)).toEqual(["game_open", "decision", "native_step", "step_outcome", "game_close"]);
+    expect(evidence.map(record => record.kind)).toEqual(["game_open", "step", "boundary", "game_close"]);
     h.send({ cmd: "stop" });
     expect(await h.exit).toBe(0);
     expect(h.events.at(-1)).toMatchObject({ event: "stopped", games_closed: 1 });
@@ -355,6 +370,52 @@ describe("fast-env K-game process", () => {
     expect(opened).toMatchObject({ start: { kind: "from_save", save_sha256: save.sha256 }, native: "started" });
     expect(h.natives[0]!.shutdowns).toEqual([true]);
     expect(linkOf(h.linkMessages, "episode_open", opened.game_instance_id)[0].start).toEqual({ kind: "from_save", save_sha256: save.sha256, act: 2, floor: 18 });
+  });
+
+  it("hands WP6 one typed record per acted choice, boundaries, the compact lines and one close", async () => {
+    const calls: any[] = [];
+    const sink = (): FastEvidenceSink => ({ openGame(meta: FastGameMeta) {
+      calls.push(["open", meta]);
+      return { nativeLine: line => calls.push(["line", line]), step: record => calls.push(["step", record]),
+        async segmentBoundary(range) { calls.push(["boundary", range]); },
+        async close(closed) { calls.push(["close", closed]); return "locator"; } };
+    } });
+    const h = await harness({ sink, hooks: () => ({ terminalAfter: 3, compactLines: true }), edit: config => { config.evidence.boundary_rows = 2; config.compact.enabled = true; } });
+    h.open(0, { r7: true, retain_originals: true });
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 3, evidence_dir: "locator" });
+    const kinds = calls.map(([kind]) => kind);
+    // The mount's full frame (buffered until open), then each step's successor line before that step's record.
+    expect(kinds).toEqual(["open", "line", "line", "step", "line", "step", "boundary", "line", "step", "boundary", "close"]);
+    expect(calls.filter(([kind]) => kind === "line").map(([, line]) => JSON.parse(line).seq)).toEqual([0, 1, 2, 3]);
+    expect(calls[0][1]).toMatchObject({ slot: 0, game_instance_id: closed.game_instance_id, start: { kind: "new_run" },
+      r7: true, retain_originals: true, native_lines: true });
+    const decisions = linkOf(h.linkMessages, "decision", closed.game_instance_id);
+    const steps = calls.filter(([kind]) => kind === "step").map(([, record]) => record);
+    for (const [index, record] of steps.entries()) {
+      expect(record).toMatchObject({ row_id: decisions[index].row_id, step_index: index, consumption_id: decisions[index].consumption_id,
+        observation_sha256: decisions[index].observation_sha256, catalog_sha256: decisions[index].catalog_sha256,
+        catalog_len: decisions[index].catalog_len, selected_index: 0, same_content_ordinal: 0, status: "completed",
+        frame: { episode_instance: "fake", seq: index }, native_steps: [expect.objectContaining({ fold_index: 0, delivery: "delivered",
+          receipt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) })] });
+      expect(record.input_line).toBe(JSON.stringify(decisions[index]));
+      expect(JSON.parse(record.choice_json)).not.toHaveProperty("choice_id");
+      expect(record.choice_json).not.toMatch(/bound_action_id/u);
+      expect(Number.isSafeInteger(record.occurrence)).toBe(true);
+    }
+    expect(calls.filter(([kind]) => kind === "boundary").map(([, range]) => range)).toEqual([
+      { first_row_id: decisions[0].row_id, last_row_id: decisions[1].row_id }, { first_row_id: decisions[2].row_id, last_row_id: decisions[2].row_id }]);
+    expect(calls.at(-1)[1]).toMatchObject({ reason: "terminal", decisions: 3, native_steps: 3, last_step_index: 2,
+      terminal: { result: "defeat" }, native_replaced: false, public_facts: expect.objectContaining({ act: 1 }) });
+    // An unknown delivery is still recorded, with the native step that was handed over.
+    calls.length = 0;
+    const unknown = await harness({ sink, hooks: () => ({ delivery: () => "unknown" }) });
+    unknown.open(0);
+    await unknown.next(event => event.event === "closed");
+    expect(calls.filter(([kind]) => kind === "step").map(([, record]) => record)).toEqual([expect.objectContaining({ status: "unknown",
+      native_steps: [expect.objectContaining({ delivery: "unknown" })] })]);
+    expect(calls.at(-1)[1]).toMatchObject({ reason: "unknown", native_replaced: true });
+    expect(calls[0][1]).toMatchObject({ r7: false, retain_originals: false, native_lines: false });
   });
 
   it("budget closes the game before a further row", async () => {

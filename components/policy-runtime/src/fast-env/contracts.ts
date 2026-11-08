@@ -33,7 +33,8 @@ export interface FastEnvConfig {
   budget: { max_decisions_per_game: number; max_native_steps_per_game: number; game_wall_ms: number };
   no_progress: { window_decisions: number; max_repeats: number } | null;
   settling_timeout_ms: number;
-  evidence: { directory: string };
+  /** boundary_rows: model rows of one game between two `segmentBoundary` calls (default 64). */
+  evidence: { directory: string; boundary_rows: number };
 }
 
 /** `save` = the Host `save_map` result object, passed to the Host `load_map` unchanged (the Host verifies it). */
@@ -42,7 +43,7 @@ export type GameStart = { kind: "new_run" } | { kind: "from_save"; save: HostSav
 
 export type FastEnvCommand =
   | { cmd: "open"; command_id: string; slot: number; game_ref: string; seed: string;
-      initial_progress: Record<string, unknown> | null; start: GameStart; r7: boolean }
+      initial_progress: Record<string, unknown> | null; start: GameStart; r7: boolean; retain_originals: boolean }
   | { cmd: "close_slot"; command_id: string; slot: number }
   | { cmd: "stop"; command_id: string }
   | { cmd: "status"; command_id: string };
@@ -122,7 +123,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
   const inference = obj(v.inference, "inference", ["timeout_ms", "actor_id", "sampling", "single_choice"]);
   if (inference.single_choice !== "score" && inference.single_choice !== "omit") throw new FastEnvContractError("inference.single_choice");
   const budget = obj(v.budget, "budget", ["max_decisions_per_game", "max_native_steps_per_game", "game_wall_ms"]);
-  const evidence = obj(v.evidence, "evidence", ["directory"]);
+  const evidence = obj(v.evidence, "evidence", ["directory", "boundary_rows"]);
   let noProgress: FastEnvConfig["no_progress"] = null;
   if (v.no_progress !== null && v.no_progress !== undefined) {
     const p = obj(v.no_progress, "no_progress", ["window_decisions", "max_repeats"]);
@@ -152,7 +153,8 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
       game_wall_ms: int(budget.game_wall_ms, "budget.game_wall_ms", 1, 86_400_000) },
     no_progress: noProgress,
     settling_timeout_ms: int(v.settling_timeout_ms ?? 30_000, "settling_timeout_ms", 50, 600_000),
-    evidence: { directory: str(evidence.directory, "evidence.directory") }
+    evidence: { directory: str(evidence.directory, "evidence.directory"),
+      boundary_rows: int(evidence.boundary_rows ?? 64, "evidence.boundary_rows", 1, 4096) }
   };
 }
 
@@ -162,7 +164,7 @@ export function parseFastEnvCommand(value: unknown): FastEnvCommand {
   const commandId = str(v.command_id, "command.command_id", ID);
   switch (v.cmd) {
     case "open": {
-      obj(v, "open", ["schema", "cmd", "command_id", "slot", "game_ref", "seed", "initial_progress", "start", "r7"]);
+      obj(v, "open", ["schema", "cmd", "command_id", "slot", "game_ref", "seed", "initial_progress", "start", "r7", "retain_originals"]);
       const start = obj(v.start, "open.start");
       let parsedStart: GameStart;
       if (start.kind === "new_run" && Object.keys(start).length === 1) parsedStart = { kind: "new_run" };
@@ -176,7 +178,8 @@ export function parseFastEnvCommand(value: unknown): FastEnvCommand {
       return { cmd: "open", command_id: commandId, slot: int(v.slot, "open.slot", 0, MAX_SLOTS - 1),
         game_ref: str(v.game_ref, "open.game_ref", ID), seed: str(v.seed, "open.seed"),
         initial_progress: v.initial_progress == null ? null : obj(v.initial_progress, "open.initial_progress"),
-        start: parsedStart, r7: v.r7 === undefined ? false : bool(v.r7, "open.r7") };
+        start: parsedStart, r7: v.r7 === undefined ? false : bool(v.r7, "open.r7"),
+        retain_originals: v.retain_originals === undefined ? false : bool(v.retain_originals, "open.retain_originals") };
     }
     case "close_slot":
       obj(v, "close_slot", ["schema", "cmd", "command_id", "slot"]);

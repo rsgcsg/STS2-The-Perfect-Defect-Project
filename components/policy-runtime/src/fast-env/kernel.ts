@@ -11,7 +11,7 @@ import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
 import type { DecisionLinkPort } from "./link.js";
-import type { FastEvidenceSink, FastGameEvidence } from "./evidence-sink.js";
+import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
 import type { SlotNative, SlotNativeFactory } from "./host.js";
 
 type Reduction = ReturnType<typeof reduce>;
@@ -69,8 +69,10 @@ function terminalResult(observation: Reduction["observation"]): { result: "victo
   return outcome === "win" ? { result: "victory" } : outcome === "loss" ? { result: "defeat" } : null;
 }
 
-interface Source { full: FullPublicBasis }
+interface Source { full: FullPublicBasis; frame: FastStepRecord["frame"] }
 interface Prepared { source: Source; reduction: Reduction }
+/** What a model row adds to its evidence record. */
+interface RowRef { rowId: number; stepIndex: number; consumptionId: string; observationSha: string; catalogSha: string; inputLine: string }
 interface PendingOutcome { row_id: number; step_index: number; receipt_sha256: string; forced: number }
 
 /** One game on one slot: the receive/act loop of today's Runtime (receiveGlobal /
@@ -96,7 +98,62 @@ class GameRun {
 
   #outcome(rowId: number, stepIndex: number, status: "completed" | "not_started" | "unknown", extra: Record<string, unknown>): void {
     this.ctx.link.send({ type: "step_outcome", row_id: rowId, game_instance_id: this.gameInstanceId, step_index: stepIndex, status, ...extra });
-    this.evidence.record("step_outcome", { row_id: rowId, step_index: stepIndex, status, ...extra });
+  }
+
+  /** The evidence record of one P1 choice; native steps and status are filled by #acted. */
+  #stepRecord(prepared: Prepared, index: number, row: RowRef | null): FastStepRecord {
+    const catalog = prepared.reduction.observation.catalog;
+    const content = (item: (typeof catalog)[number]) => { const { choice_id: _handle, ...rest } = item; return canonicalJson(rest); };
+    const selected = catalog[index]!, choiceJson = content(selected);
+    let ordinal = 0;
+    for (let j = 0; j < index; j += 1) {
+      const other = catalog[j]!;
+      if (other.kind === selected.kind && other.label === selected.label && content(other) === choiceJson) ordinal += 1;
+    }
+    return { row_id: row?.rowId ?? null, step_index: row?.stepIndex ?? null, consumption_id: row?.consumptionId ?? null,
+      occurrence: prepared.reduction.observation.envelope.occurrence, snapshot_id: String(prepared.source.full.basis.snapshot.snapshot_id),
+      frame: prepared.source.frame, observation_sha256: row?.observationSha ?? null, catalog_sha256: row?.catalogSha ?? globalDigest(catalog),
+      catalog_len: catalog.length, selected_index: index, choice_json: choiceJson, same_content_ordinal: ordinal,
+      status: "not_started", native_steps: [], input_line: row?.inputLine ?? null };
+  }
+
+  /** Acts on one P1 choice and hands its record to evidence, whatever the outcome. */
+  async #acted(prepared: Prepared, index: number, row: RowRef | null): Promise<StepStatus> {
+    const record = this.#stepRecord(prepared, index, row);
+    try {
+      record.status = await this.#act(prepared, prepared.reduction.observation.catalog[index]!.choice_id,
+        row ? { rowId: row.rowId, stepIndex: row.stepIndex } : null, record);
+    } catch (error) {
+      // A step handed to the Host without a usable successor: its effect is not known.
+      record.status = record.native_steps.length > 0 ? "unknown" : "not_started";
+      this.#recorded(record);
+      throw error;
+    }
+    this.#recorded(record);
+    if (this.#boundaryRows >= this.ctx.config.evidence.boundary_rows) await this.boundary();
+    return record.status;
+  }
+
+  #boundaryFirst: number | null = null;
+  #boundaryLast: number | null = null;
+  #boundaryRows = 0;
+
+  #recorded(record: FastStepRecord): void {
+    this.evidence.step(record);
+    if (record.row_id === null) return;
+    this.#boundaryFirst ??= record.row_id;
+    this.#boundaryLast = record.row_id;
+    this.#boundaryRows += 1;
+  }
+
+  /** Durability point for the rows recorded since the last one (also called before close). */
+  async boundary(): Promise<void> {
+    if (this.#boundaryFirst === null || this.#boundaryLast === null) return;
+    const range = { first_row_id: this.#boundaryFirst, last_row_id: this.#boundaryLast };
+    this.#boundaryFirst = null; this.#boundaryLast = null; this.#boundaryRows = 0;
+    // Evidence that cannot be made durable ends the game loudly; the game never continues unrecorded.
+    try { await this.evidence.segmentBoundary(range); }
+    catch (error) { throw new GameEnd("env_crash", `evidence_boundary:${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /** The step of an earlier row resolved; its outcome carries the facts of the state it led to. */
@@ -126,7 +183,7 @@ class GameRun {
     try {
       const full = await this.native.capture();
       if (full.capture.total_bytes > this.ctx.manifest.limits.max_capture_bytes) throw new GameEnd("not_started", "capture_capacity");
-      return { full };
+      return { full, frame: this.native.frame() };
     } catch (error) {
       if (error instanceof GameEnd) throw error;
       const taint = this.native.taint();
@@ -192,7 +249,7 @@ class GameRun {
       if (catalog.length === 1 && config.inference.single_choice === "omit") {
         stats.forced += 1;
         const forced = this.#pendingOutcome;
-        const status = await this.#act(prepared, catalog[0]!.choice_id, null);
+        const status = await this.#acted(prepared, 0, null);
         if (forced) forced.forced += 1;
         if (status === "not_started") throw new GameEnd("not_started", "forced_step_not_delivered");
         if (status === "unknown") throw new GameEnd("unknown", "delivery_unknown", { replaceNative: true });
@@ -205,11 +262,12 @@ class GameRun {
       const view = modelView(observation) as unknown as Record<string, any>;
       const observationJson = JSON.stringify(view), catalogJson = JSON.stringify(catalog);
       const catalogSha = globalDigest(catalog), inCombat = view.combat?.availability === "available";
+      const observationSha = sha256(observationJson);
       const row = { row_id: rowId, game_instance_id: this.gameInstanceId, catalog_sha256: catalogSha, catalog_len: catalog.length, in_combat: inCombat };
       const consumptionId = `consumption-${randomUUID().replaceAll("-", "")}`;
       const line = `{"schema":${JSON.stringify(FAST_ENV_LINK_SCHEMA)},"type":"decision","row_id":${rowId},`
         + `"game_instance_id":${JSON.stringify(this.gameInstanceId)},"step_index":${stepIndex},"consumption_id":"${consumptionId}",`
-        + `"catalog_len":${catalog.length},"catalog_sha256":"${catalogSha}","observation_sha256":"${sha256(observationJson)}",`
+        + `"catalog_len":${catalog.length},"catalog_sha256":"${catalogSha}","observation_sha256":"${observationSha}",`
         + `"in_combat":${inCombat},"floor":${facts.floor},"input":{"input_spec":${JSON.stringify(this.ctx.manifest.input.input_spec)},`
         + `"observation":${observationJson},"catalog":${catalogJson}}}`;
       stats.input_ms += performance.now() - inputStarted;
@@ -232,10 +290,9 @@ class GameRun {
       if (this.ctx.stopping() || this.slot.closeRequested) notStarted("stop_before_send", "stop", "stop_before_send");
       const index = (verdict as { index: number }).index, choice = catalog[index]!;
       if (this.#noProgress?.check(observation, choice).exhausted) notStarted("stop_before_send", "budget", "no_progress");
-      this.evidence.record("decision", { row_id: rowId, step_index: stepIndex, consumption_id: consumptionId, catalog_len: catalog.length,
-        catalog_sha256: catalogSha, selected_index: index, choice_kind: choice.kind, in_combat: inCombat });
 
-      const status = await this.#act(prepared, choice.choice_id, { rowId, stepIndex });
+      const status = await this.#acted(prepared, index, { rowId, stepIndex, consumptionId,
+        observationSha: observationSha, catalogSha, inputLine: line });
       if (status === "not_started") notStarted("native_not_delivered", "not_started", "native_not_delivered");
       if (status === "unknown") {
         this.#outcome(rowId, stepIndex, "unknown", { reason: "delivery_unknown" });
@@ -245,7 +302,7 @@ class GameRun {
   }
 
   /** actGlobal's fold over one P1 choice: Host BoundActions only, each revalidated by the Host. */
-  async #act(prepared: Prepared, choiceId: string, row: { rowId: number; stepIndex: number } | null): Promise<StepStatus> {
+  async #act(prepared: Prepared, choiceId: string, row: { rowId: number; stepIndex: number } | null, record: FastStepRecord): Promise<StepStatus> {
     const { stats } = this.ctx;
     const choice = prepared.reduction.observation.catalog.find(item => item.choice_id === choiceId);
     const lowering = prepared.reduction.lowering[choiceId];
@@ -284,8 +341,8 @@ class GameRun {
       receiptSha = globalDigest(decoded);
       stats.receipt_ms += performance.now() - receiptStarted;
       steps += 1; this.nativeSteps += 1; stats.native_steps += 1;
-      this.evidence.record("native_step", { row_id: row?.rowId ?? null, step_index: row?.stepIndex ?? null, fold_index: steps - 1,
-        native_verb: step.verb, delivery: decoded.delivery, reason_code: decoded.reason_code ?? null, receipt_sha256: receiptSha });
+      record.native_steps.push({ fold_index: steps - 1, native_verb: String(step.verb), delivery: decoded.delivery,
+        reason_code: decoded.reason_code ?? null, receipt_sha256: receiptSha });
       if (decoded.delivery === "unknown") return "unknown";
       if (decoded.delivery === "not_delivered") { status = steps === 1 ? "not_started" : "interrupted_known"; break; }
       if (decoded.reason_code === "compact_state_divergence") {
@@ -392,12 +449,14 @@ export class SlotKernel {
     ctx.stats.games += 1;
     ctx.emit("opened", { command_id: command.command_id, slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
       start, native: nativeTag, mount_ms: Math.round(performance.now() - mountStarted) });
+    const openStart: FastGameMeta["start"] = command.start.kind === "from_save"
+      ? { kind: "from_save", save_sha256: command.start.save.sha256, act: command.start.save.act, floor: command.start.save.floor }
+      : { kind: "new_run" };
     ctx.link.send({ type: "episode_open", game_instance_id: gameInstanceId, actor_id: ctx.config.inference.actor_id,
-      sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice,
-      start: command.start.kind === "from_save"
-        ? { kind: "from_save", save_sha256: command.start.save.sha256, act: command.start.save.act, floor: command.start.save.floor }
-        : { kind: "new_run" } });
-    const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId, r7: command.r7 });
+      sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart });
+    const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
+      start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: ctx.config.compact.enabled });
+    if (ctx.config.compact.enabled) native.attachLines(line => evidence.nativeLine(line));
     const game = new GameRun(ctx, this, native, gameInstanceId, evidence);
     this.#game = game;
     let reason: CloseReason, detail: string, terminal: { result: "victory" | "defeat" } | null = null, replace = false;
@@ -415,9 +474,15 @@ export class SlotKernel {
     if (!replace) {
       try { await native.release(); } catch { replace = true; }
     }
+    native.attachLines(null);
     if (replace) await this.#replaceNative();
     let evidenceDir: string | null = null;
-    try { evidenceDir = await evidence.close({ reason, detail, decisions: game.decisions, native_steps: game.nativeSteps, terminal }); }
+    try {
+      // The rows recorded since the last boundary.
+      await game.boundary();
+      evidenceDir = await evidence.close({ reason, detail, decisions: game.decisions, native_steps: game.nativeSteps,
+        last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace });
+    }
     catch (error) { ctx.emit("evidence_failed", { slot: this.index, game_instance_id: gameInstanceId, reason: error instanceof Error ? error.message : String(error) }); }
     this.#idle();
     ctx.emit("closed", { slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId, reason, detail,
