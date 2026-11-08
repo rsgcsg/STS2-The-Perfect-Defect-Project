@@ -154,6 +154,12 @@ class EpisodeStart:
             return {"kind": "new_run"}
         return {"kind": "from_save", "save_sha256": self.save["sha256"]}
 
+    def env_start(self) -> dict[str, Any]:
+        """``fast-env-command-1`` ``open.start``: the Host descriptor itself for a save."""
+        if self.save is None:
+            return {"kind": "new_run"}
+        return {"kind": "from_save", "save": dict(self.save)}
+
     def inference_start(self, origin_game_instance_id: str | None = None) -> dict[str, Any]:
         """``stpd/rl-inference-3`` ``episode_open.start``: never the seed or a world key."""
         if self.save is None:
@@ -254,6 +260,13 @@ def require_loaded_identity(identity: object, *, start: EpisodeStart,
 
 
 def require_first_frame_start(observed: Any, *, start: EpisodeStart) -> None:
-    """Fast-chain gate: the compact first frame says how the native instance began."""
+    """Fast-chain gate: the compact first frame says how the native instance began.
+
+    The environment may echo either the compact ``start`` or its own ``open.start``
+    (the descriptor); both must name exactly this kind and save digest.
+    """
+    if (isinstance(observed, Mapping) and observed.get("kind") == "from_save"
+            and isinstance(observed.get("save"), Mapping) and set(observed) == {"kind", "save"}):
+        observed = {"kind": "from_save", "save_sha256": observed["save"].get("sha256")}
     if observed != start.native_start():
         reject("first_frame_start_changed")
