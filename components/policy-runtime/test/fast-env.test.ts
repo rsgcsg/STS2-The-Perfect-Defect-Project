@@ -477,22 +477,33 @@ describe("fast-env failure paths", () => {
     expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
   };
 
-  it("a capture that fails on a compact-divergent native: row unknown/compact_state_divergence, game not_started, native replaced, build output stopped", async () => {
+  it("a delivered action whose successor frame diverges: row and game unknown/compact_state_divergence, native replaced, build output stopped", async () => {
     const h = await harness({ hooks: () => ({ captureThrows: capture => capture === 2, taintReason: () => "compact_state_divergence" }) });
     h.open(0);
     const closed = await h.next(event => event.event === "closed");
-    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "unknown" })]);
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
     await expectBuildStopped(h);
   });
 
-  it("a receipt carrying reason_code compact_state_divergence ends the game the same way", async () => {
+  it("a delivered receipt carrying reason_code compact_state_divergence ends the game the same way (unknown)", async () => {
     const h = await harness({ hooks: () => ({ terminalAfter: 5, receiptReasonCode: () => "compact_state_divergence" }) });
     h.open(0);
     const closed = await h.next(event => event.event === "closed");
-    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
+    expect(closed).toMatchObject({ reason: "unknown", detail: "compact_state_divergence", native: "replaced", native_steps: 1 });
     expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown", reason: "compact_state_divergence" })]);
+    await expectBuildStopped(h);
+  });
+
+  it("a divergence before any action of the game is not_started (no outcome in question), native replaced, build output stopped", async () => {
+    const h = await harness({ hooks: () => ({ captureThrows: capture => capture === 1, taintReason: () => "compact_state_divergence" }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "not_started", detail: "compact_state_divergence", native: "replaced", native_steps: 0, decisions: 0 });
+    expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([]);
+    expect(h.natives[0]!.source.steps).toBe(0);
     await expectBuildStopped(h);
   });
 
