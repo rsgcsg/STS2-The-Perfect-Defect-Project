@@ -4127,10 +4127,10 @@ index 0000000..6147465
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..8869f96
+index 0000000..d02a7dd
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,320 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -4161,10 +4161,11 @@ index 0000000..8869f96
 +public static partial class NativeCardPreviewReadQualification
 +{
 +    private static bool RenderMethodsUnpatched(Type type) =>
-+        NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderMethodsUnpatched), type, RenderMethodsUnpatchedLive)
++            : RenderMethodsUnpatchedLive(type);
 +    private static bool RenderMethodsUnpatchedLive(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
 +        .All(IsUnpatched) && type.GetConstructors(NativeMembers).All(IsUnpatched);
-+    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null ? RenderIteratorUnpatchedLive(method)
++    private static bool RenderIteratorUnpatched(MethodInfo? method) => method == null || !NativePatchStateCache.Enabled ? RenderIteratorUnpatchedLive(method)
 +        : NativePatchStateCache.Memo<MethodInfo>(nameof(RenderIteratorUnpatched), method, RenderIteratorUnpatchedLive);
 +    private static bool RenderIteratorUnpatchedLive(MethodInfo? method)
 +    {
@@ -4172,9 +4173,10 @@ index 0000000..8869f96
 +        Type? iterator = method!.GetCustomAttribute<IteratorStateMachineAttribute>()?.StateMachineType;
 +        return iterator == null || RenderMethodsUnpatched(iterator);
 +    }
-+    private static bool RenderGettersUnpatched(Type type, params string[] names) => !NativePatchStateCache.Enabled
-+        ? RenderGettersUnpatchedLive(type, names)
-+        : NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
++    private static bool RenderGettersUnpatched(Type type, params string[] names) => NativePatchStateCache.Enabled
++        ? RenderGettersUnpatchedMemo(type, names) : RenderGettersUnpatchedLive(type, names);
++    private static bool RenderGettersUnpatchedMemo(Type type, string[] names) =>
++        NativePatchStateCache.Memo(nameof(RenderGettersUnpatched), type, string.Join('\u001f', names), () => RenderGettersUnpatchedLive(type, names));
 +    private static bool RenderGettersUnpatchedLive(Type type, string[] names) => names.All(name =>
 +        IsUnpatched(type.GetProperty(name, NativeMembers)?.GetMethod));
 +    private static bool NativeRenderMethod(MethodInfo? method) => method != null
@@ -4184,7 +4186,9 @@ index 0000000..8869f96
 +    private static bool RenderCardDispatchQualified(CardModel card)
 +    {
 +        Type type = card.GetType();
-+        return NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive);
++        return NativePatchStateCache.Enabled
++            ? NativePatchStateCache.Memo(nameof(RenderCardDispatchQualified), type, RenderCardDispatchQualifiedLive)
++            : RenderCardDispatchQualifiedLive(type);
 +    }
 +
 +    private static bool RenderCardDispatchQualifiedLive(Type type)
@@ -4261,7 +4265,8 @@ index 0000000..8869f96
 +            && NativeRenderMethod(character.GetType().GetProperty("CardPool", NativeMembers)?.GetMethod);
 +    }
 +    private static bool RenderFixedClosureUnpatched() =>
-+        NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(RenderFixedClosureUnpatched), null, null, RenderFixedClosureUnpatchedLive)
++            : RenderFixedClosureUnpatchedLive();
 +    private static bool RenderFixedClosureUnpatchedLive() =>
 +        MethodsUnpatched(typeof(CardModel), "get_TitleLocString", "get_Title", "get_Description", "get_Type", "get_Rarity",
 +            "get_IsUpgraded", "get_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "get_Pile", "get_UpgradePreviewType", "get_IsEnchantmentPreview",
@@ -4341,7 +4346,9 @@ index 0000000..8869f96
 +    private static bool RenderCombatListenerQualified(AbstractModel model)
 +    {
 +        Type current = model.GetType();
-+        if (!NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)) return false;
++        if (!(NativePatchStateCache.Enabled
++                ? NativePatchStateCache.Memo(nameof(RenderCombatListenerTypeQualified), current, RenderCombatListenerTypeQualified)
++                : RenderCombatListenerTypeQualified(current))) return false;
 +        if (model is WeakPower or VulnerablePower)
 +            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
 +                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
@@ -4373,7 +4380,9 @@ index 0000000..8869f96
 +        gap = "native_card_render_combat_hook_closure_unqualified";
 +        if (combat.GetType() != typeof(CombatState) || !NativeRunHookReadQualification.Preflight(run)
 +            || typeof(ModHelper).GetField("_combatHookSubscribers", NativeMembers)?.GetValue(null) is not ICollection { Count: 0 }
-+            || !NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)) return false;
++            || !(NativePatchStateCache.Enabled
++                ? NativePatchStateCache.Memo(nameof(RenderCombatFixedClosureUnpatched), null, null, RenderCombatFixedClosureUnpatched)
++                : RenderCombatFixedClosureUnpatched())) return false;
 +        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
 +        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
 +        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
@@ -4444,10 +4453,10 @@ index 0000000..8869f96
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..e4c97ed
+index 0000000..9c6fc4a
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,429 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -4479,14 +4488,22 @@ index 0000000..e4c97ed
 +    internal const BindingFlags NativeMembers = BindingFlags.Instance | BindingFlags.Static
 +        | BindingFlags.Public | BindingFlags.NonPublic;
 +
-+    // fast_chain memoizes by patch generation; off = the original live check.
-+    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
++    // fast_chain memoizes by patch generation. Off runs the original code directly: no
++    // Memo call, delegate or closure is created on the off path anywhere in this class.
++    public static bool IsUnpatched(MethodBase? method)
++    {
++        if (NativePatchStateCache.Enabled) return NativePatchStateCache.IsUnpatched(method);
++        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
++        catch { return false; }
++    }
 +
 +    private static readonly ConditionalWeakTable<Type, ILookup<string, MethodInfo>> MethodTables = new();
 +
-+    internal static bool MethodsUnpatched(Type owner, params string[] names) => !NativePatchStateCache.Enabled
-+        ? MethodsUnpatchedLive(owner, names)
-+        : NativePatchStateCache.Memo(nameof(MethodsUnpatched), owner, string.Join('\u001f', names), () => MethodsUnpatchedLive(owner, names));
++    internal static bool MethodsUnpatched(Type owner, params string[] names) => NativePatchStateCache.Enabled
++        ? MethodsUnpatchedMemo(owner, names) : MethodsUnpatchedLive(owner, names);
++
++    private static bool MethodsUnpatchedMemo(Type owner, string[] names) =>
++        NativePatchStateCache.Memo(nameof(MethodsUnpatched), owner, string.Join('\u001f', names), () => MethodsUnpatchedLive(owner, names));
 +
 +    private static bool MethodsUnpatchedLive(Type owner, string[] names)
 +    {
@@ -4497,11 +4514,15 @@ index 0000000..e4c97ed
 +        return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
 +    }
 +
-+    private static bool FixedConstructorsUnpatched(Type type) => NativePatchStateCache.Memo(nameof(FixedConstructorsUnpatched), type,
-+        static current => current.GetConstructors(NativeMembers).All(IsUnpatched));
++    private static bool FixedConstructorsUnpatched(Type type) => NativePatchStateCache.Enabled
++        ? NativePatchStateCache.Memo(nameof(FixedConstructorsUnpatched), type, FixedConstructorsUnpatchedLive)
++        : FixedConstructorsUnpatchedLive(type);
++
++    private static bool FixedConstructorsUnpatchedLive(Type type) => type.GetConstructors(NativeMembers).All(IsUnpatched);
 +
 +    private static bool CloneLambdaUnpatched(Type owner) =>
-+        NativePatchStateCache.Memo(nameof(CloneLambdaUnpatched), owner, CloneLambdaUnpatchedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(CloneLambdaUnpatched), owner, CloneLambdaUnpatchedLive)
++            : CloneLambdaUnpatchedLive(owner);
 +
 +    private static bool CloneLambdaUnpatchedLive(Type owner)
 +    {
@@ -4511,7 +4532,10 @@ index 0000000..e4c97ed
 +        return exact.Length == 1 && IsUnpatched(exact[0]);
 +    }
 +
-+    private static bool BaseImplementation(Type current, Type owner, string method) =>
++    private static bool BaseImplementation(Type current, Type owner, string method) => NativePatchStateCache.Enabled
++        ? BaseImplementationMemo(current, owner, method) : BaseImplementationLive(current, owner, method);
++
++    private static bool BaseImplementationMemo(Type current, Type owner, string method) =>
 +        NativePatchStateCache.Memo(nameof(BaseImplementation), current, owner, () => BaseImplementationLive(current, owner, method), method);
 +
 +    private static bool BaseImplementationLive(Type current, Type owner, string method) =>
@@ -4631,7 +4655,8 @@ index 0000000..e4c97ed
 +    // the existing canonical-instance binding. Framework collection/decimal
 +    // primitives are the trusted CLR boundary, not a native plugin callback.
 +    private static bool CopyClosureUnpatched() =>
-+        NativePatchStateCache.Memo(nameof(CopyClosureUnpatched), null, null, CopyClosureUnpatchedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(CopyClosureUnpatched), null, null, CopyClosureUnpatchedLive)
++            : CopyClosureUnpatchedLive();
 +
 +    private static bool CopyClosureUnpatchedLive() =>
 +        MethodsUnpatched(typeof(AbstractModel), "MutableClone", "get_IsMutable", "set_IsMutable", "AssertMutable", "AfterCloned")
@@ -4648,7 +4673,8 @@ index 0000000..e4c97ed
 +        && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 +
 +    private static bool CopyAfterClonedQualified(Type type) =>
-+        NativePatchStateCache.Memo(nameof(CopyAfterClonedQualified), type, CopyAfterClonedQualifiedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(CopyAfterClonedQualified), type, CopyAfterClonedQualifiedLive)
++            : CopyAfterClonedQualifiedLive(type);
 +
 +    private static bool CopyAfterClonedQualifiedLive(Type type) =>
 +        BaseImplementation(type, typeof(CardModel), "AfterCloned")
@@ -4754,7 +4780,8 @@ index 0000000..e4c97ed
 +    }
 +
 +    private static bool UpgradeClosureQualified(Type type) =>
-+        NativePatchStateCache.Memo(nameof(UpgradeClosureQualified), type, UpgradeClosureQualifiedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(UpgradeClosureQualified), type, UpgradeClosureQualifiedLive)
++            : UpgradeClosureQualifiedLive(type);
 +
 +    private static bool UpgradeClosureQualifiedLive(Type type) =>
 +            type.GetMethod("OnUpgrade", NativeMembers) is { } upgrade
@@ -4847,7 +4874,8 @@ index 0000000..e4c97ed
 +    private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
 +
 +    private static bool SingletonListUnpatched(Type element) =>
-+        NativePatchStateCache.Memo(nameof(SingletonListUnpatched), element, SingletonListUnpatchedLive);
++        NativePatchStateCache.Enabled ? NativePatchStateCache.Memo(nameof(SingletonListUnpatched), element, SingletonListUnpatchedLive)
++            : SingletonListUnpatchedLive(element);
 +
 +    private static bool SingletonListUnpatchedLive(Type element)
 +    {
@@ -7104,10 +7132,10 @@ index 0000000..322cbcb
 +}
 diff --git a/src/Sts2Headless/NativeRunHookReadQualification.cs b/src/Sts2Headless/NativeRunHookReadQualification.cs
 new file mode 100644
-index 0000000..e9875aa
+index 0000000..1fee73d
 --- /dev/null
 +++ b/src/Sts2Headless/NativeRunHookReadQualification.cs
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,115 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -7134,8 +7162,13 @@ index 0000000..e9875aa
 +    private static readonly Guid AuditedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
 +    private static readonly FieldInfo? Subscribers = typeof(ModHelper).GetField("_runHookSubscribers",
 +        BindingFlags.Static | BindingFlags.NonPublic);
-+    // fast_chain memoizes by patch generation; off = the original live check.
-+    public static bool IsUnpatched(MethodBase? method) => NativePatchStateCache.IsUnpatched(method);
++    // fast_chain memoizes by patch generation; off runs the original live check directly.
++    public static bool IsUnpatched(MethodBase? method)
++    {
++        if (NativePatchStateCache.Enabled) return NativePatchStateCache.IsUnpatched(method);
++        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
++        catch { return false; }
++    }
 +
 +    private static bool IteratorIsUnpatched(MethodInfo? method)
 +    {
@@ -7184,7 +7217,9 @@ index 0000000..e9875aa
 +            return run.GetType() == typeof(RunState)
 +                && typeof(RunState).Assembly.ManifestModule.ModuleVersionId == AuditedGameMvid
 +                && Subscribers?.GetValue(null) is ICollection { Count: 0 }
-+                && NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched);
++                && (NativePatchStateCache.Enabled
++                    ? NativePatchStateCache.Memo(nameof(FixedClosureIsUnpatched), null, null, FixedClosureIsUnpatched)
++                    : FixedClosureIsUnpatched());
 +        }
 +        catch { return false; }
 +    }
