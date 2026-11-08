@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -123,9 +123,43 @@ test("both exact Hosts compile the same native reward/read qualification source"
     "NativeMapReadProjection.cs", "NativeCardRenderTransaction.cs",
     "NativeCalculatedVariableInventory.cs", "NativeCardPreviewReadQualification.Rendering.cs", "NativeCardPreviewReadQualification.cs",
     "NativeDetachedCardCopy.cs", "NativeDetachedCardPreview.cs", "NativeEnchantmentMethodInventory.cs",
-    "NativeSettledRelicCounter.cs", "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs"])
+    "NativeSettledRelicCounter.cs", "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs",
+    "NativePatchStateCache.cs"])
     assert.equal(files.get(`src/Sts2Headless/${name}`),
       readFileSync(path.join(root, "../native-foundation/src", name), "utf8"));
+});
+
+test("only the Managed native entry point enables the fast_chain read cache", () => {
+  const patch = readFileSync(path.join(root, "experiments/managed-exact/patches/sts2-cli-d11aa88-v01110.patch"), "utf8");
+  const callers = new Map();
+  for (const block of patch.split(/^diff --git /mu).slice(1)) {
+    const file = block.split("\n")[0].split(" b/")[1];
+    const added = block.split(/\r?\n/u).filter(line => line.startsWith("+") && !line.startsWith("+++")
+      && line.includes("NativePatchStateCache.Configure("));
+    if (added.length) callers.set(file, added);
+  }
+  assert.deepEqual([...callers.keys()].sort(), ["patch-cache-tests/Program.cs", "src/Sts2Headless/Program.cs"]);
+  assert.equal(callers.get("src/Sts2Headless/Program.cs").length, 1);
+  assert.match(callers.get("src/Sts2Headless/Program.cs")[0],
+    /NativePatchStateCache\.Configure\(Environment\.GetEnvironmentVariable\("STS2_HEADLESS_FAST_CHAIN"\) == "1"\);/u);
+  // Mod, Reference Host and every other shared C# source never enable it nor read the switch.
+  const repository = path.resolve(root, "../..");
+  const skip = new Set([".git", "node_modules", ".local", "bin", "obj", "dist"]);
+  const offenders = [];
+  const walk = directory => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (skip.has(entry.name)) continue;
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".cs")) {
+        // Comment lines cannot enable or read the switch; only code is checked.
+        const text = readFileSync(full, "utf8").split(/\r?\n/u).filter(line => !/^\s*\/\//u.test(line)).join("\n");
+        if (/NativePatchStateCache\s*\.\s*Configure\s*\(|STS2_HEADLESS_FAST_CHAIN/u.test(text)) offenders.push(path.relative(repository, full));
+      }
+    }
+  };
+  walk(repository);
+  assert.deepEqual(offenders, []);
 });
 
 test("exact native reward factory preserves Skip/reroll/sacrifice without selection effects", async context => {
