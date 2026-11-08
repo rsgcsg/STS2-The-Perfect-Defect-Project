@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -157,6 +158,9 @@ def claim_group(root: Path, pool: dict[str, Any], cell: str, owner: dict[str, st
     return None
 
 
+SNAPSHOT_HASH_WORKERS = 16
+
+
 def snapshot(source: Path, destination: Path) -> dict[str, Any]:
     """Copy closed/current evidence, then compare every byte; never read credentials."""
     if source.resolve() == destination.resolve():
@@ -165,16 +169,22 @@ def snapshot(source: Path, destination: Path) -> dict[str, Any]:
     subprocess.run(["rsync", "-a", "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=",
                     str(source) + "/", str(destination) + "/"], check=True,
                    stdout=subprocess.DEVNULL)
-    files = {}
+    names = []
     for path in sorted(source.rglob("*")):
         if path.is_symlink():
             raise ValueError("scratch_symlink_not_supported")
         if path.is_file():
-            relative = path.relative_to(source).as_posix()
-            identity = hashed(path)
-            if hashed(destination / relative) != identity:
-                raise ValueError("persistent_snapshot_readback_failed")
-            files[relative] = identity
+            names.append(path.relative_to(source).as_posix())
+
+    def compare(relative: str) -> str:
+        identity = hashed(source / relative)
+        if hashed(destination / relative) != identity:
+            raise ValueError("persistent_snapshot_readback_failed")
+        return identity
+    # Every byte of both sides is still hashed; only the per-file NFS round trips overlap
+    # (RL5 OPS-2: evaluation-0007 hashed 248k files serially and hit its Slurm limit).
+    with ThreadPoolExecutor(max_workers=SNAPSHOT_HASH_WORKERS) as pool:
+        files = dict(zip(names, pool.map(compare, names), strict=True))
     return {"schema": "spireagent/friday-local-snapshot-v1", "files": files,
             "bytes": sum((source / name).stat().st_size for name in files),
             "full_readback": True}

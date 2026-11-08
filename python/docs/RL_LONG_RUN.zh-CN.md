@@ -262,12 +262,22 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 其它节点中位数仍低时，记typed事件，向该节点在跑actor发原合作USR1（打完当前局不再offer），
 之后补位与新attempt的actor、CPU步和评估job的`--exclude` = 配置exclude_nodes + 自动排除节点。排除前的原unknown照计入全局门，
 不重投；整体都高时只记录不排除，超过上限记录后交回全局滚动unknown门。阈值来自c11回放。
-限制：排除在本watch内永久，watch不自己重新准入；同窗口续跑（`previous_watch_state`）沿用原state里的排除，
-新运营窗口从新state开始不继承；`release_swap.py`两种续跑都把前任自动排除的节点并进`exclude_nodes`（另见`avoid_actor_nodes`）。
-重新准入只在自然重启点、由负责人按节点体检证据决定（`release_swap.py --readmit`，见“换 release 续训”）：
-配置`readmit_nodes`里的节点在同窗口续跑首次启动时移出继承的自动排除（排除期间那段原局仍隔离、仍不进门），
-之后它的局照常计数，并开一个新的#386窗口，坏了会再被排除。请求里不是自动排除的节点不改，
-记一条`node_readmission_skipped`事件。
+窗口内自动重新准入（RL5 OPS-2，`canary_lanes`>0时，默认开）：`max_nodes`是同时隔离的节点数，不是累计数。
+被排除节点按第几次（strike）冷却`cooldown_seconds`（默认2/4/8 h，超出列表就本窗口不再试），到期且离deadline
+超过30 min时，watcher在该节点上钉`canary_lanes`（默认2）个额外actor（`rl.submit --nodelist`，计入`cpu_budget`，
+不够就等并发一次attention），不补位。canary累计`canary_games`（默认10）局无节点状态失败就放回
+（`node_readmitted`，证据kind=canary，排除期那段原局仍隔离），并用`scontrol update ExcNodeList`让本attempt
+还在排队的actor数组也能用它；有一局失败、或canary全部提前结束，就算失败：USR1让canary打完当前局，
+进下一个strike的冷却。哪些局算节点失败：unknown/save_failed里除`environment_gap`、`wall_limit`外都算
+（c13f：坏节点的unknown 823/826是`runtime_execution_or_release_unknown`→unclassified，只数infrastructure就漏检）。
+慢节点单独判：存档局用时中位数 > 其它节点（≥3个，各≥`slow_min_games`局）中位数的`slow_ratio`倍（默认2），
+记`node_slow`，只不再派新actor，不发信号，不占`max_nodes`。`canary_lanes=0`保持旧行为（本watch内永久排除）。
+同窗口续跑（`previous_watch_state`）沿用原state；`release_swap.py`在canary开时把前任自动排除写成
+`inherited_node_exclusions`（带strike和冷却到期时刻；OPS-2前的记录按排除时刻+该strike冷却算），
+新watch首次建state时并进自己的排除，不再写进`exclude_nodes`整窗不用；canary关时照旧并进`exclude_nodes`。
+人工重新准入仍可在自然重启点由负责人按证据做（`release_swap.py --readmit`，见“换 release 续训”）：
+配置`readmit_nodes`里的节点在同窗口续跑首次启动时移出继承的自动排除，之后照常计数，坏了会再被排除。
+请求里不是自动排除的节点不改，记一条`node_readmission_skipped`事件。
 每个actor结果带`node_nfs_events`：分配开始和结束时节点内核日志里NFS lost locks、state manager失败、
 server not responding的计数差（读不到内核日志记`kernel_log_unavailable`），供节点诊断用，不影响门和排除。
 learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
@@ -291,6 +301,12 @@ archive健康消费磁盘可用量、站点usage配额、inode、积压及观察
 model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即删；成功μ发布仅释放本次临时导出
 副本，规范Store不变。完整CP全入R2，本地仅冷却已远端逐字读回的旧payload，保最近3份及评估/
 回滚引用；共享chunk、活reader、未保全数据不删。结束走原archive drain，不靠人工cron。
+窗口结束（watcher的`run_budget_complete`/`absolute_deadline` stop、deadline或版本预算）drain后仍在飞的
+world/lease是正常收尾：learner在final CP之后把它们记进summary和finished事件的`dropped_at_window_end`
+（计数、episode键，不重投，原件保留），再照常检查actor allocation和SGD退出；watcher只报
+`worlds_dropped_at_window_end`。其他停法（人工STOP、故障stop、fence、读不到stop）仍报
+`unresolved_worlds_after_drain`。每两小时评估的job wall默认10800 s（审计第21行：evaluation-0007在
+snapshot阶段到2:05墙）；`release_swap`把更小的显式值抬到这个默认。snapshot仍逐字节哈希两侧，只是16线程并行。
 
 ### 每两小时固定 Managed 评估
 
@@ -417,16 +433,15 @@ python <任一含本工具的checkout>/tools/friday/release_swap.py prepare \
 
 节点计划（OPS 11-07，都写进watch配置，下个续跑照抄）：
 - `exclude_node_provenance`：每个排除节点的来源，`auto_node_unknown_exclusion`（#386，带时刻和窗口数）、
-  `operator`（`--exclude-node`，带`--exclude-reason`）、`evaluation_pool`或`static_unrecorded`（来源没记的旧条目）。
+  `operator`（`--exclude-node`，带`--exclude-reason`；或`--node-reason NODE=理由`给已排除节点补理由）、
+  `evaluation_pool`、`hardware_class`（Slurm features不含actor节点类型，硬件约束，不是健康排除）、
+  `slurm_unavailable`（DOWN/DRAIN/FAIL）或`static_unrecorded`（Slurm没报、来源没记的旧条目）。
   清单按来源、按节点类型计数，并点名actor类型（如fc430）里被排除的节点。
 - `--readmit NODE`（可多次，必须是当前排除的节点，必须带`--readmit-evidence`）：从`exclude_nodes`去掉，
   写`readmit_nodes`（watch在同窗口续跑时移出继承的自动排除）和累积的`node_readmissions`记录
-  （节点、原排除来源、证据、哪次swap）。每个`--readmit`节点先跑一个1核只读探查（`srun --immediate=120
-  --chdir=/tmp`，读`/proc/uptime`和`dmesg`；`--dry-run`不提交探查，记`skipped_dry_run`），
-  最近6 h内有`kthread_run: -4`（NFS客户端state manager失败，每次坏节点停训都有），或者探查读不到、
-  内核日志为空或没覆盖满6 h（`kernel_log_window_incomplete`，ring buffer已回卷），就拒绝
-  （`readmit_node_recent_nfs_state_loss`/`readmit_node_nfs_check_unavailable`）。确实要放回时，
-  传`--acknowledge nfs_state_loss:NODE=理由`；结果和理由都写进该节点的`node_readmissions`记录。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
+  （节点、原排除来源、证据、哪次swap）。OPS F2的`kthread_run: -4`探查已删（NODE-HEALTH-REVIEW 11-08 §2：
+  -4是NFS恢复期间我们自己的actor被杀留下的EINTR，跟着大批actor退出出现，把恢复中的节点关了19 h，
+  又漏掉了正在变坏的节点）；节点证据改由watcher的冷却+真游戏canary给。同一节点放回两次后又被自动排除，再放回会被拒（`readmission_limit_reached`），先诊断。
 - `--eval-node NODE`：评估池，加进actor的`exclude_nodes`，写`evaluation.pool_nodes`，`evaluation.exclude_nodes` =
   评估分区（`sinfo`读取，读不到就拒绝）里池以外的节点 + actor排除节点；准备时的真游戏也按这个列表提交。
   当前被自动排除的节点只能和`--readmit NODE --readmit-evidence`一起进池（否则`eval_node_auto_excluded_needs_readmission`）。

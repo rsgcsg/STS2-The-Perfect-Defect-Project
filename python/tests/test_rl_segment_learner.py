@@ -1007,3 +1007,56 @@ def test_resubmitted_episode_end_waits_for_inflight_original(original_fails) -> 
     assert results == [{"run_id": "e"}] * (1 if original_fails else 2)
     assert errors == (["original_failed_without_fact"] if original_fails else [])
     assert len(calls) == (2 if original_fails else 1) and not owner.episode_ends
+
+
+# ------------------------------------------------- RL5 OPS-2: window-end drain (audit row 23)
+def _ending(tmp_path, **fields):
+    value = SimpleNamespace(input_fenced=False, stop_fact=None, generation="g-x",
+                            exchange=SimpleNamespace(stop_request=lambda **k: None),
+                            work=tmp_path, version=3, config=SimpleNamespace(max_versions=100),
+                            selection_deadline=None, deadline_at=None)
+    for key, item in fields.items():
+        setattr(value, key, item)
+    return value
+
+
+@pytest.mark.parametrize(("fields", "expected"), [
+    ({"stop_fact": {"reason": "run_budget_complete"}}, "run_budget_complete"),
+    ({"stop_fact": {"reason": "absolute_deadline"}}, "absolute_deadline"),
+    ({"deadline_at": 0.0}, "deadline"),
+    ({"version": 100}, "max_versions"),
+    ({"stop_fact": {"reason": "training_unknown_fraction_above_limit"}}, None),
+    ({"stop_fact": {"reason": "learner_progress_stalled"}, "deadline_at": 0.0}, None),
+    ({"input_fenced": True, "deadline_at": 0.0}, None),
+    ({}, None),
+])
+def test_window_end_table_is_fail_closed(tmp_path, fields, expected):
+    owner = _ending(tmp_path, **fields)
+    assert SegmentLearner._window_end(owner, time.monotonic() + 3600, False) == expected
+
+
+def test_window_end_reads_remote_stop_and_operator_stop_or_unreadable_fails_closed(tmp_path):
+    later = time.monotonic() + 3600
+    remote = _ending(tmp_path, exchange=SimpleNamespace(
+        stop_request=lambda **k: {"reason": "run_budget_complete"}))
+    assert SegmentLearner._window_end(remote, later, False) == "run_budget_complete"
+
+    def unreadable(**k):
+        raise OSError("nfs")
+    broken = _ending(tmp_path, deadline_at=0.0, exchange=SimpleNamespace(stop_request=unreadable))
+    assert SegmentLearner._window_end(broken, later, False) is None
+    (tmp_path / "STOP").touch()
+    assert SegmentLearner._window_end(_ending(tmp_path, deadline_at=0.0), later, False) is None
+    assert SegmentLearner._window_end(_ending(tmp_path), time.monotonic() - 1, True) is None
+
+
+def test_inflight_worlds_at_window_end_are_dropped_counted_never_retried():
+    from stpd.rl.segment_learner import window_end_drop
+
+    dropped = window_end_drop("absolute_deadline", {"lease-1": 8},
+                              {"a-1:e-2": "x", "a-0:e-1": "y"}, fenced=False)
+    assert dropped == {"reason": "absolute_deadline", "inflight_leases": 1, "episodes": 2,
+                       "episode_keys": ["a-0:e-1", "a-1:e-2"], "retried": False}
+    assert window_end_drop(None, {"lease-1": 8}, {}, fenced=False) is None  # -> raises
+    assert window_end_drop("deadline", {"lease-1": 8}, {}, fenced=True) is None
+    assert window_end_drop("deadline", {}, {}, fenced=False) is None  # nothing in flight
