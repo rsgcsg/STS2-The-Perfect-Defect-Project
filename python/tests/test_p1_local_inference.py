@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -226,3 +227,54 @@ def test_close_after_acceptor_failure_has_no_authentication_wait(monkeypatch):
     assert finished.wait(3), "dead acceptor must not cause an authentication wait"
     closer.join(timeout=1)
     assert outcome[0]["closed"] is True
+
+
+def test_control_timeout_drops_connection_and_next_request_gets_its_own_reply(monkeypatch):
+    """A late reply never answers the next request; nothing is resent (#426 exposure)."""
+    import json as _json
+    import threading as _threading
+    from multiprocessing.connection import Listener
+
+    from stpd.p1 import local_inference
+    from stpd.p1.export import adapter_identity
+
+    key = os.urandom(16)
+    monkeypatch.setenv(local_inference.AUTH_ENV, key.hex())
+    monkeypatch.setattr(local_inference, "CONTROL_REPLY_SECONDS", 0.3)
+    listener = Listener(("127.0.0.1", 0), authkey=key)
+    seen: list[tuple[int, str, int]] = []
+    release = _threading.Event()
+
+    def serve() -> None:
+        for connection_index in range(2):
+            connection = listener.accept()
+            try:
+                while True:
+                    request = _json.loads(connection.recv_bytes())
+                    seen.append((connection_index, request["operation"], request["request_id"]))
+                    if request["operation"] == "slow":
+                        release.wait(5)  # answered only after the client gave up
+                    connection.send_bytes(_json.dumps({
+                        "request_id": request["request_id"],
+                        "result": {"echo": request["operation"]}}).encode())
+            except (EOFError, OSError):
+                connection.close()
+
+    thread = _threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client = local_inference.SegmentConnection({
+        "schema": local_inference.SEGMENT_SCHEMA, "adapter": adapter_identity(),
+        "address": list(listener.address), "pool_id": "pool-1"})
+    try:
+        with pytest.raises(TimeoutError):
+            client.request("slow")
+        assert client.connection is None  # marked bad, not reused
+        release.set()
+        assert client.request("status_like") == {"echo": "status_like"}
+        assert client.request("other") == {"echo": "other"}
+    finally:
+        client.close()
+        listener.close()
+    # The timed-out request was sent once and never resent on the new connection.
+    assert [op for _, op, _ in seen].count("slow") == 1
+    assert [(c, op) for c, op, _ in seen] == [(0, "slow"), (1, "status_like"), (1, "other")]

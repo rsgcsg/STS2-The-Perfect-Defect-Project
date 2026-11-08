@@ -305,6 +305,7 @@ class LocalInferenceClient:
 
 
 SEGMENT_SCHEMA = "stpd/rl-inference-2"
+CONTROL_REPLY_SECONDS = 120  # a bounded control reply wait (begin/episode_open wait unbounded)
 
 
 class SegmentInferencePool(LocalInferencePool):
@@ -830,10 +831,17 @@ class SegmentConnection:
         # A begin is one owned capacity wait, not a scoring/network deadline.
         # The Agent stays responsive through its existing await directives;
         # learner Stop or episode_end wakes this same request without a retry.
-        if not self.connection.poll(None if operation in {"begin", "episode_open"} else 120):
+        if not self.connection.poll(None if operation in {"begin", "episode_open"}
+                                    else CONTROL_REPLY_SECONDS):
+            # The late reply would answer the next request on this connection:
+            # drop the connection; the next request connects anew. Nothing is
+            # resent here (a mutation resolves through its receipt in _request).
+            self.close()
             raise TimeoutError("RL service request unavailable; original request not retried")
         response = json.loads(self.connection.recv_bytes(MAX_BYTES))
         if response.get("request_id") != self.request_id or "error" in response:
+            if response.get("request_id") != self.request_id:
+                self.close()  # out of step: never read another request's reply as ours
             if response.get("error_code"):
                 from spireagent.json_boundary import BoundaryError
 
