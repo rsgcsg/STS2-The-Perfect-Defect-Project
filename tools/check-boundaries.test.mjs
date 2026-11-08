@@ -82,6 +82,11 @@ test("native read qualifiers admit only the audited patch-info query and keep pa
     assert.equal(textBoundaryErrors(owner, `${read}\n${mutation};`).length, 1, mutation);
   }
   assert.equal(textBoundaryErrors(owner, `${read}\nusing STS2Connector;`).length, 1);
+  const cache = "components/native-foundation/src/NativePatchStateCache.cs";
+  const patched = "using HarmonyLib;\nvar patched = Harmony.GetAllPatchedMethods();";
+  assert.deepEqual(textBoundaryErrors(cache, patched), []);
+  assert.equal(textBoundaryErrors(owner, patched).length, 1, "only the cache may read all patched methods");
+  assert.equal(textBoundaryErrors(cache, `${patched}\nHarmony.Patch(method);`).length, 1);
 });
 
 
