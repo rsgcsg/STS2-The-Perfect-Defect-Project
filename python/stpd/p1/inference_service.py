@@ -505,7 +505,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     scorers: dict[str, Any] = {}
     waiting: dict[int, list[dict[str, Any]]] = {}
     control.send_bytes(b"ready")
-    sources = list(inputs)
+    sources = list(inputs)  # every prepare worker, for the whole service life
     while True:
         ready = wait([control, *sources])
         if control in ready:  # models first: a published mu is resident before its rows
@@ -526,8 +526,9 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             try:
                 part = pickle.loads(reader.recv_bytes())
             except EOFError:
-                sources.remove(reader)
-                continue
+                # A prepare worker is gone: its parts never arrive. End this
+                # process so the service fails every outstanding row loudly.
+                return
             parts = waiting.setdefault(part["job"], [])
             parts.append(part)
             if len(parts) < part["parts"]:

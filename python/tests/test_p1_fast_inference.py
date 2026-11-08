@@ -589,3 +589,20 @@ def test_job_parts_are_joined_into_one_forward_with_the_same_scores(vocabulary, 
         _, behavior = distribution(want.scores, 1.5, 0.05)
         got = finished[3 + index]["behavior_q"]
         assert torch.allclose(torch.tensor(got), torch.tensor(behavior), atol=1e-6)
+
+
+def test_a_dead_prepare_worker_stops_the_service_loudly(vocabulary, model):
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler())
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["status"] == "scored"
+        service.workers[0][0].kill()
+        service.device_process.join(30)
+        assert not service.device_process.is_alive()
+        service.threads[2].join(30)
+        assert _score(client, encoded, 4, "g1")["error_code"] == "SERVICE_STOPPING"
+    finally:
+        client.close()
+        service.close()
