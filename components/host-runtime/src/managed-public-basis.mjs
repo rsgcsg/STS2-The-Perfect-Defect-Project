@@ -6,10 +6,14 @@ import { checkPublicBasisLight, decodePublicBasis, PUBLIC_BASIS_SCHEMA, PUBLIC_B
  * fullCheck=false (fast chain, unsampled step) keeps every semantic gate but skips the
  * strict shape decode; the sampled steps and R7 games get the full decode. */
 export function captureManagedPublicBasis(session, { generationId, gameContinuityId, ordinal, settledRelicCounters = false, fullCheck = true }) {
-  const snapshot = structuredClone(session.observe());
+  // The old chain copies the projection so no consumer can reach the session's objects.
+  // The fast chain (fullCheck=false) freezes them instead: same isolation, no copy, and
+  // unchanged subtrees keep their identity from step to step.
+  const own = fullCheck ? structuredClone : deepFreeze;
+  const snapshot = own(session.observe());
   const reads = snapshot.reads.map(listed => {
     try { return { read_id: listed.read_id, kind: listed.kind,
-      response: structuredClone(session.read({ readId: listed.read_id, expectedSnapshotId: snapshot.snapshot_id })), error: null }; }
+      response: own(session.read({ readId: listed.read_id, expectedSnapshotId: snapshot.snapshot_id })), error: null }; }
     catch (error) { return { read_id: listed.read_id, kind: listed.kind, response: null, error: String(error.message) }; }
   });
   const missing = reads.flatMap(read => read.response === null ? [`read:${read.read_id}:${read.error}`]
@@ -28,4 +32,16 @@ export function captureManagedPublicBasis(session, { generationId, gameContinuit
     captured_at: new Date(now).toISOString(), expires_at: new Date(now + 30_000).toISOString(),
     total_bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), first_cursor: 'inline', capture_ordinal: ordinal },
     basis, serializedObservation };
+}
+
+/** Freezes every object and array reachable from value (already frozen subtrees are skipped). */
+export function deepFreeze(value) {
+  const pending = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (item === null || typeof item !== "object" || Object.isFrozen(item)) continue;
+    Object.freeze(item);
+    for (const key of Object.keys(item)) pending.push(item[key]);
+  }
+  return value;
 }
