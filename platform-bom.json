@@ -16,9 +16,9 @@
     },
     "host_runtime": {
       "version": "1.1.0-rc.64",
-      "source_revision": "a8f2ba95b5f32c84559983f7f79f9889a17b17cc",
-      "component_tree_revision": "3a07eb3bc65b746830baf72ad3c6fee00aaecd9b",
-      "component_source_digest_sha256": "22cb59ca4db7b8c2d413529e0e20660e19375f35a178484cf11f4d9deeef73db"
+      "source_revision": "a921c63717289c321c37b6139363e867298a7993",
+      "component_tree_revision": "f8a15321eb03ecfa641a5b608a7eaa79e5e5a253",
+      "component_source_digest_sha256": "89769362fea16e4847e728838255e7593dc55b5f9c8741ca0ce3081a93e125e3"
     },
     "annotator": {
       "version": "0.3.0-rc.33",
