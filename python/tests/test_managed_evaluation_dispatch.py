@@ -1631,3 +1631,36 @@ def test_in_process_transport_starts_the_same_runtime_arguments_inside_the_host_
     assert "node" not in argv and str(tmp_path / "cli.js") not in argv
     # Cleanup sent the same owner Stop on stdin before the Host manager close.
     assert json.loads(stdin.final.split(b"\n")[1]) == {"schema": backend.INPROCESS_STOP_SCHEMA}
+
+
+@pytest.mark.parametrize("transport", ["in_process", "http"])
+def test_in_process_is_refused_on_the_current_release_even_with_its_files(
+    tmp_path, monkeypatch, transport
+):
+    """The released pin sets are empty: rc.64 plus launcher files never admits in_process."""
+    from spireagent.workbench import managed_evaluation as backend
+
+    assert backend.IN_PROCESS_RUNTIME_VERSIONS == frozenset()
+    assert backend.IN_PROCESS_HOST_VERSIONS == frozenset()
+    actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
+    monkeypatch.setattr(backend, "source_identity", lambda _: actual)
+    monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
+    monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
+
+    def audit(*_, **_kwargs):
+        raise RuntimeError("admitted_runtime_before_world_audit")
+
+    monkeypatch.setattr(backend, "_audit", audit)
+    (tmp_path / "package.json").write_bytes(json_bytes({"version": "0.1.0-rc.64"}))
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "managed-inprocess-host.js").write_text("")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "managed-host-service-tool.mjs").write_text("")
+    configuration = {"producer": actual.to_dict(), "managed_transport": transport,
+        "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
+        "agent_adapter": backend.export.adapter_identity()}
+    error, reason = ((BoundaryError, "in_process_transport_unsupported") if transport == "in_process"
+                     else (RuntimeError, "admitted_runtime_before_world_audit"))
+    with pytest.raises(error, match=reason):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)

@@ -108,13 +108,16 @@ function successorState() {
 function fakeNative({ successors = [successorState()], mutateLine = null } = {}) {
   const writer = new CompactWriter();
   const log = [];
+  const requests = [];
   let compact = false;
   let step = 0;
   let current = eventState();
   return {
     log,
-    async request(request) {
+    requests,
+    async request(request, timeoutMs) {
       log.push(request.cmd);
+      requests.push(JSON.stringify([request, timeoutMs]));
       if (request.cmd === "start_run" || request.cmd === "reset_run") {
         current = eventState();
         return compact ? received(writer.frame(current, "full")) : structuredClone(current);
@@ -157,6 +160,11 @@ test("old chain never sends configure_output and keeps its exact requests", asyn
   const receipt = await act(old, snapshot);
   assert.equal(receipt.delivery, "delivered");
   assert.deepEqual(native.log, ["start_run", "action"]);
+  // Byte-for-byte what the pre-slice session (0369eacf) sends for the same run.
+  assert.deepEqual(native.requests, [
+    '[{"cmd":"start_run","character":"Ironclad","seed":"SEED","lang":"en","ascension":0},10000]',
+    '[{"action":"choose_option","args":{"event_ref":"native-2","option_index":0,"option_ref":"native-4","room_ref":"native-1"},"cmd":"action"},10000]'
+  ]);
 });
 
 test("compact output rebuilds the same snapshots and receipts as the full writer", async () => {
@@ -254,6 +262,28 @@ test("configure refused or a mount without a full frame fails closed", async () 
     : original(request);
   await assert.rejects(fast.mount({ seed: "SEED", reset: true }), error => error.reason === "instance_start_not_full");
   assert.equal(fast.taintReason, "compact_state_divergence");
+});
+
+test("a new instance must be fresh and start the way it was asked (review S2)", async () => {
+  for (const [edit, reason] of [
+    [frame => { frame.episode_instance = "test-instance-1"; }, "instance_reused"],
+    [frame => { frame.start = { kind: "from_save", save_sha256: "e".repeat(64) }; }, "start_mismatch"]
+  ]) {
+    const native = fakeNative();
+    const original = native.request;
+    const fast = session(native, {});
+    await act(fast, await fast.mount({ seed: "SEED" }));
+    const writer = new CompactWriter();
+    writer.frame(eventState(), "full");
+    native.request = async (request) => {
+      if (request.cmd !== "reset_run") return original(request);
+      const frame = JSON.parse(writer.frame(eventState(), "full"));
+      edit(frame);
+      return received(JSON.stringify(frame));
+    };
+    await assert.rejects(fast.mount({ seed: "SEED", reset: true }), error => error.reason === reason, reason);
+    assert.equal(fast.taintReason, "compact_state_divergence");
+  }
 });
 
 test("an unexpected full frame on an action is a divergence", async () => {

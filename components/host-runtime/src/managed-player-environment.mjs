@@ -2843,6 +2843,7 @@ export class ManagedPlayerEnvironmentSession {
   #compactConfigured = false;
   #compactInstance = null;
   #compactCheckAll = false;
+  #compactInstances = new Set();
 
   constructor({
     process,
@@ -2929,7 +2930,7 @@ export class ManagedPlayerEnvironmentSession {
         lang: this.#language,
         ascension: this.#ascension,
         ...(initialProgress == null ? {} : { initial_progress: initialProgress })
-      }, timeoutMs, { startsInstance: true });
+      }, timeoutMs, { startsInstance: "new_run" });
       this.#record("mount_transport_and_native", performance.now() - mountStarted);
       this.#ledger.clear();
       this.#publicEntityAliases.clear();
@@ -2962,7 +2963,7 @@ export class ManagedPlayerEnvironmentSession {
     this.#publicEntityAliases.clear();
     try {
       const state = await this.#nativeState({ cmd: "load_save", path, lang: this.#language }, timeoutMs,
-        { startsInstance: true });
+        { startsInstance: "from_save" });
       if (state?.type !== "decision" || state.decision !== "map_select") {
         throw new Error("managed_map_restore_not_map");
       }
@@ -3236,6 +3237,10 @@ export class ManagedPlayerEnvironmentSession {
     const started = performance.now();
     if (frame.frame === "full") {
       if (!startsInstance) throw new CompactStateDivergence("unexpected_full_frame");
+      // The native says how this instance began; it must be what was asked, under a fresh instance id.
+      if (frame.start?.kind !== startsInstance) throw new CompactStateDivergence("start_mismatch", String(frame.start?.kind ?? "missing"));
+      if (this.#compactInstances.has(frame.episode_instance)) throw new CompactStateDivergence("instance_reused");
+      if (typeof frame.episode_instance === "string") this.#compactInstances.add(frame.episode_instance);
       // A new instance gets a new table and its own check schedule, drawn now,
       // before any of its content has been read.
       this.#compactInstance = {
