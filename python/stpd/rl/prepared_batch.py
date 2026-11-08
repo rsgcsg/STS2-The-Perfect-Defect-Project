@@ -112,6 +112,12 @@ class RowLayout:
     roles: dict[str, tuple[Tensor, Tensor, Tensor, tuple[int, ...]]] = field(
         default_factory=dict)
     role_present: dict[str, Tensor] = field(default_factory=dict)
+    # C-SCALE packed text (unique texts in their own order, real tokens only):
+    # flat index into text_ids [texts * prepared width], cumulative lengths and the
+    # longest text. Absent (None) in layouts written before C-SCALE step 2.
+    text_tokens: Tensor | None = None
+    text_offsets: Tensor | None = None  # int32 [texts + 1]
+    text_longest: int = 0
 
 
 @dataclass(frozen=True)

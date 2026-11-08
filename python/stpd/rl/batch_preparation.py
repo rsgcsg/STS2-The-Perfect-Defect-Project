@@ -345,6 +345,11 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
         low = high
     text_slots = torch.empty_like(order)
     text_slots[order] = torch.arange(texts)
+    real = lengths.long()
+    starts_text = torch.repeat_interleave(real.cumsum(0) - real, real)
+    text_tokens = (torch.repeat_interleave(torch.arange(texts) * prepared_width, real)
+                   + torch.arange(int(real.sum())) - starts_text)
+    text_offsets = torch.cat((real.new_zeros(1), real.cumsum(0))).to(torch.int32)
     joint = group.joint
     node_text = joint.tensors["text_indices"]
     if len(node_text) and int(node_text.max()) >= len(inverse):
@@ -421,7 +426,9 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
         reductions=reductions, scene_buckets=tuple(buckets), scene_rows=row_order,
         scene_inverse=scene_inverse, scene_nodes=torch.cat(nodes),
         scene_positions=torch.cat(positions), scene_lengths=slots[row_order],
-        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags)
+        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags,
+        text_tokens=text_tokens, text_offsets=text_offsets,
+        text_longest=int(real.max()) if texts else 0)
 
 
 def prepare_group(

@@ -52,9 +52,14 @@ def prepared(model, *layouts, microbatch_size=8):
     return batches if len(batches) > 1 else batches[0]
 
 
-def forward_and_gradients(model, group):
+def forward_and_gradients(model, group, *, packed=None):
     model.zero_grad(set_to_none=True)
-    scores, logits, hp = model.forward_prepared_rl4(group)
+    if packed is None:
+        scores, logits, hp = model.forward_prepared_rl4(group)
+    else:
+        from stpd.p1.rows_forward import forward_rows
+
+        scores, logits, hp = forward_rows(model, group, packed=packed)
     generator = torch.Generator().manual_seed(5)
     total = hp.mul(torch.randn(hp.shape, generator=generator)).sum()
     for value in (scores, logits):
@@ -66,9 +71,9 @@ def forward_and_gradients(model, group):
     return (scores.detach(), logits.detach(), hp.detach()), gradients
 
 
-def assert_same_function(model, padded, rows):
+def assert_same_function(model, padded, rows, *, packed=None):
     (s0, l0, h0), g0 = forward_and_gradients(model, padded)
-    (s1, l1, h1), g1 = forward_and_gradients(model, rows)
+    (s1, l1, h1), g1 = forward_and_gradients(model, rows, packed=packed)
     for left, right in ((s0, s1), (l0, l1), (h0, h1)):
         assert left.shape == right.shape
         assert torch.equal(left.isneginf(), right.isneginf())
@@ -96,6 +101,36 @@ def test_rows_forward_equals_padded_forward_on_cpu(model, varied, bucket_rows, w
         plain = dc.replace(group, policy=False)
         assert_same_function(model, plain, dc.replace(plain, layout=row_layout(
             plain, bucket_rows=bucket_rows, width_multiple=width_multiple)))
+
+
+@pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8), (1, 1)])
+def test_packed_rows_forward_equals_padded_forward_on_cpu(model, varied, bucket_rows,
+                                                          width_multiple):
+    """C-SCALE step 2: the packed path (every attention over real tokens only:
+    packed text, scene, both heads, cross-attention) is the same function. On CPU
+    it runs the reference attention one sequence at a time; CUDA runs flash."""
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    for group in groups:
+        layout = row_layout(group, bucket_rows=bucket_rows, width_multiple=width_multiple)
+        texts = len(layout.text_order)
+        assert layout.text_offsets is not None and len(layout.text_offsets) == texts + 1
+        lengths = group.tensors["text_lengths"][:texts].long()
+        assert int(layout.text_offsets[-1]) == int(lengths.sum())
+        assert layout.text_longest == int(lengths.max())
+        assert_same_function(model, group, dc.replace(group, layout=layout), packed=True)
+        plain = dc.replace(group, policy=False)
+        assert_same_function(model, plain, dc.replace(plain, layout=row_layout(
+            plain, bucket_rows=bucket_rows, width_multiple=width_multiple)), packed=True)
+
+
+def test_packed_forward_reads_a_layout_without_packed_text(model, varied):
+    """Layouts written before step 2 (offline dumps) carry no packed text: the text
+    encoder then runs bucketed, the scene/heads/cross still packed."""
+    group = prepared(model).minibatches[0].groups[0]
+    layout = dc.replace(row_layout(group), text_tokens=None, text_offsets=None,
+                        text_longest=0)
+    assert_same_function(model, group, dc.replace(group, layout=layout), packed=True)
 
 
 def test_preparation_builds_the_same_layout_and_it_survives_transport(model, varied):
