@@ -2776,7 +2776,18 @@ class SegmentLearner:
                 return None
         if stop is not None:
             return stop["reason"] if stop.get("reason") in WINDOW_END_STOPS else None
-        if (self.work / "STOP").exists():
+        stop_file = self.work / "STOP"
+        if stop_file.exists():
+            # The watcher writes its typed reason and budget into STOP before the socket
+            # stop can arrive; an empty or foreign STOP (operator, signal) fails closed.
+            try:
+                written = json.loads(stop_file.read_bytes() or b"null")
+            except (OSError, ValueError):
+                return None
+            budget = getattr(self.config, "operating_budget", None)
+            if (isinstance(written, dict) and written.get("reason") in WINDOW_END_STOPS
+                    and (budget is None or written.get("budget_id") == budget["id"])):
+                return written["reason"]
             return None
         if self.version >= self.config.max_versions:
             return "max_versions"
@@ -2886,6 +2897,10 @@ class SegmentLearner:
                         on_tick()
                     with self.condition:
                         self.condition.wait(0.2)
+                if self.window_end is None:
+                    # The socket stop normally lands during the drain; read the facts
+                    # again (same fail-closed table) before classifying what is left.
+                    self.window_end = self._window_end(deadline, initialize_only)
                 if not self.input_fenced:
                     phase = "final_labels"
                     try:

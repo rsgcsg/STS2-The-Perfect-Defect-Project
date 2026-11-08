@@ -268,7 +268,7 @@ fleet_median_max=0.10、max_nodes=4）按sacct NodeList把原close归到节点�
 不够就等并发一次attention），不补位。canary累计`canary_games`（默认10）局无节点状态失败就放回
 （`node_readmitted`，证据kind=canary，排除期那段原局仍隔离），并用`scontrol update ExcNodeList`让本attempt
 还在排队的actor数组也能用它；有一局失败、或canary全部提前结束，就算失败：USR1让canary打完当前局，
-进下一个strike的冷却。哪些局算节点失败：unknown/save_failed里除`environment_gap`、`wall_limit`外都算
+进下一个strike的冷却；canary提交后`canary_start_seconds`（默认3600）内一个lane都没起（全PENDING），也算失败：只scancel这个canary数组，它的lane不再计入`cpu_budget`。放回节点时更新ExcNodeList跳过所有canary数组（它们钉在被测节点上）。哪些局算节点失败：unknown/save_failed里除`environment_gap`、`wall_limit`外都算
 （c13f：坏节点的unknown 823/826是`runtime_execution_or_release_unknown`→unclassified，只数infrastructure就漏检）。
 慢节点单独判：存档局用时中位数 > 其它节点（≥3个，各≥`slow_min_games`局）中位数的`slow_ratio`倍（默认2），
 记`node_slow`，只不再派新actor，不发信号，不占`max_nodes`。`canary_lanes=0`保持旧行为（本watch内永久排除）。
@@ -304,7 +304,7 @@ model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即
 窗口结束（watcher的`run_budget_complete`/`absolute_deadline` stop、deadline或版本预算）drain后仍在飞的
 world/lease是正常收尾：learner在final CP之后把它们记进summary和finished事件的`dropped_at_window_end`
 （计数、episode键，不重投，原件保留），再照常检查actor allocation和SGD退出；watcher只报
-`worlds_dropped_at_window_end`。其他停法（人工STOP、故障stop、fence、读不到stop）仍报
+`worlds_dropped_at_window_end`。watcher把stop理由和budget_id原子写进`learner/STOP`（它比socket stop先到learner；drain后learner再读一次stop事实），空STOP或别的理由不算窗口结束。其他停法（人工STOP、故障stop、fence、读不到stop）仍报
 `unresolved_worlds_after_drain`。每两小时评估的job wall默认10800 s（审计第21行：evaluation-0007在
 snapshot阶段到2:05墙）；`release_swap`把更小的显式值抬到这个默认。snapshot仍逐字节哈希两侧，只是16线程并行。
 

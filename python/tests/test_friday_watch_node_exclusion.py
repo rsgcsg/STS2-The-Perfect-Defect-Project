@@ -498,3 +498,58 @@ def test_inherited_exclusions_are_seeded_once_into_a_new_work_dir(owner, watch, 
     seeded.persist()
     again = watch.SegmentWatcher(config, tmp_path / "watch-c16")  # in-place restart
     assert again.state["node_exclusion"]["excluded"] == {}
+
+
+def test_canary_pending_past_start_deadline_is_cancelled_as_a_failed_canary(
+        owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path,
+                                                {"good-0": "smp-9-2"})
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000, due=now - 1)},
+        "strikes": {"smp-9-20": 1}}
+    owner.replace_actors(value)
+    record = owner.state["node_exclusion"]["excluded"]["smp-9-20"]
+    pending = [{"actor": a, "job_id": "1", "array_job_id": "78_0", "state": "PENDING",
+                "exit_code": "0:0", "terminal": False, "node": None}
+               for a in ("canary-1-a", "canary-1-b")]
+    rl.actor_accounting = lambda path, with_node=False: pending
+    commands = []
+    monkeypatch.setattr(watch, "read_published", lambda path: {"job_id": "78;cluster"})
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **k: (
+        commands.append(command) or SimpleNamespace(returncode=0)))
+    owner.replace_actors(value)
+    assert record["canary"] is not None and commands == []  # within the start deadline
+    record["canary"]["started_at"] = now - 3601
+    owner.replace_actors(value)
+    assert commands == [["scancel", "78"]]  # only the canary's own array
+    assert record["canary"] is None and record["strike"] == 2
+    assert record["canaries"][-1]["outcome"] == "not_started"
+    assert value["cancelled_canary_actors"] == ["canary-1-a", "canary-1-b"]
+    # Its still-PENDING lanes no longer count against the CPU budget.
+    owner.config.update(actors=466, cpus=32, cpu_budget=500)  # 466+32+2 == 500
+    record["cooldown_until"] = time.time() - 1
+    owner.replace_actors(value)
+    assert record.get("canary_waiting") is None and len(prepared) == 2
+
+
+def test_release_never_updates_a_pinned_canary_array(owner, watch, monkeypatch, tmp_path):
+    now = time.time()
+    value, rl, signals, prepared = canary_owner(owner, watch, monkeypatch, tmp_path,
+                                                {"good-0": "smp-9-2"})
+    owner.state["node_exclusion"] = {
+        "excluded": {"smp-9-20": excluded_record(watch, now - 9000),
+                     "smp-9-21": {**excluded_record(watch, now - 9000),
+                                  "canary": {"plan": "canary-B/plan.json", "actors": ["b"],
+                                             "started_at": now, "closes": 0,
+                                             "failures": 0}}},
+        "strikes": {}}
+    value["actor_plans"] = ["actor-plan", "canary-B/plan.json"]
+    updated = []
+    monkeypatch.setattr(watch, "read_published", lambda path: {"job_id": str(path.parent)})
+    monkeypatch.setattr(watch.subprocess, "run", lambda command, **k: (
+        updated.append(command) or SimpleNamespace(returncode=0)))
+    rl.actor_accounting = lambda path, with_node=False: [
+        {"actor": "x", "state": "PENDING", "terminal": False}]
+    owner.release_pending_exclusion(value, "smp-9-22")
+    assert [c[2] for c in updated] == ["JobId=."]  # actor-plan only, never canary-B

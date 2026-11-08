@@ -380,7 +380,7 @@ NODE_EXCLUSION_DEFAULTS: dict[str, Any] = {
     'window_attempts': 30, 'min_attempts': 20, 'node_fraction': .25,
     'fleet_median_max': .10, 'max_nodes': 4,
     'cooldown_seconds': [7200, 14400, 28800], 'canary_lanes': 2, 'canary_games': 10,
-    'slow_ratio': 2.0, 'slow_min_games': 20}
+    'slow_ratio': 2.0, 'slow_min_games': 20, 'canary_start_seconds': 3600}
 # Which closes count toward a node. The bad-node state does not classify as
 # ``infrastructure`` (c13f 11-08: 823 of 826 bad-node unknowns are
 # ``runtime_execution_or_release_unknown`` -> ``unclassified``), so narrowing to that
@@ -404,7 +404,7 @@ def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
         raise ValueError('explicit_node_unknown_exclusion_settings_required')
     value = {**NODE_EXCLUSION_DEFAULTS, **raw}
     ints = ('window_attempts', 'min_attempts', 'max_nodes', 'canary_lanes', 'canary_games',
-            'slow_min_games')
+            'slow_min_games', 'canary_start_seconds')
     fractions = ('node_fraction', 'fleet_median_max', 'slow_ratio')
     cooldown = value['cooldown_seconds']
     if (any(type(value[k]) is not int for k in ints)
@@ -417,6 +417,7 @@ def node_exclusion_settings(config: dict[str, Any]) -> dict[str, Any] | None:
             or not 0 <= value['max_nodes'] <= 16
             or not 0 <= value['canary_lanes'] <= 4 or not 1 <= value['canary_games'] <= 100
             or not 1 < value['slow_ratio'] <= 100 or not 5 <= value['slow_min_games'] <= 1000
+            or not 600 <= value['canary_start_seconds'] <= 14400
             or not isinstance(cooldown, list) or not 1 <= len(cooldown) <= 8
             or any(type(c) is not int or not 600 <= c <= 86400 for c in cooldown)
             or cooldown != sorted(cooldown)):
@@ -2479,7 +2480,16 @@ class SegmentWatcher(Watcher):
             ended = {row['actor'] for row in rows if row['terminal']}
             lanes_ended = (canary['closes'] < settings['canary_games']
                            and set(canary['actors']) <= ended)
-            if canary['failures'] > 0 or lanes_ended:
+            lanes = [row for row in rows if row['actor'] in canary['actors']]
+            # A canary still PENDING after the start deadline (node full, DRAIN/DOWN) is a
+            # failed canary: cancel only its own array, stop counting its lanes, strike.
+            never_started = (canary['closes'] == 0 and not lanes_ended
+                             and now - canary['started_at'] >= settings['canary_start_seconds']
+                             and all(row['state'] == 'PENDING' for row in lanes))
+            if never_started:
+                self.cancel_canary(canary)
+                attempt.setdefault('cancelled_canary_actors', []).extend(canary['actors'])
+            if canary['failures'] > 0 or lanes_ended or never_started:
                 # Lanes that end before their sample (crash, wall) are not evidence of a
                 # healthy node: fail closed, the next strike's cooldown, a new canary.
                 for row in rows:
@@ -2490,7 +2500,8 @@ class SegmentWatcher(Watcher):
                 nodes['strikes'][node] = nodes['strikes'].get(node, 0) + 1
                 cooldown = node_cooldown(settings, nodes['strikes'][node])
                 record.setdefault('canaries', []).append({**canary, 'ended_at': now,
-                    'outcome': 'lanes_ended_early' if lanes_ended and not canary['failures']
+                    'outcome': 'not_started' if never_started
+                    else 'lanes_ended_early' if lanes_ended and not canary['failures']
                     else 'failed'})
                 record.update(canary=None, strike=nodes['strikes'][node],
                               cooldown_until=now + cooldown if cooldown is not None else None)
@@ -2526,7 +2537,8 @@ class SegmentWatcher(Watcher):
         # Extra lanes stay inside the run's explicit CPU budget (actors + learner CPUs):
         # every canary lane still running counts, including those of re-admitted nodes.
         budget = self.config.get('cpu_budget', 500)
-        pinned = set(attempt.get('canary_actors', []))
+        pinned = set(attempt.get('canary_actors', [])) - set(
+            attempt.get('cancelled_canary_actors', []))
         active = sum(1 for row in rows if row['actor'] in pinned and not row['terminal'])
         active += sum(lanes for r in self.state['node_exclusion']['excluded'].values()
                       if r.get('canary') and not set(r['canary']['actors'])
@@ -2584,6 +2596,23 @@ class SegmentWatcher(Watcher):
         self.persist()
         self.telemetry('node_canary_started', **{k: v for k, v in event.items() if k != 'kind'})
 
+    def cancel_canary(self, canary: dict[str, Any]) -> None:
+        """``scancel`` our own never-started canary array (nothing else). Its lanes ran
+        no game, so nothing is retried; a failed cancel only alarms."""
+        submission = read_published(Path(canary['plan']).parent / 'submission.json')
+        if submission is None:
+            return
+        job = str(submission['job_id']).split(';')[0]
+        try:
+            result = subprocess.run(['scancel', job], check=False, capture_output=True,
+                                    timeout=60)
+            code: Any = result.returncode
+        except (OSError, subprocess.SubprocessError) as error:
+            code = type(error).__name__
+        if code != 0:
+            self.telemetry('attention', reason='node_canary_cancel_failed', job_id=job,
+                           outcome=code)
+
     def release_pending_exclusion(self, attempt: dict[str, Any], node: str) -> None:
         """A re-admitted node is usable by this attempt's still-pending actor elements:
         ``scontrol update`` of their ExcNodeList to the current list (our own arrays only;
@@ -2591,8 +2620,21 @@ class SegmentWatcher(Watcher):
         import rl
 
         current = self.actor_exclude_nodes() or []
+        # Canary arrays are pinned by --nodelist to the node under test: an ExcNodeList
+        # naming that node would make them unschedulable, so they are never updated.
+        canary_plans = {r['canary']['plan'] for r in
+                        self.state['node_exclusion'].get('excluded', {}).values()
+                        if r.get('canary')}
+        canary_plans |= {c['plan'] for r in
+                         self.state['node_exclusion'].get('excluded', {}).values()
+                         for c in r.get('canaries', [])}
+        canary_plans |= {e['evidence']['plan'] for rows in
+                         self.state['node_exclusion'].get('readmitted', {}).values()
+                         for e in rows if e.get('evidence', {}).get('plan')}
         outcomes = []
         for plan in attempt['actor_plans']:
+            if plan in canary_plans:
+                continue
             submission = read_published(Path(plan).parent / 'submission.json')
             if submission is None:
                 continue
@@ -2738,7 +2780,18 @@ class SegmentWatcher(Watcher):
         if not (root / 'login-launch/STOP').exists():
             save(root / 'login-launch/STOP', {'reason': reason})
         if (root / 'learner').exists():
-            (root / 'learner/STOP').touch()
+            # The typed reason travels in the file itself (atomic replace), because the
+            # learner sees this file before the socket stop below can reach it. Only a
+            # window-end reason with this budget lets in-flight worlds close as dropped;
+            # an empty STOP (operator touch, signal) stays fail closed.
+            learner_stop = root / 'learner/STOP'
+            try:
+                prior = json.loads(learner_stop.read_bytes() or b'null')
+            except (OSError, ValueError):
+                prior = None
+            if not isinstance(prior, dict) or 'reason' not in prior:
+                save(learner_stop, {'reason': attempt.get('first_stopping', reason),
+                                    'budget_id': self.config.get('budget_id')})
         # Numeric steps share the held allocation. Cooperative generation/file
         # Stop leaves their CPU pools and resource tracker alive for drain/CP.
         # A step-wide USR1 also reaches descendants; hard cancellation remains

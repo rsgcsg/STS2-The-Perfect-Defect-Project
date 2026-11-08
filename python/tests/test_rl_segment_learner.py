@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import threading
 import time
@@ -1045,7 +1046,7 @@ def test_window_end_reads_remote_stop_and_operator_stop_or_unreadable_fails_clos
         raise OSError("nfs")
     broken = _ending(tmp_path, deadline_at=0.0, exchange=SimpleNamespace(stop_request=unreadable))
     assert SegmentLearner._window_end(broken, later, False) is None
-    (tmp_path / "STOP").touch()
+    (tmp_path / "STOP").touch()  # operator touch or signal: fail closed
     assert SegmentLearner._window_end(_ending(tmp_path, deadline_at=0.0), later, False) is None
     assert SegmentLearner._window_end(_ending(tmp_path), time.monotonic() - 1, True) is None
 
@@ -1060,3 +1061,23 @@ def test_inflight_worlds_at_window_end_are_dropped_counted_never_retried():
     assert window_end_drop(None, {"lease-1": 8}, {}, fenced=False) is None  # -> raises
     assert window_end_drop("deadline", {"lease-1": 8}, {}, fenced=True) is None
     assert window_end_drop("deadline", {}, {}, fenced=False) is None  # nothing in flight
+
+
+def test_watcher_stop_file_arrives_before_the_socket_stop_and_is_a_normal_window_end(tmp_path):
+    """Real order (review H1): the watcher writes learner/STOP with its typed reason, the
+    loop exits on it, and the socket stop arrives only during the drain."""
+    later = time.monotonic() + 3600
+    budget = SimpleNamespace(max_versions=100, operating_budget={"id": "b-1"})
+    (tmp_path / "STOP").write_text(json.dumps({"reason": "absolute_deadline",
+                                               "budget_id": "b-1"}))
+    owner = _ending(tmp_path, config=budget)
+    assert SegmentLearner._window_end(owner, later, False) == "absolute_deadline"
+    from stpd.rl.segment_learner import window_end_drop
+    dropped = window_end_drop("absolute_deadline", {"lease-1": 8}, {}, fenced=False)
+    assert dropped is not None  # closes normally with a dropped count, not a failure
+    for written in ({"reason": "absolute_deadline", "budget_id": "other"},
+                    {"reason": "learner_progress_stalled", "budget_id": "b-1"},
+                    "not json"):
+        (tmp_path / "STOP").write_text(written if isinstance(written, str)
+                                       else json.dumps(written))
+        assert SegmentLearner._window_end(_ending(tmp_path, config=budget), later, False) is None
