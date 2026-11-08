@@ -36,6 +36,63 @@ def single_cpu_thread() -> None:
         torch.set_num_interop_threads(1)
 
 
+def load_behavior_mu(identity: dict[str, Any], *, node_cache: NodeMuCache | None,
+                     exchange: Any, cache_root: Path, text_cache: TextVectorCache) -> Any:
+    """Load and verify one immutable behavior mu on CPU (model, heads, numerics).
+
+    Shared by the actor-local scorer and the standalone inference service, so
+    both apply the same grant/heads/snapshot/adapter/input checks.
+    """
+    # Download only this grant, never walk all intermediate publications. The
+    # temporary package is owned here; no existing Store asset is removed.
+    if node_cache is not None:
+        with node_cache.materialize(identity) as (package, head, raw):
+            model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
+    else:
+        with tempfile.TemporaryDirectory(prefix="mu-", dir=cache_root) as temporary:
+            package = exchange.materialize_model(identity, Path(temporary))
+            model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
+        head = exchange.store.get_manifest(identity["heads_artifact_id"])
+        raw = b"".join(exchange.store.read_payload(head.payload("checkpoint")))
+    payload = head.payload("checkpoint")
+    if (head.kind != "checkpoint" or payload.sha256 != identity["heads_sha256"]
+            or head.parameters.value().get("schema") != "stpd/rl-behavior-heads-1"
+            or head.parents != (Parent("policy", identity["model_artifact_id"]),)):
+        raise ValueError("behavior_heads_binding_changed")
+    if digest(raw) != identity["heads_sha256"]:
+        raise ValueError("behavior_heads_checksum_changed")
+    state = decode_checkpoint(raw)
+    with torch.random.fork_rng(devices=[]):
+        model.enable_rl4_heads(0)
+    model.rl4_heads.load_state_dict(state["heads"], strict=True)
+    numerical = {key: identity[key] for key in (
+        "precision", "tf32", "projection", "execution", "adapter", "deduplicate_text")}
+    expected = digest(json_bytes({"weights": identity["model_sha256"],
+                                  "heads": identity["heads_sha256"],
+                                  "numerical": numerical}))
+    if identity["snapshot_sha256"] != expected:
+        raise ValueError("behavior_snapshot_checksum_changed")
+    compiler = FrameCompiler(model.vocabulary)
+    if (identity["precision"] != "fp32" or identity["tf32"] is not False
+            or identity["adapter"] != adapter_identity()
+            or identity.get("vocabulary_sha256", compiler.identity["vocabulary_sha256"])
+                != compiler.identity["vocabulary_sha256"]
+            or identity.get("input_spec", compiler.identity["input_spec"])
+                != compiler.identity["input_spec"]):
+        raise ValueError("behavior_numerical_or_input_binding_changed")
+    bound_projection(model.vocabulary, identity["projection"])
+    execution = MStdExecution.decode(identity["execution"])
+    if execution.implementation not in {
+            "experimental-packed-v1", "experimental-joint-nodes-v1"}:
+        raise ValueError("actor_mu_requires_packed_execution")
+    model.execution = execution
+    model.deduplicate_text = identity["deduplicate_text"]
+    model.cpu().eval().requires_grad_(False)
+    model.text_cache = text_cache
+    model.text_cache_namespace = identity["snapshot_sha256"]
+    return model
+
+
 class LocalMuScorer:
     """Full model codec/Store reader; bounded cache and explicitly retained tails.
 
@@ -73,54 +130,8 @@ class LocalMuScorer:
         self.node_cache: NodeMuCache | None = None
 
     def _load(self, identity: dict[str, Any]) -> Any:
-        # Download only this grant, never walk all intermediate publications. The
-        # temporary package is owned here; no existing Store asset is removed.
-        if self.node_cache is not None:
-            with self.node_cache.materialize(identity) as (package, head, raw):
-                model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
-        else:
-            with tempfile.TemporaryDirectory(prefix="mu-", dir=self.cache_root) as temporary:
-                package = self.exchange.materialize_model(identity, Path(temporary))
-                model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
-            head = self.exchange.store.get_manifest(identity["heads_artifact_id"])
-            raw = b"".join(self.exchange.store.read_payload(head.payload("checkpoint")))
-        payload = head.payload("checkpoint")
-        if (head.kind != "checkpoint" or payload.sha256 != identity["heads_sha256"]
-                or head.parameters.value().get("schema") != "stpd/rl-behavior-heads-1"
-                or head.parents != (Parent("policy", identity["model_artifact_id"]),)):
-            raise ValueError("behavior_heads_binding_changed")
-        if digest(raw) != identity["heads_sha256"]:
-            raise ValueError("behavior_heads_checksum_changed")
-        state = decode_checkpoint(raw)
-        with torch.random.fork_rng(devices=[]):
-            model.enable_rl4_heads(0)
-        model.rl4_heads.load_state_dict(state["heads"], strict=True)
-        numerical = {key: identity[key] for key in (
-            "precision", "tf32", "projection", "execution", "adapter", "deduplicate_text")}
-        expected = digest(json_bytes({"weights": identity["model_sha256"],
-                                      "heads": identity["heads_sha256"],
-                                      "numerical": numerical}))
-        if identity["snapshot_sha256"] != expected:
-            raise ValueError("behavior_snapshot_checksum_changed")
-        compiler = FrameCompiler(model.vocabulary)
-        if (identity["precision"] != "fp32" or identity["tf32"] is not False
-                or identity["adapter"] != adapter_identity()
-                or identity.get("vocabulary_sha256", compiler.identity["vocabulary_sha256"])
-                    != compiler.identity["vocabulary_sha256"]
-                or identity.get("input_spec", compiler.identity["input_spec"])
-                    != compiler.identity["input_spec"]):
-            raise ValueError("behavior_numerical_or_input_binding_changed")
-        bound_projection(model.vocabulary, identity["projection"])
-        execution = MStdExecution.decode(identity["execution"])
-        if execution.implementation not in {
-                "experimental-packed-v1", "experimental-joint-nodes-v1"}:
-            raise ValueError("actor_mu_requires_packed_execution")
-        model.execution = execution
-        model.deduplicate_text = identity["deduplicate_text"]
-        model.cpu().eval().requires_grad_(False)
-        model.text_cache = self.text_cache
-        model.text_cache_namespace = identity["snapshot_sha256"]
-        return model
+        return load_behavior_mu(identity, node_cache=self.node_cache, exchange=self.exchange,
+                                cache_root=self.cache_root, text_cache=self.text_cache)
 
     def adopt(self, identity: dict[str, Any], *, retain: bool = False) -> None:
         key = identity["snapshot_sha256"]
@@ -233,10 +244,23 @@ class LocalMuScorer:
 
 
 class RemoteMuScorer:
-    """Explicit central alternative, sharing the same frozen-mu/tail interface."""
+    """Explicit central alternative, sharing the same frozen-mu/tail interface.
 
-    def __init__(self, attachment: dict[str, Any]) -> None:
+    `role=learner_central` is the learner-internal scorer (no binary dataplane).
+    `role=inference_service` is the standalone RL5 S2 service: the actor keeps
+    its learner control/dataplane channel and only scoring leaves the core.
+    The service loads each granted mu itself; adopt() asks it once per new mu.
+    """
+
+    def __init__(self, attachment: dict[str, Any], *, exchange: Any = None,
+                 cache_root: Path | None = None) -> None:
         self.attachment = copy.deepcopy(attachment)
+        self.service = attachment.get("role") == "inference_service"
+        # Present only so the dataplane actor keeps its Exchange/WAL wiring; this
+        # scorer never reads a model from them.
+        self.exchange, self.cache_root = exchange, cache_root
+        self.node_cache: NodeMuCache | None = None
+        self.adopted: set[str] = set()
         # Scores do not wait for commits or grants. One actor-owned, serialized
         # score channel can therefore serve policy and old-mu tails without
         # opening/authenticating a new TCP connection for every row. Control
@@ -262,8 +286,20 @@ class RemoteMuScorer:
                 # Reconnect via the original rendezvous on the next new request;
                 # no outstanding or unknown score is resent.
                 self.remote.close()
+            if self.service and key not in self.adopted:
+                # One owned load request per new mu. A lost reply is not
+                # resent: this begin fails and the World follows normal Stop.
+                try:
+                    loaded = self.remote.request("adopt", identity=identity)
+                except BaseException:
+                    self.remote.close()
+                    raise
+                if loaded.get("snapshot_sha256") != key:
+                    raise ValueError("inference_service_adopted_other_mu")
+                self.adopted.add(key)
             self.identities = {k: v for k, v in self.identities.items()
                                if k == key or self.references.get(k, 0)}
+            self.adopted &= set(self.identities) | {key}
             self.identities[key] = copy.deepcopy(identity)
             if retain:
                 self.references[key] = self.references.get(key, 0) + 1
@@ -327,8 +363,8 @@ class RemoteMuScorer:
 
     def report(self) -> dict[str, Any]:
         with self.lock:
-            return {"backend": "central", "requests": self.requests,
-                    "retained": dict(self.references)}
+            return {"backend": "service" if self.service else "central",
+                    "requests": self.requests, "retained": dict(self.references)}
 
     def close(self) -> None:
         with self.score_lock:
@@ -358,8 +394,10 @@ class ActorInferencePool(SegmentInferencePool):
             from spireagent.rl_local_wal import LocalControlWAL
             from spireagent.rl_socket_transport import NodeMuCache, ensure_fd_capacity
 
-            if not isinstance(scorer, LocalMuScorer):
-                raise ValueError("binary_dataplane_requires_actor_local_mu")
+            if not isinstance(scorer, LocalMuScorer) and not (
+                    isinstance(scorer, RemoteMuScorer) and scorer.service
+                    and scorer.exchange is not None and scorer.cache_root is not None):
+                raise ValueError("binary_dataplane_requires_actor_local_mu_or_service")
             self.fd_limits = ensure_fd_capacity(1)
             node_root = Path(tempfile.gettempdir()) / f"stpd-node-mu-{os.getuid()}" / (
                 attachment["run"]) / attachment["training_generation"]
