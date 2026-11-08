@@ -467,19 +467,27 @@ def audit_pick(game_instance_id: str, step_index: Any, threshold: int) -> bool:
     return int.from_bytes(pick.digest()[:8], "big") < threshold
 
 
-def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
-    """Score one job's prepared sub-groups with one mu in one forward.
+def _join_parts(groups: list[Any]) -> tuple[Any, list[int]]:
+    """One forward group from a job's prepared sub-groups.
 
     The sub-groups are joined by the C-SCALE `concatenate_groups` (lead 11-09 (a);
     one logic with `prepare_group`); each part's rows count from 0, so the joined
     rows are `range(total)` and output rows come back in part order.
     """
+    counts = [len(group.rows) for group in groups]
     if len(groups) == 1:
-        return [scorer.forward_tensors(groups[0])]
+        return groups[0], counts
     from stpd.rl.batch_preparation import concatenate_groups
 
-    counts = [len(group.rows) for group in groups]
-    joined = concatenate_groups(groups, rows=tuple(range(sum(counts))))
+    return concatenate_groups(groups, rows=tuple(range(sum(counts)))), counts
+
+
+def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
+    """Score one job's prepared sub-groups with one mu in one forward."""
+    return _score_joined(scorer, *_join_parts(groups))
+
+
+def _score_joined(scorer: Any, joined: Any, counts: list[int]) -> list[tuple[torch.Tensor, ...]]:
     tensors = scorer.forward_tensors(joined)
     out, start = [], 0
     for count in counts:
@@ -492,9 +500,10 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                    device: str, bf16: bool, compile: bool, threads: int) -> None:
     """Spawned device process: models and forwards only, no per-row Python work.
 
-    It reads prepared parts from every prepare worker, runs one job's parts when
-    all of them are there, and sends CPU tensors back; the service process does
-    the per-row checks, draws and replies (no GIL shared with the forward).
+    The loading thread reads prepared parts from every prepare worker and joins a
+    job's parts once all are there; the forward thread scores the previous job
+    meanwhile and sends CPU tensors back. The service process does the per-row
+    checks, draws and replies (no GIL shared with the forward).
     """
     import io
     from multiprocessing.connection import wait
@@ -504,6 +513,15 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     torch.set_num_threads(threads)
     scorers: dict[str, Any] = {}
     waiting: dict[int, list[dict[str, Any]]] = {}
+    joined: queue.Queue[tuple[list[dict[str, Any]], Any] | None] = queue.Queue(maxsize=2)
+
+    def forward() -> None:
+        while (item := joined.get()) is not None:
+            parts, group = item
+            output.send_bytes(pickle.dumps(_device_job(scorers, parts, group),
+                                           protocol=pickle.HIGHEST_PROTOCOL))
+
+    threading.Thread(target=forward, daemon=True, name="rl-inference-3-forward").start()
     control.send_bytes(b"ready")
     sources = list(inputs)  # every prepare worker, for the whole service life
     while True:
@@ -535,11 +553,16 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                 continue
             del waiting[part["job"]]
             parts.sort(key=lambda item: item["part"])
-            output.send_bytes(pickle.dumps(_device_job(scorers, parts),
-                                           protocol=pickle.HIGHEST_PROTOCOL))
+            live = [p["group"] for p in parts if p["group"] is not None]
+            try:
+                group: Any = _join_parts(live) if live else None
+            except Exception as failure:  # refused loudly by the service
+                group = failure
+            joined.put((parts, group))
 
 
-def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
+                joined: Any) -> list[dict[str, Any]]:
     out = []
     mu = parts[0]["mu"]
     scorer = scorers.get(mu)
@@ -547,12 +570,13 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]]) -> list[di
     started = time.perf_counter()
     outputs: dict[int, Any] = {}
     error: tuple[str, str] | None = None
-    if live and scorer is None:
+    if isinstance(joined, Exception):
+        error = ("NONFINITE_SCORES", f"join {type(joined).__name__}: {str(joined)[:200]}")
+    elif live and scorer is None:
         error = ("MU_NOT_RESIDENT", "")
     elif live:
         try:
-            for part, tensors in zip(live, _forward_parts(scorer, [p["group"] for p in live]),
-                                     strict=True):
+            for part, tensors in zip(live, _score_joined(scorer, *joined), strict=True):
                 outputs[part["part"]] = tensors
         except Exception as failure:  # loud in the service: the rows are refused
             error = ("NONFINITE_SCORES", f"{type(failure).__name__}: {str(failure)[:200]}")
