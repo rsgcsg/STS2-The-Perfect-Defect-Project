@@ -464,4 +464,5 @@ def test_real_rows_v2_row_survives_the_segment():
                                           selected_q=q[0]), values())
     h.close("g1", "stop")
     _, rows = decode_segment(h.sealed[0].data)
-    assert_frame_equal(frame, decode_row(rows[0], validator=compiler))
+    assert_frame_equal(frame, decode_row(rows[0], validator=compiler,
+                                         expected_sha256=row["payload"]["row_sha256"]))
