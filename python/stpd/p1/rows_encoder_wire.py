@@ -32,6 +32,17 @@ numbers whose float32 bits are nonzero are stored (`text_number_index` into the
 ragged stream). Padding to `text_width` is rebuilt as zeros, exactly as
 `compile_frame` pads. The sha256 of these bytes is the payload binding in
 `stpd/rl-inference-3` rows; encoding is deterministic.
+
+Canonical form (what `encode_row` writes): every integer array uses the smallest
+of u1/u2/i4/i8 holding its values; the header is `json.dumps(sort_keys=True,
+ensure_ascii=False, separators=(",", ":"))` UTF-8 with no duplicate keys; all
+padding is zero; `text_width` equals the longest text and every text has at
+least one token, as `compile_frame` produces; only nonzero token numbers are
+stored. There is one encoder (this Python module). `decode_row` accepts some
+non-canonical spellings of the same frame (wider integers, other header
+spacing), so a row sha256 identifies bytes produced by this encoder only; it is
+not a content identity across encoders and decode does not re-encode to check.
+A second encoder would need byte-equality tests against this one first.
 """
 from __future__ import annotations
 
@@ -97,15 +108,19 @@ def encode_row(frame: TensorFrame) -> bytes:
     tensors = frame.tensors
     if set(tensors) != set(FRAME_TENSORS) or set(frame.reductions) != set(REDUCTION_ORDER):
         _reject("frame_fields_differ")
+    if type(frame.entity_count) is not int:
+        _reject("frame_entity_count")
     for name, tensor in tensors.items():
         dtype = torch.float32 if name in {"numbers", "text_numbers"} else torch.long
-        if tensor.dtype != dtype or tensor.device.type != "cpu":
+        rank = 2 if name == "text_ids" else 3 if name == "text_numbers" else 1
+        if tensor.dtype != dtype or tensor.device.type != "cpu" or tensor.ndim != rank:
             _reject("frame_tensor_dtype")
     ids, numbers = tensors["text_ids"].numpy(), tensors["text_numbers"].numpy()
     lengths = tensors["text_lengths"].numpy()
-    if (ids.ndim != 2 or numbers.shape != (*ids.shape, 1) or lengths.shape != ids.shape[:1]
-            or (lengths.size and (int(lengths.min()) < 0 or int(lengths.max()) > ids.shape[1]))):
-        _reject("frame_text_shape")
+    if (numbers.shape != (*ids.shape, 1) or lengths.shape != ids.shape[:1]
+            or (lengths.size and int(lengths.min()) < 1)
+            or ids.shape[1] != (int(lengths.max()) if lengths.size else 0)):
+        _reject("frame_text_shape")  # compile_frame: width = longest text, no empty text
     real = np.arange(ids.shape[1])[None, :] < lengths[:, None]
     if ids[~real].any() or numbers[..., 0][~real].view(np.uint32).any():
         _reject("frame_text_padding_nonzero")  # compile_frame pads with zeros only
@@ -173,7 +188,8 @@ def _header(raw: bytes) -> tuple[dict[str, Any], int]:
     names = _plan(reductions)
     if len(table) != len(names) or any(
             not isinstance(entry, list) or len(entry) != 3 or entry[0] != name
-            or entry[1] not in _DTYPES or (entry[1] == "f4") != (name in FLOAT_ARRAYS)
+            or type(entry[1]) is not str or entry[1] not in _DTYPES
+            or (entry[1] == "f4") != (name in FLOAT_ARRAYS)
             or type(entry[2]) is not int or entry[2] < 0
             for entry, name in zip(table, names, strict=False)):
         _reject("row_header_arrays")
@@ -183,13 +199,15 @@ def _header(raw: bytes) -> tuple[dict[str, Any], int]:
     return header, end + _pad(end)
 
 
-def decode_row(row: bytes | bytearray | memoryview, *, validator: Any = None,
-               expected_sha256: str | None = None) -> TensorFrame:
+def decode_row(row: bytes | bytearray | memoryview, *, validator: Any,
+               expected_sha256: str | None) -> TensorFrame:
     """Rebuild the TensorFrame; validate structure/indices when `validator` is given.
 
-    `validator` is a `FrameCompiler` for the bound vocabulary (the inference
-    service always passes one): the same bounds `FrameCompiler.decode` checks
-    before M-std reads any index. `expected_sha256` binds these exact bytes.
+    Both checks are required arguments so a consumer cannot omit them by accident:
+    `validator` is a `FrameCompiler` for the bound vocabulary (the same bounds
+    `FrameCompiler.decode` checks before M-std reads any index) and
+    `expected_sha256` binds these exact bytes (`payload.row_sha256`). Only tests
+    of the byte layout itself pass None.
     """
     raw = bytes(row)
     if len(raw) > MAX_ROW_BYTES:
@@ -213,7 +231,12 @@ def decode_row(row: bytes | bytearray | memoryview, *, validator: Any = None,
         cursor += nbytes + _pad(nbytes)
     lengths, width = arrays["text_lengths"], header["text_width"]
     tokens = arrays["text_tokens"]
-    if ((lengths.size and (int(lengths.min()) < 0 or int(lengths.max()) > width))
+    # Check the canonical text shape before any dense allocation: width is the
+    # longest text and no text is empty (compile_frame), and the dense text is
+    # bounded like the old 64 MiB frame wire, so a header integer cannot inflate it.
+    if ((lengths.size and int(lengths.min()) < 1)
+            or width != (int(lengths.max()) if lengths.size else 0)
+            or lengths.size * width * 12 > MAX_ROW_BYTES
             or int(lengths.sum()) != tokens.size):
         _reject("row_text_shape")
     index, values = arrays["text_number_index"], arrays["text_number_values"]
