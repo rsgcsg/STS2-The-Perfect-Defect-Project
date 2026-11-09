@@ -17,7 +17,8 @@ from test_p1_input_v2 import public_state
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.data import digest, json_bytes
-from stpd.p1.fast_aggregator import LINK_SCHEMA, NodeAggregator
+from stpd.p1.export import input_spec
+from stpd.p1.fast_aggregator import LINK_SCHEMA, NodeAggregator, agent_input_spec
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.inference_service import (
     V3_MAX_MESSAGE,
@@ -117,6 +118,18 @@ def vocabulary() -> dict[str, Any]:
     return public_vocabulary(V2_INPUT_SPEC)
 
 
+# What the fast-env kernel sends: its model manifest's input_spec, not the projection.
+AGENT_SPEC = input_spec(public_vocabulary(V2_INPUT_SPEC))
+
+
+def test_agent_input_spec_is_the_model_manifest_binding(vocabulary):
+    # The kernel's hello/decision lines carry manifest.input.input_spec (WP8 whole-chain
+    # finding: the projection dict never matched a real fast-env process).
+    identity = FrameCompiler(vocabulary).identity
+    assert agent_input_spec(identity) == input_spec(vocabulary) == AGENT_SPEC
+    assert agent_input_spec(identity) != identity["input_spec"]
+
+
 @pytest.fixture(scope="module")
 def model(vocabulary: dict[str, Any]) -> MStd:
     torch.manual_seed(3)
@@ -155,7 +168,7 @@ def _decision_line(row_id: int, game: str, step: int, observation: dict[str, Any
             f'"catalog_len":{len(catalog) if catalog_len is None else catalog_len},'
             f'"catalog_sha256":"{digest(json_bytes(catalog))}","observation_sha256":"{"0" * 64}",'
             f'"in_combat":false,"floor":3,')
-    body = json.dumps({"input_spec": V2_INPUT_SPEC, "observation": observation,
+    body = json.dumps({"input_spec": AGENT_SPEC, "observation": observation,
                        "catalog": catalog})
     return (head + '"input":' + body + "}\n").encode()
 
@@ -200,7 +213,7 @@ def test_node_aggregator_scores_rows_end_to_end(vocabulary, model):
     try:
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 2, "p1_revision": "x",
-                  "input_spec": V2_INPUT_SPEC})
+                  "input_spec": AGENT_SPEC})
         observations = _observations(3)
         for game in ("g1", "g2"):
             env.send({"type": "episode_open", "game_instance_id": game, "actor_id": "actor-1",
@@ -271,7 +284,7 @@ def test_binding_difference_is_refused_before_the_service(vocabulary, model):
     try:
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
-                  "input_spec": V2_INPUT_SPEC})
+                  "input_spec": AGENT_SPEC})
         env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         observation = _observations(1)[0]
@@ -891,7 +904,7 @@ def test_a_broken_encoder_pool_fails_the_aggregator(vocabulary, model, capfd):
     try:
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
-                  "input_spec": V2_INPUT_SPEC})
+                  "input_spec": AGENT_SPEC})
         env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         aggregator.pool._break(RuntimeError("worker gone"))
@@ -918,13 +931,13 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
             env = FakeEnv(path)
             if bad["type"] != "episode_open":
                 env.send({"type": "hello", "env_process_id": "env-1", "slots": 1,
-                          "p1_revision": "x", "input_spec": V2_INPUT_SPEC})
+                          "p1_revision": "x", "input_spec": AGENT_SPEC})
             env.send(bad)
             env.socket.settimeout(60)
             assert env.reader.readline() == b""
         env = FakeEnv(path)  # a fresh connection is still served
         env.send({"type": "hello", "env_process_id": "env-2", "slots": 1, "p1_revision": "x",
-                  "input_spec": V2_INPUT_SPEC})
+                  "input_spec": AGENT_SPEC})
         env.send({"type": "episode_open", "game_instance_id": "g2", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         env.socket.sendall(_decision_line(1, "g2", 0, _observations(1)[0]))

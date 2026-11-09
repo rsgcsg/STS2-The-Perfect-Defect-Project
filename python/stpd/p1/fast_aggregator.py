@@ -43,6 +43,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 
+from .data import digest, json_bytes
 from .inference_service import V3_MAX_MESSAGE, V3_SCHEMA, pack_message, unpack_message
 from .local_inference import tcp_nodelay
 from .rows_encoder_pool import EncoderPool
@@ -55,6 +56,20 @@ _DECISION_HEAD = re.compile(
     rb'^\{"schema":"[^"]+","type":"decision","row_id":(\d+),"game_instance_id":"([A-Za-z0-9._:-]{1,128})",'
     rb'"step_index":(\d+),"consumption_id":"[^"]*","catalog_len":\d+,"catalog_sha256":"([0-9a-f]{64})"')
 _BINDING_FIELDS = ("catalog_len", "in_combat", "floor")
+
+
+def agent_input_spec(identity: dict[str, Any]) -> dict[str, str]:
+    """The model manifest's ``input.input_spec`` ({id, version, sha256}) for a compiler identity.
+
+    The fast-env kernel sends its agent manifest's input_spec in ``hello`` and in every
+    decision line; the model manifest binds ``stpd.p1.export.input_spec(vocabulary)``, so the
+    same digest is recomputed here from the projection and the vocabulary digest (never the
+    projection dict itself, which is not what the environment carries).
+    """
+    projection = identity["input_spec"]
+    return {"id": projection["id"], "version": projection["version"],
+            "sha256": digest(json_bytes({"projection": projection,
+                                         "vocabulary_sha256": identity["vocabulary_sha256"]}))}
 
 
 def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
@@ -75,7 +90,7 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
             "consumption_id": message.get("consumption_id"), "binding": None}
     # The line's own claims must equal what was encoded (no repair, no fallback).
     differs = [name for name, ok in (
-        ("input_spec", source.get("input_spec") == encoder.identity["input_spec"]),
+        ("input_spec", source.get("input_spec") == agent_input_spec(encoder.identity)),
         ("catalog", source.get("catalog") == source["observation"]["catalog"]),
         ("catalog_sha256", message.get("catalog_sha256") == encoded.catalog_sha256),
         ("catalog_len", message.get("catalog_len") == encoded.catalog_len
@@ -142,6 +157,7 @@ class NodeAggregator:
         identity = self.pool.identity
         self.compiler_identity = {key: identity[key] for key in
                                   ("input_spec", "vocabulary_sha256", "compiler_sha256")}
+        self.agent_input_spec = agent_input_spec(identity)
         self.window = window_ms / 1000
         self.aggregator_id = aggregator_id
         self.stats: dict[str, Any] = {"rows": 0, "packets": 0, "replies": 0,
@@ -402,7 +418,7 @@ class NodeAggregator:
     def _link_message(self, env: _Env, message: dict[str, Any]) -> None:
         kind = message.get("type")
         if kind == "hello":
-            if message.get("input_spec") != self.compiler_identity["input_spec"]:
+            if message.get("input_spec") != self.agent_input_spec:
                 print(json.dumps({"fast_aggregator_hello_input_spec_differs": env.name}),
                       file=sys.stderr, flush=True)
                 with contextlib.suppress(OSError):
