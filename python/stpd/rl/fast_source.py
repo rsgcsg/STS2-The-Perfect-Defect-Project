@@ -13,7 +13,10 @@ Three pieces, none used by the old chain:
   `instance_closed` says `close_reason` unknown/env_crash or `failure` unknown:*,
   or the actor sends `fast_instance_excluded`, the instance's not-yet-used
   segments are dropped and the already-used ones are only counted (old-chain
-  behavior for verified prefixes). An instance never attested is truncated.
+  behavior for verified prefixes). "Used" = already selected into a prepared
+  (read-ahead) batch (lead ruling 11-10): such a batch is neither voided nor
+  rebuilt; its rows are counted apart from rows already handed to SGD. An
+  instance never attested is truncated.
 - `read_handoff`: the receiving end of `fast_handoff` (segment messages are
   copied from shared memory, verified and acked; `instance_closed` has no ack).
 
@@ -45,8 +48,10 @@ Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲
   - hp: `r7_audit.public_battle_hp` (a battle = a maximal run of in_combat rows
     ending where the next row is not in combat or at the natural terminal; label
     = public hp in that last combat row's step outcome / 100, states = the
-    battle's rows). Off by default (dataplane `fast_aux_labels`) until
-    `compare_hp_labels` shows it equal to the old chain; it switches to
+    battle's rows). Dataplane `fast_aux_labels` defaults to every pool whose
+    loss coefficient is > 0 (an explicit list may not leave one out; lead
+    ruling 11-10); `compare_hp_labels` still has to show the hp rule equal to
+    the old chain on a corpus before a long run relies on hp. It switches to
     `combat_end` once the native side emits it (WP1 slice 3). One difference
     from the old chain: a reward-boundary battle's hp rows enter the pool at
     game end, not at its segment's commit (pool timing only; same rows, same
@@ -717,6 +722,15 @@ class FastSegmentIntake:
             self._count_excluded(reason, segment.rows, used=False)
         instance.buffered.clear()
         return IntakeDecision(exclude_instance=instance_id, reply=reply)
+
+    def excluded(self, instance_id: str) -> bool:
+        """Whether this instance is excluded now (checked again at admission:
+        an exclusion may be applied between an admit decision and its use)."""
+        with self.lock:
+            instance = self.instances.get(instance_id)
+            if instance is not None:
+                return instance.excluded is not None
+            return self.finished.get(instance_id) is not None
 
     def _count_excluded(self, reason: str, rows: int, *, used: bool) -> None:
         if rows:

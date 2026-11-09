@@ -104,7 +104,13 @@ def shard_groups(rows: list[int], rank: int, world: int) -> tuple[int, ...]:
 
 
 def replica_check(model: torch.nn.Module, group: Any = None) -> None:
-    """Loud if theta differs across ranks (it must be bitwise identical)."""
+    """Loud if theta differs across ranks.
+
+    A checksum, not a bitwise comparison: per parameter, the float64 sum of its
+    values must be exactly equal on every rank. Ranks apply the same summed
+    gradients, so any real divergence changes these sums; an exactly
+    compensating change inside one parameter would not be seen.
+    """
     import torch.distributed as dist
 
     parameters = list(model.parameters())

@@ -718,10 +718,18 @@ class SegmentLearner:
                 if settings.steps != MAX_ROWS or settings.capacity_rows < MAX_ROWS:
                     raise BoundaryError("rl_learner", "fast_chain_requires_steps_equal_max_rows")
                 self.fast_sources = FastSources()
-                aux_labels = self.dataplane.get("fast_aux_labels", [])
+                # Every aux pool the loss weights (coef > 0) takes the fast labels
+                # by default (lead ruling 11-10); an explicit list that leaves out
+                # such a pool is refused, so its loss never silently becomes 0.
+                weighted = [kind for kind, coef in (("terminal", config.loss.terminal_coef),
+                                                    ("hp", config.loss.hp_coef)) if coef > 0]
+                aux_labels = self.dataplane.get("fast_aux_labels", weighted)
                 if (not isinstance(aux_labels, list)
                         or not set(aux_labels) <= {"terminal", "hp"}):
                     raise BoundaryError("rl_learner", "fast_aux_labels_must_list_terminal_or_hp")
+                if not set(weighted) <= set(aux_labels):
+                    raise BoundaryError("rl_learner",
+                                        "fast_aux_labels_omit_a_pool_with_positive_coef")
                 self.fast_intake = FastSegmentIntake(
                     run=config.run, generation=self.generation,
                     excluded_seeds=frozenset(settings.excluded_seeds),
@@ -730,6 +738,8 @@ class SegmentLearner:
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
                     "excluded_instances", "excluded_dropped_rows", "excluded_used_rows",
+                    "excluded_trained_rows", "excluded_prefetched_rows",
+                    "excluded_admit_raced", "excluded_admit_raced_rows",
                     "excluded_aux_rows")}
                 provider = RoutedSources(self.binary_sources, self.fast_sources)
             self.input_preparer = BinaryBatchPreparer(provider=provider,
@@ -1868,6 +1878,14 @@ class SegmentLearner:
             return
         if envelope["compiler_identity"] != self.compiler_identity:
             raise ValueError("fast_segment_compiler_identity_changed")
+        assert self.fast_intake is not None
+        if self.fast_intake.excluded(envelope["run_id"]):
+            # The intake decided "admit", then an exclusion of this instance was
+            # applied (another thread) before this admission ran: drop, counted.
+            self.fast_counters["excluded_admit_raced"] += 1
+            self.fast_counters["excluded_admit_raced_rows"] += segment.rows
+            self.fast_counters["excluded_dropped_rows"] += segment.rows
+            return
         # Full queue: drop the oldest queued, unprepared segments (whole segments,
         # no trace crosses them), counted; decision of 11-09.
         referenced = self._fast_referenced()
@@ -1915,12 +1933,20 @@ class SegmentLearner:
             self.fast_admitted_rows[record["run_id"]] -= record["rows"]
 
     def _fast_exclude(self, instance: str) -> None:
-        """D1 = A: drop what is still queued and unprepared; count what was used."""
+        """D1 = A: drop what is still queued and unprepared; count what was used.
+
+        Used = selected into a prepared (read-ahead) batch (lead ruling 11-10):
+        that batch is neither voided nor rebuilt. Its rows are counted as
+        `excluded_prefetched_rows`, rows already handed to SGD as
+        `excluded_trained_rows`; `excluded_used_rows` is their sum."""
         assert self.fast_intake is not None
         referenced = self._fast_referenced()
-        ids = {record["segment_id"] for record in self.queue.pending
-               if record.get("fast") and record["run_id"] == instance
-               and record["segment_id"] not in referenced}
+        mine = [record for record in self.queue.pending
+                if record.get("fast") and record["run_id"] == instance]
+        ids = {record["segment_id"] for record in mine
+               if record["segment_id"] not in referenced}
+        prefetched = sum(record["rows"] for record in mine
+                         if record["segment_id"] in referenced)
         dropped = 0
         for record in self.queue.discard(ids):
             payload = self._member(record).payload
@@ -1936,6 +1962,8 @@ class SegmentLearner:
         self.fast_counters["excluded_instances"] += 1
         self.fast_counters["excluded_dropped_rows"] += dropped
         self.fast_counters["excluded_used_rows"] += used
+        self.fast_counters["excluded_prefetched_rows"] += prefetched
+        self.fast_counters["excluded_trained_rows"] += used - prefetched
         if dropped:
             self._notify_capacity()
 

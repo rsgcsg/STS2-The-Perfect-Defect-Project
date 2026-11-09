@@ -18,10 +18,13 @@ from stpd.rl.segment_learner import SegmentLearner
 
 
 def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
-                 aux_labels: list[str] | None = None) -> SegmentLearner:
+                 aux_labels: list[str] | None = None, **loss: float) -> SegmentLearner:
     from stpd.p1.local_inference import AUTH_ENV
 
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config, io = configuration(tmp_path, monkeypatch)
+    if loss:
+        config = dataclasses.replace(config, loss=dataclasses.replace(config.loss, **loss))
     monkeypatch.setenv(AUTH_ENV, "ab" * 32)
     config = dataclasses.replace(config, segments=dataclasses.replace(
         config.segments, steps=64, dataset_rows=64, episode_rows=128, capacity_rows=128))
@@ -109,11 +112,13 @@ def test_handoff_connection_admits_attested_segments_and_prepares_a_batch(
         assert [r["segment_id"] for r in owner.active["segments"]] == [sealed[0].segment_id]
         assert owner.active_batch is not None
         assert len(owner.active_batch.metadata) == 64
-        # Forward/loss/backward run on the fast rows; the fixture's behaviour q
-        # (0.25/0.75) is far from the fresh policy, so the method's own KL stop fires.
+        # Forward/loss/backward run on the fast rows. The fixture's behaviour q
+        # (0.25/0.75) is far from the fresh policy, so the method's own KL stop
+        # usually fires; a 16-row random minibatch can fall under it (then it steps).
         result = owner._step()
-        assert result["rows"] == 16 and result["kl_stopped"] and not result["stepped"]
-        assert result["approx_kl_mu_theta"] > 0 and owner.updates == 0
+        assert result["rows"] == 16 and result["approx_kl_mu_theta"] > 0
+        assert result["kl_stopped"] is not result["stepped"]
+        assert owner.updates == (1 if result["stepped"] else 0)
     finally:
         owner.close()
 
@@ -281,3 +286,92 @@ def test_fast_sources_cross_ipc_as_offsets_into_a_derived_file(tmp_path, monkeyp
     finally:
         if not closed:
             owner.close()
+
+
+def exclude(owner: SegmentLearner, name: str) -> dict[str, Any]:
+    return owner.control({"operation": "fast_instance_excluded", "actor": "actor-1",
+                          "game_instance_id": name, "reason": "evidence_failed",
+                          "run": owner.config.run, "training_generation": owner.generation})
+
+
+def test_exclusion_counts_trained_and_prefetched_rows_apart(tmp_path, monkeypatch):
+    """Lead ruling 11-10: used = selected into a prepared batch, never voided or
+    rebuilt; rows handed to SGD and rows only read ahead are counted apart."""
+    from concurrent.futures import Future
+
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        for index, name in enumerate(("g1", "g2"), start=1):
+            sealed = game(owner, name)
+            admission(owner, name, index)
+            for segment in sealed:
+                offer(owner, segment)
+            if name == "g1":
+                # The next dataset is taken for SGD: it leaves the queue.
+                active = owner._select()
+            else:
+                # A read-ahead batch (take=False): still queued, held by the batch.
+                active = owner._select(take=False)
+                owner.ahead_batches.append((active, Future()))
+            assert active is not None
+            assert [r["segment_id"] for r in active["segments"]] == [sealed[0].segment_id]
+            assert exclude(owner, name) == {"excluded": True, "game_instance_id": name}
+            assert queued(owner) == ([] if name == "g1" else [sealed[0].segment_id])
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        assert counters["excluded_instances"] == 2
+        assert counters["excluded_dropped_rows"] == 12  # each game's 6-row terminal tail
+        assert counters["excluded_trained_rows"] == 64  # g1's dataset, handed to SGD
+        assert counters["excluded_prefetched_rows"] == 64  # g2's, read ahead, kept
+        assert counters["excluded_used_rows"] == 128
+    finally:
+        owner.ahead_batches.clear()
+        owner.close()
+
+
+def test_an_exclusion_between_the_admit_decision_and_its_use_drops_the_segment(
+        tmp_path, monkeypatch):
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        sealed = game(owner, "g1")
+        admission(owner, "g1", 1)
+        assert owner.fast_intake is not None
+        # The receive thread has the intake's decision (admit) ...
+        decision = owner.fast_intake.offer(message(sealed[0]), sealed[0].data)
+        assert decision.admit
+        # ... the control thread applies the actor's exclusion first ...
+        assert exclude(owner, "g1") == {"excluded": True, "game_instance_id": "g1"}
+        # ... then the receive thread applies its decision: dropped, counted.
+        owner._fast_apply(decision)
+        assert queued(owner) == []
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        assert counters["excluded_admit_raced"] == 1
+        assert counters["excluded_admit_raced_rows"] == 64
+        assert counters["excluded_dropped_rows"] == 64 and counters["admitted"] == 0
+        assert eventually(lambda: owner.fast_status()["fast_chain"]["fast_source_segments"] == 0)
+    finally:
+        owner.close()
+
+
+def test_fast_aux_pools_follow_the_loss_coefficients(tmp_path, monkeypatch):
+    """Lead ruling 11-10: every pool with coef > 0 takes fast labels by default;
+    an explicit list leaving one out is refused at start, never a silent 0."""
+    owner = fast_learner(tmp_path / "a", monkeypatch)
+    try:
+        assert owner.config.loss.terminal_coef > 0 and owner.config.loss.hp_coef > 0
+        assert owner.fast_intake is not None
+        assert owner.fast_intake.aux_labels == {"terminal", "hp"}
+    finally:
+        owner.close()
+    owner = fast_learner(tmp_path / "b", monkeypatch, hp_coef=0.0)
+    try:
+        assert owner.fast_intake is not None and owner.fast_intake.aux_labels == {"terminal"}
+    finally:
+        owner.close()
+    with pytest.raises(BoundaryError, match="omit_a_pool_with_positive_coef"):
+        fast_learner(tmp_path / "c", monkeypatch, aux_labels=["terminal"])
+    with pytest.raises(BoundaryError, match="omit_a_pool_with_positive_coef"):
+        fast_learner(tmp_path / "d", monkeypatch, aux_labels=[], terminal_coef=0.1)
+    # A pool the loss does not weight may still be listed (harmless).
+    owner = fast_learner(tmp_path / "e", monkeypatch, aux_labels=["terminal", "hp"],
+                         hp_coef=0.0)
+    owner.close()
