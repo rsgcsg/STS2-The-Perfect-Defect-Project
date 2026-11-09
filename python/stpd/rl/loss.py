@@ -147,6 +147,7 @@ def prepared_update(
     gpu_lock: Any = None,
     diagnostics: bool = False,
     collect_policy_rows: bool = False,
+    gradient_sync: Any = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
 
@@ -187,7 +188,10 @@ def prepared_update(
             if rows_forward:
                 from stpd.p1.rows_forward import varlen_supported
 
-                rows_path = "varlen" if varlen_supported(device) else "masked"
+                # "packed" = every attention on flash varlen (C-SCALE step 2); the
+                # pre-step-2 "varlen" (scene encoder only) no longer exists, so a
+                # report never mixes the two paths under one name.
+                rows_path = "packed" if varlen_supported(device) else "masked"
             for group in minibatch.groups:
                 if (getattr(group, "layout", None) is not None) != rows_forward:
                     raise BoundaryError("rl_performance",
@@ -227,6 +231,13 @@ def prepared_update(
                 # Drop their small graphs before the next encoder allocation.
                 del loss, partial, components, valid, scores, logits, hp
             phase = time.perf_counter()
+            if gradient_sync is not None:
+                # Data parallel (C-SCALE): every rank holds the same theta/Adam and
+                # one minibatch; after this all ranks share the mean gradient and
+                # totals, so clip, KL stop and Adam make one identical decision.
+                totals, dynamic_valid = gradient_sync(model, totals, dynamic_valid)
+                phases["gradient_sync"] = time.perf_counter() - phase
+                phase = time.perf_counter()
             diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
             valid = (dynamic_valid & torch.isfinite(norm)
@@ -282,7 +293,7 @@ def prepared_update(
             },
         }
         if rows_path is not None:
-            # Which scene-attention path ran (device-chosen, not a fallback) and the
+            # Which attention path ran (device-chosen, not a fallback) and the
             # process's dynamo counters: a cache-limit fall back to eager shows here.
             result["rows_forward"] = {"path": rows_path, "compiled": compile_rows}
             if performance.prepared_compile:

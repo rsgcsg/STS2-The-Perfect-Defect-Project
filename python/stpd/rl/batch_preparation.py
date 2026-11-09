@@ -13,7 +13,7 @@ import multiprocessing
 import os
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
@@ -21,13 +21,14 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from spireagent.rl_contracts import HotPayloadRef, RowRef
 from spireagent.rl_dataplane_ports import BinaryRef
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.tensor_input import TensorFrame, joint_nodes, text_batch
+from stpd.p1.tensor_input import JointNodes, Reduction, TensorFrame, joint_nodes, text_batch
 
 from .heads import OUTCOME_CLASSES, outcome_mask
 from .prepared_batch import (
@@ -334,17 +335,7 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
     prepared_width = int(t["text_ids"].shape[1])
     if texts and (int(lengths.min()) < 1 or int(lengths.max()) > prepared_width):
         raise ValueError("row_layout_text_length_outside_prepared_width")
-    order = torch.argsort(lengths, stable=True)
-    ordered = lengths[order]
-    edges = [edge for edge in (8, 16, 32, 64, 128, 256, 512) if edge < prepared_width]
-    text_buckets, low = [], 0
-    for edge in [*edges, prepared_width]:
-        high = int((ordered <= edge).sum())
-        if high > low:
-            text_buckets.append((high - low, edge))
-        low = high
-    text_slots = torch.empty_like(order)
-    text_slots[order] = torch.arange(texts)
+    text = _text_layout(lengths, prepared_width)
     joint = group.joint
     node_text = joint.tensors["text_indices"]
     if len(node_text) and int(node_text.max()) >= len(inverse):
@@ -370,23 +361,13 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
             raise ValueError("row_layout_requires_contiguous_scene_rows")
     if t["scene_lengths"][:rows, 0].ne(slots.float()).any():
         raise ValueError("row_layout_scene_lengths_changed")
-    row_order = torch.argsort(slots, stable=True)
+    scene = _scene_layout(slots, starts, width, bucket_rows, width_multiple)
     catalog = int(t["action_types"].shape[1]) if group.policy else 0
-    buckets, nodes, positions, offsets = [], [], [], []
     roles: dict[str, list[list[Tensor]]] = {"source": [], "target": []}
     present: dict[str, list[Tensor]] = {"source": [], "target": []}
-    for first in range(0, rows, bucket_rows):
-        members = row_order[first:first + bucket_rows]
+    for members, (_count, bucket_width, _longest, _slots) in zip(
+            scene.members, scene.buckets, strict=True):
         counts = slots[members]
-        longest = int(counts.max())
-        bucket_width = min(width, -(-longest // width_multiple) * width_multiple)
-        local = torch.repeat_interleave(torch.arange(len(members)), counts)
-        within = torch.arange(int(counts.sum())) - torch.repeat_interleave(
-            counts.cumsum(0) - counts, counts)
-        nodes.append(torch.repeat_interleave(starts[members], counts) + within)
-        positions.append(local * bucket_width + within)
-        offsets.append(torch.cat((counts.new_zeros(1), counts.cumsum(0))).to(torch.int32))
-        buckets.append((len(members), bucket_width, longest, int(counts.sum())))
         if group.policy:
             candidates = (members[:, None] * catalog + torch.arange(catalog)).reshape(-1)
             owner = torch.arange(len(members)).repeat_interleave(catalog)[:, None]
@@ -413,15 +394,79 @@ def row_layout(group: PreparedGroup, *, bucket_rows: int = ROW_BUCKET_ROWS,
                                 torch.cat([part[2] for part in roles[key]]),
                                 tuple(len(part[0]) for part in roles[key]))
             role_flags[key] = torch.cat(present[key])
-    scene_inverse = torch.empty_like(row_order)
-    scene_inverse[row_order] = torch.arange(rows)
     return RowLayout(
-        text_buckets=tuple(text_buckets), text_order=order, text_inverse=text_slots,
-        node_text_indices=inverse[node_text] if len(node_text) else node_text.clone(),
-        reductions=reductions, scene_buckets=tuple(buckets), scene_rows=row_order,
-        scene_inverse=scene_inverse, scene_nodes=torch.cat(nodes),
-        scene_positions=torch.cat(positions), scene_lengths=slots[row_order],
-        scene_offsets=torch.cat(offsets), roles=role_layout, role_present=role_flags)
+        **text, node_text_indices=inverse[node_text] if len(node_text) else node_text.clone(),
+        reductions=reductions, **scene.fields(), roles=role_layout, role_present=role_flags)
+
+
+def _text_layout(lengths: Tensor, prepared_width: int) -> dict[str, Any]:
+    """rows-v2 text fields from the real unique text lengths (one rule: `row_layout`
+    and `join_forward_inputs`)."""
+    texts = len(lengths)
+    order = torch.argsort(lengths, stable=True)
+    ordered = lengths[order]
+    edges = [edge for edge in (8, 16, 32, 64, 128, 256, 512) if edge < prepared_width]
+    text_buckets, low = [], 0
+    for edge in [*edges, prepared_width]:
+        high = int((ordered <= edge).sum())
+        if high > low:
+            text_buckets.append((high - low, edge))
+        low = high
+    text_slots = torch.empty_like(order)
+    text_slots[order] = torch.arange(texts)
+    real = lengths.long()
+    starts_text = torch.repeat_interleave(real.cumsum(0) - real, real)
+    text_tokens = (torch.repeat_interleave(torch.arange(texts) * prepared_width, real)
+                   + torch.arange(int(real.sum())) - starts_text)
+    text_offsets = torch.cat((real.new_zeros(1), real.cumsum(0))).to(torch.int32)
+    return {"text_buckets": tuple(text_buckets), "text_order": order,
+            "text_inverse": text_slots, "text_tokens": text_tokens,
+            "text_offsets": text_offsets, "text_longest": int(real.max()) if texts else 0}
+
+
+@dataclasses.dataclass(frozen=True)
+class _SceneLayout:
+    buckets: tuple[tuple[int, int, int, int], ...]
+    members: tuple[Tensor, ...]  # group rows of each bucket, in bucket order
+    row_order: Tensor
+    inverse: Tensor
+    nodes: Tensor
+    positions: Tensor
+    lengths: Tensor
+    offsets: Tensor
+
+    def fields(self) -> dict[str, Any]:
+        return {"scene_buckets": self.buckets, "scene_rows": self.row_order,
+                "scene_inverse": self.inverse, "scene_nodes": self.nodes,
+                "scene_positions": self.positions, "scene_lengths": self.lengths,
+                "scene_offsets": self.offsets}
+
+
+def _scene_layout(slots: Tensor, starts: Tensor, width: int, bucket_rows: int,
+                  width_multiple: int) -> _SceneLayout:
+    """Rows sorted by real scene length, cut into buckets (one rule: `row_layout`
+    and `join_forward_inputs`). `starts` is each row's first node."""
+    rows = len(slots)
+    row_order = torch.argsort(slots, stable=True)
+    buckets, members_list, nodes, positions, offsets = [], [], [], [], []
+    for first in range(0, rows, bucket_rows):
+        members = row_order[first:first + bucket_rows]
+        counts = slots[members]
+        longest = int(counts.max())
+        bucket_width = min(width, -(-longest // width_multiple) * width_multiple)
+        local = torch.repeat_interleave(torch.arange(len(members)), counts)
+        within = torch.arange(int(counts.sum())) - torch.repeat_interleave(
+            counts.cumsum(0) - counts, counts)
+        nodes.append(torch.repeat_interleave(starts[members], counts) + within)
+        positions.append(local * bucket_width + within)
+        offsets.append(torch.cat((counts.new_zeros(1), counts.cumsum(0))).to(torch.int32))
+        buckets.append((len(members), bucket_width, longest, int(counts.sum())))
+        members_list.append(members)
+    inverse = torch.empty_like(row_order)
+    inverse[row_order] = torch.arange(rows)
+    return _SceneLayout(tuple(buckets), tuple(members_list), row_order, inverse,
+                        torch.cat(nodes), torch.cat(positions), slots[row_order],
+                        torch.cat(offsets))
 
 
 def prepare_group(
@@ -517,6 +562,791 @@ def prepare_group(
     if layout != "rows-v2":
         raise ValueError("unsupported_prepared_layout")
     return dataclasses.replace(group, layout=row_layout(group))
+
+
+def _merged_reduction(parts: list[tuple[Reduction, dict[str, int]]], key: str,
+                      totals: dict[str, int]) -> Reduction:
+    """`joint_nodes` reduction order from already joined sub-group reductions."""
+    buckets: dict[int, list[tuple[int, Tensor, Tensor]]] = {}
+    for value, offset in parts:
+        owners_packed = value.inverse.argsort()
+        cursor = 0
+        for width, count, indices in value.buckets:
+            owners = owners_packed[cursor:cursor + count] + offset["refs"]
+            cursor += count
+            if key == "numbers":  # [numbers..., missing...] of the joined graph
+                present = offset["numbers_total"]
+                indices = torch.where(indices < present, indices + offset["numbers"],
+                                      indices - present + totals["numbers"] + offset["missing"])
+            else:
+                indices = indices + offset[key]
+            buckets.setdefault(width, []).append((count, indices, owners))
+    combined: list[tuple[int, int, Tensor]] = []
+    order: list[Tensor] = []
+    for width, items in buckets.items():
+        combined.append((width, sum(item[0] for item in items),
+                         torch.cat([item[1] for item in items])))
+        order.extend(item[2] for item in items)
+    inverse = torch.empty(totals["refs"], dtype=torch.long)
+    if order:
+        inverse[torch.cat(order)] = torch.arange(totals["refs"])
+    return Reduction(tuple(combined), inverse)
+
+
+def concatenate_groups(groups: Sequence[PreparedGroup], *,
+                       rows: tuple[int, ...] | None = None) -> PreparedGroup:
+    """One PreparedGroup from already prepared sub-groups, rows in sub-group order.
+
+    The C-SCALE merge for a forward over several prepared parts (lead 11-09 (a);
+    rl-inference-3 `_forward_parts`). Only real rows, texts, nodes and role terms
+    are copied and re-offset; every padded size is re-bucketed over the union, so
+    the result equals `prepare_group` of all frames at once, except that a text
+    repeated in two sub-groups keeps one row per sub-group (an encoded duplicate,
+    same function). A rows-v2 result gets its layout from `row_layout`. `rows`
+    defaults to the sub-groups' rows in order (rl-inference-3 parts each count
+    from 0, so pass `range(total)`). Output row i is part row i in order.
+    """
+    if not groups:
+        raise ValueError("concatenate_requires_groups")
+    policy = groups[0].policy
+    has_layout = groups[0].layout is not None
+    if any(g.policy != policy or (g.layout is not None) != has_layout for g in groups):
+        raise ValueError("concatenate_requires_one_policy_and_layout")
+    counts = [len(g.rows) for g in groups]
+    total = sum(counts)
+    rows = tuple(r for g in groups for r in g.rows) if rows is None else tuple(rows)
+    if len(rows) != total:
+        raise ValueError("concatenate_rows_mismatch")
+    ts = [g.tensors for g in groups]
+    if any(value.device.type != "cpu" for t in ts for value in t.values()):
+        raise ValueError("concatenate_requires_host_tensors")
+    entities = [t["scene_lengths"][:n, 0].long() for t, n in zip(ts, counts, strict=True)]
+    entity = torch.cat(entities)
+    scene_width = _bucket(int(entity.max()), (32, 64, 128, 256, 512, 1024))
+    physical_rows = _bucket(total, (1, 2, 4, 8, 16, 32, 64))
+    # Text: each sub-group's real (unique) text rows, then re-padded once.
+    texts = [int(t["text_inverse"].max()) + 1 if len(t["text_inverse"]) else 0 for t in ts]
+    text_width = max(int(t["text_ids"].shape[1]) for t in ts)
+    ids = torch.cat([F.pad(t["text_ids"][:k], (0, text_width - t["text_ids"].shape[1]))
+                     for t, k in zip(ts, texts, strict=True)])
+    numbers = torch.cat([F.pad(t["text_numbers"][:k],
+                               (0, 0, 0, text_width - t["text_numbers"].shape[1]))
+                         for t, k in zip(ts, texts, strict=True)])
+    lengths = torch.cat([t["text_lengths"][:k] for t, k in zip(ts, texts, strict=True)])
+    text_offsets = [sum(texts[:i]) for i in range(len(ts))]
+    inverse = torch.cat([t["text_inverse"] + o for t, o in zip(ts, text_offsets, strict=True)])
+    text_rows = _bucket(len(lengths), (32, 128, 512, 2048)) if len(lengths) else 0
+    if text_rows > len(lengths):
+        ids = F.pad(ids, (0, 0, 0, text_rows - len(lengths)))
+        numbers = F.pad(numbers, (0, 0, 0, 0, 0, text_rows - len(lengths)))
+        lengths = F.pad(lengths, (0, text_rows - len(lengths)), value=1)
+    node_count = int(entity.sum())
+    gather = torch.full((physical_rows, scene_width), node_count, dtype=torch.long)
+    scene_mask = torch.ones_like(gather, dtype=torch.bool)
+    starts = entity.cumsum(0) - entity
+    for i in range(total):
+        count = int(entity[i])
+        gather[i, :count] = torch.arange(int(starts[i]), int(starts[i]) + count)
+        scene_mask[i, :count] = False
+    scene_mask[total:, 0] = False
+    data = {
+        "text_ids": ids, "text_numbers": numbers, "text_lengths": lengths,
+        "text_inverse": inverse, "scene_gather": gather, "scene_mask": scene_mask,
+        "scene_lengths": torch.cat((entity.float(), torch.ones(physical_rows - total)))[:, None],
+        "outcome_valid": torch.cat([t["outcome_valid"][:n] for t, n in zip(ts, counts, strict=True)]
+                                   + [outcome_mask(torch.zeros(physical_rows - total,
+                                                               dtype=torch.long))]),
+    }
+    if policy:
+        catalog = max(int(t["action_types"].shape[1]) for t in ts)
+        data["action_types"] = F.pad(torch.cat([
+            F.pad(t["action_types"][:n], (0, catalog - t["action_types"].shape[1]))
+            for t, n in zip(ts, counts, strict=True)]), (0, 0, 0, physical_rows - total))
+        data["catalog_mask"] = F.pad(torch.cat([
+            F.pad(t["catalog_mask"][:n], (0, catalog - t["catalog_mask"].shape[1]), value=True)
+            for t, n in zip(ts, counts, strict=True)]), (0, 0, 0, physical_rows - total),
+            value=True)
+        for key in ("source", "target"):
+            width = max(int(t[key + "_indices"].shape[1]) for t in ts)
+            indices = torch.zeros((physical_rows * catalog, width), dtype=torch.long)
+            weights = torch.zeros((physical_rows * catalog, width), dtype=torch.float32)
+            first = 0
+            for t, n in zip(ts, counts, strict=True):
+                local_catalog = int(t["action_types"].shape[1])
+                local_width = int(t["scene_gather"].shape[1])
+                part_indices = t[key + "_indices"][:n * local_catalog]
+                part_weights = t[key + "_weights"][:n * local_catalog]
+                columns = part_indices.shape[1]
+                moved = (part_indices // local_width + first) * scene_width \
+                    + part_indices % local_width
+                moved = torch.where(part_weights != 0, moved, torch.zeros_like(moved))
+                target = ((first + torch.arange(n))[:, None] * catalog
+                          + torch.arange(local_catalog)).reshape(-1)
+                indices[target, :columns] = moved
+                weights[target, :columns] = part_weights
+                first += n
+            data[key + "_indices"] = indices
+            data[key + "_weights"] = weights
+    # Joint node graph: same tensors and reduction order as `joint_nodes`.
+    names = ("identities", "identity_fields", "kinds", "positions", "number_fields",
+             "numbers", "missing_fields", "text_fields")
+    joints = [g.joint for g in groups]
+    tensors = {key: torch.cat([j.tensors[key] for j in joints]) for key in names}
+    offsets, cumulative = [], dict.fromkeys(("ids", "numbers", "missing", "text", "refs"), 0)
+    for j, n_refs in zip(joints, (int(e.sum()) for e in entities), strict=True):
+        offsets.append({**cumulative, "numbers_total": j.tensors["numbers"].numel()})
+        cumulative["ids"] += j.tensors["identities"].numel()
+        cumulative["numbers"] += j.tensors["numbers"].numel()
+        cumulative["missing"] += j.tensors["missing_fields"].numel()
+        cumulative["text"] += j.tensors["text_fields"].numel()
+        cumulative["refs"] += n_refs
+    vector_offsets = [0]
+    for t in ts:
+        vector_offsets.append(vector_offsets[-1] + len(t["text_inverse"]))
+    tensors["text_indices"] = torch.cat([j.tensors["text_indices"] + o
+                                         for j, o in zip(joints, vector_offsets, strict=False)])
+    reductions = {key: _merged_reduction([(j.reductions[key], o)
+                                          for j, o in zip(joints, offsets, strict=True)],
+                                         key, cumulative)
+                  for key in ("ids", "numbers", "text", "refs")}
+    group = PreparedGroup(rows, policy, JointNodes(tensors, reductions), data)
+    return dataclasses.replace(group, layout=row_layout(group)) if has_layout else group
+
+
+# C-SCALE step 3 (inference transfer, lead 11-09): only what `forward_rows` reads,
+# int32 indices, one byte arena per job, one H2D copy, sub-groups joined on device.
+FORWARD_TENSORS = ("text_ids", "text_numbers", "text_lengths", "outcome_valid",
+                   "action_types", "catalog_mask")
+FORWARD_JOINT = ("identities", "identity_fields", "kinds", "positions", "number_fields",
+                 "numbers", "missing_fields", "text_fields")
+FORWARD_REDUCTIONS = ("ids", "numbers", "text", "refs")
+ARENA_ALIGN = 64
+_INT32 = (-(2 ** 31), 2 ** 31 - 1)
+
+
+def _index_cast(value: Tensor, dtype: torch.dtype, name: str) -> Tensor:
+    if value.dtype != torch.int64 or dtype == torch.int64:
+        return value
+    if value.numel():
+        low, high = torch.aminmax(value)
+        if int(low) < _INT32[0] or int(high) > _INT32[1]:
+            raise ValueError(f"forward_index_exceeds_int32:{name}")
+    return value.to(dtype)
+
+
+def is_forward_inputs(group: PreparedGroup) -> bool:
+    """A `forward_inputs` group: rows-v2 layout, no padded-v1 / loss-only tensors."""
+    return group.layout is not None and "scene_gather" not in group.tensors
+
+
+def forward_inputs(group: PreparedGroup, *, index_dtype: torch.dtype = torch.int32
+                   ) -> PreparedGroup:
+    """The rows-v2 group `forward_rows` reads, nothing else; integer indices in
+    `index_dtype` (int32: checked to fit, raises otherwise; `text_lengths` stays).
+
+    Drops the padded-v1 view (scene gather/mask, padded role indices, text
+    occurrence inverse, bucketed joint reductions): the rows-v2 forward never
+    reads them, so outputs are the same values (CPU fp32 bitwise). Not a training
+    loss input: the learner keeps whole groups (`stage_batch`).
+    """
+    if index_dtype not in (torch.int32, torch.int64):
+        raise ValueError("forward_index_dtype_must_be_int32_or_int64")
+    if group.layout is None:
+        raise ValueError("forward_inputs_require_rows_v2_layout")
+    if is_forward_inputs(group):
+        return group
+    layout = group.layout
+
+    def cast(value: Any, name: str) -> Any:
+        return _index_cast(value, index_dtype, name) if isinstance(value, Tensor) else value
+
+    tensors = {key: group.tensors[key] if key == "text_lengths" else cast(group.tensors[key], key)
+               for key in FORWARD_TENSORS if key in group.tensors}
+    joint = JointNodes({key: cast(group.joint.tensors[key], key) for key in FORWARD_JOINT}, {})
+    fields = {}
+    for item in dataclasses.fields(layout):
+        value = getattr(layout, item.name)
+        if item.name == "reductions":
+            value = {key: tuple(cast(part, f"{key}.{i}") for i, part in enumerate(value[key]))
+                     for key in FORWARD_REDUCTIONS}
+        elif item.name == "roles":
+            value = {key: tuple(cast(part, f"roles.{key}.{i}") for i, part in enumerate(parts))
+                     for key, parts in value.items()}
+        elif isinstance(value, Tensor):
+            value = cast(value, item.name)
+        fields[item.name] = value
+    return PreparedGroup(group.rows, group.policy, joint, tensors, RowLayout(**fields))
+
+
+@dataclasses.dataclass(frozen=True)
+class _ArenaSlot:
+    offset: int  # bytes from the part's start
+    dtype: torch.dtype
+    shape: tuple[int, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class ForwardPart:
+    """Where one prepared group's forward inputs sit in a byte arena. Picklable and
+    small (no tensors): a prepare process sends this instead of the group."""
+    start: int
+    end: int
+    tree: Any  # the forward-inputs PreparedGroup, tensors replaced by _ArenaSlot
+
+
+def _arena_plan(value: Any) -> tuple[Any, list[tuple[int, Tensor]], int]:
+    writes: list[tuple[int, Tensor]] = []
+    cursor = 0
+
+    def place(node: Any) -> Any:
+        nonlocal cursor
+        if not isinstance(node, Tensor):
+            return node
+        if node.device.type != "cpu":
+            raise ValueError("forward_arena_requires_host_tensors")
+        cursor = -(-cursor // ARENA_ALIGN) * ARENA_ALIGN
+        writes.append((cursor, node))
+        slot = _ArenaSlot(cursor, node.dtype, tuple(node.shape))
+        cursor += node.numel() * node.element_size()
+        return slot
+
+    tree = _map_structure(value, place)
+    return tree, writes, cursor
+
+
+def _arena_view(base: Tensor, slot: _ArenaSlot, start: int) -> Tensor:
+    size = math.prod(slot.shape) * torch.empty((), dtype=slot.dtype).element_size()
+    return base[start + slot.offset:start + slot.offset + size].view(slot.dtype).view(slot.shape)
+
+
+def _arena_tree(base: Tensor, tree: Any, start: int) -> Any:
+    return _map_structure(tree, lambda node: _arena_view(base, node, start)
+                          if isinstance(node, _ArenaSlot) else node)
+
+
+def allocate_forward_arena(nbytes: int, *, shared: bool = False, pinned: bool = False) -> Tensor:
+    """A host byte arena for forward inputs. `shared`: torch shared memory, so the
+    handle can be sent once to prepare processes (each writes its part in place);
+    the device process then pins it with `pin_host_arena`. `pinned`: page-locked
+    here (one process; not combinable with `shared`)."""
+    if shared and pinned:
+        raise ValueError("pin_a_shared_arena_with_pin_host_arena")
+    arena = torch.empty(int(nbytes), dtype=torch.uint8, pin_memory=pinned)
+    return arena.share_memory_() if shared else arena
+
+
+def pin_host_arena(arena: Tensor) -> Callable[[], None]:
+    """Page-lock an existing host arena in this process (cudaHostRegister), so its
+    H2D copy is one asynchronous DMA. Raises if CUDA refuses. Returns the unpin."""
+    cudart = torch.cuda.cudart()
+    pointer, size = arena.data_ptr(), arena.numel() * arena.element_size()
+    error = cudart.cudaHostRegister(pointer, size, 0)
+    if int(error) != 0:
+        raise RuntimeError(f"cudaHostRegister_failed:{int(error)}")
+    return lambda: cudart.cudaHostUnregister(pointer)
+
+
+def forward_arena_bytes(group: PreparedGroup, *, index_dtype: torch.dtype = torch.int32) -> int:
+    return _arena_plan(forward_inputs(group, index_dtype=index_dtype))[2]
+
+
+def write_forward_inputs(arena: Tensor, offset: int, group: PreparedGroup, *,
+                         index_dtype: torch.dtype = torch.int32) -> ForwardPart:
+    """Write `forward_inputs(group)` into `arena` at `offset` (rounded up to 64 B).
+
+    Raises `forward_arena_overflow` if it does not fit (never truncates). The
+    caller owns slot assignment and must not overwrite a part before the forward
+    that read it has returned its outputs to the host.
+    """
+    if arena.dtype != torch.uint8 or arena.dim() != 1 or arena.device.type != "cpu":
+        raise ValueError("forward_arena_must_be_a_host_uint8_vector")
+    tree, writes, size = _arena_plan(forward_inputs(group, index_dtype=index_dtype))
+    start = -(-int(offset) // ARENA_ALIGN) * ARENA_ALIGN
+    if start + size > arena.numel():
+        raise ValueError("forward_arena_overflow")
+    for local, tensor in writes:
+        slot = _ArenaSlot(local, tensor.dtype, tuple(tensor.shape))
+        _arena_view(arena, slot, start).copy_(tensor)
+    return ForwardPart(start, start + size, tree)
+
+
+def read_forward_part(arena: Tensor, part: ForwardPart) -> PreparedGroup:
+    """The part as views of `arena` (no copy)."""
+    return cast(PreparedGroup, _arena_tree(arena, part.tree, part.start))
+
+
+def _copy_once(arena: Tensor, parts: Sequence[ForwardPart], device: torch.device
+               ) -> list[PreparedGroup]:
+    low, high = min(p.start for p in parts), max(p.end for p in parts)
+    staged = arena[low:high].to(device, non_blocking=True)
+    return [cast(PreparedGroup, _arena_tree(staged, p.tree, p.start - low)) for p in parts]
+
+
+def stage_group(group: PreparedGroup, device: torch.device, *,
+                index_dtype: torch.dtype = torch.int32) -> PreparedGroup:
+    """One H2D copy of a host group's forward inputs (pinned, non-blocking)."""
+    if device.type == "cpu":
+        return group
+    tree, writes, size = _arena_plan(forward_inputs(group, index_dtype=index_dtype))
+    arena = torch.empty(size, dtype=torch.uint8, pin_memory=True)
+    for local, tensor in writes:
+        _arena_view(arena, _ArenaSlot(local, tensor.dtype, tuple(tensor.shape)), 0).copy_(tensor)
+    return _copy_once(arena, [ForwardPart(0, size, tree)], device)[0]
+
+
+def stage_forward_parts(arena: Tensor, parts: Sequence[ForwardPart], device: torch.device, *,
+                        rows: tuple[int, ...] | None = None) -> PreparedGroup:
+    """One forward group from parts written in `arena`, planned here.
+
+    Equals `forward_inputs(concatenate_groups(...))`. A device process should
+    take the planned path instead (`plan_forward_join` in a prepare/joiner
+    process, then `stage_joined` here): this function plans on this thread and
+    copies the plan separately.
+    """
+    if not parts:
+        raise ValueError("stage_requires_parts")
+    if len(parts) == 1:
+        group = read_forward_part(arena, parts[0]) if device.type == "cpu" else _copy_once(
+            arena, parts, device)[0]
+        return group if rows is None else dataclasses.replace(group, rows=tuple(rows))
+    tensors, plan = _plan_join(arena, parts, rows)
+    buffer = torch.empty(_plan_bytes(tensors), dtype=torch.uint8,
+                         pin_memory=device.type == "cuda")
+    return stage_joined(arena, _write_plan(buffer, 0, tensors, plan, in_arena=False), device,
+                        plan_arena=buffer)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Gather:
+    """One dtype's joined bulk tensors: runs over the parts' span (`g<i>.*` tables)."""
+    dtype: torch.dtype
+    total: int  # elements
+    mode: Literal["copy", "add", "where"]
+    zeros: bool
+    outputs: tuple[tuple[str, int, tuple[int, ...]], ...]  # name, element offset, shape
+
+
+@dataclasses.dataclass(frozen=True)
+class JoinPlan:
+    """A job's parts joined ahead of the device (`plan_forward_join`). Picklable and
+    small: byte spans, a flat slot table of the plan tensors written next to the
+    parts, and the few Python values of the layout."""
+    rows: tuple[int, ...]
+    policy: bool
+    low: int  # the parts' byte span in the arena
+    high: int
+    plan_start: int  # the plan tensors' byte span (arena, or `plan_arena`)
+    plan_end: int
+    in_arena: bool
+    slots: tuple[tuple[str, int, int, torch.dtype, tuple[int, ...]], ...]  # name, offset, bytes
+    gathers: tuple[_Gather, ...]
+    meta: dict[str, Any]
+
+
+def plan_forward_join(arena: Tensor, parts: Sequence[ForwardPart], offset: int, *,
+                      rows: tuple[int, ...] | None = None,
+                      plan_arena: Tensor | None = None) -> JoinPlan:
+    """Plan the join of `parts` (all host index maps) and write the plan tensors at
+    `offset` (rounded up to 64 B) of `plan_arena`, default `arena`.
+
+    For a prepare/joiner process: the device process then runs `stage_joined`
+    (one H2D copy of parts plus plan, a fixed few device ops, no per-part Python).
+    Put the plan next to the parts (same job slot) so one copy covers both.
+    Raises `forward_arena_overflow` if it does not fit (never truncates).
+    """
+    if not parts:
+        raise ValueError("join_requires_parts")
+    tensors, plan = _plan_join(arena, parts, rows)
+    target = arena if plan_arena is None else plan_arena
+    return _write_plan(target, offset, tensors, plan, in_arena=plan_arena is None)
+
+
+def stage_joined(arena: Tensor, plan: JoinPlan, device: torch.device, *,
+                 plan_arena: Tensor | None = None) -> PreparedGroup:
+    """The joined forward group on `device`: one non-blocking H2D copy (two if the
+    plan is in a separate `plan_arena`), then gathers on the device.
+
+    With a pinned arena the copy is asynchronous: keep parts and plan unchanged
+    until this forward's outputs have reached the host.
+    """
+    if plan.in_arena != (plan_arena is None):
+        raise ValueError("stage_joined_plan_arena_mismatch")
+    if plan.in_arena:
+        low, high = min(plan.low, plan.plan_start), max(plan.high, plan.plan_end)
+        staged = arena[low:high]
+        staged = staged if device.type == "cpu" else staged.to(device, non_blocking=True)
+        span = staged[plan.low - low:plan.high - low]
+        planned = staged[plan.plan_start - low:plan.plan_end - low]
+    else:
+        assert plan_arena is not None
+        span, planned = arena[plan.low:plan.high], plan_arena[plan.plan_start:plan.plan_end]
+        if device.type != "cpu":
+            span = span.to(device, non_blocking=True)
+            planned = planned.to(device, non_blocking=True)
+    view = {name: planned[start:start + size].view(dtype).view(shape)
+            for name, start, size, dtype, shape in plan.slots}
+    out: dict[str, Tensor] = {}
+    for i, gather in enumerate(plan.gathers):
+        if gather.total:
+            length = view[f"g{i}.length"]
+
+            def spread(name: str, length: Tensor = length, total: int = gather.total) -> Tensor:
+                return torch.repeat_interleave(view[name], length, output_size=total)
+
+            source = span[:span.numel() // gather.dtype.itemsize * gather.dtype.itemsize]
+            index = torch.arange(gather.total, device=span.device) + spread(f"g{i}.delta")
+            values = source.view(gather.dtype).index_select(0, index)
+            if gather.zeros:
+                values = values.masked_fill(spread(f"g{i}.zero"), 0)
+            if gather.mode == "add":
+                values = values + spread(f"g{i}.lo")
+            elif gather.mode == "where":
+                values = values + torch.where(values < spread(f"g{i}.thr"), spread(f"g{i}.lo"),
+                                              spread(f"g{i}.hi"))
+        else:
+            values = torch.empty(0, dtype=gather.dtype, device=span.device)
+        for name, start, shape in gather.outputs:
+            out[name] = values[start:start + math.prod(shape)].view(shape)
+    meta, policy = plan.meta, plan.policy
+    tensors = {"text_ids": out["text_ids"], "text_numbers": out["text_numbers"],
+               "text_lengths": view["lengths"], "outcome_valid": view["outcome_valid"]}
+    roles, role_present = {}, {}
+    if policy:
+        tensors.update(action_types=view["action_types"], catalog_mask=view["catalog_mask"])
+        for key in ("source", "target"):
+            roles[key] = (view[f"roles.{key}.candidate"], view[f"roles.{key}.slot"],
+                          out[f"weights.{key}"], meta["role_terms"][key])
+            role_present[key] = view[f"present.{key}"]
+    joint = JointNodes({key: out[f"joint.{key}"] for key in FORWARD_JOINT}, {})
+    reductions = {key: (out[f"reduction.{key}"], meta["reduction_buckets"][key],
+                        view[f"inverse.{key}"]) for key in FORWARD_REDUCTIONS}
+    layout = RowLayout(
+        text_buckets=meta["text_buckets"], text_order=view["text.text_order"],
+        text_inverse=view["text.text_inverse"], node_text_indices=out["node_text"],
+        reductions=reductions, scene_buckets=meta["scene_buckets"],
+        **{name: view[f"scene.{name}"] for name in _SCENE_TENSORS},
+        roles=roles, role_present=role_present, text_tokens=view["text.text_tokens"],
+        text_offsets=view["text.text_offsets"], text_longest=meta["text_longest"])
+    return PreparedGroup(plan.rows, policy, joint, tensors, layout)
+
+
+def join_forward_inputs(parts: Sequence[PreparedGroup], *,
+                        rows: tuple[int, ...] | None = None) -> PreparedGroup:
+    """`forward_inputs(concatenate_groups(groups))` from each group's forward inputs
+    (host, via a scratch arena; the planned path on the CPU)."""
+    if not parts:
+        raise ValueError("join_requires_parts")
+    _check_join(parts)
+    arena = allocate_forward_arena(sum(forward_arena_bytes(p) + ARENA_ALIGN for p in parts))
+    written, cursor = [], 0
+    for part in parts:
+        written.append(write_forward_inputs(arena, cursor, part))
+        cursor = written[-1].end
+    tensors, plan = _plan_join(arena, written, rows)
+    buffer = torch.empty(_plan_bytes(tensors), dtype=torch.uint8)
+    return stage_joined(arena, _write_plan(buffer, 0, tensors, plan, in_arena=False),
+                        torch.device("cpu"), plan_arena=buffer)
+
+
+_SCENE_TENSORS = ("scene_rows", "scene_inverse", "scene_nodes", "scene_positions",
+                  "scene_lengths", "scene_offsets")
+
+
+def _check_join(parts: Sequence[PreparedGroup]) -> torch.dtype:
+    policy = parts[0].policy
+    if any(p.policy != policy or not is_forward_inputs(p) for p in parts):
+        raise ValueError("join_requires_forward_inputs_of_one_policy")
+    index = cast(RowLayout, parts[0].layout).scene_rows.dtype
+    if any(cast(RowLayout, p.layout).scene_rows.dtype != index for p in parts):
+        raise ValueError("join_requires_one_index_dtype")
+    return index
+
+
+def _plan_bytes(tensors: dict[str, Tensor]) -> int:
+    cursor = 0
+    for tensor in tensors.values():
+        cursor = -(-cursor // ARENA_ALIGN) * ARENA_ALIGN + tensor.numel() * tensor.element_size()
+    return max(cursor, 1)
+
+
+def _write_plan(target: Tensor, offset: int, tensors: dict[str, Tensor], plan: JoinPlan, *,
+                in_arena: bool) -> JoinPlan:
+    if target.dtype != torch.uint8 or target.dim() != 1 or target.device.type != "cpu":
+        raise ValueError("forward_arena_must_be_a_host_uint8_vector")
+    start = -(-int(offset) // ARENA_ALIGN) * ARENA_ALIGN
+    end = start + _plan_bytes(tensors)
+    if end > target.numel():
+        raise ValueError("forward_arena_overflow")
+    slots, cursor = [], 0
+    for name, tensor in tensors.items():
+        cursor = -(-cursor // ARENA_ALIGN) * ARENA_ALIGN
+        size = tensor.numel() * tensor.element_size()
+        target[start + cursor:start + cursor + size].view(tensor.dtype).view(
+            tuple(tensor.shape)).copy_(tensor)
+        slots.append((name, cursor, size, tensor.dtype, tuple(tensor.shape)))
+        cursor += size
+    return dataclasses.replace(plan, plan_start=start, plan_end=end, in_arena=in_arena,
+                               slots=tuple(slots))
+
+
+class _Runs:
+    """Joined bulk tensors as element runs over the parts' byte span, one table per
+    dtype: out = span[run start ...] (+ per-run add; `where`: two adds split at a
+    per-run threshold; `zero` runs are padding)."""
+
+    def __init__(self) -> None:
+        self.groups: dict[torch.dtype, dict[str, Any]] = {}
+
+    def add(self, name: str, dtype: torch.dtype, shape: tuple[int, ...], src: Tensor,
+            length: Tensor, *, lo: Tensor | None = None, hi: Tensor | None = None,
+            thr: Tensor | None = None, zero: Tensor | None = None) -> None:
+        group = self.groups.setdefault(dtype, {
+            "src": [], "length": [], "lo": [], "hi": [], "thr": [], "zero": [],
+            "outputs": [], "total": 0, "add": False, "where": False, "zeros": False})
+        numel = math.prod(shape)
+        if int(length.sum()) != numel:
+            raise ValueError(f"join_runs_mismatch:{name}")
+        group["outputs"].append((name, group["total"], tuple(shape)))
+        group["total"] += numel
+        runs = len(length)
+        low = lo if lo is not None else torch.zeros(runs, dtype=torch.long)
+        group["src"].append(src)
+        group["length"].append(length)
+        group["lo"].append(low)
+        group["hi"].append(hi if hi is not None else low)
+        integer = not dtype.is_floating_point and dtype != torch.bool
+        group["thr"].append(thr if thr is not None else torch.full(
+            (runs,), torch.iinfo(dtype).max if integer else 0, dtype=torch.long))
+        group["zero"].append(zero if zero is not None else torch.zeros(runs, dtype=torch.bool))
+        group["add"] |= lo is not None and bool((low != 0).any())
+        group["where"] |= thr is not None
+        group["zeros"] |= zero is not None and bool(zero.any())
+
+    def finish(self, tensors: dict[str, Tensor]) -> tuple[_Gather, ...]:
+        gathers = []
+        for i, (dtype, group) in enumerate(self.groups.items()):
+            length = torch.cat(group["length"]).long()
+            tensors[f"g{i}.delta"] = torch.cat(group["src"]).long() - (length.cumsum(0) - length)
+            tensors[f"g{i}.length"] = length
+            mode: Literal["copy", "add", "where"] = (
+                "where" if group["where"] else "add" if group["add"] else "copy")
+            if mode != "copy" and dtype.is_floating_point:
+                raise ValueError("join_runs_add_on_float")
+            names = {"where": ("lo", "hi", "thr"), "add": ("lo",), "copy": ()}[mode]
+            for name in names:
+                tensors[f"g{i}.{name}"] = torch.cat(group[name]).to(dtype)
+            if group["zeros"]:
+                tensors[f"g{i}.zero"] = torch.cat(group["zero"])
+            gathers.append(_Gather(dtype, group["total"], mode, group["zeros"],
+                                   tuple(group["outputs"])))
+        return tuple(gathers)
+
+
+def _plan_join(arena: Tensor, written: Sequence[ForwardPart], rows: tuple[int, ...] | None
+               ) -> tuple[dict[str, Tensor], JoinPlan]:
+    """All host work of the join: the index maps of `forward_inputs(concatenate_groups(
+    ...))` (same rules and order as the CPU merge) and the runs of the bulk arrays."""
+    parts = [read_forward_part(arena, part) for part in written]
+    trees = [cast(PreparedGroup, part.tree) for part in written]
+    index = _check_join(parts)
+    policy = parts[0].policy
+    layouts = [cast(RowLayout, p.layout) for p in parts]
+    tree_layouts = [cast(RowLayout, t.layout) for t in trees]
+    counts = [len(p.rows) for p in parts]
+    total = sum(counts)
+    rows = tuple(r for p in parts for r in p.rows) if rows is None else tuple(rows)
+    if len(rows) != total:
+        raise ValueError("join_rows_mismatch")
+    low = min(part.start for part in written)
+    high = max(part.end for part in written)
+
+    def element(p: int, slot: _ArenaSlot) -> int:
+        start = written[p].start + slot.offset - low
+        if start % slot.dtype.itemsize:
+            raise ValueError("forward_arena_misaligned")
+        return start // slot.dtype.itemsize
+
+    hosts = [p.tensors for p in parts]
+    row_offsets = [sum(counts[:i]) for i in range(len(parts))]
+    # Scene rows: entity counts in each part's row order, as one row_layout.
+    entities = [layout.scene_lengths.long()[layout.scene_inverse.long()] for layout in layouts]
+    entity = torch.cat(entities)
+    nodes = int(entity.sum())
+    scene_width = _bucket(int(entity.max()), (32, 64, 128, 256, 512, 1024))
+    scene = _scene_layout(entity, entity.cumsum(0) - entity, scene_width, ROW_BUCKET_ROWS,
+                          ROW_WIDTH_MULTIPLE)
+    physical_rows = _bucket(total, (1, 2, 4, 8, 16, 32, 64))
+    # Text: each part's real unique texts in part order, then re-padded once.
+    texts = [len(layout.text_order) for layout in layouts]
+    text_offsets = [sum(texts[:i]) for i in range(len(parts))]
+    width = max(int(t["text_ids"].shape[1]) for t in hosts)
+    lengths = torch.cat([t["text_lengths"][:k] for t, k in zip(hosts, texts, strict=True)])
+    text = _text_layout(lengths, width)
+    text_rows = _bucket(len(lengths), (32, 128, 512, 2048)) if len(lengths) else 0
+    padded_lengths = F.pad(lengths, (0, text_rows - len(lengths)), value=1)
+    sizes = {key: [int(p.joint.tensors[name].numel()) for p in parts] for key, name in (
+        ("ids", "identities"), ("numbers", "numbers"), ("missing", "missing_fields"),
+        ("text", "text_fields"))}
+    sizes["refs"] = [int(e.sum()) for e in entities]
+    if max(nodes, sum(sizes["ids"]), sum(sizes["numbers"]) + sum(sizes["missing"]),
+           sum(sizes["text"]), int(padded_lengths.numel()) * width,
+           physical_rows * scene_width, high - low) > _INT32[1]:
+        raise ValueError("forward_index_exceeds_int32:join")
+    before = {key: [sum(values[:i]) for i in range(len(values))] for key, values in sizes.items()}
+    tensors: dict[str, Tensor] = {f"text.{key}": value for key, value in text.items()
+                                  if isinstance(value, Tensor)}
+    tensors.update({f"scene.{key}": value for key, value in scene.fields().items()
+                    if isinstance(value, Tensor)})
+    runs = _Runs()
+    meta: dict[str, Any] = {"text_buckets": text["text_buckets"],
+                            "text_longest": text["text_longest"],
+                            "scene_buckets": scene.buckets, "reduction_buckets": {},
+                            "role_terms": {}}
+    # Reductions: `_merged_reduction` order (widths in first-seen order, parts in
+    # order); the inverse maps each node to its row in that order.
+    for key in FORWARD_REDUCTIONS:
+        grouped: dict[int, list[tuple[int, int, int, int, int, int]]] = {}
+        for p, layout in enumerate(layouts):
+            flat_cursor = row_cursor = 0
+            for number, (bucket_width, count) in enumerate(layout.reductions[key][1]):
+                size = bucket_width * count
+                grouped.setdefault(bucket_width, []).append(
+                    (p, flat_cursor, size, count, row_cursor, number))
+                flat_cursor += size
+                row_cursor += count
+        position = 0
+        moves: list[dict[int, tuple[int, int]]] = [{} for _ in layouts]  # bucket: shift
+        chunks: list[tuple[int, int, int]] = []
+        for bucket_width, items in grouped.items():
+            for p, flat_start, size, count, row_start, number in items:
+                moves[p][number] = (position - row_start, count)
+                position += count
+                if bucket_width:
+                    chunks.append((p, flat_start, size))
+        meta["reduction_buckets"][key] = tuple((w, sum(item[3] for item in items))
+                                               for w, items in grouped.items())
+        inverses = []
+        for move, layout in zip(moves, layouts, strict=True):
+            shifts = [move[start] for start in sorted(move)]  # part bucket order
+            owners = len(layout.reductions[key][2])
+            mapping = torch.arange(owners) + torch.repeat_interleave(
+                torch.tensor([shift for shift, _ in shifts], dtype=torch.long),
+                torch.tensor([count for _, count in shifts], dtype=torch.long),
+                output_size=owners)
+            inverses.append(mapping[layout.reductions[key][2].long()])
+        tensors[f"inverse.{key}"] = torch.cat(inverses)
+        flats = [cast(_ArenaSlot, t.reductions[key][0]) for t in tree_layouts]
+        src = torch.tensor([element(p, flats[p]) + a for p, a, _ in chunks], dtype=torch.long)
+        length = torch.tensor([n for _, _, n in chunks], dtype=torch.long)
+        if key == "numbers":
+            present = torch.tensor([sizes["numbers"][p] for p, _, _ in chunks], dtype=torch.long)
+            lo = torch.tensor([before["numbers"][p] for p, _, _ in chunks], dtype=torch.long)
+            hi = torch.tensor([sum(sizes["numbers"]) + before["missing"][p]
+                               for p, _, _ in chunks], dtype=torch.long) - present
+            runs.add(f"reduction.{key}", index, (int(length.sum()),), src, length, lo=lo,
+                     hi=hi, thr=present)
+        else:
+            lo = torch.tensor([before[key][p] for p, _, _ in chunks], dtype=torch.long)
+            runs.add(f"reduction.{key}", index, (int(length.sum()),), src, length, lo=lo)
+    # Text tokens: each part's first rows, re-padded to the joined width.
+    for key in ("text_ids", "text_numbers"):
+        slots = [cast(_ArenaSlot, t.tensors[key]) for t in trees]
+        extra = math.prod(slots[0].shape[2:])
+        srcs, lens, zeros = [], [], []
+        for p, (text_slot, k) in enumerate(zip(slots, texts, strict=True)):
+            if not k:
+                continue
+            base, own_width = element(p, text_slot), text_slot.shape[1]
+            if own_width == width:
+                srcs.append(torch.tensor([base]))
+                lens.append(torch.tensor([k * width * extra]))
+                zeros.append(torch.tensor([False]))
+            else:
+                firsts = base + torch.arange(k) * own_width * extra
+                srcs.append(torch.stack((firsts, torch.zeros_like(firsts)), 1).reshape(-1))
+                lens.append(torch.tensor([own_width * extra, (width - own_width) * extra]
+                                         ).repeat(k))
+                zeros.append(torch.tensor([False, True]).repeat(k))
+        pad = text_rows - len(lengths)
+        if pad:
+            srcs.append(torch.zeros(pad, dtype=torch.long))
+            lens.append(torch.full((pad,), width * extra))
+            zeros.append(torch.ones(pad, dtype=torch.bool))
+        runs.add(key, slots[0].dtype, (text_rows, width, *slots[0].shape[2:]),
+                 torch.cat(srcs) if srcs else torch.zeros(0, dtype=torch.long),
+                 torch.cat(lens).long() if lens else torch.zeros(0, dtype=torch.long),
+                 zero=torch.cat(zeros) if zeros else torch.zeros(0, dtype=torch.bool))
+    for key in FORWARD_JOINT:
+        slots = [cast(_ArenaSlot, t.joint.tensors[key]) for t in trees]
+        if any(s.dtype != slots[0].dtype or s.shape[1:] != slots[0].shape[1:] for s in slots):
+            raise ValueError(f"join_requires_one_joint_shape:{key}")
+        runs.add(f"joint.{key}", slots[0].dtype,
+                 (sum(s.shape[0] for s in slots), *slots[0].shape[1:]),
+                 torch.tensor([element(p, s) for p, s in enumerate(slots)], dtype=torch.long),
+                 torch.tensor([math.prod(s.shape) for s in slots], dtype=torch.long))
+    texts_slots = [cast(_ArenaSlot, t.node_text_indices) for t in tree_layouts]
+    runs.add("node_text", index, (sum(math.prod(s.shape) for s in texts_slots),),
+             torch.tensor([element(p, s) for p, s in enumerate(texts_slots)], dtype=torch.long),
+             torch.tensor([math.prod(s.shape) for s in texts_slots], dtype=torch.long),
+             lo=torch.tensor(text_offsets, dtype=torch.long))
+    if policy:
+        catalogs = [int(t["action_types"].shape[1]) for t in hosts]
+        catalog = max(catalogs)
+        tensors["action_types"] = F.pad(torch.cat([
+            F.pad(t["action_types"][:n], (0, catalog - c))
+            for t, n, c in zip(hosts, counts, catalogs, strict=True)]),
+            (0, 0, 0, physical_rows - total))
+        tensors["catalog_mask"] = F.pad(torch.cat([
+            F.pad(t["catalog_mask"][:n], (0, catalog - c), value=True)
+            for t, n, c in zip(hosts, counts, catalogs, strict=True)]),
+            (0, 0, 0, physical_rows - total), value=True)
+        joined_widths = torch.tensor([b[1] for b in scene.buckets])
+        for key in ("source", "target"):
+            order_keys, candidates, term_slots, term_buckets = [], [], [], []
+            present = torch.zeros((total, catalog), dtype=torch.bool)
+            for p, layout in enumerate(layouts):
+                candidate, slot, _weight, terms = layout.roles[key]
+                own = layout.scene_buckets
+                starts = torch.tensor([sum(b[0] for b in own[:i]) for i in range(len(own))],
+                                      dtype=torch.long)
+                widths = torch.tensor([b[1] for b in own], dtype=torch.long)
+                bucket = torch.repeat_interleave(torch.arange(len(own)), torch.tensor(terms))
+                local = candidate.long().div(catalogs[p], rounding_mode="floor")
+                choice = candidate.long() - local * catalogs[p]
+                term_slot = slot.long() - local * widths[bucket]
+                part_rows = layout.scene_rows.long()
+                rank = scene.inverse[row_offsets[p] + part_rows[starts[bucket] + local]]
+                joined_bucket = rank.div(ROW_BUCKET_ROWS, rounding_mode="floor")
+                within = rank - joined_bucket * ROW_BUCKET_ROWS
+                order_keys.append(rank * catalog + choice)
+                candidates.append(within * catalog + choice)
+                term_slots.append(within * joined_widths[joined_bucket] + term_slot)
+                term_buckets.append(joined_bucket)
+                flags = layout.role_present[key].view(counts[p], catalogs[p])
+                present[scene.inverse[row_offsets[p] + part_rows], :catalogs[p]] = flags
+            permutation = torch.argsort(torch.cat(order_keys), stable=True)
+            meta["role_terms"][key] = tuple(torch.bincount(
+                torch.cat(term_buckets)[permutation], minlength=len(scene.buckets)).tolist())
+            tensors[f"roles.{key}.candidate"] = torch.cat(candidates)[permutation]
+            tensors[f"roles.{key}.slot"] = torch.cat(term_slots)[permutation]
+            tensors[f"present.{key}"] = present.reshape(-1)
+            weights = [cast(_ArenaSlot, t.roles[key][2]) for t in tree_layouts]
+            row = math.prod(weights[0].shape[1:])
+            first = torch.cat([torch.full((w.shape[0],), element(p, w), dtype=torch.long)
+                               for p, w in enumerate(weights)])
+            local_term = torch.cat([torch.arange(w.shape[0]) for w in weights])
+            src = (first + local_term * row)[permutation]
+            runs.add(f"weights.{key}", weights[0].dtype,
+                     (len(permutation), *weights[0].shape[1:]), src,
+                     torch.full((len(permutation),), row, dtype=torch.long))
+    tensors["outcome_valid"] = torch.cat(
+        [t["outcome_valid"][:n] for t, n in zip(hosts, counts, strict=True)]
+        + [outcome_mask(torch.zeros(physical_rows - total, dtype=torch.long))])
+    tensors = {name: value.to(index) if value.dtype == torch.int64 else value
+               for name, value in tensors.items()}
+    tensors["lengths"] = padded_lengths  # text_lengths keeps its prepared dtype
+    gathers = runs.finish(tensors)
+    return tensors, JoinPlan(rows, policy, low, high, 0, 0, False, (), gathers, meta)
 
 
 def assemble(
