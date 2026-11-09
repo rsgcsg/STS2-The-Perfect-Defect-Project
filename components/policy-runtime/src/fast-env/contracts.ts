@@ -30,6 +30,10 @@ export interface FastEnvConfig {
   checks: { sample_rate: number };
   decision_link: { kind: "unix"; path: string };
   inference: { timeout_ms: number; actor_id: string; sampling: Sampling; single_choice: "score" | "omit" };
+  /** Under `single_choice: "omit"` `max_decisions_per_game` counts model rows only (multi-choice
+   *  decisions); forced one-option steps are not decisions, so a game runs more native steps per
+   *  decision than under `score`. Do not reuse an old-chain per-game decision cap unchanged; the
+   *  native-step and wall caps bound the whole game in both modes. */
   budget: { max_decisions_per_game: number; max_native_steps_per_game: number; game_wall_ms: number };
   no_progress: { window_decisions: number; max_repeats: number } | null;
   settling_timeout_ms: number;

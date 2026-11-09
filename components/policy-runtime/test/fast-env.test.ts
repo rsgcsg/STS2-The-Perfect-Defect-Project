@@ -48,7 +48,35 @@ interface NativeHooks {
   settlingAfterStep?: number;
   /** Called when the process asks the native for its CPU time; may hold the read open. */
   onCpuRead?: () => void | Promise<void>;
+  /** The state after native step n (0 = after the mount): a six-option combat ("multi"), the
+   * same combat with one option ("single") or the game over ("terminal"). Overrides terminalAfter. */
+  script?: (step: number) => "multi" | "single" | "terminal";
+  /** The successor frame of these native steps carries one native combat_end fact. */
+  combatEndOn?: number[];
 }
+
+/** A state of the scripted fixture game; every one gets its own snapshot id and the fixture's session. */
+function scriptedBasis(source: GlobalHttpFixture, kind: "multi" | "single", step: number): any {
+  const basis = p1Fixture("synthetic-complete-combat");
+  if (kind === "single") {
+    // The same combat with only End turn left: one option.
+    const actions = basis.snapshot.bound_actions;
+    actions.actions = actions.actions.filter((action: any) => action.verb === "end_turn");
+    actions.materialized_count = actions.total_count = 1;
+    basis.snapshot.interaction.content.surface.playable_cards = [];
+  }
+  const session = { runtime_instance_id: source.capabilities.host.runtime_instance_id, environment_fingerprint: source.capabilities.environment_fingerprint };
+  basis.snapshot.session = session;
+  basis.snapshot.snapshot_id = `${basis.snapshot.snapshot_id}-s${step}`;
+  basis.snapshot.sequence = step + 1;
+  for (const read of basis.reads) {
+    read.response.session = session;
+    read.response.expected_snapshot_id = read.response.observed_snapshot_id = basis.snapshot.snapshot_id;
+  }
+  return basis;
+}
+const COMBAT_END = (step: number) => ({ index: step, act: 1, floor: 1, room_kind: "monster", encounter_id: `encounter-${step}`, result: "victory",
+  hp_start: 70, hp_end: 60, max_hp_start: 75, max_hp_end: 75, potions_used: 0, turns: 3 });
 
 /** One slot's "native": a Reference fixture Host behind the real public-basis client. */
 class FakeNative implements SlotNative {
@@ -74,6 +102,9 @@ class FakeNative implements SlotNative {
     this.source.basis = p1Fixture("synthetic-complete-combat");
     this.source.steps = 0;
     this.source.terminalAfterStep = (this.hooks.terminalAfter ?? 1) <= 1;
+    this.#combatEnd = [];
+    const first = this.hooks.script?.(0);
+    if (first === "single") this.source.basis = scriptedBasis(this.source, "single", 0);
     await this.transport.acquire(new AbortController().signal);
     return { gameInstanceId: `gi-${randomUUID().replaceAll("-", "")}`, start: { kind: "new_run" } };
   }
@@ -97,7 +128,13 @@ class FakeNative implements SlotNative {
     if (this.hooks.stepThrows?.(step)) throw new Error("fixture_native_lost");
     this.source.delivery = this.hooks.delivery?.(step) ?? "delivered";
     this.source.terminalAfterStep = step >= (this.hooks.terminalAfter ?? 1);
+    const next = this.hooks.script?.(step);
+    if (next !== undefined) {
+      this.source.terminalAfterStep = next === "terminal";
+      this.source.nextBases = next === "terminal" ? [] : [scriptedBasis(this.source, next, step)];
+    }
     const receipt = await this.transport.step(input, { timeoutMs: 2000 });
+    if (this.hooks.combatEndOn?.includes(step)) this.#combatEnd.push(COMBAT_END(step));
     if (this.hooks.divergenceReportOn === step) {
       // What the Host tap hands over for the native's report, with or without compact output.
       this.#emit(NATIVE_DIVERGENCE_LINE);
@@ -118,6 +155,8 @@ class FakeNative implements SlotNative {
     const buffered = this.#lines; this.#lines = [];
     if (listener) for (const line of buffered) listener(line);
   }
+  #combatEnd: Record<string, unknown>[] = [];
+  takeCombatEnd() { const facts = this.#combatEnd; this.#combatEnd = []; return facts; }
   frame() { return this.hooks.compactLines ? { episode_instance: "fake", seq: this.source.steps, objects_root_sha256: "b".repeat(64), line_sha256: "c".repeat(64) } : null; }
   cpuReadInFlight = false;
   async nativeCpuMs() { this.cpuReadInFlight = true; try { await this.hooks.onCpuRead?.(); return 1; } finally { this.cpuReadInFlight = false; } }
@@ -485,6 +524,127 @@ describe("fast-env K-game process", () => {
   });
 });
 
+describe("fast-env L1 single_choice omit", () => {
+  const omit = (extra?: (config: any) => void) => (config: any) => {
+    config.inference.single_choice = "omit"; config.budget.max_native_steps_per_game = 400; extra?.(config);
+  };
+  const outcomes = (h: Awaited<ReturnType<typeof harness>>, gid: string) => linkOf(h.linkMessages, "step_outcome", gid);
+
+  it("forced steps before the terminal: the row is completed with forced_steps and the terminal (B1)", async () => {
+    const script = (step: number) => step === 0 ? "multi" : step < 3 ? "single" : "terminal";
+    const h = await harness({ hooks: () => ({ script }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", terminal: { result: "defeat" }, decisions: 1, native_steps: 3 });
+    expect(linkOf(h.linkMessages, "decision", closed.game_instance_id)).toHaveLength(1);
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ row_id: 1, status: "completed", forced_steps: 2,
+      terminal: { result: "defeat" }, public_facts: { act: 1, floor: 4, hp: 0, max_hp: 75 } })]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ forced_steps: 2, decisions: 1 });
+  });
+
+  it("several forced steps in a row: their count and a combat_end read inside the chain go to the row before it (B1, S2)", async () => {
+    const script = (step: number) => step === 0 ? "multi" : step <= 5 ? "single" : step === 6 ? "multi" : "terminal";
+    const h = await harness({ hooks: () => ({ script, combatEndOn: [3] }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 2, native_steps: 7 });
+    const [first, second] = outcomes(h, closed.game_instance_id);
+    // The row's successor facts are those of the next row's state, not of the first forced state.
+    expect(first).toMatchObject({ status: "completed", forced_steps: 5, terminal: null, combat_end: [COMBAT_END(3)],
+      public_facts: publicFactsOf(linkOf(h.linkMessages, "decision", closed.game_instance_id)[1]) });
+    expect(second).toMatchObject({ status: "completed", forced_steps: 0, terminal: { result: "defeat" } });
+    expect(second).not.toHaveProperty("combat_end");
+  });
+
+  it("Stop inside a forced chain commits the row as completed with the last accepted facts", async () => {
+    let release!: () => void, entered!: () => void, steps = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    const script = (step: number) => step === 0 ? "multi" : "single";
+    // The second native step (the first forced one) waits until close_slot is in.
+    const stepGate = async () => { if (++steps === 2) { entered(); await gate; } };
+    const h = await harness({ hooks: () => ({ script, stepGate }), edit: omit() });
+    h.open(0);
+    await reached;
+    h.send({ cmd: "close_slot", slot: 0 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    release();
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "stop", detail: "close_slot", decisions: 1, native_steps: 2 });
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1, terminal: null })]);
+  });
+
+  it("a forced step whose delivery is unknown closes the game unknown; the row before it stays completed", async () => {
+    const script = (step: number) => step === 0 ? "multi" : "single";
+    const h = await harness({ hooks: () => ({ script, delivery: step => step === 3 ? "unknown" : "delivered" }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "unknown", native: "replaced", decisions: 1, native_steps: 3 });
+    expect(closed.detail).toMatch(/^delivery_unknown:receipt_delivery_unknown:/u);
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1 })]);
+    expect(h.natives[0]!.shutdowns).toEqual([true]);
+  });
+
+  it("a forced step not delivered closes not_started; a forced first state's combat_end has no row and is only counted", async () => {
+    const script = (step: number) => step === 0 ? "single" : step === 1 ? "multi" : "single";
+    const h = await harness({ hooks: () => ({ script, combatEndOn: [1], delivery: step => step === 3 ? "not_delivered" : "delivered" }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "not_started", detail: "forced_step_not_delivered", decisions: 1, native_steps: 3 });
+    const [outcome] = outcomes(h, closed.game_instance_id);
+    expect(outcome).toMatchObject({ status: "completed", forced_steps: 0 });
+    expect(outcome).not.toHaveProperty("combat_end");
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ combat_end_unattributed: 1, forced_steps: 2 });
+  });
+
+  it("a combat that ends on the row's own step, then a forced step: the fact rides on that row (S2)", async () => {
+    const script = (step: number) => step === 0 ? "multi" : step === 1 ? "single" : "terminal";
+    const h = await harness({ hooks: () => ({ script, combatEndOn: [1, 2] }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1,
+      combat_end: [COMBAT_END(1), COMBAT_END(2)], terminal: { result: "defeat" } })]);
+  });
+
+  it("more than 64 forced steps in a row close the game as budget/forced_steps_in_a_row (S1)", async () => {
+    const script = (step: number) => step === 0 ? "multi" : "single";
+    const h = await harness({ hooks: () => ({ script }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "budget", detail: "forced_steps_in_a_row", decisions: 1, native_steps: 65 });
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 64 })]);
+  });
+
+  it("forced steps after the last row are durable: the default sink reads them back after the close (S4)", async () => {
+    const script = (step: number) => step === 0 ? "multi" : step < 4 ? "single" : "terminal";
+    const h = await harness({ sink: dir => defaultFastEvidenceSink(dir), hooks: () => ({ script }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    const read = await readFastGameEvidence(closed.evidence_dir);
+    expect(read).toMatchObject({ state: "closed", close: { reason: "terminal", decisions: 1, native_steps: 4 } });
+    expect(read.steps.map(step => [step.row_id, step.catalog_len, step.status])).toEqual([
+      [1, 6, "completed"], [null, 1, "completed"], [null, 1, "completed"], [null, 1, "completed"]]);
+    expect(read.satisfied_steps).toBe(4);
+  });
+
+  it("score (the default) keeps today's rows: a one-option state is a row and no forced_steps is sent", async () => {
+    const script = (step: number) => step === 0 ? "multi" : step === 1 ? "single" : "terminal";
+    const h = await harness({ hooks: () => ({ script }) });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 2, native_steps: 2 });
+    expect(linkOf(h.linkMessages, "decision", closed.game_instance_id).map(decision => decision.catalog_len)).toEqual([6, 1]);
+    for (const outcome of outcomes(h, closed.game_instance_id)) expect(outcome).not.toHaveProperty("forced_steps");
+  });
+});
+
+const publicFactsOf = (decision: any) => {
+  const run = decision.input.observation.run.content, player = decision.input.observation.player.content;
+  return { act: run.act, floor: run.floor, hp: player.hp, max_hp: player.max_hp };
+};
+
 describe("fast-env failure paths", () => {
   const recordingSink = (calls: any[]) => (): FastEvidenceSink => ({
     openGame(meta: FastGameMeta) {
@@ -564,7 +724,10 @@ describe("fast-env failure paths", () => {
       expect(await h.exit).toBe(1);
       expect(h.events.at(-1)).toMatchObject({ event: "fatal", reason: expect.stringMatching(/^evidence_failed:.*disk_full/u) });
       // The game's close is marked, so the manager neither counts nor trains on it.
-      expect(h.events.find(event => event.event === "closed")).toMatchObject({ evidence_dir: null, evidence_failed: true });
+      const closed = h.events.find(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "terminal", evidence_dir: null, evidence_failed: true });
+      // The decision link hears env_crash, so the assembler never labels the game for SGD.
+      expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "env_crash" })]);
       expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
     });
   }

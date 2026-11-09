@@ -18,7 +18,13 @@ an action sent and never witnessed (``delivery_unknown``), a start echo that dif
 from the offer and a terminal close without a result are ``environment_gap``; an
 environment-process crash, a native crash, a manager kill (Stop bound, unconfirmed
 close, open delivery, exit without close), a protocol-invalid close and a failed offer
-event are ``infrastructure``. Any other ``fast_chain_unknown:<detail>`` stays
+event are ``infrastructure``. The kernel appends the cause to ``delivery_unknown``
+(``delivery_unknown:receipt_delivery_unknown:<code>`` and the like): still
+``environment_gap``. An action delivered whose successor could not be read
+(``delivered_successor_unreadable:<detail>``) is ``environment_gap``, as the old
+chain types ``managed_settling_stalled``. A compact-state divergence is a fast-chain
+implementation fault that says nothing about the model, so ``infrastructure``; it
+also stops the build's output. Any other ``fast_chain_unknown:<detail>`` stays
 ``unclassified``.
 """
 from __future__ import annotations
@@ -46,8 +52,11 @@ WALL_LIMIT = 'episode_wall_limit_reached'  # U4-1 executor reason for the same f
 FAST_CHAIN_ENVIRONMENT_CODES = frozenset({
     'fast_chain_unknown:delivery_unknown', 'first_frame_start_changed',
     'fast_chain_terminal_without_result'})
+FAST_CHAIN_ENVIRONMENT_PREFIXES = ('fast_chain_unknown:delivery_unknown:',
+                                   'fast_chain_unknown:delivered_successor_unreadable:')
 FAST_CHAIN_INFRASTRUCTURE_CODES = frozenset({
-    'fast_chain_close_reason_invalid', 'fast_chain_unknown:native_crash',
+    'fast_chain_close_reason_invalid', 'fast_chain_unknown:compact_state_divergence',
+    'fast_chain_unknown:native_crash',
     'fast_chain_unknown:stop_latency_bound_exceeded',
     'fast_chain_unknown:fast_env_game_close_unconfirmed',
     'fast_chain_unknown:fast_env_open_delivery_unknown',
@@ -94,6 +103,10 @@ def classify_unknown(status: str, reason: Any = None,
             signal('infrastructure', code)
         if code in FAST_CHAIN_ENVIRONMENT_CODES:
             signal('environment_gap', code)
+        if code is not None and code.startswith(FAST_CHAIN_ENVIRONMENT_PREFIXES):
+            prefix = next(item for item in FAST_CHAIN_ENVIRONMENT_PREFIXES
+                          if code.startswith(item))
+            signal('environment_gap', prefix[:-1])
         if code is not None and (code in FAST_CHAIN_INFRASTRUCTURE_CODES
                                  or code.startswith(FAST_CHAIN_INFRASTRUCTURE_PREFIXES)):
             prefix = next((item for item in FAST_CHAIN_INFRASTRUCTURE_PREFIXES
