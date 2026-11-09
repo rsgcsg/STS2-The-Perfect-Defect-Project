@@ -590,6 +590,7 @@ class BinaryBatchPreparer:
             "scene_attention_area",
             "text_attention_area",
             "prepared_layout",
+            "group_shards",
         }
         if set(existing_assembly_options) - allowed:
             raise TypeError("unknown_binary_assembly_options")

@@ -670,6 +670,13 @@ class SegmentLearner:
             # S3 rows-v2: preparation workers add the CPU row layout; the forward
             # refuses any group whose layout does not match this selection.
             preparation_options["prepared_layout"] = self.performance.prepared_forward
+        if (self.sgd_options is not None and self.sgd_options.compile is not None
+                and not self.performance.prepared_compile):
+            raise BoundaryError("rl_learner", "sgd_compile_options_require_prepared_compile")
+        if self.sgd_options is not None and self.sgd_options.data_parallel is not None:
+            # WP8 same-update data parallel: no physical group crosses a rank's
+            # equal share of a minibatch (the SGD ranks split by group).
+            preparation_options["group_shards"] = self.sgd_options.data_parallel["world"]
         if self.dataplane is not None:
             from spireagent.rl_local_wal import LocalControlWAL, WalReplication
             from spireagent.rl_socket_transport import BinarySources
@@ -923,7 +930,10 @@ class SegmentLearner:
             "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
             "performance": asdict(self.performance), "target_kl": settings.target_kl,
             "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
-            "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init()})
+            "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init(),
+            **({"data_parallel": dict(options.data_parallel)}
+               if options.data_parallel is not None else {}),
+            **({"compile": dict(options.compile)} if options.compile is not None else {})})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
@@ -932,7 +942,16 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "sgd_process_controller_has_CUDA_context")
         self.sgd_groups = ready["optimizer_param_groups"]
         self.sgd_memory = ready["memory"]
+        # Preflight/limits/warm-up facts of `prepared_compile` (None when not compiled).
+        self.sgd_compile = ready.get("compile")
+        if options.data_parallel is not None and (
+                not isinstance(ready.get("data_parallel"), list)
+                or len(ready["data_parallel"]) != options.data_parallel["world"]):
+            raise self.sgd.violation("sgd_data_parallel_ranks_not_ready")
         self._event("sgd_process_started", pid=ready["pid"], device=ready["device"],
+                    **({"data_parallel": ready["data_parallel"]}
+                       if options.data_parallel is not None else {}),
+                    **({"compile": ready["compile"]} if "compile" in ready else {}),
                     gpu_uuid=ready["gpu_uuid"], gpu_name=ready["gpu_name"], cpus=ready["cpus"],
                     weights_sha256=ready["weights_sha256"], updates=ready["updates"],
                     memory_budget=budget, memory=ready["memory"])

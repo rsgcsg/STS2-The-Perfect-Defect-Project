@@ -148,8 +148,13 @@ def prepared_update(
     diagnostics: bool = False,
     collect_policy_rows: bool = False,
     gradient_sync: Any = None,
+    shard: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
+
+    `shard=(rank, world)` (data parallel, same update) runs only this rank's
+    groups (`data_parallel.shard_groups`) with the minibatch's global
+    denominators; `gradient_sync` must then sum the partial results.
 
     A full group needs one forward/backward. Smaller groups accumulate gradients
     with the same minibatch denominators, then share one clip/KL/Adam decision.
@@ -184,15 +189,27 @@ def prepared_update(
         # (donated buffers) refuses; those occasional steps run the same block eager.
         compile_rows = performance.prepared_compile and diagnostic is None
         rows_path: str | None = None
+        local_groups: tuple[int, ...] | None = None
+        if shard is not None:
+            from .data_parallel import shard_groups
+
+            if gradient_sync is None:
+                raise ValueError("data_parallel_shard_requires_gradient_sync")
+            local_groups = shard_groups([len(g.rows) for g in minibatch.groups], *shard)
+        executed: list[Any] = []
         with lock, prepared_precision(model, performance):
             if rows_forward:
                 from stpd.p1.rows_forward import varlen_supported
 
                 rows_path = "varlen" if varlen_supported(device) else "masked"
-            for group in minibatch.groups:
+            for group_index, group in enumerate(minibatch.groups):
                 if (getattr(group, "layout", None) is not None) != rows_forward:
                     raise BoundaryError("rl_performance",
                                         "prepared_layout_does_not_match_selected_forward")
+                if local_groups is not None and group_index not in local_groups:
+                    offset += len(group.rows)  # another rank's rows of this minibatch
+                    continue
+                executed.append(group)
                 phase = time.perf_counter()
                 scores, logits, hp = (
                     model.forward_prepared_rl4(group, compile_rows=compile_rows)
@@ -289,6 +306,11 @@ def prepared_update(
                 **phases,
             },
         }
+        if shard is not None:
+            result["data_parallel"] = {
+                "rank": shard[0], "world": shard[1], "groups": len(executed),
+                "rows": sum(len(group.rows) for group in executed),
+                "minibatch_groups": len(minibatch.groups)}
         if rows_path is not None:
             # Which scene-attention path ran (device-chosen, not a fallback) and the
             # process's dynamo counters: a cache-limit fall back to eager shows here.
@@ -302,7 +324,7 @@ def prepared_update(
         if collect_policy_rows:
             # Logical row indices pair these transient pre-update observations
             # with generation time/actual mu. The learner persists summaries only.
-            logical_rows = [row for group in minibatch.groups for row in group.rows]
+            logical_rows = [row for group in executed for row in group.rows]
             result["_policy_rows"] = [
                 {"row": row, "kl_mu_theta": value[0] if math.isfinite(value[0]) else None,
                  "ratio": value[1] if math.isfinite(value[1]) else None,

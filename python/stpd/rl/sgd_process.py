@@ -54,7 +54,10 @@ OPTION_KEYS = frozenset((
     "sgd_cpus", "sgd_offline_step_seconds", "memory_limit_bytes",
     "memory_headroom_fraction", "memory_budget",
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
+    "sgd_data_parallel", "sgd_compile",
 ))
+DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
+COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup"))
 # Per-process bases from measurement where one exists (margin ~15-25%); override
 # with `dataplane.memory_budget` once a run measures better. The check refuses;
 # it never shrinks a limit.
@@ -87,6 +90,11 @@ class SgdOptions:
     declared: dict[str, int] = field(default_factory=dict)
     # C-SCALE: sampled real online minibatches as offline-step files; None = off.
     offline_dump: OfflineDumpOptions | None = None
+    # WP8: {"world", "backend", "timeout_seconds"}; None = one device (default).
+    data_parallel: dict[str, Any] | None = None
+    # WP8: {"cache_dir", "recompile_limit", "warmup"} for `prepared_compile`;
+    # None keeps torch's defaults and no warm-up (default).
+    compile: dict[str, Any] | None = None
 
 
 def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
@@ -122,6 +130,31 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
     if (not isinstance(declared, dict) or set(declared) - set(DECLARED_BYTES)
             or any(type(value) is not int or value < 0 for value in declared.values())):
         raise ValueError("invalid_memory_budget_declarations")
+    parallel = dataplane.get("sgd_data_parallel")
+    if parallel is not None:
+        timeout: Any = (parallel.get("timeout_seconds", 600) if isinstance(parallel, dict)
+                        else None)
+        if (not isinstance(parallel, dict) or set(parallel) - DATA_PARALLEL_KEYS
+                or type(parallel.get("world")) is not int or not 2 <= parallel["world"] <= 8
+                or parallel.get("backend", "nccl") not in ("nccl", "gloo")
+                or type(timeout) not in (int, float) or not 10 <= timeout <= 3600):
+            raise ValueError("invalid_sgd_data_parallel")
+        parallel = {"world": parallel["world"], "backend": parallel.get("backend", "nccl"),
+                    "timeout_seconds": float(timeout)}
+    compiled = dataplane.get("sgd_compile")
+    if compiled is not None:
+        limit_value = compiled.get("recompile_limit") if isinstance(compiled, dict) else None
+        warm = compiled.get("warmup", []) if isinstance(compiled, dict) else None
+        cache_dir = compiled.get("cache_dir") if isinstance(compiled, dict) else None
+        if (not isinstance(compiled, dict) or set(compiled) - COMPILE_KEYS
+                or (limit_value is not None and (type(limit_value) is not int
+                                                 or not 8 <= limit_value <= 64))
+                or not isinstance(warm, list) or len(warm) > 8
+                or any(not isinstance(path, str) or not path for path in warm)
+                or (cache_dir is not None and (not isinstance(cache_dir, str) or not cache_dir))):
+            raise ValueError("invalid_sgd_compile")
+        compiled = {"cache_dir": cache_dir, "recompile_limit": limit_value,
+                    "warmup": list(warm)}
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -132,6 +165,8 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         headroom=number("memory_headroom_fraction", 0.20, 0.0, 0.9),
         declared=dict(declared),
         offline_dump=dump_options(dataplane),
+        data_parallel=parallel,
+        compile=compiled,
     )
 
 
@@ -257,6 +292,12 @@ def memory_budget(*, options: SgdOptions, device: str, model_bytes: int,
         ("sgd", "state_capture", 8 * model_bytes, "anonymous",
          "derived: CPU state 4x + encoded file 4x model bytes"),
     ]
+    if options.data_parallel is not None:
+        followers = options.data_parallel["world"] - 1
+        items.append(("sgd", "data_parallel_ranks", followers * (
+            declared["sgd_base_cuda" if cuda else "sgd_base_cpu"] + pinned_bytes),
+            "pinned" if cuda else "anonymous",
+            f"declared: {followers} follower rank(s) x (SGD base + two-slot pinned cap)"))
     if options.offline_dump is not None:
         items.append(("sgd", "offline_dump", 8 * model_bytes + prepared_bytes // 2, "anonymous",
                       "derived: state 8x model bytes + CPU and encoded copy of one minibatch "
@@ -582,6 +623,7 @@ def _child_main(connection: Any, parent: int) -> None:
     state: dict[str, Any] = {"sent": 0, "received": 0, "run": None, "generation": None,
                              "stage": "init"}
     send_lock = threading.Lock()
+    followers: list[_Follower] = []
 
     def send(kind: str, **fields: Any) -> None:
         with send_lock:
@@ -599,15 +641,25 @@ def _child_main(connection: Any, parent: int) -> None:
                     return
                 # Controller died or closed its end: exit at once, write nothing.
                 os._exit(70)
+            # Data parallel: every follower sees the controller's messages in
+            # order; rank 0 alone validates and answers them.
+            for follower in followers:
+                follower.forward(message)
             inbox.put(message)
 
-    threading.Thread(target=receive, name="rl-sgd-receiver", daemon=True).start()
     worker = None
+    parallel = None
     try:
+        message = connection.recv()
+        parallel_init = message.get("data_parallel") if isinstance(message, dict) else None
+        if parallel_init is not None:
+            parallel = _DataParallel.leader(message, send, state, followers)
+        inbox.put(message)
+        threading.Thread(target=receive, name="rl-sgd-receiver", daemon=True).start()
         message = _child_next(inbox, state, block=True)
         if message["kind"] != "init":
             raise _ChildViolation("sgd_init_required_first")
-        worker = _SgdWorker(message, send, state)
+        worker = _SgdWorker(message, send, state, parallel=parallel)
         worker.loop(lambda block: _child_next(inbox, state, block=block))
     except _Shutdown:
         pass
@@ -626,10 +678,205 @@ def _child_main(connection: Any, parent: int) -> None:
         with suppress(BaseException):
             send("failed", **facts)
         state["closing"] = True
+        for follower in followers:
+            follower.kill()
         os._exit(1)
     if worker is not None:
         worker.close()
     state["closing"] = True
+    if parallel is not None:
+        parallel.close(followers)
+
+
+class _Follower:
+    """Rank-0 side of one follower rank: forwarded messages, failure watch."""
+
+    def __init__(self, context: Any, init: dict[str, Any], rank: int, send: Any,
+                 state: dict[str, Any], on_staged: Any) -> None:
+        self.rank, self.send, self.state, self.on_staged = rank, send, state, on_staged
+        self.connection, child = context.Pipe(duplex=True)
+        self.process = context.Process(target=_follower_main,
+                                       args=(child, init, rank, os.getpid()),
+                                       name=f"rl-sgd-rank{rank}", daemon=False)
+        self.process.start()
+        child.close()
+        self.lock = threading.Lock()
+        threading.Thread(target=self._watch, name=f"rl-sgd-rank{rank}-watch",
+                         daemon=True).start()
+
+    def forward(self, message: Any) -> None:
+        with self.lock, suppress(OSError, ValueError):
+            self.connection.send(message)
+
+    def _watch(self) -> None:
+        while True:
+            try:
+                report = self.connection.recv()
+            except (EOFError, OSError):
+                report = None
+            if isinstance(report, dict) and set(report) == {"staged"}:
+                self.on_staged(self.rank, report["staged"])
+                continue
+            break
+        if self.state.get("closing"):
+            return
+        self.process.join(5)
+        facts = report if isinstance(report, dict) else {}
+        # A rank that failed or vanished would hang the next collective: fail now.
+        with suppress(BaseException):
+            self.send("failed", stage="data_parallel_rank", error_type=facts.get(
+                "error_type", "DataParallelRankExited"), error_code=facts.get("error_code"),
+                rank=self.rank, exitcode=self.process.exitcode,
+                diagnostic=facts.get("diagnostic"))
+        self.state["closing"] = True
+        os._exit(1)
+
+    def kill(self) -> None:
+        with suppress(BaseException):
+            self.process.kill()
+
+
+class _DataParallel:
+    """One process group over the SGD ranks; rank 0 is the controller's SGD child."""
+
+    def __init__(self, init: dict[str, Any], rank: int) -> None:
+        import datetime
+
+        import torch
+        import torch.distributed as dist
+
+        config = init["data_parallel"]
+        self.rank, self.world = rank, config["world"]
+        self.backend = config["backend"]
+        self.dist = dist
+        # Rank 0 only: a "staged" answer waits until every follower has its own
+        # copy, because the controller deletes the prepared file once staged.
+        self.send: Any = None
+        self.staged_lock = threading.Lock()
+        self.deferred: dict[int, dict[str, Any]] = {}
+        self.follower_ready: dict[int, set[int]] = {}
+        device = init["device"]
+        if device.startswith("cuda"):
+            base = int(device.split(":", 1)[1]) if ":" in device else 0
+            self.device = f"cuda:{base + rank}"
+            torch.cuda.set_device(self.device)
+        else:
+            if self.backend != "gloo":
+                raise _ChildViolation("sgd_data_parallel_cpu_requires_gloo")
+            self.device = device
+        dist.init_process_group(
+            self.backend, init_method="file://" + str(Path(init["root"]) / config["store"]),
+            rank=rank, world_size=self.world,
+            timeout=datetime.timedelta(seconds=config["timeout_seconds"]))
+
+    @classmethod
+    def leader(cls, init: dict[str, Any], send: Any, state: dict[str, Any],
+               followers: list[_Follower]) -> _DataParallel:
+        import uuid
+
+        context = multiprocessing.get_context("spawn")
+        config = init["data_parallel"]
+        if (init.get("kind") != "init" or not isinstance(config, dict)
+                or type(config.get("world")) is not int):
+            raise _ChildViolation("sgd_data_parallel_init_changed")
+        # One fresh rendezvous file per SGD child (node-local root, never reused).
+        init["data_parallel"] = config = {**config, "store": "dp-store-" + uuid.uuid4().hex}
+        holder: list[_DataParallel] = []
+        for rank in range(1, config["world"]):
+            followers.append(_Follower(context, init, rank, send, state,
+                                       lambda r, d: holder[0].follower_staged(r, d)))
+        leader = cls(init, 0)
+        leader.send = send
+        holder.append(leader)
+        return leader
+
+    def staged(self, dataset: int, fields: dict[str, Any]) -> None:
+        with self.staged_lock:
+            self.deferred[dataset] = fields
+            self._flush(dataset)
+
+    def follower_staged(self, rank: int, dataset: int) -> None:
+        with self.staged_lock:
+            self.follower_ready.setdefault(dataset, set()).add(rank)
+            self._flush(dataset)
+
+    def _flush(self, dataset: int) -> None:
+        if (dataset in self.deferred
+                and len(self.follower_ready.get(dataset, ())) == self.world - 1):
+            fields = self.deferred.pop(dataset)
+            self.follower_ready.pop(dataset)
+            self.send("staged", dataset=dataset, **fields)
+
+    def gather(self, value: Any) -> list[Any] | None:
+        parts: list[Any] | None = [None] * self.world if self.rank == 0 else None
+        self.dist.gather_object(value, parts, dst=0)
+        return parts
+
+    def close(self, followers: list[_Follower]) -> None:
+        for follower in followers:
+            follower.process.join(30)
+            if follower.process.exitcode is None:
+                follower.kill()
+        with suppress(BaseException):
+            self.dist.destroy_process_group()
+
+
+def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int) -> None:
+    """A follower rank: same theta/Adam, its share of every minibatch, no answers."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    _parent_death_signal(leader)
+    inbox: queue.Queue[Any] = queue.Queue()
+    state: dict[str, Any] = {"stage": "init", "follower": True}
+
+    def receive() -> None:
+        while True:
+            try:
+                message = connection.recv()
+            except (EOFError, OSError):
+                if state.get("closing"):
+                    return
+                os._exit(70)
+            inbox.put(message)
+
+    def next_message(block: bool) -> Any:
+        try:
+            message = inbox.get(block=block)
+        except queue.Empty:
+            return None
+        if message.get("kind") == "shutdown":
+            raise _Shutdown
+        return message
+
+    worker = None
+    parallel = None
+    try:
+        parallel = _DataParallel(init, rank)
+        threading.Thread(target=receive, name="rl-sgd-follower-receiver", daemon=True).start()
+        def answer(kind: str, **fields: Any) -> None:
+            # Followers answer nothing to the controller; rank 0 waits for these.
+            if kind == "staged":
+                connection.send({"staged": fields["dataset"]})
+
+        worker = _SgdWorker(init, answer, state, parallel=parallel)
+        worker.loop(next_message)
+    except _Shutdown:
+        pass
+    except BaseException as error:
+        from spireagent.local_diagnostics import exception_facts
+
+        with suppress(BaseException):
+            connection.send({"error_type": type(error).__name__,
+                             "error_code": getattr(error, "code", None),
+                             "diagnostic": exception_facts(error)})
+        state["closing"] = True
+        os._exit(1)
+    if worker is not None:
+        worker.close()
+    state["closing"] = True
+    if parallel is not None:
+        with suppress(BaseException):
+            parallel.dist.destroy_process_group()
 
 
 def _child_next(inbox: queue.Queue[Any], state: dict[str, Any], *, block: bool) -> Any:
@@ -650,7 +897,8 @@ def _child_next(inbox: queue.Queue[Any], state: dict[str, Any], *, block: bool) 
 
 
 class _SgdWorker:
-    def __init__(self, init: dict[str, Any], send: Any, state: dict[str, Any]) -> None:
+    def __init__(self, init: dict[str, Any], send: Any, state: dict[str, Any], *,
+                 parallel: _DataParallel | None = None) -> None:
         import torch
 
         from stpd.p1.execution import MStdExecution
@@ -671,7 +919,9 @@ class _SgdWorker:
                 raise _ChildViolation("sgd_cpu_affinity_unsupported_on_this_platform")
             os.sched_setaffinity(0, set(init["cpus"]))
         torch.manual_seed(init["seed"])
-        self.device = _device(init["device"])
+        self.parallel = parallel
+        self.rank = parallel.rank if parallel is not None else 0
+        self.device = _device(parallel.device if parallel is not None else init["device"])
         values = read_tree(init["state"], INIT_SCHEMA)
         spec = init["model"]
         with torch.random.fork_rng(devices=[]):
@@ -700,6 +950,8 @@ class _SgdWorker:
             torch.cuda.set_rng_state_all(list(self.cuda_rng))
         self.loss = LossConfig(**init["loss"])
         self.performance = PerformanceConfig(**init["performance"])
+        self.compile_facts = (self.prepare_compile(init.get("compile"))
+                              if self.performance.prepared_compile else None)
         self.target_kl, self.ema_decay = init["target_kl"], init["ema_decay"]
         self.diagnostics_every = init["diagnostics_every"]
         self.root = Path(init["root"])
@@ -711,17 +963,94 @@ class _SgdWorker:
         self.offline_dump = init.get("offline_dump")
         self.offline_dumps = 0
         self.next_dump = (self.updates + self.offline_dump["every"]
-                          if self.offline_dump is not None else None)
+                          if self.offline_dump is not None and self.rank == 0 else None)
         loaded = weights_digest(self.model.state_dict())
-        self.state["stage"] = "ready"
         properties = (torch.cuda.get_device_properties(self.device)
                       if self.device.type == "cuda" else None)
+        self.sync: Any = None
+        self.replica_seconds: float | None = None
+        ranks = None
+        if parallel is not None:
+            from .data_parallel import GradientAverage
+
+            # Same update: each rank sums its partial gradient of the same minibatch.
+            self.sync = GradientAverage(reduce="sum")
+            ranks = parallel.gather({
+                "rank": self.rank, "pid": os.getpid(), "device": str(self.device),
+                "gpu_uuid": str(properties.uuid) if properties is not None else None,
+                "gpu_name": properties.name if properties is not None else None,
+                "weights_sha256": loaded})
+            if ranks is not None and any(r["weights_sha256"] != loaded for r in ranks):
+                raise _ChildViolation("sgd_data_parallel_ranks_loaded_different_weights")
+        self.state["stage"] = "ready"
         self.send("ready", pid=os.getpid(), device=str(self.device),
+                  **({"data_parallel": ranks} if ranks is not None else {}),
+                  **({"compile": self.compile_facts} if self.compile_facts is not None else {}),
                   gpu_uuid=str(properties.uuid) if properties is not None else None,
                   gpu_name=properties.name if properties is not None else None,
                   weights_sha256=loaded, updates=self.updates, datasets=self.datasets,
                   optimizer_param_groups=self.groups(), cpus=init["cpus"],
                   cuda_initialized=bool(torch.cuda.is_initialized()), memory=self.memory())
+
+    def prepare_compile(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        """F6 preflight, compile limits/cache, then optional warm-up (no learning effect).
+
+        The module-loaded Python links `_bz2` against the EasyBuild bzip2; a GPU
+        job without `module load python/...` cannot import it, and inductor's
+        first compile then fails mid-run. Refuse here, before `ready`.
+        """
+        try:
+            import bz2  # noqa: F401
+        except ImportError as error:
+            raise _ChildViolation("sgd_compile_requires_bz2_load_the_python_module") from error
+        facts: dict[str, Any] = {"bz2": True}
+        if options is None:
+            return facts
+        if options["cache_dir"] is not None:
+            # Read lazily by inductor at each compile: persistent across jobs.
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = options["cache_dir"]
+            facts["cache_dir"] = options["cache_dir"]
+        if options["recompile_limit"] is not None:
+            import torch._dynamo.config as dynamo
+
+            if hasattr(dynamo, "recompile_limit"):
+                dynamo.recompile_limit = options["recompile_limit"]
+            else:
+                dynamo.cache_size_limit = options["recompile_limit"]
+            facts["recompile_limit"] = options["recompile_limit"]
+        facts["warmup"] = [self.warm(Path(path)) for path in options["warmup"]]
+        return facts
+
+    def warm(self, root: Path) -> dict[str, Any]:
+        """Compile on one dumped real minibatch: forward + backward, never a step.
+
+        `target_kl=-1` makes `prepared_update` take its KL-stop branch, which
+        zeroes gradients without an optimizer step: theta/Adam stay bitwise the
+        same, and the torch/CUDA RNG states are restored around it.
+        """
+        from . import batch_preparation as bp
+        from .loss import prepared_update
+        from .offline_step import load
+
+        torch = self.torch
+        began = time.perf_counter()
+        _value, minibatch, _receipt = load(root)
+        before = weights_digest(self.model.state_dict())
+        staged = bp.stage_batch(minibatch, self.device)[0] if self.device.type == "cuda" else (
+            minibatch)
+        devices = [self.device] if self.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            result = prepared_update(
+                self.model, self.optimizer, staged, config=self.loss,
+                performance=self.performance, target_kl=-1.0, diagnostics=False,
+                collect_policy_rows=False)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        if result["stepped"] or weights_digest(self.model.state_dict()) != before:
+            raise _ChildViolation("sgd_compile_warmup_changed_theta")
+        return {"path": str(root), "rows": result["rows"],
+                "seconds": time.perf_counter() - began,
+                "rows_forward": result.get("rows_forward")}
 
     def names(self) -> tuple[tuple[str, ...], ...]:
         names = {id(parameter): name for name, parameter in self.model.named_parameters()}
@@ -760,7 +1089,8 @@ class _SgdWorker:
             elif kind == "start":
                 self.run_dataset(message, next_message)
             elif kind == "checkpoint":
-                self.capture_state(message)
+                if self.rank == 0:  # followers hold the same theta; rank 0 answers
+                    self.capture_state(message)
             else:
                 raise _ChildViolation("sgd_unexpected_message_" + str(kind))
 
@@ -802,9 +1132,13 @@ class _SgdWorker:
         del batch  # pinned slot returns once its H2D event completes
         self.staged[dataset] = (plan, device_batch)
         done = time.perf_counter()
-        self.send("staged", dataset=dataset, sha256=plan["sha256"], copies=copies,
-                  verify_seconds=verified - began, pin_seconds=pinned - verified,
-                  stage_seconds=done - pinned, host_seconds=done - began)
+        fields = dict(sha256=plan["sha256"], copies=copies,
+                      verify_seconds=verified - began, pin_seconds=pinned - verified,
+                      stage_seconds=done - pinned, host_seconds=done - began)
+        if self.parallel is not None and self.rank == 0:
+            self.parallel.staged(dataset, fields)
+        else:
+            self.send("staged", dataset=dataset, **fields)
 
     def run_dataset(self, start: dict[str, Any], next_message: Any) -> None:
         from .loss import prepared_update
@@ -849,13 +1183,18 @@ class _SgdWorker:
             result = prepared_update(
                 self.model, self.optimizer, batch, config=self.loss,
                 performance=self.performance, target_kl=self.target_kl,
-                diagnostics=diagnostics, collect_policy_rows=True)
+                diagnostics=diagnostics, collect_policy_rows=True,
+                gradient_sync=self.sync,
+                shard=(self.rank, self.parallel.world) if self.parallel is not None else None)
             optimizer_seconds = time.perf_counter() - step_began
+            if self.parallel is not None:
+                result = self.gather_step(result, diagnostics)
             ema_seconds = 0.0
             if result["stepped"]:
                 self.state["stage"] = "ema"
                 ema_began = time.perf_counter()
-                self.update_ema()
+                if self.rank == 0:  # EMA and every answer live on rank 0 only
+                    self.update_ema()
                 self.updates += 1
                 ema_seconds = time.perf_counter() - ema_began
             cuda_seconds = None
@@ -877,6 +1216,9 @@ class _SgdWorker:
                               else 0.0,
                               "boundary_seconds": boundary if minibatch == epoch == 0
                               else None,
+                              **({"replica_check_seconds": self.replica_seconds}
+                                 if minibatch == epoch == 0
+                                 and self.replica_seconds is not None else {}),
                               **({"offline_dump": dumped} if dumped is not None else {})})
             minibatch += 1
             end_epoch = minibatch == len(device_batch.minibatches)
@@ -887,9 +1229,36 @@ class _SgdWorker:
                 break
         del device_batch, batch
         self.datasets += 1
-        if self.updates > start_updates:
+        if self.parallel is not None:
+            from .data_parallel import replica_check
+
+            # Once per dataset: theta must still be bitwise identical on every rank.
+            self.state["stage"] = "replica_check"
+            check_began = time.perf_counter()
+            replica_check(self.model)
+            self.replica_seconds = time.perf_counter() - check_began
+        if self.updates > start_updates and self.rank == 0:
             self.snapshot()
         self.idle_since = time.perf_counter()
+
+    def gather_step(self, result: dict[str, Any], diagnostics: bool) -> dict[str, Any]:
+        """Rank 0 gets every rank's per-row policy facts (in group order) and timing."""
+        assert self.parallel is not None
+        began = time.perf_counter()
+        rows = result.pop("_policy_rows", [])
+        local = {**result["data_parallel"], "seconds": result["seconds"],
+                 "host_timing": result["host_timing"]}
+        parts = self.parallel.gather((rows, local))
+        if parts is None:
+            return result
+        result["_policy_rows"] = [row for part_rows, _ in parts for row in part_rows]
+        result["data_parallel"] = {
+            "world": self.parallel.world, "mode": "split_rows",
+            "ranks": [facts for _, facts in parts],
+            "gather_seconds": time.perf_counter() - began,
+            # Per-head trunk diagnostics are computed from rank 0's groups only.
+            **({"diagnostics_scope": "rank0_groups"} if diagnostics else {})}
+        return result
 
     def dump_offline_step(self, batch: Any, device_batch: Any, dataset: int, minibatch: int,
                           epoch: int) -> dict[str, Any]:
