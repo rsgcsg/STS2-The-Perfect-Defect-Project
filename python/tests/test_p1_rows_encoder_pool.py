@@ -72,3 +72,20 @@ def test_pool_rejects_fork_and_mismatched_cpus():
         EncoderPool(vocabulary, workers=1, start_method="fork")
     with pytest.raises(ValueError, match="encoder_pool_cpus_per_worker"):
         EncoderPool(vocabulary, workers=2, cpus=[0])
+
+
+def test_a_send_racing_the_break_never_leaves_a_pending_future():
+    """#429 review S6: submit passed its broken check, then the reader broke the
+    pool and drained before this send appended: the future must fail at once."""
+    vocabulary = public_vocabulary(V2_INPUT_SPEC)
+    pool = EncoderPool(vocabulary, workers=1)
+    try:
+        worker = pool._workers[0]
+        pool._break(RuntimeError("encoder_reply_out_of_order"))  # drained: nothing pending
+        future = pool._send(worker, 99, b"")  # the send that was inside the window
+        assert future.done()
+        with pytest.raises(BoundaryError, match="encoder_worker_died"):
+            future.result(0)
+        assert not worker.pending
+    finally:
+        pool.close()
