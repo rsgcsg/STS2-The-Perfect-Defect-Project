@@ -257,3 +257,27 @@ def test_labels_over_the_handoff_fill_the_aux_pools_and_reach_a_batch(tmp_path, 
         assert owner.fast_status()["fast_chain"]["learner"]["excluded_aux_rows"] > 0
     finally:
         owner.close()
+
+
+def test_fast_sources_cross_ipc_as_offsets_into_a_derived_file(tmp_path, monkeypatch):
+    """Decoded fast rows live in the source's derived file, removed with the slot."""
+    owner = fast_learner(tmp_path, monkeypatch)
+    preparer: Any = owner.input_preparer
+    scratch = preparer.scratch
+    closed = False
+    try:
+        sealed = game(owner, "g1")
+        admission(owner, "g1", 1)
+        for segment in sealed:
+            offer(owner, segment)
+        assert owner._prepare() and owner.active_batch is not None
+        ready = [job.result().value for job in preparer.source_jobs.values() if job.done()]
+        assert ready and all(type(a).__name__ == "_SharedArray" for r in ready for a in r.arrays)
+        assert {a.name for r in ready for a in r.arrays} <= {
+            str(p) for p in scratch.glob("rl-source-*.d*")}
+        owner.close()
+        closed = True
+        assert not list(scratch.glob("rl-source-*"))
+    finally:
+        if not closed:
+            owner.close()

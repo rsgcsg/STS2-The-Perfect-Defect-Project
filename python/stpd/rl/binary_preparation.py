@@ -70,14 +70,41 @@ class _SharedArray:
     dtype: str
 
 
+def _derived_path(descriptor: _Descriptor) -> str:
+    """fast_chain only: the file holding one source's derived (decoded) slabs."""
+    return f"{descriptor.name}.d{descriptor.epoch}.{descriptor.offset}"
+
+
+def _write_derived(path: str, slabs: list[np.ndarray]) -> tuple[_SharedArray, ...]:
+    cursor, places = 0, []
+    for slab in slabs:
+        alignment = slab.dtype.itemsize
+        cursor = (cursor + alignment - 1) // alignment * alignment
+        places.append(cursor)
+        cursor += slab.nbytes
+    with open(path, "xb") as stream:
+        os.chmod(path, 0o600)
+        stream.truncate(max(cursor, 1))
+    with open(path, "r+b") as stream:
+        mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
+    try:
+        for slab, place in zip(slabs, places, strict=True):
+            contiguous = np.ascontiguousarray(slab)
+            mapping[place:place + slab.nbytes] = memoryview(cast(Any, contiguous)).cast("B")
+    finally:
+        mapping.close()
+    return tuple(_SharedArray(path, place, slab.size, slab.dtype.str)
+                 for slab, place in zip(slabs, places, strict=True))
+
+
 @dc.dataclass(frozen=True)
 class _ReadySource:
     descriptor: _Descriptor
     tree: bytes
-    # fast_chain only: slabs the learner derives itself (targets, decoded rows)
-    # live outside the slot, so they travel inline as arrays; old packets are
-    # always slot views.
-    arrays: tuple[_SharedArray | np.ndarray, ...]
+    # Old packets are slot views. fast_chain sources decode rows the slot does
+    # not hold; those slabs live in the source's own derived file
+    # (`_derived_path`, removed with the slot), so only offsets cross IPC.
+    arrays: tuple[_SharedArray, ...]
     header: dict[str, Any]
     seconds: float
     pid: int
@@ -185,15 +212,18 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
                 )
             tree, slabs = bp.pack_transport(_source)
             base = np.frombuffer(mapping, dtype=np.uint8).ctypes.data
-            arrays: tuple[_SharedArray | np.ndarray, ...]
+            arrays: tuple[_SharedArray, ...]
             if descriptor.envelope.get("format") == FAST_FORMAT:
                 end = base + len(mapping)
+                inside = [base <= slab.ctypes.data and slab.ctypes.data + slab.nbytes <= end
+                          for slab in slabs]
+                derived = iter(_write_derived(
+                    _derived_path(descriptor),
+                    [slab for slab, here in zip(slabs, inside, strict=True) if not here]))
                 arrays = tuple(
                     _SharedArray(descriptor.name, slab.ctypes.data - base, slab.size,
-                                 slab.dtype.str)
-                    if base <= slab.ctypes.data and slab.ctypes.data + slab.nbytes <= end
-                    else np.array(slab, copy=True)
-                    for slab in slabs
+                                 slab.dtype.str) if here else next(derived)
+                    for slab, here in zip(slabs, inside, strict=True)
                 )
             else:
                 arrays = tuple(
@@ -231,7 +261,8 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
 
 def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
     handles = {}
-    for name in {item.descriptor.name for item in ready}:
+    for name in {array.name for item in ready for array in item.arrays} | {
+            item.descriptor.name for item in ready}:
         with open(name, "rb") as stream:
             handles[name] = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
     try:
@@ -243,7 +274,7 @@ def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
                 if int.from_bytes(handles[d.name][:8], "little") != d.epoch:
                     raise ValueError("binary_shared_slot_epoch_changed")
                 arrays = tuple(
-                    a if isinstance(a, np.ndarray) else np.frombuffer(
+                    np.frombuffer(
                         handles[a.name], dtype=np.dtype(a.dtype), count=a.count, offset=a.offset
                     )
                     for a in item.arrays
@@ -754,6 +785,7 @@ class BinaryBatchPreparer:
                 raise ValueError("binary_source_slots_busy")
             arena = self.arenas[arena_index]
             for key in [k for k, (i, _) in self.sources.items() if i == arena_index]:
+                Path(_derived_path(self.sources[key][1])).unlink(missing_ok=True)
                 del self.sources[key]
                 del self.source_jobs[key]
             arena.cursor = 8
@@ -1160,6 +1192,8 @@ class BinaryBatchPreparer:
         # Deferred releases still name these arenas; apply them before teardown.
         self.callbacks.submit(lambda: None).result()
         with self.condition:
+            for _index, descriptor in self.sources.values():
+                Path(_derived_path(descriptor)).unlink(missing_ok=True)
             for arena in self.arenas:
                 arena.mapping.close()
                 Path(arena.name).unlink()
