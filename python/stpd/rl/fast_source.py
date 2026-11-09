@@ -490,8 +490,12 @@ class FastSegmentIntake:
 
     # -- hand-off ---------------------------------------------------------------------
     def offer(self, message: dict[str, Any], data: bytes) -> IntakeDecision:
-        """One verified hand-off segment (bytes already match message sha256)."""
-        header, _rows = decode_segment(data, expected_sha256=message["sha256"])
+        """One verified hand-off segment (bytes already match message sha256).
+
+        `read_handoff` hashed these bytes once; the header is parsed without a
+        second whole-segment or per-row hash (the decode worker binds every row
+        to its digest before any training use)."""
+        header, _rows = decode_segment(data, header_only=True)
         if (header["segment_id"] != message["segment_id"] or not header["trainable"]
                 or len(header["rows"]) != message["rows"]
                 or header["assembler_instance"] != message["assembler_id"]

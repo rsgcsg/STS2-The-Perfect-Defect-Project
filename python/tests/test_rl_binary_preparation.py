@@ -536,3 +536,83 @@ def test_source_copy_runs_outside_preparer_lock_and_barrier_waits_for_it(model, 
     finally:
         provider.go.set()
         preparer.shutdown()
+
+
+def test_persistent_pools_warm_every_worker_and_survive_barriers(model, tmp_path):
+    with pytest.raises(ValueError, match="persistent_pools"):
+        prepare(model, tmp_path / "bad", BytesProvider(), persistent_pools=1)
+    provider = BytesProvider()
+    spools = {}
+    plain = prepare(model, tmp_path / "plain", provider)
+    kept = prepare(model, tmp_path / "kept", provider, persistent_pools=True)
+    try:
+        # Every worker of the three pools is started before the first batch.
+        assert len(kept.pool._processes) == kept.workers
+        assert len(kept.assembly_pool._processes) == kept.assembly_workers
+        assert kept.summary()["pool_warmups"][0]["workers"]["source"] >= 1
+        assert not plain.pool._processes  # the original pools spawn lazily
+
+        def run(prep, value, slot):
+            # One spool per (preparer, generation): a spool never re-encodes a source.
+            key = (id(prep), value["training_generation"], value["run_id"])
+            enc = spools.setdefault(key, encoder(model, tmp_path / f"spool-{len(spools)}"))
+            member, _ = admit(enc, prep, provider, value, slot)
+            req = dc.replace(request([value]), members=(member,))
+            return batch_digest(prep.submit(req).result(timeout=60))
+
+        first = segment(model)
+        assert run(kept, first, "k1") == run(plain, first, "p1")
+        pools = (kept.pool, kept.assembly_pool, kept.label_pool)
+        pids = set(kept.pool._processes) | set(kept.assembly_pool._processes)
+        names = [Path(a.name) for a in kept.arenas]
+        kept.barrier(generation="g-two")
+        plain.barrier(generation="g-two")
+        # Same executors, same worker processes; the old arenas are gone.
+        assert (kept.pool, kept.assembly_pool, kept.label_pool) == pools
+        assert set(kept.pool._processes) | set(kept.assembly_pool._processes) == pids
+        assert not kept.arenas and names and all(not name.exists() for name in names)
+        second = segment(model, generation="g-two")
+        assert run(kept, second, "k2") == run(plain, second, "p2")
+        # A broken pool is replaced (and warmed), never reused.
+        next(iter(kept.assembly_pool._processes.values())).kill()
+        with pytest.raises(Exception):  # noqa: B017 - BrokenProcessPool or its wrapper
+            run(kept, segment(model, generation="g-two", run_id="other"), "k3")
+        kept.barrier(generation="g-three")
+        assert kept.assembly_pool is not pools[1] and kept.pool is pools[0]
+        assert len(kept.assembly_pool._processes) == kept.assembly_workers
+        third = segment(model, generation="g-three")
+        plain.barrier(generation="g-three")
+        assert run(kept, third, "k4") == run(plain, third, "p4")
+    finally:
+        kept.shutdown(wait=True, cancel_futures=True)
+        plain.shutdown(wait=True, cancel_futures=True)
+    assert not kept.pool._processes and not kept.assembly_pool._processes
+
+
+def test_array_table_crosses_ipc_as_one_buffer_with_the_same_views(tmp_path):
+    import mmap
+    import pickle
+
+    import numpy as np
+
+    from stpd.rl.binary_preparation import _ArrayTable, _SharedArray
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.write_bytes(bytes(range(256)) * 4)
+    b.write_bytes(bytes(reversed(range(256))) * 4)
+    arrays = [_SharedArray(str(a if i % 3 else b), 8 * (i % 50), 1 + i % 7,
+                           ("<f4", "<i8", "|u1")[i % 3]) for i in range(3000)]
+    table = _ArrayTable.of(arrays)
+    assert list(table) == arrays and len(table) == 3000
+    # One int64 buffer plus the distinct names/dtypes, not 3,000 objects.
+    assert len(pickle.dumps(table, protocol=5)) < table.rows.nbytes + 4096
+    handles = {}
+    for path in (a, b):
+        with path.open("rb") as stream:
+            handles[str(path)] = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    views = table.views(handles)
+    for view, item in zip(views, arrays, strict=True):
+        expected = np.frombuffer(handles[item.name], dtype=np.dtype(item.dtype),
+                                 count=item.count, offset=item.offset)
+        assert view.dtype == expected.dtype and np.array_equal(view, expected)
+    del views, expected, view

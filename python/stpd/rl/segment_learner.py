@@ -748,6 +748,7 @@ class SegmentLearner:
                     * (self.prepared_batches + 2) // 4),
                 source_wait_seconds=self.dataplane.get("source_wait_seconds", 60),
                 handoff=self.sgd_options is not None,
+                persistent_pools=self.dataplane.get("persistent_pools", False),
                 **preparation_options)
         else:
             self.input_preparer = BatchPreparer(
