@@ -590,7 +590,6 @@ export class SlotKernel {
     }
     const fullChecks = native.fullChecks();
     ctx.stats.full_checks += fullChecks;
-    ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason, last_step_index: game.lastStepIndex });
     if (!replace) {
       try { await native.release(); } catch { replace = true; }
     }
@@ -604,6 +603,11 @@ export class SlotKernel {
         last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace, full_checks: fullChecks });
     }
     catch (error) { failEvidence(error); }
+    // The decision link hears the close only after this game's evidence is closed: a game
+    // whose evidence failed is never labelled, so its segments are truncated and never reach
+    // SGD (`env_crash` on the link; the evidence and the `closed` event keep the real reason).
+    ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason: evidenceFailed ? "env_crash" : reason,
+      last_step_index: game.lastStepIndex });
     this.#idle();
     ctx.emit("closed", { slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId, reason, detail,
       decisions: game.decisions, native_steps: game.nativeSteps, last_step_index: game.lastStepIndex, terminal,

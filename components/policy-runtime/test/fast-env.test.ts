@@ -724,7 +724,10 @@ describe("fast-env failure paths", () => {
       expect(await h.exit).toBe(1);
       expect(h.events.at(-1)).toMatchObject({ event: "fatal", reason: expect.stringMatching(/^evidence_failed:.*disk_full/u) });
       // The game's close is marked, so the manager neither counts nor trains on it.
-      expect(h.events.find(event => event.event === "closed")).toMatchObject({ evidence_dir: null, evidence_failed: true });
+      const closed = h.events.find(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "terminal", evidence_dir: null, evidence_failed: true });
+      // The decision link hears env_crash, so the assembler never labels the game for SGD.
+      expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "env_crash" })]);
       expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
     });
   }
