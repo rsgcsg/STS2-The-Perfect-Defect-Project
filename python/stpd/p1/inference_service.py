@@ -483,7 +483,9 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
     import torch.multiprocessing
 
     if cpu is not None:
-        os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
+        if not hasattr(os, "sched_setaffinity"):  # Linux only; never silently unpinned
+            raise BoundaryError("rl_inference_3", "cpu_affinity_unsupported_on_this_platform")
+        os.sched_setaffinity(0, {cpu})
     torch.set_num_threads(1)
     # Pipe ends received at spawn are inheritable; the torch_shm_manager this
     # process starts would keep them open and hide this worker's death from the
