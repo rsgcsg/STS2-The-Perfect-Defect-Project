@@ -56,7 +56,9 @@ def _handler(path: str) -> Callable[[Any, memoryview], tuple[dict[str, Any], byt
 def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int,
             verify_every: int, cpu: int | None, handler_path: str) -> None:
     if cpu is not None:
-        os.sched_setaffinity(0, {cpu})  # type: ignore[attr-defined]
+        if not hasattr(os, "sched_setaffinity"):  # Linux only; never silently unpinned
+            raise BoundaryError("p1_rows_encoder", "cpu_affinity_unsupported_on_this_platform")
+        os.sched_setaffinity(0, {cpu})
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     import torch
 
