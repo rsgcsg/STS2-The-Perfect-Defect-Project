@@ -1390,7 +1390,7 @@ class FastInferenceService:
         if part.get("overflow"):
             print(json.dumps({"rl_inference_3_arena_overflow": part["overflow"]}),
                   file=sys.stderr, flush=True)
-            self.stopping.set()
+            self._stop("arena_overflow", part["overflow"])
         for index, code in part["failed"].items():
             self._refuse(rows[index], code)
         if part["audit"]:

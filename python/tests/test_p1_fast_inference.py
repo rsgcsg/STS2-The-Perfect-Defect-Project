@@ -644,11 +644,14 @@ def test_an_arena_slice_too_small_stops_the_service_loudly(vocabulary, model, ca
     client = _open_client(service, encoder, "g1")
     try:
         assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
-        assert service.stopping.is_set()
+        assert service.stopping.is_set() and service.stop_reason == "arena_overflow"
+        assert _score(client, encoded, 4, "g1")["error_code"] == "SERVICE_STOPPING"
     finally:
         client.close()
         service.close()
-    assert "rl_inference_3_arena_overflow" in capfd.readouterr().err
+    err = capfd.readouterr().err
+    assert "rl_inference_3_arena_overflow" in err
+    assert '"rl_inference_3_stopping": "arena_overflow"' in err
 
 
 def test_rows_conversion_matches_the_per_row_rule():
