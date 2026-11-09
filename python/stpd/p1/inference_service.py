@@ -21,6 +21,7 @@ import json
 import os
 import pickle
 import queue
+import re
 import signal
 import socket
 import struct
@@ -396,6 +397,41 @@ def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
                                     "error": audit_error}
 
 
+_SAMPLING_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def check_sampling(sampling: Any) -> str | None:
+    """The episode_open `sampling` against the rl-inference-3 schema; None if valid.
+
+    T in [1, 3], uniform_mix in [0, 0.1], both classes, seed and arm_id strings,
+    no other keys (#431 review M1): the draw must never meet a value it cannot
+    use, and out-of-range arms would silently change the training data.
+    """
+    if not isinstance(sampling, dict):
+        return "sampling_not_an_object"
+    if set(sampling) != {"mode", "seed", "arm_id", "classes"}:
+        return "sampling_keys"
+    if sampling["mode"] != "temperature_uniform":
+        return "sampling_mode"
+    seed = sampling["seed"]
+    if type(seed) is not str or not 1 <= len(seed) <= 128:
+        return "sampling_seed"
+    if type(sampling["arm_id"]) is not str or not _SAMPLING_ID.match(sampling["arm_id"]):
+        return "sampling_arm_id"
+    classes = sampling["classes"]
+    if not isinstance(classes, dict) or set(classes) != {"combat", "noncombat"}:
+        return "sampling_classes"
+    for policy in classes.values():
+        if not isinstance(policy, dict) or set(policy) != {"temperature", "uniform_mix"}:
+            return "sampling_class_keys"
+        temperature, mix = policy["temperature"], policy["uniform_mix"]
+        if type(temperature) not in (int, float) or not 1.0 <= temperature <= 3.0:
+            return "sampling_temperature"
+        if type(mix) not in (int, float) or not 0.0 <= mix <= 0.1:
+            return "sampling_uniform_mix"
+    return None
+
+
 class _ArenaPart(NamedTuple):
     """A prepared part written in the shared arena: where it is, and its rows."""
 
@@ -681,10 +717,18 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
     joined: queue.Queue[tuple[list[dict[str, Any]], Any] | None] = queue.Queue(maxsize=2)
 
     def forward() -> None:
-        while (item := joined.get()) is not None:
-            parts, group = item
-            output.send_bytes(pickle.dumps(_device_job(scorers, parts, group),
-                                           protocol=pickle.HIGHEST_PROTOCOL))
+        try:
+            while (item := joined.get()) is not None:
+                parts, group = item
+                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group),
+                                               protocol=pickle.HIGHEST_PROTOCOL))
+        except BaseException as failure:
+            # The forward thread is gone (#431 review S1): end the whole device
+            # process, so the service sees EOF and stops loudly, never waits.
+            print(json.dumps({"rl_inference_3_forward_thread_failed":
+                              f"{type(failure).__name__}: {str(failure)[:200]}"}),
+                  file=sys.stderr, flush=True)
+            os._exit(1)
 
     threading.Thread(target=forward, daemon=True, name="rl-inference-3-forward").start()
     control.send_bytes(b"ready")
@@ -742,21 +786,27 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
     outputs: dict[int, Any] = {}
     error: tuple[str, str] | None = None
     overflow = None
+    # A join, stage or forward that raises is the fast chain's own failure, not a
+    # fact of the rows (#431 review S3, design §2.6): SERVICE_STOPPING and the
+    # service stops. Only non-finite scores (RowsScorer.rows) are NONFINITE_SCORES.
+    fatal: str | None = None
     if isinstance(joined, Exception) and "forward_arena_overflow" in str(joined):
         error = ("SERVICE_STOPPING", "")  # the join plan does not fit its slot
         overflow = {"plan": str(joined)[:200]}
     elif isinstance(joined, Exception):
-        error = ("NONFINITE_SCORES", f"join {type(joined).__name__}: {str(joined)[:200]}")
+        fatal = f"join {type(joined).__name__}: {str(joined)[:200]}"
     elif live and scorer is None:
         error = ("MU_NOT_RESIDENT", "")
     elif live:
         try:
             for part, tensors in zip(live, _score_joined(scorer, *joined), strict=True):
                 outputs[part["part"]] = tensors
-        except Exception as failure:  # loud in the service: the rows are refused
-            error = ("NONFINITE_SCORES", f"{type(failure).__name__}: {str(failure)[:200]}")
+        except Exception as failure:
+            fatal = f"forward {type(failure).__name__}: {str(failure)[:200]}"
+    part_tails: list[list[tuple[Any, Any]]] = []
     for part in parts:
-        tails = []
+        tails: list[tuple[Any, Any]] = []
+        part_tails.append(tails)
         for tail_mu, indices, group in part["tails"]:
             tail_scorer = scorers.get(tail_mu)
             if group is None:
@@ -766,12 +816,17 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
             else:
                 try:
                     tails.append((indices, tail_scorer.forward_tensors(group)))
-                except Exception:
-                    tails.append((indices, "NONFINITE_SCORES"))
+                except Exception as failure:
+                    fatal = fatal or f"tail {type(failure).__name__}: {str(failure)[:200]}"
+                    tails.append((indices, "SERVICE_STOPPING"))
+    if fatal is not None:
+        error = ("SERVICE_STOPPING", "")
+        outputs = {}
+    for part, tails in zip(parts, part_tails, strict=True):
         out.append({"job": part["job"], "part": part["part"], "kept": part["kept"],
                     "lengths": part["lengths"], "failed": part["failed"],
                     "audit": part["audit"], "tails": tails, "error": error,
-                    "overflow": part.get("overflow") or overflow,
+                    "overflow": part.get("overflow") or overflow, "fatal": fatal,
                     "outputs": outputs.get(part["part"])})
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
@@ -888,6 +943,7 @@ class FastInferenceService:
         self.audits: dict[str, int] = {}  # full checks per game
         self.failure_dir = Path(failure_dir) if failure_dir is not None else None
         self.audit_failed = threading.Event()
+        self.stop_reason: str | None = None  # why the service stopped serving
         self.sampling: dict[str, dict[str, Any]] = {}
         self.queue: queue.Queue[_V3Row | None] = queue.Queue()
         self.stopping = threading.Event()
@@ -897,7 +953,8 @@ class FastInferenceService:
                                       "load_seconds": 0.0, "join_seconds": 0.0,
                                       "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
-                                      "audited": 0, "audit_failures": 0}
+                                      "audited": 0, "audit_failures": 0,
+                                      "episodes_refused": 0}
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
@@ -966,6 +1023,7 @@ class FastInferenceService:
         self.outstanding = [0] * prepare_workers
         self.jobs: dict[int, list[Any]] = {}  # job id -> [remaining parts, parts' rows, workers]
         self.jobs_lock = threading.Lock()
+        self.results_done = False
         self.job_ids = 0
         self.slots = threading.BoundedSemaphore(self.slot_count)
         self.auth = authkey or os.urandom(32)
@@ -1079,6 +1137,16 @@ class FastInferenceService:
                 elif not link.attached:
                     raise BoundaryError("rl_inference_3", "attach_required")
                 elif kind == "episode_open":
+                    problem = check_sampling(envelope.get("sampling"))
+                    if problem is not None:
+                        # Refused loudly: the game is never opened, so its rows
+                        # come back EPISODE_NOT_OPEN; other games are untouched.
+                        self.stats["episodes_refused"] += 1
+                        print(json.dumps({"rl_inference_3_episode_refused": problem,
+                                          "game_instance_id":
+                                              envelope.get("game_instance_id")}),
+                              file=sys.stderr, flush=True)
+                        continue
                     self.assembler.open_episode(envelope)
                     self.sampling[envelope["game_instance_id"]] = envelope["sampling"]
                 elif kind == "episode_close":
@@ -1172,6 +1240,16 @@ class FastInferenceService:
             if slot_waited:
                 self.slots.acquire()
             closing = self._drain(pending, closing)
+            if self.stopping.is_set() and self.stop_reason is not None:
+                # Stopped by a failure (#431 review S2): rows that began in the
+                # assembler are refused (and aborted) instead of dispatched.
+                for item in pending:
+                    if item.packet.results[item.index] is None:
+                        self._refuse(item, "SERVICE_STOPPING")
+                pending = []
+                with contextlib.suppress(ValueError):
+                    self.slots.release()
+                continue
             if not slot_waited and not closing and len(pending) < self.max_job_rows:
                 deadline = time.perf_counter() + self.window
                 while len(pending) < self.max_job_rows:
@@ -1213,14 +1291,20 @@ class FastInferenceService:
         size = -(-len(rows) // parts)
         chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
         with self.jobs_lock:
-            self.job_ids += 1
-            job_id = self.job_ids
-            workers = sorted(range(len(self.workers)), key=self.outstanding.__getitem__)
-            workers = workers[:len(chunks)]
-            for worker in workers:
-                self.outstanding[worker] += 1
-            slot = self.free_slots.pop()  # a slot semaphore is held: one is free
-            self.jobs[job_id] = [len(chunks), chunks, workers, slot]
+            gone = self.results_done or not self.free_slots
+            if not gone:
+                self.job_ids += 1
+                job_id = self.job_ids
+                workers = sorted(range(len(self.workers)), key=self.outstanding.__getitem__)
+                workers = workers[:len(chunks)]
+                for worker in workers:
+                    self.outstanding[worker] += 1
+                slot = self.free_slots.pop()  # a slot semaphore is held: one is free
+                self.jobs[job_id] = [len(chunks), chunks, workers, slot]
+        if gone:  # the results thread has ended (#431 review S2): never dispatched
+            for item in rows:
+                self._refuse(item, "SERVICE_STOPPING")
+            return
         # parts share the first 3/4 of the slot (64 B aligned); a joiner writes the
         # join plan after them (C-SCALE: plan ~30% of the parts' bytes)
         share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
@@ -1256,22 +1340,31 @@ class FastInferenceService:
                 return
 
     def _results(self) -> None:
-        while True:
-            try:
-                message = self.results.recv_bytes()
-            except (EOFError, OSError):
-                break
-            finishing = time.perf_counter()
-            for part in pickle.loads(message):
-                self._finish_part(part)
-            self.stats["finish_seconds"] += time.perf_counter() - finishing
+        try:
+            while True:
+                try:
+                    message = self.results.recv_bytes()
+                except (EOFError, OSError):
+                    break
+                finishing = time.perf_counter()
+                for part in pickle.loads(message):
+                    self._finish_part(part)
+                self.stats["finish_seconds"] += time.perf_counter() - finishing
+        except Exception as error:  # never die silently (#431 review M1)
+            self._stop("results_failed", f"{type(error).__name__}: {str(error)[:200]}")
+            print(json.dumps({"rl_inference_3_results_failed": type(error).__name__}),
+                  file=sys.stderr, flush=True)
         with self.jobs_lock:
             left = list(self.jobs.values())
             self.jobs.clear()
-        if left and not self.stopping.is_set():
-            print(json.dumps({"rl_inference_3_device_process_gone": len(left)}),
-                  file=sys.stderr, flush=True)
+            self.results_done = True  # no job dispatched from now on is ever finished
+        if not self.stopping.is_set():
+            self._stop("device_process_gone", len(left))
         self.stopping.set()
+        # Unblock the batcher (#431 review S2): it refuses what it holds.
+        with contextlib.suppress(ValueError):
+            while True:
+                self.slots.release()
         for _, chunks, *_ in left:
             for chunk in chunks:
                 for item in chunk:
@@ -1301,7 +1394,12 @@ class FastInferenceService:
         if part["audit"]:
             self._audit_failure([(rows[index], detail) for index, detail in part["audit"]])
         kept = [rows[index] for index in part["kept"]]
-        if part["error"] is not None:
+        if part.get("fatal"):
+            self._stop("device_job_failed", part["fatal"])
+        if self.audit_failed.is_set():
+            for item in kept:  # scored or not, nothing more enters a segment
+                self._refuse(item, "SERVICE_STOPPING")
+        elif part["error"] is not None:
             code, message = part["error"]
             if message:
                 print(json.dumps({"rl_inference_3_forward_failed": message}), file=sys.stderr,
@@ -1338,9 +1436,26 @@ class FastInferenceService:
         if done:
             self.slots.release()
 
+    def _stop(self, reason: str, detail: Any = None) -> None:
+        """Stop serving loudly: later rows are refused SERVICE_STOPPING."""
+        if self.stop_reason is None:
+            self.stop_reason = reason
+            print(json.dumps({"rl_inference_3_stopping": reason, "detail": detail}),
+                  file=sys.stderr, flush=True)
+        self.stopping.set()
+
+    def build_output_stopped(self) -> str | None:
+        """Why this build's output must stop (a spot-check mismatch), else None.
+
+        For WP7 / the learner (#431 review S4): once set, no row of this service
+        reaches a segment any more and the build's output is to be stopped.
+        """
+        return "audit_mismatch" if self.audit_failed.is_set() else None
+
     def _audit_failure(self, rows: list[tuple[_V3Row, dict[str, Any] | None]]) -> None:
         """A spot check differs: stop this build's output, keep the originals (§2.7)."""
         self.audit_failed.set()
+        self._stop("audit_mismatch")
         self.stats["audit_failures"] += len(rows)
         for item, detail in rows:
             meta = {"rl_inference_3_audit_mismatch": {"detail": detail, **{

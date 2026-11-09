@@ -1,6 +1,7 @@
 """rl-inference-3 service + node aggregator, end to end on CPU (P-REWRITE WP4)."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -680,3 +681,254 @@ def test_rows_conversion_matches_the_per_row_rule():
                                          float(hp[row]))
     assert [row is None for row in got] == [False, False, True, True, True, False, True, True,
                                              False]
+
+
+# -- #431 review fixes: loud stops, never a silent stall ------------------------
+
+class RaisingMStd(MStd):
+    """A model whose forward raises `failure` (pickled to the device process)."""
+
+    failure: type[BaseException] = RuntimeError
+
+    def forward_prepared_rl4(self, group: Any, **options: Any) -> Any:
+        raise self.failure("injected forward failure")
+
+
+def _raising(model: MStd, failure: type[BaseException]) -> MStd:
+    import copy
+
+    bad = copy.copy(model)
+    bad.__class__ = RaisingMStd
+    bad.failure = failure
+    return bad
+
+
+def _bad_samplings() -> list[Any]:
+    def classes(**change: Any) -> dict[str, Any]:
+        noncombat = {**SAMPLING["classes"]["noncombat"], **change}
+        return {**SAMPLING, "classes": {**SAMPLING["classes"], "noncombat": noncombat}}
+
+    missing_seed = {key: value for key, value in SAMPLING.items() if key != "seed"}
+    return [None, missing_seed, {**SAMPLING, "extra": 1}, {**SAMPLING, "mode": "greedy"},
+            {**SAMPLING, "seed": 7}, {**SAMPLING, "arm_id": "a b"},
+            {**SAMPLING, "classes": {"combat": SAMPLING["classes"]["combat"]}},
+            classes(temperature=0), classes(temperature=3.5), classes(temperature="1"),
+            classes(temperature=True), classes(uniform_mix=-0.01), classes(uniform_mix=0.2),
+            {**SAMPLING, "classes": {**SAMPLING["classes"], "combat": {"temperature": 1.0}}}]
+
+
+def test_episode_open_sampling_is_checked_and_a_bad_one_is_refused(vocabulary, model, capfd):
+    """Review M1: an out-of-contract sampling never opens the game, and the
+    service keeps serving every other game."""
+    from stpd.p1.inference_service import check_sampling
+
+    assert check_sampling(SAMPLING) is None
+    assert all(check_sampling(bad) is not None for bad in _bad_samplings())
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler())
+    client = _open_client(service, encoder, "good")
+    try:
+        bad = {**SAMPLING, "classes": {**SAMPLING["classes"],
+                                       "combat": {"temperature": 0, "uniform_mix": 0.0}}}
+        client.send_bytes(pack_message({
+            "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 3,
+            "game_instance_id": "bad", "actor_id": "a", "sampling": bad,
+            "single_choice": "score", "start": {"kind": "new_run"}}))
+        assert _score(client, encoded, 4, "bad")["error_code"] == "EPISODE_NOT_OPEN"
+        assert _score(client, encoded, 5, "good")["status"] == "scored"
+        assert not service.stopping.is_set()
+    finally:
+        client.close()
+        report = service.close()
+    assert report["episodes_refused"] == 1
+    assert "rl_inference_3_episode_refused" in capfd.readouterr().err
+
+
+def test_a_results_thread_failure_stops_and_refuses_the_rows_in_flight(vocabulary, model,
+                                                                      capfd):
+    """Review M1: the results thread never dies silently."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler())
+    client = _open_client(service, encoder, "g1")
+
+    def broken(part: dict[str, Any]) -> None:
+        raise KeyError("temperature")
+
+    try:
+        service._finish_part = broken  # type: ignore[method-assign]
+        assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
+        assert service.stop_reason == "results_failed" and service.stopping.is_set()
+        assert _score(client, encoded, 4, "g1")["error_code"] == "SERVICE_STOPPING"
+    finally:
+        client.close()
+        service.close()
+    assert "rl_inference_3_results_failed" in capfd.readouterr().err
+
+
+@pytest.mark.parametrize(("failure", "reason"), [(RuntimeError, "device_job_failed"),
+                                                 (SystemExit, "device_process_gone")])
+def test_a_failing_forward_stops_the_service_never_per_row(vocabulary, model, failure, reason,
+                                                           capfd):
+    """Review S3 (an exception in the forward: SERVICE_STOPPING and stop, not
+    NONFINITE_SCORES) and S1 (the forward thread itself dies: the device process
+    exits, so the service sees EOF and stops)."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    assembler = FakeAssembler()
+    service = _service(vocabulary, _raising(model, failure), assembler)
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
+        assert service.stop_reason == reason and service.stopping.is_set()
+        assert _score(client, encoded, 4, "g1")["error_code"] == "SERVICE_STOPPING"
+    finally:
+        client.close()
+        report = service.close()
+    assert "NONFINITE_SCORES" not in report["refused"]
+    assert not any(kind == "finish" for kind, _ in assembler.calls)
+    err = capfd.readouterr().err
+    assert "rl_inference_3_stopping" in err
+    if failure is SystemExit:
+        assert "rl_inference_3_forward_thread_failed" in err
+
+
+def _send_row(client: Any, encoded: Any, request_id: int, game: str) -> None:
+    row = {"request_id": request_id, "game_instance_id": game, "step_index": request_id,
+           "consumption_id": f"c{request_id}", "catalog_len": encoded.catalog_len,
+           "catalog_sha256": encoded.catalog_sha256,
+           "observation_sha256": encoded.observation_sha256, "in_combat": False,
+           "floor": 2, "payload": {"offset": 0, "length": len(encoded.row),
+                                   "row_sha256": encoded.row_sha256}}
+    client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                    "packet_id": request_id, "rows": [row]}, encoded.row))
+
+
+def _replies(client: Any, count: int) -> dict[int, dict[str, Any]]:
+    out = {}
+    for _ in range(count):
+        assert client.poll(60)
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        out[envelope["packet_id"]] = dict(envelope["results"][0])
+    return out
+
+
+def test_a_dead_device_refuses_rows_waiting_for_a_slot_and_close_returns(vocabulary, model):
+    """Review S2: a row in flight and a row the batcher holds (waiting for the
+    only slot) are both refused and aborted; close does not wait out a timeout."""
+    import signal
+    import time
+
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, in_flight=1)
+    client = _open_client(service, encoder, "g1")
+    pid = service.device_process.pid
+    try:
+        assert _score(client, encoded, 3, "g1")["status"] == "scored"
+        os.kill(pid, signal.SIGSTOP)  # the job of row 4 holds the slot, never returns
+        _send_row(client, encoded, 4, "g1")
+        time.sleep(0.5)
+        _send_row(client, encoded, 5, "g1")  # waits in the batcher for the slot
+        time.sleep(0.5)
+        os.kill(pid, signal.SIGKILL)
+        replies = _replies(client, 2)
+        assert {key: value["error_code"] for key, value in replies.items()} == {
+            4: "SERVICE_STOPPING", 5: "SERVICE_STOPPING"}
+        assert service.stop_reason == "device_process_gone"
+    finally:
+        client.close()
+        started = time.perf_counter()
+        service.close()
+    assert time.perf_counter() - started < 30
+    aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
+    assert aborted == {4: "SERVICE_STOPPING", 5: "SERVICE_STOPPING"}
+
+
+def test_an_audit_mismatch_keeps_rows_in_flight_out_of_segments(vocabulary, model):
+    """Review S4: rows already in flight when a spot check fails are refused, not
+    finished into a segment, and the stop is visible outside the service."""
+    import signal
+
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, in_flight=1)
+    client = _open_client(service, encoder, "g1")
+    pid = service.device_process.pid
+    try:
+        assert _score(client, encoded, 3, "g1")["status"] == "scored"
+        assert service.build_output_stopped() is None
+        os.kill(pid, signal.SIGSTOP)
+        _send_row(client, encoded, 4, "g1")
+        import time
+        time.sleep(0.5)  # row 4 is dispatched and in flight
+        service._audit_failure([])  # another part's spot check differed
+        os.kill(pid, signal.SIGCONT)
+        assert _replies(client, 1)[4]["error_code"] == "SERVICE_STOPPING"
+        assert service.build_output_stopped() == "audit_mismatch"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGCONT)
+        client.close()
+        service.close()
+    finished = {body[0] for kind, body in assembler.calls if kind == "finish"}
+    assert finished == {3}
+    aborted = {body[0]: body[1] for kind, body in assembler.calls if kind == "abort"}
+    assert aborted == {4: "SERVICE_STOPPING"}
+
+
+def test_a_broken_encoder_pool_fails_the_aggregator(vocabulary, model, capfd):
+    """Review S5(a): a dead encoder pool is the aggregator's failure, not a row's."""
+    service = _service(vocabulary, model, FakeAssembler())
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = _aggregator(vocabulary, service, path)
+    try:
+        env = FakeEnv(path)
+        env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
+                  "input_spec": V2_INPUT_SPEC})
+        env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
+                  "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
+        aggregator.pool._break(RuntimeError("worker gone"))
+        env.socket.sendall(_decision_line(1, "g1", 0, _observations(1)[0]))
+        env.socket.settimeout(60)
+        assert env.reader.readline() == b""  # the link is closed, no row refusal
+    finally:
+        stats = aggregator.close()
+        service.close()
+    assert stats["failure"] == "encoder_pool_broken"
+    assert stats["refused_here"] == {}
+    assert "fast_aggregator_failed" in capfd.readouterr().err
+
+
+def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, capfd):
+    """Review S5(b): a link message that raises closes its connection loudly; the
+    aggregator keeps serving other connections."""
+    service = _service(vocabulary, model, FakeAssembler())
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = _aggregator(vocabulary, service, path)
+    try:
+        for bad in ({"type": "episode_open", "game_instance_id": "g1"},  # before hello
+                    {"type": "unknown_kind"}):
+            env = FakeEnv(path)
+            if bad["type"] != "episode_open":
+                env.send({"type": "hello", "env_process_id": "env-1", "slots": 1,
+                          "p1_revision": "x", "input_spec": V2_INPUT_SPEC})
+            env.send(bad)
+            env.socket.settimeout(60)
+            assert env.reader.readline() == b""
+        env = FakeEnv(path)  # a fresh connection is still served
+        env.send({"type": "hello", "env_process_id": "env-2", "slots": 1, "p1_revision": "x",
+                  "input_spec": V2_INPUT_SPEC})
+        env.send({"type": "episode_open", "game_instance_id": "g2", "actor_id": "actor-1",
+                  "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
+        env.socket.sendall(_decision_line(1, "g2", 0, _observations(1)[0]))
+        assert env.reply()["type"] == "scored"
+    finally:
+        stats = aggregator.close()
+        service.close()
+    assert stats["failure"] is None
+    err = capfd.readouterr().err
+    assert "hello_required" in err and "unexpected_link_message" in err

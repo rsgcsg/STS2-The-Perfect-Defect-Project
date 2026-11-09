@@ -322,7 +322,12 @@ class NodeAggregator:
                     if head is None:
                         raise BoundaryError("p1_fast_aggregator", "decision_head")
                     row_id, game, _, catalog = head.groups()
-                    future = self.pool.submit(game.decode(), line)
+                    try:
+                        future = self.pool.submit(game.decode(), line)
+                    except BoundaryError as error:
+                        if error.code == "encoder_worker_died":
+                            self._fail("encoder_pool_broken")  # #431 review S5(a)
+                        raise
                     item: Any = _Decision(env, int(row_id), game.decode(), catalog.decode(), future)
                 else:
                     item = json.loads(line)
@@ -349,10 +354,21 @@ class NodeAggregator:
                 item = env.order.popleft()
             if item is None:
                 break
-            if isinstance(item, _Decision):
-                self._decision(item)
-            else:
-                self._link_message(env, item)
+            try:
+                if isinstance(item, _Decision):
+                    self._decision(item)
+                else:
+                    self._link_message(env, item)
+            except Exception as error:
+                # Never a silently stalled link (#431 review S5(b)): log it and
+                # shut this env connection; its reader then ends the queue.
+                print(json.dumps({"fast_aggregator_env_failed": env.name,
+                                  "error": type(error).__name__,
+                                  "code": getattr(error, "code", None)}),
+                      file=sys.stderr, flush=True)
+                with contextlib.suppress(OSError):
+                    env.connection.shutdown(socket.SHUT_RDWR)
+                break
         with env.send_lock:
             env.closed = True
         with contextlib.suppress(OSError):
@@ -361,7 +377,11 @@ class NodeAggregator:
     def _decision(self, decision: _Decision) -> None:
         try:
             meta, row = decision.future.result()
-        except ValueError:  # BoundaryError: the line could not be encoded
+        except ValueError as error:  # BoundaryError: the line could not be encoded
+            if getattr(error, "code", None) == "encoder_worker_died":
+                # The pool is gone, not this row (#431 review S5(a)): fail loudly.
+                self._fail("encoder_pool_broken")
+                return
             self._refuse_here(decision, "ROW_DECODE_FAILED")
             return
         if meta["binding"] is not None:
