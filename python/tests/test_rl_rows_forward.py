@@ -178,6 +178,28 @@ def test_one_rows_v2_optimizer_step_matches_padded_v1_on_cpu(model, varied):
         torch.testing.assert_close(value, weights[1][name], rtol=1e-4, atol=1e-6, msg=name)
 
 
+def test_update_reports_packed_when_the_device_selects_flash_varlen(model, varied,
+                                                                   monkeypatch):
+    """The step report names the attention path: "packed" (every attention on flash
+    varlen, C-SCALE step 2) where the device supports it, else "masked". The CPU
+    reference of flash_varlen stands in for the CUDA kernel here."""
+    import stpd.p1.rows_forward as rows_forward
+
+    padded, rows = prepared(model, "padded-v1", "rows-v2")
+    config = LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01)
+    monkeypatch.setattr(rows_forward, "varlen_supported", lambda device: True)
+    trained = copy.deepcopy(model)
+    result = prepared_update(trained, torch.optim.AdamW(trained.parameters(), lr=1e-3),
+                             rows.minibatches[0], config=config, target_kl=1e9,
+                             performance=PerformanceConfig(prepared_forward="rows-v2"))
+    expected = prepared_update(copy.deepcopy(model), torch.optim.AdamW(
+        copy.deepcopy(model).parameters(), lr=1e-3), padded.minibatches[0], config=config,
+        target_kl=1e9, performance=PerformanceConfig())
+    assert result["rows_forward"] == {"path": "packed", "compiled": False}
+    assert result["policy_loss"] == pytest.approx(expected["policy_loss"], rel=1e-4,
+                                                  abs=1e-6)
+
+
 def test_selection_is_explicit_and_compile_needs_rows_v2():
     assert PerformanceConfig().prepared_forward == "padded-v1"
     with pytest.raises(BoundaryError, match="invalid_prepared_forward"):
