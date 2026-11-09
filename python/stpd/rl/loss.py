@@ -188,7 +188,10 @@ def prepared_update(
             if rows_forward:
                 from stpd.p1.rows_forward import varlen_supported
 
-                rows_path = "varlen" if varlen_supported(device) else "masked"
+                # "packed" = every attention on flash varlen (C-SCALE step 2); the
+                # pre-step-2 "varlen" (scene encoder only) no longer exists, so a
+                # report never mixes the two paths under one name.
+                rows_path = "packed" if varlen_supported(device) else "masked"
             for group in minibatch.groups:
                 if (getattr(group, "layout", None) is not None) != rows_forward:
                     raise BoundaryError("rl_performance",
@@ -290,7 +293,7 @@ def prepared_update(
             },
         }
         if rows_path is not None:
-            # Which scene-attention path ran (device-chosen, not a fallback) and the
+            # Which attention path ran (device-chosen, not a fallback) and the
             # process's dynamo counters: a cache-limit fall back to eager shows here.
             result["rows_forward"] = {"path": rows_path, "compiled": compile_rows}
             if performance.prepared_compile:
