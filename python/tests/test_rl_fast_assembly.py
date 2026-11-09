@@ -426,7 +426,8 @@ def test_handoff_writes_to_disk_first_and_sends_only_trainable(tmp_path: Path):
     assert handoff.counters == {"written": 3, "handed_off": 2, "truncated_written": 1,
                                 "rejected_written": 0, "bytes": handoff.counters["bytes"],
                                 "write_failed": 0, "not_handed_off": 0,
-                                "instances_closed_sent": 0, "instances_closed_not_sent": 0}
+                                "instances_closed_sent": 0, "instances_closed_not_sent": 0,
+                                "labels_sent": 0, "labels_not_sent": 0}
     assert len(list((tmp_path / "bootstrap").iterdir())) == 2
     [truncated] = list((tmp_path / "truncated").iterdir())
     assert decode_segment(truncated.read_bytes())[0]["seal"]["kind"] == "truncated"
@@ -601,3 +602,171 @@ def test_instance_closed_without_a_sender_is_counted_not_sent(tmp_path: Path):
     handoff.close()
     assert handoff.counters["instances_closed_not_sent"] == 1
     assert handoff.counters["instances_closed_sent"] == 0
+
+
+# ---------------------------------------------------------------- labels (WP8)
+def _carry_all(segments: list[Any]) -> tuple[dict, bytes]:
+    """A stand-in for `fast_source.build_instance_labels`: every segment, 8-byte aligned."""
+    parts, entries, cursor = [], [], 0
+    for segment in sorted(segments, key=lambda s: s.header["segment_index"]):
+        entries.append({"segment_id": segment.segment_id, "sha256": segment.sha256,
+                        "offset": cursor, "size": len(segment.data)})
+        parts.append(segment.data + bytes(-len(segment.data) % 8))
+        cursor += len(parts[-1])
+    data = b"".join(parts)
+    first = segments[0].header
+    return ({"schema": "stpd/rl-fast-instance-labels-1",
+             "assembler_id": first["assembler_instance"],
+             "game_instance_id": first["game_instance_id"], "segments": entries,
+             "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}, data)
+
+
+def _labels_receiver(connection: Any, count: int, out: Any) -> None:
+    for _ in range(count):
+        kind, value = receive_handoff(connection)
+        if kind == "segment":
+            message, header, _rows = value
+            out.put((kind, header["game_instance_id"], message["handoff_sequence"]))
+        elif kind == "labels":
+            message, data = value
+            out.put((kind, message["game_instance_id"], message["handoff_sequence"],
+                     [(e["segment_id"], e["offset"]) for e in message["segments"]],
+                     hashlib.sha256(data).hexdigest()))
+        else:
+            out.put((kind, value["game_instance_id"], value["close_reason"]))
+
+
+def _terminal_game(h: Harness, game: str, rows: int) -> None:
+    h.open(game)
+    for _ in range(rows - 1):
+        h.step(game)
+    _, row = h.step(game, outcome=False, floor=5)
+    h.outcome(row, terminal={"result": "defeat"})
+    h.close(game, "terminal", row["step_index"])
+
+
+def test_labels_go_between_the_last_segment_and_instance_closed(tmp_path: Path):
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    out = context.Queue()
+    process = context.Process(target=_labels_receiver, args=(child, 5, out))
+    process.start()
+    h = Harness(lambda summary: {"class": 5, "reward": 0.0054})
+    instance = h.assembler.instance_id
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance),
+                             ShmSegmentSender(parent, assembler_id=instance),
+                             labeler=_carry_all)
+    h.assembler.emit, h.assembler.on_closed = handoff.submit, handoff.submit_closed
+    h.assembler.offer_mu(mu(1))
+    _terminal_game(h, "g1", 65)  # a bootstrap and a terminal segment
+    h.open("g2")
+    h.step("g2")
+    h.close("g2", "stop")  # its only segment is truncated: no labels, never in part
+    handoff.close()
+    received = [out.get(timeout=60) for _ in range(5)]
+    process.join(timeout=60)
+    assert process.exitcode == 0
+    originals = [tmp_path / "bootstrap" / f"{instance}.1.stfs",
+                 tmp_path / "terminal" / f"{instance}.2.stfs"]
+    first = originals[0].read_bytes()
+    carried = first + bytes(-len(first) % 8) + originals[1].read_bytes()
+    carried += bytes(-len(carried) % 8)
+    assert received == [
+        ("segment", "g1", 1), ("segment", "g1", 2),
+        ("labels", "g1", 3, [(f"{instance}.1", 0), (f"{instance}.2", len(first)
+                                                     + (-len(first) % 8))],
+         hashlib.sha256(carried).hexdigest()),
+        ("instance_closed", "g1", "terminal"),
+        ("instance_closed", "g2", "stop")]
+    assert handoff.counters["labels_sent"] == 1 and handoff.counters["labels_not_sent"] == 1
+    assert handoff.counters["instances_closed_sent"] == 2 and not handoff._games
+
+
+@pytest.mark.parametrize("ending", ["unknown", "generation"])
+def test_failed_or_split_games_get_no_labels(tmp_path: Path, ending: str):
+    seen: list[Any] = []
+    h = Harness(lambda summary: {"class": 5, "reward": 0.0054})
+    instance = h.assembler.instance_id
+    sent: list[Any] = []
+
+    class Recorder:  # a sender that only records (no SGD needed here)
+        assembler_id = instance
+
+        def send(self, segment: Any, path: Path) -> int:
+            sent.append(segment.segment_id)
+            return len(sent)
+
+        def send_message(self, fields: dict, data: bytes) -> int:
+            sent.append("labels")
+            return len(sent)
+
+        def send_closed(self, closed: Any) -> None:
+            sent.append(("closed", closed.game_instance_id))
+
+        def close(self) -> None:
+            pass
+
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance),
+                             Recorder(),  # type: ignore[arg-type]
+                             labeler=lambda segments: seen.append(segments) or _carry_all(segments))
+    h.assembler.emit, h.assembler.on_closed = handoff.submit, handoff.submit_closed
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    for _ in range(64):
+        h.step("g1")
+    if ending == "unknown":
+        _, row = h.step("g1", outcome=False)
+        h.outcome(row, "unknown", reason="delivery_unknown")
+        h.close("g1", "unknown", row["step_index"])
+    else:
+        h.assembler.offer_mu(mu(2, generation="gen-2"))
+        _, row = h.step("g1", outcome=False, floor=5)
+        h.outcome(row, terminal={"result": "defeat"})
+        h.close("g1", "terminal", row["step_index"])
+    handoff.close()
+    assert "labels" not in sent and not seen
+    assert sent[-1] == ("closed", "g1")
+    assert handoff.counters["labels_sent"] == 0 and handoff.counters["labels_not_sent"] == 1
+
+
+def test_a_changed_original_stops_the_labels_loudly(tmp_path: Path):
+    h = Harness(lambda summary: {"class": 5, "reward": 0.0054})
+    instance = h.assembler.instance_id
+    parent, child = multiprocessing.Pipe()
+    sender = ShmSegmentSender(parent, assembler_id=instance)
+
+    def corrupt(segment: Any, path: Path) -> None:
+        if segment.header["segment_index"] == 0:
+            path.write_bytes(b"changed")
+
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance), sender,
+                             on_written=corrupt, labeler=_carry_all)
+    h.assembler.emit, h.assembler.on_closed = handoff.submit, handoff.submit_closed
+    h.assembler.offer_mu(mu(1))
+    try:
+        _terminal_game(h, "g1", 65)
+        with pytest.raises(HandoffError, match="segment_handoff_failed") as raised:
+            handoff.close()
+        assert str(raised.value.__cause__) == "labels_original_changed"
+        assert handoff.counters["labels_not_sent"] == 1
+        assert handoff.counters["instances_closed_not_sent"] == 1
+    finally:
+        for block, _ in sender.inflight.values():
+            block.close()
+            block.unlink()
+        child.close()
+
+
+def test_send_message_checks_its_own_binding(tmp_path: Path):
+    parent, _child = multiprocessing.Pipe()
+    sender = ShmSegmentSender(parent, assembler_id="node-a.1")
+    data = b"x" * 9
+    good = {"schema": "s", "assembler_id": "node-a.1", "size": 9,
+            "sha256": hashlib.sha256(data).hexdigest()}
+    for broken, code in [({"assembler_id": "node-b.1"}, "message_from_another_assembler"),
+                         ({"size": 8}, "handoff_message_binding"),
+                         ({"sha256": "0" * 64}, "handoff_message_binding"),
+                         ({"shm_name": "x"}, "handoff_message_binding")]:
+        with pytest.raises(HandoffError, match=code):
+            sender.send_message({**good, **broken}, data)
+    assert sender.sequence == 0 and not sender.inflight
