@@ -33,6 +33,10 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
   `forced_steps` is kept per row and summed per segment;
 - a game closed other than by a labelled natural terminal seals its unsealed
   segments `truncated`: kept as original, counted, never given to SGD;
+- every close (normal or not) then emits one `InstanceClosed` (close reason,
+  first failure, segment counts) to `on_closed`, after the instance's segments:
+  the learner's game-ended / exclusion signal (WP8; the learner decides what an
+  exclusion drops, `fast_handoff` documents the wire);
 - the environment's outcome fields are copied unchanged, including `combat_end`,
   which nothing here reads before the Connector fair-projection review;
 - a natural terminal is labelled by `public_terminal_label` (lead decision
@@ -84,6 +88,7 @@ from stpd.p1.trajectory import boss_clearance
 from .fast_segment import (
     MAX_ROWS,
     ROW_FORMAT,
+    InstanceClosed,
     RejectedSegment,
     SealedSegment,
     SegmentFormatError,
@@ -316,6 +321,8 @@ class _Game:
     acts: list[int] = field(default_factory=list)
     failure: str | None = None
     pending: tuple[dict[str, Any], bytes] | None = None
+    sealed: dict[str, int] = field(default_factory=lambda: dict.fromkeys(
+        ("bootstrap", "terminal", "truncated", "rejected"), 0))
 
 
 def _archive_key(handoff: MuHandoff) -> tuple[str, str]:
@@ -328,7 +335,8 @@ class FastSegmentAssembler:
                  emit: Callable[[SealedSegment | RejectedSegment], None],
                  terminal_labeler: TerminalLabeler | None = public_terminal_label,
                  ledger: MuLedger | None = None, closed_memory: int = 65536,
-                 mu_archive: MuArchive | None = None) -> None:
+                 mu_archive: MuArchive | None = None,
+                 on_closed: Callable[[InstanceClosed], None] | None = None) -> None:
         if (not isinstance(assembler_id, str) or not assembler_id or len(assembler_id) > 64
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
@@ -336,6 +344,9 @@ class FastSegmentAssembler:
         self.instance_id = f"{assembler_id}.{secrets.token_hex(6)}"
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.emit, self.terminal_labeler = emit, terminal_labeler
+        # Normally `fast_handoff.SegmentHandoff.submit_closed`: queued after the
+        # instance's segments, so the learner sees it after the last one (WP8).
+        self.on_closed = on_closed
         self.mu_archive = mu_archive
         self.archived: set[tuple[str, str]] = set()  # (snapshot, training generation)
         self.archive_lock = threading.Lock()
@@ -350,7 +361,7 @@ class FastSegmentAssembler:
             "outcomes_without_row": 0, "segments": {"bootstrap": 0, "terminal": 0,
                                                     "truncated": 0, "rejected": 0},
             "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
-            "terminal_label_refused": 0, "mu_archived": 0}
+            "terminal_label_refused": 0, "mu_archived": 0, "instances_closed": 0}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -642,15 +653,27 @@ class FastSegmentAssembler:
             sealed.extend(self._try_seal(game, item))
 
     def close_episode(self, message: Mapping[str, Any]) -> None:
+        """Seal the game's segments, emit them, then emit its `InstanceClosed`.
+
+        The closed signal follows the segments even when a hand-off or the labeler
+        raised (the first error is raised after it), so the learner always learns
+        the game ended; a late close of an unknown instance emits nothing.
+        """
         sealed: list[SealedSegment | RejectedSegment] = []
+        closed: list[InstanceClosed] = []
         try:
             with self.lock:
-                self._close_episode(message, sealed)
+                self._close_episode(message, sealed, closed)
         finally:
-            self._emit(sealed)
+            try:
+                self._emit(sealed)
+            finally:
+                if closed and self.on_closed is not None:
+                    self.on_closed(closed[0])
 
     def _close_episode(self, message: Mapping[str, Any],
-                       sealed: list[SealedSegment | RejectedSegment]) -> None:
+                       sealed: list[SealedSegment | RejectedSegment],
+                       closed: list[InstanceClosed]) -> None:
         instance = str(message.get("game_instance_id"))
         game = self.games.pop(instance, None)
         if game is None:
@@ -691,6 +714,8 @@ class FastSegmentAssembler:
             cause = segment.doomed or (reason, game.failure or reason)
             sealed.append(self._seal(game, segment, "truncated",
                                      truncation={"reason": cause[0], "detail": cause[1]}))
+        closed.append(InstanceClosed(instance, reason, game.failure, dict(game.sealed)))
+        self.counters["instances_closed"] += 1
         if broken is not None:
             raise broken
 
@@ -805,6 +830,7 @@ class FastSegmentAssembler:
         game.segments.remove(segment)
         self.ledger.release(segment.mu.snapshot_sha256)
         self.counters["segments"][kind] += 1
+        game.sealed[kind] += 1
         if truncation is not None and kind == "truncated":
             by_reason = self.counters["truncated_by_reason"]
             by_reason[truncation["reason"]] = by_reason.get(truncation["reason"], 0) + 1
