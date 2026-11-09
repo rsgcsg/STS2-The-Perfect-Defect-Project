@@ -84,15 +84,20 @@ public static partial class NativeCardPreviewReadQualification
         && effective.DeclaringType == owner && IsUnpatched(effective);
 
     private static readonly Type? CombatTurnStateType = typeof(CombatManager).Assembly.GetType("MegaCrit.Sts2.Core.Combat.CombatTurnState");
-    private static readonly FieldInfo? Mutable = typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers);
-    private static readonly FieldInfo? CardVars = typeof(CardModel).GetField("_dynamicVars", NativeMembers);
-    private static readonly FieldInfo? Vars = typeof(DynamicVarSet).GetField("_vars", NativeMembers);
-    private static readonly FieldInfo? VarName = typeof(DynamicVar).GetField("<Name>k__BackingField", NativeMembers);
-    private static readonly FieldInfo? VarOwner = typeof(DynamicVar).GetField("_owner", NativeMembers);
-    private static readonly FieldInfo? Keywords = typeof(CardModel).GetField("_keywords", NativeMembers);
-    private static readonly FieldInfo? Enchantment = typeof(CardModel).GetField("<Enchantment>k__BackingField", NativeMembers);
-    private static readonly FieldInfo? Affliction = typeof(CardModel).GetField("<Affliction>k__BackingField", NativeMembers);
-    private static readonly FieldInfo? Canonical = typeof(CardModel).GetField("_canonicalInstance", NativeMembers);
+    private static readonly NativeField? Mutable = NativeField.Of(typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers));
+    private static readonly NativeField? CardVars = NativeField.Of(typeof(CardModel).GetField("_dynamicVars", NativeMembers));
+    private static readonly NativeField? Vars = NativeField.Of(typeof(DynamicVarSet).GetField("_vars", NativeMembers));
+    private static readonly NativeField? VarName = NativeField.Of(typeof(DynamicVar).GetField("<Name>k__BackingField", NativeMembers));
+    private static readonly NativeField? VarOwner = NativeField.Of(typeof(DynamicVar).GetField("_owner", NativeMembers));
+    private static readonly NativeField? Keywords = NativeField.Of(typeof(CardModel).GetField("_keywords", NativeMembers));
+    private static readonly NativeField? Enchantment = NativeField.Of(typeof(CardModel).GetField("<Enchantment>k__BackingField", NativeMembers));
+    private static readonly NativeField? Affliction = NativeField.Of(typeof(CardModel).GetField("<Affliction>k__BackingField", NativeMembers));
+    private static readonly NativeField? Canonical = NativeField.Of(typeof(CardModel).GetField("_canonicalInstance", NativeMembers));
+    private static readonly NativeField? TemporaryStarCosts = NativeField.Of(typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers));
+    private static readonly NativeField? EnergyCostField = NativeField.Of(typeof(CardModel).GetField("_energyCost", NativeMembers));
+    private static readonly NativeField? EnergyCostCard = NativeField.Of(typeof(CardEnergyCost).GetField("_card", NativeMembers));
+    private static readonly NativeField? EnergyCostModifiers = NativeField.Of(typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers));
+    private static readonly NativeField? MultiplierCalc = NativeField.Of(typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers));
 
     // The native clone only calls base Clone/ResetToBase then SetOwner. Unknown
     // SetOwner implementations are rejected BEFORE they can run. The exact
@@ -126,7 +131,7 @@ public static partial class NativeCardPreviewReadQualification
             || !BaseImplementation(type, type == typeof(CalculatedDamageVar) ? typeof(CalculatedDamageVar) : typeof(CalculatedVar), "GetExtraVar")
             || !MethodsUnpatched(typeof(CalculatedVar), "SetOwner", "UpdateValues", "GetBaseVar", "GetExtraVar", "RecalculateForUpgradeOrEnchant", "Calculate")
             || !MethodsUnpatched(typeof(DynamicVarSet), "get_CalculationBase", "get_CalculationExtra", "get_ExtraDamage")) return false;
-        object? stored = typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers)?.GetValue(value);
+        object? stored = MultiplierCalc?.GetValue(value);
         if (stored is not Delegate multiplier || multiplier.GetInvocationList().Length != 1
             || multiplier.Method.Module.ModuleVersionId != AuditedGameMvid
             || multiplier.Method.DeclaringType?.DeclaringType != owner.GetType()
@@ -137,11 +142,11 @@ public static partial class NativeCardPreviewReadQualification
 
     private static bool CopyCostQualified(CardModel card)
     {
-        object? value = typeof(CardModel).GetField("_energyCost", NativeMembers)?.GetValue(card);
+        object? value = EnergyCostField?.GetValue(card);
         if (value == null) return true; // native getter initializes the NEW copy
         return value is CardEnergyCost cost
-            && ReferenceEquals(typeof(CardEnergyCost).GetField("_card", NativeMembers)?.GetValue(cost), card)
-            && typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers)?.GetValue(cost) is List<LocalCostModifier> modifiers
+            && ReferenceEquals(EnergyCostCard?.GetValue(cost), card)
+            && EnergyCostModifiers?.GetValue(cost) is List<LocalCostModifier> modifiers
             && modifiers.GetType() == typeof(List<LocalCostModifier>) && modifiers.All(modifier => modifier != null && modifier.GetType() == typeof(LocalCostModifier));
     }
 
@@ -244,7 +249,7 @@ public static partial class NativeCardPreviewReadQualification
             if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
                 || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
                 || keywords.GetType() != typeof(HashSet<CardKeyword>) || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)
-                || typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(card) is not List<TemporaryCardCost> temporary
+                || TemporaryStarCosts?.GetValue(card) is not List<TemporaryCardCost> temporary
                 || temporary.GetType() != typeof(List<TemporaryCardCost>)
                 || CardVars?.GetValue(card) is not DynamicVarSet vars || !CopyVariablesQualified(card, vars) || !CopyCostQualified(card))
             { gap = "native_preview_initialized_card_copy_facts_unqualified"; return false; }
@@ -274,7 +279,7 @@ public static partial class NativeCardPreviewReadQualification
             if (Keywords?.GetValue(canonical) is { } keywords
                 && (keywords is not HashSet<CardKeyword> set || set.GetType() != typeof(HashSet<CardKeyword>)
                     || !ReferenceEquals(set.Comparer, EqualityComparer<CardKeyword>.Default))) return false;
-            if (typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(canonical) is not List<TemporaryCardCost> temporary
+            if (TemporaryStarCosts?.GetValue(canonical) is not List<TemporaryCardCost> temporary
                 || temporary.GetType() != typeof(List<TemporaryCardCost>)) return false;
             if (Canonical?.GetValue(canonical) is { } parent && !ReferenceEquals(parent, canonical)) return false;
             if (!CanonicalRegistryBindingQualified(canonical))

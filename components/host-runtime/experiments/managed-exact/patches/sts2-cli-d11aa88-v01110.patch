@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..dba07da
+index 0000000..65477bc
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,619 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1549,6 +1549,7 @@ index 0000000..dba07da
 +            CardDetailCache();
 +            CardDetailExclusions();
 +            CardDetailOwnerFlip();
++            FieldAccessAndCapacity();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -2009,6 +2010,107 @@ index 0000000..dba07da
 +            }
 +        }
 +        Check(changedCalculated > 0, "owner Strength must change at least one calculated-variable card's text");
++    }
++
++    // Fixtures for NativeField: every field shape the native reads use.
++    enum Shade { Dark, Light }
++    class FixtureBase { private int _hidden = 7; protected decimal Money = 1.5m; public static string Shared = "s"; public const int Literal = 3; }
++    sealed class Fixture : FixtureBase
++    {
++        public string? Text = "t"; public object? Ref; public Shade Tone = Shade.Light; public int? Maybe = 4; public bool Flag = true;
++        public readonly List<int> Items = new() { 2, 1 }; public Action? Callback;
++    }
++    struct Pair { public int Left; public string? Right; }
++
++    static string Outcome(Func<object?> read)
++    {
++        try { object? value = read(); return value == null ? "null" : value.GetType().FullName + ":" + Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture); }
++        catch (Exception error) { return "throws " + (error is TargetInvocationException { InnerException: { } inner } ? inner : error).GetType().FullName; }
++    }
++
++    // fast_chain field reads and dictionary capacities: same values, same exceptions, same bytes.
++    static void FieldAccessAndCapacity()
++    {
++        const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
++        var fixture = new Fixture { Ref = new object(), Callback = () => { } };
++        object boxedPair = new Pair { Left = 5, Right = "r" };
++        var targets = new (Type Type, object? Target)[] { (typeof(Fixture), fixture), (typeof(FixtureBase), fixture), (typeof(Pair), boxedPair) };
++        int compared = 0;
++        foreach (bool enabled in new[] { true, false })
++        {
++            SetEnabled(enabled);
++            foreach (var (type, target) in targets)
++                foreach (FieldInfo field in type.GetFields(All))
++                {
++                    NativeField native = NativeField.Of(field)!;
++                    foreach (object? probe in new[] { target, null, "not the declaring type" })
++                    {
++                        Check(Outcome(() => native.GetValue(probe)) == Outcome(() => field.GetValue(probe)),
++                            $"{type.Name}.{field.Name} on {probe?.GetType().Name ?? "null"}: native read differs from FieldInfo.GetValue");
++                        compared++;
++                    }
++                }
++        }
++        // A compiled getter reads the live field: a value written after the first read is seen.
++        SetEnabled(true);
++        NativeField text = NativeField.Of(typeof(Fixture).GetField(nameof(Fixture.Text)))!;
++        Check(Equals(text.GetValue(fixture), "t"), "first native read");
++        fixture.Text = "changed";
++        Check(Equals(text.GetValue(fixture), "changed"), "a native read must be live, never a remembered value");
++        Check(NativeField.Of(null) == null, "a missing field stays missing");
++
++        // Every field of every native card model and its variables reads the same through NativeField,
++        // and the card-detail cache key is the same string on and off.
++        Type?[] all;
++        try { all = typeof(CardModel).Module.GetTypes(); } catch (ReflectionTypeLoadException error) { all = error.Types; }
++        MethodInfo canonical = typeof(ModelDb).GetMethod(nameof(ModelDb.Card), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        MethodInfo appendScalars = typeof(NativeCardDetailCache).GetMethod("AppendScalars", Flags)!;
++        string Key(object value, bool enabled)
++        {
++            SetEnabled(enabled);
++            var key = new System.Text.StringBuilder();
++            bool ok = (bool)appendScalars.Invoke(null, new object[] { key, value })!;
++            return ok + "|" + key;
++        }
++        int cards = 0, fields = 0;
++        foreach (Type type in all.OfType<Type>().Where(t => typeof(CardModel).IsAssignableFrom(t) && !t.IsAbstract).OrderBy(t => t.FullName, StringComparer.Ordinal))
++        {
++            CardModel card = (CardModel)((CardModel)canonical.MakeGenericMethod(type).Invoke(null, null)!).ToMutable();
++            var owners = new List<object> { card };
++            owners.AddRange(card.DynamicVars.Values);
++            foreach (object owner in owners)
++            {
++                for (Type? t = owner.GetType(); t != null && t != typeof(object); t = t.BaseType)
++                    foreach (FieldInfo field in t.GetFields(All).Where(f => !f.IsStatic))
++                    {
++                        SetEnabled(true);
++                        object? native = NativeField.Of(field)!.GetValue(owner), reflected = field.GetValue(owner);
++                        Check(ReferenceEquals(native, reflected) || Equals(native, reflected), $"{t.Name}.{field.Name}: native read differs on a card model");
++                        fields++;
++                    }
++                Check(Key(owner, true) == Key(owner, false), $"{owner.GetType().Name}: card-detail cache key differs on and off");
++            }
++            cards++;
++        }
++        Check(cards > 100 && fields > 1000, $"card model coverage too small: {cards} cards, {fields} fields");
++
++        // Capacity: off is the default constructor's 0; on, insertion order (and so bytes) is unchanged,
++        // also after a removal and re-insertion.
++        SetEnabled(false);
++        Check(NativeCapacity.Of(15) == 0, "off capacity must be the default 0");
++        SetEnabled(true);
++        Check(NativeCapacity.Of(15) == 15, "on capacity");
++        string Fill(int capacity)
++        {
++            var map = new Dictionary<string, object?>(capacity);
++            foreach (string name in new[] { "id", "type", "rarity", "is_upgraded", "name", "description", "cost", "star_cost",
++                "target_type", "enchantment_id", "enchantment", "enchantment_description", "enchantment_amount", "keywords", "card_previews" })
++                map[name] = name.Length;
++            map["name"] = "again"; map.Remove("rarity"); map["late"] = 1; map["rarity"] = 2;
++            return JsonSerializer.Serialize(map);
++        }
++        Check(Fill(0) == Fill(NativeCapacity.Of(15)) && Fill(0) == Fill(3) && Fill(0) == Fill(64), "dictionary capacity changed serialized key order");
++        Console.WriteLine($"native field reads: {compared} fixture probes, {cards} card types, {fields} card fields equal");
 +    }
 +}
 diff --git a/setup.sh b/setup.sh
@@ -4301,10 +4403,10 @@ index 0000000..6147465
 +}
 diff --git a/src/Sts2Headless/NativeCardDetailCache.cs b/src/Sts2Headless/NativeCardDetailCache.cs
 new file mode 100644
-index 0000000..a94995b
+index 0000000..5e3e58f
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardDetailCache.cs
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,261 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -4360,7 +4462,7 @@ index 0000000..a94995b
 +        Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW") == "1";
 +    private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
 +    private static readonly Dictionary<Type, bool> CacheableTypes = new();
-+    private static readonly Dictionary<Type, FieldInfo[]> ScalarFields = new();
++    private static readonly Dictionary<Type, (NativeField Field, FieldKind Kind)[]> ScalarFields = new();
 +    private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
 +    private static int _ownerThread;
 +    private static long _frame;
@@ -4472,13 +4574,22 @@ index 0000000..a94995b
 +    private static bool Scalar(Type type) => type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal)
 +        || Nullable.GetUnderlyingType(type) is { } inner && Scalar(inner);
 +
-+    private static FieldInfo[] Fields(Type type)
++    private enum FieldKind { Scalar, Delegate, ScalarCollection, Other }
++
++    // The field-type tests of AppendScalars, taken once per field instead of per read.
++    private static FieldKind Kind(Type type) =>
++        Scalar(type) ? FieldKind.Scalar
++        : typeof(Delegate).IsAssignableFrom(type) ? FieldKind.Delegate
++        : type.IsGenericType && type.GetGenericArguments() is [var item] && Scalar(item) ? FieldKind.ScalarCollection
++        : FieldKind.Other;
++
++    private static (NativeField Field, FieldKind Kind)[] Fields(Type type)
 +    {
-+        if (ScalarFields.TryGetValue(type, out FieldInfo[]? fields)) return fields;
++        if (ScalarFields.TryGetValue(type, out (NativeField Field, FieldKind Kind)[]? fields)) return fields;
 +        var list = new List<FieldInfo>();
 +        for (Type? t = type; t != null && t != typeof(object); t = t.BaseType)
 +            list.AddRange(t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly));
-+        fields = list.ToArray();
++        fields = list.Select(field => (NativeField.Of(field)!, Kind(field.FieldType))).ToArray();
 +        ScalarFields[type] = fields;
 +        return fields;
 +    }
@@ -4487,15 +4598,15 @@ index 0000000..a94995b
 +    // References to other models (owner, pool, clone links, vars set) are context, not text inputs.
 +    private static bool AppendScalars(StringBuilder key, object value)
 +    {
-+        foreach (FieldInfo field in Fields(value.GetType()))
++        foreach ((NativeField field, FieldKind kind) in Fields(value.GetType()))
 +        {
 +            Type type = field.FieldType;
-+            if (Scalar(type))
++            if (kind == FieldKind.Scalar)
 +            {
 +                key.Append(';').Append(field.Name).Append('=').Append(field.GetValue(value));
 +                continue;
 +            }
-+            if (typeof(Delegate).IsAssignableFrom(type))
++            if (kind == FieldKind.Delegate)
 +            {
 +                if (field.GetValue(value) is not Delegate call) continue;
 +                if (field.DeclaringType != null && typeof(DynamicVar).IsAssignableFrom(field.DeclaringType))
@@ -4506,7 +4617,7 @@ index 0000000..a94995b
 +                }
 +                continue;
 +            }
-+            if (type.IsGenericType && field.GetValue(value) is IEnumerable items && type.GetGenericArguments() is [var item] && Scalar(item))
++            if (kind == FieldKind.ScalarCollection && field.GetValue(value) is IEnumerable items)
 +            {
 +                var parts = items.Cast<object?>().Select(element => Convert.ToString(element) ?? "").ToList();
 +                if (!typeof(IList).IsAssignableFrom(type)) parts.Sort(StringComparer.Ordinal);
@@ -4885,10 +4996,10 @@ index 0000000..d02a7dd
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..9c6fc4a
+index 0000000..4016920
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,434 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -4975,15 +5086,20 @@ index 0000000..9c6fc4a
 +        && effective.DeclaringType == owner && IsUnpatched(effective);
 +
 +    private static readonly Type? CombatTurnStateType = typeof(CombatManager).Assembly.GetType("MegaCrit.Sts2.Core.Combat.CombatTurnState");
-+    private static readonly FieldInfo? Mutable = typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers);
-+    private static readonly FieldInfo? CardVars = typeof(CardModel).GetField("_dynamicVars", NativeMembers);
-+    private static readonly FieldInfo? Vars = typeof(DynamicVarSet).GetField("_vars", NativeMembers);
-+    private static readonly FieldInfo? VarName = typeof(DynamicVar).GetField("<Name>k__BackingField", NativeMembers);
-+    private static readonly FieldInfo? VarOwner = typeof(DynamicVar).GetField("_owner", NativeMembers);
-+    private static readonly FieldInfo? Keywords = typeof(CardModel).GetField("_keywords", NativeMembers);
-+    private static readonly FieldInfo? Enchantment = typeof(CardModel).GetField("<Enchantment>k__BackingField", NativeMembers);
-+    private static readonly FieldInfo? Affliction = typeof(CardModel).GetField("<Affliction>k__BackingField", NativeMembers);
-+    private static readonly FieldInfo? Canonical = typeof(CardModel).GetField("_canonicalInstance", NativeMembers);
++    private static readonly NativeField? Mutable = NativeField.Of(typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers));
++    private static readonly NativeField? CardVars = NativeField.Of(typeof(CardModel).GetField("_dynamicVars", NativeMembers));
++    private static readonly NativeField? Vars = NativeField.Of(typeof(DynamicVarSet).GetField("_vars", NativeMembers));
++    private static readonly NativeField? VarName = NativeField.Of(typeof(DynamicVar).GetField("<Name>k__BackingField", NativeMembers));
++    private static readonly NativeField? VarOwner = NativeField.Of(typeof(DynamicVar).GetField("_owner", NativeMembers));
++    private static readonly NativeField? Keywords = NativeField.Of(typeof(CardModel).GetField("_keywords", NativeMembers));
++    private static readonly NativeField? Enchantment = NativeField.Of(typeof(CardModel).GetField("<Enchantment>k__BackingField", NativeMembers));
++    private static readonly NativeField? Affliction = NativeField.Of(typeof(CardModel).GetField("<Affliction>k__BackingField", NativeMembers));
++    private static readonly NativeField? Canonical = NativeField.Of(typeof(CardModel).GetField("_canonicalInstance", NativeMembers));
++    private static readonly NativeField? TemporaryStarCosts = NativeField.Of(typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers));
++    private static readonly NativeField? EnergyCostField = NativeField.Of(typeof(CardModel).GetField("_energyCost", NativeMembers));
++    private static readonly NativeField? EnergyCostCard = NativeField.Of(typeof(CardEnergyCost).GetField("_card", NativeMembers));
++    private static readonly NativeField? EnergyCostModifiers = NativeField.Of(typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers));
++    private static readonly NativeField? MultiplierCalc = NativeField.Of(typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers));
 +
 +    // The native clone only calls base Clone/ResetToBase then SetOwner. Unknown
 +    // SetOwner implementations are rejected BEFORE they can run. The exact
@@ -5017,7 +5133,7 @@ index 0000000..9c6fc4a
 +            || !BaseImplementation(type, type == typeof(CalculatedDamageVar) ? typeof(CalculatedDamageVar) : typeof(CalculatedVar), "GetExtraVar")
 +            || !MethodsUnpatched(typeof(CalculatedVar), "SetOwner", "UpdateValues", "GetBaseVar", "GetExtraVar", "RecalculateForUpgradeOrEnchant", "Calculate")
 +            || !MethodsUnpatched(typeof(DynamicVarSet), "get_CalculationBase", "get_CalculationExtra", "get_ExtraDamage")) return false;
-+        object? stored = typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers)?.GetValue(value);
++        object? stored = MultiplierCalc?.GetValue(value);
 +        if (stored is not Delegate multiplier || multiplier.GetInvocationList().Length != 1
 +            || multiplier.Method.Module.ModuleVersionId != AuditedGameMvid
 +            || multiplier.Method.DeclaringType?.DeclaringType != owner.GetType()
@@ -5028,11 +5144,11 @@ index 0000000..9c6fc4a
 +
 +    private static bool CopyCostQualified(CardModel card)
 +    {
-+        object? value = typeof(CardModel).GetField("_energyCost", NativeMembers)?.GetValue(card);
++        object? value = EnergyCostField?.GetValue(card);
 +        if (value == null) return true; // native getter initializes the NEW copy
 +        return value is CardEnergyCost cost
-+            && ReferenceEquals(typeof(CardEnergyCost).GetField("_card", NativeMembers)?.GetValue(cost), card)
-+            && typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers)?.GetValue(cost) is List<LocalCostModifier> modifiers
++            && ReferenceEquals(EnergyCostCard?.GetValue(cost), card)
++            && EnergyCostModifiers?.GetValue(cost) is List<LocalCostModifier> modifiers
 +            && modifiers.GetType() == typeof(List<LocalCostModifier>) && modifiers.All(modifier => modifier != null && modifier.GetType() == typeof(LocalCostModifier));
 +    }
 +
@@ -5135,7 +5251,7 @@ index 0000000..9c6fc4a
 +            if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
 +                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
 +                || keywords.GetType() != typeof(HashSet<CardKeyword>) || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)
-+                || typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(card) is not List<TemporaryCardCost> temporary
++                || TemporaryStarCosts?.GetValue(card) is not List<TemporaryCardCost> temporary
 +                || temporary.GetType() != typeof(List<TemporaryCardCost>)
 +                || CardVars?.GetValue(card) is not DynamicVarSet vars || !CopyVariablesQualified(card, vars) || !CopyCostQualified(card))
 +            { gap = "native_preview_initialized_card_copy_facts_unqualified"; return false; }
@@ -5165,7 +5281,7 @@ index 0000000..9c6fc4a
 +            if (Keywords?.GetValue(canonical) is { } keywords
 +                && (keywords is not HashSet<CardKeyword> set || set.GetType() != typeof(HashSet<CardKeyword>)
 +                    || !ReferenceEquals(set.Comparer, EqualityComparer<CardKeyword>.Default))) return false;
-+            if (typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(canonical) is not List<TemporaryCardCost> temporary
++            if (TemporaryStarCosts?.GetValue(canonical) is not List<TemporaryCardCost> temporary
 +                || temporary.GetType() != typeof(List<TemporaryCardCost>)) return false;
 +            if (Canonical?.GetValue(canonical) is { } parent && !ReferenceEquals(parent, canonical)) return false;
 +            if (!CanonicalRegistryBindingQualified(canonical))
@@ -5960,10 +6076,10 @@ index 0000000..6742e80
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
 new file mode 100644
-index 0000000..eec9734
+index 0000000..3d1e63e
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardPreview.cs
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,225 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -6109,7 +6225,17 @@ index 0000000..eec9734
 +    private sealed class SourceStamp
 +    {
 +        private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-+        private readonly List<(object Owner, FieldInfo Field, object? Value)> fields = new();
++        private readonly List<(object Owner, NativeField Field, object? Value)> fields = new();
++        // Per declaring type: the same GetFields(Fields) list, read through NativeField.
++        private static readonly Dictionary<Type, NativeField[]> Declared = new();
++        private static readonly NativeField? CardEnchantment = NativeField.Of(typeof(CardModel).GetField("<Enchantment>k__BackingField", Fields));
++        private static readonly NativeField? CardAffliction = NativeField.Of(typeof(CardModel).GetField("<Affliction>k__BackingField", Fields));
++        private static readonly NativeField? CardKeywords = NativeField.Of(typeof(CardModel).GetField("_keywords", Fields));
++        private static readonly NativeField? CardTemporaryStarCosts = NativeField.Of(typeof(CardModel).GetField("_temporaryStarCosts", Fields));
++        private static readonly NativeField? CardEnergyCost = NativeField.Of(typeof(CardModel).GetField("_energyCost", Fields));
++        private static readonly NativeField? CostLocalModifiers = NativeField.Of(typeof(CardEnergyCost).GetField("_localModifiers", Fields));
++        private static readonly NativeField? EnchantmentVars = NativeField.Of(typeof(EnchantmentModel).GetField("_dynamicVars", Fields));
++        private static readonly NativeField? SetVars = NativeField.Of(typeof(DynamicVarSet).GetField("_vars", Fields));
 +        private readonly List<(System.Collections.IList List, object?[] Items)> lists = new();
 +        private readonly List<(HashSet<CardKeyword> Set, CardKeyword[] Items)> keywordSets = new();
 +
@@ -6124,21 +6250,21 @@ index 0000000..eec9734
 +        internal static SourceStamp Card(CardModel card)
 +        {
 +            SourceStamp stamp = Model(card, typeof(CardModel));
-+            if (typeof(CardModel).GetField("<Enchantment>k__BackingField", Fields)?.GetValue(card) is EnchantmentModel enchantment)
++            if (CardEnchantment?.GetValue(card) is EnchantmentModel enchantment)
 +            {
 +                stamp.Add(enchantment, typeof(EnchantmentModel));
-+                if (typeof(EnchantmentModel).GetField("_dynamicVars", Fields)?.GetValue(enchantment) is DynamicVarSet vars) stamp.AddVariables(vars);
++                if (EnchantmentVars?.GetValue(enchantment) is DynamicVarSet vars) stamp.AddVariables(vars);
 +            }
-+            if (typeof(CardModel).GetField("<Affliction>k__BackingField", Fields)?.GetValue(card) is AfflictionModel affliction)
++            if (CardAffliction?.GetValue(card) is AfflictionModel affliction)
 +                stamp.Add(affliction, typeof(AfflictionModel));
-+            if (typeof(CardModel).GetField("_keywords", Fields)?.GetValue(card) is HashSet<CardKeyword> keywords)
++            if (CardKeywords?.GetValue(card) is HashSet<CardKeyword> keywords)
 +                stamp.keywordSets.Add((keywords, keywords.ToArray()));
-+            if (typeof(CardModel).GetField("_temporaryStarCosts", Fields)?.GetValue(card) is System.Collections.IList temporary)
++            if (CardTemporaryStarCosts?.GetValue(card) is System.Collections.IList temporary)
 +                stamp.lists.Add((temporary, temporary.Cast<object?>().ToArray()));
-+            if (typeof(CardModel).GetField("_energyCost", Fields)?.GetValue(card) is CardEnergyCost cost)
++            if (CardEnergyCost?.GetValue(card) is CardEnergyCost cost)
 +            {
 +                stamp.Add(cost, typeof(CardEnergyCost));
-+                if (typeof(CardEnergyCost).GetField("_localModifiers", Fields)?.GetValue(cost) is System.Collections.IList modifiers)
++                if (CostLocalModifiers?.GetValue(cost) is System.Collections.IList modifiers)
 +                {
 +                    stamp.lists.Add((modifiers, modifiers.Cast<object?>().ToArray()));
 +                    foreach (object modifier in modifiers) stamp.Add(modifier, typeof(LocalCostModifier));
@@ -6150,12 +6276,19 @@ index 0000000..eec9734
 +        private void AddVariables(DynamicVarSet vars)
 +        {
 +            Add(vars, typeof(DynamicVarSet));
-+            if (typeof(DynamicVarSet).GetField("_vars", Fields)?.GetValue(vars) is Dictionary<string, DynamicVar> values)
++            if (SetVars?.GetValue(vars) is Dictionary<string, DynamicVar> values)
 +                foreach (DynamicVar value in values.Values) Add(value, typeof(DynamicVar));
 +        }
 +
-+        private void Add(object owner, Type declaring) => fields.AddRange(declaring.GetFields(Fields)
-+            .Where(field => !field.IsStatic).Select(field => (owner, field, field.GetValue(owner))));
++        private void Add(object owner, Type declaring)
++        {
++            NativeField[] declared;
++            lock (Declared)
++                if (!Declared.TryGetValue(declaring, out declared!))
++                    Declared[declaring] = declared = declaring.GetFields(Fields).Where(field => !field.IsStatic)
++                        .Select(field => NativeField.Of(field)!).ToArray();
++            foreach (NativeField field in declared) fields.Add((owner, field, field.GetValue(owner)));
++        }
 +
 +        private static bool Same(object? left, object? right) => ReferenceEquals(left, right)
 +            || left != null && right != null && left.GetType() == right.GetType()
@@ -6374,6 +6507,70 @@ index 0000000..b01ae4a
 +            return "native_crystal_sphere_minigame_unavailable";
 +        return null;
 +    }
++}
+diff --git a/src/Sts2Headless/NativeFieldAccess.cs b/src/Sts2Headless/NativeFieldAccess.cs
+new file mode 100644
+index 0000000..2965e0a
+--- /dev/null
++++ b/src/Sts2Headless/NativeFieldAccess.cs
+@@ -0,0 +1,58 @@
++using System;
++using System.Collections.Generic;
++using System.Linq.Expressions;
++using System.Reflection;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>
++/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>): a field read through a
++/// compiled getter instead of <see cref="FieldInfo.GetValue"/>. Reading is all it does: the
++/// value (boxed the same way), its live-ness and every exception are those of
++/// <see cref="FieldInfo.GetValue"/>. A target that is null or not an instance of the
++/// declaring type goes to <see cref="FieldInfo.GetValue"/> itself, so it fails the same way.
++/// Literal, pointer and by-ref-like fields always use reflection. Off: reflection, as before.
++/// Nothing is cached except the getter delegate; no field value is ever remembered.
++/// </summary>
++public sealed class NativeField
++{
++    private static readonly MethodInfo ReflectionGet = typeof(FieldInfo).GetMethod(nameof(FieldInfo.GetValue), new[] { typeof(object) })!;
++    private Func<object?, object?>? _get;
++
++    private NativeField(FieldInfo info) => Info = info;
++
++    public FieldInfo Info { get; }
++    public string Name => Info.Name;
++    public Type FieldType => Info.FieldType;
++    public bool IsStatic => Info.IsStatic;
++    public Type? DeclaringType => Info.DeclaringType;
++
++    public static NativeField? Of(FieldInfo? info) => info == null ? null : new NativeField(info);
++
++    /// <summary>Same as <c>Info.GetValue(target)</c>.</summary>
++    public object? GetValue(object? target) =>
++        NativePatchStateCache.Enabled ? (_get ??= Compile(Info))(target) : Info.GetValue(target);
++
++    internal static Func<object?, object?> Compile(FieldInfo info)
++    {
++        Type type = info.FieldType;
++        if (info.IsLiteral || info.DeclaringType is not { } owner || owner.ContainsGenericParameters || owner.IsByRefLike
++            || type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsFunctionPointer)
++            return info.GetValue;
++        var target = Expression.Parameter(typeof(object), "target");
++        Expression read = info.IsStatic
++            ? Expression.Convert(Expression.Field(null, info), typeof(object))
++            : Expression.Condition(Expression.TypeIs(target, owner),
++                Expression.Convert(Expression.Field(Expression.Convert(target, owner), info), typeof(object)),
++                Expression.Call(Expression.Constant(info), ReflectionGet, target));
++        return Expression.Lambda<Func<object?, object?>>(read, target).Compile();
++    }
++}
++
++/// <summary>fast_chain only: dictionary capacities. Off: 0, the default constructor's capacity.</summary>
++public static class NativeCapacity
++{
++    // Capacity never changes enumeration order: entries keep their insertion slots when a
++    // dictionary grows, so the serialized key order is the same either way.
++    public static int Of(int expected) => NativePatchStateCache.Enabled ? expected : 0;
 +}
 diff --git a/src/Sts2Headless/NativeHandSelection.cs b/src/Sts2Headless/NativeHandSelection.cs
 new file mode 100644
@@ -7130,10 +7327,10 @@ index 0000000..21f689a
 +}
 diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
 new file mode 100644
-index 0000000..0c630fd
+index 0000000..e603626
 --- /dev/null
 +++ b/src/Sts2Headless/NativePublicCardDetails.cs
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,210 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -7173,7 +7370,7 @@ index 0000000..0c630fd
 +    // source; these display-only cards are not gameplay operands or action IDs.
 +    private static Dictionary<string, object?> ToPublicCard(Dictionary<string, object?> card)
 +    {
-+        var value = new Dictionary<string, object?>
++        var value = new Dictionary<string, object?>(NativeCapacity.Of(15))
 +        {
 +            ["entity_id"] = null, ["definition_id"] = card.GetValueOrDefault("id"),
 +            ["name"] = card.GetValueOrDefault("name"), ["type"] = card.GetValueOrDefault("type"),
@@ -7220,9 +7417,12 @@ index 0000000..0c630fd
 +                ["card"] = upgraded.Complete ? upgraded.PublicCard : null } };
 +    }
 +
++    private static readonly NativeField? IsMutable =
++        NativeField.Of(typeof(AbstractModel).GetField("<IsMutable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic));
++
 +    private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path, CardPreviewMode mode = CardPreviewMode.Normal)
 +    {
-+        var visible = new Dictionary<string, object?>();
++        var visible = new Dictionary<string, object?>(NativeCapacity.Of(15));
 +        var missing = new List<string>();
 +        bool addedToPath = false;
 +        CardModel subject = card;
@@ -7235,7 +7435,7 @@ index 0000000..0c630fd
 +            // A native CardHoverTip may refer to a readonly canonical card.
 +            // Initialize/render only a qualified detached presentation copy;
 +            // retain the original reference in cycle detection throughout.
-+            if (typeof(AbstractModel).GetField("<IsMutable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(card) is false)
++            if (IsMutable?.GetValue(card) is false)
 +            {
 +                if (!NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(card, out CardModel? display, out string? gap)
 +                    || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
@@ -9867,7 +10067,7 @@ index 800f139..c279831 100644
          Console.Out.Flush();
      }
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..8069b8f 100644
+index 6b9de4a..0e24c9a 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -14050,6 +14250,15 @@ index 6b9de4a..8069b8f 100644
      private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
      {
          if (!card.IsUpgradable) return null;
+@@ -2953,7 +3783,7 @@ public class RunSimulator
+             var addedKws = newKws.Except(oldKws).ToList();
+             var removedKws = oldKws.Except(newKws).ToList();
+ 
+-            return new Dictionary<string, object?>
++            return new Dictionary<string, object?>(NativeCapacity.Of(5))
+             {
+                 ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
+                 ["stats"] = stats.Count > 0 ? stats : null,
 @@ -2965,38 +3795,90 @@ public class RunSimulator
          catch { return null; }
      }
@@ -14176,7 +14385,7 @@ index 6b9de4a..8069b8f 100644
 +                // Use the same game-owned card rendering path as a normal pile hover. The
 +                // managed Host exports facts and exact identity; it does not reimplement
 +                // DynamicVar formatting or card rules.
-+                var dcard = VisibleHoverCard(c, PileType.Deck);
++                var dcard = VisibleHoverCard(c, PileType.Deck, capacity: 21);
 +                dcard["native_ref"] = NativeObjectIdentity.Get(c);
 +                dcard["stats"] = dstats.Count > 0 ? dstats : null;
 +                dcard["keywords"] = dkws?.Count > 0 ? dkws : null;
@@ -14237,7 +14446,7 @@ index 6b9de4a..8069b8f 100644
 +        return new VisibleHoverFactsResult(keywords, cardPreviews, complete);
 +    }
 +
-+    private Dictionary<string, object?> VisibleHoverCard(CardModel card, PileType? settledPreviewPile = null)
++    private Dictionary<string, object?> VisibleHoverCard(CardModel card, PileType? settledPreviewPile = null, int capacity = 12)
 +    {
 +        string? description;
 +        // The Reference reads an enchanted deck card after native rendering has
@@ -14248,7 +14457,7 @@ index 6b9de4a..8069b8f 100644
 +        else
 +            try { description = StripVisibleText(card.GetDescriptionForPile(PileType.None)); }
 +            catch { description = StripVisibleText(card.Description.GetFormattedText()); }
-+        var result = new Dictionary<string, object?>
++        var result = new Dictionary<string, object?>(NativeCapacity.Of(capacity))
 +        {
 +            ["id"] = card.Id.Entry,
 +            ["name"] = StripVisibleText(card.Title),
@@ -14492,8 +14701,7 @@ index 6b9de4a..8069b8f 100644
 +        }
 +
 +        public bool IsAwaitingAction
-         {
--            var harmony = new Harmony("sts2headless.yieldpatch");
++        {
 +            get
 +            {
 +                lock (_gate) return _stack.Count > 0 && _stack[^1].Request != null;
@@ -14501,21 +14709,22 @@ index 6b9de4a..8069b8f 100644
 +        }
 +
 +        public async Task SelectAsync(RewardsSet set)
-+        {
+         {
+-            var harmony = new Harmony("sts2headless.yieldpatch");
 +            NativeRewardSetObservation.Register(set);
 +            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
 +            if (synchronizer.IsRewardsSetCompleted(set)) return;
-+
-+            foreach (var reward in set.Rewards)
-+            {
-+                reward.MarkContentAsSeen();
-+            }
  
 -            // Patch YieldAwaitable.YieldAwaiter.IsCompleted to return true
 -            // This makes `await Task.Yield()` execute synchronously (continuation runs inline)
 -            var yieldAwaiterType = typeof(System.Runtime.CompilerServices.YieldAwaitable)
 -                .GetNestedType("YieldAwaiter");
 -            if (yieldAwaiterType != null)
++            foreach (var reward in set.Rewards)
++            {
++                reward.MarkContentAsSeen();
++            }
++
 +            var context = new SelectionContext { Set = set };
 +            lock (_gate) _stack.Add(context);
 +            try
@@ -14616,8 +14825,7 @@ index 6b9de4a..8069b8f 100644
 +        }
 +
 +        public void NotifyStateChanged()
-         {
--            Console.Error.WriteLine($"[WARN] Failed to patch Task.Yield: {ex.Message}");
++        {
 +            lock (_gate)
 +            {
 +                if (_stack.Count == 0 || _stack[^1].Request == null) return;
@@ -14629,7 +14837,8 @@ index 6b9de4a..8069b8f 100644
 +        }
 +
 +        public void CancelAllPending()
-+        {
+         {
+-            Console.Error.WriteLine($"[WARN] Failed to patch Task.Yield: {ex.Message}");
 +            lock (_gate)
 +            {
 +                foreach (var context in _stack)
@@ -14667,18 +14876,9 @@ index 6b9de4a..8069b8f 100644
  
 -        public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
 +        public bool HasPending { get { lock (_selectionGate) return _pendingTcs != null && !_pendingTcs.Task.IsCompleted; } }
- 
--        public Task<IEnumerable<CardModel>> GetSelectedCards(
--            IEnumerable<CardModel> options, int minSelect, int maxSelect)
++
 +        public DeckUpgradeSelection? PendingDeckUpgrade
-         {
--            var optList = options.ToList();
--            if (optList.Count == 0)
--                return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
--
--            // If only one option and minSelect requires it, auto-select
--            if (optList.Count == 1 && minSelect >= 1)
--                return Task.FromResult<IEnumerable<CardModel>>(optList);
++        {
 +            get { lock (_selectionGate) return HasPending ? _deckUpgrade : null; }
 +        }
 +
@@ -14695,11 +14895,17 @@ index 6b9de4a..8069b8f 100644
 +
 +        public NativeSelectorSelection? PendingNativeSelector
 +        { get { lock (_selectionGate) return HasPending ? _nativeSelector : null; } }
-+
-+        public Task<IEnumerable<CardModel>> GetSelectedCards(
-+            IEnumerable<CardModel> options, int minSelect, int maxSelect)
-+        {
-+            var optList = options.ToList();
+ 
+         public Task<IEnumerable<CardModel>> GetSelectedCards(
+             IEnumerable<CardModel> options, int minSelect, int maxSelect)
+         {
+             var optList = options.ToList();
+-            if (optList.Count == 0)
+-                return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
+-
+-            // If only one option and minSelect requires it, auto-select
+-            if (optList.Count == 1 && minSelect >= 1)
+-                return Task.FromResult<IEnumerable<CardModel>>(optList);
 +            bool exactUpgrade = DeckUpgradeCallScope.TryTake(this, minSelect, maxSelect,
 +                out Player? upgradePlayer, out CardSelectorPrefs upgradePrefs, out bool mismatchedScope);
 +            bool exactGeneric = DeckGenericCallScope.TryTake(this, minSelect, maxSelect,
@@ -15114,12 +15320,12 @@ index 6b9de4a..8069b8f 100644
 +            }
          }
 -    }
- 
+-
 -    internal static class YieldPatches
 -    {
 -        // Only suppress Task.Yield() when this flag is set (during end_turn processing)
 -        public static volatile bool SuppressYield;
--
+ 
 -        public static bool IsCompletedPrefix(ref bool __result)
 +        public bool ResolveAlternative(object? expectedIdentity)
          {
@@ -15171,6 +15377,120 @@ index 6b9de4a..8069b8f 100644
 -
 -            var locDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "localization_eng");
 -            if (Directory.Exists(locDir))
+-            {
+-                foreach (var file in Directory.GetFiles(locDir, "*.json"))
+-                {
+-                    try
+-                    {
+-                        var name = Path.GetFileNameWithoutExtension(file);
+-                        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
+-                            File.ReadAllText(file));
+-                        if (data != null)
+-                            tables[name] = new LocTable(name, data);
+-                    }
+-                    catch { }
+-                }
+-                Console.Error.WriteLine($"[INFO] Loaded {tables.Count} localization tables from {locDir}");
+-            }
+-            else
+-            {
+-                Console.Error.WriteLine($"[WARN] Localization dir not found: {locDir}");
+-                // Fallback: empty tables
+-                var tableNames = new[] {
+-                    "achievements","acts","afflictions","ancients","ascension",
+-                    "bestiary","card_keywords","card_library","card_reward_ui",
+-                    "card_selection","cards","characters","combat_messages",
+-                    "credits","enchantments","encounters","epochs","eras",
+-                    "events","ftues","game_over_screen","gameplay_ui",
+-                    "inspect_relic_screen","intents","main_menu_ui","map",
+-                    "merchant_room","modifiers","monsters","orbs","potion_lab",
+-                    "potions","powers","relic_collection","relics","rest_site_ui",
+-                    "run_history","settings_ui","static_hover_tips","stats_screen",
+-                    "timeline","vfx"
+-                };
+-                foreach (var name in tableNames)
+-                    tables[name] = new LocTable(name, new Dictionary<string, string>());
+-            }
+-            tablesField!.SetValue(instance, tables);
+-
+-            // Set Language
+-            var langProp = typeof(LocManager).GetProperty("Language",
+-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+-            try { langProp?.SetValue(instance, "eng"); } catch { }
+-
+-            // Set CultureInfo
+-            var cultureProp = typeof(LocManager).GetProperty("CultureInfo",
+-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+-            try { cultureProp?.SetValue(instance, System.Globalization.CultureInfo.InvariantCulture); } catch { }
+-
+-            // Initialize _smartFormatter — the game uses `new SmartFormatter()`
+-            try
+-            {
+-                var sfField = typeof(LocManager).GetField("_smartFormatter",
+-                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+-                // Dump ALL fields (instance + static)
+-                foreach (var f in typeof(LocManager).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
+-                    Console.Error.WriteLine($"[DEBUG] LocManager {(f.IsStatic?"static":"inst")} field: {f.Name} ({f.FieldType.Name})");
+-                Console.Error.WriteLine($"[DEBUG] sfField: {sfField?.Name ?? "null"} type: {sfField?.FieldType?.Name ?? "null"}");
+-                if (sfField != null)
+-                {
+-                    try
+-                    {
+-                        // List constructors to find the right one
+-                        var ctors = sfField.FieldType.GetConstructors(
+-                            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+-                        Console.Error.WriteLine($"[DEBUG] SmartFormatter has {ctors.Length} constructors:");
+-                        foreach (var ctor in ctors)
+-                        {
+-                            var ps = ctor.GetParameters();
+-                            Console.Error.WriteLine($"  ({string.Join(", ", ps.Select(p => $"{p.ParameterType.Name} {p.Name}"))})");
+-                        }
+-                        // Try the one with fewest params
+-                        var bestCtor = ctors.OrderBy(c => c.GetParameters().Length).First();
+-                        var args2 = bestCtor.GetParameters().Select(p =>
+-                            p.HasDefaultValue ? p.DefaultValue :
+-                            p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null
+-                        ).ToArray();
+-                        var sf = bestCtor.Invoke(args2);
+-                        // Register extensions using the game's own LoadLocFormatters logic
+-                        // Call it via reflection on LocManager instance
+-                        try
+-                        {
+-                            var loadMethod = typeof(LocManager).GetMethod("LoadLocFormatters",
+-                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+-                            if (loadMethod != null)
+-                            {
+-                                loadMethod.Invoke(instance, null);
+-                                Console.Error.WriteLine("[INFO] SmartFormatter initialized via LoadLocFormatters");
+-                            }
+-                            else
+-                            {
+-                                sfField.SetValue(null, sf);
+-                                Console.Error.WriteLine("[INFO] SmartFormatter set (no LoadLocFormatters found)");
+-                            }
+-                        }
+-                        catch (Exception lfEx)
+-                        {
+-                            sfField.SetValue(null, sf);
+-                            Console.Error.WriteLine($"[WARN] LoadLocFormatters failed: {lfEx.InnerException?.Message ?? lfEx.Message}");
+-                        }
+-                    }
+-                    catch (Exception sfEx)
+-                    {
+-                        Console.Error.WriteLine($"[WARN] SmartFormatter create failed: {sfEx.GetType().Name}: {sfEx.Message}");
+-                        if (sfEx.InnerException != null)
+-                            Console.Error.WriteLine($"  Inner: {sfEx.InnerException.GetType().Name}: {sfEx.InnerException.Message}");
+-                    }
+-                }
+-                else
+-                {
+-                    Console.Error.WriteLine("[WARN] _smartFormatter field not found in LocManager");
+-                }
+-            }
+-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] _smartFormatter init: {ex.GetType().Name}: {ex.Message}\n{ex.InnerException?.Message}"); }
+-
+-            // Initialize _engTables to point to _tables (avoid null ref in fallback)
+-            try
 +            var loadFormatters = typeof(LocManager).GetMethod("LoadLocFormatters",
 +                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
 +                ?? throw new MissingMethodException(typeof(LocManager).FullName, "LoadLocFormatters");
@@ -15252,129 +15572,6 @@ index 6b9de4a..8069b8f 100644
 +            NativeSelectorCallScope.CombatHookReady=true;
 +            foreach (var entry in new[]
              {
--                foreach (var file in Directory.GetFiles(locDir, "*.json"))
--                {
--                    try
--                    {
--                        var name = Path.GetFileNameWithoutExtension(file);
--                        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
--                            File.ReadAllText(file));
--                        if (data != null)
--                            tables[name] = new LocTable(name, data);
--                    }
--                    catch { }
--                }
--                Console.Error.WriteLine($"[INFO] Loaded {tables.Count} localization tables from {locDir}");
--            }
--            else
-+                (Name: nameof(CardSelectCmd.FromSimpleGrid), Types: new[] { typeof(PlayerChoiceContext), typeof(IReadOnlyList<CardModel>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimplePrefix)),
-+                (Name: nameof(CardSelectCmd.FromSimpleGridForRewards), Types: new[] { typeof(PlayerChoiceContext), typeof(List<CardCreationResult>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimpleRewardsPrefix))
-+            })
-             {
--                Console.Error.WriteLine($"[WARN] Localization dir not found: {locDir}");
--                // Fallback: empty tables
--                var tableNames = new[] {
--                    "achievements","acts","afflictions","ancients","ascension",
--                    "bestiary","card_keywords","card_library","card_reward_ui",
--                    "card_selection","cards","characters","combat_messages",
--                    "credits","enchantments","encounters","epochs","eras",
--                    "events","ftues","game_over_screen","gameplay_ui",
--                    "inspect_relic_screen","intents","main_menu_ui","map",
--                    "merchant_room","modifiers","monsters","orbs","potion_lab",
--                    "potions","powers","relic_collection","relics","rest_site_ui",
--                    "run_history","settings_ui","static_hover_tips","stats_screen",
--                    "timeline","vfx"
--                };
--                foreach (var name in tableNames)
--                    tables[name] = new LocTable(name, new Dictionary<string, string>());
-+                var method = AccessTools.Method(typeof(CardSelectCmd), entry.Name, entry.Types)
-+                    ?? throw new MissingMethodException("Exact native simple-grid command changed: " + entry.Name);
-+                harmony.Patch(method,
-+                    prefix: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), entry.Prefix)),
-+                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), nameof(NativeSelectorCallScope.Finalizer))));
-             }
--            tablesField!.SetValue(instance, tables);
--
--            // Set Language
--            var langProp = typeof(LocManager).GetProperty("Language",
--                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
--            try { langProp?.SetValue(instance, "eng"); } catch { }
-+            NativeSelectorCallScope.SimpleHookReady = true;
- 
--            // Set CultureInfo
--            var cultureProp = typeof(LocManager).GetProperty("CultureInfo",
--                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
--            try { cultureProp?.SetValue(instance, System.Globalization.CultureInfo.InvariantCulture); } catch { }
--
--            // Initialize _smartFormatter — the game uses `new SmartFormatter()`
--            try
--            {
--                var sfField = typeof(LocManager).GetField("_smartFormatter",
--                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
--                // Dump ALL fields (instance + static)
--                foreach (var f in typeof(LocManager).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
--                    Console.Error.WriteLine($"[DEBUG] LocManager {(f.IsStatic?"static":"inst")} field: {f.Name} ({f.FieldType.Name})");
--                Console.Error.WriteLine($"[DEBUG] sfField: {sfField?.Name ?? "null"} type: {sfField?.FieldType?.Name ?? "null"}");
--                if (sfField != null)
--                {
--                    try
--                    {
--                        // List constructors to find the right one
--                        var ctors = sfField.FieldType.GetConstructors(
--                            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
--                        Console.Error.WriteLine($"[DEBUG] SmartFormatter has {ctors.Length} constructors:");
--                        foreach (var ctor in ctors)
--                        {
--                            var ps = ctor.GetParameters();
--                            Console.Error.WriteLine($"  ({string.Join(", ", ps.Select(p => $"{p.ParameterType.Name} {p.Name}"))})");
--                        }
--                        // Try the one with fewest params
--                        var bestCtor = ctors.OrderBy(c => c.GetParameters().Length).First();
--                        var args2 = bestCtor.GetParameters().Select(p =>
--                            p.HasDefaultValue ? p.DefaultValue :
--                            p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null
--                        ).ToArray();
--                        var sf = bestCtor.Invoke(args2);
--                        // Register extensions using the game's own LoadLocFormatters logic
--                        // Call it via reflection on LocManager instance
--                        try
--                        {
--                            var loadMethod = typeof(LocManager).GetMethod("LoadLocFormatters",
--                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
--                            if (loadMethod != null)
--                            {
--                                loadMethod.Invoke(instance, null);
--                                Console.Error.WriteLine("[INFO] SmartFormatter initialized via LoadLocFormatters");
--                            }
--                            else
--                            {
--                                sfField.SetValue(null, sf);
--                                Console.Error.WriteLine("[INFO] SmartFormatter set (no LoadLocFormatters found)");
--                            }
--                        }
--                        catch (Exception lfEx)
--                        {
--                            sfField.SetValue(null, sf);
--                            Console.Error.WriteLine($"[WARN] LoadLocFormatters failed: {lfEx.InnerException?.Message ?? lfEx.Message}");
--                        }
--                    }
--                    catch (Exception sfEx)
--                    {
--                        Console.Error.WriteLine($"[WARN] SmartFormatter create failed: {sfEx.GetType().Name}: {sfEx.Message}");
--                        if (sfEx.InnerException != null)
--                            Console.Error.WriteLine($"  Inner: {sfEx.InnerException.GetType().Name}: {sfEx.InnerException.Message}");
--                    }
--                }
--                else
--                {
--                    Console.Error.WriteLine("[WARN] _smartFormatter field not found in LocManager");
--                }
--            }
--            catch (Exception ex) { Console.Error.WriteLine($"[WARN] _smartFormatter init: {ex.GetType().Name}: {ex.Message}\n{ex.InnerException?.Message}"); }
--
--            // Initialize _engTables to point to _tables (avoid null ref in fallback)
--            try
--            {
 -                var engTablesField = typeof(LocManager).GetField("_engTables",
 -                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 -                engTablesField?.SetValue(instance, tables);
@@ -15398,11 +15595,20 @@ index 6b9de4a..8069b8f 100644
 -            var prefix = typeof(LocPatches).GetMethod(nameof(LocPatches.GetRawTextPrefix),
 -                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
 -            if (getRawText != null && prefix != null)
--            {
++                (Name: nameof(CardSelectCmd.FromSimpleGrid), Types: new[] { typeof(PlayerChoiceContext), typeof(IReadOnlyList<CardModel>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimplePrefix)),
++                (Name: nameof(CardSelectCmd.FromSimpleGridForRewards), Types: new[] { typeof(PlayerChoiceContext), typeof(List<CardCreationResult>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimpleRewardsPrefix))
++            })
+             {
 -                harmony.Patch(getRawText, new HarmonyMethod(prefix));
 -                Console.Error.WriteLine("[INFO] Patched LocTable.GetRawText");
--            }
--
++                var method = AccessTools.Method(typeof(CardSelectCmd), entry.Name, entry.Types)
++                    ?? throw new MissingMethodException("Exact native simple-grid command changed: " + entry.Name);
++                harmony.Patch(method,
++                    prefix: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), entry.Prefix)),
++                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), nameof(NativeSelectorCallScope.Finalizer))));
+             }
++            NativeSelectorCallScope.SimpleHookReady = true;
+ 
 -            // Patch GetLocString to not throw
 -            var getLocString = typeof(LocTable).GetMethod("GetLocString");
 -            var glsPrefix = typeof(LocPatches).GetMethod(nameof(LocPatches.GetLocStringPrefix),
