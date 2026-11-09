@@ -37,6 +37,8 @@ from spireagent.rl_dataplane_ports import (
 from stpd.p1.frame_compiler import FrameCompiler
 
 from . import batch_preparation as bp
+from .fast_segment import FORMAT as FAST_FORMAT
+from .fast_source import decode_fast_packet
 from .prepared_batch import AuxiliaryInput, PreparedBatch, PrepareRequest
 from .tensor_segment import auxiliary_frame, decode_packet, packet_header
 
@@ -72,7 +74,10 @@ class _SharedArray:
 class _ReadySource:
     descriptor: _Descriptor
     tree: bytes
-    arrays: tuple[_SharedArray, ...]
+    # fast_chain only: slabs the learner derives itself (targets, decoded rows)
+    # live outside the slot, so they travel inline as arrays; old packets are
+    # always slot views.
+    arrays: tuple[_SharedArray | np.ndarray, ...]
     header: dict[str, Any]
     seconds: float
     pid: int
@@ -169,15 +174,33 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
             if int.from_bytes(mapping[:8], "little") != descriptor.epoch:
                 raise ValueError("binary_shared_slot_epoch_changed")
             raw = memoryview(mapping)[descriptor.offset : descriptor.offset + descriptor.length]
-            _source, header = decode_packet(
-                raw, envelope=descriptor.envelope, compiler=_worker_compiler
-            )
+            if descriptor.envelope.get("format") == FAST_FORMAT:
+                # fast_chain only: the learner's own envelope binds the sealed segment.
+                _source, header = decode_fast_packet(
+                    raw, envelope=descriptor.envelope, compiler=_worker_compiler
+                )
+            else:
+                _source, header = decode_packet(
+                    raw, envelope=descriptor.envelope, compiler=_worker_compiler
+                )
             tree, slabs = bp.pack_transport(_source)
             base = np.frombuffer(mapping, dtype=np.uint8).ctypes.data
-            arrays = tuple(
-                _SharedArray(descriptor.name, slab.ctypes.data - base, slab.size, slab.dtype.str)
-                for slab in slabs
-            )
+            arrays: tuple[_SharedArray | np.ndarray, ...]
+            if descriptor.envelope.get("format") == FAST_FORMAT:
+                end = base + len(mapping)
+                arrays = tuple(
+                    _SharedArray(descriptor.name, slab.ctypes.data - base, slab.size,
+                                 slab.dtype.str)
+                    if base <= slab.ctypes.data and slab.ctypes.data + slab.nbytes <= end
+                    else np.array(slab, copy=True)
+                    for slab in slabs
+                )
+            else:
+                arrays = tuple(
+                    _SharedArray(descriptor.name, slab.ctypes.data - base, slab.size,
+                                 slab.dtype.str)
+                    for slab in slabs
+                )
             witness = dict(header["witness"])
             # The complete InputSpec/public binding was checked above. Label
             # correlation only needs the original step number and successor
@@ -220,7 +243,7 @@ def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
                 if int.from_bytes(handles[d.name][:8], "little") != d.epoch:
                     raise ValueError("binary_shared_slot_epoch_changed")
                 arrays = tuple(
-                    np.frombuffer(
+                    a if isinstance(a, np.ndarray) else np.frombuffer(
                         handles[a.name], dtype=np.dtype(a.dtype), count=a.count, offset=a.offset
                     )
                     for a in item.arrays
@@ -683,7 +706,9 @@ class BinaryBatchPreparer:
         """Under the condition: validate and reserve arena bytes; None if cached."""
         if (
             not isinstance(ref, BinaryRef)
-            or ref.format != TENSOR_SEGMENT_FORMAT
+            or ref.format not in (TENSOR_SEGMENT_FORMAT, FAST_FORMAT)
+            or (ref.format == FAST_FORMAT and (
+                envelope is None or envelope.get("format") != FAST_FORMAT))
             or not 0 < ref.size <= min(MAX_PACKET_BYTES, self.capacity - 8)
             or (
                 envelope is not None
@@ -866,8 +891,12 @@ class BinaryBatchPreparer:
                         # spool is released. A concurrent cache eviction must
                         # refill that same snapshot, never reopen a retired ref.
                         item = (snapshots or {}).get(ref)
-                        self._prefetch(ref, item.envelope if item else None,
-                                       item.body if item else None)
+                        # A fast segment has no self-describing envelope: the
+                        # learner's provider holds the one it admitted.
+                        envelope = (item.envelope if item else
+                                    cast(Any, self.provider).envelope(ref)
+                                    if ref.format == FAST_FORMAT else None)
+                        self._prefetch(ref, envelope, item.body if item else None)
                     arena_index, descriptor = self.sources[ref]
                     self.arenas[arena_index].users += 1
                     arenas.append(arena_index)

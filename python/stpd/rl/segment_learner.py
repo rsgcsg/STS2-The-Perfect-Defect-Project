@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext, suppress
@@ -85,6 +85,16 @@ from .checkpoint_state import (
     validate_optimizer_order,
 )
 from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
+from .fast_segment import FORMAT as FAST_FORMAT
+from .fast_source import (
+    FastSegment,
+    FastSegmentIntake,
+    FastSources,
+    IntakeDecision,
+    RoutedSources,
+    ack,
+    read_handoff,
+)
 from .learner import ROOT, LearnerConfig, _device
 from .loss import prepared_update
 from .performance import PerformanceConfig
@@ -106,6 +116,9 @@ from .sgd_process import (
 
 # The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
 WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
+# fast_chain actor control (learner owns the receiving side; see `fast_source`).
+FAST_INSTANCE_ADMISSION = "fast_instance_admission"
+FAST_INSTANCE_EXCLUDED = "fast_instance_excluded"
 
 
 def window_end_drop(window_end: str | None, leases: dict[str, Any], episodes: dict[str, Any],
@@ -493,6 +506,12 @@ class SegmentLearner:
         self.hot_references: dict[tuple[str, str], HotPayloadRef | BinaryRef] = {}
         self.newlease_stopped = self.input_fenced = False
         self.input_failure: dict[str, Any] | None = None
+        # fast_chain (WP8) only; None keeps every old-chain path unchanged.
+        self.fast_intake: FastSegmentIntake | None = None
+        self.fast_sources: FastSources | None = None
+        self.fast_admitted_rows: OrderedDict[str, int] = OrderedDict()
+        self.fast_counters: dict[str, int] = {}
+        self.fast_receivers: list[threading.Thread] = []
         self.input_sequence = 0
         self.input_head: str | None = None
         self.input_anchor = config.resume_checkpoint
@@ -674,7 +693,28 @@ class SegmentLearner:
             self.exchange.event_sink = self._durable_event
             self.exchange.live_generation = self.generation
             self.exchange.stop_source = lambda _generation: self.stop_fact
-            self.input_preparer = BinaryBatchPreparer(provider=self.binary_sources,
+            fast_chain = self.dataplane.get("fast_chain", False)
+            if type(fast_chain) is not bool:
+                raise BoundaryError("rl_learner", "fast_chain_switch_must_be_explicit_bool")
+            provider: Any = self.binary_sources
+            if fast_chain:
+                from stpd.rl.fast_segment import MAX_ROWS
+
+                # A sealed bootstrap segment is exactly MAX_ROWS rows; a learner
+                # with a different trace length would mis-bind every segment.
+                if settings.steps != MAX_ROWS or settings.capacity_rows < MAX_ROWS:
+                    raise BoundaryError("rl_learner", "fast_chain_requires_steps_equal_max_rows")
+                self.fast_sources = FastSources()
+                self.fast_intake = FastSegmentIntake(
+                    run=config.run, generation=self.generation,
+                    excluded_seeds=frozenset(settings.excluded_seeds),
+                    buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
+                    gae_lambda=settings.gae_lambda)
+                self.fast_counters = {key: 0 for key in (
+                    "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
+                    "excluded_instances", "excluded_dropped_rows", "excluded_used_rows")}
+                provider = RoutedSources(self.binary_sources, self.fast_sources)
+            self.input_preparer = BinaryBatchPreparer(provider=provider,
                 vocabulary=self.model.vocabulary,
                 workers=self.dataplane.get("preparation_workers", settings.preparation_workers),
                 threads=self.dataplane.get("preparation_threads", settings.preparation_threads),
@@ -1051,7 +1091,8 @@ class SegmentLearner:
                         disposition, {"discarded_rows": sum(r["rows"] for r in records)},
                         kind="disposition")
         for record in records:
-            self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
+            if not record.get("fast"):
+                self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
             payload = self._member(record).payload
             owner = "ppo:" + record["segment_id"]
             if (payload.slot, owner) in self.hot_references:
@@ -1507,6 +1548,8 @@ class SegmentLearner:
 
     def control(self, request: dict[str, Any]) -> dict[str, Any]:
         operation = request["operation"]
+        if operation in (FAST_INSTANCE_ADMISSION, FAST_INSTANCE_EXCLUDED):
+            return self._fast_control(operation, request)
         if self.wal is not None:
             if operation == "stop":
                 with (self.input_gate if self.wal is not None else nullcontext()), self.condition:
@@ -1564,6 +1607,7 @@ class SegmentLearner:
                     "control_lock_timing": (self.control_lock.snapshot()
                         if hasattr(self.control_lock, "snapshot") else [])}
                    if self.wal is not None else {}),
+                **self.fast_status(),
             }
         if operation == "receipt":
             if self.wal is not None:
@@ -1678,6 +1722,154 @@ class SegmentLearner:
                 return {"stopped": True}
         raise ValueError("unsupported_segment_control")
 
+    # -- fast_chain (WP8): sealed segments from the assembler, no actor lease -------------
+    def _fast_control(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Non-mutation actor requests: never journaled, never replayed by the client."""
+        if self.fast_intake is None:
+            raise BoundaryError("rl_learner", "fast_chain_not_enabled_on_this_learner")
+        self.fast_intake.set_generation(self.generation)
+        if operation == FAST_INSTANCE_ADMISSION:
+            decision = self.fast_intake.attest(request)
+        else:
+            decision = self.fast_intake.exclude(request)
+        self._fast_apply(decision)
+        assert decision.reply is not None
+        return decision.reply
+
+    def attach_fast_handoff(self, connection: Any) -> threading.Thread:
+        """Start the reader of one assembler's `fast_handoff` Connection.
+
+        Any broken message, digest or contract fences new input loudly; nothing
+        falls back to the old chain and no segment is re-requested.
+        """
+        if self.fast_intake is None:
+            raise BoundaryError("rl_learner", "fast_chain_not_enabled_on_this_learner")
+        thread = threading.Thread(target=self._fast_receive, args=(connection,),
+                                  name="rl-fast-handoff", daemon=True)
+        self.fast_receivers.append(thread)
+        thread.start()
+        return thread
+
+    def _fast_receive(self, connection: Any) -> None:
+        assert self.fast_intake is not None
+        try:
+            while True:
+                try:
+                    kind, message, data = read_handoff(connection)
+                except EOFError:
+                    return
+                self.fast_intake.set_generation(self.generation)
+                if kind == "segment":
+                    assert data is not None
+                    self._fast_apply(self.fast_intake.offer(message, data))
+                    # Ack after the bytes are owned here: the sender's in-flight
+                    # bound is the only back-pressure on the assembler.
+                    ack(connection, message)
+                else:
+                    self._fast_apply(self.fast_intake.closed(message))
+        except BaseException as error:
+            with self.condition:
+                self.input_fenced = self.newlease_stopped = True
+                self.input_failure = {"operation": "fast_handoff", "code": "INVALID_PACKET",
+                                      "error_type": type(error).__name__,
+                                      "error": str(error)[:200]}
+                self.condition.notify_all()
+                self._notify_capacity(force=True)
+            raise
+
+    def _fast_referenced(self) -> set[str]:
+        """Segments a prepared (read-ahead) batch already holds: treated as used."""
+        return {record["segment_id"] for active, _ in self._pending_batches()
+                for record in active["segments"]}
+
+    def _fast_apply(self, decision: IntakeDecision) -> None:
+        assert self.fast_intake is not None and self.fast_sources is not None
+        with self.condition:
+            if decision.exclude_instance is not None:
+                self._fast_exclude(decision.exclude_instance)
+            for segment, envelope in decision.admit:
+                self._fast_admit(segment, envelope)
+
+    def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any]) -> None:
+        assert self.fast_sources is not None
+        if self.newlease_stopped or self.input_fenced:
+            self.training_discarded_rows += segment.rows
+            return
+        if envelope["compiler_identity"] != self.compiler_identity:
+            raise ValueError("fast_segment_compiler_identity_changed")
+        # Full queue: drop the oldest queued, unprepared segments (whole segments,
+        # no trace crosses them), counted; decision of 11-09.
+        referenced = self._fast_referenced()
+        overflow = self.queue.occupied + segment.rows - self.settings.capacity_rows
+        victims: set[str] = set()
+        for record in self.queue.pending:
+            if overflow <= 0:
+                break
+            if record["segment_id"] not in referenced:
+                victims.add(record["segment_id"])
+                overflow -= record["rows"]
+        if overflow > 0:
+            self.fast_counters["capacity_dropped"] += 1
+            self.fast_counters["capacity_dropped_rows"] += segment.rows
+            return
+        for record in self.queue.discard(victims):
+            self._fast_forget(record, counter="capacity_dropped")
+        ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
+                        f"{segment.segment_id}", envelope["packet_sha256"],
+                        envelope["packet_size"])
+        owner = "ppo:" + segment.segment_id
+        self.fast_sources.put(ref, envelope, segment.data, owner)
+        self.hot_references[ref.slot, owner] = ref
+        record = {"segment_id": segment.segment_id, "fast": True,
+                  "payload": {"format": ref.format, "slot": ref.slot, "sha256": ref.sha256,
+                              "size": ref.size},
+                  "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
+                  "episode": envelope["episode"], "actor": envelope["actor"],
+                  "envelope": envelope}
+        self.queue.admit(record)
+        self.fast_admitted_rows[envelope["run_id"]] = (
+            self.fast_admitted_rows.pop(envelope["run_id"], 0) + envelope["rows"])
+        while len(self.fast_admitted_rows) > 65536:
+            self.fast_admitted_rows.popitem(last=False)
+        self.fast_counters["admitted"] += 1
+        self.fast_counters["admitted_rows"] += envelope["rows"]
+        self.source_prefetch_changed.set()
+
+    def _fast_forget(self, record: dict[str, Any], *, counter: str) -> None:
+        payload = self._member(record).payload
+        self._release(payload, "ppo:" + record["segment_id"])
+        self.fast_counters[counter] += 1
+        self.fast_counters[counter + "_rows"] += record["rows"]
+        if record["run_id"] in self.fast_admitted_rows:
+            self.fast_admitted_rows[record["run_id"]] -= record["rows"]
+
+    def _fast_exclude(self, instance: str) -> None:
+        """D1 = A: drop what is still queued and unprepared; count what was used."""
+        assert self.fast_intake is not None
+        referenced = self._fast_referenced()
+        ids = {record["segment_id"] for record in self.queue.pending
+               if record.get("fast") and record["run_id"] == instance
+               and record["segment_id"] not in referenced}
+        dropped = 0
+        for record in self.queue.discard(ids):
+            payload = self._member(record).payload
+            self._release(payload, "ppo:" + record["segment_id"])
+            dropped += record["rows"]
+        used = self.fast_admitted_rows.pop(instance, 0) - dropped
+        self.fast_counters["excluded_instances"] += 1
+        self.fast_counters["excluded_dropped_rows"] += dropped
+        self.fast_counters["excluded_used_rows"] += used
+        if dropped:
+            self._notify_capacity()
+
+    def fast_status(self) -> dict[str, Any]:
+        if self.fast_intake is None or self.fast_sources is None:
+            return {}
+        with self.condition:
+            counters = dict(self.fast_counters)
+        return {"fast_chain": {"learner": counters, "intake": self.fast_intake.report(),
+                               **self.fast_sources.status()}}
+
     @staticmethod
     def _member(record: dict[str, Any]) -> BatchMember:
         payload = record["payload"]
@@ -1691,10 +1883,15 @@ class SegmentLearner:
             record["episode"],
         )
 
+    def _binary_owner(self, payload: BinaryRef) -> Any:
+        if payload.format == FAST_FORMAT and self.fast_sources is not None:
+            return self.fast_sources
+        return self.binary_sources
+
     def _retain(self, payload: HotPayloadRef | BinaryRef, owner: str) -> None:
         with self.condition:
             if isinstance(payload, BinaryRef):
-                self.binary_sources.retain(payload, owner)
+                self._binary_owner(payload).retain(payload, owner)
             else:
                 self.exchange.retain_hot_payload(payload, owner)
             self.hot_references[payload.slot, owner] = payload
@@ -1702,7 +1899,7 @@ class SegmentLearner:
     def _release(self, payload: HotPayloadRef | BinaryRef, owner: str) -> None:
         with self.condition:
             if isinstance(payload, BinaryRef):
-                self.binary_sources.release(payload, owner)
+                self._binary_owner(payload).release(payload, owner)
             else:
                 self.exchange.release_hot_payload(payload, owner)
             del self.hot_references[payload.slot, owner]
@@ -1840,7 +2037,7 @@ class SegmentLearner:
             for member in members:
                 assert isinstance(member.payload, BinaryRef)
                 cast("BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
-                    self.binary_sources.envelope(member.payload), wait=wait)
+                    self._binary_owner(member.payload).envelope(member.payload), wait=wait)
 
     def _source_prefetch_loop(self) -> None:
         """Coalesce commit hints; copy/decode sources before numerical selection.
@@ -2162,7 +2359,9 @@ class SegmentLearner:
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
         if self.wal is not None:
             for record in records:
-                self._episode_rows(record["actor"], record["episode"], queued=-record["rows"])
+                if not record.get("fast"):
+                    self._episode_rows(record["actor"], record["episode"],
+                                       queued=-record["rows"])
             self._notify_capacity()
             self.source_prefetch_changed.set()
 
