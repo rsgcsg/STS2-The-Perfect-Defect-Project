@@ -35,6 +35,10 @@ export interface SlotNative {
   attachLines(listener: ((line: string) => void) | null): void;
   /** The last compact frame read (the state a step is bound to); null without compact output. */
   frame(): FastFrameRef | null;
+  /** The native combat_end facts (managed-native-compact-1 rule 12) of the frames read since the
+   * last call, unchanged and in order; empty without compact output. The kernel only carries them
+   * to the step outcome; nothing reads them before the fair-projection review. */
+  takeCombatEnd(): Record<string, unknown>[];
   nativeCpuMs(): Promise<number | null>;
   shutdown(force: boolean): Promise<void>;
 }
@@ -120,6 +124,7 @@ export class HostSlotNative implements SlotNative {
   #continuity: string | null = null;
   #lines: string[] = [];
   #listener: ((line: string) => void) | null = null;
+  #combatEnd: Record<string, unknown>[] = [];
   #last: { line: string; episode_instance: string; seq: number; objects_root_sha256: string; sha?: string } | null = null;
   #sampled: (ordinal: number) => boolean = () => true;
   #captures = 0;
@@ -131,14 +136,19 @@ export class HostSlotNative implements SlotNative {
     started.session.compactLineTap = (line: string | null, frame: Record<string, unknown>) => {
       if (typeof line !== "string") return;
       // The native's own divergence report is an original line, not a frame a step acted on.
-      if (frame.type === "compact_state") this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
+      if (frame.type === "compact_state") {
+        this.#last = { line, episode_instance: String(frame.episode_instance), seq: Number(frame.seq), objects_root_sha256: String(frame.objects_root_sha256) };
+        // Shape-checked by the Host reconstructor (facts.combat_end, at most four per frame).
+        const facts = frame.facts as { combat_end?: unknown } | undefined;
+        if (facts && Array.isArray(facts.combat_end)) for (const fact of facts.combat_end) this.#combatEnd.push(fact as Record<string, unknown>);
+      }
       if (this.#listener) this.#listener(line); else this.#lines.push(line);
     };
   }
 
   /** A new episode starts with an empty line buffer and no listener. */
   #beginEpisode(r7: boolean, drawKey: string): void {
-    this.#lines = []; this.#listener = null; this.#last = null;
+    this.#lines = []; this.#listener = null; this.#last = null; this.#combatEnd = [];
     this.#captures = 0; this.#fullChecks = 0; this.#r7 = r7; this.#drawKey = drawKey; this.#sampled = () => true;
   }
 
@@ -150,6 +160,12 @@ export class HostSlotNative implements SlotNative {
     const buffered = this.#lines;
     this.#lines = [];
     for (const line of buffered) listener(line);
+  }
+
+  takeCombatEnd(): Record<string, unknown>[] {
+    const facts = this.#combatEnd;
+    if (facts.length > 0) this.#combatEnd = [];
+    return facts;
   }
 
   frame(): FastFrameRef | null {

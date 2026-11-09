@@ -76,12 +76,13 @@ class _Artifacts:
 
 
 def _executor(manager: GameManager, *, episode_seconds: float = 30, starts=None,
-              before=None, offered=None, instance_opened=None) -> FastChainEpisodeExecutor:
+              before=None, offered=None, instance_opened=None,
+              instance_excluded=None) -> FastChainEpisodeExecutor:
     return FastChainEpisodeExecutor(
         {"initial_progress": {"progress_sha256": "progress"},
          "episode_starts": starts or {}}, manager=manager, episode_seconds=episode_seconds,
         before_world_offer=before, world_offered=offered, instance_opened=instance_opened,
-        reserve_seconds=5)
+        reserve_seconds=5, instance_excluded=instance_excluded)
 
 
 def _play(executor: FastChainEpisodeExecutor, seed: str, checkpoints=None) -> dict:
@@ -729,6 +730,19 @@ def test_a_close_slot_never_reaches_the_next_game_on_the_same_slot(tmp_path):
     ({"reason": "unknown", "detail": "env_crash:fast_env_exited:3", "synthetic": True},
      "infrastructure", "fast_chain_unknown:env_crash"),
     ({"reason": "weird"}, "infrastructure", "fast_chain_close_reason_invalid"),
+    ({"reason": "unknown", "detail": "delivery_unknown:receipt_delivery_unknown:none",
+      "native": "replaced"}, "environment_gap", "fast_chain_unknown:delivery_unknown"),
+    ({"reason": "unknown", "detail": "delivery_unknown:host_step_failed:EPIPE",
+      "native": "replaced"}, "environment_gap", "fast_chain_unknown:delivery_unknown"),
+    ({"reason": "unknown", "detail": "delivered_successor_unreadable:capture_capacity",
+      "native": "replaced"}, "environment_gap",
+     "fast_chain_unknown:delivered_successor_unreadable"),
+    ({"reason": "unknown",
+      "detail": "delivered_successor_unreadable:managed_settling_stalled",
+      "native": "replaced"}, "environment_gap",
+     "fast_chain_unknown:delivered_successor_unreadable"),
+    ({"reason": "unknown", "detail": "compact_state_divergence", "native": "replaced"},
+     "infrastructure", "fast_chain_unknown:compact_state_divergence"),
     ({"reason": "unknown", "detail": "something_new", "native": "replaced"},
      "unclassified", "no_classifying_fact"),
 ])
@@ -1023,3 +1037,88 @@ def test_evidence_failed_on_an_unknown_close_stays_unknown_and_is_recorded():
                       "evidence_failed": True, "evidence_dir": None},
                 start=EpisodeStart.new_run("a"))
     assert row["status"] == "unknown" and row["evidence_failed"]["close_flag"] is True
+
+
+# -- WP8: exclusion request after an evidence failure ------------------------------------
+class _ExcludingLearner(_FakeLearner):
+    """Admits every instance; answers ``fast_instance_excluded`` with ``exclude``."""
+
+    def __init__(self, exclude=None, error=None):
+        super().__init__()
+        self.exclude, self.exclude_error = exclude, error
+
+    def request(self, operation, **fields):
+        if operation != "fast_instance_excluded":
+            return super().request(operation, **fields)
+        self.calls.append((operation, fields))
+        if self.exclude_error is not None:
+            raise self.exclude_error
+        return (self.exclude if self.exclude is not None
+                else {"excluded": True, "game_instance_id": fields["game_instance_id"]})
+
+
+def _excluding(manager, learner):
+    from functools import partial
+
+    from spireagent.workbench.rl_segment_producer import (
+        fast_instance_admission,
+        fast_instance_excluded,
+    )
+
+    return _executor(manager, before=_owner, instance_opened=partial(
+        fast_instance_admission, admission=learner, actor="actor-1"),
+        instance_excluded=partial(fast_instance_excluded, admission=learner,
+                                  actor="actor-1"))
+
+
+def test_evidence_failed_game_sends_one_exclusion_with_the_exact_fields(tmp_path):
+    from spireagent.workbench.rl_segment_producer import FAST_INSTANCE_EXCLUDED_FIELDS
+
+    games = [
+        {"seed": "flag", "close": {"reason": "terminal", "terminal": {"result": "victory"},
+                                   "evidence_failed": True, "evidence_dir": None}},
+        {"seed": "event", "evidence_event": "disk_full",
+         "close": {"reason": "terminal", "terminal": {"result": "defeat"}}},
+        {"seed": "clean", "close": {"reason": "terminal", "terminal": {"result": "defeat"}}},
+    ]
+    manager = _manager(tmp_path, 1, games)
+    learner = _ExcludingLearner()
+    executor = _excluding(manager, learner)
+    flag, event, clean = (_play(executor, s) for s in ("flag", "event", "clean"))
+    excluded = [fields for op, fields in learner.calls if op == "fast_instance_excluded"]
+    assert [tuple(f) for f in excluded] == [FAST_INSTANCE_EXCLUDED_FIELDS] * 2
+    assert excluded == [{"actor": "actor-1", "game_instance_id": row["game_instance_id"],
+                         "reason": "evidence_failed", "run": "run-1",
+                         "training_generation": "gen-1"} for row in (flag, event)]
+    for row in (flag, event):
+        assert row["fast_instance_excluded"] == {
+            "excluded": True, "game_instance_id": row["game_instance_id"],
+            "reason": "evidence_failed"}
+        assert row["training_excluded"] is True
+    assert "fast_instance_excluded" not in clean and clean["status"] == "finished"
+    counters = executor.close()["fast_chain_stop"]["counters"]
+    assert counters["fast_instance_excluded_sent"] == 2
+    assert counters.get("fast_instance_excluded_failed", 0) == 0
+
+
+@pytest.mark.parametrize("learner,code", [
+    (_ExcludingLearner(error=EOFError()), "fast_instance_excluded_delivery_failed"),
+    (_ExcludingLearner(exclude={"excluded": False, "reason": "generation_changed"}),
+     "fast_instance_excluded_refused:generation_changed"),
+    (_ExcludingLearner(exclude={"excluded": True, "game_instance_id": "another"}),
+     "fast_instance_excluded_refused:unspecified"),
+])
+def test_failed_exclusion_is_recorded_counted_and_never_resent(tmp_path, learner, code,
+                                                              capsys):
+    games = [{"close": {"reason": "terminal", "terminal": {"result": "victory"},
+                        "evidence_failed": True, "evidence_dir": None}}]
+    manager = _manager(tmp_path, 1, games)
+    executor = _excluding(manager, learner)
+    row = _play(executor, "a")
+    assert row["fast_instance_excluded"] == {"excluded": False, "error": code}
+    assert (row["status"], row["training_excluded"]) == ("censored", True)
+    assert [op for op, _ in learner.calls].count("fast_instance_excluded") == 1
+    assert "exclusion request failed" in capsys.readouterr().err
+    counters = executor.close()["fast_chain_stop"]["counters"]
+    assert counters["fast_instance_excluded_failed"] == 1
+    assert counters.get("fast_instance_excluded_sent", 0) == 0
