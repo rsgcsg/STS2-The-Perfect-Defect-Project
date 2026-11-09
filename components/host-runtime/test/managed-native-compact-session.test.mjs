@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { JsonLineProcess, RAW_LINE } from "../src/json-line-process.mjs";
+import { JsonLineProcess, RAW_LINE, isNativeCompactDivergence } from "../src/json-line-process.mjs";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
 import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
@@ -99,9 +99,13 @@ class CompactWriter {
 
 function received(line) {
   const message = JSON.parse(line);
-  if (message.type === "compact_state") Object.defineProperty(message, RAW_LINE, { value: line, enumerable: false });
+  if (message.type === "compact_state" || isNativeCompactDivergence(message))
+    Object.defineProperty(message, RAW_LINE, { value: line, enumerable: false });
   return message;
 }
+
+/** The fast_chain native's own fatal report (#433 S3); the real native exits 70 after it. */
+const NATIVE_DIVERGENCE_LINE = '{"type":"error","code":"compact_state_divergence","message":"card_detail_reconcile"}';
 
 function successorState() {
   const state = eventState("Successor", 70);
@@ -109,7 +113,7 @@ function successorState() {
   return state;
 }
 
-function fakeNative({ successors = [successorState()], mutateLine = null } = {}) {
+function fakeNative({ successors = [successorState()], mutateLine = null, divergeOn = null } = {}) {
   const writer = new CompactWriter();
   const log = [];
   const requests = [];
@@ -122,6 +126,7 @@ function fakeNative({ successors = [successorState()], mutateLine = null } = {})
     async request(request, timeoutMs) {
       log.push(request.cmd);
       requests.push(JSON.stringify([request, timeoutMs]));
+      if (request.cmd === divergeOn) return received(NATIVE_DIVERGENCE_LINE);
       if (request.cmd === "start_run" || request.cmd === "reset_run") {
         current = eventState();
         return compact ? received(writer.frame(current, "full")) : structuredClone(current);
@@ -363,6 +368,51 @@ test("JsonLineProcess keeps the emitted line only on compact frames", async () =
   } finally {
     await child.stop({ force: true });
   }
+});
+
+test("a native-reported divergence on an action is delivered, never retried, no successor (#433 S3)", async () => {
+  for (const compactOutput of [{ sampleRate: 0 }, undefined]) {
+    const native = fakeNative({ divergeOn: "action" });
+    const fast = session(native, compactOutput);
+    const seen = [];
+    fast.compactLineTap = (line, frame) => seen.push([line, frame.type]);
+    const snapshot = await fast.mount({ seed: "SEED" });
+    const first = await act(fast, snapshot);
+    assert.equal(first.delivery, "delivered");
+    assert.equal(first.reason_code, "compact_state_divergence");
+    assert.match(first.detail, /native_reported:card_detail_reconcile/u);
+    assert.deepEqual(first.retry, { allowed: false, reason: "compact_state_divergence_requires_process_replacement" });
+    assert.equal(first.successor, null);
+    assert.equal(fast.taintReason, "compact_state_divergence");
+    assert.throws(() => fast.observe(), /managed_session_tainted_after_compact_state_divergence/u);
+    // The exact line reached the evidence tap (an original); nothing is sent on the state.
+    assert.deepEqual(seen.at(-1), [NATIVE_DIVERGENCE_LINE, "error"]);
+    const later = await act(fast, snapshot, "r2");
+    assert.equal(later.delivery, "not_delivered");
+    assert.equal(later.reason_code, "runtime_tainted_after_compact_state_divergence");
+    assert.equal(later.retry.reason, "compact_state_divergence_requires_process_replacement");
+    assert.equal(native.log.filter(cmd => cmd === "action").length, 1);
+  }
+});
+
+test("a native-reported divergence while mounting taints the session as divergence (#433 S3)", async () => {
+  for (const divergeOn of ["start_run", "configure_output"]) {
+    const native = fakeNative({ divergeOn });
+    const fast = session(native, { sampleRate: 0 });
+    await assert.rejects(fast.mount({ seed: "SEED" }), /compact_state_divergence:native_reported/u);
+    assert.equal(fast.taintReason, "compact_state_divergence", divergeOn);
+  }
+});
+
+test("the JSON-line process hands the native's divergence line over with its exact bytes, then sees exit 70", async () => {
+  const script = `process.stdin.once("data", () => { process.stdout.write(${JSON.stringify(`${NATIVE_DIVERGENCE_LINE}\n`)}, () => process.exit(70)); });`;
+  const child = new JsonLineProcess({ command: process.execPath, args: ["-e", script] });
+  const reply = await child.request({ cmd: "action" }, 5_000);
+  assert.equal(isNativeCompactDivergence(reply), true);
+  assert.equal(reply[RAW_LINE], NATIVE_DIVERGENCE_LINE);
+  assert.equal((await child.exit).code, 70);
+  // An ordinary native error is not a divergence report and gets no raw line.
+  assert.equal(isNativeCompactDivergence({ type: "error", message: "x" }), false);
 });
 
 test("design C differential: with shareUnchanged and the light frozen capture, P1 reduce outputs are byte-identical", async () => {

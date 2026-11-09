@@ -9,7 +9,8 @@ import { FAST_ENV_EVENT_SCHEMA, FastEnvContractError, parseFastEnvCommand, parse
   type FastEnvConfig } from "./contracts.js";
 import { ResponseBinding } from "./binding.js";
 import { connectUnixDecisionLink, type DecisionLinkPort } from "./link.js";
-import { MinimalJsonlEvidenceSink, type FastEvidenceSink } from "./evidence-sink.js";
+import type { FastEvidenceSink } from "./evidence-sink.js";
+import { FastActionEvidenceSink } from "../global-fast-storage.js";
 import { hostSlotNativeFactory, type SlotNativeFactory } from "./host.js";
 import { SlotKernel, emptyStats, type KernelContext, type KernelStats } from "./kernel.js";
 
@@ -65,6 +66,11 @@ export class FastEnvProcess {
       stopBuildOutput: (reason, slot, gameInstanceId) => {
         this.#buildStopped ??= reason;
         emit("build_output_stopped", { reason, slot, game_instance_id: gameInstanceId });
+      },
+      evidenceFailed: (slot, gameInstanceId, reason) => {
+        emit("evidence_failed", { slot, game_instance_id: gameInstanceId, reason });
+        // No game continues unrecorded and nothing falls back to a weaker sink.
+        void this.#finish(1, `evidence_failed:${reason}`);
       },
       stopping: () => this.#stopping,
       sleep: deps.sleep ?? (ms => delay(ms))
@@ -137,7 +143,7 @@ export class FastEnvProcess {
     const s = this.stats;
     return { late_replies_discarded: this.deps.link.lateReplies, invalid_replies_discarded: this.deps.link.invalidReplies,
       games: s.games, games_closed: this.#gamesClosed, stale_close_slot_ignored: this.#staleCloses, decisions: s.decisions, forced_steps: s.forced, native_steps: s.native_steps,
-      settle_waits: s.settle_waits, build_output_stopped: this.#buildStopped,
+      settle_waits: s.settle_waits, full_checks: s.full_checks, compact_divergences: s.compact_divergences, build_output_stopped: this.#buildStopped,
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
       link_wait_ms: round(s.link_wait_ms) };
@@ -172,6 +178,11 @@ export class FastEnvProcess {
   }
 }
 
+/** The production evidence of the K-game process: WP6's sink (retention rules live only there). */
+export function defaultFastEvidenceSink(directory: string): FastEvidenceSink {
+  return new FastActionEvidenceSink(directory);
+}
+
 function argument(argv: readonly string[], name: string): string {
   const index = argv.indexOf(name);
   const value = index >= 0 ? argv[index + 1] : undefined;
@@ -187,7 +198,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const manifest = requireFastEnvManifest(JSON.parse(readFileSync(config.agent_manifest, "utf8")));
     const factory = await hostSlotNativeFactory(config);
     const link = await connectUnixDecisionLink(config.decision_link.path, reason => run?.linkDisconnected(reason));
-    run = new FastEnvProcess({ config, manifest, factory, link, evidence: new MinimalJsonlEvidenceSink(config.evidence.directory),
+    run = new FastEnvProcess({ config, manifest, factory, link, evidence: defaultFastEvidenceSink(config.evidence.directory),
       commands: process.stdin, write });
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => process.stdin.destroy());
     return await run.run();

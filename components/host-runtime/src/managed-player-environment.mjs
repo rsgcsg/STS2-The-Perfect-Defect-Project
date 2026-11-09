@@ -10,7 +10,7 @@ import {
 import { completePublicUpgradePreview } from "@rsgcsg/sts2-connector-client/p1-global";
 import { crystalSphereSurface } from "./managed-crystal-sphere.mjs";
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
-import { RAW_LINE } from "./json-line-process.mjs";
+import { RAW_LINE, isNativeCompactDivergence } from "./json-line-process.mjs";
 import {
   COMPACT_FORMAT, CompactStateDivergence, CompactStateReconstructor, compactSampleSchedule,
   DEFAULT_RECONCILE_INTERVAL, DEFAULT_SAMPLE_RATE
@@ -2948,7 +2948,7 @@ export class ManagedPlayerEnvironmentSession {
       this.#publicEntityAliases.clear();
       const snapshot = await this.#setState(state, timeoutMs);
       if (initialProgress != null) {
-        const identity = await this.#process.request({ cmd: "run_identity" }, timeoutMs);
+        const identity = await this.#request({ cmd: "run_identity" }, timeoutMs);
         const proof = identity?.initial_progress;
         if (identity?.type !== "run_identity" || identity.active !== true
             || proof?.recipe !== initialProgress.recipe || proof.progress_sha256 !== initialProgress.progress_sha256
@@ -3012,7 +3012,12 @@ export class ManagedPlayerEnvironmentSession {
       throw cause;
     }
     if (state?.type !== "decision") throw new Error("managed_observe_decision_failed");
-    return this.#setState(state, timeoutMs, true);
+    try {
+      return await this.#setState(state, timeoutMs, true);
+    } catch (cause) {
+      if (cause instanceof CompactStateDivergence) this.#taintCompact();
+      throw cause;
+    }
   }
 
   settledRelicCounters(expectedSnapshotId) {
@@ -3115,6 +3120,22 @@ export class ManagedPlayerEnvironmentSession {
       this.#ledger.set(requestId, { requestKey, receipt: value });
       return value;
     }
+    // The native answered, so the exact input was delivered; the state it would have
+    // answered with cannot be trusted, so nothing is ever sent on it (fail closed).
+    const diverged = (detail) => {
+      this.#taintCompact();
+      const value = this.#makeReceipt({
+        requestId,
+        delivery: "delivered",
+        action: binding.action,
+        reasonCode: "compact_state_divergence",
+        detail,
+        retry: { allowed: false, reason: "compact_state_divergence_requires_process_replacement" },
+        successor: null
+      });
+      this.#ledger.set(requestId, { requestKey, receipt: value });
+      return value;
+    };
     let successor;
     try {
       const transportStarted = performance.now();
@@ -3135,6 +3156,9 @@ export class ManagedPlayerEnvironmentSession {
       this.#ledger.set(requestId, { requestKey, receipt: value });
       return value;
     }
+    // The fast_chain native found its own output diverged while answering this action
+    // (it writes this one line, then exits 70): delivered, never retried, no successor.
+    if (isNativeCompactDivergence(successor)) return diverged(this.#nativeDivergence(successor).message);
     if (this.#compactConfigured && plainObject(successor)
         && (successor.type === "compact_state" || successor.type === "decision")) {
       try {
@@ -3142,20 +3166,7 @@ export class ManagedPlayerEnvironmentSession {
         successor = this.#compactState(successor, { startsInstance: false });
       } catch (error) {
         if (!(error instanceof CompactStateDivergence)) throw error;
-        // The native answered with a state, so the exact input was delivered; that
-        // state cannot be trusted, so nothing is ever sent on it (fail closed).
-        this.#taintCompact();
-        const value = this.#makeReceipt({
-          requestId,
-          delivery: "delivered",
-          action: binding.action,
-          reasonCode: "compact_state_divergence",
-          detail: error.message,
-          retry: { allowed: false, reason: "compact_state_divergence_requires_process_replacement" },
-          successor: null
-        });
-        this.#ledger.set(requestId, { requestKey, receipt: value });
-        return value;
+        return diverged(error.message);
       }
     }
     if (!plainObject(successor) || successor.type !== "decision") {
@@ -3179,6 +3190,8 @@ export class ManagedPlayerEnvironmentSession {
     try {
       next = await this.#setState(successor, timeoutMs);
     } catch (error) {
+      // The native reported divergence on the successor's enrichment read.
+      if (error instanceof CompactStateDivergence) return diverged(error.message);
       // A decision returned from the native action confirms delivery, but a
       // failed successor projection leaves no trustworthy current binding.
       this.#tainted = true;
@@ -3208,6 +3221,19 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
+  /** A native request whose reply may be the fast_chain native's own divergence report:
+   * that line goes to the evidence tap (an original) and becomes a CompactStateDivergence. */
+  async #request(payload, timeoutMs) {
+    const reply = await this.#process.request(payload, timeoutMs);
+    if (isNativeCompactDivergence(reply)) throw this.#nativeDivergence(reply);
+    return reply;
+  }
+
+  #nativeDivergence(reply) {
+    this.#compactLineTap?.(reply[RAW_LINE] ?? null, reply);
+    return new CompactStateDivergence("native_reported", typeof reply.message === "string" ? reply.message : null);
+  }
+
   #taintCompact() {
     // observe/read refuse on this reason and submit refuses on taint, so no
     // binding of the last trusted projection can be used again.
@@ -3219,15 +3245,15 @@ export class ManagedPlayerEnvironmentSession {
    * request. With it, the first mount turns compact output on and every state reply
    * must be a compact frame; it is rebuilt to the full state before anything reads it. */
   async #nativeState(payload, timeoutMs, { startsInstance = false } = {}) {
-    if (this.#compact == null) return this.#process.request(payload, timeoutMs);
-    let reply = await this.#process.request(payload, timeoutMs);
+    if (this.#compact == null) return this.#request(payload, timeoutMs);
+    let reply = await this.#request(payload, timeoutMs);
     if (!this.#compactConfigured) {
       if (!startsInstance) throw new Error("managed_compact_output_not_configured");
       // Today's full reply to the first mount is never projected: the run is
       // re-read as a compact full frame so one writer serves the whole game.
       if (!plainObject(reply) || reply.type !== "decision") return reply;
       const configureStarted = performance.now();
-      reply = await this.#process.request({
+      reply = await this.#request({
         cmd: "configure_output", format: COMPACT_FORMAT, reconcile_interval: this.#compact.reconcileInterval
       }, timeoutMs);
       this.#record("compact_configure_output", performance.now() - configureStarted);
@@ -3276,12 +3302,14 @@ export class ManagedPlayerEnvironmentSession {
     if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
       const mapReadStarted = performance.now();
       try {
-        const visibleMap = await this.#process.request({ cmd: "get_map" }, timeoutMs);
+        const visibleMap = await this.#request({ cmd: "get_map" }, timeoutMs);
         if (plainObject(visibleMap) && visibleMap.type === "map") {
           enriched = { ...state, visible_map: visibleMap };
         }
-      } catch {
-        // A failed read-only enrichment never changes known mutation delivery.
+      } catch (error) {
+        // A failed read-only enrichment never changes known mutation delivery; a
+        // native divergence report is not a failed read and is never swallowed.
+        if (error instanceof CompactStateDivergence) throw error;
       } finally {
         this.#record("map_enrichment", performance.now() - mapReadStarted);
       }

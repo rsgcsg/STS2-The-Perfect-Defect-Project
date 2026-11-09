@@ -5,6 +5,7 @@ import { gunzip, gzip } from "node:zlib";
 import { promisify } from "node:util";
 import type { FastEvidenceSink, FastGameClose, FastGameEvidence, FastGameMeta, FastRefusedOpen, FastStepRecord }
   from "./fast-env/evidence-sink.js";
+import type { SampledCheckMismatch } from "./fast-env/host.js";
 
 /**
  * Fast-chain evidence (WP6). One directory per game:
@@ -20,11 +21,14 @@ import type { FastEvidenceSink, FastGameClose, FastGameEvidence, FastGameMeta, F
  *   (kept) or are dropped (a clean finish not chosen: the user rule keeps no originals for it).
  *   Nothing kept is ever deleted or overwritten; any write failure is loud and the game's evidence
  *   stays unclosed, which readers count as unsatisfied.
+ * - `sampled-check-mismatch.jsonl.gz`: a game whose sampled full check disagreed keeps the
+ *   mismatching originals (Host capture, serialized bytes, light basis), one line per mismatch.
  */
 export const FAST_EVIDENCE_SCHEMA = "sts2.policy-runtime/fast-evidence-1" as const;
 export const FAST_ACTIONS_FILE = "actions.jsonl";
 export const FAST_NATIVE_LINES_FILE = "native-lines.jsonl.gz";
 export const FAST_INPUT_LINES_FILE = "input-lines.jsonl.gz";
+export const FAST_SAMPLED_MISMATCH_FILE = "sampled-check-mismatch.jsonl.gz";
 /** Staging of the originals, appended and fsynced at every boundary. After a process crash they
  * are that game's originals; at close they become the final layout (kept) or are dropped (clean). */
 export const FAST_NATIVE_SPOOL_FILE = "native-lines.spool";
@@ -42,6 +46,8 @@ export interface FastEvidenceCloseRecord extends FastGameClose {
   retained: string[];
   native_lines: FastOriginalsFile | null;
   input_lines: FastOriginalsFile | null;
+  /** The mismatching originals of a sampled full check; null when none disagreed. */
+  sampled_check_mismatch: FastOriginalsFile | null;
 }
 /** The one-line `actions.jsonl` of a refused open (#427 `FastRefusedOpen`); a refused open is a failure, so its native lines are always kept. */
 export interface FastRefusedOpenRecord extends Omit<FastRefusedOpen, "native_lines"> {
@@ -154,6 +160,7 @@ export class FastGameActionEvidence implements FastGameEvidence {
   #inputs: string[] = [];
   readonly #statuses = new Set<FastStepRecord["status"]>();
   readonly #signals: FastRetainSignals = { sampled_check_mismatch: false };
+  readonly #mismatches: string[] = [];
   #steps = 0;
   #nativeCount = 0;
   #inputCount = 0;
@@ -186,9 +193,10 @@ export class FastGameActionEvidence implements FastGameEvidence {
   }
 
   /** A sampled faithfulness check of this game did not match (contract `build_output_stopped`):
-   * its originals are kept whatever the close. Not yet on the #427 interface. */
-  retainSampledCheckMismatch(): void {
+   * the mismatching originals are stored and every original of the game is kept, whatever the close. */
+  retainSampledCheckMismatch(mismatch: SampledCheckMismatch): void {
     this.#usable("native_line");
+    this.#mismatches.push(JSON.stringify(mismatch));
     this.#signals.sampled_check_mismatch = true;
   }
 
@@ -208,7 +216,10 @@ export class FastGameActionEvidence implements FastGameEvidence {
       const retained = fastRetainReasons(this.meta, closed, this.#statuses, this.#signals);
       const keep = retained.length > 0;
       let native_lines: FastOriginalsFile | null = null, input_lines: FastOriginalsFile | null = null;
+      let sampled_check_mismatch: FastOriginalsFile | null = null;
       if (keep) {
+        if (this.#mismatches.length > 0)
+          sampled_check_mismatch = await writeOriginals(this.#directory, FAST_SAMPLED_MISMATCH_FILE, this.#mismatches);
         if (this.meta.native_lines) native_lines = await writeOriginalBytes(this.#directory, FAST_NATIVE_LINES_FILE,
           await readFile(join(this.#directory, FAST_NATIVE_SPOOL_FILE)), this.#nativeCount);
         input_lines = await writeOriginalBytes(this.#directory, FAST_INPUT_LINES_FILE,
@@ -217,7 +228,7 @@ export class FastGameActionEvidence implements FastGameEvidence {
         await syncDirectory(this.#directory);
       }
       const record: FastEvidenceCloseRecord = { kind: "close", ...closed, steps: this.#steps, native_lines_seen: this.#nativeCount,
-        retained, native_lines, input_lines };
+        retained, native_lines, input_lines, sampled_check_mismatch };
       this.#pending.push(JSON.stringify(record));
       await this.#flush();
       await this.#closeHandles();
@@ -296,6 +307,8 @@ export interface FastGameEvidenceRead {
   spool_torn: boolean;
   native_lines: string[] | null;
   input_lines: { row_id: number | null; step_index: number | null; line: string }[] | null;
+  /** Closed games only: the stored mismatches of a sampled full check (null when none). */
+  sampled_check_mismatches: SampledCheckMismatch[] | null;
 }
 
 async function readOriginals(directory: string, ref: FastOriginalsFile, name: string): Promise<string[]> {
@@ -323,7 +336,7 @@ export async function readFastGameEvidence(directory: string): Promise<FastGameE
       throw new Error("fast_evidence_refused_open");
     const natives = await readOriginals(directory, refused.native_lines, FAST_NATIVE_LINES_FILE);
     return { open: null, refused, steps: [], boundaries: [], close: null, state: "refused", satisfied_steps: 0, torn_tail: false,
-      spool_torn: false, native_lines: natives, input_lines: null };
+      spool_torn: false, native_lines: natives, input_lines: null, sampled_check_mismatches: null };
   }
   let open: FastGameEvidenceRead["open"] = null, close: FastEvidenceCloseRecord | null = null;
   const steps: FastStepLine[] = [], boundaries: FastBoundaryLine[] = [];
@@ -350,10 +363,14 @@ export async function readFastGameEvidence(directory: string): Promise<FastGameE
   if (open === null) throw new Error("fast_evidence_open");
   if (close !== null && torn) throw new Error("fast_evidence_torn_after_close");
   let natives: string[] | null = null, inputs: FastGameEvidenceRead["input_lines"] = null;
+  let mismatches: SampledCheckMismatch[] | null = null;
   if (close !== null) {
     if ((close.retained.length > 0) !== (close.input_lines !== null)
-      || (close.native_lines !== null) !== (close.retained.length > 0 && open.native_lines))
+      || (close.native_lines !== null) !== (close.retained.length > 0 && open.native_lines)
+      || ((close.sampled_check_mismatch ?? null) !== null) !== close.retained.includes("sampled_check_mismatch"))
       throw new Error("fast_evidence_retained");
+    if (close.sampled_check_mismatch) mismatches = (await readOriginals(directory, close.sampled_check_mismatch, FAST_SAMPLED_MISMATCH_FILE))
+      .map(line => JSON.parse(line) as SampledCheckMismatch);
     if (close.native_lines) {
       natives = await readOriginals(directory, close.native_lines, FAST_NATIVE_LINES_FILE);
       if (natives.length !== close.native_lines_seen) throw new Error("fast_evidence_native_count");
@@ -377,5 +394,5 @@ export async function readFastGameEvidence(directory: string): Promise<FastGameE
     spoolTorn = (native?.torn ?? false) || (input?.torn ?? false);
   }
   return { open, refused: null, steps, boundaries, close, state: close !== null ? "closed" : "unsatisfied", satisfied_steps: satisfied,
-    torn_tail: torn, spool_torn: spoolTorn, native_lines: natives, input_lines: inputs };
+    torn_tail: torn, spool_torn: spoolTorn, native_lines: natives, input_lines: inputs, sampled_check_mismatches: mismatches };
 }

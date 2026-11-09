@@ -35,9 +35,17 @@ function withTimeout(promise, timeoutMs, label) {
 
 /** The exact stdout line a managed-native-compact-1 frame was parsed from. Attached
  * (non-enumerable, never serialised) only to compact_state messages, which exist
- * only after the fast_chain Host sent configure_output; other messages are untouched.
+ * only after the fast_chain Host sent configure_output, and to the fast_chain native's
+ * own fatal `{"type":"error","code":"compact_state_divergence"}` line (an original the
+ * evidence keeps); other messages are untouched.
  * Compact body digests are over these emitted bytes, so the sampled check needs them. */
 export const RAW_LINE = Symbol.for("sts2.host-runtime/raw-line");
+
+/** The fast_chain native's own fatal divergence report (it exits 70 right after). */
+export function isNativeCompactDivergence(message) {
+  return message !== null && typeof message === "object" && !Array.isArray(message)
+    && message.type === "error" && message.code === "compact_state_divergence";
+}
 
 export class JsonLineProcess {
   #child;
@@ -118,7 +126,7 @@ export class JsonLineProcess {
       this.#recordDiagnostic("stdout", line);
       return;
     }
-    if (parsed !== null && typeof parsed === "object" && parsed.type === "compact_state") {
+    if (parsed !== null && typeof parsed === "object" && (parsed.type === "compact_state" || isNativeCompactDivergence(parsed))) {
       Object.defineProperty(parsed, RAW_LINE, { value: line, enumerable: false });
     }
     const waiter = this.#waiters.shift();
