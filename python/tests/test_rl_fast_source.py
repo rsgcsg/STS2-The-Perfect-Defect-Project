@@ -67,7 +67,8 @@ class Game:
     """Real assembler, real rows-v2 bytes, real compiler identity."""
 
     def __init__(self, generation: str = "gen-1", terminal_class: int = 3,
-                 compiler: FrameCompiler = COMPILER, assembler_id: str = "node-a") -> None:
+                 compiler: FrameCompiler = COMPILER, assembler_id: str = "node-a",
+                 handoff: MuHandoff | None = None) -> None:
         self.sealed: list[Any] = []
         self.row = encode_row(compiler.compile(public_state()))
         self.width = len(compiler.compile(public_state()).choices)
@@ -76,7 +77,7 @@ class Game:
             emit=self.sealed.append,
             terminal_labeler=lambda _summary: {
                 "class": terminal_class, "reward": float(class_reward_values()[terminal_class])})
-        self.assembler.offer_mu(mu(1, generation))
+        self.assembler.offer_mu(handoff or mu(1, generation))
         self.request = 0
         self.steps: dict[str, int] = {}
 
@@ -217,8 +218,16 @@ def test_tampered_or_rebound_fast_packet_is_refused():
                            compiler=COMPILER)
 
 
+def published(handoff: MuHandoff) -> dict[str, Any]:
+    return {"snapshot_sha256": handoff.snapshot_sha256,
+            "training_generation": handoff.training_generation,
+            "version": handoff.version, "updates": handoff.updates}
+
+
 def intake(**kwargs: Any) -> FastSegmentIntake:
-    return FastSegmentIntake(run="run-1", generation="gen-1", **kwargs)
+    value = FastSegmentIntake(run="run-1", generation="gen-1", **kwargs)
+    value.publish_mu(published(mu(1)))  # the learner's own publication of the Game mu
+    return value
 
 
 def closed_for(sealed: list[SealedSegment], **change: Any) -> dict[str, Any]:
@@ -373,3 +382,28 @@ def test_read_handoff_verifies_acks_and_reads_the_close_in_order():
     process.join(30)
     assert process.exitcode == 0
     assert admitted == [s.segment_id for s in segments]
+
+
+def test_segment_under_a_mu_the_learner_never_published_is_refused_loudly():
+    i = FastSegmentIntake(run="run-1", generation="gen-1")
+    i.attest(attest("g1"))
+    segment = bootstrap_and_terminal()[0]
+    with pytest.raises(FastIntakeError, match="fast_segment_mu_not_published"):
+        i.offer(message(segment), segment.data)
+    # Same digest, another version/updates: also not this learner's publication.
+    i.publish_mu({**published(mu(1)), "version": 7})
+    with pytest.raises(FastIntakeError, match="fast_segment_mu_not_published"):
+        i.offer(message(segment), segment.data)
+    assert i.report()["unpublished_mu_refused"] == 2
+
+
+def test_published_mu_ledger_is_typed_and_per_generation():
+    i = intake()
+    with pytest.raises(FastIntakeError, match="fast_published_mu_generation_changed"):
+        i.publish_mu(published(mu(2, "gen-0")))
+    with pytest.raises(FastIntakeError, match="fast_published_mu_identity_fields"):
+        i.publish_mu({**published(mu(2)), "version": "2"})
+    with pytest.raises(FastIntakeError, match="fast_published_mu_digest_reused"):
+        i.publish_mu({**published(mu(1)), "updates": 9})
+    i.set_generation("gen-2")
+    assert not i.published

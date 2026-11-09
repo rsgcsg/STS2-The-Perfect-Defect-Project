@@ -12,6 +12,7 @@ from test_rl_fast_source import Game, _sender, closed_for, message, train_seed
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.frame_compiler import FrameCompiler
+from stpd.rl.fast_assembly import MuHandoff
 from stpd.rl.fast_source import FAST_FORMAT
 from stpd.rl.segment_learner import SegmentLearner
 
@@ -34,7 +35,7 @@ def fast_learner(tmp_path, monkeypatch, *, fast: Any = True) -> SegmentLearner:
 def game(owner: SegmentLearner, name: str, *, terminal: bool = True) -> list[Any]:
     """One real assembler game bound to this learner's generation and compiler."""
     g = Game(owner.generation, compiler=FrameCompiler(owner.model.vocabulary),
-             assembler_id="node-" + name)
+             assembler_id="node-" + name, handoff=learner_mu(owner))
     g.open(name)
     for _ in range(64 + 5 if terminal else 65):
         g.step(name)
@@ -42,6 +43,13 @@ def game(owner: SegmentLearner, name: str, *, terminal: bool = True) -> list[Any
         g.step(name, terminal=True)
         g.close(name, "terminal")
     return g.sealed
+
+
+def learner_mu(owner: SegmentLearner) -> MuHandoff:
+    """The mu this learner itself published (its start snapshot)."""
+    identity = owner.pool.snapshots[owner.pool.latest]
+    return MuHandoff(identity["snapshot_sha256"], identity["training_generation"],
+                     identity["version"], identity["updates"])
 
 
 def admission(owner: SegmentLearner, name: str, index: int) -> dict[str, Any]:
@@ -178,5 +186,28 @@ def test_fast_ref_format_is_routed_to_fast_sources(tmp_path, monkeypatch):
         member = owner._member(record)
         assert member.payload.format == FAST_FORMAT
         assert owner._binary_owner(member.payload) is owner.fast_sources
+    finally:
+        owner.close()
+
+
+def test_learner_trains_only_segments_under_its_own_published_mu(tmp_path, monkeypatch):
+    from test_rl_fast_source import mu
+
+    from stpd.rl.fast_source import FastIntakeError
+
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        assert owner.fast_intake is not None
+        start = learner_mu(owner)
+        assert owner.fast_intake.published[start.snapshot_sha256]["version"] == start.version
+        g = Game(owner.generation, compiler=FrameCompiler(owner.model.vocabulary),
+                 assembler_id="node-x", handoff=mu(5, owner.generation))
+        g.open("gx")
+        for _ in range(65):
+            g.step("gx")
+        admission(owner, "gx", 1)
+        with pytest.raises(FastIntakeError, match="fast_segment_mu_not_published"):
+            offer(owner, g.sealed[0])
+        assert queued(owner) == []
     finally:
         owner.close()

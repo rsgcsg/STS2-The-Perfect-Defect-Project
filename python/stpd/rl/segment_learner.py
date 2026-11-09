@@ -821,6 +821,11 @@ class SegmentLearner:
                            "model_files": self._model_files, "on_failure": self._transport_failure}
                            if self.dataplane is not None else None,
             )
+            if self.fast_intake is not None:
+                # The start (or restored) mu is this learner's first publication.
+                # Known limit: mu published by an earlier process is not carried
+                # across a resume, so its in-flight segments are refused loudly.
+                self.fast_intake.publish_mu(initial["identity"])
             if self.dataplane is not None:
                 recipe = _resume_config(asdict(self.config))
                 cast(SegmentInferencePool, self.pool).binary_profile = {"binary_recipe": {
@@ -1327,6 +1332,10 @@ class SegmentLearner:
             self._discard_snapshot(self.pending_snapshot)
             self.pending_snapshot = None
             with self.condition:
+                if self.fast_intake is not None:
+                    # Before any service can hold it: a fast segment trains only
+                    # under a mu recorded here (fast_segment_mu_not_published).
+                    self.fast_intake.publish_mu(publication["identity"])
                 if isinstance(self.pool, CentralInferencePool):
                     self.pool.publish(publication["model"], publication["identity"])
                 else:

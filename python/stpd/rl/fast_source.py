@@ -51,7 +51,7 @@ from stpd.p1.rows_encoder_wire import decode_row
 from . import batch_preparation as bp
 from .fast_handoff import HANDOFF_KEYS, HANDOFF_SCHEMA, HandoffError
 from .fast_segment import FORMAT as FAST_FORMAT
-from .fast_segment import decode_segment, sha256
+from .fast_segment import MU_KEYS, decode_segment, sha256
 from .heads import categorical_lambda_targets
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
@@ -263,8 +263,8 @@ class FastSegmentIntake:
 
     def __init__(self, *, run: str, generation: str, excluded_seeds: frozenset[str] = frozenset(),
                  buffer_segments: int = 512, closed_memory: int = 65536,
-                 gae_lambda: float = 0.99) -> None:
-        if buffer_segments < 1 or closed_memory < 1:
+                 gae_lambda: float = 0.99, published_memory: int = 65536) -> None:
+        if buffer_segments < 1 or closed_memory < 1 or published_memory < 1:
             raise ValueError("positive_fast_intake_bounds_required")
         self.run, self.generation = run, generation
         self.excluded_seeds = excluded_seeds
@@ -277,6 +277,12 @@ class FastSegmentIntake:
         self.buffer: collections.deque[FastSegment] = collections.deque()
         self.counters: dict[str, Any] = collections.defaultdict(int)
         self.excluded_by_reason: dict[str, int] = collections.defaultdict(int)
+        # Every mu this learner published in the current generation, by snapshot
+        # digest. A segment trains only under a mu found here with the same
+        # version/updates; anything else is a broken service -> loud refusal.
+        self.published: collections.OrderedDict[str, dict[str, Any]] = (
+            collections.OrderedDict())
+        self.published_memory = published_memory
 
     # -- generation -------------------------------------------------------------------
     def set_generation(self, generation: str) -> None:
@@ -288,7 +294,28 @@ class FastSegmentIntake:
             self.buffer.clear()
             self.instances.clear()
             self.finished.clear()
+            self.published.clear()
             self.generation = generation
+
+    # -- mu publication -----------------------------------------------------------
+    def publish_mu(self, identity: dict[str, Any]) -> None:
+        """Record one mu this learner published (its own publication identity)."""
+        mu = {key: identity.get(key) for key in MU_KEYS}
+        if (not isinstance(mu["snapshot_sha256"], str) or len(mu["snapshot_sha256"]) != 64
+                or not isinstance(mu["training_generation"], str)
+                or any(type(mu[key]) is not int or mu[key] < 0
+                       for key in ("version", "updates"))):
+            raise FastIntakeError("fast_published_mu_identity_fields")
+        with self.lock:
+            if mu["training_generation"] != self.generation:
+                raise FastIntakeError("fast_published_mu_generation_changed")
+            previous = self.published.get(mu["snapshot_sha256"])
+            if previous is not None and previous != mu:
+                raise FastIntakeError("fast_published_mu_digest_reused")
+            self.published[mu["snapshot_sha256"]] = mu
+            self.published.move_to_end(mu["snapshot_sha256"])
+            while len(self.published) > self.published_memory:
+                self.published.popitem(last=False)
 
     # -- actor control ----------------------------------------------------------------
     def attest(self, request: dict[str, Any]) -> IntakeDecision:
@@ -358,6 +385,11 @@ class FastSegmentIntake:
                 # A mu of an older generation: the W2 rule never trains it here.
                 self.counters["old_generation_dropped"] += 1
                 return IntakeDecision()
+            if self.published.get(header["mu"]["snapshot_sha256"]) != header["mu"]:
+                # Not a mu this learner published (or published under another
+                # version/updates): never trained, never repaired.
+                self.counters["unpublished_mu_refused"] += 1
+                raise FastIntakeError("fast_segment_mu_not_published")
             instance_id = segment.instance
             if instance_id in self.finished:
                 raise FastIntakeError("fast_segment_after_instance_closed")
