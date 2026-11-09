@@ -147,6 +147,7 @@ def prepared_update(
     gpu_lock: Any = None,
     diagnostics: bool = False,
     collect_policy_rows: bool = False,
+    gradient_sync: Any = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
 
@@ -227,6 +228,13 @@ def prepared_update(
                 # Drop their small graphs before the next encoder allocation.
                 del loss, partial, components, valid, scores, logits, hp
             phase = time.perf_counter()
+            if gradient_sync is not None:
+                # Data parallel (C-SCALE): every rank holds the same theta/Adam and
+                # one minibatch; after this all ranks share the mean gradient and
+                # totals, so clip, KL stop and Adam make one identical decision.
+                totals, dynamic_valid = gradient_sync(model, totals, dynamic_valid)
+                phases["gradient_sync"] = time.perf_counter() - phase
+                phase = time.perf_counter()
             diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
             valid = (dynamic_valid & torch.isfinite(norm)

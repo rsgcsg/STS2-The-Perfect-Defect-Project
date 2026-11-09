@@ -9,8 +9,12 @@ only work on padding is removed (S0-GPU 0-level items, measured 2026-11-07):
      terms gather them directly in fp32 (no duplicate-occurrence tensor);
   4. scene rows are sorted by length into buckets (width a multiple of 64);
   5. attention is batch-first with the same in/out projections; on CUDA under
-     BF16/FP16 autocast (sm80+) the scene encoder runs varlen flash attention on
-     real tokens only, otherwise the same math on the bucket with a key mask;
+     BF16/FP16 autocast (sm80+) every attention runs varlen flash attention on
+     real tokens only ("packed", C-SCALE step 2): the text encoder over packed
+     unique texts, the scene encoder, both value heads (one query per row) and
+     the action cross-attention (catalog queries per row) read the packed scene
+     tokens directly, so no padded scene tensor or key mask is built. Elsewhere
+     (CPU, FP32) the same math runs on the bucket with a key mask;
   6. optional torch.compile of the per-bucket block (explicit selection).
 Float accumulation order differs from padded-v1 (BF16 tolerance, not bitwise).
 Dropout is not implemented here: the prepared RL step runs in eval mode and this
@@ -26,6 +30,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .model import positions
 from .tensor_input import JointNodes
 
 
@@ -91,22 +96,70 @@ def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor)
     return x
 
 
+def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, max_q: int,
+                 max_k: int) -> Tensor:
+    """Ragged attention over packed (tokens, heads, width) sequences, no mask.
+
+    CUDA: the flash varlen kernel. Elsewhere: the same math one sequence at a
+    time (a reference for CPU tests; never selected by the GPU step)."""
+    scale = 1.0 / math.sqrt(q.shape[-1])
+    if q.is_cuda:
+        return cast(Tensor, torch.ops.aten._flash_attention_forward(
+            q.contiguous(), k.contiguous(), v.contiguous(), cu_q, cu_k, max_q, max_k,
+            0.0, False, False, scale=scale)[0])
+    bounds_q, bounds_k = cu_q.tolist(), cu_k.tolist()
+    parts = [F.scaled_dot_product_attention(
+        q[a:b].transpose(0, 1), k[c:d].transpose(0, 1), v[c:d].transpose(0, 1),
+        scale=scale).transpose(0, 1)
+        for a, b, c, d in zip(bounds_q[:-1], bounds_q[1:], bounds_k[:-1], bounds_k[1:],
+                              strict=True)]
+    return torch.cat(parts) if parts else q.new_empty(q.shape)
+
+
+def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Tensor,
+                     cu_q: Tensor, cu_k: Tensor, max_q: int, max_k: int) -> Tensor:
+    """nn.MultiheadAttention (eval, need_weights=False) over packed rows: query
+    tokens of sequence i attend exactly to kv tokens of sequence i."""
+    embed, heads = module.embed_dim, module.num_heads
+    width = embed // heads
+    weight, bias = module.in_proj_weight, module.in_proj_bias
+    if query is kv:
+        q, k, v = F.linear(query, weight, bias).view(-1, 3, heads, width).unbind(1)
+    else:
+        q = F.linear(query, weight[:embed], bias[:embed]).view(-1, heads, width)
+        k, v = F.linear(kv, weight[embed:], bias[embed:]).view(-1, 2, heads, width).unbind(1)
+    out = flash_varlen(q, k, v, cu_q, cu_k, max_q, max_k)
+    return F.linear(out.reshape(-1, embed), module.out_proj.weight, module.out_proj.bias)
+
+
 def encode_varlen(encoder: torch.nn.TransformerEncoder, tokens: Tensor, offsets: Tensor,
                   longest: int) -> Tensor:
     """Self-attention over ragged rows packed as (tokens, embed); no padding anywhere."""
     for layer in encoder.layers:
-        module = layer.self_attn
-        embed, heads = module.embed_dim, module.num_heads
-        count = tokens.shape[0]
-        q, k, v = F.linear(tokens, module.in_proj_weight, module.in_proj_bias).view(
-            count, 3, heads, embed // heads).unbind(1)
-        out = torch.ops.aten._flash_attention_forward(
-            q.contiguous(), k.contiguous(), v.contiguous(), offsets, offsets, longest, longest,
-            0.0, False, False, scale=1.0 / math.sqrt(embed // heads))[0]
-        attended = F.linear(out.reshape(count, embed), module.out_proj.weight,
-                            module.out_proj.bias)
+        attended = packed_attention(layer.self_attn, tokens, tokens, offsets, offsets,
+                                    longest, longest)
         tokens = _layer_tail(layer, tokens, attended)
     return tokens
+
+
+def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any) -> Tensor:
+    """`model._encode_text` for every unique text at once, real tokens only.
+
+    Same embeddings, positions, encoder, mean over real tokens and projection;
+    output in unique-text order (no bucket inverse needed)."""
+    tokens = move(layout.text_tokens)
+    offsets = move(layout.text_offsets)
+    width = ids.shape[1]
+    texts = offsets.shape[0] - 1
+    owner = torch.div(tokens, width, rounding_mode="floor")
+    value = (model.text_ids(ids.reshape(-1).index_select(0, tokens))
+             + model.text_numbers(numbers.reshape(-1, numbers.shape[-1]).index_select(0, tokens))
+             + positions(tokens - owner * width, model.text_ids.embedding_dim))
+    _check_encoder(model.text_blocks)
+    encoded = encode_varlen(model.text_blocks, value, offsets, layout.text_longest)
+    lengths = (offsets[1:] - offsets[:-1]).to(encoded.dtype)
+    mean = encoded.new_zeros((texts, encoded.shape[1])).index_add(0, owner, encoded)
+    return cast(Tensor, model.text_projection(mean / lengths[:, None]))
 
 
 def varlen_supported(device: torch.device) -> bool:
@@ -135,19 +188,16 @@ def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
 
 
 def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, offsets: Tensor,
-               rows: int, width: int, longest: int, varlen: bool, outcome_valid: Tensor,
+               rows: int, width: int, longest: int, outcome_valid: Tensor,
                action_types: Tensor | None, catalog_mask: Tensor | None,
                roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...]) -> tuple[
                    Tensor | None, Tensor, Tensor]:
-    """Scene encoder + heads + action readout for one length bucket of rows."""
+    """Scene encoder + heads + action readout for one length bucket of rows
+    (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
     embed = tokens.shape[1]
     mask = torch.arange(width, device=tokens.device)[None, :] >= lengths[:, None]
-    if varlen:
-        encoded = encode_varlen(model.scene, tokens, offsets, longest)
-        scene = encoded.new_zeros((rows * width, embed)).index_copy(0, positions, encoded)
-    else:
-        packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions, tokens)
-        scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
+    packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions.long(), tokens)
+    scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
     scene = scene.view(rows, width, -1)
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
     logits = head(model.rl4_heads.outcome, scene, mask, current).float()
@@ -171,20 +221,79 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
     return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
 
 
-def _compiled_block(model: Any) -> Any:
-    block = getattr(model, "_rows_block_compiled", None)
+def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor,
+                      offsets: Tensor, rows: int, width: int, longest: int,
+                      outcome_valid: Tensor, action_types: Tensor | None,
+                      catalog_mask: Tensor | None,
+                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...]) -> tuple[
+                          Tensor | None, Tensor, Tensor]:
+    """`rows_block` on packed real scene tokens only (CUDA BF16 flash varlen).
+
+    Same function: the mean, both heads and the cross-attention read exactly the
+    real slots of their own row; role terms map bucket slots to packed tokens."""
+    encoded = encode_varlen(model.scene, tokens, offsets, longest)
+    owner = torch.div(positions, width, rounding_mode="floor")
+    current = encoded.new_zeros((rows, encoded.shape[1])).index_add(0, owner, encoded)
+    current = current / lengths[:, None].to(current.dtype)
+    one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
+
+    def pooled(module: Any) -> Tensor:
+        query = module.query.reshape(1, -1).expand(rows, -1)
+        value = packed_attention(module.attention, query, encoded, one, offsets, 1, longest)
+        return cast(Tensor, module.mlp(torch.cat((value, current), dim=1)))
+
+    logits = pooled(model.rl4_heads.outcome).float()
+    logits = logits.masked_fill(~outcome_valid, -torch.inf)
+    hp = pooled(model.rl4_heads.hp)[:, 0].float()
+    if action_types is None or catalog_mask is None:
+        return None, logits, hp
+    action = model.action_types(action_types)
+    catalog = action.shape[1]
+    starts = offsets.long()
+    means = []
+    for index, (candidate, slot, weight, present) in enumerate(roles):
+        row = torch.div(slot, width, rounding_mode="floor")
+        token = starts.index_select(0, row) + slot - row * width
+        values = encoded.index_select(0, token) * weight.unsqueeze(-1).to(encoded.dtype)
+        mean = encoded.new_zeros((rows * catalog, encoded.shape[1])).index_add(
+            0, candidate, values)
+        mean = torch.where(present[:, None], mean, model.absent_roles[index])
+        means.append(mean.reshape(action.shape))
+    action = action + model.source_role(means[0]) + model.target_role(means[1])
+    read = packed_attention(model.cross, action.reshape(rows * catalog, -1), encoded,
+                            one * catalog, offsets, catalog, longest).view(action.shape)
+    scores = model.head(torch.cat((action + read,
+                                   current[:, None, :].expand(-1, catalog, -1)), -1))
+    return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
+
+
+def _compiled_block(model: Any, packed: bool) -> Any:
+    name = "_rows_block_packed_compiled" if packed else "_rows_block_compiled"
+    block = getattr(model, name, None)
     if block is None:
-        block = torch.compile(rows_block, dynamic=None)
-        model._rows_block_compiled = block  # learner-process runtime only, not state
+        block = torch.compile(rows_block_packed if packed else rows_block, dynamic=None)
+        setattr(model, name, block)  # learner-process runtime only, not state
     return block
 
 
-def forward_rows(model: Any, group: Any, *, compile: bool = False) -> tuple[
-        Tensor, Tensor, Tensor]:
+def forward_rows(model: Any, group: Any, *, compile: bool = False,
+                 packed: bool | None = None) -> tuple[Tensor, Tensor, Tensor]:
+    """`packed` defaults to the device: CUDA sm80+ under BF16/FP16 autocast.
+    Tests may force it on CPU (reference attention, one sequence at a time)."""
     if model.training:
         raise ValueError("rows_forward_requires_eval_mode")
-    layout = group.layout
     device = model.ids.weight.device
+    if device.type == "cuda" and any(value.device.type == "cpu"
+                                     for value in group.tensors.values()):
+        # A host group (inference): its forward inputs in one pinned non-blocking
+        # copy instead of ~50 pageable per-tensor copies (each a stream sync).
+        # int64 here: casting/checking on this thread cost more than it saved
+        # (Friday 1454515); int32 inputs come from `write_forward_inputs` in the
+        # prepare processes. The learner's groups are already staged: untouched.
+        from stpd.rl.batch_preparation import stage_group
+
+        group = stage_group(group, device, index_dtype=torch.int64)
+    layout = group.layout
     nonblocking = model.nonblocking_inputs
 
     def move(value: Tensor) -> Tensor:
@@ -192,7 +301,11 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False) -> tuple[
 
     t = {key: move(value) for key, value in group.tensors.items()}
     rows = len(group.rows)
-    if layout.text_buckets:
+    if packed is None:
+        packed = varlen_supported(device)
+    if packed and layout.text_buckets and layout.text_tokens is not None:
+        vectors = packed_text(model, t["text_ids"], t["text_numbers"], layout, move).float()
+    elif layout.text_buckets:
         order = move(layout.text_order)
         parts, cursor = [], 0
         for count, width in layout.text_buckets:
@@ -211,8 +324,8 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False) -> tuple[
             for key, (indices, buckets, inverse) in layout.reductions.items()}
     nodes = model.tensor_nodes(joint, vectors, flat=flat)
     _check_encoder(model.scene)
-    varlen = varlen_supported(device)
-    block = _compiled_block(model) if compile else rows_block
+    block = (_compiled_block(model, packed) if compile
+             else rows_block_packed if packed else rows_block)
     buckets = layout.scene_buckets
     row_sizes = [bucket[0] for bucket in buckets]
     slot_sizes = [bucket[3] for bucket in buckets]
@@ -238,7 +351,7 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False) -> tuple[
         member = members[index]
         score, logit, value = block(
             model, tokens[index], positions[index], lengths[index], offsets[index], count, width,
-            longest, varlen, t["outcome_valid"].index_select(0, member),
+            longest, t["outcome_valid"].index_select(0, member),
             t["action_types"].index_select(0, member) if group.policy else None,
             t["catalog_mask"].index_select(0, member) if group.policy else None,
             role_parts[index])

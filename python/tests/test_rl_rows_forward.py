@@ -52,9 +52,14 @@ def prepared(model, *layouts, microbatch_size=8):
     return batches if len(batches) > 1 else batches[0]
 
 
-def forward_and_gradients(model, group):
+def forward_and_gradients(model, group, *, packed=None):
     model.zero_grad(set_to_none=True)
-    scores, logits, hp = model.forward_prepared_rl4(group)
+    if packed is None:
+        scores, logits, hp = model.forward_prepared_rl4(group)
+    else:
+        from stpd.p1.rows_forward import forward_rows
+
+        scores, logits, hp = forward_rows(model, group, packed=packed)
     generator = torch.Generator().manual_seed(5)
     total = hp.mul(torch.randn(hp.shape, generator=generator)).sum()
     for value in (scores, logits):
@@ -66,9 +71,9 @@ def forward_and_gradients(model, group):
     return (scores.detach(), logits.detach(), hp.detach()), gradients
 
 
-def assert_same_function(model, padded, rows):
+def assert_same_function(model, padded, rows, *, packed=None):
     (s0, l0, h0), g0 = forward_and_gradients(model, padded)
-    (s1, l1, h1), g1 = forward_and_gradients(model, rows)
+    (s1, l1, h1), g1 = forward_and_gradients(model, rows, packed=packed)
     for left, right in ((s0, s1), (l0, l1), (h0, h1)):
         assert left.shape == right.shape
         assert torch.equal(left.isneginf(), right.isneginf())
@@ -96,6 +101,36 @@ def test_rows_forward_equals_padded_forward_on_cpu(model, varied, bucket_rows, w
         plain = dc.replace(group, policy=False)
         assert_same_function(model, plain, dc.replace(plain, layout=row_layout(
             plain, bucket_rows=bucket_rows, width_multiple=width_multiple)))
+
+
+@pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8), (1, 1)])
+def test_packed_rows_forward_equals_padded_forward_on_cpu(model, varied, bucket_rows,
+                                                          width_multiple):
+    """C-SCALE step 2: the packed path (every attention over real tokens only:
+    packed text, scene, both heads, cross-attention) is the same function. On CPU
+    it runs the reference attention one sequence at a time; CUDA runs flash."""
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    for group in groups:
+        layout = row_layout(group, bucket_rows=bucket_rows, width_multiple=width_multiple)
+        texts = len(layout.text_order)
+        assert layout.text_offsets is not None and len(layout.text_offsets) == texts + 1
+        lengths = group.tensors["text_lengths"][:texts].long()
+        assert int(layout.text_offsets[-1]) == int(lengths.sum())
+        assert layout.text_longest == int(lengths.max())
+        assert_same_function(model, group, dc.replace(group, layout=layout), packed=True)
+        plain = dc.replace(group, policy=False)
+        assert_same_function(model, plain, dc.replace(plain, layout=row_layout(
+            plain, bucket_rows=bucket_rows, width_multiple=width_multiple)), packed=True)
+
+
+def test_packed_forward_reads_a_layout_without_packed_text(model, varied):
+    """Layouts written before step 2 (offline dumps) carry no packed text: the text
+    encoder then runs bucketed, the scene/heads/cross still packed."""
+    group = prepared(model).minibatches[0].groups[0]
+    layout = dc.replace(row_layout(group), text_tokens=None, text_offsets=None,
+                        text_longest=0)
+    assert_same_function(model, group, dc.replace(group, layout=layout), packed=True)
 
 
 def test_preparation_builds_the_same_layout_and_it_survives_transport(model, varied):
@@ -281,3 +316,234 @@ def test_compiled_rows_forward_trains_and_diagnostic_steps_run_eager(model, vari
     for name, value in reference.state_dict().items():
         torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
                                    msg=name)
+
+
+def _equal_structure(left, right):
+    """Bitwise: same tensors (dtype, shape, values) through dataclasses and containers."""
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor) and left.dtype == right.dtype
+        assert left.shape == right.shape and torch.equal(left, right)
+    elif dc.is_dataclass(left):
+        assert type(left) is type(right)
+        for item in dc.fields(left):
+            _equal_structure(getattr(left, item.name), getattr(right, item.name))
+    elif isinstance(left, dict):
+        assert list(left) == list(right)
+        for key in left:
+            _equal_structure(left[key], right[key])
+    elif isinstance(left, (tuple, list)):
+        assert len(left) == len(right)
+        for a, b in zip(left, right, strict=True):
+            _equal_structure(a, b)
+    else:
+        assert left == right
+
+
+def _frames(model, count=3):
+    sources = [w1.source(model, w1.segment(model, name=f"actor/{i}", run_id=f"episode-{i}",
+                                           rows=5)) for i in range(count)]
+    frames = [frame for source in sources for frame in source.frames]
+    floors = [floor for source in sources for floor in source.floors]
+    return frames, floors
+
+
+@pytest.mark.parametrize("policy", [True, False])
+@pytest.mark.parametrize("layout", ["rows-v2", "padded-v1"])
+def test_concatenated_subgroups_equal_one_prepared_group_bitwise(model, varied, policy, layout):
+    """Lead 11-09 (a): merging prepared parts is the one-shot group, bit for bit."""
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model)
+    cuts = [(0, 1), (1, 7), (7, 15)]  # uneven parts: widths, catalogs, row buckets differ
+    parts = [prepare_group(frames[a:b], tuple(range(a, b)), policy,
+                           torch.tensor(floors[a:b]), deduplicate_text=False, layout=layout)
+             for a, b in cuts]
+    whole = prepare_group(frames, tuple(range(len(frames))), policy, torch.tensor(floors),
+                          deduplicate_text=False, layout=layout)
+    merged = concatenate_groups(parts)
+    _equal_structure(merged, whole)
+    model.eval()
+    with torch.no_grad():
+        for left, right in zip(model.forward_prepared_rl4(merged),
+                               model.forward_prepared_rl4(whole), strict=True):
+            assert torch.equal(left, right)
+
+
+def test_concatenated_deduplicated_subgroups_score_like_their_parts(model, varied):
+    """rl-inference-3 parts (`rows_scorer.prepare`, deduplicated per part): one merged
+    forward gives each part's own outputs bit for bit (CPU fp32 eager)."""
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model)
+    cuts = [(0, 4), (4, 9), (9, 15)]
+    parts = [prepare_group(frames[a:b], tuple(range(b - a)), True, torch.tensor(floors[a:b]),
+                           deduplicate_text=True, layout="rows-v2") for a, b in cuts]
+    merged = concatenate_groups(parts, rows=tuple(range(len(frames))))
+    assert merged.rows == tuple(range(len(frames)))
+    model.eval()
+    with torch.no_grad():
+        together = model.forward_prepared_rl4(merged)
+        alone = [model.forward_prepared_rl4(part) for part in parts]
+    for index, outputs in enumerate(zip(*alone, strict=True)):
+        joined = together[index]
+        width = joined.shape[1] if joined.ndim > 1 else None
+        expected = torch.cat([value if width is None else torch.nn.functional.pad(
+            value, (0, width - value.shape[1]), value=-torch.inf) for value in outputs])
+        if index == 0:  # scores: catalog padding of a narrower part is -inf in both
+            assert torch.equal(joined.isneginf(), expected.isneginf())
+            finite = joined.isfinite()
+            assert torch.equal(joined[finite], expected[finite])
+        else:
+            assert torch.equal(joined, expected)
+
+
+def test_concatenate_refuses_mixed_parts(model, varied):
+    from stpd.rl.batch_preparation import concatenate_groups, prepare_group
+
+    frames, floors = _frames(model, count=1)
+    a = prepare_group(frames[:2], (0, 1), True, torch.tensor(floors[:2]),
+                      deduplicate_text=True, layout="rows-v2")
+    b = prepare_group(frames[2:], (2, 3, 4), False, torch.tensor(floors[2:]),
+                      deduplicate_text=True, layout="rows-v2")
+    with pytest.raises(ValueError, match="one_policy_and_layout"):
+        concatenate_groups([a, b])
+    with pytest.raises(ValueError, match="rows_mismatch"):
+        concatenate_groups([a], rows=(0,))
+
+
+def _bitwise(left, right):
+    assert left.shape == right.shape and left.dtype == right.dtype
+    assert torch.equal(left.isneginf(), right.isneginf())
+    finite = left.isfinite()
+    assert torch.equal(left[finite], right[finite])
+
+
+@pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("packed", [False, True])
+def test_forward_inputs_are_the_same_function_bitwise(model, varied, index_dtype, packed):
+    """C-SCALE step 3: only what the rows-v2 forward reads, int32 indices: same
+    outputs and gradients bit for bit (CPU fp32), policy and non-policy."""
+    from stpd.rl.batch_preparation import forward_inputs, is_forward_inputs
+
+    group = prepared(model, "rows-v2").minibatches[0].groups[0]
+    for value in (group, dc.replace(group, policy=False, layout=row_layout(
+            dc.replace(group, policy=False)))):
+        inputs = forward_inputs(value, index_dtype=index_dtype)
+        assert is_forward_inputs(inputs) and forward_inputs(inputs) is inputs
+        assert "scene_gather" not in inputs.tensors and not inputs.joint.reductions
+        if index_dtype == torch.int32:
+            assert inputs.layout.scene_nodes.dtype == torch.int32
+            assert inputs.joint.tensors["identities"].dtype == torch.int32
+        (s0, l0, h0), g0 = forward_and_gradients(model, value, packed=packed)
+        (s1, l1, h1), g1 = forward_and_gradients(model, inputs, packed=packed)
+        for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+            _bitwise(left, right)
+        assert set(g0) == set(g1) and all(torch.equal(g0[k], g1[k]) for k in g0)
+
+
+@pytest.mark.parametrize("policy", [True, False])
+@pytest.mark.parametrize("deduplicate", [True, False])
+@pytest.mark.parametrize("repeat", [1, 18])  # 18: 270 rows, two joined scene buckets
+def test_arena_parts_join_like_concatenate_groups_bitwise(model, varied, policy, deduplicate,
+                                                          repeat):
+    """Lead 11-09 step 3 (2): parts written into one shared arena and joined
+    (planning on host views) equal `forward_inputs(concatenate_groups(...))`."""
+    import pickle
+
+    from stpd.rl.batch_preparation import (
+        ROW_BUCKET_ROWS,
+        allocate_forward_arena,
+        concatenate_groups,
+        forward_arena_bytes,
+        forward_inputs,
+        plan_forward_join,
+        prepare_group,
+        stage_forward_parts,
+        stage_joined,
+        write_forward_inputs,
+    )
+
+    frames, floors = _frames(model)
+    frames, floors = frames * repeat, floors * repeat
+    step = max(1, len(frames) // 4)
+    cuts = [(0, 1), (1, 7), (7, step + 7), (step + 7, len(frames))]
+    parts = [prepare_group(frames[a:b], tuple(range(b - a)), policy, torch.tensor(floors[a:b]),
+                           deduplicate_text=deduplicate, layout="rows-v2") for a, b in cuts]
+    rows = tuple(range(len(frames)))
+    expected = forward_inputs(concatenate_groups(parts, rows=rows))
+    if repeat > 1:
+        assert len(expected.layout.scene_buckets) == -(-len(frames) // ROW_BUCKET_ROWS) > 1
+    sizes = [forward_arena_bytes(part) for part in parts]
+    arena = allocate_forward_arena(sum(sizes) + 64 * len(parts) + 100, shared=True)
+    written, cursor = [], 37  # unaligned start: rounded up
+    for part in reversed(parts):  # any slot order
+        item = write_forward_inputs(arena, cursor, part)
+        assert item.start % 64 == 0 and item.end - item.start == forward_arena_bytes(part)
+        written.insert(0, pickle.loads(pickle.dumps(item)))
+        cursor = item.end
+    joined = stage_forward_parts(arena, written, torch.device("cpu"), rows=rows)
+    _equal_structure(joined, expected)
+    # Planned in a prepare/joiner process, staged on the device: plan in the arena
+    # next to the parts (one copy), or in a separate buffer; JoinPlan pickles.
+    plan_arena = allocate_forward_arena(1 << 22, shared=True)
+    for target in (None, plan_arena):
+        if target is None:
+            big = allocate_forward_arena(arena.numel() + (1 << 22), shared=True)
+            big[:arena.numel()] = arena
+            source, offset = big, arena.numel() + 5
+        else:
+            source, offset = arena, 3
+        plan = pickle.loads(pickle.dumps(plan_forward_join(source, written, offset, rows=rows,
+                                                           plan_arena=target)))
+        assert plan.plan_start % 64 == 0 and plan.in_arena == (target is None)
+        _equal_structure(stage_joined(source, plan, torch.device("cpu"), plan_arena=target),
+                         expected)
+    single = forward_inputs(concatenate_groups(parts[1:2], rows=rows[:6]))
+    plan = plan_forward_join(arena, written[1:2], 0, rows=rows[:6], plan_arena=plan_arena)
+    _equal_structure(stage_joined(arena, plan, torch.device("cpu"), plan_arena=plan_arena),
+                     single)
+    model.eval()
+    with torch.no_grad():
+        for left, right in zip(model.forward_prepared_rl4(joined),
+                               model.forward_prepared_rl4(concatenate_groups(parts, rows=rows)),
+                               strict=True):
+            _bitwise(left, right)
+
+
+def test_forward_arena_fails_loudly(model, varied):
+    from stpd.rl.batch_preparation import (
+        allocate_forward_arena,
+        forward_arena_bytes,
+        forward_inputs,
+        join_forward_inputs,
+        write_forward_inputs,
+    )
+
+    group = prepared(model, "rows-v2").minibatches[0].groups[0]
+    arena = allocate_forward_arena(forward_arena_bytes(group) - 1)
+    with pytest.raises(ValueError, match="forward_arena_overflow"):
+        write_forward_inputs(arena, 0, group)
+    with pytest.raises(ValueError, match="host_uint8_vector"):
+        write_forward_inputs(torch.empty(10, dtype=torch.int32), 0, group)
+    huge = dc.replace(group, joint=dc.replace(group.joint, tensors={
+        **group.joint.tensors, "kinds": group.joint.tensors["kinds"] + 2 ** 31}))
+    with pytest.raises(ValueError, match="exceeds_int32:kinds"):
+        forward_inputs(huge)
+    with pytest.raises(ValueError, match="forward_inputs_require_rows_v2"):
+        forward_inputs(dc.replace(group, layout=None))
+    with pytest.raises(ValueError, match="join_requires_forward_inputs"):
+        join_forward_inputs([group, group])
+    with pytest.raises(ValueError, match="join_requires_one_index_dtype"):
+        join_forward_inputs([forward_inputs(group),
+                             forward_inputs(group, index_dtype=torch.int64)])
+    from stpd.rl.batch_preparation import plan_forward_join, stage_joined
+
+    full = allocate_forward_arena(forward_arena_bytes(group))
+    part = write_forward_inputs(full, 0, group)
+    with pytest.raises(ValueError, match="forward_arena_overflow"):
+        plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(64))
+    with pytest.raises(ValueError, match="join_requires_parts"):
+        plan_forward_join(full, [], 0)
+    plan = plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(1 << 22))
+    with pytest.raises(ValueError, match="plan_arena_mismatch"):
+        stage_joined(full, plan, torch.device("cpu"))

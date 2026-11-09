@@ -89,6 +89,8 @@ class RowLayout:
     lengths, real scene slots, role terms and weights, reduction buckets): no
     theta value, no membership, mean length or loss-denominator change. Python
     ints carry every split size, so the GPU step never reads a device tensor back.
+    "long" below is the prepared dtype; `forward_inputs` (inference transfer) may
+    hold the same index values as int32.
     """
 
     # Unique real texts (padding text rows dropped), sorted by length into
@@ -112,6 +114,12 @@ class RowLayout:
     roles: dict[str, tuple[Tensor, Tensor, Tensor, tuple[int, ...]]] = field(
         default_factory=dict)
     role_present: dict[str, Tensor] = field(default_factory=dict)
+    # C-SCALE packed text (unique texts in their own order, real tokens only):
+    # flat index into text_ids [texts * prepared width], cumulative lengths and the
+    # longest text. Absent (None) in layouts written before C-SCALE step 2.
+    text_tokens: Tensor | None = None
+    text_offsets: Tensor | None = None  # int32 [texts + 1]
+    text_longest: int = 0
 
 
 @dataclass(frozen=True)
