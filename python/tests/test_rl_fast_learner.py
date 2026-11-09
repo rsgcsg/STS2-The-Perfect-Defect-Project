@@ -17,7 +17,8 @@ from stpd.rl.fast_source import FAST_FORMAT
 from stpd.rl.segment_learner import SegmentLearner
 
 
-def fast_learner(tmp_path, monkeypatch, *, fast: Any = True) -> SegmentLearner:
+def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
+                 aux_labels: list[str] | None = None) -> SegmentLearner:
     from stpd.p1.local_inference import AUTH_ENV
 
     config, io = configuration(tmp_path, monkeypatch)
@@ -29,6 +30,8 @@ def fast_learner(tmp_path, monkeypatch, *, fast: Any = True) -> SegmentLearner:
                  "preparation_workers": 1, "assembly_workers": 1}
     if fast is not None:
         dataplane["fast_chain"] = fast
+    if aux_labels is not None:
+        dataplane["fast_aux_labels"] = aux_labels
     return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
 
 
@@ -209,5 +212,48 @@ def test_learner_trains_only_segments_under_its_own_published_mu(tmp_path, monke
         with pytest.raises(FastIntakeError, match="fast_segment_mu_not_published"):
             offer(owner, g.sealed[0])
         assert queued(owner) == []
+    finally:
+        owner.close()
+
+
+def test_labels_over_the_handoff_fill_the_aux_pools_and_reach_a_batch(tmp_path, monkeypatch):
+    from test_rl_fast_source import combat_game
+
+    owner = fast_learner(tmp_path, monkeypatch, aux_labels=["terminal", "hp"])
+    try:
+        sealed = combat_game(handoff=learner_mu(owner),
+                             compiler=FrameCompiler(owner.model.vocabulary),
+                             assembler_id="node-g1")
+        admission(owner, "g1", 1)
+        ours, theirs = multiprocessing.Pipe()
+        process = multiprocessing.Process(target=_sender,
+                                          args=(theirs, sealed, closed_for(sealed), True))
+        process.start()
+        theirs.close()
+        reader = owner.attach_fast_handoff(ours)
+        process.join(30)
+        assert process.exitcode == 0
+        reader.join(30)
+        assert not reader.is_alive() and not owner.input_fenced
+        assert list(owner.terminal.groups) == ["g1"] and len(owner.terminal.groups["g1"]) == 64
+        assert list(owner.hp.groups) == ["g1:0", "g1:20"]
+        assert {row["hp"] for row in owner.hp.groups["g1:0"]} == {0.4}
+        intake = owner.fast_status()["fast_chain"]["intake"]
+        assert intake["labels_terminal_rows"] == 64 and intake["labels_hp_rows"] == 20
+        # The aux rows go through the same binary preparer as the old chain's.
+        assert owner._prepare()
+        assert owner.active is not None and owner.active["terminal"] and owner.active["hp"]
+        assert owner.active_batch is not None
+        batch = owner.active_batch
+        assert batch.kinds.count("terminal") == len(owner.active["terminal"]) > 0
+        assert batch.kinds.count("hp") == len(owner.active["hp"]) > 0
+        result = owner._step()
+        assert result["rows"] > 0
+        # A later exclusion of the instance also removes its label rows.
+        owner.control({"operation": "fast_instance_excluded", "actor": "actor-1",
+                       "game_instance_id": "g1", "reason": "evidence_failed",
+                       "run": owner.config.run, "training_generation": owner.generation})
+        assert not owner.terminal.groups and not owner.hp.groups
+        assert owner.fast_status()["fast_chain"]["learner"]["excluded_aux_rows"] > 0
     finally:
         owner.close()

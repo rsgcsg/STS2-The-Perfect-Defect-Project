@@ -40,7 +40,7 @@ import torch
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.local_diagnostics import exception_facts
-from spireagent.rl_contracts import HotPayloadRef, RunSequence
+from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
 from spireagent.rl_dataplane_ports import CONTROL_SCHEMA, BinaryRef
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
@@ -98,7 +98,13 @@ from .fast_source import (
 from .learner import ROOT, LearnerConfig, _device
 from .loss import prepared_update
 from .performance import PerformanceConfig
-from .prepared_batch import AuxiliarySelection, BatchMember, PreparedBatch, PrepareRequest
+from .prepared_batch import (
+    AuxiliaryInput,
+    AuxiliarySelection,
+    BatchMember,
+    PreparedBatch,
+    PrepareRequest,
+)
 from .reward import REWARD_SPEC
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
 from .sgd_process import (
@@ -712,14 +718,19 @@ class SegmentLearner:
                 if settings.steps != MAX_ROWS or settings.capacity_rows < MAX_ROWS:
                     raise BoundaryError("rl_learner", "fast_chain_requires_steps_equal_max_rows")
                 self.fast_sources = FastSources()
+                aux_labels = self.dataplane.get("fast_aux_labels", [])
+                if (not isinstance(aux_labels, list)
+                        or not set(aux_labels) <= {"terminal", "hp"}):
+                    raise BoundaryError("rl_learner", "fast_aux_labels_must_list_terminal_or_hp")
                 self.fast_intake = FastSegmentIntake(
                     run=config.run, generation=self.generation,
                     excluded_seeds=frozenset(settings.excluded_seeds),
                     buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
-                    gae_lambda=settings.gae_lambda)
+                    gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
-                    "excluded_instances", "excluded_dropped_rows", "excluded_used_rows")}
+                    "excluded_instances", "excluded_dropped_rows", "excluded_used_rows",
+                    "excluded_aux_rows")}
                 provider = RoutedSources(self.binary_sources, self.fast_sources)
             self.input_preparer = BinaryBatchPreparer(provider=provider,
                 vocabulary=self.model.vocabulary,
@@ -1787,9 +1798,11 @@ class SegmentLearner:
                 except EOFError:
                     return
                 self.fast_intake.set_generation(self.generation)
-                if kind == "segment":
+                if kind in ("segment", "labels"):
                     assert data is not None
-                    self._fast_apply(self.fast_intake.offer(message, data))
+                    intake = (self.fast_intake.offer if kind == "segment"
+                              else self.fast_intake.labels)
+                    self._fast_apply(intake(message, data))
                     # Ack after the bytes are owned here: the sender's in-flight
                     # bound is the only back-pressure on the assembler.
                     ack(connection, message)
@@ -1817,6 +1830,35 @@ class SegmentLearner:
                 self._fast_exclude(decision.exclude_instance)
             for segment, envelope in decision.admit:
                 self._fast_admit(segment, envelope)
+            if decision.auxiliary:
+                self._add_auxiliary(self._fast_auxiliary(decision.auxiliary))
+
+    def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
+                        ) -> list[tuple[str, str, list[dict[str, Any]]]]:
+        """Verified fast labels -> the old pools' rows; each holds its original segment."""
+        result = []
+        for kind, identity, rows in groups:
+            values = []
+            for row in rows:
+                segment, envelope = row["segment"], row["envelope"]
+                ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
+                                f"{segment.segment_id}", envelope["packet_sha256"],
+                                envelope["packet_size"])
+                member = BatchMember(segment.segment_id, ref, envelope["run_id"],
+                                     envelope["rows"], envelope["mu"]["snapshot_sha256"],
+                                     envelope["episode"])
+                # The same row reference `decode_fast_packet` gives that row.
+                source: RowRef = {"run_id": envelope["run_id"],
+                                  "segment_id": segment.segment_id,
+                                  "training_generation": envelope["training_generation"],
+                                  "row": row["row"],
+                                  "key": f"{envelope['run_id']}:{row['step_index']}"}
+                values.append({"key": source["key"], "source": source, "member": member,
+                               "outcome" if kind == "terminal" else "hp": row["label"],
+                               "prepared_input": AuxiliaryInput(source, member, segment.data,
+                                                                envelope)})
+            result.append((kind, identity, values))
+        return result
 
     def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any]) -> None:
         assert self.fast_sources is not None
@@ -1884,6 +1926,12 @@ class SegmentLearner:
             self._release(payload, "ppo:" + record["segment_id"])
             dropped += record["rows"]
         used = self.fast_admitted_rows.pop(instance, 0) - dropped
+        # Its label rows leave the aux pools too; rows a prepared batch already
+        # holds count as used, like its PPO rows.
+        for pool in (self.terminal, self.hp):
+            for key in [key for key, rows in pool.groups.items()
+                        if any(r["source"]["run_id"] == instance for r in rows)]:
+                self.fast_counters["excluded_aux_rows"] += len(pool.groups.pop(key))
         self.fast_counters["excluded_instances"] += 1
         self.fast_counters["excluded_dropped_rows"] += dropped
         self.fast_counters["excluded_used_rows"] += used

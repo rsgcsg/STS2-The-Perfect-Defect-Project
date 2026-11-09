@@ -89,14 +89,15 @@ class Game:
         self.steps[game] = 0
 
     def step(self, game: str, *, terminal: bool = False, status: str = "completed",
-             reason: str | None = None) -> None:
+             reason: str | None = None, in_combat: bool = True, hp: int = 50) -> None:
         self.request += 1
         step = self.steps[game]
         self.steps[game] += 1
         n, raw = self.width, self.row
         row = {"request_id": self.request, "game_instance_id": game, "step_index": step,
                "consumption_id": f"c-{self.request}", "catalog_len": n,
-               "catalog_sha256": "c" * 64, "observation_sha256": "d" * 64, "in_combat": True,
+               "catalog_sha256": "c" * 64, "observation_sha256": "d" * 64,
+               "in_combat": in_combat,
                "floor": 1, "payload": {"offset": 0, "length": len(raw),
                                        "row_sha256": hashlib.sha256(raw).hexdigest()}}
         plan = self.assembler.begin_row(row, raw)
@@ -109,7 +110,8 @@ class Game:
                   "mu_snapshot_sha256": plan.mu.snapshot_sha256, "segment_id": plan.segment_id,
                   "row_in_segment": plan.row_in_segment, "selected_index": n - 1,
                   "behavior_q": q, "selected_q": q[-1],
-                  "applied": {"arm_id": "control", "decision_class": "combat",
+                  "applied": {"arm_id": "control",
+                              "decision_class": "combat" if in_combat else "noncombat",
                               "temperature": 1.0, "uniform_mix": 0.0}}
         shift = 0.01 * (step % 7)
         self.assembler.finish_row(plan, scored, values(1, shift),
@@ -120,7 +122,7 @@ class Game:
         if status == "completed":
             message.update(receipt_sha256="e" * 64,
                            terminal={"result": "defeat"} if terminal else None,
-                           public_facts={"act": 1, "floor": 1, "hp": 50, "max_hp": 75})
+                           public_facts={"act": 1, "floor": 1, "hp": hp, "max_hp": 75})
         else:
             message["reason"] = reason
         self.assembler.step_outcome(message)
@@ -349,10 +351,31 @@ def test_broken_sender_order_is_loud():
         i.offer({**message(segments[0]), "rows": 3}, segments[0].data)
 
 
-def _sender(connection: Any, segments: list[SealedSegment], close: dict[str, Any]) -> None:
+def send_labels(sender: ShmSegmentSender, segments: list[SealedSegment]) -> None:
+    """Test stand-in for the sender side (甲): labels go like a segment, acked."""
+    from multiprocessing import shared_memory
+
+    from stpd.rl.fast_source import build_instance_labels
+
+    fields, data = build_instance_labels(segments)
+    block = shared_memory.SharedMemory(create=True, size=max(len(data), 1))
+    buffer = block.buf
+    assert buffer is not None
+    buffer[:len(data)] = data
+    sender.sequence += 1
+    sender.connection.send({**fields, "handoff_sequence": sender.sequence,
+                            "shm_name": block.name})
+    sender.inflight[sender.sequence] = (block, len(data))
+    sender.inflight_bytes += len(data)
+
+
+def _sender(connection: Any, segments: list[SealedSegment], close: dict[str, Any],
+            labels: bool = False) -> None:
     sender = ShmSegmentSender(connection, assembler_id=segments[0].header["assembler_instance"])
     for segment in segments:
         sender.send(segment, Path(__file__))
+    if labels:
+        send_labels(sender, segments)
     connection.send(close)
     # ShmSegmentSender.close() currently waits for one ack only, then unlinks the
     # rest (reported to the sender's owner); wait for every ack here until fixed.
@@ -407,3 +430,114 @@ def test_published_mu_ledger_is_typed_and_per_generation():
         i.publish_mu({**published(mu(1)), "updates": 9})
     i.set_generation("gen-2")
     assert not i.published
+
+
+# ---------------------------------------------------------- instance labels (gap a)
+def combat_game(game: str = "g1", generation: str = "gen-1",
+                handoff: MuHandoff | None = None, compiler: FrameCompiler = COMPILER,
+                assembler_id: str = "node-a") -> list[SealedSegment]:
+    """70 rows: combat 0-9 (post hp 40), map 10-19, combat 20-29 (post hp 30), then
+    noncombat to a natural terminal; two segments (bootstrap + terminal)."""
+    g = Game(generation, compiler=compiler, assembler_id=assembler_id, handoff=handoff)
+    g.open(game)
+    for step in range(70):
+        combat = step < 10 or 20 <= step < 30
+        hp = 40 if step == 9 else 30 if step == 29 else 60
+        g.step(game, in_combat=combat, hp=hp, terminal=step == 69)
+    g.close(game, "terminal")
+    assert [s.kind for s in g.sealed] == ["bootstrap", "terminal"]
+    return g.sealed
+
+
+def labels_message(fields: dict[str, Any], sequence: int = 9) -> dict[str, Any]:
+    return {**fields, "handoff_sequence": sequence, "shm_name": "unused"}
+
+
+def test_instance_labels_follow_the_old_rules():
+    from stpd.rl.fast_source import build_instance_labels
+    from stpd.rl.segments import uniform_depth_indices
+
+    sealed = combat_game()
+    fields, data = build_instance_labels(sealed)
+    ids = [s.segment_id for s in sealed]
+    keys = [(ids[i // 64], i % 64) for i in range(70)]
+    assert [(r["segment_id"], r["row"]) for r in fields["outcome_rows"]] == [
+        keys[i] for i in uniform_depth_indices(70)]
+    assert fields["terminal"] == sealed[-1].header["seal"]["terminal"]
+    battles = [(b["battle_id"], b["post_hp"], [r["step_index"] for r in b["states"]])
+               for b in fields["hp_battles"]]
+    assert battles == [("g1:0", 40, list(range(10))), ("g1:20", 30, list(range(20, 30)))]
+    # The data carries the referenced originals, byte for byte, 8-byte aligned.
+    assert [e["segment_id"] for e in fields["segments"]] == ids
+    for entry, segment in zip(fields["segments"], sealed, strict=True):
+        assert data[entry["offset"]:entry["offset"] + entry["size"]] == segment.data
+
+
+def labelled_intake(**kwargs: Any) -> tuple[FastSegmentIntake, list[SealedSegment]]:
+    i = intake(**kwargs)
+    i.attest(attest("g1"))
+    sealed = combat_game()
+    for n, segment in enumerate(sealed, 1):
+        assert i.offer(message(segment, n), segment.data).admit
+    return i, sealed
+
+
+def test_labels_become_terminal_and_hp_groups_only_when_enabled():
+    from stpd.rl.fast_source import build_instance_labels
+
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal", "hp"}))
+    fields, data = build_instance_labels(sealed)
+    decision = i.labels(labels_message(fields), data)
+    kinds = [(kind, identity, len(rows)) for kind, identity, rows in decision.auxiliary]
+    assert kinds == [("terminal", "g1", 64), ("hp", "g1:0", 10), ("hp", "g1:20", 10)]
+    hp_row = decision.auxiliary[1][2][0]
+    assert hp_row["label"] == 0.4 and hp_row["segment"].data == sealed[0].data
+    assert hp_row["envelope"]["packet_sha256"] == sealed[0].sha256
+    assert decision.auxiliary[0][2][0]["label"] == sealed[-1].header["seal"]["terminal"]["class"]
+    assert i.closed(closed_for(sealed)).exclude_instance is None
+    assert "closed_without_labels" not in i.report()
+
+    off, sealed = labelled_intake()
+    fields, data = build_instance_labels(sealed)
+    assert not off.labels(labels_message(fields), data).auxiliary
+    assert off.report()["labels_disabled"] == 1
+
+
+def test_labels_that_differ_from_the_received_headers_fence():
+    from stpd.rl.fast_source import build_instance_labels
+
+    def refused(change: Any, match: str) -> None:
+        i, sealed = labelled_intake(aux_labels=frozenset({"terminal", "hp"}))
+        fields, data = build_instance_labels(sealed)
+        fields, data = change(fields, data)
+        with pytest.raises(FastIntakeError, match=match):
+            i.labels(labels_message(fields), data)
+
+    def other_hp(f: dict[str, Any], d: bytes) -> tuple[dict[str, Any], bytes]:
+        battles = [dict(f["hp_battles"][0], post_hp=41), *f["hp_battles"][1:]]
+        return {**f, "hp_battles": battles}, d
+
+    def fewer_rows(f: dict[str, Any], d: bytes) -> tuple[dict[str, Any], bytes]:
+        return {**f, "outcome_rows": f["outcome_rows"][1:]}, d
+
+    def flipped(f: dict[str, Any], d: bytes) -> tuple[dict[str, Any], bytes]:
+        return f, d[:100] + bytes([d[100] ^ 1]) + d[101:]
+
+    def dropped(f: dict[str, Any], d: bytes) -> tuple[dict[str, Any], bytes]:
+        return {**f, "segments": f["segments"][:1]}, d
+
+    refused(other_hp, "fast_labels_rule_changed")
+    refused(fewer_rows, "fast_labels_rule_changed")
+    refused(flipped, "fast_labels_segment_bytes_changed")
+    refused(dropped, "fast_labels_segments_changed")
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal"}))
+    fields, data = build_instance_labels(sealed)
+    i.labels(labels_message(fields), data)
+    with pytest.raises(FastIntakeError, match="fast_labels_twice"):
+        i.labels(labels_message(fields), data)
+
+
+def test_terminal_close_without_labels_is_counted_when_enabled():
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal"}))
+    i.closed(closed_for(sealed))
+    assert i.report()["closed_without_labels"] == 1

@@ -29,15 +29,39 @@ Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲
   `{"admitted": true, "game_instance_id"}` or `{"admitted": false, "reason"}`.
 - actor control `fast_instance_excluded`: `actor`, `game_instance_id`, `reason`,
   `run`, `training_generation`; reply `{"excluded": true, "game_instance_id"}`.
+- handoff `stpd/rl-fast-instance-labels-1` (lead approval 2026-11-09), same
+  Connection, after the instance's last segment and before its instance_closed,
+  shared memory + ack like a segment. The sender builds it with
+  `build_instance_labels(trainable segments in order)` and adds the transport
+  fields `handoff_sequence` and `shm_name`; `data` is the referenced original
+  segments' exact bytes (re-read from the node-local .stfs originals), 8-byte
+  aligned at `segments[i].offset`. The learner recomputes every label from the
+  segment headers it received and fences on any difference; the aux pools then
+  hold those original segments, exactly as the old chain's aux packets did.
+  Label rules (`instance_labels`), the old chain's:
+  - terminal: `uniform_depth_indices(n, 64)` over all n trainable rows of the
+    game, each labelled with the terminal seal's class (old
+    `completed_auxiliary`);
+  - hp: `r7_audit.public_battle_hp` (a battle = a maximal run of in_combat rows
+    ending where the next row is not in combat or at the natural terminal; label
+    = public hp in that last combat row's step outcome / 100, states = the
+    battle's rows). Off by default (dataplane `fast_aux_labels`) until
+    `compare_hp_labels` shows it equal to the old chain; it switches to
+    `combat_end` once the native side emits it (WP1 slice 3). One difference
+    from the old chain: a reward-boundary battle's hp rows enter the pool at
+    game end, not at its segment's commit (pool timing only; same rows, same
+    values).
 """
 
 from __future__ import annotations
 
 import collections
+import copy
 import os
 import re
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from multiprocessing import resource_tracker, shared_memory
 from multiprocessing.connection import Connection
@@ -70,6 +94,12 @@ ENVELOPE_KEYS = frozenset({"format", "payload_kind", "run", "training_generation
                            "assembler_id", "training_split", "seed", "gae_lambda",
                            "packet_size", "packet_sha256"})
 _REASON = re.compile(r"[a-z0-9_]{1,64}")
+LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
+LABEL_FIELDS = frozenset({"schema", "assembler_id", "game_instance_id", "training_generation",
+                          "terminal", "outcome_rows", "hp_battles", "segments", "size",
+                          "sha256"})
+LABELS_KEYS = LABEL_FIELDS | {"handoff_sequence", "shm_name"}
+AUX_LABEL_KINDS = frozenset({"terminal", "hp"})
 
 
 class FastIntakeError(ValueError):
@@ -166,6 +196,81 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     return source, {"envelope": dict(envelope), "witness": witness}
 
 
+def row_facts(header: dict[str, Any]) -> list[dict[str, Any]]:
+    """What the label rule reads from one segment header, per row (no row bytes)."""
+    return [{"segment_id": header["segment_id"], "row": index, "step_index": meta["step_index"],
+             "in_combat": bool(meta["in_combat"]),
+             "outcome": {"public_facts": {"hp": ((meta["outcome"] or {}).get("public_facts")
+                                                 or {}).get("hp")},
+                         "terminal": (meta["outcome"] or {}).get("terminal")}}
+            for index, meta in enumerate(header["rows"])]
+
+
+def instance_labels(instance: str, facts: Sequence[dict[str, Any]],
+                    terminal: dict[str, Any] | None) -> dict[str, Any]:
+    """The one fast label rule (sender and learner): one game's row facts in order."""
+    from .r7_audit import public_battle_hp
+    from .segments import uniform_depth_indices
+
+    def ref(fact: dict[str, Any]) -> dict[str, Any]:
+        return {"segment_id": fact["segment_id"], "row": fact["row"],
+                "step_index": fact["step_index"]}
+
+    outcome = ([ref(facts[i]) for i in uniform_depth_indices(len(facts))]
+               if terminal is not None else [])
+    by_step = {fact["step_index"]: fact for fact in facts}
+    if len(by_step) != len(facts):
+        raise FastIntakeError("fast_labels_step_index_repeated")
+    battles = [{"battle_id": f"{instance}:{battle['steps'][0]}",
+                "post_hp": battle["post_hp"],
+                "states": [ref(by_step[step]) for step in battle["steps"]]}
+               for battle in public_battle_hp(facts)
+               if battle["post_hp"] >= 0]
+    return {"terminal": copy.deepcopy(terminal), "outcome_rows": outcome, "hp_battles": battles}
+
+
+def _game_order(segments: Sequence[Any]) -> list[Any]:
+    ordered = sorted(segments, key=lambda s: s.header["segment_index"])
+    if [s.header["segment_index"] for s in ordered] != list(range(len(ordered))):
+        raise FastIntakeError("fast_labels_segments_not_contiguous")
+    return ordered
+
+
+def build_instance_labels(segments: Sequence[Any]) -> tuple[dict[str, Any], bytes]:
+    """Sender helper: an instance's trainable `SealedSegment`s -> (fields, data).
+
+    The caller adds `handoff_sequence` and `shm_name` and puts `data` in shared
+    memory. Only segments a label row references are carried.
+    """
+    ordered = _game_order(segments)
+    if not ordered or any(not s.header["trainable"] for s in ordered):
+        raise FastIntakeError("fast_labels_need_trainable_segments")
+    first = ordered[0].header
+    if any(s.header["game_instance_id"] != first["game_instance_id"]
+           or s.header["assembler_instance"] != first["assembler_instance"]
+           or s.header["mu"]["training_generation"] != first["mu"]["training_generation"]
+           for s in ordered):
+        raise FastIntakeError("fast_labels_segments_of_two_instances")
+    last = ordered[-1].header
+    terminal = last["seal"]["terminal"] if last["seal"]["kind"] == "terminal" else None
+    labels = instance_labels(first["game_instance_id"],
+                             [fact for s in ordered for fact in row_facts(s.header)], terminal)
+    wanted = {r["segment_id"] for r in labels["outcome_rows"]} | {
+        r["segment_id"] for battle in labels["hp_battles"] for r in battle["states"]}
+    parts, entries, cursor = [], [], 0
+    for segment in ordered:
+        if segment.segment_id in wanted:
+            entries.append({"segment_id": segment.segment_id, "sha256": segment.sha256,
+                            "offset": cursor, "size": len(segment.data)})
+            parts.append(segment.data + bytes(-len(segment.data) % 8))
+            cursor += len(parts[-1])
+    data = b"".join(parts)
+    return ({"schema": LABELS_SCHEMA, "assembler_id": first["assembler_instance"],
+             "game_instance_id": first["game_instance_id"],
+             "training_generation": first["mu"]["training_generation"], **labels,
+             "segments": entries, "size": len(data), "sha256": sha256(data)}, data)
+
+
 def check_instance_closed(message: Any) -> dict[str, Any]:
     if (not isinstance(message, dict) or set(message) != CLOSED_KEYS
             or message["schema"] != CLOSED_SCHEMA
@@ -182,7 +287,8 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
 
 
 def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | None]:
-    """One hand-off message: ("segment", message, verified bytes) or ("closed", message, None).
+    """One hand-off message: ("segment" | "labels", message, verified bytes) or
+    ("closed", message, None).
 
     A segment is acked by the caller (`ack`) only after it has been taken over, so the
     sender's in-flight bound stays the one back-pressure point.
@@ -191,7 +297,10 @@ def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | N
     schema = message.get("schema") if isinstance(message, dict) else None
     if schema == CLOSED_SCHEMA:
         return "closed", check_instance_closed(message), None
-    if schema != HANDOFF_SCHEMA or set(message) != HANDOFF_KEYS:
+    kind = "segment"
+    if schema == LABELS_SCHEMA and set(message) == LABELS_KEYS:
+        kind = "labels"
+    elif schema != HANDOFF_SCHEMA or set(message) != HANDOFF_KEYS:
         raise HandoffError("handoff_schema")
     block = shared_memory.SharedMemory(name=message["shm_name"])
     try:
@@ -206,7 +315,7 @@ def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | N
         block.close()
     if sha256(data) != message["sha256"]:
         raise HandoffError("handoff_digest")
-    return "segment", message, data
+    return kind, message, data
 
 
 def ack(connection: Connection, message: dict[str, Any]) -> None:
@@ -242,6 +351,11 @@ class _Instance:
     received: int = 0
     excluded: str | None = None
     closed: dict[str, Any] | None = None
+    # Label rule inputs of every current-generation segment received, in order.
+    facts: list[dict[str, Any]] | None = field(default_factory=list)
+    segments: dict[str, tuple[int, str, int]] = field(default_factory=dict)
+    terminal: dict[str, Any] | None = None
+    labelled: bool = False
 
 
 @dataclass
@@ -251,6 +365,9 @@ class IntakeDecision:
     admit: list[tuple[FastSegment, dict[str, Any]]] = field(default_factory=list)
     exclude_instance: str | None = None
     reply: dict[str, Any] | None = None
+    # Verified aux label groups: (kind, identity, rows); a row names its original
+    # segment (`FastSegment`), the learner envelope, row index and label value.
+    auxiliary: list[tuple[str, str, list[dict[str, Any]]]] = field(default_factory=list)
 
 
 class FastSegmentIntake:
@@ -263,9 +380,13 @@ class FastSegmentIntake:
 
     def __init__(self, *, run: str, generation: str, excluded_seeds: frozenset[str] = frozenset(),
                  buffer_segments: int = 512, closed_memory: int = 65536,
-                 gae_lambda: float = 0.99, published_memory: int = 65536) -> None:
+                 gae_lambda: float = 0.99, published_memory: int = 65536,
+                 aux_labels: frozenset[str] = frozenset()) -> None:
         if buffer_segments < 1 or closed_memory < 1 or published_memory < 1:
             raise ValueError("positive_fast_intake_bounds_required")
+        if not aux_labels <= AUX_LABEL_KINDS:
+            raise ValueError("fast_aux_label_kinds")
+        self.aux_labels = frozenset(aux_labels)
         self.run, self.generation = run, generation
         self.excluded_seeds = excluded_seeds
         self.buffer_segments, self.closed_memory = buffer_segments, closed_memory
@@ -300,7 +421,7 @@ class FastSegmentIntake:
     # -- mu publication -----------------------------------------------------------
     def publish_mu(self, identity: dict[str, Any]) -> None:
         """Record one mu this learner published (its own publication identity)."""
-        mu = {key: identity.get(key) for key in MU_KEYS}
+        mu: dict[str, Any] = {key: identity.get(key) for key in MU_KEYS}
         if (not isinstance(mu["snapshot_sha256"], str) or len(mu["snapshot_sha256"]) != 64
                 or not isinstance(mu["training_generation"], str)
                 or any(type(mu[key]) is not int or mu[key] < 0
@@ -398,6 +519,19 @@ class FastSegmentIntake:
                 raise FastIntakeError("fast_instance_from_two_assemblers")
             instance.assembler_id = message["assembler_id"]
             instance.received += 1
+            if instance.facts is not None:
+                if (header["segment_index"] != len(instance.segments)
+                        or instance.terminal is not None):
+                    # A generation drop (or a rejected segment) left a gap: the
+                    # old rule needs the whole game, so this game gets no labels.
+                    instance.facts = None
+                    self.counters["label_facts_gap"] += 1
+                else:
+                    instance.segments[segment.segment_id] = (
+                        header["segment_index"], message["sha256"], len(data))
+                    instance.facts.extend(row_facts(header))
+                    if header["seal"]["kind"] == "terminal":
+                        instance.terminal = copy.deepcopy(header["seal"]["terminal"])
             if instance.excluded is not None:
                 self._count_excluded(instance.excluded, segment.rows, used=False)
                 return IntakeDecision()
@@ -406,6 +540,89 @@ class FastSegmentIntake:
                 return IntakeDecision()
             return IntakeDecision(admit=[(segment, self._envelope(segment,
                                                                   instance.attestation))])
+
+    def labels(self, message: dict[str, Any], data: bytes) -> IntakeDecision:
+        """One verified labels hand-off (`data` already matches message sha256).
+
+        Every label is recomputed here from the headers this intake received; the
+        carried original segments must be exactly the ones received. Any
+        difference fences (raises); nothing is repaired or partly used.
+        """
+        if set(message) != LABELS_KEYS or message["schema"] != LABELS_SCHEMA:
+            raise HandoffError("handoff_schema")
+        instance_id = message["game_instance_id"]
+        with self.lock:
+            self.counters["labels_received"] += 1
+            if message["training_generation"] != self.generation:
+                self.counters["labels_old_generation_dropped"] += 1
+                return IntakeDecision()
+            if instance_id in self.finished:
+                raise FastIntakeError("fast_labels_after_instance_closed")
+            instance = self.instances.get(instance_id)
+            if instance is None or instance.assembler_id != message["assembler_id"]:
+                raise FastIntakeError("fast_labels_for_unknown_instance")
+            if instance.labelled:
+                raise FastIntakeError("fast_labels_twice")
+            instance.labelled = True
+            if instance.facts is None:
+                self.counters["labels_incomplete_instance"] += 1
+                return IntakeDecision()
+            expected = instance_labels(instance_id, instance.facts, instance.terminal)
+            if any(message[key] != expected[key]
+                   for key in ("terminal", "outcome_rows", "hp_battles")):
+                raise FastIntakeError("fast_labels_rule_changed")
+            wanted = {r["segment_id"] for r in expected["outcome_rows"]} | {
+                r["segment_id"] for battle in expected["hp_battles"] for r in battle["states"]}
+            order = sorted(wanted, key=lambda sid: instance.segments[sid][0])
+            entries = message["segments"]
+            if (not isinstance(entries, list) or len(data) != message["size"]
+                    or [entry.get("segment_id") for entry in entries] != order):
+                raise FastIntakeError("fast_labels_segments_changed")
+            bodies: dict[str, tuple[str, bytes]] = {}
+            cursor = 0
+            for entry in entries:
+                _index, digest, size = instance.segments[entry["segment_id"]]
+                pad = -size % 8
+                if (set(entry) != {"segment_id", "sha256", "offset", "size"}
+                        or entry["sha256"] != digest or entry["size"] != size
+                        or entry["offset"] != cursor or cursor + size + pad > len(data)
+                        or any(data[cursor + size:cursor + size + pad])):
+                    raise FastIntakeError("fast_labels_segments_changed")
+                body = data[cursor:cursor + size]
+                if sha256(body) != digest:
+                    raise FastIntakeError("fast_labels_segment_bytes_changed")
+                bodies[entry["segment_id"]] = digest, body
+                cursor += size + pad
+            if cursor != len(data):
+                raise FastIntakeError("fast_labels_segments_changed")
+            if instance.excluded is not None or instance.attestation is None:
+                self.counters["labels_untrained_instance"] += 1
+                return IntakeDecision()
+            if not self.aux_labels:
+                self.counters["labels_disabled"] += 1
+                return IntakeDecision()
+            segments = {}
+            for sid, (digest, body) in bodies.items():
+                header, _rows = decode_segment(body, expected_sha256=digest)
+                segment = FastSegment({"segment_id": sid, "sha256": digest}, header, body)
+                segments[sid] = segment, self._envelope(segment, instance.attestation)
+
+            def rows(refs: list[dict[str, Any]], label: float) -> list[dict[str, Any]]:
+                return [{"segment": segments[r["segment_id"]][0],
+                         "envelope": segments[r["segment_id"]][1], "row": r["row"],
+                         "step_index": r["step_index"], "label": label} for r in refs]
+
+            groups = []
+            if "terminal" in self.aux_labels and expected["terminal"] is not None:
+                groups.append(("terminal", instance_id,
+                               rows(expected["outcome_rows"], expected["terminal"]["class"])))
+                self.counters["labels_terminal_rows"] += len(expected["outcome_rows"])
+            if "hp" in self.aux_labels:
+                for battle in expected["hp_battles"]:
+                    groups.append(("hp", battle["battle_id"],
+                                   rows(battle["states"], battle["post_hp"] / 100)))
+                    self.counters["labels_hp_rows"] += len(battle["states"])
+            return IntakeDecision(auxiliary=groups)
 
     def closed(self, message: dict[str, Any]) -> IntakeDecision:
         check_instance_closed(message)
@@ -425,6 +642,9 @@ class FastSegmentIntake:
                 self.counters["closed_segment_count_short"] += 1
             instance.closed = dict(message)
             self.counters["closed_" + message["close_reason"]] += 1
+            if (self.aux_labels and not instance.labelled and instance.excluded is None
+                    and message["close_reason"] == "terminal"):
+                self.counters["closed_without_labels"] += 1
             reason = None
             failure = message["failure"] or ""
             if message["close_reason"] in EXCLUDING_CLOSE_REASONS:
