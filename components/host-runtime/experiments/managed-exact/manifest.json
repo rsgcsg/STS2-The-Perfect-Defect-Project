@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "dcc9878832700e20e6d812e115269f1a2c41443a554dda01e13d9e9db63b678f",
-    "artifact_sha256": "fbd2dcf3d2ecf4cba195a41edcbf4f512be163bd09fbd966990e33104da49cce",
-    "artifact_mvid": "b89746d5-dbec-4290-a3cb-b7f312535c4f",
+    "source_patch_sha256": "25fa2b73582f211300affafd086a7687dc033a0a36c76badbae73de5460e2655",
+    "artifact_sha256": "a27f4f16a67261fcdb60b9110a064618c8d3a351734b6d42c7eb6a0c11e268d2",
+    "artifact_mvid": "cd95fb9c-15e8-4e8a-8d9a-4344ae53948f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 8
       },
       "expected_build": {
-        "source_patch_sha256": "1b01fcec1959ab9b3680bb843dbfcd6942fc84ad40f40682372a8f579c3b6f25",
-        "artifact_sha256": "0d0a85daeedb89e9eafcd52d4da35c38ec383fe9c5a7bc265e9c7249f64c6c33",
-        "artifact_mvid": "edf4a340-f1e5-46d6-9987-767d27c27ea4",
+        "source_patch_sha256": "0edc9a15c2a7275ebcf19d44a76f262b0177e9e670df53795f58380c9a29d13b",
+        "artifact_sha256": "7c962c1209c3bab5cf004186ecfb9504e5122c73150ef0f30f303d30f09654d3",
+        "artifact_mvid": "7f83f37e-66e6-4491-a3b6-d5752ea87486",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -539,11 +539,18 @@
       "regression": "patch-cache-tests CardDetailCache (off never consulted, hit equals live, changed variable is a new key, stale entry stops at the reconcile frame, extra-args type never stored), CardDetailExclusions, CardDetailOwnerFlip (owner strength change gives a new key, served equals live); a game update requires rerunning shadow mode and refreezing the whitelist; Friday shadow mode (every frame live-vs-cache) over the whole corpus with 0 divergence; paired replay byte-equal."
     },
     {
+      "id": "fast_chain_compact_state_output",
+      "kind": "native_output_encoding",
+      "risk": "medium",
+      "effect": "Under the same fast_chain switch only, and only after the Host sends configure_output (managed-native-compact-1): each decision state is written as a compact frame derived solely from the exact bytes the full writer would emit for it. Objects whose own members carry a native_ref are tabled under <native_ref>#<member name>; piles (draw/discard/exhaust containers, ordering_semantics objects) and pile-named views stay inline; a body is upserted iff its bytes differ from the bytes last sent; textual inlining gives the full bytes back. configure_output answers with a full frame of the exact last full decision line; start_run/reset_run/load_save start a new episode instance (new_run, or from_save with the save JSON sha256). Every reconcile_interval frames a reconcile frame recomputes every body digest and compares it with the reuse memo; any writer inconsistency, including a failure while writing the configure_output full frame and any exception once compact output is configured, writes compact_state_divergence and exits 70. Off, or before configure_output, the output is the original bytes; without fast_chain configure_output stays an unknown command.",
+      "regression": "patch-cache-tests CompactOutput (textual inline equals full bytes for synthetic and live states, tabled-key set with piles/ordering/pile-named views/invalid refs/duplicates/clashes, delta/removed/re-added and reconcile cadence, corrupted memo fails the consumer root check on a delta and the native at the next reconcile, delta after a start command is fatal, from_save start digest, configure refusals, off stays unknown, an ordering_semantics object with its own native_ref stays inline) and ProgramWiring (the real Program loop in a child process: off keeps configure_output unknown, on gives full/delta/reconcile over start_run, get_map and reset_run, and an injected writer exception or I/O failure at configure or at a delta gives one compact_state_divergence line and exit 70); Friday corpus replay: off and fast full byte-equal, compact rebuilt by the Host CompactStateReconstructor (every frame sampled) equal to the recorded full state."
+    },
+    {
       "id": "fast_chain_compiled_field_reads",
       "kind": "native_read_performance",
       "risk": "low",
-      "effect": "Under the same fast_chain switch only: the card-detail cache key, the detached-copy preflight and the detached-preview source stamp read fields through a getter compiled once per field instead of FieldInfo.GetValue; a target that is null or not of the declaring type, and literal/pointer/by-ref-like fields, still go to FieldInfo.GetValue, so values (boxed the same way), live-ness and exceptions are those of reflection. Per-type field lists and field-type tests are taken once instead of per read; fixed GetField lookups are hoisted to statics. The card dictionaries (card detail, public card, hover card, upgrade info) get their final capacity, which never changes insertion order. No value is remembered and no output byte changes; off, the original reflection path and default capacities run.",
-      "regression": "patch-cache-tests FieldAccessAndCapacity (fixture fields of every shape, null and wrong-type targets, on and off, equal value/type/exception; a write after the first read is seen; every instance field of every card model and its dynamic variables equal through the getter; card-detail cache key identical on and off; dictionary capacity never changes serialized key order including after remove/re-add) plus ObservationEquality on/off state equality; a getter mutation fails the suite; Friday corpus replay: fast and off byte-equal to the recorded originals."
+      "effect": "Under the same fast_chain switch only: the card-detail cache key, the detached-copy preflight and the detached-preview source stamp read fields through FieldInfo.GetValue until that field has been read 2048 times (compiling costs about as many reads as it saves), then through an emitted getter; a target that is null or not of the declaring type, and static/literal/pointer/by-ref-like fields, still go to FieldInfo.GetValue, so values (boxed the same way), live-ness and exceptions are those of reflection. Per-type field lists and field-type tests are taken once instead of per read; fixed GetField lookups are hoisted to statics. The card dictionaries (card detail, public card, hover card, upgrade info) get their final capacity, which never changes insertion order. No value is remembered and no output byte changes; off, the original reflection path and default capacities run.",
+      "regression": "patch-cache-tests FieldAccessAndCapacity (fixture fields of every shape, null and wrong-type targets, on and off, equal value/type/exception; the same probes through the emitted getter directly and after the 2048-read threshold; a write after compiling is seen; every instance field of every card model and its dynamic variables equal through NativeField and the emitted getter; card-detail cache key identical on and off; dictionary capacity never changes serialized key order including after remove/re-add) plus ObservationEquality on/off state equality; getter mutations (no box, no type check, never compile) fail the suite; Friday corpus replay: fast and off byte-equal to the recorded originals."
     }
   ],
   "admission": {

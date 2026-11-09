@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..65477bc
+index 0000000..bfab3d8
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,619 @@
+@@ -0,0 +1,992 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1530,6 +1530,7 @@ index 0000000..65477bc
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        AssemblyLoadContext.Default.Resolving += (_, n) => File.Exists(Path.Combine(root, "lib", n.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", n.Name + ".dll")) : null;
++        if (args.Length == 2 && args[0] == "--program-child") { ProgramChild(args[1]); return; }
 +        sim = Activator.CreateInstance(Simulator)!;
 +        SetEnabled(false);
 +        var start = (Dictionary<string, object?>)Call("StartRun", "Defect", 0, "PATCHCACHE_COMPONENT", "zh", null)!;
@@ -1549,6 +1550,8 @@ index 0000000..65477bc
 +            CardDetailCache();
 +            CardDetailExclusions();
 +            CardDetailOwnerFlip();
++            CompactOutput();
++            ProgramWiring();
 +            FieldAccessAndCapacity();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
@@ -2012,6 +2015,359 @@ index 0000000..65477bc
 +        Check(changedCalculated > 0, "owner Strength must change at least one calculated-variable card's text");
 +    }
 +
++    // --- fast_chain compact output (managed-native-compact-1) --------------------------
++    static readonly Type CompactWriter = typeof(Sts2Headless.NativeCompactStateWriter);
++    static void WriterField(string name, object? value) => CompactWriter.GetField(name, Flags)!.SetValue(null, value);
++    static void ResetWriter()
++    {
++        WriterField("_interval", 0); WriterField("_instance", null); WriterField("_instanceValid", false);
++        WriterField("_hasLastStateLine", false); WriterField("_pendingStart", null); WriterField("_currentStart", null);
++        foreach (var name in new[] { "_held", "_next" }) ((System.Collections.IDictionary)CompactWriter.GetField(name, Flags)!.GetValue(null)!).Clear();
++    }
++    static string Sha(string text) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
++
++    /// <summary>
++    /// Independent consumer: applies one frame to its table from raw object text, checks every
++    /// body digest against its raw bytes, the root, reachability and the reconcile rule, and
++    /// inlines placeholders textually; the result must be the full writer's bytes.
++    /// </summary>
++    sealed class CompactChecker
++    {
++        public readonly Dictionary<string, string> Table = new(StringComparer.Ordinal);
++        public readonly Dictionary<string, string> Digests = new(StringComparer.Ordinal);
++        public string? Instance; public int Seq = -1; public int Anchor;
++        public readonly int Interval;
++        public CompactChecker(int interval) { Interval = interval; }
++        static readonly System.Text.RegularExpressions.Regex Placeholder = new("\\{\"\\$obj\":\"([^\"]+)\"\\}");
++        public string Accept(string line, out string kind)
++        {
++            using var doc = JsonDocument.Parse(line);
++            var f = doc.RootElement;
++            if (f.GetProperty("type").GetString() != "compact_state" || f.GetProperty("schema").GetString() != "managed-native-compact-1")
++                throw new Exception("not a compact frame: " + line[..Math.Min(200, line.Length)]);
++            kind = f.GetProperty("frame").GetString()!;
++            int seq = f.GetProperty("seq").GetInt32();
++            var objects = f.GetProperty("objects").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetRawText(), StringComparer.Ordinal);
++            var digests = f.GetProperty("object_digests").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!, StringComparer.Ordinal);
++            if (!objects.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(digests.Keys.OrderBy(k => k, StringComparer.Ordinal))) throw new Exception("objects/digests keys differ");
++            foreach (var (key, body) in objects)
++            {
++                if (Sha(body) != digests[key]) throw new Exception("body digest mismatch: " + key);
++                using var b = JsonDocument.Parse(body);
++                if (!b.RootElement.TryGetProperty("native_ref", out var r) || r.GetString() != key.Split('#')[0]) throw new Exception("key/native_ref mismatch: " + key);
++            }
++            if (kind == "full")
++            {
++                Instance = f.GetProperty("episode_instance").GetString(); Seq = 0; Anchor = 0;
++                if (seq != 0 || f.GetProperty("base_seq").ValueKind != JsonValueKind.Null) throw new Exception("full frame seq");
++                Table.Clear(); Digests.Clear();
++                foreach (var (k, v) in objects) { Table[k] = v; Digests[k] = digests[k]; }
++            }
++            else
++            {
++                if (f.GetProperty("episode_instance").GetString() != Instance || seq != Seq + 1 || f.GetProperty("base_seq").GetInt32() != Seq)
++                    throw new Exception("base/seq mismatch");
++                Seq = seq;
++                var removed = f.GetProperty("removed").EnumerateArray().Select(e => e.GetString()!).ToList();
++                if (kind == "reconcile")
++                {
++                    // What a delta would have said, applied to the held table, must equal the whole table sent.
++                    var upserted = f.GetProperty("upserted").EnumerateArray().Select(e => e.GetString()!).ToHashSet(StringComparer.Ordinal);
++                    var expect = new Dictionary<string, string>(Digests, StringComparer.Ordinal);
++                    foreach (var k in removed) expect.Remove(k);
++                    foreach (var k in upserted) expect[k] = digests[k];
++                    foreach (var k in digests.Keys) if (!upserted.Contains(k) && (!Digests.TryGetValue(k, out var d) || d != digests[k] || Table[k] != objects[k]))
++                        throw new Exception("reconcile: unchanged key differs from held: " + k);
++                    if (!expect.OrderBy(p => p.Key, StringComparer.Ordinal).SequenceEqual(digests.OrderBy(p => p.Key, StringComparer.Ordinal))) throw new Exception("reconcile: table differs from held+delta");
++                    Table.Clear(); Digests.Clear();
++                    Anchor = seq;
++                }
++                else
++                {
++                    if (Seq - Anchor >= Interval) throw new Exception("reconcile overdue");
++                    foreach (var k in removed) { if (!Table.Remove(k)) throw new Exception("removed unknown key " + k); Digests.Remove(k); }
++                }
++                foreach (var (k, v) in objects) { Table[k] = v; Digests[k] = digests[k]; }
++            }
++            string root = Sha(string.Concat(Digests.Keys.OrderBy(k => k, StringComparer.Ordinal).Select(k => k + "\t" + Digests[k] + "\n")));
++            if (root != f.GetProperty("objects_root_sha256").GetString()) throw new Exception("root mismatch");
++            var reached = new HashSet<string>(StringComparer.Ordinal);
++            string Inline(string text, int depth)
++            {
++                if (depth > 64) throw new Exception("placeholder cycle");
++                return Placeholder.Replace(text, m =>
++                {
++                    string key = m.Groups[1].Value;
++                    if (!Table.TryGetValue(key, out var body)) throw new Exception("dangling placeholder " + key);
++                    reached.Add(key);
++                    return Inline(body, depth + 1);
++                });
++            }
++            string state = Inline(f.GetProperty("skeleton").GetRawText(), 0);
++            if (!reached.SetEquals(Table.Keys)) throw new Exception("orphan table keys");
++            return state;
++        }
++    }
++
++    static string Frame(Action<Stream> write)
++    {
++        var stream = new MemoryStream();
++        write(stream);
++        string text = System.Text.Encoding.UTF8.GetString(stream.ToArray());
++        Check(text.EndsWith('\n') && text.IndexOf('\n') == text.Length - 1, "a frame is exactly one line");
++        return text[..^1];
++    }
++
++    // --- Program wiring (real stdin/stdout loop in a child process) -----------------------
++
++    /// <summary>Child: the real headless Program loop. <paramref name="inject"/> makes one stdout write of a compact frame throw.</summary>
++    static void ProgramChild(string inject)
++    {
++        if (inject != "none")
++            typeof(Sts2Headless.NativeJsonLineWriter).GetField("_stdout", Flags)!.SetValue(null, new FailingStdout(Console.OpenStandardOutput(), inject));
++        Simulator.Assembly.GetType("Sts2Headless.Program")!.GetMethod("Main", Flags)!.Invoke(null, new object[] { Array.Empty<string>() });
++    }
++
++    /// <summary>Passes writes through, except the Nth compact_state frame, which throws (configure-*: 1st, delta-io: 2nd).</summary>
++    sealed class FailingStdout(Stream inner, string inject) : Stream
++    {
++        int frames;
++        public override void Write(ReadOnlySpan<byte> buffer)
++        {
++            if (buffer.IndexOf("\"type\":\"compact_state\""u8) >= 0 && ++frames == (inject == "delta-io" ? 2 : 1))
++                throw inject == "configure-writer" ? new Sts2Headless.NativeCompactWriterException("injected writer failure") : new IOException("injected write failure");
++            inner.Write(buffer);
++        }
++        public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
++        public override void Flush() => inner.Flush();
++        public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => true;
++        public override long Length => throw new NotSupportedException();
++        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
++        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
++        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
++        public override void SetLength(long value) => throw new NotSupportedException();
++    }
++
++    static (int Exit, List<JsonElement> Lines) RunChild(bool fastChain, string inject, params string[] commands)
++    {
++        string host = Environment.ProcessPath!;
++        var info = new System.Diagnostics.ProcessStartInfo(host)
++        {
++            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
++        };
++        if (Path.GetFileNameWithoutExtension(host) == "dotnet") info.ArgumentList.Add(typeof(Program).Assembly.Location);
++        info.ArgumentList.Add("--program-child");
++        info.ArgumentList.Add(inject);
++        info.Environment.Remove("STS2_HEADLESS_FAST_CHAIN");
++        if (fastChain) info.Environment["STS2_HEADLESS_FAST_CHAIN"] = "1";
++        info.Environment["STS2_HEADLESS_QUIET"] = "1";
++        using var child = System.Diagnostics.Process.Start(info)!;
++        var stdout = child.StandardOutput.ReadToEndAsync();
++        var stderr = child.StandardError.ReadToEndAsync();
++        try { foreach (string command in commands) child.StandardInput.WriteLine(command); child.StandardInput.Close(); }
++        catch (IOException) { } // the child may already have exited (exit 70)
++        Check(child.WaitForExit(180_000), $"program child {inject} did not exit");
++        // The game's own log lines ([SIM] ...) share stdout; protocol lines are the JSON objects.
++        var lines = stdout.Result.Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => line.StartsWith('{')).Select(line => JsonDocument.Parse(line).RootElement.Clone()).ToList();
++        return (child.ExitCode, lines);
++    }
++
++    static string Kind(JsonElement line) => line.GetProperty("type").GetString()!;
++    static string Prop(JsonElement line, string name) => line.TryGetProperty(name, out var value) ? value.ToString() : "";
++
++    // Program-level wiring of managed-native-compact-1: off routing, BeforeCommand / StartAnswered
++    // over start_run and reset_run, read-only commands, and the one fatal exit (code
++    // compact_state_divergence, exit 70, nothing after it) for every compact writer failure.
++    static void ProgramWiring()
++    {
++        const string Start = "{\"cmd\":\"start_run\",\"character\":\"Defect\",\"seed\":\"PATCHCACHE_WIRING\"}";
++        const string Configure = "{\"cmd\":\"configure_output\",\"format\":\"managed-native-compact-1\",\"reconcile_interval\":2}";
++        const string Observe = "{\"cmd\":\"observe_decision\"}";
++
++        // Off: configure_output stays an unknown command and every state is today's full line.
++        var off = RunChild(false, "none", Start, Configure, Observe);
++        Check(off.Exit == 0 && off.Lines.Count == 4 && Kind(off.Lines[1]) == "decision" && Kind(off.Lines[2]) == "error"
++            && Prop(off.Lines[2], "message").Contains("Unknown command") && Kind(off.Lines[3]) == "decision"
++            && off.Lines.All(line => Kind(line) != "compact_state"), "off: " + string.Join(" | ", off.Lines));
++
++        // On: full line before configure; then full / delta / reconcile frames; get_map is a plain
++        // read that does not move the frame sequence; reset_run starts a new episode instance.
++        // ready, start, configure, 2 observes, map, observe, reset, observe: 9 lines.
++        var on = RunChild(true, "none", Start, Configure, Observe, Observe, "{\"cmd\":\"get_map\"}", Observe,
++            "{\"cmd\":\"reset_run\",\"character\":\"Defect\",\"seed\":\"PATCHCACHE_WIRING2\"}", Observe);
++        Check(on.Exit == 0 && on.Lines.Count == 9 && Kind(on.Lines[1]) == "decision", "on: " + string.Join(" | ", on.Lines));
++        var frames = on.Lines.Where(line => Kind(line) == "compact_state").ToList();
++        Check(string.Join(",", frames.Select(f => Prop(f, "frame") + Prop(f, "seq"))) == "full0,delta1,reconcile2,delta3,full0,delta1",
++            "on frames: " + string.Join(",", frames.Select(f => Prop(f, "frame") + Prop(f, "seq"))));
++        Check(Kind(on.Lines[5]) != "compact_state" && Kind(on.Lines[5]) != "error", "get_map must stay a plain response");
++        Check(Prop(frames[0], "episode_instance") != Prop(frames[4], "episode_instance")
++            && frames[4].GetProperty("start").GetProperty("kind").GetString() == "new_run", "reset_run must start a new instance");
++
++        // Every compact writer failure: one error line with the divergence code, exit 70, nothing after.
++        foreach (var (inject, before, reason) in new[] {
++                     ("configure-writer", 2, "injected writer failure"),          // review S1
++                     ("configure-io", 2, "System.IO.IOException: injected"),      // S1 with any exception
++                     ("delta-io", 3, "System.IO.IOException: injected") })        // review N2
++        {
++            var failed = RunChild(true, inject, Start, Configure, Observe, Observe);
++            Check(failed.Exit == 70 && failed.Lines.Count == before + 1, $"{inject}: exit {failed.Exit}, lines " + string.Join(" | ", failed.Lines));
++            var error = failed.Lines[^1];
++            Check(Kind(error) == "error" && Prop(error, "code") == "compact_state_divergence" && Prop(error, "message").Contains(reason),
++                $"{inject}: " + error);
++        }
++        Console.WriteLine("program wiring: off, on (start/reset/read-only), 3 fatal compact writer exits checked");
++    }
++
++    static void CompactOutput()
++    {
++        var options = (JsonSerializerOptions)Simulator.Assembly.GetType("Sts2Headless.Program")!.GetField("JsonOpts", Flags)!.GetValue(null)!;
++        byte[] Bytes(object value) => Sts2Headless.NativeJsonLineWriter.Serialize(value, options).ToArray();
++        string Text(object value) => System.Text.Encoding.UTF8.GetString(Bytes(value));
++        Dictionary<string, object?> Card(int r, string name, int cost = 1) => new() { ["native_ref"] = $"native-{r}", ["name"] = name, ["cost"] = cost };
++        Dictionary<string, object?> Synthetic(string handName = "打击", int hp = 70, bool withPotion = true, bool twice = true, bool clash = false)
++        {
++            var hand = new List<object?> { Card(2, handName), Card(3, "Defend \"q\" \\ \u2028") };
++            var player = new Dictionary<string, object?>
++            {
++                ["native_ref"] = "native-1", ["hp"] = hp, ["hand"] = hand,
++                ["draw_pile"] = new List<object?> { Card(10, "in draw") },
++                ["discard_pile"] = new Dictionary<string, object?> { ["cards"] = new List<object?> { Card(11, "in discard") } },
++                ["exhaust_pile"] = new List<object?> { Card(12, "in exhaust") },
++                ["relics"] = new List<object?> { new Dictionary<string, object?> { ["native_ref"] = "native-20", ["counter"] = new Dictionary<string, object?> { ["native_ref"] = "native-21", ["v"] = 3 } } },
++            };
++            if (withPotion) player["potions"] = new List<object?> { new Dictionary<string, object?> { ["native_ref"] = "native-30", ["id"] = "FIRE" } };
++            var state = new Dictionary<string, object?>
++            {
++                ["type"] = "decision", ["decision"] = "combat_play", ["native_ref"] = "native-99", ["player"] = player,
++                ["ordered"] = new Dictionary<string, object?> { ["native_ref"] = "native-44", ["cards"] = new List<object?> { Card(40, "before ordering") }, ["ordering_semantics"] = "top_first", ["after"] = Card(41, "after") },
++                ["draw_choices"] = new List<object?> { Card(42, "pile-named view") },
++                ["bad_refs"] = new List<object?> { new Dictionary<string, object?> { ["native_ref"] = "native-0" }, new Dictionary<string, object?> { ["native_ref"] = "native-01" },
++                    new Dictionary<string, object?> { ["native_ref"] = "native-9x" }, new Dictionary<string, object?> { ["native_ref"] = 7 }, new Dictionary<string, object?> { ["label"] = "native_ref", ["v"] = "native-50" } },
++                ["Odd-View"] = Card(43, "view sanitized"),
++            };
++            // "ordered" carries its own native_ref: an ordering_semantics object is never tabled itself.
++            // The same object at two positions of one kind shares one body; a different body under the same key stays inline.
++            if (twice) state["hand"] = new List<object?> { Card(2, handName) };
++            if (clash) state["hand"] = new List<object?> { Card(2, "different body") };
++            return state;
++        }
++
++        // 1. Encoding: textual inlining gives the full writer bytes back; only the right objects are tabled.
++        foreach (var (label, value) in new (string, object)[] { ("synthetic", Synthetic()), ("clash", Synthetic(clash: true)),
++                     ("live decision", Call("DetectDecisionPoint")!) })
++        {
++            ResetWriter();
++            var checker = new CompactChecker(64);
++            byte[] full = Bytes(value);
++            Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++            Sts2Headless.NativeCompactStateWriter.RetainFullLine(full);
++            string line = Frame(s => Check(Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 64, s, "\n") == null, "configure refused: " + label));
++            Check(checker.Accept(line, out var kind) == System.Text.Encoding.UTF8.GetString(full) && kind == "full", "inlined text differs from the full bytes: " + label);
++            using var doc = JsonDocument.Parse(line);
++            Check(doc.RootElement.GetProperty("start").GetProperty("kind").GetString() == "new_run", "start kind");
++            if (label == "synthetic")
++            {
++                var keys = checker.Table.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray();
++                Check(keys.SequenceEqual(new[] { "native-1#player", "native-2#hand", "native-20#relics", "native-21#counter", "native-3#hand", "native-30#potions" }),
++                    "tabled keys: " + string.Join(",", keys));
++            }
++            if (label == "clash") Check(!checker.Table["native-2#hand"].Contains("different body") && line.Contains("different body"), "a clashing body must stay inline");
++        }
++
++        // 2. Frames over one instance: unchanged → no upsert; changed / removed / re-added; reconcile cadence.
++        ResetWriter();
++        {
++            var checker = new CompactChecker(3);
++            Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++            Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(Synthetic()));
++            checker.Accept(Frame(s => Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 3, s, "\n")), out _);
++            var states = new[] { Synthetic(), Synthetic(hp: 64), Synthetic(withPotion: false), Synthetic(), Synthetic(handName: "打击+"), Synthetic(), Synthetic(hp: 1) };
++            var kinds = new List<string>();
++            var objectCounts = new List<int>();
++            foreach (var state in states)
++            {
++                byte[] full = Bytes(state);
++                string line = Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(full, s, "\n", startsInstance: false));
++                Check(checker.Accept(line, out var kind) == System.Text.Encoding.UTF8.GetString(full), "delta rebuild differs");
++                kinds.Add(kind);
++                using var doc = JsonDocument.Parse(line);
++                objectCounts.Add(doc.RootElement.GetProperty("objects").EnumerateObject().Count());
++            }
++            Check(string.Join(",", kinds) == "delta,delta,reconcile,delta,delta,reconcile,delta", "frame kinds: " + string.Join(",", kinds));
++            // seq1 same state: nothing sent; seq2 hp: player only; seq4 potion back: player + potion; seq5 card name: that card only.
++            Check(objectCounts[0] == 0 && objectCounts[1] == 1 && objectCounts[3] == 2 && objectCounts[4] == 1, "delta object counts: " + string.Join(",", objectCounts));
++
++            // 3. Mutation: a corrupted memo digest. A delta re-sends it (the Host's sampled check catches it) ...
++            void Corrupt(string key)
++            {
++                var held = (System.Collections.IDictionary)CompactWriter.GetField("_held", Flags)!.GetValue(null)!;
++                object sent = held[key]!;
++                var type = sent.GetType();
++                var copy = Activator.CreateInstance(type, type.GetProperty("Offset")!.GetValue(sent), type.GetProperty("Length")!.GetValue(sent), new string('0', 64))!;
++                held[key] = copy;
++            }
++            Corrupt("native-1#player");
++            byte[] same = Bytes(Synthetic(hp: 1, handName: "x"));
++            string bad = Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(same, s, "\n", false));
++            bool caught = false;
++            try { checker.Accept(bad, out _); } catch (Exception e) { caught = e.Message.Contains("root mismatch") || e.Message.Contains("digest"); }
++            Check(caught, "a delta carrying a corrupted memo must fail the consumer's root check");
++            // ... and the next reconcile recomputes every digest and fails loudly.
++            ResetWriter();
++            Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++            Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(Synthetic()));
++            Frame(s => Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 2, s, "\n"));
++            byte[] steady = Bytes(Synthetic());
++            Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(steady, s, "\n", false));
++            Corrupt("native-1#player");
++            string? message = null;
++            try { Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(steady, s, "\n", false)); }
++            catch (Sts2Headless.NativeCompactWriterException e) { message = e.Message; }
++            Check(message != null && message.Contains("native-1#player"), "a reconcile frame must refuse a corrupted memo: " + message);
++        }
++
++        // 4. A start command ends the held instance: a later state without a new start is fatal.
++        ResetWriter();
++        Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++        Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(Synthetic()));
++        Frame(s => Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 64, s, "\n"));
++        Sts2Headless.NativeCompactStateWriter.BeforeCommand("reset_run");
++        bool fatal = false;
++        try { Sts2Headless.NativeCompactStateWriter.WriteFrame(Bytes(Synthetic()), new MemoryStream(), "\n", false); }
++        catch (Sts2Headless.NativeCompactWriterException) { fatal = true; }
++        Check(fatal, "a delta after a start command must be fatal");
++        Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartFromSave("{\"save\":1}"));
++        string reload = Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(Bytes(Synthetic()), s, "\n", true));
++        using (var doc = JsonDocument.Parse(reload))
++        {
++            Check(doc.RootElement.GetProperty("frame").GetString() == "full" && doc.RootElement.GetProperty("start").GetProperty("kind").GetString() == "from_save"
++                && doc.RootElement.GetProperty("start").GetProperty("save_sha256").GetString() == Sha("{\"save\":1}"), "load_save full frame");
++        }
++
++        // 5. configure_output refusals.
++        ResetWriter();
++        string? Refusal(string? format, int interval) => (string?)Sts2Headless.NativeCompactStateWriter.Configure(format, interval, new MemoryStream(), "\n")?["message"];
++        Check(Refusal("managed-native-compact-1", 64)?.Contains("no current decision") == true, "configure without a state");
++        Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++        Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(Synthetic()));
++        Check(Refusal("managed-native-compact-2", 64)?.Contains("unsupported format") == true, "wrong format");
++        Check(Refusal("managed-native-compact-1", 0) != null && Refusal("managed-native-compact-1", 1025) != null, "interval bounds");
++        Sts2Headless.NativeCompactStateWriter.BeforeCommand("action");
++        Check(Refusal("managed-native-compact-1", 64)?.Contains("no current decision") == true, "a state-changing command drops the retained state");
++        Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(Synthetic()));
++        Sts2Headless.NativeCompactStateWriter.BeforeCommand("get_map");
++        Check(Refusal("managed-native-compact-1", 64) == null, "a read-only command keeps the retained state");
++        Check(Refusal("managed-native-compact-1", 64)?.Contains("already configured") == true, "configure twice");
++        ResetWriter();
++
++        // 6. Off: configure_output is an unknown command and the writer is never reached.
++        SetEnabled(false);
++        var handle = Simulator.Assembly.GetType("Sts2Headless.Program")!.GetMethod("HandleCommand", Flags)!;
++        var cmd = JsonSerializer.Deserialize<JsonElement>("{\"cmd\":\"configure_output\",\"format\":\"managed-native-compact-1\",\"reconcile_interval\":64}");
++        var reply = (Dictionary<string, object?>)handle.Invoke(null, new[] { sim, (object)cmd })!;
++        Check((reply["message"] as string) == "Unknown command: configure_output" && !Sts2Headless.NativeCompactStateWriter.Configured, "off: configure_output must stay unknown");
++    }
++
 +    // Fixtures for NativeField: every field shape the native reads use.
 +    enum Shade { Dark, Light }
 +    class FixtureBase { private int _hidden = 7; protected decimal Money = 1.5m; public static string Shared = "s"; public const int Literal = 3; }
@@ -2035,6 +2391,10 @@ index 0000000..65477bc
 +        var fixture = new Fixture { Ref = new object(), Callback = () => { } };
 +        object boxedPair = new Pair { Left = 5, Right = "r" };
 +        var targets = new (Type Type, object? Target)[] { (typeof(Fixture), fixture), (typeof(FixtureBase), fixture), (typeof(Pair), boxedPair) };
++        // The getter fast_chain switches to after NativeField.CompileAfter reads; probed directly too.
++        MethodInfo compileMethod = typeof(NativeField).GetMethod("Compile", BindingFlags.Static | BindingFlags.NonPublic)!;
++        int compileAfter = (int)typeof(NativeField).GetField("CompileAfter", BindingFlags.Static | BindingFlags.NonPublic)!.GetRawConstantValue()!;
++        Func<object?, object?> Compiled(FieldInfo field) => (Func<object?, object?>)compileMethod.Invoke(null, new object[] { field })!;
 +        int compared = 0;
 +        foreach (bool enabled in new[] { true, false })
 +        {
@@ -2043,12 +2403,19 @@ index 0000000..65477bc
 +                foreach (FieldInfo field in type.GetFields(All))
 +                {
 +                    NativeField native = NativeField.Of(field)!;
++                    Func<object?, object?> compiled = Compiled(field);
 +                    foreach (object? probe in new[] { target, null, "not the declaring type" })
 +                    {
-+                        Check(Outcome(() => native.GetValue(probe)) == Outcome(() => field.GetValue(probe)),
++                        string reflected = Outcome(() => field.GetValue(probe));
++                        Check(Outcome(() => native.GetValue(probe)) == reflected && Outcome(() => compiled(probe)) == reflected,
 +                            $"{type.Name}.{field.Name} on {probe?.GetType().Name ?? "null"}: native read differs from FieldInfo.GetValue");
 +                        compared++;
 +                    }
++                    // Past the threshold (on: compiled; off: still reflection) every probe still reads the same.
++                    for (int read = 0; read <= compileAfter; read++) native.GetValue(target);
++                    foreach (object? probe in new[] { target, null, "not the declaring type" })
++                        Check(Outcome(() => native.GetValue(probe)) == Outcome(() => field.GetValue(probe)),
++                            $"{type.Name}.{field.Name} on {probe?.GetType().Name ?? "null"}: native read differs after {compileAfter} reads");
 +                }
 +        }
 +        // A compiled getter reads the live field: a value written after the first read is seen.
@@ -2057,6 +2424,11 @@ index 0000000..65477bc
 +        Check(Equals(text.GetValue(fixture), "t"), "first native read");
 +        fixture.Text = "changed";
 +        Check(Equals(text.GetValue(fixture), "changed"), "a native read must be live, never a remembered value");
++        for (int read = 0; read <= compileAfter; read++) text.GetValue(fixture);
++        Check(typeof(NativeField).GetField("_get", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(text) != null,
++            $"fast_chain must compile a field read more than {compileAfter} times");
++        fixture.Text = "compiled";
++        Check(Equals(text.GetValue(fixture), "compiled"), "a compiled native read must be live, never a remembered value");
 +        Check(NativeField.Of(null) == null, "a missing field stays missing");
 +
 +        // Every field of every native card model and its variables reads the same through NativeField,
@@ -2084,8 +2456,9 @@ index 0000000..65477bc
 +                    foreach (FieldInfo field in t.GetFields(All).Where(f => !f.IsStatic))
 +                    {
 +                        SetEnabled(true);
-+                        object? native = NativeField.Of(field)!.GetValue(owner), reflected = field.GetValue(owner);
-+                        Check(ReferenceEquals(native, reflected) || Equals(native, reflected), $"{t.Name}.{field.Name}: native read differs on a card model");
++                        object? native = NativeField.Of(field)!.GetValue(owner), compiled = Compiled(field)(owner), reflected = field.GetValue(owner);
++                        Check((ReferenceEquals(native, reflected) || Equals(native, reflected))
++                            && (ReferenceEquals(compiled, reflected) || Equals(compiled, reflected)), $"{t.Name}.{field.Name}: native read differs on a card model");
 +                        fields++;
 +                    }
 +                Check(Key(owner, true) == Key(owner, false), $"{owner.GetType().Name}: card-detail cache key differs on and off");
@@ -5850,6 +6223,500 @@ index 0000000..381119e
 +        catch { return false; }
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeCompactStateWriter.cs b/src/Sts2Headless/NativeCompactStateWriter.cs
+new file mode 100644
+index 0000000..5c381aa
+--- /dev/null
++++ b/src/Sts2Headless/NativeCompactStateWriter.cs
+@@ -0,0 +1,488 @@
++using System.Buffers;
++using System.Security.Cryptography;
++using System.Text;
++
++namespace Sts2Headless;
++
++/// <summary>
++/// fast_chain only: managed-native-compact-1 state output (contract
++/// contracts/managed-native/README.md in the platform repository). Default off: the native
++/// writes today's full state lines until the Host sends configure_output, and without the
++/// fast_chain switch configure_output stays an unknown command, so the old chain never
++/// reaches this class.
++///
++/// Every frame starts from today's full writer output of the state (the exact UTF-8 bytes
++/// the full writer would have emitted) and is derived from those bytes alone:
++/// - the skeleton is that text with each tabled object replaced in place by
++///   {"$obj":"&lt;native_ref&gt;#&lt;view&gt;"}; a body is the object's own text with its tabled
++///   descendants replaced the same way, so inlining every placeholder textually gives the
++///   full text back byte for byte;
++/// - only an object whose own members carry a string native_ref of the form native-N is
++///   tabled; the view is the name of the member that holds it (or holds its array), and an
++///   object is never tabled inside a pile container (a draw_pile/discard_pile/exhaust_pile
++///   member, or an object with ordering_semantics), under a view naming a pile, or when it
++///   has ordering_semantics itself;
++/// - a key is upserted iff its body bytes differ from the bytes last sent for it (or none
++///   were sent); it is removed iff no longer present; digests are sha256 over the emitted
++///   body bytes. No game object, dirty flag or text cache decides membership, so this class
++///   cannot hold stale content of its own;
++/// - a reconcile frame (whole table plus what a delta would have said) comes every
++///   reconcile_interval frames of an episode instance.
++/// The written state therefore carries exactly the fields and values of today's full writer.
++/// </summary>
++public static class NativeCompactStateWriter
++{
++    public const string Format = "managed-native-compact-1";
++
++    private static readonly byte[] PileDraw = "draw_pile"u8.ToArray();
++    private static readonly byte[] PileDiscard = "discard_pile"u8.ToArray();
++    private static readonly byte[] PileExhaust = "exhaust_pile"u8.ToArray();
++    private static readonly byte[] NativeRefName = "native_ref"u8.ToArray();
++    private static readonly byte[] OrderingName = "ordering_semantics"u8.ToArray();
++
++    private static int _interval;
++    private static string? _instance;
++    private static long _instances;
++    private static int _seq;
++    private static int _anchor;
++    private static string? _pendingStart;            // start JSON of the next full frame (start command answered)
++    private static string? _currentStart;            // start JSON of the held instance, for configure_output
++    private static bool _instanceValid;
++    private static readonly ArrayBufferWriter<byte> LastStateLine = new(1 << 16);  // pre-configure: last full decision line
++    private static bool _hasLastStateLine;
++
++    // Last sent table: key -> (bytes, digest). Double-buffered arenas hold the body bytes.
++    private static Dictionary<string, Sent> _held = new(StringComparer.Ordinal);
++    private static Dictionary<string, Sent> _next = new(StringComparer.Ordinal);
++    private static ArrayBufferWriter<byte> _arena = new(1 << 16);
++    private static ArrayBufferWriter<byte> _arenaNext = new(1 << 16);
++    private static readonly ArrayBufferWriter<byte> Skeleton = new(1 << 16);
++    private static readonly ArrayBufferWriter<byte> Line = new(1 << 17);
++    private static readonly List<Node> Nodes = new(512);
++    private static readonly List<int> PostOrder = new(512);
++    private static readonly List<string> Order = new(256);
++
++    private readonly record struct Sent(int Offset, int Length, string Digest);
++
++    private struct Node
++    {
++        public int Start, End;      // [Start, End) of the object text
++        public int RefStart, RefLength;
++        public int ViewStart, ViewLength;  // raw member-name bytes giving the view (-1 = root)
++        public bool Ordering, Pile, Tabled;
++        public string? Key;
++    }
++
++    public static bool Configured => _interval > 0;
++
++    /// <summary>Commands that never change the native state keep the retained pre-configure line.</summary>
++    public static bool ReadOnlyCommand(string command) =>
++        command is "get_map" or "run_identity" or "runtime_identity" or "process_metrics";
++
++    /// <summary>Called for every command before it runs (fast_chain only).</summary>
++    public static void BeforeCommand(string command)
++    {
++        if (Configured)
++        {
++            if (command is "start_run" or "reset_run" or "load_save") _instanceValid = false;
++        }
++        else if (!ReadOnlyCommand(command) && command != "configure_output")
++        {
++            _hasLastStateLine = false;
++        }
++    }
++
++    /// <summary>A start command answered with a decision: the next frame starts a new instance.</summary>
++    public static void StartAnswered(string startJson)
++    {
++        if (Configured) _pendingStart = startJson;
++        else _currentStart = startJson;
++    }
++
++    /// <summary>Pre-configure: keep the exact full decision line last written (for configure_output).</summary>
++    public static void RetainFullLine(ReadOnlySpan<byte> lineWithoutNewline)
++    {
++        LastStateLine.ResetWrittenCount();
++        LastStateLine.Write(lineWithoutNewline);
++        _hasLastStateLine = true;
++    }
++
++    public static string StartNewRun() => "{\"kind\":\"new_run\"}";
++
++    public static string StartFromSave(string saveJson) =>
++        "{\"kind\":\"from_save\",\"save_sha256\":\"" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(saveJson))) + "\"}";
++
++    /// <summary>
++    /// configure_output: validates the request and answers with a full frame of the state the
++    /// native last wrote (its exact bytes), or returns an error object. Never reached off fast_chain.
++    /// </summary>
++    public static Dictionary<string, object?>? Configure(string? format, int interval, Stream stdout, string newline)
++    {
++        if (format != Format)
++            return Error($"configure_output: unsupported format {format}");
++        if (interval < 1 || interval > 1024)
++            return Error("configure_output: reconcile_interval must be in 1..1024");
++        if (Configured)
++            return Error("configure_output: compact output is already configured");
++        if (!_hasLastStateLine || _currentStart == null)
++            return Error("configure_output: no current decision state to answer with");
++        _interval = interval;
++        _pendingStart = _currentStart;
++        _hasLastStateLine = false;
++        WriteFrame(LastStateLine.WrittenSpan, stdout, newline, startsInstance: true);
++        return null;
++    }
++
++    /// <summary>Writes one decision state (its full-writer bytes) as a compact frame.</summary>
++    public static void WriteFrame(ReadOnlySpan<byte> full, Stream stdout, string newline, bool startsInstance)
++    {
++        if (startsInstance)
++        {
++            if (_pendingStart == null) throw new NativeCompactWriterException("full frame without a start");
++            _instances++;
++            _instance = $"native-compact:{Environment.ProcessId}:{_instances}";
++            _currentStart = _pendingStart;
++            _pendingStart = null;
++            _seq = 0;
++            _anchor = 0;
++            _held.Clear();
++            _arena.ResetWrittenCount();
++            _instanceValid = true;
++        }
++        else
++        {
++            if (!_instanceValid || _instance == null) throw new NativeCompactWriterException("delta without a held episode instance");
++            _seq++;
++        }
++        string kind = startsInstance ? "full" : _seq - _anchor >= _interval ? "reconcile" : "delta";
++        if (kind != "delta") _anchor = _seq;
++        Encode(full, fresh: kind != "delta");
++        WriteLine(kind, stdout, newline);
++        // The table just sent becomes the held one.
++        (_held, _next) = (_next, _held);
++        (_arena, _arenaNext) = (_arenaNext, _arena);
++        _next.Clear();
++        _arenaNext.ResetWrittenCount();
++    }
++
++    private static Dictionary<string, object?> Error(string message) =>
++        new() { ["type"] = "error", ["message"] = message };
++
++    // --- encoding --------------------------------------------------------------------
++
++    /// <summary>
++    /// Builds Skeleton, _next and _arenaNext (body bytes) from the full text. A delta reuses
++    /// the held digest of a body whose bytes did not change (the writer's only memo); a full or
++    /// reconcile frame recomputes every digest and compares it with that memo byte for byte:
++    /// a mismatch is fatal (compact_state_divergence), never repaired.
++    /// </summary>
++    internal static void Encode(ReadOnlySpan<byte> full, bool fresh)
++    {
++        Index(full);
++        Skeleton.ResetWrittenCount();
++        _next.Clear();
++        _arenaNext.ResetWrittenCount();
++        Order.Clear();
++        // Children close before parents: a body is built after every tabled descendant.
++        foreach (int index in PostOrder)
++        {
++            var node = Nodes[index];
++            if (!node.Tabled) continue;
++            int offset = _arenaNext.WrittenCount;
++            CopyWithPlaceholders(full, node.Start, node.End, index + 1, _arenaNext);
++            int length = _arenaNext.WrittenCount - offset;
++            var body = _arenaNext.WrittenSpan.Slice(offset, length);
++            string key = node.Key!;
++            if (_next.TryGetValue(key, out var existing))
++            {
++                var first = _arenaNext.WrittenSpan.Slice(existing.Offset, existing.Length);
++                // The same object at the same kind of position twice: one body, two placeholders.
++                // A different body under the same key stays inline (never two bodies per key).
++                if (!first.SequenceEqual(body)) { node.Tabled = false; Nodes[index] = node; }
++                _arenaNext.ResetWrittenCount();
++                _arenaNext.Advance(offset);
++                continue;
++            }
++            string? memo = _held.TryGetValue(key, out var held)
++                && _arena.WrittenSpan.Slice(held.Offset, held.Length).SequenceEqual(body)
++                ? held.Digest
++                : null;
++            string digest = memo != null && !fresh ? memo : Convert.ToHexStringLower(SHA256.HashData(body));
++            if (memo != null && fresh && !string.Equals(memo, digest, StringComparison.Ordinal))
++                throw new NativeCompactWriterException("reconcile: held digest of " + key + " differs from its body");
++            _next[key] = new Sent(offset, length, digest);
++            Order.Add(key);
++        }
++        CopyWithPlaceholders(full, 0, full.Length, 1, Skeleton);
++    }
++
++    /// <summary>Copies full[start, end) replacing every outermost tabled object inside (node index from first) by its placeholder.</summary>
++    private static void CopyWithPlaceholders(ReadOnlySpan<byte> full, int start, int end, int first, ArrayBufferWriter<byte> output)
++    {
++        int cursor = start;
++        for (int i = first; i < Nodes.Count; i++)
++        {
++            var node = Nodes[i];
++            if (node.Start >= end) break;
++            if (!node.Tabled) continue;
++            output.Write(full[cursor..node.Start]);
++            WriteAscii(output, "{\"$obj\":\"");
++            WriteAscii(output, node.Key!);
++            WriteAscii(output, "\"}");
++            cursor = node.End;
++            while (i + 1 < Nodes.Count && Nodes[i + 1].Start < node.End) i++;
++        }
++        output.Write(full[cursor..end]);
++    }
++
++    /// <summary>One pass over the compact JSON text: every object with its span, own native_ref, view and pile context.</summary>
++    private static void Index(ReadOnlySpan<byte> json)
++    {
++        Nodes.Clear();
++        PostOrder.Clear();
++        // Container stack: object node index (or -1 for an array), plus the view/pile state for its values.
++        Span<int> nodeStack = stackalloc int[256];
++        Span<int> viewStart = stackalloc int[256];
++        Span<int> viewLength = stackalloc int[256];
++        Span<bool> pileStack = stackalloc bool[256];
++        int depth = 0;
++        int pendingKeyStart = -1, pendingKeyLength = 0;   // member name awaiting its value
++        bool expectKey = false;
++        int i = 0;
++        while (i < json.Length)
++        {
++            byte c = json[i];
++            if (c == (byte)'"')
++            {
++                int stringEnd = SkipString(json, i);
++                if (expectKey)
++                {
++                    pendingKeyStart = i + 1;
++                    pendingKeyLength = stringEnd - i - 2;
++                    expectKey = false;
++                }
++                else if (depth > 0 && nodeStack[depth - 1] >= 0 && pendingKeyStart >= 0
++                         && json.Slice(pendingKeyStart, pendingKeyLength).SequenceEqual(NativeRefName))
++                {
++                    int owner = nodeStack[depth - 1];
++                    var node = Nodes[owner];
++                    node.RefStart = i + 1;
++                    node.RefLength = stringEnd - i - 2;
++                    Nodes[owner] = node;
++                }
++                if (!expectKey && pendingKeyStart >= 0 && depth > 0 && nodeStack[depth - 1] >= 0
++                    && json.Slice(pendingKeyStart, pendingKeyLength).SequenceEqual(OrderingName))
++                    MarkOrdering(nodeStack[depth - 1]);
++                i = stringEnd;
++                continue;
++            }
++            if (c == (byte)'{' || c == (byte)'[')
++            {
++                if (depth == nodeStack.Length) throw new NativeCompactWriterException("state nesting deeper than 256");
++                bool parentPile = depth > 0 && pileStack[depth - 1];
++                int vs = depth > 0 ? viewStart[depth - 1] : -1, vl = depth > 0 ? viewLength[depth - 1] : 0;
++                bool pileMember = false;
++                if (depth > 0 && nodeStack[depth - 1] >= 0 && pendingKeyStart >= 0)
++                {
++                    // A member value: its view is the member name.
++                    vs = pendingKeyStart; vl = pendingKeyLength;
++                    var name = json.Slice(pendingKeyStart, pendingKeyLength);
++                    pileMember = name.SequenceEqual(PileDraw) || name.SequenceEqual(PileDiscard) || name.SequenceEqual(PileExhaust);
++                    if (depth > 0 && Nodes[nodeStack[depth - 1]].Ordering) parentPile = true;
++                }
++                bool pile = parentPile || pileMember;
++                if (c == (byte)'{')
++                {
++                    Nodes.Add(new Node { Start = i, End = -1, RefStart = -1, ViewStart = vs, ViewLength = vl, Pile = pile });
++                    nodeStack[depth] = Nodes.Count - 1;
++                    expectKey = true;
++                }
++                else
++                {
++                    nodeStack[depth] = -1;
++                }
++                viewStart[depth] = vs; viewLength[depth] = vl; pileStack[depth] = pile;
++                depth++;
++                pendingKeyStart = -1;
++                i++;
++                continue;
++            }
++            if (c == (byte)'}' || c == (byte)']')
++            {
++                depth--;
++                int index = nodeStack[depth];
++                if (index >= 0)
++                {
++                    var node = Nodes[index];
++                    node.End = i + 1;
++                    Nodes[index] = node;
++                    PostOrder.Add(index);
++                }
++                pendingKeyStart = -1;
++                i++;
++                continue;
++            }
++            if (c == (byte)',')
++            {
++                if (depth > 0 && nodeStack[depth - 1] >= 0) expectKey = true;
++                pendingKeyStart = -1;
++                i++;
++                continue;
++            }
++            i++;  // ':' and scalar bytes
++        }
++        if (depth != 0) throw new NativeCompactWriterException("unbalanced state text");
++        // Decide tabling now that every object's own members are known. Root is never tabled.
++        for (int n = 1; n < Nodes.Count; n++)
++        {
++            var node = Nodes[n];
++            node.Tabled = false;
++            if (!node.Pile && !node.Ordering && node.RefStart >= 0 && IsNativeRef(json.Slice(node.RefStart, node.RefLength)))
++            {
++                string? view = View(json, node.ViewStart, node.ViewLength);
++                if (view != null)
++                {
++                    node.Key = Encoding.ASCII.GetString(json.Slice(node.RefStart, node.RefLength)) + "#" + view;
++                    node.Tabled = true;
++                }
++            }
++            Nodes[n] = node;
++        }
++    }
++
++    /// <summary>An object with ordering_semantics is a pile: it and everything inside it stay inline.</summary>
++    private static void MarkOrdering(int index)
++    {
++        var node = Nodes[index];
++        node.Ordering = true;
++        Nodes[index] = node;
++        // Descendants already indexed (members written before ordering_semantics) become pile too.
++        for (int n = index + 1; n < Nodes.Count; n++)
++        {
++            var child = Nodes[n];
++            child.Pile = true;
++            Nodes[n] = child;
++        }
++    }
++
++    /// <summary>Member name to view: the name itself when it is ^[a-z][a-z0-9_]{0,31}$ and names no pile; else null (inline).</summary>
++    private static string? View(ReadOnlySpan<byte> json, int start, int length)
++    {
++        if (start < 0 || length < 1 || length > 32) return null;
++        var name = json.Slice(start, length);
++        if (name[0] < (byte)'a' || name[0] > (byte)'z') return null;
++        foreach (byte b in name)
++            if (!((b >= (byte)'a' && b <= (byte)'z') || (b >= (byte)'0' && b <= (byte)'9') || b == (byte)'_')) return null;
++        if (name.IndexOf("pile"u8) >= 0 || name.IndexOf("draw"u8) >= 0 || name.IndexOf("discard"u8) >= 0 || name.IndexOf("exhaust"u8) >= 0)
++            return null;
++        return Encoding.ASCII.GetString(name);
++    }
++
++    private static bool IsNativeRef(ReadOnlySpan<byte> value)
++    {
++        // ^native-[1-9][0-9]*$
++        if (value.Length < 8 || !value[..7].SequenceEqual("native-"u8) || value[7] < (byte)'1' || value[7] > (byte)'9') return false;
++        foreach (byte b in value[8..]) if (b < (byte)'0' || b > (byte)'9') return false;
++        return true;
++    }
++
++    private static int SkipString(ReadOnlySpan<byte> json, int start)
++    {
++        int i = start + 1;
++        while (i < json.Length)
++        {
++            byte b = json[i];
++            if (b == (byte)'\\') { i += 2; continue; }
++            if (b == (byte)'"') return i + 1;
++            i++;
++        }
++        throw new NativeCompactWriterException("unterminated string in state text");
++    }
++
++    // --- frame text ------------------------------------------------------------------
++
++    private static void WriteLine(string kind, Stream stdout, string newline)
++    {
++        Line.ResetWrittenCount();
++        WriteAscii(Line, "{\"type\":\"compact_state\",\"schema\":\"managed-native-compact-1\",\"frame\":\"");
++        WriteAscii(Line, kind);
++        WriteAscii(Line, "\",\"episode_instance\":\"");
++        WriteAscii(Line, _instance!);
++        WriteAscii(Line, "\",\"seq\":");
++        WriteAscii(Line, _seq.ToString(System.Globalization.CultureInfo.InvariantCulture));
++        WriteAscii(Line, ",\"base_seq\":");
++        WriteAscii(Line, kind == "full" ? "null" : (_seq - 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
++        if (kind == "full")
++        {
++            WriteAscii(Line, ",\"start\":");
++            WriteAscii(Line, _currentStart!);
++        }
++        var removed = new List<string>();
++        foreach (var key in _held.Keys) if (!_next.ContainsKey(key)) removed.Add(key);
++        removed.Sort(StringComparer.Ordinal);
++        var carried = new List<string>(Order.Count);
++        var upserted = new List<string>();
++        foreach (var key in Order)
++        {
++            bool changed = kind == "full" || !_held.TryGetValue(key, out var held) || held.Digest != _next[key].Digest;
++            if (changed) upserted.Add(key);
++            if (kind != "delta" || changed) carried.Add(key);
++        }
++        if (kind == "reconcile") { WriteAscii(Line, ",\"upserted\":"); WriteKeys(upserted); }
++        if (kind != "full") { WriteAscii(Line, ",\"removed\":"); WriteKeys(removed); }
++        WriteAscii(Line, ",\"skeleton\":");
++        Line.Write(Skeleton.WrittenSpan);
++        WriteAscii(Line, ",\"objects\":{");
++        for (int k = 0; k < carried.Count; k++)
++        {
++            if (k > 0) WriteAscii(Line, ",");
++            var sent = _next[carried[k]];
++            WriteAscii(Line, "\""); WriteAscii(Line, carried[k]); WriteAscii(Line, "\":");
++            Line.Write(_arenaNext.WrittenSpan.Slice(sent.Offset, sent.Length));
++        }
++        WriteAscii(Line, "},\"object_digests\":{");
++        for (int k = 0; k < carried.Count; k++)
++        {
++            if (k > 0) WriteAscii(Line, ",");
++            WriteAscii(Line, "\""); WriteAscii(Line, carried[k]); WriteAscii(Line, "\":\"");
++            WriteAscii(Line, _next[carried[k]].Digest); WriteAscii(Line, "\"");
++        }
++        WriteAscii(Line, "},\"objects_root_sha256\":\"");
++        WriteAscii(Line, Root(_next));
++        WriteAscii(Line, "\"}");
++        WriteAscii(Line, newline);
++        stdout.Write(Line.WrittenSpan);
++        stdout.Flush();
++    }
++
++    private static void WriteKeys(List<string> keys)
++    {
++        WriteAscii(Line, "[");
++        for (int k = 0; k < keys.Count; k++)
++        {
++            if (k > 0) WriteAscii(Line, ",");
++            WriteAscii(Line, "\""); WriteAscii(Line, keys[k]); WriteAscii(Line, "\"");
++        }
++        WriteAscii(Line, "]");
++    }
++
++    /// <summary>sha256 over "&lt;key&gt;\t&lt;digest&gt;\n" of the whole table, keys in byte order.</summary>
++    private static string Root(Dictionary<string, Sent> table)
++    {
++        var keys = new List<string>(table.Keys);
++        keys.Sort(StringComparer.Ordinal);
++        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
++        foreach (var key in keys) hash.AppendData(Encoding.ASCII.GetBytes(key + "\t" + table[key].Digest + "\n"));
++        return Convert.ToHexStringLower(hash.GetHashAndReset());
++    }
++
++    private static void WriteAscii(ArrayBufferWriter<byte> output, string text)
++    {
++        var span = output.GetSpan(text.Length);
++        for (int k = 0; k < text.Length; k++) span[k] = (byte)text[k];
++        output.Advance(text.Length);
++    }
++}
++
++/// <summary>The compact writer cannot write a faithful frame: fatal, reported as compact_state_divergence.</summary>
++public sealed class NativeCompactWriterException(string message) : Exception(message);
 diff --git a/src/Sts2Headless/NativeDebugAudioPresentation.cs b/src/Sts2Headless/NativeDebugAudioPresentation.cs
 new file mode 100644
 index 0000000..e72897e
@@ -6510,30 +7377,39 @@ index 0000000..b01ae4a
 +}
 diff --git a/src/Sts2Headless/NativeFieldAccess.cs b/src/Sts2Headless/NativeFieldAccess.cs
 new file mode 100644
-index 0000000..2965e0a
+index 0000000..8536239
 --- /dev/null
 +++ b/src/Sts2Headless/NativeFieldAccess.cs
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,89 @@
 +using System;
 +using System.Collections.Generic;
-+using System.Linq.Expressions;
 +using System.Reflection;
++using System.Reflection.Emit;
 +
 +namespace STS2Platform.NativeFoundation;
 +
 +/// <summary>
-+/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>): a field read through a
-+/// compiled getter instead of <see cref="FieldInfo.GetValue"/>. Reading is all it does: the
-+/// value (boxed the same way), its live-ness and every exception are those of
-+/// <see cref="FieldInfo.GetValue"/>. A target that is null or not an instance of the
-+/// declaring type goes to <see cref="FieldInfo.GetValue"/> itself, so it fails the same way.
-+/// Literal, pointer and by-ref-like fields always use reflection. Off: reflection, as before.
-+/// Nothing is cached except the getter delegate; no field value is ever remembered.
++/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>): a field read that, once the field
++/// has been read <see cref="CompileAfter"/> times, goes through a compiled getter instead of
++/// <see cref="FieldInfo.GetValue"/>. Reading is all it does: the value (boxed the same way), its
++/// live-ness and every exception are those of <see cref="FieldInfo.GetValue"/>. A target that is
++/// null or not an instance of the declaring type goes to <see cref="FieldInfo.GetValue"/> itself,
++/// so it fails the same way. Static, literal, pointer and by-ref-like fields always use reflection.
++/// Off: reflection, as before. Nothing is cached except the getter delegate; no field value is
++/// ever remembered.
 +/// </summary>
 +public sealed class NativeField
 +{
++    /// <summary>
++    /// Compiling costs about as much as this many reflection reads save (measured: ~40 us to emit
++    /// and JIT one getter, ~15 ns saved per read), so a field read fewer times never pays for its
++    /// getter and keeps using reflection; a hot field pays at most twice the best choice.
++    /// </summary>
++    internal const int CompileAfter = 2048;
++
 +    private static readonly MethodInfo ReflectionGet = typeof(FieldInfo).GetMethod(nameof(FieldInfo.GetValue), new[] { typeof(object) })!;
 +    private Func<object?, object?>? _get;
++    private int _reads;
 +
 +    private NativeField(FieldInfo info) => Info = info;
 +
@@ -6546,22 +7422,44 @@ index 0000000..2965e0a
 +    public static NativeField? Of(FieldInfo? info) => info == null ? null : new NativeField(info);
 +
 +    /// <summary>Same as <c>Info.GetValue(target)</c>.</summary>
-+    public object? GetValue(object? target) =>
-+        NativePatchStateCache.Enabled ? (_get ??= Compile(Info))(target) : Info.GetValue(target);
++    public object? GetValue(object? target)
++    {
++        if (!NativePatchStateCache.Enabled) return Info.GetValue(target);
++        if (_get is { } get) return get(target);
++        // A racing increment only moves the moment of compiling; both getters read the same field.
++        if (++_reads < CompileAfter) return Info.GetValue(target);
++        return (_get = Compile(Info))(target);
++    }
 +
++    /// <summary>
++    /// <c>target is Owner o ? (object)o.field : info.GetValue(target)</c>, emitted directly
++    /// (an expression tree costs about three times as much to compile).
++    /// </summary>
 +    internal static Func<object?, object?> Compile(FieldInfo info)
 +    {
 +        Type type = info.FieldType;
-+        if (info.IsLiteral || info.DeclaringType is not { } owner || owner.ContainsGenericParameters || owner.IsByRefLike
-+            || type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsFunctionPointer)
++        if (info.IsStatic || info.IsLiteral || info.DeclaringType is not { } owner || owner.ContainsGenericParameters
++            || owner.IsByRefLike || Nullable.GetUnderlyingType(owner) != null
++            || type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsFunctionPointer || type.ContainsGenericParameters)
 +            return info.GetValue;
-+        var target = Expression.Parameter(typeof(object), "target");
-+        Expression read = info.IsStatic
-+            ? Expression.Convert(Expression.Field(null, info), typeof(object))
-+            : Expression.Condition(Expression.TypeIs(target, owner),
-+                Expression.Convert(Expression.Field(Expression.Convert(target, owner), info), typeof(object)),
-+                Expression.Call(Expression.Constant(info), ReflectionGet, target));
-+        return Expression.Lambda<Func<object?, object?>>(read, target).Compile();
++        var method = new DynamicMethod("native_get_" + info.Name, typeof(object), new[] { typeof(FieldInfo), typeof(object) },
++            typeof(NativeField).Module, skipVisibility: true);
++        ILGenerator il = method.GetILGenerator();
++        Label reflection = il.DefineLabel();
++        il.Emit(OpCodes.Ldarg_1);
++        il.Emit(OpCodes.Isinst, owner);
++        il.Emit(OpCodes.Brfalse, reflection);
++        il.Emit(OpCodes.Ldarg_1);
++        il.Emit(owner.IsValueType ? OpCodes.Unbox : OpCodes.Castclass, owner);
++        il.Emit(OpCodes.Ldfld, info);
++        if (type.IsValueType) il.Emit(OpCodes.Box, type);
++        il.Emit(OpCodes.Ret);
++        il.MarkLabel(reflection);
++        il.Emit(OpCodes.Ldarg_0);
++        il.Emit(OpCodes.Ldarg_1);
++        il.Emit(OpCodes.Callvirt, ReflectionGet);
++        il.Emit(OpCodes.Ret);
++        return (Func<object?, object?>)method.CreateDelegate(typeof(Func<object?, object?>), info);
 +    }
 +}
 +
@@ -6710,10 +7608,10 @@ index 0000000..fe6792d
 +}
 diff --git a/src/Sts2Headless/NativeJsonLineWriter.cs b/src/Sts2Headless/NativeJsonLineWriter.cs
 new file mode 100644
-index 0000000..a1b262c
+index 0000000..09d9972
 --- /dev/null
 +++ b/src/Sts2Headless/NativeJsonLineWriter.cs
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,79 @@
 +using System.Buffers;
 +using System.Text;
 +using System.Text.Json;
@@ -6738,6 +7636,26 @@ index 0000000..a1b262c
 +    /// <summary>Appends the JSON text of <paramref name="value"/> plus <paramref name="newline"/> to <paramref name="target"/>.</summary>
 +    public static void Write(Stream target, object? value, JsonSerializerOptions options, string newline)
 +    {
++        Serialize(value, options);
++        WriteSerialized(target, newline);
++    }
++
++    /// <summary>Writes the text of the last <see cref="Serialize"/> call plus <paramref name="newline"/> to <paramref name="target"/>.</summary>
++    public static void WriteSerialized(Stream target, string newline)
++    {
++        int count = Encoding.UTF8.GetByteCount(newline);
++        Encoding.UTF8.GetBytes(newline, Buffer.GetSpan(count));
++        Buffer.Advance(count);
++        target.Write(Buffer.WrittenSpan);
++        target.Flush();
++    }
++
++    /// <summary>
++    /// The JSON text of <paramref name="value"/> (no newline) in the reused buffer: the exact
++    /// bytes <see cref="Write"/> emits before its newline. Valid until the next call.
++    /// </summary>
++    public static ReadOnlySpan<byte> Serialize(object? value, JsonSerializerOptions options)
++    {
 +        Buffer.ResetWrittenCount();
 +        if (_writer == null || !ReferenceEquals(_writerOptionsFor, options))
 +        {
@@ -6754,22 +7672,22 @@ index 0000000..a1b262c
 +        else _writer.Reset(Buffer);
 +        JsonSerializer.Serialize(_writer, value, value?.GetType() ?? typeof(object), options);
 +        _writer.Flush();
-+        int count = Encoding.UTF8.GetByteCount(newline);
-+        Encoding.UTF8.GetBytes(newline, Buffer.GetSpan(count));
-+        Buffer.Advance(count);
-+        target.Write(Buffer.WrittenSpan);
-+        target.Flush();
++        return Buffer.WrittenSpan;
 +    }
 +
 +    /// <summary>Writes one response line to standard output in order with every Console.Out writer.</summary>
-+    public static void WriteStdout(object? value, JsonSerializerOptions options)
++    public static void WriteStdout(object? value, JsonSerializerOptions options) =>
++        WithStdout((stdout, newline) => Write(stdout, value, options, newline));
++
++    /// <summary>Runs <paramref name="body"/> with the standard output stream and newline, in order with every Console.Out writer.</summary>
++    public static void WithStdout(Action<Stream, string> body)
 +    {
 +        TextWriter console = Console.Out;
 +        lock (console)
 +        {
 +            console.Flush();
 +            _stdout ??= Console.OpenStandardOutput();
-+            Write(_stdout, value, options, console.NewLine);
++            body(_stdout, console.NewLine);
 +        }
 +    }
 +}
@@ -9932,7 +10850,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..c279831 100644
+index 800f139..4317787 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -9958,18 +10876,27 @@ index 800f139..c279831 100644
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -85,7 +93,9 @@ class Program
+@@ -82,10 +90,18 @@ class Program
+             if (string.IsNullOrEmpty(line)) continue;
+ 
+             Dictionary<string, object?>? result;
++            string commandName = "";
              try
              {
                  var cmd = JsonSerializer.Deserialize<JsonElement>(line);
 -                result = HandleCommand(sim, cmd);
 +                NativePatchStateCache.Revalidate(); // fast_chain patch-generation sampling point; off = no-op
 +                NativeCardDetailCache.BeginFrame(); // fast_chain card detail reconcile clock; off = no-op
++                if (NativePatchStateCache.Enabled)
++                {
++                    commandName = cmd.TryGetProperty("cmd", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() ?? "" : "";
++                    NativeCompactStateWriter.BeforeCommand(commandName); // fast_chain compact output bookkeeping
++                }
 +                result = HandleCommand(ref sim, cmd);
              }
              catch (JsonException ex)
              {
-@@ -93,7 +103,16 @@ class Program
+@@ -93,12 +109,22 @@ class Program
              }
              catch (Exception ex)
              {
@@ -9987,7 +10914,14 @@ index 800f139..c279831 100644
              }
  
              if (result != null)
-@@ -108,17 +127,64 @@ class Program
+             {
+-                WriteLine(result);
++                if (NativePatchStateCache.Enabled) WriteFastChain(result, commandName);
++                else WriteLine(result);
+                 if (result.TryGetValue("type", out var resultTypeObj) &&
+                     string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
+                 {
+@@ -108,17 +134,64 @@ class Program
          }
      }
  
@@ -10054,8 +10988,98 @@ index 800f139..c279831 100644
                  );
  
              case "action":
-@@ -232,6 +298,11 @@ class Program
+@@ -143,6 +216,24 @@ class Program
+                 return sim.ExecuteAction(action, actionArgs);
+             }
  
++            case "configure_output" when NativePatchStateCache.Enabled:
++            {
++                // fast_chain only (managed-native-compact-1). Off, this stays an unknown command.
++                int interval = cmd.TryGetProperty("reconcile_interval", out var ri) && ri.ValueKind == JsonValueKind.Number
++                    && ri.TryGetInt32(out var parsed) ? parsed : 0;
++                string? format = cmd.TryGetProperty("format", out var fo) && fo.ValueKind == JsonValueKind.String ? fo.GetString() : null;
++                Dictionary<string, object?>? refused = null;
++                // A refusal is an error object; a failure while writing the full frame is fatal,
++                // the same exit as every other compact writer failure.
++                try
++                {
++                    NativeJsonLineWriter.WithStdout((stdout, newline) =>
++                        refused = NativeCompactStateWriter.Configure(format, interval, stdout, newline));
++                }
++                catch (Exception error) { CompactWriterDivergence(error); }
++                return refused;
++            }
++
+             case "load_save":
+             {
+                 var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
+@@ -156,6 +247,7 @@ class Program
+                 if (saveJson == null)
+                     return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
+                 var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
++                if (NativePatchStateCache.Enabled) _loadedSaveStart = NativeCompactStateWriter.StartFromSave(saveJson);
+                 return sim.LoadSave(saveJson, loadLang);
+             }
+             case "get_map":
+@@ -230,8 +322,68 @@ class Program
+         }
+     }
+ 
++    private static string? _loadedSaveStart;
++
++    /// <summary>
++    /// fast_chain response writer. A decision state goes through the compact writer once the
++    /// Host configured it (managed-native-compact-1); before that it is today's full line,
++    /// retained so configure_output can answer with exactly that state. Every other response
++    /// is today's line. A compact writer failure is fatal and loud, never a fallback.
++    /// </summary>
++    static void WriteFastChain(Dictionary<string, object?> data, string command)
++    {
++        bool decision = data.TryGetValue("type", out var type) && string.Equals(type as string, "decision", StringComparison.Ordinal);
++        if (!decision)
++        {
++            WriteLine(data);
++            return;
++        }
++        bool starts = command is "start_run" or "reset_run" or "load_save";
++        try
++        {
++            if (starts)
++                NativeCompactStateWriter.StartAnswered(command == "load_save"
++                    ? _loadedSaveStart ?? throw new NativeCompactWriterException("load_save start digest missing")
++                    : NativeCompactStateWriter.StartNewRun());
++            NativeJsonLineWriter.WithStdout((stdout, newline) =>
++            {
++                var full = NativeJsonLineWriter.Serialize(data, JsonOpts);
++                if (NativeCompactStateWriter.Configured)
++                {
++                    NativeCompactStateWriter.WriteFrame(full, stdout, newline, starts);
++                    return;
++                }
++                NativeCompactStateWriter.RetainFullLine(full);
++                NativeJsonLineWriter.WriteSerialized(stdout, newline);
++            });
++        }
++        catch (Exception error) when (error is NativeCompactWriterException || NativeCompactStateWriter.Configured)
++        {
++            CompactWriterDivergence(error);
++        }
++    }
++
++    /// <summary>
++    /// fast_chain: the compact writer could not write a faithful frame (its own check or any
++    /// other exception once compact output is configured). Fatal and loud: one error line with
++    /// code compact_state_divergence, then exit 70; never a fallback to full lines.
++    /// </summary>
++    static void CompactWriterDivergence(Exception error)
++    {
++        string reason = error is NativeCompactWriterException ? error.Message : error.GetType().FullName + ": " + error.Message;
++        Console.Error.WriteLine("[native-compact-writer] " + error);
++        WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence",
++            ["message"] = "compact_state_divergence: native compact writer: " + reason });
++        Environment.Exit(70);
++    }
++
      static void WriteLine(Dictionary<string, object?> data)
      {
 +        if (NativePatchStateCache.Enabled)

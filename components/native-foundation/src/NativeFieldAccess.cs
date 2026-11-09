@@ -1,23 +1,32 @@
 using System;
 using System.Collections.Generic;
-using System.Linq.Expressions;
 using System.Reflection;
+using System.Reflection.Emit;
 
 namespace STS2Platform.NativeFoundation;
 
 /// <summary>
-/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>): a field read through a
-/// compiled getter instead of <see cref="FieldInfo.GetValue"/>. Reading is all it does: the
-/// value (boxed the same way), its live-ness and every exception are those of
-/// <see cref="FieldInfo.GetValue"/>. A target that is null or not an instance of the
-/// declaring type goes to <see cref="FieldInfo.GetValue"/> itself, so it fails the same way.
-/// Literal, pointer and by-ref-like fields always use reflection. Off: reflection, as before.
-/// Nothing is cached except the getter delegate; no field value is ever remembered.
+/// fast_chain only (<see cref="NativePatchStateCache.Enabled"/>): a field read that, once the field
+/// has been read <see cref="CompileAfter"/> times, goes through a compiled getter instead of
+/// <see cref="FieldInfo.GetValue"/>. Reading is all it does: the value (boxed the same way), its
+/// live-ness and every exception are those of <see cref="FieldInfo.GetValue"/>. A target that is
+/// null or not an instance of the declaring type goes to <see cref="FieldInfo.GetValue"/> itself,
+/// so it fails the same way. Static, literal, pointer and by-ref-like fields always use reflection.
+/// Off: reflection, as before. Nothing is cached except the getter delegate; no field value is
+/// ever remembered.
 /// </summary>
 public sealed class NativeField
 {
+    /// <summary>
+    /// Compiling costs about as much as this many reflection reads save (measured: ~40 us to emit
+    /// and JIT one getter, ~15 ns saved per read), so a field read fewer times never pays for its
+    /// getter and keeps using reflection; a hot field pays at most twice the best choice.
+    /// </summary>
+    internal const int CompileAfter = 2048;
+
     private static readonly MethodInfo ReflectionGet = typeof(FieldInfo).GetMethod(nameof(FieldInfo.GetValue), new[] { typeof(object) })!;
     private Func<object?, object?>? _get;
+    private int _reads;
 
     private NativeField(FieldInfo info) => Info = info;
 
@@ -30,22 +39,44 @@ public sealed class NativeField
     public static NativeField? Of(FieldInfo? info) => info == null ? null : new NativeField(info);
 
     /// <summary>Same as <c>Info.GetValue(target)</c>.</summary>
-    public object? GetValue(object? target) =>
-        NativePatchStateCache.Enabled ? (_get ??= Compile(Info))(target) : Info.GetValue(target);
+    public object? GetValue(object? target)
+    {
+        if (!NativePatchStateCache.Enabled) return Info.GetValue(target);
+        if (_get is { } get) return get(target);
+        // A racing increment only moves the moment of compiling; both getters read the same field.
+        if (++_reads < CompileAfter) return Info.GetValue(target);
+        return (_get = Compile(Info))(target);
+    }
 
+    /// <summary>
+    /// <c>target is Owner o ? (object)o.field : info.GetValue(target)</c>, emitted directly
+    /// (an expression tree costs about three times as much to compile).
+    /// </summary>
     internal static Func<object?, object?> Compile(FieldInfo info)
     {
         Type type = info.FieldType;
-        if (info.IsLiteral || info.DeclaringType is not { } owner || owner.ContainsGenericParameters || owner.IsByRefLike
-            || type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsFunctionPointer)
+        if (info.IsStatic || info.IsLiteral || info.DeclaringType is not { } owner || owner.ContainsGenericParameters
+            || owner.IsByRefLike || Nullable.GetUnderlyingType(owner) != null
+            || type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsFunctionPointer || type.ContainsGenericParameters)
             return info.GetValue;
-        var target = Expression.Parameter(typeof(object), "target");
-        Expression read = info.IsStatic
-            ? Expression.Convert(Expression.Field(null, info), typeof(object))
-            : Expression.Condition(Expression.TypeIs(target, owner),
-                Expression.Convert(Expression.Field(Expression.Convert(target, owner), info), typeof(object)),
-                Expression.Call(Expression.Constant(info), ReflectionGet, target));
-        return Expression.Lambda<Func<object?, object?>>(read, target).Compile();
+        var method = new DynamicMethod("native_get_" + info.Name, typeof(object), new[] { typeof(FieldInfo), typeof(object) },
+            typeof(NativeField).Module, skipVisibility: true);
+        ILGenerator il = method.GetILGenerator();
+        Label reflection = il.DefineLabel();
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Isinst, owner);
+        il.Emit(OpCodes.Brfalse, reflection);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(owner.IsValueType ? OpCodes.Unbox : OpCodes.Castclass, owner);
+        il.Emit(OpCodes.Ldfld, info);
+        if (type.IsValueType) il.Emit(OpCodes.Box, type);
+        il.Emit(OpCodes.Ret);
+        il.MarkLabel(reflection);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Callvirt, ReflectionGet);
+        il.Emit(OpCodes.Ret);
+        return (Func<object?, object?>)method.CreateDelegate(typeof(Func<object?, object?>), info);
     }
 }
 
