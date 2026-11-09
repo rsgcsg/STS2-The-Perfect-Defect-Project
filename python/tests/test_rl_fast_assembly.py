@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import multiprocessing
+import time
 from pathlib import Path
 from typing import Any
 
@@ -543,8 +544,9 @@ def test_instance_closed_message_is_checked_exactly(change):
         check_instance_closed({**message, **change})
 
 
-def _mixed_receiver(connection: Any, count: int, out: Any) -> None:
+def _mixed_receiver(connection: Any, count: int, out: Any, delay: float = 0.0) -> None:
     for _ in range(count):
+        time.sleep(delay)  # a slow reader: blocks are still in flight when close() runs
         kind, value = receive_handoff(connection)
         if kind == "segment":
             message, header, rows = value
@@ -554,11 +556,13 @@ def _mixed_receiver(connection: Any, count: int, out: Any) -> None:
                      value["failure"], value["segments"]["bootstrap"]))
 
 
-def test_instance_closed_reaches_sgd_after_the_instance_segments(tmp_path: Path):
+@pytest.mark.parametrize("delay", [0.0, 0.3])
+def test_instance_closed_reaches_sgd_after_the_instance_segments(tmp_path: Path, delay: float):
+    # delay > 0: close() must wait for every ack, not one, before unlinking (乙's review).
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe()
     out = context.Queue()
-    process = context.Process(target=_mixed_receiver, args=(child, 4, out))
+    process = context.Process(target=_mixed_receiver, args=(child, 4, out, delay))
     process.start()
     h = Harness()
     instance = h.assembler.instance_id

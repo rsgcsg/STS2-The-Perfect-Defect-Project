@@ -245,8 +245,10 @@ class ShmSegmentSender:
         self.inflight: dict[int, tuple[shared_memory.SharedMemory, int]] = {}
         self.inflight_bytes = 0
 
-    def _drain(self, *, block: bool) -> None:
-        while self.inflight and (block or self.connection.poll(0)):
+    def _drain(self, *, block: bool, until_empty: bool = False) -> None:
+        """Read acknowledgements: none waited for (block False), one (block True), or every
+        one in flight (until_empty, for close); each wait is bounded by ack_timeout."""
+        while self.inflight and (block or until_empty or self.connection.poll(0)):
             if not self.connection.poll(self.ack_timeout):
                 raise HandoffError("sgd_ack_timeout")
             reply = self.connection.recv()
@@ -303,7 +305,9 @@ class ShmSegmentSender:
     def close(self) -> None:
         """Wait for every acknowledgement, then release the blocks."""
         try:
-            self._drain(block=True)
+            # Every block in flight is still mapped by the reader until its ack arrives;
+            # unlinking one early would fence the learner's input (shm_open fails).
+            self._drain(block=True, until_empty=True)
         finally:
             for block, _ in self.inflight.values():
                 block.close()
