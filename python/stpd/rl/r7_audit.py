@@ -20,6 +20,13 @@ Comparators:
   and selected score, then decisions and terminal. Duplicate identical options
   match by the n-th-equal rule and are marked ambiguous; a later fork after an
   ambiguous match is a divergence (no relaxed comparison).
+  `single_choice: omit` (L1): a fast record lists its forced single-choice steps in
+  order with `forced: true`, `step_index: null`, no scores and no selected score;
+  the env counts only model rows in `decisions` and `step_index`. Both sides are
+  aligned by position (every P1 choice either chain acted on); a forced step is
+  compared like any other except scores, and the replay must have had exactly one
+  option there. `decisions` is compared as model rows plus forced steps, so a
+  score-mode replay (today's complete chain) and an omit fast game agree.
 - `compare_compact_reconstruction`: native compact reconstruction against the
   untouched legacy full writer (design v2 §4.1): key order kept, compact UTF-8,
   `native-N` renamed `ref-k` by first appearance across the game on each side
@@ -205,22 +212,46 @@ def _number(value: Any) -> bool:
     return type(value) in (int, float)
 
 
+def _forced(step: Mapping[str, Any]) -> bool:
+    return step.get("forced") is True
+
+
 def _record_shape(record: Any) -> str | None:
     """The first shape problem of one R7 record, or None."""
     if not isinstance(record, Mapping) or not set(record) >= RECORD_KEYS:
         return "record_keys"
     if not isinstance(record["steps"], list):
         return "steps"
+    model_rows = 0
+    omitted = any(isinstance(s, Mapping) and _forced(s) for s in record["steps"])
     for index, step in enumerate(record["steps"]):
         if not isinstance(step, Mapping) or not set(step) >= STEP_KEYS:
             return f"steps[{index}].keys"
         choice, scores = step["choice"], step["scores"]
-        if (type(step["step_index"]) is not int or not isinstance(choice, Mapping)
-                or not {"content", "occurrence"} <= set(choice)
-                or not isinstance(scores, list) or not all(_number(v) for v in scores)
-                or not _number(step["selected_score"])):
+        if (not isinstance(choice, Mapping) or not {"content", "occurrence"} <= set(choice)
+                or step.get("forced", False) not in (True, False)):
             return f"steps[{index}].types"
+        if _forced(step):
+            # An omitted single choice: no row, no score; it was the only option.
+            if step["step_index"] is not None or scores != [] or step["selected_score"] is not None:
+                return f"steps[{index}].forced"
+            continue
+        if (type(step["step_index"]) is not int or not isinstance(scores, list)
+                or not all(_number(v) for v in scores) or not _number(step["selected_score"])):
+            return f"steps[{index}].types"
+        # A record with forced steps numbers model rows only (the env's own counter).
+        if omitted and step["step_index"] != model_rows:
+            return f"steps[{index}].step_index"
+        model_rows += 1
     return None
+
+
+def _choices_acted(record: Mapping[str, Any]) -> Any:
+    """Model rows plus forced single choices: what a score-mode chain counts as decisions."""
+    decisions = record["decisions"]
+    if type(decisions) is not int:
+        return decisions
+    return decisions + sum(1 for step in record["steps"] if _forced(step))
 
 
 @dataclass
@@ -283,12 +314,22 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
         return report
     ambiguous_seen = False
     fast_steps, replay_steps = list(fast["steps"]), list(replay["steps"])
-    for left, right in zip(fast_steps, replay_steps, strict=False):
-        step = left["step_index"]
+    # With forced steps on either side, steps align by position (`step` = position) and
+    # the per-side `step_index` (model rows only) is checked by `_record_shape`.
+    by_position = any(_forced(s) for s in (*fast_steps, *replay_steps))
+    for position, (left, right) in enumerate(zip(fast_steps, replay_steps, strict=False)):
+        step = position if by_position else left["step_index"]
         report.compared_steps += 1
-        if left["step_index"] != right["step_index"]:
+        if not by_position and left["step_index"] != right["step_index"]:
             report.findings.append(Finding(step, "step_index", "divergence",
                                            [left["step_index"], right["step_index"]]))
+            break
+        forced = _forced(left) or _forced(right)
+        if forced and not all(_forced(side) or len(side["scores"]) == 1
+                              for side in (left, right)):
+            # One side omitted this choice as single, the other had several options.
+            report.findings.append(Finding(step, "forced_single_choice", "divergence",
+                                           [len(left["scores"]), len(right["scores"])]))
             break
         differences = _differences(dehandle(left["input"]), dehandle(right["input"]))
         if differences:
@@ -314,8 +355,10 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
         if left["native_steps"] != right["native_steps"]:
             report.findings.append(Finding(step, "native_steps", "divergence",
                                            [left["native_steps"], right["native_steps"]]))
-        if not all(math.isfinite(v) for side in (left, right)
-                   for v in (*side["scores"], side["selected_score"])):
+        if forced:
+            pass  # an omitted single choice has no score to compare
+        elif not all(math.isfinite(v) for side in (left, right)
+                     for v in (*side["scores"], side["selected_score"])):
             report.findings.append(Finding(step, "non_finite_score", "divergence"))
         elif not _scores_close(left["scores"], right["scores"], score_tolerance):
             kind = ("score_multiset" if len(left["scores"]) == len(right["scores"])
@@ -332,7 +375,10 @@ def compare_action_records(fast: Mapping[str, Any], replay: Mapping[str, Any], *
             report.findings.append(Finding(None, "step_count", "divergence",
                                            [len(fast_steps), len(replay_steps)]))
     if not report.stops_output:
-        for key in ("decisions", "native_steps", "terminal"):
+        if _choices_acted(fast) != _choices_acted(replay):
+            report.findings.append(Finding(None, "decisions", "divergence",
+                                           [fast["decisions"], replay["decisions"]]))
+        for key in ("native_steps", "terminal"):
             if fast[key] != replay[key]:
                 report.findings.append(Finding(None, key, "divergence", [fast[key], replay[key]]))
     return report
@@ -470,10 +516,26 @@ def public_battle_hp(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def compare_hp_labels(fast: Sequence[Mapping[str, Any]],
-                      legacy: Sequence[Mapping[str, Any]]) -> Finding | None:
-    """Per battle: the labelled state steps and the post-combat public hp, in order."""
+                      legacy: Sequence[Mapping[str, Any]], *,
+                      legacy_single_choice_steps: Iterable[int] = ()) -> Finding | None:
+    """Per battle: the labelled state steps and the post-combat public hp, in order.
+
+    Under `single_choice: omit` the fast rows skip single-choice states and number model
+    rows only. Pass the old chain's single-choice step indices: they are dropped from the
+    legacy battles and the rest renumbered as model rows, so both sides name the same
+    rows. The post-combat hp is compared unchanged: a fast outcome after a forced chain
+    describes the next decision state, so an hp change inside that chain is reported.
+    """
+    single = sorted(set(legacy_single_choice_steps))
+
+    def renumber(steps: Iterable[int]) -> list[int]:
+        import bisect
+        return [step - bisect.bisect_left(single, step) for step in steps
+                if bisect.bisect_left(single, step) == bisect.bisect_right(single, step)]
+
     left = [(list(b["steps"]), b["post_hp"]) for b in fast]
-    right = [(list(b["steps"]), b["post_hp"]) for b in legacy]
+    right = [(renumber(b["steps"]), b["post_hp"]) for b in legacy]
+    right = [battle for battle in right if battle[0]]
     if left == right:
         return None
     first = next((i for i, (a, b) in enumerate(zip(left, right, strict=False)) if a != b),
