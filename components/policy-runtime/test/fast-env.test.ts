@@ -575,6 +575,27 @@ describe("fast-env L1 single_choice omit", () => {
     expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1, terminal: null })]);
   });
 
+  it("a combat_end read inside a forced chain, then Stop: the fact rides on the completed row (S2)", async () => {
+    let release!: () => void, entered!: () => void, steps = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reached = new Promise<void>(resolve => { entered = resolve; });
+    const script = (step: number) => step === 0 ? "multi" : "single";
+    const stepGate = async () => { if (++steps === 2) { entered(); await gate; } };
+    // The fact comes with the gated forced step; Stop is seen right after its successor is accepted.
+    const h = await harness({ hooks: () => ({ script, stepGate, combatEndOn: [2] }), edit: omit() });
+    h.open(0);
+    await reached;
+    h.send({ cmd: "close_slot", slot: 0 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    release();
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "stop", detail: "close_slot", decisions: 1, native_steps: 2 });
+    expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1,
+      combat_end: [COMBAT_END(2)] })]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ combat_end_unattributed: 0 });
+  });
+
   it("a forced step whose delivery is unknown closes the game unknown; the row before it stays completed", async () => {
     const script = (step: number) => step === 0 ? "multi" : "single";
     const h = await harness({ hooks: () => ({ script, delivery: step => step === 3 ? "unknown" : "delivered" }), edit: omit() });
@@ -584,6 +605,19 @@ describe("fast-env L1 single_choice omit", () => {
     expect(closed.detail).toMatch(/^delivery_unknown:receipt_delivery_unknown:/u);
     expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 1 })]);
     expect(h.natives[0]!.shutdowns).toEqual([true]);
+  });
+
+  it("a combat_end read by the forced step that ended the game is counted, never sent", async () => {
+    const script = (step: number) => step === 0 ? "multi" : "single";
+    const h = await harness({ hooks: () => ({ script, combatEndOn: [3], delivery: step => step === 3 ? "unknown" : "delivered" }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "unknown", decisions: 1, native_steps: 3 });
+    const [outcome] = outcomes(h, closed.game_instance_id);
+    expect(outcome).toMatchObject({ status: "completed", forced_steps: 1 });
+    expect(outcome).not.toHaveProperty("combat_end");
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ combat_end_unattributed: 1 });
   });
 
   it("a forced step not delivered closes not_started; a forced first state's combat_end has no row and is only counted", async () => {
@@ -615,6 +649,20 @@ describe("fast-env L1 single_choice omit", () => {
     const closed = await h.next(event => event.event === "closed");
     expect(closed).toMatchObject({ reason: "budget", detail: "forced_steps_in_a_row", decisions: 1, native_steps: 65 });
     expect(outcomes(h, closed.game_instance_id)).toEqual([expect.objectContaining({ status: "completed", forced_steps: 64 })]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ forced_chain_limit: 1 });
+  });
+
+  it("forced steps that are not in a row never add up to the S1 bound", async () => {
+    // Chains of 40 forced steps between rows: 120 forced steps in all, none closes the game.
+    const script = (step: number) => step >= 123 ? "terminal" : step % 41 === 0 ? "multi" : "single";
+    const h = await harness({ hooks: () => ({ script }), edit: omit() });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 3, native_steps: 123 });
+    expect(outcomes(h, closed.game_instance_id).map(o => o.forced_steps)).toEqual([40, 40, 40]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).toMatchObject({ forced_chain_limit: 0, forced_steps: 120 });
   });
 
   it("forced steps after the last row are durable: the default sink reads them back after the close (S4)", async () => {
