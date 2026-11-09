@@ -185,7 +185,17 @@ class EncoderPool:
         future: Future[Any] = Future()
         with worker.send_lock:
             with worker.lock:
-                worker.pending.append((tag, future))
+                # Checked under worker.lock after the append (#429 review S6):
+                # `_break` sets `_broken` before it drains the pending lists, so
+                # either that drain sees this future or this check sees the break.
+                broken = self._broken
+                if broken is None:
+                    worker.pending.append((tag, future))
+            if broken is not None:
+                exception = BoundaryError("p1_rows_encoder", "encoder_worker_died")
+                exception.__cause__ = broken
+                future.set_exception(exception)
+                return future
             try:
                 worker.connection.send_bytes(message)
             except (OSError, ValueError) as error:
