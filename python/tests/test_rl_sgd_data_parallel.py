@@ -7,6 +7,7 @@ counters, first use, KL decisions and auxiliary uses are the same ledger.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 import torch
@@ -98,3 +99,44 @@ def test_data_parallel_options_are_explicit():
             sgd_options({**base, "sgd_data_parallel": bad})
     with pytest.raises(ValueError, match="without_explicit_selection"):
         sgd_options({"sgd_process": False, **PARALLEL})
+
+
+def _replica_rank(rank: int, store: str, perturb: bool, results: Any) -> None:
+    import torch
+    import torch.distributed as dist
+
+    from stpd.rl.data_parallel import replica_check
+
+    dist.init_process_group("gloo", init_method="file://" + store, rank=rank, world_size=2)
+    try:
+        torch.manual_seed(7)
+        model = torch.nn.Linear(3, 2)
+        if perturb and rank == 1:
+            with torch.no_grad():
+                model.weight[0, 0] += 1e-3
+        try:
+            replica_check(model)
+            results.put((rank, "ok"))
+        except ValueError as error:
+            results.put((rank, str(error)))
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("perturb", [False, True])
+def test_replica_check_fences_a_diverged_follower(tmp_path, perturb):
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    store = str(tmp_path / "store")
+    ranks = [context.Process(target=_replica_rank, args=(rank, store, perturb, results))
+             for rank in (0, 1)]
+    for process in ranks:
+        process.start()
+    for process in ranks:
+        process.join(120)
+        assert process.exitcode == 0
+    outcome = dict(results.get(timeout=5) for _ in ranks)
+    expected = "data_parallel_replicas_diverged" if perturb else "ok"
+    assert outcome == {0: expected, 1: expected}
