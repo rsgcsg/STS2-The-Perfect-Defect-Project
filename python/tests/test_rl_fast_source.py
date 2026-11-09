@@ -377,11 +377,7 @@ def _sender(connection: Any, segments: list[SealedSegment], close: dict[str, Any
     if labels:
         send_labels(sender, segments)
     connection.send(close)
-    # ShmSegmentSender.close() currently waits for one ack only, then unlinks the
-    # rest (reported to the sender's owner); wait for every ack here until fixed.
-    while sender.inflight:
-        sender._drain(block=True)
-    sender.close()
+    sender.close()  # waits for every ack (#445)
 
 
 def test_read_handoff_verifies_acks_and_reads_the_close_in_order():
