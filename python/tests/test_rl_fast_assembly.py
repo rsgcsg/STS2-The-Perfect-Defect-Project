@@ -21,9 +21,12 @@ from stpd.rl.fast_handoff import (
     HandoffError,
     SegmentHandoff,
     ShmSegmentSender,
+    check_instance_closed,
+    receive_handoff,
     receive_segment,
 )
 from stpd.rl.fast_segment import (
+    InstanceClosed,
     SealedSegment,
     SegmentFormatError,
     canonical_json,
@@ -421,7 +424,8 @@ def test_handoff_writes_to_disk_first_and_sends_only_trainable(tmp_path: Path):
     assert received == [(1, f"{instance}.1", 64, True), (2, f"{instance}.2", 64, True)]
     assert handoff.counters == {"written": 3, "handed_off": 2, "truncated_written": 1,
                                 "rejected_written": 0, "bytes": handoff.counters["bytes"],
-                                "write_failed": 0, "not_handed_off": 0}
+                                "write_failed": 0, "not_handed_off": 0,
+                                "instances_closed_sent": 0, "instances_closed_not_sent": 0}
     assert len(list((tmp_path / "bootstrap").iterdir())) == 2
     [truncated] = list((tmp_path / "truncated").iterdir())
     assert decode_segment(truncated.read_bytes())[0]["seal"]["kind"] == "truncated"
@@ -473,3 +477,123 @@ def test_real_rows_v2_row_survives_the_segment():
     _, rows = decode_segment(h.sealed[0].data)
     assert_frame_equal(frame, decode_row(rows[0], validator=compiler,
                                          expected_sha256=row["payload"]["row_sha256"]))
+
+
+# -- WP8: instance-closed signal ---------------------------------------------------------
+def _closing_harness(**options: Any) -> tuple[Harness, list[Any]]:
+    stream: list[Any] = []
+    h = Harness(**options)
+    h.assembler.emit = stream.append
+    h.assembler.on_closed = stream.append
+    return h, stream
+
+
+def test_every_close_emits_instance_closed_after_its_segments():
+    h, stream = _closing_harness()
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    for _ in range(64):
+        h.step("g1")
+    _, row = h.step("g1", outcome=False)
+    h.outcome(row, "unknown", reason="compact_state_divergence")
+    h.close("g1", "unknown", row["step_index"])
+    h.open("g2")
+    h.step("g2")
+    h.close("g2", "stop")
+    kinds = [item.kind if not isinstance(item, InstanceClosed) else "closed"
+             for item in stream]
+    assert kinds == ["bootstrap", "truncated", "closed", "truncated", "closed"]
+    assert stream[2] == InstanceClosed("g1", "unknown", "unknown:compact_state_divergence",
+                                       {"bootstrap": 1, "terminal": 0, "truncated": 1,
+                                        "rejected": 0})
+    assert stream[4] == InstanceClosed("g2", "stop", None,
+                                       {"bootstrap": 0, "terminal": 0, "truncated": 1,
+                                        "rejected": 0})
+    assert h.assembler.report()["instances_closed"] == 2
+    h.close("g2", "stop")  # a late close of a closed instance emits nothing
+    assert len(stream) == 5
+
+
+def test_instance_closed_follows_even_when_the_labeler_breaks():
+    def broken(summary: Any) -> dict:
+        raise RuntimeError("labeler bug")
+
+    h, stream = _closing_harness(labeler=broken)
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    _, row = h.step("g1", outcome=False)
+    h.outcome(row, terminal={"result": "victory"})
+    with pytest.raises(RuntimeError):
+        h.close("g1", "terminal", row["step_index"])
+    assert [type(item).__name__ for item in stream] == ["SealedSegment", "InstanceClosed"]
+    assert stream[1].close_reason == "terminal" and stream[1].segments["truncated"] == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"schema": "other"}, {"extra": 1}, {"failure": 3}, {"close_reason": ""},
+    {"segments": {"bootstrap": 1}},
+    {"segments": {"bootstrap": -1, "terminal": 0, "truncated": 0, "rejected": 0}},
+])
+def test_instance_closed_message_is_checked_exactly(change):
+    message = {"schema": "stpd/rl-fast-instance-closed-1", "assembler_id": "a.1",
+               "game_instance_id": "g1", "close_reason": "terminal", "failure": None,
+               "segments": {"bootstrap": 1, "terminal": 1, "truncated": 0, "rejected": 0}}
+    assert check_instance_closed(dict(message)) == message
+    with pytest.raises(HandoffError, match="instance_closed_schema"):
+        check_instance_closed({**message, **change})
+
+
+def _mixed_receiver(connection: Any, count: int, out: Any) -> None:
+    for _ in range(count):
+        kind, value = receive_handoff(connection)
+        if kind == "segment":
+            message, header, rows = value
+            out.put((kind, header["game_instance_id"], message["handoff_sequence"]))
+        else:
+            out.put((kind, value["game_instance_id"], value["close_reason"],
+                     value["failure"], value["segments"]["bootstrap"]))
+
+
+def test_instance_closed_reaches_sgd_after_the_instance_segments(tmp_path: Path):
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    out = context.Queue()
+    process = context.Process(target=_mixed_receiver, args=(child, 4, out))
+    process.start()
+    h = Harness()
+    instance = h.assembler.instance_id
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance),
+                             ShmSegmentSender(parent, assembler_id=instance))
+    h.assembler.emit, h.assembler.on_closed = handoff.submit, handoff.submit_closed
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    for _ in range(128):
+        h.step("g1")
+    _, row = h.step("g1", outcome=False)
+    h.outcome(row, "unknown", reason="compact_state_divergence")
+    h.close("g1", "unknown", row["step_index"])
+    h.open("g2")
+    h.step("g2")
+    h.close("g2", "stop")
+    handoff.close()
+    received = [out.get(timeout=60) for _ in range(4)]
+    process.join(timeout=60)
+    assert process.exitcode == 0
+    assert received == [("segment", "g1", 1), ("segment", "g1", 2),
+                        ("instance_closed", "g1", "unknown",
+                         "unknown:compact_state_divergence", 2),
+                        ("instance_closed", "g2", "stop", None, 0)]
+    assert handoff.counters["instances_closed_sent"] == 2
+
+
+def test_instance_closed_without_a_sender_is_counted_not_sent(tmp_path: Path):
+    h = Harness()
+    handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=h.assembler.instance_id))
+    h.assembler.emit, h.assembler.on_closed = handoff.submit, handoff.submit_closed
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    h.step("g1")
+    h.close("g1", "stop")
+    handoff.close()
+    assert handoff.counters["instances_closed_not_sent"] == 1
+    assert handoff.counters["instances_closed_sent"] == 0

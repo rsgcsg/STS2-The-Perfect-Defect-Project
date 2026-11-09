@@ -29,6 +29,21 @@ Same-machine hand-off wire (`stpd/rl-fast-segment-handoff-1`), over one
                      "shm_name", "size", "sha256", "path"}
     SGD -> sender   {"schema", "ack": handoff_sequence}
 
+After the last segment of a game instance the same channel carries one
+instance-closed message (`stpd/rl-fast-instance-closed-1`, WP8), never acked:
+
+    sender -> SGD   {"schema", "assembler_id", "game_instance_id", "close_reason",
+                     "failure", "segments": {"bootstrap", "terminal", "truncated",
+                     "rejected"}}
+
+It is queued behind the instance's segments, so it arrives after every trainable
+segment of that instance (`bootstrap` + `terminal` of them). `close_reason` is the
+environment's `episode_close.reason` (an evidence failure known at close is
+`env_crash`); `failure` is the game's first non-completed outcome
+(`"<status>:<reason>"`) or null. What an exclusion drops is the learner's rule
+(semantics A: unused queued segments of that instance; already-trained ones stay
+counted, as in the old chain). `receive_handoff` reads either message.
+
 `handoff_sequence` counts trainable segments in hand-off order from 1 per sender
 connection, strictly increasing, never reused or resent; it is the order an
 SGD-side queue (today `SegmentQueue`, lease `<assembler_id>/<sequence>`) needs.
@@ -55,12 +70,23 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-from .fast_segment import RejectedSegment, SealedSegment, canonical_json, decode_segment, sha256
+from .fast_segment import (
+    InstanceClosed,
+    RejectedSegment,
+    SealedSegment,
+    canonical_json,
+    decode_segment,
+    sha256,
+)
 
 HANDOFF_SCHEMA = "stpd/rl-fast-segment-handoff-1"
 HANDOFF_KEYS = frozenset({"schema", "handoff_sequence", "assembler_id", "segment_id",
                           "training_generation", "mu_snapshot_sha256", "rows", "shm_name",
                           "size", "sha256", "path"})
+INSTANCE_CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
+INSTANCE_CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id",
+                                  "close_reason", "failure", "segments"})
+SEGMENT_KINDS = ("bootstrap", "terminal", "truncated", "rejected")
 SUFFIX = ".stfs"
 
 
@@ -264,6 +290,16 @@ class ShmSegmentSender:
         self.inflight_bytes += size
         return self.sequence
 
+    def send_closed(self, closed: InstanceClosed) -> None:
+        """The instance-closed message; queued behind that instance's segments."""
+        self._drain(block=False)
+        message = {"schema": INSTANCE_CLOSED_SCHEMA, "assembler_id": self.assembler_id,
+                   "game_instance_id": closed.game_instance_id,
+                   "close_reason": closed.close_reason, "failure": closed.failure,
+                   "segments": dict(closed.segments)}
+        check_instance_closed(message)
+        self.connection.send(message)
+
     def close(self) -> None:
         """Wait for every acknowledgement, then release the blocks."""
         try:
@@ -276,13 +312,46 @@ class ShmSegmentSender:
             self.inflight_bytes = 0
 
 
+def check_instance_closed(message: Any) -> dict[str, Any]:
+    """Exact keys and types of an instance-closed message; loud on anything else."""
+    if (not isinstance(message, dict) or message.get("schema") != INSTANCE_CLOSED_SCHEMA
+            or set(message) != INSTANCE_CLOSED_KEYS):
+        raise HandoffError("instance_closed_schema")
+    segments = message["segments"]
+    if (not all(isinstance(message[key], str) and message[key]
+                for key in ("assembler_id", "game_instance_id", "close_reason"))
+            or not (message["failure"] is None or isinstance(message["failure"], str))
+            or not isinstance(segments, dict) or set(segments) != set(SEGMENT_KINDS)
+            or any(type(count) is not int or count < 0 for count in segments.values())):
+        raise HandoffError("instance_closed_schema")
+    return message
+
+
+def receive_handoff(connection: Connection) -> tuple[str, Any]:
+    """SGD-side reference reader for both messages of the channel.
+
+    Returns `("segment", (message, header, rows))` (as `receive_segment`) or
+    `("instance_closed", message)`; anything else raises.
+    """
+    message = connection.recv()
+    if isinstance(message, dict) and message.get("schema") == INSTANCE_CLOSED_SCHEMA:
+        return "instance_closed", check_instance_closed(message)
+    return "segment", _receive_segment_message(connection, message)
+
+
 def receive_segment(connection: Connection) -> tuple[dict[str, Any], dict[str, Any], list[bytes]]:
     """SGD-side reference reader: (hand-off message, segment header, row bytes).
 
     Copies and verifies the bytes, acks, and leaves the block to the sender.
     The learner then runs `decode_row` on each row and builds rows-v2 groups.
+    A channel whose sender emits instance-closed messages is read with
+    `receive_handoff` instead.
     """
-    message = connection.recv()
+    return _receive_segment_message(connection, connection.recv())
+
+
+def _receive_segment_message(connection: Connection, message: Any
+                             ) -> tuple[dict[str, Any], dict[str, Any], list[bytes]]:
     if (not isinstance(message, dict) or message.get("schema") != HANDOFF_SCHEMA
             or set(message) != HANDOFF_KEYS):
         raise HandoffError("handoff_schema")
@@ -318,12 +387,14 @@ class SegmentHandoff:
                  on_written: Callable[[SealedSegment | RejectedSegment, Path], None] | None = None
                  ) -> None:
         self.writer, self.sender, self.on_written = writer, sender, on_written
-        self.queue: queue.Queue[SealedSegment | RejectedSegment | None] = queue.Queue(max_queue)
+        self.queue: queue.Queue[SealedSegment | RejectedSegment | InstanceClosed | None] = (
+            queue.Queue(max_queue))
         self.write_error: BaseException | None = None
         self.send_error: BaseException | None = None
         self.counters = {"written": 0, "handed_off": 0, "truncated_written": 0,
                          "rejected_written": 0, "bytes": 0, "write_failed": 0,
-                         "not_handed_off": 0}
+                         "not_handed_off": 0, "instances_closed_sent": 0,
+                         "instances_closed_not_sent": 0}
         self.thread = threading.Thread(target=self._run, name="fast-segment-handoff",
                                        daemon=True)
         self.thread.start()
@@ -343,11 +414,34 @@ class SegmentHandoff:
         self.queue.put(segment)
         self.raise_if_failed()
 
+    def submit_closed(self, closed: InstanceClosed) -> None:
+        """Queue the instance-closed message behind the instance's segments.
+
+        Without a sender, or after a hand-off failure, it is counted as not sent
+        (the chain has already stopped loudly); it is never resent.
+        """
+        self.queue.put(closed)
+        self.raise_if_failed()
+
+    def _send_closed(self, closed: InstanceClosed) -> None:
+        if self.sender is None or self.send_error is not None:
+            self.counters["instances_closed_not_sent"] += 1
+            return
+        try:
+            self.sender.send_closed(closed)
+            self.counters["instances_closed_sent"] += 1
+        except BaseException as error:  # noqa: BLE001 - recorded, re-raised
+            self.send_error = error
+            self.counters["instances_closed_not_sent"] += 1
+
     def _run(self) -> None:
         while True:
             segment = self.queue.get()
             if segment is None:
                 return
+            if isinstance(segment, InstanceClosed):
+                self._send_closed(segment)
+                continue
             try:
                 path = self.writer.write(segment)
             except BaseException as error:  # noqa: BLE001 - recorded and re-raised
