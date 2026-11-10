@@ -405,3 +405,19 @@ def test_capacity_drop_never_takes_an_old_chain_segment(tmp_path, monkeypatch):
         with owner.queue.condition:
             owner.queue.discard({"old-chain-1"})
         owner.close()
+
+
+def test_a_bad_buffered_segment_released_by_an_attest_fences_input(tmp_path, monkeypatch):
+    """Review record 3: the control thread fences exactly as the hand-off thread."""
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        bootstrap = game(owner, "g1", terminal=False)[0]
+        offer(owner, bootstrap)  # not attested yet: buffered by the intake
+        assert queued(owner) == [] and not owner.input_fenced
+        monkeypatch.setattr(owner, "compiler_identity", "another-compiler")
+        with pytest.raises(ValueError, match="fast_segment_compiler_identity_changed"):
+            admission(owner, "g1", 1)
+        assert owner.input_fenced and owner.newlease_stopped
+        assert owner.input_failure["operation"] == "fast_control"
+    finally:
+        owner.close()

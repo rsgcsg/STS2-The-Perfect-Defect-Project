@@ -1782,7 +1782,13 @@ class SegmentLearner:
             decision = self.fast_intake.attest(request)
         else:
             decision = self.fast_intake.exclude(request)
-        self._fast_apply(decision)
+        try:
+            self._fast_apply(decision)
+        except BaseException as error:
+            # Released buffered segments fail exactly as on the hand-off thread:
+            # input is fenced, not only reported back to this actor (review rec. 3).
+            self._fast_fence("fast_control", error)
+            raise
         assert decision.reply is not None
         return decision.reply
 
@@ -1820,14 +1826,17 @@ class SegmentLearner:
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
         except BaseException as error:
-            with self.condition:
-                self.input_fenced = self.newlease_stopped = True
-                self.input_failure = {"operation": "fast_handoff", "code": "INVALID_PACKET",
-                                      "error_type": type(error).__name__,
-                                      "error": str(error)[:200]}
-                self.condition.notify_all()
-                self._notify_capacity(force=True)
+            self._fast_fence("fast_handoff", error)
             raise
+
+    def _fast_fence(self, operation: str, error: BaseException) -> None:
+        with self.condition:
+            self.input_fenced = self.newlease_stopped = True
+            self.input_failure = {"operation": operation, "code": "INVALID_PACKET",
+                                  "error_type": type(error).__name__,
+                                  "error": str(error)[:200]}
+            self.condition.notify_all()
+            self._notify_capacity(force=True)
 
     def _fast_referenced(self) -> set[str]:
         """Segments a prepared (read-ahead) batch already holds: treated as used."""
