@@ -1359,10 +1359,13 @@ def assemble(
     text_attention_area: int = 67108864,
     auxiliary_frames: tuple[AuxiliaryFrame, ...] = (),
     prepared_layout: str = "padded-v1",
+    group_shards: int = 1,
 ) -> PreparedBatch:
     began = time.perf_counter()
     if prepared_layout not in PREPARED_LAYOUTS:
         raise ValueError("unsupported_prepared_layout")
+    if type(group_shards) is not int or not 1 <= group_shards <= 64:
+        raise ValueError("invalid_group_shards")
     if type(request.epochs) is not int or request.epochs < 1:
         raise ValueError("positive_prepared_epochs_required")
     by_id = {source.segment_id: source for source in sources}
@@ -1465,12 +1468,16 @@ def assemble(
         groups = []
         group: list[int] = []
         text_count = text_width = scene_width = 0
-        for row in work:
+        # Data parallel (same update): never let one physical group cross a
+        # rank's equal share of this minibatch, so every rank has its own rows.
+        cuts = {len(work) * k // group_shards for k in range(1, group_shards)}
+        for position, row in enumerate(work):
             frame = frames[row]
             width = _bucket(max(text_width, frame.text_width), (8, 16, 32, 64, 128, 256, 512))
             scene = _bucket(max(scene_width, frame.entity_count), (32, 64, 128, 256, 512, 1024))
             if group and (
-                len(group) >= microbatch_size
+                position in cuts
+                or len(group) >= microbatch_size
                 or (len(group) + 1) * scene**2 > scene_attention_area
                 or (text_count + frame.text_count) * width**2 > text_attention_area
             ):

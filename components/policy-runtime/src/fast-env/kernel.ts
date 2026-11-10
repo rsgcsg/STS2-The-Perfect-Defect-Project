@@ -21,11 +21,18 @@ type StepStatus = "completed" | "interrupted_known" | "not_started" | "unknown";
 
 export interface KernelStats {
   games: number; decisions: number; forced: number; native_steps: number; settle_waits: number; full_checks: number;
+  /** L1 omit: combat_end facts read before any model row of the game (no transition to carry them), or past the
+   * contract's four per outcome; counted, never sent. */
+  combat_end_unattributed: number;
   /** Games and opens ended by compact_state_divergence (Host- or native-detected), counted apart from other unknowns. */
   compact_divergences: number;
+  /** S1: games closed as budget `forced_steps_in_a_row` (more one-option steps in a row than the old chain allows),
+   * counted apart from the other budget ends. */
+  forced_chain_limit: number;
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
 }
-export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0, compact_divergences: 0,
+export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
+  combat_end_unattributed: 0, compact_divergences: 0, forced_chain_limit: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0 });
 
 /** What every slot of one environment process shares. */
@@ -80,7 +87,17 @@ interface Source { full: FullPublicBasis; frame: FastStepRecord["frame"] }
 interface Prepared { source: Source; reduction: Reduction }
 /** What a model row adds to its evidence record. */
 interface RowRef { rowId: number; stepIndex: number; consumptionId: string; observationSha: string; catalogSha: string; inputLine: string }
-interface PendingOutcome { row_id: number; step_index: number; receipt_sha256: string; forced: number }
+/** The outcome of the last model row, sent once the state its step led to is known: at the next
+ * model row or the terminal. With L1 omit the one-option steps in between run first; they add to
+ * `forced` and their successors' combat_end facts, and `resolved` holds the public facts of the last
+ * accepted state, so a game ending inside that chain still reports the row as completed. */
+interface PendingOutcome {
+  row_id: number; step_index: number; receipt_sha256: string; forced: number;
+  combat_end: Record<string, unknown>[];
+  resolved: PublicFacts | null;
+}
+/** rl-inference-3 step_outcome.combat_end maxItems. */
+const COMBAT_END_PER_OUTCOME = 4;
 
 /** One game on one slot: the receive/act loop of today's Runtime (receiveGlobal /
  * actGlobal), without the per-event evidence journal and NDJSON agent port. */
@@ -99,6 +116,8 @@ class GameRun {
   /** A native step was delivered and its successor has not been read and accepted yet. */
   awaitingSuccessor = false;
   #noProgress: GlobalNoProgressWindow | null;
+  /** L1 omit: one-option steps executed since the last model row (S1 bound). */
+  #forcedInARow = 0;
   readonly #started = performance.now();
 
   constructor(private readonly ctx: KernelContext, private readonly slot: SlotKernel, private readonly native: SlotNative,
@@ -168,8 +187,27 @@ class GameRun {
     catch (error) { throw new GameEnd("env_crash", `evidence_boundary:${error instanceof Error ? error.message : String(error)}`); }
   }
 
+  /** Native combat_end facts read since the last call, carried by the pending row (S2: across a forced chain). */
+  #collectCombatEnd(): void {
+    const facts = this.native.takeCombatEnd();
+    if (facts.length === 0) return;
+    const pending = this.#pendingOutcome;
+    if (!pending) { this.ctx.stats.combat_end_unattributed += facts.length; return; }
+    for (const fact of facts) {
+      if (pending.combat_end.length < COMBAT_END_PER_OUTCOME) pending.combat_end.push(fact);
+      else this.ctx.stats.combat_end_unattributed += 1;
+    }
+  }
+
+  #completed(pending: PendingOutcome, facts: PublicFacts, terminal: { result: "victory" | "defeat" } | null): void {
+    this.#outcome(pending.row_id, pending.step_index, "completed", { receipt_sha256: pending.receipt_sha256, public_facts: facts, terminal,
+      ...(this.ctx.config.inference.single_choice === "omit" ? { forced_steps: pending.forced } : {}),
+      ...(pending.combat_end.length > 0 ? { combat_end: pending.combat_end } : {}) });
+  }
+
   /** The step of an earlier row resolved; its outcome carries the facts of the state it led to. */
   #flushOutcome(facts: PublicFacts | null, terminal: { result: "victory" | "defeat" } | null): void {
+    this.#collectCombatEnd();
     const pending = this.#pendingOutcome;
     if (!pending) return;
     this.#pendingOutcome = null;
@@ -177,15 +215,30 @@ class GameRun {
       this.#outcome(pending.row_id, pending.step_index, "unknown", { reason: "native_crash" });
       throw new GameEnd("not_started", "required_information_unavailable:public_facts");
     }
-    this.#outcome(pending.row_id, pending.step_index, "completed", { receipt_sha256: pending.receipt_sha256, public_facts: facts,
-      terminal, ...(this.ctx.config.inference.single_choice === "omit" ? { forced_steps: pending.forced } : {}) });
+    this.#completed(pending, facts, terminal);
   }
 
-  /** Called with every GameEnd: an unresolved earlier step gets its honest outcome. */
+  /** L1 omit: a one-option state was accepted after the pending row's step. That row's step is
+   * resolved (its successor was read and accepted), but its outcome waits for the end of the chain. */
+  #resolveInChain(facts: PublicFacts | null): void {
+    this.#collectCombatEnd();
+    const pending = this.#pendingOutcome;
+    if (pending && facts !== null) pending.resolved = facts;
+  }
+
+  /** Called with every GameEnd: an unresolved earlier step gets its honest outcome. A row whose
+   * successor was already accepted inside a forced chain is completed, with the facts of the last
+   * accepted state, whatever ended the game after it (Stop, budget, a forced step's failure). */
   failPending(end: GameEnd): void {
+    // combat_end facts read by the step that ended the game: that step's successor was never
+    // accepted, so they ride on no outcome; counted, never lost silently and never sent.
+    this.ctx.stats.combat_end_unattributed += this.native.takeCombatEnd().length;
     const pending = this.#pendingOutcome;
     if (!pending) return;
     this.#pendingOutcome = null;
+    if (pending.resolved !== null) { this.#completed(pending, pending.resolved, null); return; }
+    // An outcome that is not completed carries no combat_end: its facts are counted, not sent.
+    this.ctx.stats.combat_end_unattributed += pending.combat_end.length;
     const fallback = end.options.pendingOutcome ?? { status: "unknown" as const, reason: "native_crash" as const };
     this.#outcome(pending.row_id, pending.step_index, fallback.status, { reason: fallback.reason });
   }
@@ -256,7 +309,11 @@ class GameRun {
         this.lastFacts = facts;
         return { reason: "terminal", detail: observation.status, terminal };
       }
-      this.#flushOutcome(facts, null);
+      // L1 omit: a one-option state is not a row. The pending row's outcome waits for the next
+      // row or the terminal (B1); its forced steps and combat_end facts accumulate meanwhile (S2).
+      const forcedState = catalog.length === 1 && config.inference.single_choice === "omit";
+      if (forcedState) this.#resolveInChain(facts);
+      else this.#flushOutcome(facts, null);
       this.awaitingSuccessor = false;
       this.lastFacts = facts;
       if (this.ctx.stopping() || this.slot.closeRequested) throw new GameEnd("stop", this.ctx.stopping() ? "process_stop" : "close_slot");
@@ -264,15 +321,23 @@ class GameRun {
       if (this.nativeSteps >= config.budget.max_native_steps_per_game) throw new GameEnd("budget", "max_native_steps_per_game");
       if (performance.now() - this.#started >= config.budget.game_wall_ms) throw new GameEnd("budget", "game_wall_ms");
 
-      if (catalog.length === 1 && config.inference.single_choice === "omit") {
+      if (forcedState) {
+        // S1: the old chain's bound on one-option steps in a row (P1G_LIMITS.forced_steps_in_a_row);
+        // past it the game closes as a budget end, never an endless loop.
+        if (this.#forcedInARow >= P1G_LIMITS.forced_steps_in_a_row) {
+          stats.forced_chain_limit += 1;
+          throw new GameEnd("budget", "forced_steps_in_a_row");
+        }
+        this.#forcedInARow += 1;
         stats.forced += 1;
-        const forced = this.#pendingOutcome;
         const status = await this.#acted(prepared, 0, null);
-        if (forced) forced.forced += 1;
         if (status === "not_started") throw new GameEnd("not_started", "forced_step_not_delivered");
         if (status === "unknown") throw new GameEnd("unknown", this.#unknownDetail(), { replaceNative: true });
+        // Counted once its successor was captured (an interrupted fold still ran native steps).
+        if (this.#pendingOutcome) this.#pendingOutcome.forced += 1;
         continue;
       }
+      this.#forcedInARow = 0;
 
       if (facts === null) throw new GameEnd("not_started", "required_information_unavailable:public_facts");
       const inputStarted = performance.now();
@@ -285,6 +350,8 @@ class GameRun {
       const observationSha = pyJsonSha256(view);
       const row = { row_id: rowId, game_instance_id: this.gameInstanceId, catalog_sha256: catalogSha, catalog_len: catalog.length, in_combat: inCombat };
       const consumptionId = `consumption-${randomUUID().replaceAll("-", "")}`;
+      // combat_end facts read before this row with no earlier row to carry them are not this row's.
+      this.#collectCombatEnd();
       const line = `{"schema":${JSON.stringify(FAST_ENV_LINK_SCHEMA)},"type":"decision","row_id":${rowId},`
         + `"game_instance_id":${JSON.stringify(this.gameInstanceId)},"step_index":${stepIndex},"consumption_id":"${consumptionId}",`
         + `"catalog_len":${catalog.length},"catalog_sha256":"${catalogSha}","observation_sha256":"${observationSha}",`
@@ -322,6 +389,10 @@ class GameRun {
         throw new GameEnd("unknown", this.#unknownDetail(), { replaceNative: true });
       }
     }
+  }
+
+  #newPending(row: { rowId: number; stepIndex: number }, receiptSha: string): PendingOutcome {
+    return { row_id: row.rowId, step_index: row.stepIndex, receipt_sha256: receiptSha, forced: 0, combat_end: [], resolved: null };
   }
 
   /** actGlobal's fold over one P1 choice: Host BoundActions only, each revalidated by the Host. */
@@ -375,14 +446,14 @@ class GameRun {
       if (decoded.delivery === "unknown") { this.#unknownCause = `receipt_delivery_unknown:${decoded.reason_code ?? "none"}`; return "unknown"; }
       if (decoded.delivery === "not_delivered") { status = steps === 1 ? "not_started" : "interrupted_known"; break; }
       if (decoded.reason_code === "compact_state_divergence") {
-        if (row) this.#pendingOutcome = { row_id: row.rowId, step_index: row.stepIndex, receipt_sha256: receiptSha, forced: 0 };
+        if (row) this.#pendingOutcome = this.#newPending(row, receiptSha);
         throw new GameEnd("not_started", "compact_state_divergence", { replaceNative: true, buildStop: "compact_state_divergence",
           pendingOutcome: { status: "unknown", reason: "compact_state_divergence" } });
       }
       const rule = lowering.follow[followIndex++];
       // Every known delivery gets an actual successor capture; a failure after a
       // delivered step leaves its row's outcome unknown and ends the game.
-      if (row && steps === 1) this.#pendingOutcome = { row_id: row.rowId, step_index: row.stepIndex, receipt_sha256: receiptSha, forced: 0 };
+      if (row && steps === 1) this.#pendingOutcome = this.#newPending(row, receiptSha);
       if (row && this.#pendingOutcome) this.#pendingOutcome.receipt_sha256 = receiptSha;
       const since = performance.now();
       source = await this.#capture();
@@ -530,7 +601,6 @@ export class SlotKernel {
     }
     const fullChecks = native.fullChecks();
     ctx.stats.full_checks += fullChecks;
-    ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason, last_step_index: game.lastStepIndex });
     if (!replace) {
       try { await native.release(); } catch { replace = true; }
     }
@@ -544,6 +614,13 @@ export class SlotKernel {
         last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace, full_checks: fullChecks });
     }
     catch (error) { failEvidence(error); }
+    // The decision link hears the close only after this game's evidence is closed: a game whose
+    // evidence failed gets no terminal label and its unsealed rows are sealed truncated
+    // (`env_crash` on the link; the evidence and the `closed` event keep the real reason). Per
+    // D1=A the learner then excludes the game: segments not yet used are dropped; a segment
+    // already selected into a prefetched batch counts as used and is only counted.
+    ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason: evidenceFailed ? "env_crash" : reason,
+      last_step_index: game.lastStepIndex });
     this.#idle();
     ctx.emit("closed", { slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId, reason, detail,
       decisions: game.decisions, native_steps: game.nativeSteps, last_step_index: game.lastStepIndex, terminal,

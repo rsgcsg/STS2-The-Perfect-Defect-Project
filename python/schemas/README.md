@@ -44,8 +44,13 @@ is closed and versioned.
     before it opens; every temporary mu its segments bind is archived with its weights
     (bound by sha256) before a row is scored with it, and the game's originals are kept
     in full; the flag carries no game information;
-  - `single_choice: omit` (L1) and arms other than `control` change training data and
-    need their own approval; the defaults are `score` and `control`.
+  - `single_choice: omit` (L1) changes training data: one-option states are not rows,
+    their native steps fold into the previous row's outcome (`forced_steps`), and
+    `max_decisions_per_game` counts model rows only. The user approved omit for the fast
+    chain on 2026-11-09 ("这个我决定没什么问题。你自己检查隐藏的风险", WP8 card ③): fast-chain
+    configs write `omit` (the fast-env field is required, so the launcher states it) and
+    the old chain keeps `score`. Arms other than
+    `control` still need their own approval; the default arm is `control`.
 
 Rules:
 

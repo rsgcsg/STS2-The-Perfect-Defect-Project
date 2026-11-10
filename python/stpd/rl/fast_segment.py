@@ -242,6 +242,24 @@ class RejectedSegment:
             "rows_base64": [base64.b64encode(row).decode() for row in self.rows]})
 
 
+@dataclass(frozen=True)
+class InstanceClosed:
+    """One game instance closed at the assembler (WP8): the learner's exclusion signal.
+
+    Emitted after every segment of the instance, on the same stream, so a
+    receiver sees it after the last one. `close_reason` is the environment's
+    `episode_close.reason`; `failure` the first non-completed outcome of the game
+    (`"<status>:<reason>"`, for example `"unknown:compact_state_divergence"`, or
+    `"refused:<code>"` for a refused row), or None. `segments` counts every
+    segment of the instance by sealed kind (`bootstrap` + `terminal` = trainable).
+    """
+
+    game_instance_id: str
+    close_reason: str
+    failure: str | None
+    segments: dict[str, int]
+
+
 def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
     """Seal `header` (whose rows carry no payload yet) with the exact row bytes."""
     header = json.loads(canonical_json(header))  # owned copy, JSON-only values

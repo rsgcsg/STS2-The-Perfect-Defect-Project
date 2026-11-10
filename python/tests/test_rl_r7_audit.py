@@ -345,3 +345,76 @@ def test_public_battle_hp_candidate_and_comparison():
     assert compare_hp_labels(battles, battles) is None
     finding = compare_hp_labels(battles, [{"steps": [1, 2], "post_hp": 69}])
     assert finding is not None and finding.detail == {"first_battle": 0, "fast": 2, "legacy": 1}
+
+
+# ------------------------------------------- single_choice: omit (audit B3)
+def _forced_step(**overrides: Any) -> dict[str, Any]:
+    step = _step(0, step_index=None, scores=[], selected_score=None, forced=True,
+                 choice={"content": {"kind": "end_turn"}, "occurrence": 0, "ambiguous": False})
+    step.update(overrides)
+    return step
+
+
+def _omit_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A fast omit game (rows 0, 1 with two forced choices between) and its score replay."""
+    fast_steps = [_step(0), _forced_step(), _forced_step(), _step(1)]
+    replay_steps = [_step(0), {**_forced_step(), "step_index": 1, "forced": False,
+                               "scores": [0.9], "selected_score": 0.9},
+                    {**_forced_step(), "step_index": 2, "forced": False, "scores": [0.4],
+                     "selected_score": 0.4}, _step(3)]
+    replay_steps[3]["input"] = fast_steps[3]["input"]
+    replay_steps[3]["content_sha256"] = fast_steps[3]["content_sha256"]
+    replay_steps[3]["choice"] = fast_steps[3]["choice"]
+    fast = {"steps": fast_steps, "decisions": 2, "native_steps": 4, "terminal": None}
+    replay = {"steps": replay_steps, "decisions": 4, "native_steps": 4, "terminal": None}
+    return fast, replay
+
+
+def test_omit_fast_game_matches_its_score_mode_replay():
+    fast, replay = _omit_pair()
+    report = compare_action_records(fast, replay)
+    assert report.findings == [] and report.compared_steps == 4
+
+
+def test_omit_alignment_still_catches_forks():
+    fast, replay = _omit_pair()
+    replay["steps"][1]["scores"] = [0.5, 0.5]  # the replay had two options there
+    report = compare_action_records(fast, replay)
+    assert [f.kind for f in report.findings] == ["forced_single_choice"]
+    fast, replay = _omit_pair()
+    replay["steps"][2]["choice"] = {"content": {"kind": "proceed"}, "occurrence": 0}
+    assert [f.kind for f in compare_action_records(fast, replay).findings] == ["choice"]
+    fast, replay = _omit_pair()
+    replay["decisions"] = 3
+    assert [f.kind for f in compare_action_records(fast, replay).findings] == ["decisions"]
+    fast, replay = _omit_pair()
+    del replay["steps"][2]  # a forced step missing on one side is a fork, not a skip
+    assert compare_action_records(fast, replay).stops_output
+
+
+@pytest.mark.parametrize(("mutate", "problem"), [
+    (lambda r: r["steps"][1].update(scores=[0.3]), "steps[1].forced"),
+    (lambda r: r["steps"][1].update(step_index=1), "steps[1].forced"),
+    (lambda r: r["steps"][3].update(step_index=3), "steps[3].step_index"),
+    (lambda r: r["steps"][1].update(forced="yes"), "steps[1].types"),
+])
+def test_omit_record_shape(mutate, problem):
+    fast, replay = _omit_pair()
+    mutate(fast)
+    report = compare_action_records(fast, replay)
+    assert report.findings[0].kind == "record_shape"
+    assert report.findings[0].detail == {"side": "fast", "problem": problem}
+
+
+def test_hp_labels_renumber_the_old_chain_single_choice_steps():
+    from stpd.rl.r7_audit import compare_hp_labels
+
+    # Old chain: battle on steps 3..7 where 5 was a single choice (end turn only).
+    legacy = [{"steps": [3, 4, 5, 6, 7], "post_hp": 50}, {"steps": [10, 11], "post_hp": 41}]
+    # Fast omit rows: step 5 skipped, so 6, 7 are rows 5, 6; the second battle 9, 10.
+    fast = [{"steps": [3, 4, 5, 6], "post_hp": 50}, {"steps": [9, 10], "post_hp": 41}]
+    assert compare_hp_labels(fast, legacy) is not None  # without the mapping they differ
+    assert compare_hp_labels(fast, legacy, legacy_single_choice_steps=[5]) is None
+    changed = [{"steps": [3, 4, 5, 6], "post_hp": 48}, fast[1]]
+    finding = compare_hp_labels(changed, legacy, legacy_single_choice_steps=[5])
+    assert finding is not None and finding.detail["first_battle"] == 0
