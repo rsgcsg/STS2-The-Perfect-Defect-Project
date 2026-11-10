@@ -41,6 +41,11 @@ def close_tree(left, right):
         assert left == right
 
 
+def first_moment(cp: Any, parameter: str) -> float:
+    names = [name for group in cp.optimizer_parameter_names for name in group]
+    return float(cp.optimizer["state"][names.index(parameter)]["exp_avg"].abs().max())
+
+
 def test_two_ranks_split_each_minibatch_and_match_one_SGD_process(tmp_path, monkeypatch):
     results = {}
     for world in (1, 2):
@@ -51,6 +56,7 @@ def test_two_ranks_split_each_minibatch_and_match_one_SGD_process(tmp_path, monk
             owner.checkpoint(final=True)
             _, cp = read_cp(owner)
             results[world] = cp, events, aux_uses(owner)
+            results["lr"] = owner.config.lr
             if world == 2:
                 parallel = [e["data_parallel"] for e in events if "data_parallel" in e]
                 assert len(parallel) == len(events)
@@ -67,7 +73,25 @@ def test_two_ranks_split_each_minibatch_and_match_one_SGD_process(tmp_path, monk
     (one, one_events, one_aux), (two, two_events, two_aux) = results[1], results[2]
     assert one.counters == two.counters and one_aux == two_aux
     assert [e["kl_stopped"] for e in one_events] == [e["kl_stopped"] for e in two_events]
-    for name in ("weights", "optimizer", "ema"):
+    # The action-score bias `head.2.bias` adds one constant to every score of a
+    # catalog, and scores only enter the loss through log_softmax: its exact
+    # gradient is 0, so both runs only see float32 rounding noise (~1e-9) there.
+    # Adam divides that noise by sqrt(v)+eps with sqrt(v) below eps, turning it
+    # into a step of up to ~lr whose value depends on summation order (seen on
+    # Linux CI: 1.55e-5 on a value of 0.025). The bias cannot change any policy
+    # output, so it is bounded by the Adam step (updates x lr), not by rounding;
+    # every other tensor keeps the rounding tolerance. The exemption is this one
+    # named parameter, and its gradient must still be noise in both runs.
+    null = {"head.2.bias"}
+    assert all(first_moment(cp, name) < 1e-7 for cp in (one, two) for name in null)
+    bound = one.counters.updates * results["lr"]
+    for name, left in one.weights.items():
+        right = two.weights[name]
+        if name in null:
+            assert float((left - right).abs().max()) <= bound, name
+        else:
+            close_tree(left, right)
+    for name in ("optimizer", "ema"):
         close_tree(getattr(one, name), getattr(two, name))
     for left, right in zip(one_events, two_events, strict=True):
         for key in ("update", "first_use", "first_use_multi", "stepped"):
