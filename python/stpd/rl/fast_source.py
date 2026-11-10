@@ -52,10 +52,12 @@ Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲
     loss coefficient is > 0 (an explicit list may not leave one out; lead
     ruling 11-10); `compare_hp_labels` still has to show the hp rule equal to
     the old chain on a corpus before a long run relies on hp. It switches to
-    `combat_end` once the native side emits it (WP1 slice 3). One difference
-    from the old chain: a reward-boundary battle's hp rows enter the pool at
-    game end, not at its segment's commit (pool timing only; same rows, same
-    values).
+    `combat_end` once the native side emits it (WP1 slice 3). Two differences
+    from the old chain (lead ruling on #450 review N1, accepted as current
+    behavior: hp is off by default and stop/budget truncation is rare):
+    (1) hp rows enter the pool at game end, not at their segment's commit;
+    (2) a game without a clean close (truncated, failed, or across a
+    generation change) gives no hp labels.
 """
 
 from __future__ import annotations
