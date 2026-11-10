@@ -137,3 +137,49 @@ def test_historical_P5_snapshot_shape_still_loads(tmp_path, model):
     assert all(group.layout is None for group in minibatch.groups)
     with pytest.raises(FileExistsError):  # one directory per attempt, never overwritten
         offline_step.write(tmp_path / "p5", {"schema": offline_step.SCHEMA}, {})
+
+
+def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, monkeypatch):
+    """WP8: bz2 preflight, recompile limit, cache dir and warm-up on a real dump."""
+    dumps = tmp_path / "dumps"
+    split, owner = _owner(tmp_path / "dump", monkeypatch, "rows-v2", {
+        "sgd_offline_dump_every": 1, "sgd_offline_dump_limit": 1,
+        "sgd_offline_dump_directory": str(dumps)})
+    try:
+        split.train(owner, 2)
+    finally:
+        owner.close()
+    (root,) = sorted(dumps.iterdir())
+    original = split.configuration
+
+    def compiled(path, patch, **kwargs):
+        config, io = original(path, patch, **kwargs)
+        return dc.replace(config, performance=dc.replace(
+            config.performance, prepared_compile=True)), io
+
+    monkeypatch.setattr(split, "configuration", compiled)
+    cache = tmp_path / "inductor"
+    owner = split.terminal_owner(tmp_path / "warm", monkeypatch, dataplane={"sgd_compile": {
+        "cache_dir": str(cache), "recompile_limit": 16, "warmup": [str(root)]}})[0]
+    try:
+        # The controller already refused a ready whose theta differs from init.
+        facts = owner.sgd_compile
+        assert facts["bz2"] and facts["recompile_limit"] == 16
+        assert facts["cache_dir"] == str(cache) and cache.exists()
+        (warm,) = facts["warmup"]
+        assert warm["path"] == str(root) and warm["rows"] > 0
+        assert warm["rows_forward"]["compiled"] and warm["rows_forward"]["dynamo_frames_ok"] > 0
+        events = split.train(owner, 1)
+        assert owner.updates == 2
+        # Diagnostics attempts (update 0 here) run eager by design; the rest compile.
+        assert [event["rows_forward"]["compiled"] for event in events] == [False, True]
+    finally:
+        owner.close()
+
+
+def test_compile_options_need_prepared_compile_and_are_explicit():
+    base = {"sgd_process": True}
+    assert sgd_options(base).compile is None
+    for bad in ({"recompile_limit": 4}, {"warmup": "x"}, {"cache_dir": ""}, {"other": 1}):
+        with pytest.raises(ValueError, match="invalid_sgd_compile"):
+            sgd_options({**base, "sgd_compile": bad})

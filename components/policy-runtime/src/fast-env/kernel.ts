@@ -26,10 +26,13 @@ export interface KernelStats {
   combat_end_unattributed: number;
   /** Games and opens ended by compact_state_divergence (Host- or native-detected), counted apart from other unknowns. */
   compact_divergences: number;
+  /** S1: games closed as budget `forced_steps_in_a_row` (more one-option steps in a row than the old chain allows),
+   * counted apart from the other budget ends. */
+  forced_chain_limit: number;
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
 }
 export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
-  combat_end_unattributed: 0, compact_divergences: 0,
+  combat_end_unattributed: 0, compact_divergences: 0, forced_chain_limit: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0 });
 
 /** What every slot of one environment process shares. */
@@ -227,10 +230,15 @@ class GameRun {
    * successor was already accepted inside a forced chain is completed, with the facts of the last
    * accepted state, whatever ended the game after it (Stop, budget, a forced step's failure). */
   failPending(end: GameEnd): void {
+    // combat_end facts read by the step that ended the game: that step's successor was never
+    // accepted, so they ride on no outcome; counted, never lost silently and never sent.
+    this.ctx.stats.combat_end_unattributed += this.native.takeCombatEnd().length;
     const pending = this.#pendingOutcome;
     if (!pending) return;
     this.#pendingOutcome = null;
     if (pending.resolved !== null) { this.#completed(pending, pending.resolved, null); return; }
+    // An outcome that is not completed carries no combat_end: its facts are counted, not sent.
+    this.ctx.stats.combat_end_unattributed += pending.combat_end.length;
     const fallback = end.options.pendingOutcome ?? { status: "unknown" as const, reason: "native_crash" as const };
     this.#outcome(pending.row_id, pending.step_index, fallback.status, { reason: fallback.reason });
   }
@@ -316,7 +324,10 @@ class GameRun {
       if (forcedState) {
         // S1: the old chain's bound on one-option steps in a row (P1G_LIMITS.forced_steps_in_a_row);
         // past it the game closes as a budget end, never an endless loop.
-        if (this.#forcedInARow >= P1G_LIMITS.forced_steps_in_a_row) throw new GameEnd("budget", "forced_steps_in_a_row");
+        if (this.#forcedInARow >= P1G_LIMITS.forced_steps_in_a_row) {
+          stats.forced_chain_limit += 1;
+          throw new GameEnd("budget", "forced_steps_in_a_row");
+        }
         this.#forcedInARow += 1;
         stats.forced += 1;
         const status = await this.#acted(prepared, 0, null);
@@ -603,9 +614,11 @@ export class SlotKernel {
         last_step_index: game.lastStepIndex, terminal, public_facts: game.lastFacts, native_replaced: replace, full_checks: fullChecks });
     }
     catch (error) { failEvidence(error); }
-    // The decision link hears the close only after this game's evidence is closed: a game
-    // whose evidence failed is never labelled, so its segments are truncated and never reach
-    // SGD (`env_crash` on the link; the evidence and the `closed` event keep the real reason).
+    // The decision link hears the close only after this game's evidence is closed: a game whose
+    // evidence failed gets no terminal label and its unsealed rows are sealed truncated
+    // (`env_crash` on the link; the evidence and the `closed` event keep the real reason). Per
+    // D1=A the learner then excludes the game: segments not yet used are dropped; a segment
+    // already selected into a prefetched batch counts as used and is only counted.
     ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason: evidenceFailed ? "env_crash" : reason,
       last_step_index: game.lastStepIndex });
     this.#idle();
