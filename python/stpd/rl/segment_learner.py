@@ -1894,7 +1894,9 @@ class SegmentLearner:
         for record in self.queue.pending:
             if overflow <= 0:
                 break
-            if record["segment_id"] not in referenced:
+            # Only fast records: an old-chain lease's segment has its own episode
+            # accounting and is never a fast capacity drop (review S4).
+            if record.get("fast") and record["segment_id"] not in referenced:
                 victims.add(record["segment_id"])
                 overflow -= record["rows"]
         if overflow > 0:
