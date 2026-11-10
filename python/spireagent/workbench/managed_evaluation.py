@@ -407,6 +407,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
+            "0.1.0-rc.66",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -423,6 +424,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
+            "0.1.0-rc.66",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -440,6 +442,7 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.62",
                 "0.1.0-rc.63",
                 "0.1.0-rc.64",
+                "0.1.0-rc.66",
             }
             else "event",
         )
@@ -456,6 +459,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.62",
             "0.1.0-rc.63",
             "0.1.0-rc.64",
+            "0.1.0-rc.66",
         }:
             reject("runtime_decision_durability_required")
         if self.managed_transport == "in_process" and (
@@ -471,7 +475,8 @@ class ManagedEpisodeExecutor:
             (self.host / "package.json").read_bytes()
         ).get("version") not in {
             "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59",
-            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62", "1.1.0-rc.63", "1.1.0-rc.64"
+            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62", "1.1.0-rc.63", "1.1.0-rc.64",
+            "1.1.0-rc.66",
         }:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(

@@ -64,7 +64,13 @@ def test_real_labeler_and_learner_agree_end_to_end(tmp_path: Path):
         handoff = SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id=instance),
                                  ShmSegmentSender(ours, assembler_id=instance, ack_timeout=20),
                                  labeler=build_instance_labels)
-        game.assembler.emit = handoff.submit
+        emitted: list[tuple[str, str]] = []  # (game, segment_id) in emit order
+
+        def emit(segment: Any) -> None:
+            emitted.append((segment.header["game_instance_id"], segment.segment_id))
+            handoff.submit(segment)
+
+        game.assembler.emit = emit
         game.assembler.on_closed = handoff.submit_closed
         for name in GAMES:
             game.open(name)
@@ -91,10 +97,11 @@ def test_real_labeler_and_learner_agree_end_to_end(tmp_path: Path):
     for name in ("g1", "g2"):
         assert [(k, None, n) for k, _identity, n in labels[name]] == expected
         assert [i for _k, i, _n in labels[name]][1:] == [f"{name}:0", f"{name}:20"]
-        # Order per game: its last segment, then its labels, then its close.
+        # Order per game: its own last segment, then its labels, then its close.
+        last = [segment_id for owner, segment_id in emitted if owner == name][-1]
         at = trace.index(("labels", name, labels[name]))
         assert trace[at + 1] == ("closed", name, None)
-        assert trace[at - 1][0] == "segment"
+        assert trace[at - 1][:2] == ("segment", last)
     assert "g3" not in labels and ("closed", "g3", "g3") in trace
     assert handoff.counters["labels_sent"] == 2
     assert handoff.counters["labels_ineligible"] == 1
