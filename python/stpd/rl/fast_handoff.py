@@ -42,10 +42,26 @@ environment's `episode_close.reason` (an evidence failure known at close is
 `env_crash`); `failure` is the game's first non-completed outcome
 (`"<status>:<reason>"`) or null. What an exclusion drops is the learner's rule
 (semantics A: unused queued segments of that instance; already-trained ones stay
-counted, as in the old chain). `receive_handoff` reads either message.
+counted, as in the old chain). `receive_handoff` reads every message kind.
 
-`handoff_sequence` counts trainable segments in hand-off order from 1 per sender
-connection, strictly increasing, never reused or resent; it is the order an
+With a `labeler` (WP8, `stpd/rl-fast-instance-labels-1`, lead approval 2026-11-09;
+the learner's `fast_source.build_instance_labels`), one labels message goes between
+the instance's last segment and its instance-closed message, in shared memory and
+acked like a segment (`send_message`): the labeler's fields plus `handoff_sequence`
+(same counter) and `shm_name`; the bytes are the referenced originals re-read from
+this node's `.stfs` files and checked against their sha256. It is sent only for a
+game every segment of which was trainable and handed off, closed without
+`failure` and not `unknown`/`env_crash` (the old chain labels only such games);
+any other game (also one across a training-generation change) is counted in
+`labels_ineligible`, never labelled in part; a labeler, read-back or send error is
+counted in `labels_failed` and stops the chain loudly. Two differences from the old
+chain (lead ruling 2026-11-11): hp labels enter the pool at game end, not at their
+segment's commit; and a game that did not close cleanly (truncated, failed or across
+a generation) gives no hp labels for its finished battles.
+
+`handoff_sequence` counts every acked hand-off message (trainable segments and
+labels) in hand-off order from 1 per sender connection, strictly increasing, never
+reused or resent; it is the order an
 SGD-side queue (today `SegmentQueue`, lease `<assembler_id>/<sequence>`) needs.
 The SGD side attaches the named block, checks size and sha256, copies the bytes
 and acks; the sender then unlinks the block. Unacknowledged bytes are bounded by
@@ -86,6 +102,9 @@ HANDOFF_KEYS = frozenset({"schema", "handoff_sequence", "assembler_id", "segment
 INSTANCE_CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 INSTANCE_CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id",
                                   "close_reason", "failure", "segments"})
+LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
+# Close reasons after which a game gets no labels (the learner excludes its unused segments).
+UNLABELLED_CLOSE_REASONS = frozenset({"unknown", "env_crash"})
 SEGMENT_KINDS = ("bootstrap", "terminal", "truncated", "rejected")
 SUFFIX = ".stfs"
 
@@ -266,24 +285,36 @@ class ShmSegmentSender:
             raise HandoffError("truncated_segment_never_handed_to_sgd")
         if segment.header.get("assembler_instance") != self.assembler_id:
             raise HandoffError("segment_from_another_assembler_instance")
-        size = len(segment.data)
+        header = segment.header
+        return self.send_message({
+            "schema": HANDOFF_SCHEMA, "assembler_id": self.assembler_id,
+            "segment_id": segment.segment_id,
+            "training_generation": header["mu"]["training_generation"],
+            "mu_snapshot_sha256": header["mu"]["snapshot_sha256"],
+            "rows": len(header["rows"]), "size": len(segment.data),
+            "sha256": segment.sha256, "path": str(path)}, segment.data)
+
+    def send_message(self, fields: dict[str, Any], data: bytes) -> int:
+        """`data` in a new shared-memory block, `fields` plus `handoff_sequence` and
+        `shm_name` on the channel; acked and bounded like every hand-off."""
+        if fields.get("assembler_id") != self.assembler_id:
+            raise HandoffError("message_from_another_assembler_instance")
+        if (fields.get("size") != len(data) or fields.get("sha256") != sha256(data)
+                or {"handoff_sequence", "shm_name"} & set(fields)):
+            raise HandoffError("handoff_message_binding")
+        size = len(data)
         self._drain(block=False)
         while self.inflight and self.inflight_bytes + size > self.max_inflight_bytes:
             self._drain(block=True)
-        block = shared_memory.SharedMemory(create=True, size=size)
+        # A block cannot be empty; the reader copies exactly `size` bytes.
+        block = shared_memory.SharedMemory(create=True, size=max(size, 1))
         try:
             buffer = block.buf
             assert buffer is not None
-            buffer[:size] = segment.data
+            buffer[:size] = data
             self.sequence += 1
-            header = segment.header
-            self.connection.send({
-                "schema": HANDOFF_SCHEMA, "handoff_sequence": self.sequence,
-                "assembler_id": self.assembler_id, "segment_id": segment.segment_id,
-                "training_generation": header["mu"]["training_generation"],
-                "mu_snapshot_sha256": header["mu"]["snapshot_sha256"],
-                "rows": len(header["rows"]), "shm_name": block.name, "size": size,
-                "sha256": segment.sha256, "path": str(path)})
+            self.connection.send({**fields, "handoff_sequence": self.sequence,
+                                  "shm_name": block.name})
         except BaseException:
             block.close()
             block.unlink()
@@ -332,15 +363,39 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
 
 
 def receive_handoff(connection: Connection) -> tuple[str, Any]:
-    """SGD-side reference reader for both messages of the channel.
+    """SGD-side reference reader for every message of the channel.
 
-    Returns `("segment", (message, header, rows))` (as `receive_segment`) or
-    `("instance_closed", message)`; anything else raises.
+    Returns `("segment", (message, header, rows))` (as `receive_segment`),
+    `("labels", (message, data))` (bytes verified, acked; the label rule and the
+    carried originals are the learner's to check) or `("instance_closed", message)`;
+    anything else raises.
     """
     message = connection.recv()
-    if isinstance(message, dict) and message.get("schema") == INSTANCE_CLOSED_SCHEMA:
+    schema = message.get("schema") if isinstance(message, dict) else None
+    if schema == INSTANCE_CLOSED_SCHEMA:
         return "instance_closed", check_instance_closed(message)
+    if schema == LABELS_SCHEMA:
+        data = _read_block(message)
+        connection.send({"schema": HANDOFF_SCHEMA, "ack": message["handoff_sequence"]})
+        return "labels", (message, data)
     return "segment", _receive_segment_message(connection, message)
+
+
+def _read_block(message: dict[str, Any]) -> bytes:
+    block = shared_memory.SharedMemory(name=message["shm_name"])
+    try:
+        # The sender owns and unlinks the block; this process must not track it.
+        resource_tracker.unregister(block._name, "shared_memory")  # type: ignore[attr-defined]
+        if block.size < message["size"]:
+            raise HandoffError("handoff_size")
+        buffer = block.buf
+        assert buffer is not None
+        data = bytes(buffer[:message["size"]])
+    finally:
+        block.close()
+    if sha256(data) != message["sha256"]:
+        raise HandoffError("handoff_digest")
+    return data
 
 
 def receive_segment(connection: Connection) -> tuple[dict[str, Any], dict[str, Any], list[bytes]]:
@@ -359,19 +414,7 @@ def _receive_segment_message(connection: Connection, message: Any
     if (not isinstance(message, dict) or message.get("schema") != HANDOFF_SCHEMA
             or set(message) != HANDOFF_KEYS):
         raise HandoffError("handoff_schema")
-    block = shared_memory.SharedMemory(name=message["shm_name"])
-    try:
-        # The sender owns and unlinks the block; this process must not track it.
-        resource_tracker.unregister(block._name, "shared_memory")  # type: ignore[attr-defined]
-        if block.size < message["size"]:
-            raise HandoffError("handoff_size")
-        buffer = block.buf
-        assert buffer is not None
-        data = bytes(buffer[:message["size"]])
-    finally:
-        block.close()
-    if sha256(data) != message["sha256"]:
-        raise HandoffError("handoff_digest")
+    data = _read_block(message)
     header, rows = decode_segment(data)
     if (header["segment_id"] != message["segment_id"] or not header["trainable"]
             or len(rows) != message["rows"]
@@ -383,14 +426,41 @@ def _receive_segment_message(connection: Connection, message: Any
     return message, header, rows
 
 
+class _Original:
+    """A handed-off segment kept for its game's labels: header in memory, bytes on disk."""
+
+    def __init__(self, segment: SealedSegment, path: Path) -> None:
+        self.header, self.segment_id = segment.header, segment.segment_id
+        self.sha256 = segment.sha256
+        self.path = path
+        self._data: bytes | None = None
+
+    @property
+    def data(self) -> bytes:
+        if self._data is None:
+            try:
+                data = self.path.read_bytes()
+            except OSError as error:
+                raise HandoffError("labels_original_unreadable") from error
+            if sha256(data) != self.sha256:
+                raise HandoffError("labels_original_changed")
+            self._data = data
+        return self._data
+
+
 class SegmentHandoff:
     """Background writer + sender so the assembler never blocks under its lock."""
 
     def __init__(self, writer: DurableSegmentWriter, sender: ShmSegmentSender | None = None,
                  *, max_queue: int = 64,
-                 on_written: Callable[[SealedSegment | RejectedSegment, Path], None] | None = None
+                 on_written: Callable[[SealedSegment | RejectedSegment, Path], None] | None = None,
+                 labeler: Callable[[list[Any]], tuple[dict[str, Any], bytes]] | None = None
                  ) -> None:
         self.writer, self.sender, self.on_written = writer, sender, on_written
+        self.labeler = labeler
+        # Per open game: its handed-off segments, or None once one segment of it was not
+        # (truncated, rejected, write or hand-off failure): that game gets no labels.
+        self._games: dict[str, list[_Original] | None] = {}
         self.queue: queue.Queue[SealedSegment | RejectedSegment | InstanceClosed | None] = (
             queue.Queue(max_queue))
         self.write_error: BaseException | None = None
@@ -398,7 +468,8 @@ class SegmentHandoff:
         self.counters = {"written": 0, "handed_off": 0, "truncated_written": 0,
                          "rejected_written": 0, "bytes": 0, "write_failed": 0,
                          "not_handed_off": 0, "instances_closed_sent": 0,
-                         "instances_closed_not_sent": 0}
+                         "instances_closed_not_sent": 0, "labels_sent": 0,
+                         "labels_ineligible": 0, "labels_failed": 0}
         self.thread = threading.Thread(target=self._run, name="fast-segment-handoff",
                                        daemon=True)
         self.thread.start()
@@ -427,7 +498,54 @@ class SegmentHandoff:
         self.queue.put(closed)
         self.raise_if_failed()
 
+    def _labelable(self, closed: InstanceClosed, kept: list[_Original] | None) -> bool:
+        return (kept is not None and len(kept) > 0 and closed.failure is None
+                and closed.close_reason not in UNLABELLED_CLOSE_REASONS
+                and closed.segments.get("truncated") == 0
+                and closed.segments.get("rejected") == 0
+                and len(kept) == closed.segments.get("bootstrap", 0)
+                + closed.segments.get("terminal", 0)
+                # A game across a generation change: the learner drops the old part.
+                and len({o.header["mu"]["training_generation"] for o in kept}) == 1)
+
+    def _send_labels(self, closed: InstanceClosed) -> None:
+        """Labels for a game, before its instance-closed message; never in part."""
+        kept = self._games.pop(closed.game_instance_id, None)
+        if self.labeler is None:
+            return
+        if self.sender is None or self.send_error is not None:
+            # The chain has already stopped loudly (or there is no SGD): not a failure here.
+            self.counters["labels_ineligible"] += 1
+            return
+        if not self._labelable(closed, kept):
+            self.counters["labels_ineligible"] += 1
+            return
+        assert kept is not None
+        try:
+            fields, data = self.labeler(kept)
+            self.sender.send_message(fields, data)
+            self.counters["labels_sent"] += 1
+        except BaseException as error:  # noqa: BLE001 - recorded, re-raised
+            self.send_error = error
+            self.counters["labels_failed"] += 1
+
+    def _keep(self, segment: SealedSegment | RejectedSegment, path: Path | None,
+              handed_off: bool) -> None:
+        if self.labeler is None:
+            return
+        instance = segment.header.get("game_instance_id")
+        if not isinstance(instance, str):
+            return
+        kept = self._games.setdefault(instance, [])
+        if kept is None:
+            return
+        if handed_off and isinstance(segment, SealedSegment) and path is not None:
+            kept.append(_Original(segment, path))
+        else:
+            self._games[instance] = None
+
     def _send_closed(self, closed: InstanceClosed) -> None:
+        self._send_labels(closed)
         if self.sender is None or self.send_error is not None:
             self.counters["instances_closed_not_sent"] += 1
             return
@@ -451,7 +569,9 @@ class SegmentHandoff:
             except BaseException as error:  # noqa: BLE001 - recorded and re-raised
                 self.counters["write_failed"] += 1
                 self.write_error = self.write_error or error
+                self._keep(segment, None, handed_off=False)
                 continue
+            handed_off = False
             self.counters["written"] += 1
             self.counters["bytes"] += len(segment.data)
             if isinstance(segment, RejectedSegment):
@@ -465,9 +585,11 @@ class SegmentHandoff:
                     try:
                         self.sender.send(segment, path)
                         self.counters["handed_off"] += 1
+                        handed_off = True
                     except BaseException as error:  # noqa: BLE001 - recorded, re-raised
                         self.send_error = error
                         self.counters["not_handed_off"] += 1
+            self._keep(segment, path, handed_off)
             if self.on_written is not None:
                 try:
                     self.on_written(segment, path)
