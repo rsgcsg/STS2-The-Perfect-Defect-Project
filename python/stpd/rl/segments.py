@@ -171,6 +171,36 @@ class SegmentQueue:
             self.rows += size
             self.condition.notify_all()
 
+    def admit(self, segment: dict[str, Any]) -> None:
+        """fast_chain only: a sealed segment that never had an actor lease.
+
+        The caller has made room first (`discard`); capacity is never exceeded.
+        """
+        with self.condition:
+            size = segment.get("rows")
+            if (type(size) is not int or not 1 <= size <= self.config.steps
+                    or not isinstance(segment.get("run_id"), str)
+                    or not isinstance(segment.get("segment_id"), str)
+                    or segment["segment_id"] in self.leases
+                    or any(s["segment_id"] == segment["segment_id"] for s in self.pending)):
+                raise ValueError("fast_segment_admission_binding_mismatch")
+            if self.occupied + size > self.config.capacity_rows:
+                raise ValueError("fast_segment_admission_over_capacity")
+            self.pending.append(copy.deepcopy(segment))
+            self.rows += size
+            self.condition.notify_all()
+
+    def discard(self, segment_ids: set[str]) -> list[dict[str, Any]]:
+        """Remove these not-yet-taken segments; returns what was removed (never retried)."""
+        with self.condition:
+            removed = [s for s in self.pending if s["segment_id"] in segment_ids]
+            if removed:
+                self.pending = collections.deque(
+                    s for s in self.pending if s["segment_id"] not in segment_ids)
+                self.rows -= sum(s["rows"] for s in removed)
+                self.condition.notify_all()
+            return removed
+
     def release(self, lease: str) -> None:
         """Close an unused reservation; this does not retry a game or its actions."""
         with self.condition:
