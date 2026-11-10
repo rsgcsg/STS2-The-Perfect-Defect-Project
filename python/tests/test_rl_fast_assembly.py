@@ -530,6 +530,33 @@ def test_instance_closed_follows_even_when_the_labeler_breaks():
     assert stream[1].close_reason == "terminal" and stream[1].segments["truncated"] == 1
 
 
+def test_a_later_close_failure_never_hides_the_first():
+    """Labeler, hand-off and closed signal all fail: the labeler's error is the one raised,
+    and the hand-off and closed signal were still tried after it."""
+    def broken(summary: Any) -> dict:
+        raise RuntimeError("labeler bug")
+
+    tried: list[str] = []
+
+    def emit(item: Any) -> None:
+        tried.append("emit")
+        raise OSError("hand-off down")
+
+    def on_closed(item: Any) -> None:
+        tried.append("closed")
+        raise ValueError("closed signal down")
+
+    h = Harness(labeler=broken)
+    h.assembler.emit, h.assembler.on_closed = emit, on_closed
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    _, row = h.step("g1", outcome=False)
+    h.outcome(row, terminal={"result": "victory"})
+    with pytest.raises(RuntimeError, match="labeler bug"):
+        h.close("g1", "terminal", row["step_index"])
+    assert tried == ["emit", "closed"]
+
+
 @pytest.mark.parametrize("change", [
     {"schema": "other"}, {"extra": 1}, {"failure": 3}, {"close_reason": ""},
     {"segments": {"bootstrap": 1}},

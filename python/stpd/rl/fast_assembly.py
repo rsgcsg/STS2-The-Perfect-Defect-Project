@@ -661,15 +661,23 @@ class FastSegmentAssembler:
         """
         sealed: list[SealedSegment | RejectedSegment] = []
         closed: list[InstanceClosed] = []
+        errors: list[BaseException] = []
         try:
             with self.lock:
                 self._close_episode(message, sealed, closed)
-        finally:
+        except BaseException as error:  # noqa: BLE001 - re-raised below, first one wins
+            errors.append(error)
+        try:
+            self._emit(sealed)
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+        if closed and self.on_closed is not None:
             try:
-                self._emit(sealed)
-            finally:
-                if closed and self.on_closed is not None:
-                    self.on_closed(closed[0])
+                self.on_closed(closed[0])
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+        if errors:
+            raise errors[0]  # a later failure never hides the first one
 
     def _close_episode(self, message: Mapping[str, Any],
                        sealed: list[SealedSegment | RejectedSegment],
