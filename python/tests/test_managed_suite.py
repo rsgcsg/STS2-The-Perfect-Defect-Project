@@ -306,3 +306,38 @@ def test_suite_configuration_tamper_rejected(tmp_path, monkeypatch, field, value
     monkeypatch.setattr(suites, "MANIFEST_ROOT", tmp_path)
     with pytest.raises(ValueError, match="configuration changed"):
         load_suite("test-1000")
+
+
+def _uncached_membership(seed):
+    # The pre-index query, kept verbatim as the reference for the cached index.
+    from stpd.evaluation import suites
+
+    canonical = suites.require_canonical_game_seed(seed)
+    legacy = tuple(name for name in suite_names() if canonical in load_suite(name)["seeds"])
+    reserved = tuple(suites.derive_game_seed(suites.FOUR_AGENT_SUITE_ID, i) for i in range(1, 11))
+    checkpoint = tuple(m["suite_id"] for m in (
+        *(suites.checkpoint_reference_manifest("v0.111.0", c) for c in suites.CHARACTERS),
+        suites.checkpoint_reference_manifest("v0.111.0", "Defect", 10),
+    ) if canonical in m["seeds"])
+    t2 = tuple(m["suite_id"] for m in (suites.t2_managed_manifest("v0.111.0", a) for a in (0, 10))
+               if canonical in m["seeds"])
+    rl3 = suites.rl3_learning_curve_manifest("v0.111.0")
+    curve = (rl3["suite_id"],) if canonical in rl3["seeds"] else ()
+    return (legacy + ((suites.FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
+            + checkpoint + t2 + curve)
+
+
+def test_cached_membership_index_equals_the_uncached_query():
+    from stpd.evaluation import suites
+
+    reserved = set(suites._membership_index())
+    others = [suites.derive_game_seed("seed-index-negative-control", i) for i in range(1, 61)]
+    assert len(reserved) > 2000 and not reserved.intersection(others)
+    # Overlapping sets (checkpoint prefix inside T2) keep every suite, in order.
+    shared = suites.checkpoint_reference_manifest("v0.111.0")["seeds"][0]
+    assert len(seed_membership(shared)) >= 2
+    # Every reserved seed (each suite, incl. Defect a10 checkpoint) plus controls.
+    for seed in [*sorted(reserved), *others]:
+        assert seed_membership(seed) == _uncached_membership(seed)
+    with pytest.raises(ValueError):
+        seed_membership("not a seed")
