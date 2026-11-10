@@ -152,11 +152,6 @@ def seed_membership(seed: str) -> tuple[str, ...]:
     return _membership_index().get(require_canonical_game_seed(seed), ())
 
 
-def reserved_evaluation_seeds() -> frozenset[str]:
-    """Every reserved evaluation seed (all sets above), for O(1) exclusion checks."""
-    return frozenset(_membership_index())
-
-
 @lru_cache(maxsize=1)
 def _membership_index() -> dict[str, tuple[str, ...]]:
     # The reserved sets are frozen, versioned package facts. Build the seed ->

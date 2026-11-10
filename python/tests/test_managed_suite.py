@@ -330,15 +330,14 @@ def _uncached_membership(seed):
 def test_cached_membership_index_equals_the_uncached_query():
     from stpd.evaluation import suites
 
-    reserved = suites.reserved_evaluation_seeds()
+    reserved = set(suites._membership_index())
     others = [suites.derive_game_seed("seed-index-negative-control", i) for i in range(1, 61)]
     assert len(reserved) > 2000 and not reserved.intersection(others)
     # Overlapping sets (checkpoint prefix inside T2) keep every suite, in order.
     shared = suites.checkpoint_reference_manifest("v0.111.0")["seeds"][0]
     assert len(seed_membership(shared)) >= 2
-    sample = sorted(reserved)[::40] + [shared] + others
-    for seed in sample:
+    # Every reserved seed (each suite, incl. Defect a10 checkpoint) plus controls.
+    for seed in [*sorted(reserved), *others]:
         assert seed_membership(seed) == _uncached_membership(seed)
-    assert all(seed_membership(seed) for seed in reserved)
     with pytest.raises(ValueError):
         seed_membership("not a seed")
