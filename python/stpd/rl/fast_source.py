@@ -54,7 +54,8 @@ Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲
     the old chain on a corpus before a long run relies on hp. It switches to
     `combat_end` once the native side emits it (WP1 slice 3). Two differences
     from the old chain (lead ruling on #450 review N1, accepted as current
-    behavior: hp is off by default and stop/budget truncation is rare):
+    behavior; stop/budget truncation is rare. Note: with the 11-10 default
+    above, hp is on whenever hp_coef > 0, and LossConfig.hp_coef is 0.1):
     (1) hp rows enter the pool at game end, not at their segment's commit;
     (2) a game without a clean close (truncated, failed, or across a
     generation change) gives no hp labels.
