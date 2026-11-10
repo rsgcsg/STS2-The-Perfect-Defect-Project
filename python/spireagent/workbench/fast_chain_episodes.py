@@ -901,9 +901,13 @@ class FastChainEpisodeExecutor:
                  instance_opened: Callable[[dict[str, Any], Mapping[str, Any]], None]
                  | None = None,
                  r7_select: Callable[[], Mapping[str, Any]] | None = None,
-                 reserve_seconds: float = 60) -> None:
+                 reserve_seconds: float = 60,
+                 instance_excluded: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.configuration, self.manager = configuration, manager
         self.instance_opened = instance_opened
+        # After the close of an opened game whose evidence failed: the learner drops
+        # the instance's unused segments (``fast_instance_excluded``, WP8).
+        self.instance_excluded = instance_excluded
         # R7 is chosen before learner admission and the world offer by the actor's one
         # ``R7Selection`` (``stpd.rl.r7_audit.R7Sampler``, D line), recorded in the row.
         # Not wired (``fast_chain.r7`` absent): no game is R7, and the row says so.
@@ -995,9 +999,28 @@ class FastChainEpisodeExecutor:
         if "evidence_failed" in row:
             with self.manager.condition:
                 self.manager.counters["evidence_failed_games"] += 1
+            if self.instance_excluded is not None and close.get("opened") is not None:
+                self._exclude(row)
         row["fast_chain_close_record"] = artifacts.put("fast-chain-close.json",
                                                        json_bytes(close))
         checkpoint()
+
+    def _exclude(self, row: dict[str, Any]) -> None:
+        """Once; a failed or refused request is recorded, counted, loud, never resent."""
+        assert self.instance_excluded is not None
+        try:
+            self.instance_excluded(row)
+        except Exception as error:  # noqa: BLE001 - typed record, never a retry
+            code = getattr(error, "code", None) or type(error).__name__
+            row["fast_instance_excluded"] = {"excluded": False, "error": code}
+            counter = "fast_instance_excluded_failed"
+            print(f"fast_chain game {row.get('game_instance_id')} exclusion request "
+                  f"failed: {code}; the learner may still use its unused segments",
+                  file=sys.stderr, flush=True)
+        else:
+            counter = "fast_instance_excluded_sent"
+        with self.manager.condition:
+            self.manager.counters[counter] += 1
 
     def _r7_count(self, row: Mapping[str, Any], stage: str) -> None:
         count = getattr(self.r7_select, "count", None)

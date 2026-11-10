@@ -710,6 +710,47 @@ def fast_instance_admission(row: dict[str, Any], opened: Mapping[str, Any], *,
     row["fast_instance_admission"] = {"admitted": True, "game_instance_id": instance}
 
 
+FAST_INSTANCE_EXCLUDED = "fast_instance_excluded"
+FAST_INSTANCE_EXCLUDED_FIELDS = ("actor", "game_instance_id", "reason", "run",
+                                 "training_generation")
+
+
+def fast_instance_excluded(row: dict[str, Any], *, admission: Any, actor: str,
+                           reason: str = "evidence_failed") -> None:
+    """Fast chain only: tell the learner one opened instance must not be trained on.
+
+    Sent once, on the learner control connection, after the close of a game whose
+    environment evidence failed (``evidence_failed`` in the row: the close flag, or
+    an ``evidence_failed`` event that may arrive after the decision link closed, so
+    the assembler's instance-closed message cannot carry it). The request is
+    ``fast_instance_excluded`` with exactly :data:`FAST_INSTANCE_EXCLUDED_FIELDS`; ``run``
+    and ``training_generation`` are the ones ``fast_instance_admission`` sent. The
+    learner (semantics A, WP8) drops the instance's unused queued segments and keeps
+    the already-used ones counted, as the old chain does. The reply must be
+    ``{"excluded": true, "game_instance_id": <id>}``; anything else, or a transport
+    failure, raises and is never resent (the caller records and counts it).
+    """
+    owner = row.get("segment_admission_owner") or {}
+    instance = row.get("game_instance_id")
+    if not isinstance(instance, str) or not instance or not {
+            "run", "training_generation"} <= set(owner):
+        raise BoundaryError("rl_segment", "fast_instance_excluded_input_invalid")
+    request = {"actor": actor, "game_instance_id": instance, "reason": reason,
+               "run": owner["run"], "training_generation": owner["training_generation"]}
+    try:
+        result = admission.request(FAST_INSTANCE_EXCLUDED, **request)
+    except (OSError, EOFError, TimeoutError) as error:
+        raise BoundaryError("rl_segment", "fast_instance_excluded_delivery_failed") from error
+    if (not isinstance(result, Mapping) or result.get("excluded") is not True
+            or result.get("game_instance_id") != instance):
+        refusal = result.get("reason") if isinstance(result, Mapping) else None
+        refusal = refusal if isinstance(refusal, str) and _LEARNER_REASON.fullmatch(
+            refusal) else "unspecified"
+        raise BoundaryError("rl_segment", f"fast_instance_excluded_refused:{refusal}")
+    row["fast_instance_excluded"] = {"excluded": True, "game_instance_id": instance,
+                                     "reason": reason}
+
+
 class SegmentManagedExecutor(PipelinedManagedExecutor):
     def __init__(
         self,

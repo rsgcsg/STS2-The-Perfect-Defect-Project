@@ -336,6 +336,7 @@ class Actor:
         from .fast_chain_episodes import FastChainEpisodeExecutor, GameManager
         from .rl_segment_producer import (
             fast_instance_admission,
+            fast_instance_excluded,
             open_learner_episode,
             publish_world_offered,
         )
@@ -356,6 +357,8 @@ class Actor:
             # check, game_instance_id -> intent); no fast-chain episode_end is sent.
             instance_opened=partial(fast_instance_admission, admission=self.service,
                                     actor=self.name),
+            instance_excluded=partial(fast_instance_excluded, admission=self.service,
+                                      actor=self.name),
             r7_select=self.fast_chain["r7"])
 
     def _fast_chain_stop(self, reason: str) -> None:
