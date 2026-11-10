@@ -53,10 +53,15 @@ this node's `.stfs` files and checked against their sha256. It is sent only for 
 game every segment of which was trainable and handed off, closed without
 `failure` and not `unknown`/`env_crash` (the old chain labels only such games);
 any other game (also one across a training-generation change) is counted in
-`labels_not_sent`, never labelled in part. A labeler error stops the chain loudly.
+`labels_ineligible`, never labelled in part; a labeler, read-back or send error is
+counted in `labels_failed` and stops the chain loudly. Two differences from the old
+chain (lead ruling 2026-11-11): hp labels enter the pool at game end, not at their
+segment's commit; and a game that did not close cleanly (truncated, failed or across
+a generation) gives no hp labels for its finished battles.
 
-`handoff_sequence` counts trainable segments in hand-off order from 1 per sender
-connection, strictly increasing, never reused or resent; it is the order an
+`handoff_sequence` counts every acked hand-off message (trainable segments and
+labels) in hand-off order from 1 per sender connection, strictly increasing, never
+reused or resent; it is the order an
 SGD-side queue (today `SegmentQueue`, lease `<assembler_id>/<sequence>`) needs.
 The SGD side attaches the named block, checks size and sha256, copies the bytes
 and acks; the sender then unlinks the block. Unacknowledged bytes are bounded by
@@ -433,7 +438,10 @@ class _Original:
     @property
     def data(self) -> bytes:
         if self._data is None:
-            data = self.path.read_bytes()
+            try:
+                data = self.path.read_bytes()
+            except OSError as error:
+                raise HandoffError("labels_original_unreadable") from error
             if sha256(data) != self.sha256:
                 raise HandoffError("labels_original_changed")
             self._data = data
@@ -461,7 +469,7 @@ class SegmentHandoff:
                          "rejected_written": 0, "bytes": 0, "write_failed": 0,
                          "not_handed_off": 0, "instances_closed_sent": 0,
                          "instances_closed_not_sent": 0, "labels_sent": 0,
-                         "labels_not_sent": 0}
+                         "labels_ineligible": 0, "labels_failed": 0}
         self.thread = threading.Thread(target=self._run, name="fast-segment-handoff",
                                        daemon=True)
         self.thread.start()
@@ -505,9 +513,12 @@ class SegmentHandoff:
         kept = self._games.pop(closed.game_instance_id, None)
         if self.labeler is None:
             return
-        if (self.sender is None or self.send_error is not None
-                or not self._labelable(closed, kept)):
-            self.counters["labels_not_sent"] += 1
+        if self.sender is None or self.send_error is not None:
+            # The chain has already stopped loudly (or there is no SGD): not a failure here.
+            self.counters["labels_ineligible"] += 1
+            return
+        if not self._labelable(closed, kept):
+            self.counters["labels_ineligible"] += 1
             return
         assert kept is not None
         try:
@@ -516,7 +527,7 @@ class SegmentHandoff:
             self.counters["labels_sent"] += 1
         except BaseException as error:  # noqa: BLE001 - recorded, re-raised
             self.send_error = error
-            self.counters["labels_not_sent"] += 1
+            self.counters["labels_failed"] += 1
 
     def _keep(self, segment: SealedSegment | RejectedSegment, path: Path | None,
               handed_off: bool) -> None:
