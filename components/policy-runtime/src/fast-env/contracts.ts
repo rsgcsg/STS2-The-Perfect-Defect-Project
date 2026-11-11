@@ -37,6 +37,9 @@ export interface FastEnvConfig {
   budget: { max_decisions_per_game: number; max_native_steps_per_game: number; game_wall_ms: number };
   no_progress: { window_decisions: number; max_repeats: number } | null;
   settling_timeout_ms: number;
+  /** Native cold starts (Host start + first reset) at once across this node's fast-env processes
+   *  (WP8 §8.13); directory null = the node-local default. Default 10. */
+  cold_start: { max_concurrent: number; directory: string | null };
   /** boundary_rows: model rows of one game between two `segmentBoundary` calls (default 64). */
   evidence: { directory: string; boundary_rows: number };
 }
@@ -118,7 +121,7 @@ export function parseSampling(value: unknown, field = "sampling"): Sampling {
 
 export function parseFastEnvConfig(value: unknown): FastEnvConfig {
   const v = obj(value, "config", ["schema", "env_process_id", "slots", "host", "agent_manifest", "compact", "checks",
-    "decision_link", "inference", "budget", "no_progress", "settling_timeout_ms", "evidence"]);
+    "decision_link", "inference", "budget", "no_progress", "settling_timeout_ms", "cold_start", "evidence"]);
   if (v.schema !== FAST_ENV_CONFIG_SCHEMA) throw new FastEnvContractError("schema");
   const host = obj(v.host, "host", ["package", "candidate_directory", "game_directory", "character", "language", "ascension", "request_timeout_ms"]);
   const compact = obj(v.compact, "compact", ["enabled", "reconcile_interval"]);
@@ -129,6 +132,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
   if (inference.single_choice !== "score" && inference.single_choice !== "omit") throw new FastEnvContractError("inference.single_choice");
   const budget = obj(v.budget, "budget", ["max_decisions_per_game", "max_native_steps_per_game", "game_wall_ms"]);
   const evidence = obj(v.evidence, "evidence", ["directory", "boundary_rows"]);
+  const coldStart = obj(v.cold_start ?? {}, "cold_start", ["max_concurrent", "directory"]);
   let noProgress: FastEnvConfig["no_progress"] = null;
   if (v.no_progress !== null && v.no_progress !== undefined) {
     const p = obj(v.no_progress, "no_progress", ["window_decisions", "max_repeats"]);
@@ -158,6 +162,8 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
       game_wall_ms: int(budget.game_wall_ms, "budget.game_wall_ms", 1, 86_400_000) },
     no_progress: noProgress,
     settling_timeout_ms: int(v.settling_timeout_ms ?? 30_000, "settling_timeout_ms", 50, 600_000),
+    cold_start: { max_concurrent: int(coldStart.max_concurrent ?? 10, "cold_start.max_concurrent", 1, 1024),
+      directory: coldStart.directory == null ? null : str(coldStart.directory, "cold_start.directory") },
     evidence: { directory: str(evidence.directory, "evidence.directory"),
       boundary_rows: int(evidence.boundary_rows ?? 64, "evidence.boundary_rows", 1, 4096) }
   };
