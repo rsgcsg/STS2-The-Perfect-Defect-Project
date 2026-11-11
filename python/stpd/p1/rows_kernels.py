@@ -197,11 +197,12 @@ def packed_cross(module: torch.nn.MultiheadAttention, action: Tensor, encoded: T
 
 # Permutation gathers (eager node region).
 
-def permutation_inverse(perm: Tensor) -> Tensor:
-    """inverse[perm[i]] = i; asserts (device side, no sync) that perm is a bijection."""
+def permutation_inverse(perm: Tensor, what: str) -> Tensor:
+    """inverse[perm[i]] = i; asserts (device side, no sync) that perm is a bijection.
+    The assert names the lever and the map (a CUDA device assert ends the process)."""
     inverse = torch.full_like(perm, -1)
     inverse[perm] = torch.arange(perm.numel(), device=perm.device, dtype=perm.dtype)
-    torch._assert_async((inverse >= 0).all())
+    torch._assert_async((inverse >= 0).all(), "nodes_lever_requires_permutation:" + what)
     return inverse
 
 
@@ -222,7 +223,7 @@ def permute_rows(values: Tensor, perm: Tensor, what: str) -> Tensor:
     backward is the inverse gather (no atomics)."""
     if perm.numel() != values.shape[0]:
         raise ValueError("nodes_lever_requires_permutation:" + what)
-    return cast(Tensor, _Permute.apply(values, perm, permutation_inverse(perm)))
+    return cast(Tensor, _Permute.apply(values, perm, permutation_inverse(perm, what)))
 
 
 def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
@@ -232,8 +233,9 @@ def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
     the layout's bucket term order (its `indices` say which node each term reads)."""
     indices, buckets, inverse = flat
     device = inverse.device
-    order = torch.empty_like(inverse)
-    order[inverse] = torch.arange(rows, device=device, dtype=inverse.dtype)
+    if inverse.numel() != rows or sum(count for _, count in buckets) != rows:
+        raise ValueError("nodes_lever_requires_complete_reduction")
+    order = permutation_inverse(inverse, "reduction_rows")
     # Built on the device: a pageable host->device copy would sync the stream.
     per_position = torch.cat([torch.full((count,), width, device=device, dtype=torch.long)
                               for width, count in buckets]) if buckets else inverse.new_zeros(0)
@@ -246,7 +248,7 @@ def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
     if partition:
         by_term = torch.full((terms,), -1, device=device, dtype=owner.dtype)
         by_term[indices] = owner
-        torch._assert_async((by_term >= 0).all())
+        torch._assert_async((by_term >= 0).all(), "nodes_lever_requires_partition")
         owner = by_term
     scale = torch.where(width > 0, 1.0 / width.clamp(min=1).float(), 0.0)
     return owner, scale, width == 0
