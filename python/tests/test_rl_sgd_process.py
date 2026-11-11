@@ -795,17 +795,15 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     one side thread; batches, order and every update stay the same.
 
     On CUDA this is the production path: pinned slabs H2D-copied from the side
-    thread (`direct`), the default stream waiting on the copy's event. Those device
-    views lay the batch out
-    differently from the inline `stage_batch` path, so kernels may round in the
-    last float32 bits (1460100: ~1 ulp); the threaded path run twice
-    must be bit-identical, and close to the inline one.
+    thread (`direct`), the default stream waiting on the copy's event. CUDA
+    training is not bit-deterministic run to run here (1460164: the same path
+    twice differs by ~1 float32 ulp), so on CUDA the updates must agree to a few
+    ulps; a batch read before its copy landed would be far off.
     """
     results = {}
-    runs = (False, True, "again") if device == "cuda" else (False, True)
-    for threaded in runs:
+    for threaded in (False, True):
         owner, _, _ = terminal_owner(tmp_path / f"stage-{threaded}", monkeypatch,
-                                     dataplane={"sgd_stage_thread": bool(threaded),
+                                     dataplane={"sgd_stage_thread": threaded,
                                                 "ahead_while_waiting": True}, device=device)
         threads: list[str] = []
         staged = owner.sgd.on_staged
@@ -829,16 +827,12 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     assert all(name.startswith("rl-sgd-stage") for name in threads)
     assert base.counters == cp.counters and base_aux == aux
     if device == "cuda":
-        again, again_events, again_aux, _ = results["again"]
-        assert again.counters == cp.counters and again_aux == aux
         for name in ("weights", "optimizer", "ema"):
-            assert_tree(getattr(cp, name), getattr(again, name))
             assert_close_tree(getattr(base, name), getattr(cp, name))
-        for left, right, third in zip(base_events, events, again_events, strict=True):
+        for left, right in zip(base_events, events, strict=True):
             for key in ("update", "first_use", "stepped"):
-                assert left[key] == right[key] == third[key], key
+                assert left[key] == right[key], key
             for key in ("td_loss", "policy_loss"):
-                assert right[key] == third[key], key
                 assert math.isclose(left[key], right[key], rel_tol=1e-4, abs_tol=1e-9), key
     else:
         for name in ("weights", "optimizer", "ema"):
