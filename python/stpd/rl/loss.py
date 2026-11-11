@@ -215,7 +215,8 @@ def prepared_update(
                 executed.append(group)
                 phase = time.perf_counter()
                 scores, logits, hp = (
-                    model.forward_prepared_rl4(group, compile_rows=compile_rows)
+                    model.forward_prepared_rl4(group, compile_rows=compile_rows,
+                                               kernels=performance.prepared_kernels)
                     if rows_forward else model.forward_prepared_rl4(group))
                 scores = F.pad(scores, (0, t["old_probabilities"].shape[1] - scores.shape[1]),
                                value=-torch.inf if group.policy else 0)
@@ -317,7 +318,9 @@ def prepared_update(
         if rows_path is not None:
             # Which attention path ran (device-chosen, not a fallback) and the
             # process's dynamo counters: a cache-limit fall back to eager shows here.
-            result["rows_forward"] = {"path": rows_path, "compiled": compile_rows}
+            result["rows_forward"] = {"path": rows_path, "compiled": compile_rows,
+                                      **({"kernels": performance.prepared_kernels}
+                                         if performance.prepared_kernels else {})}
             if performance.prepared_compile:
                 from stpd.p1.rows_forward import compile_counters
 

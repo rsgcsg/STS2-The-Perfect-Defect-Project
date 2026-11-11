@@ -52,14 +52,14 @@ def prepared(model, *layouts, microbatch_size=8):
     return batches if len(batches) > 1 else batches[0]
 
 
-def forward_and_gradients(model, group, *, packed=None):
+def forward_and_gradients(model, group, *, packed=None, kernels=""):
     model.zero_grad(set_to_none=True)
     if packed is None:
-        scores, logits, hp = model.forward_prepared_rl4(group)
+        scores, logits, hp = model.forward_prepared_rl4(group, kernels=kernels)
     else:
         from stpd.p1.rows_forward import forward_rows
 
-        scores, logits, hp = forward_rows(model, group, packed=packed)
+        scores, logits, hp = forward_rows(model, group, packed=packed, kernels=kernels)
     generator = torch.Generator().manual_seed(5)
     total = hp.mul(torch.randn(hp.shape, generator=generator)).sum()
     for value in (scores, logits):
@@ -569,3 +569,102 @@ def test_forward_arena_fails_loudly(model, varied):
     plan = plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(1 << 22))
     with pytest.raises(ValueError, match="plan_arena_mismatch"):
         stage_joined(full, plan, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("kernels", ["heads", "cross", "cross+heads"])
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
+def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
+                                                    width_multiple):
+    """V3 T6: folded value heads and the padded cross-attention change only how the
+    readouts are computed (FP32 on CPU: tight tolerance; BF16 on CUDA: tolerance)."""
+    batch = prepared(model)
+    for group in (g for mb in batch.minibatches for g in mb.groups):
+        for plain in (group, dc.replace(group, policy=False)):
+            rows = dc.replace(plain, layout=row_layout(plain, bucket_rows=bucket_rows,
+                                                       width_multiple=width_multiple))
+            (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=packed)
+            (s1, l1, h1), g1 = forward_and_gradients(model, rows, packed=packed,
+                                                     kernels=kernels)
+            for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+                assert left.shape == right.shape
+                assert torch.equal(left.isneginf(), right.isneginf())
+                finite = left.isfinite()
+                torch.testing.assert_close(left[finite], right[finite], rtol=1e-5, atol=2e-6)
+            assert set(g0) == set(g1)
+            for name in g0:
+                torch.testing.assert_close(g0[name], g1[name], rtol=1e-4, atol=2e-6, msg=name)
+
+
+def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
+    from stpd.p1.rows_kernels import FOLD_CATALOG_LIMIT, parse_kernels
+
+    assert PerformanceConfig().prepared_kernels == ""
+    assert parse_kernels("") == () and parse_kernels("cross+heads") == ("cross", "heads")
+    for bad in ("heads+cross", "heads+heads", "flash", "+", None):
+        with pytest.raises(ValueError, match="invalid_prepared_kernels"):
+            parse_kernels(bad)  # type: ignore[arg-type]
+    with pytest.raises(BoundaryError, match="invalid_prepared_kernels"):
+        PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="heads+cross")
+    with pytest.raises(BoundaryError, match="prepared_kernels_requires_rows_v2"):
+        PerformanceConfig(prepared_kernels="heads")
+    assert FOLD_CATALOG_LIMIT == 64
+
+
+def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
+    """Both cross forms (folded for short catalogs, projected for long) agree."""
+    from stpd.p1 import rows_kernels
+
+    torch.manual_seed(3)
+    module = torch.nn.MultiheadAttention(192, 4, batch_first=True).eval()
+    lengths = torch.tensor([5, 1, 7])
+    keep = torch.arange(7)[None, :] < lengths[:, None]
+    padded = torch.randn(3, 7, 192).masked_fill(~keep[..., None], 0)
+    action = torch.randn(3, 9, 192)
+    folded = rows_kernels.padded_cross(module, action, padded, keep)
+    expected, _ = module(action, padded, padded, key_padding_mask=~keep, need_weights=False)
+    torch.testing.assert_close(folded, expected, rtol=1e-5, atol=2e-6)
+    limit = rows_kernels.FOLD_CATALOG_LIMIT
+    try:
+        rows_kernels.FOLD_CATALOG_LIMIT = 0
+        projected = rows_kernels.padded_cross(module, action, padded, keep)
+    finally:
+        rows_kernels.FOLD_CATALOG_LIMIT = limit
+    torch.testing.assert_close(projected, expected, rtol=1e-5, atol=2e-6)
+
+
+def test_effective_config_records_prepared_kernels_only_when_selected():
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segment_learner import _resume_config
+    from stpd.rl.segments import SegmentConfig
+
+    rows = PerformanceConfig(prepared_forward="rows-v2")
+    base = LearnerConfig(run="rows-unit", peer={"kind": "local", "directory": "/nonexistent"},
+                         performance=rows, segments=SegmentConfig())
+    selected = dc.replace(base, performance=dc.replace(rows, prepared_kernels="cross+heads"))
+    assert "prepared_kernels" not in base.frozen()["performance"]
+    assert selected.frozen()["performance"]["prepared_kernels"] == "cross+heads"
+    assert _resume_config(dc.asdict(base)) == _resume_config(dc.asdict(selected))
+
+
+def test_prepared_update_with_kernel_levers_steps_like_the_original_on_cpu(model, varied):
+    rows = prepared(model, "rows-v2")
+    config = LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01)
+    reference = copy.deepcopy(model)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3)
+    for minibatch in rows.minibatches:
+        result = prepared_update(
+            model, optimizer, minibatch, config=config, target_kl=1e9,
+            performance=PerformanceConfig(prepared_forward="rows-v2",
+                                          prepared_kernels="cross+heads"))
+        expected = prepared_update(reference, reference_optimizer, minibatch, config=config,
+                                   target_kl=1e9,
+                                   performance=PerformanceConfig(prepared_forward="rows-v2"))
+        assert result["stepped"] and result["rows_forward"]["kernels"] == "cross+heads"
+        assert "kernels" not in expected["rows_forward"]
+        for key in ("policy_loss", "td_loss", "terminal_loss", "hp_loss", "gradient_norm"):
+            assert result[key] == pytest.approx(expected[key], rel=1e-4, abs=1e-6)
+    for name, value in reference.state_dict().items():
+        torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
+                                   msg=name)

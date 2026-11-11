@@ -15,7 +15,9 @@ only work on padding is removed (S0-GPU 0-level items, measured 2026-11-07):
      the action cross-attention (catalog queries per row) read the packed scene
      tokens directly, so no padded scene tensor or key mask is built. Elsewhere
      (CPU, FP32) the same math runs on the bucket with a key mask;
-  6. optional torch.compile of the per-bucket block (explicit selection).
+  6. optional torch.compile of the per-bucket block (explicit selection);
+  7. optional V3 T6 levers (`rows_kernels`, explicit `prepared_kernels`): value
+     heads with folded key/value projections and a dense padded cross-attention.
 Float accumulation order differs from padded-v1 (BF16 tolerance, not bitwise).
 Dropout is not implemented here: the prepared RL step runs in eval mode and this
 forward refuses training mode instead of silently skipping dropout.
@@ -190,8 +192,8 @@ def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
 def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, offsets: Tensor,
                rows: int, width: int, longest: int, outcome_valid: Tensor,
                action_types: Tensor | None, catalog_mask: Tensor | None,
-               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...]) -> tuple[
-                   Tensor | None, Tensor, Tensor]:
+               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+               kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """Scene encoder + heads + action readout for one length bucket of rows
     (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
     embed = tokens.shape[1]
@@ -200,9 +202,17 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
     scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
     scene = scene.view(rows, width, -1)
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
-    logits = head(model.rl4_heads.outcome, scene, mask, current).float()
+    padded = scene.to(_kernel_dtype(scene)) if kernels else scene
+    if "heads" in kernels:
+        from .rows_kernels import folded_heads
+
+        outcome, value = folded_heads((model.rl4_heads.outcome, model.rl4_heads.hp), padded,
+                                      ~mask, current)
+        logits, hp = outcome.float(), value[:, 0].float()
+    else:
+        logits = head(model.rl4_heads.outcome, scene, mask, current).float()
+        hp = head(model.rl4_heads.hp, scene, mask, current)[:, 0].float()
     logits = logits.masked_fill(~outcome_valid, -torch.inf)
-    hp = head(model.rl4_heads.hp, scene, mask, current)[:, 0].float()
     if action_types is None or catalog_mask is None:
         return None, logits, hp
     action = model.action_types(action_types)
@@ -215,7 +225,12 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
     action = action + model.source_role(means[0]) + model.target_role(means[1])
-    read = attention(model.cross, action, scene, mask)
+    if "cross" in kernels:
+        from .rows_kernels import padded_cross
+
+        read = padded_cross(model.cross, action, padded, ~mask)
+    else:
+        read = attention(model.cross, action, scene, mask)
     scores = model.head(torch.cat((action + read,
                                    current[:, None, :].expand(-1, action.shape[1], -1)), -1))
     return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
@@ -225,8 +240,8 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
                       offsets: Tensor, rows: int, width: int, longest: int,
                       outcome_valid: Tensor, action_types: Tensor | None,
                       catalog_mask: Tensor | None,
-                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...]) -> tuple[
-                          Tensor | None, Tensor, Tensor]:
+                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+                      kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """`rows_block` on packed real scene tokens only (CUDA BF16 flash varlen).
 
     Same function: the mean, both heads and the cross-attention read exactly the
@@ -236,15 +251,27 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     current = encoded.new_zeros((rows, encoded.shape[1])).index_add(0, owner, encoded)
     current = current / lengths[:, None].to(current.dtype)
     one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
+    padded = keep = None
+    if kernels:
+        from .rows_kernels import padded_view
+
+        padded, keep = padded_view(encoded, positions, lengths, rows, width, longest)
 
     def pooled(module: Any) -> Tensor:
         query = module.query.reshape(1, -1).expand(rows, -1)
         value = packed_attention(module.attention, query, encoded, one, offsets, 1, longest)
         return cast(Tensor, module.mlp(torch.cat((value, current), dim=1)))
 
-    logits = pooled(model.rl4_heads.outcome).float()
+    if "heads" in kernels:
+        from .rows_kernels import folded_heads
+
+        outcome, value = folded_heads((model.rl4_heads.outcome, model.rl4_heads.hp),
+                                      cast(Tensor, padded), cast(Tensor, keep), current)
+        logits, hp = outcome.float(), value[:, 0].float()
+    else:
+        logits = pooled(model.rl4_heads.outcome).float()
+        hp = pooled(model.rl4_heads.hp)[:, 0].float()
     logits = logits.masked_fill(~outcome_valid, -torch.inf)
-    hp = pooled(model.rl4_heads.hp)[:, 0].float()
     if action_types is None or catalog_mask is None:
         return None, logits, hp
     action = model.action_types(action_types)
@@ -260,28 +287,56 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
     action = action + model.source_role(means[0]) + model.target_role(means[1])
-    read = packed_attention(model.cross, action.reshape(rows * catalog, -1), encoded,
-                            one * catalog, offsets, catalog, longest).view(action.shape)
+    if "cross" in kernels:
+        from .rows_kernels import padded_cross
+
+        read = padded_cross(model.cross, action, cast(Tensor, padded), cast(Tensor, keep))
+    else:
+        read = packed_attention(model.cross, action.reshape(rows * catalog, -1), encoded,
+                                one * catalog, offsets, catalog, longest).view(action.shape)
     scores = model.head(torch.cat((action + read,
                                    current[:, None, :].expand(-1, catalog, -1)), -1))
     return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
 
 
-def _compiled_block(model: Any, packed: bool) -> Any:
+def _kernel_dtype(reference: Tensor) -> torch.dtype:
+    from .rows_kernels import _compute_dtype
+
+    return _compute_dtype(reference)
+
+
+def _block(packed: bool, kernels: tuple[str, ...]) -> Any:
+    function = rows_block_packed if packed else rows_block
+    if not kernels:
+        return function
+
+    def block(*args: Any) -> Any:
+        return function(*args, kernels=kernels)
+
+    return block
+
+
+def _compiled_block(model: Any, packed: bool, kernels: tuple[str, ...] = ()) -> Any:
     name = "_rows_block_packed_compiled" if packed else "_rows_block_compiled"
+    if kernels:
+        name += "_" + "_".join(kernels)
     block = getattr(model, name, None)
     if block is None:
-        block = torch.compile(rows_block_packed if packed else rows_block, dynamic=None)
+        block = torch.compile(_block(packed, kernels), dynamic=None)
         setattr(model, name, block)  # learner-process runtime only, not state
     return block
 
 
 def forward_rows(model: Any, group: Any, *, compile: bool = False,
-                 packed: bool | None = None) -> tuple[Tensor, Tensor, Tensor]:
+                 packed: bool | None = None, kernels: str = "") -> tuple[Tensor, Tensor, Tensor]:
     """`packed` defaults to the device: CUDA sm80+ under BF16/FP16 autocast.
-    Tests may force it on CPU (reference attention, one sequence at a time)."""
+    Tests may force it on CPU (reference attention, one sequence at a time).
+    `kernels` selects V3 T6 levers (`rows_kernels.LEVERS`); '' is the original block."""
     if model.training:
         raise ValueError("rows_forward_requires_eval_mode")
+    from .rows_kernels import parse_kernels
+
+    levers = parse_kernels(kernels)
     device = model.ids.weight.device
     if device.type == "cuda" and any(value.device.type == "cpu"
                                      for value in group.tensors.values()):
@@ -324,8 +379,7 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
             for key, (indices, buckets, inverse) in layout.reductions.items()}
     nodes = model.tensor_nodes(joint, vectors, flat=flat)
     _check_encoder(model.scene)
-    block = (_compiled_block(model, packed) if compile
-             else rows_block_packed if packed else rows_block)
+    block = _compiled_block(model, packed, levers) if compile else _block(packed, levers)
     buckets = layout.scene_buckets
     row_sizes = [bucket[0] for bucket in buckets]
     slot_sizes = [bucket[3] for bucket in buckets]
