@@ -475,10 +475,15 @@ export async function prepareManagedCandidate({
  * The native process environment with the P-REWRITE fast_chain switch (default off).
  * `fastChain` is the only source of STS2_HEADLESS_FAST_CHAIN: an inherited value is
  * dropped when it is off, so the old chain never runs the native fast path by accident.
+ * The two card projection memo switches (deck: master-deck cards, hud: combat piles outside
+ * Hand/Play) are fast_chain only, default off, and likewise never inherited.
  */
-export function withFastChainSwitch(env, fastChain) {
-  const { STS2_HEADLESS_FAST_CHAIN: _inherited, ...rest } = env;
-  return fastChain ? { ...rest, STS2_HEADLESS_FAST_CHAIN: "1" } : rest;
+export function withFastChainSwitch(env, fastChain, { deckMemo = false, hudMemo = false } = {}) {
+  if (typeof deckMemo !== "boolean" || typeof hudMemo !== "boolean") throw new TypeError("deckMemo and hudMemo must be booleans.");
+  if ((deckMemo || hudMemo) && !fastChain) throw new TypeError("deckMemo and hudMemo require fastChain.");
+  const { STS2_HEADLESS_FAST_CHAIN: _inherited, STS2_HEADLESS_DECK_MEMO: _deck, STS2_HEADLESS_HUD_MEMO: _hud, ...rest } = env;
+  return fastChain ? { ...rest, STS2_HEADLESS_FAST_CHAIN: "1",
+    ...(deckMemo ? { STS2_HEADLESS_DECK_MEMO: "1" } : {}), ...(hudMemo ? { STS2_HEADLESS_HUD_MEMO: "1" } : {}) } : rest;
 }
 
 export async function startManagedCandidateRuntime({
@@ -487,10 +492,13 @@ export async function startManagedCandidateRuntime({
   diskIdentity,
   requestTimeoutMs = 10_000,
   quietDiagnostics = false,
-  fastChain = false
+  fastChain = false,
+  deckMemo = false,
+  hudMemo = false
 }) {
   requirePositiveInteger(requestTimeoutMs, "requestTimeoutMs");
   if (typeof fastChain !== "boolean") throw new TypeError("fastChain must be a boolean.");
+  withFastChainSwitch({}, fastChain, { deckMemo, hudMemo });
   const { manifest: loadedManifest } = loadManagedCandidateManifest(root);
   const manifest = selectManagedCandidateManifest(loadedManifest, diskIdentity);
   const exactGame = assertManagedCandidateGame(manifest, diskIdentity);
@@ -511,7 +519,7 @@ export async function startManagedCandidateRuntime({
       STS2_LIB: path.join(resolvedCandidateDirectory, "lib"),
       STS2_GAME_DIR: gameDataDirectory,
       ...(quietDiagnostics ? { STS2_HEADLESS_QUIET: "1" } : {})
-    }, fastChain),
+    }, fastChain, { deckMemo, hudMemo }),
     readyTimeoutMs: requestTimeoutMs,
     diagnosticLimit: 500
   });

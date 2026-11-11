@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..fc33279
+index 0000000..96da89b
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1324 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1527,10 +1527,19 @@ index 0000000..fc33279
 +
 +    static void Main(string[] args)
 +    {
++        if (args.Length == 1 && args[0] == "--memo-configure-child")
++        {
++            // Production Configure runs before the game assembly resolver exists: it must not load the game.
++            NativePatchStateCache.Configure(true);
++            NativeCardProjectionMemo.Configure(true, true);
++            Console.WriteLine(AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "sts2") ? "game-loaded" : "game-not-loaded");
++            return;
++        }
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        AssemblyLoadContext.Default.Resolving += (_, n) => File.Exists(Path.Combine(root, "lib", n.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", n.Name + ".dll")) : null;
 +        if (args.Length == 2 && args[0] == "--program-child") { ProgramChild(args[1]); return; }
++        if (args.Length == 4 && args[0] == "--memo-play") { MemoPlay(args[1], args[2], int.Parse(args[3])); return; }
 +        sim = Activator.CreateInstance(Simulator)!;
 +        SetEnabled(false);
 +        var start = (Dictionary<string, object?>)Call("StartRun", "Defect", 0, "PATCHCACHE_COMPONENT", "zh", null)!;
@@ -1553,6 +1562,8 @@ index 0000000..fc33279
 +            CompactOutput();
 +            ProgramWiring();
 +            FieldAccessAndCapacity();
++            CardProjectionMemo();
++            MemoPairing();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -2427,6 +2438,269 @@ index 0000000..fc33279
 +    }
 +
 +    // fast_chain field reads and dictionary capacities: same values, same exceptions, same bytes.
++    // --- fast_chain card projection memo (STS2_HEADLESS_DECK_MEMO / STS2_HEADLESS_HUD_MEMO) -------------
++    static readonly Type Memo = typeof(NativeCardProjectionMemo);
++    static void SetMemo(bool deck, bool hud)
++    {
++        Memo.GetProperty("DeckEnabled")!.SetValue(null, deck);
++        Memo.GetProperty("HudEnabled")!.SetValue(null, hud);
++    }
++    static void MemoFrame(long value) => Memo.GetField("_frame", Flags)!.SetValue(null, value);
++    static System.Collections.IDictionary MemoEntries() => (System.Collections.IDictionary)Memo.GetField("Entries", Flags)!.GetValue(null)!;
++    static string? MemoKey(NativeCardProjectionMemo.Lane lane, CardModel card, PileType pile) =>
++        (string?)Memo.GetMethod("Key", Flags)!.Invoke(null, new object[] { lane, card, pile });
++    static long MemoStores() => NativeCardProjectionMemo.Stores(NativeCardProjectionMemo.Lane.Deck) + NativeCardProjectionMemo.Stores(NativeCardProjectionMemo.Lane.Hud);
++
++    // In process, in combat (after CardDetailOwnerFlip): the master deck and the combat HUD piles,
++    // memo on and off, through every kind of card-face change. Each change must change the live
++    // projection, and the memo must equal live on the very next render (never a stale hit).
++    static void CardProjectionMemo()
++    {
++        const NativeCardProjectionMemo.Lane DeckLane = NativeCardProjectionMemo.Lane.Deck, HudLane = NativeCardProjectionMemo.Lane.Hud;
++        Check(((HashSet<string>)Memo.GetField("FrozenTypes", Flags)!.GetValue(null)!).Count > 0, "the frozen memo type list must exist");
++        bool configuredTwice = false;
++        SetEnabled(true);
++        NativeCardProjectionMemo.Configure(false, false);
++        try { NativeCardProjectionMemo.Configure(true, true); } catch (InvalidOperationException error) { configuredTwice = error.Message == "native_card_memo_configured_twice"; }
++        Check(configuredTwice && !NativeCardProjectionMemo.DeckEnabled && !NativeCardProjectionMemo.HudEnabled, "Configure is accepted once per process");
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        Player player = run.Players[0];
++        var combat = player.Creature.CombatState;
++        Check(combat != null, "the memo test runs in combat");
++        Type hud = Simulator.Assembly.GetType("Sts2Headless.NativeSelectorHud")!;
++        string Deck() => JsonSerializer.Serialize(((Dictionary<string, object?>)Call("PlayerSummary", player)!)["deck"]);
++        string Hud() => JsonSerializer.Serialize(hud.GetMethod("Capture", Flags)!.Invoke(null, new object[] { player, combat! })!);
++        string Both() => Deck() + "\n" + Hud();
++        string Live() { SetMemo(false, false); try { return Both(); } finally { SetMemo(true, true); } }
++        MemoFrame(1);
++
++        // Off: the memo is never consulted or filled.
++        SetMemo(false, false);
++        long stores = MemoStores(), deckHits = NativeCardProjectionMemo.Hits(DeckLane), hudHits = NativeCardProjectionMemo.Hits(HudLane);
++        string live = Both();
++        Check(Both() == live && MemoStores() == stores && MemoEntries().Count == 0 && NativeCardProjectionMemo.Hits(DeckLane) == deckHits,
++            "off must never consult the card projection memo");
++        SetMemo(true, true);
++        Check(Both() == live && MemoStores() > stores, "a cold memo render equals live and stores");
++        Check(Both() == live && NativeCardProjectionMemo.Hits(DeckLane) > deckHits && NativeCardProjectionMemo.Hits(HudLane) > hudHits,
++            "warm deck and HUD hits equal live");
++
++        // A key is a pure read: the card footprint is unchanged and a second read gives the same key.
++        Type stamp = typeof(NativeCardDetailCache).Assembly.GetType("STS2Platform.NativeFoundation.NativeDetachedCardPreviewFactory+SourceStamp")!;
++        var cards = player.Deck.Cards.Select(card => (DeckLane, card, PileType.Deck))
++            .Concat(new[] { PileType.Draw, PileType.Discard, PileType.Exhaust, PileType.Hand }
++                .SelectMany(pile => pile.GetPile(player).Cards.Select(card => (HudLane, card, pile)))).ToList();
++        int keyed = 0;
++        foreach (var (lane, card, pile) in cards)
++        {
++            object before = stamp.GetMethod("Card", Flags)!.Invoke(null, new object[] { card })!;
++            string? first = MemoKey(lane, card, pile), second = MemoKey(lane, card, pile);
++            stamp.GetMethod("AssertUnchanged", Flags)!.Invoke(before, null);
++            Check(first == second, $"{card.GetType().Name}: computing a key twice must give the same key");
++            if (pile == PileType.Hand) Check(first == null, "a Hand card is never keyed (global preview hooks)");
++            if (first != null) keyed++;
++        }
++        Check(keyed > 0 && Live() == live, "keys exist, and computing every key left the live projection unchanged");
++
++        // Draw order: a memo order string is the live public serialization byte for byte.
++        MethodInfo card4 = hud.GetMethod("Card", Flags, new[] { typeof(CardModel), typeof(PileType), typeof(bool), typeof(string).MakeByRefType() })!;
++        int ordered = 0;
++        foreach (CardModel card in PileType.Draw.GetPile(player).Cards)
++        {
++            var args = new object?[] { card, PileType.Draw, true, null };
++            var value = (Dictionary<string, object?>)card4.Invoke(null, args)!;
++            string expected = JsonSerializer.Serialize(value.Where(pair => pair.Key != "native_ref").ToDictionary(pair => pair.Key, pair => pair.Value));
++            if (args[3] is string order) { Check(order == expected, "a memo draw-order string must equal the live serialization"); ordered++; }
++        }
++        Check(ordered > 0, "memoized draw-pile cards must exist");
++
++        void Change(string name, Action change, bool mustChange = true)
++        {
++            string before = Live();
++            change();
++            string after = Live();
++            if (mustChange) Check(after != before, $"{name} must change the live projection");
++            Check(Both() == after, $"after {name} the memo must equal live, never a stale hit");
++            Check(Both() == after, $"after {name} a warm memo must equal live");
++        }
++        CardModel deckCard = player.Deck.Cards.First(card => MemoKey(DeckLane, card, PileType.Deck) != null && card.IsUpgradable
++            && card.DynamicVars.Values.Any() && !card.EnergyCost.CostsX && card.EnergyCost.GetWithModifiers(CostModifiers.None) > 0);
++        CardModel drawCard = PileType.Draw.GetPile(player).Cards.First(card => MemoKey(HudLane, card, PileType.Draw) != null
++            && !card.EnergyCost.CostsX && card.EnergyCost.GetWithModifiers(CostModifiers.All) > 0);
++        FieldInfo baseValue = typeof(MegaCrit.Sts2.Core.Localization.DynamicVars.DynamicVar).GetField("_baseValue", Flags)!;
++        CardKeyword keyword = new[] { CardKeyword.Retain, CardKeyword.Ethereal, CardKeyword.Exhaust }.First(k => !deckCard.Keywords.Contains(k));
++        Change("upgrade", () => { deckCard.UpgradeInternal(); deckCard.FinalizeUpgradeInternal(); });
++        Change("variable base", () => { var v = deckCard.DynamicVars.Values.First(); baseValue.SetValue(v, (decimal)baseValue.GetValue(v)! + 7m); });
++        Change("keyword", () => deckCard.AddKeyword(keyword));
++        Change("local cost modifier", () => deckCard.EnergyCost.AddThisCombat(1));
++        Change("temporary star cost", () => deckCard.SetStarCostThisCombat(2), mustChange: false);
++        Change("combat cost this turn", () => drawCard.EnergyCost.SetThisTurn(0));
++        Change("pile move", () => { PileType.Draw.GetPile(player).RemoveInternal(drawCard, silent: true); PileType.Discard.GetPile(player).AddInternal(drawCard, silent: true); });
++        MethodInfo apply = typeof(PowerCmd).GetMethods(BindingFlags.Static | BindingFlags.Public).First(m => m.Name == "Apply" && m.IsGenericMethod
++            && m.GetParameters().Length == 6 && m.GetParameters()[1].ParameterType == typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature));
++        void ApplyPower(string name, decimal amount)
++        {
++            Type power = GameTypes().OfType<Type>().First(t => t.Name == name && typeof(PowerModel).IsAssignableFrom(t));
++            ((Task)apply.MakeGenericMethod(power).Invoke(null,
++                new object?[] { new BlockingPlayerChoiceContext(), player.Creature, amount, player.Creature, null, false })!).GetAwaiter().GetResult();
++        }
++        Change("owner strength (global hooks)", () => ApplyPower("StrengthPower", 3m), mustChange: false);
++        // A global cost hook reaches draw/discard cards only through the cost with all modifiers ("|e").
++        CardModel skill = new[] { PileType.Draw, PileType.Discard }.SelectMany(pile => pile.GetPile(player).Cards.Select(card => (card, pile)))
++            .First(entry => entry.card.Type == CardType.Skill && MemoKey(HudLane, entry.card, entry.pile) != null
++                && !entry.card.EnergyCost.CostsX && entry.card.EnergyCost.GetWithModifiers(CostModifiers.All) > 0).card;
++        Change("global cost hook (Corruption)", () => ApplyPower("CorruptionPower", 1m));
++        Check(skill.EnergyCost.GetWithModifiers(CostModifiers.All) == 0, "Corruption made the memoized skill free");
++        // A card scalar alone (the upgrade level, no OnUpgrade, no variable change) must change the key.
++        CardModel plain = player.Deck.Cards.First(card => card != deckCard && !card.IsUpgraded && MemoKey(DeckLane, card, PileType.Deck) != null);
++        Change("card scalar only (upgrade level)", () => typeof(CardModel).GetField("_currentUpgradeLevel", Flags)!.SetValue(plain, 1));
++        // An enchanted card is never keyed and renders live.
++        Type enchantment = GameTypes().OfType<Type>().Where(t => typeof(EnchantmentModel).IsAssignableFrom(t) && !t.IsAbstract && t.Name != "DeprecatedEnchantment")
++            .OrderBy(t => t.FullName, StringComparer.Ordinal).First();
++        MethodInfo canonicalEnchantment = typeof(ModelDb).GetMethod(nameof(ModelDb.Enchantment), BindingFlags.Static | BindingFlags.Public, Type.EmptyTypes)!;
++        long unkeyed = NativeCardProjectionMemo.Unkeyed(DeckLane);
++        Change("enchant", () => deckCard.EnchantInternal((EnchantmentModel)((EnchantmentModel)canonicalEnchantment.MakeGenericMethod(enchantment).Invoke(null, null)!).ToMutable(), 1m));
++        Check(MemoKey(DeckLane, deckCard, PileType.Deck) == null && NativeCardProjectionMemo.Unkeyed(DeckLane) > unkeyed, "an enchanted deck card renders live");
++
++        // A stale entry: a normal frame would serve it, the reconcile frame must stop loudly.
++        var entries = MemoEntries();
++        foreach (object key in entries.Keys.Cast<object>().ToList())
++        {
++            object stored = entries[key]!;
++            Type record = stored.GetType();
++            entries[key] = Activator.CreateInstance(record, record.GetProperty("Value")!.GetValue(stored), (string)record.GetProperty("Json")!.GetValue(stored)! + " ");
++        }
++        MemoFrame(64);
++        bool diverged = false;
++        try { Both(); }
++        catch (TargetInvocationException error) when (error.InnerException is NativeCompactStateDivergenceException divergence)
++        { diverged = divergence.Message.StartsWith("compact_state_divergence", StringComparison.Ordinal); }
++        Check(diverged && NativeCardProjectionMemo.Divergence != null, "a stale memo entry must be compact_state_divergence at the reconcile frame");
++        Memo.GetProperty("Divergence")!.SetValue(null, null);
++        entries.Clear();
++        MemoFrame(1);
++        SetMemo(false, false);
++        Console.WriteLine($"card projection memo: off, cold/warm, {keyed} pure keys, {ordered} draw-order strings, 12 card-face changes, reconcile divergence checked");
++    }
++
++    // Child: one game with the game's own deterministic benchmark policy; every decision state on stdout.
++    static void MemoPlay(string character, string seed, int actions)
++    {
++        NativePatchStateCache.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1");
++        NativeCardProjectionMemo.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_DECK_MEMO") == "1",
++            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1");
++        MethodInfo choose = Simulator.Assembly.GetType("Sts2Headless.PerformanceLab")!.GetMethod("ChooseAction", Flags)!;
++        object game = Activator.CreateInstance(Simulator)!;
++        var state = (Dictionary<string, object?>)Simulator.GetMethod("StartRun", Flags)!.Invoke(game, new object?[] { character, 0, seed, "en", null })!;
++        var lines = new List<string> { JsonSerializer.Serialize(state) };
++        for (int step = 0; step < actions; step++)
++        {
++            NativePatchStateCache.Revalidate();
++            NativeCardDetailCache.BeginFrame();
++            NativeCardProjectionMemo.BeginFrame();
++            object? request = choose.Invoke(null, new object[] { state });
++            if (request == null && state.GetValueOrDefault("decision") as string != "shop_room") break;
++            string action = (string?)request?.GetType().GetProperty("Action")!.GetValue(request) ?? "";
++            var actionArgs = (Dictionary<string, object?>?)request?.GetType().GetProperty("Args")!.GetValue(request);
++            // The benchmark policy predates exact card refs: name the first offered reward card exactly.
++            if (action == "select_card_reward" && state.GetValueOrDefault("cards") is System.Collections.IList { Count: > 0 } offered)
++                actionArgs = new() { ["card_index"] = 0, ["card_ref"] = ((Dictionary<string, object?>)offered[0]!)["native_ref"] };
++            if (action == "choose_option" && state.GetValueOrDefault("decision") as string == "event_choice")
++                actionArgs = new() { ["option_index"] = actionArgs!["option_index"], ["room_ref"] = state["room_ref"], ["event_ref"] = state["event_ref"],
++                    ["option_ref"] = ((System.Collections.IList)state["options"]!).Cast<Dictionary<string, object?>>()
++                        .First(option => Equals(option["index"], actionArgs["option_index"]))["native_ref"] };
++            if (action == "leave_room" && state.GetValueOrDefault("room_ref") != null) actionArgs = new() { ["room_ref"] = state["room_ref"] };
++            if (request == null && state.GetValueOrDefault("decision") as string == "shop_room") { action = "leave_room"; actionArgs = new() { ["room_ref"] = ((Dictionary<string, object?>)state["presentation_owner"]!)["room_ref"] }; }
++            state = (Dictionary<string, object?>)Simulator.GetMethod("ExecuteAction", Flags)!.Invoke(game, new object?[] { action, actionArgs })!;
++            if (state.GetValueOrDefault("type") as string == "error") { lines.Add(JsonSerializer.Serialize(state)); break; }
++            lines.Add(JsonSerializer.Serialize(state));
++        }
++        const NativeCardProjectionMemo.Lane DeckLane = NativeCardProjectionMemo.Lane.Deck, HudLane = NativeCardProjectionMemo.Lane.Hud;
++        lines.Add(JsonSerializer.Serialize(new Dictionary<string, object?>
++        {
++            ["memo"] = "stats", ["deck_hits"] = NativeCardProjectionMemo.Hits(DeckLane), ["hud_hits"] = NativeCardProjectionMemo.Hits(HudLane),
++            ["compares"] = NativeCardProjectionMemo.Compares(DeckLane) + NativeCardProjectionMemo.Compares(HudLane),
++            ["divergence"] = NativeCardProjectionMemo.Divergence
++        }));
++        Console.Out.Flush();
++        foreach (string line in lines) Console.Out.WriteLine(line);
++        Simulator.GetMethod("CleanUp", Flags)!.Invoke(game, null);
++    }
++
++    static System.Diagnostics.Process StartMemoPlay(Dictionary<string, string> env, string character, string seed, int actions)
++    {
++        string host = Environment.ProcessPath!;
++        var info = new System.Diagnostics.ProcessStartInfo(host)
++        {
++            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
++        };
++        if (Path.GetFileNameWithoutExtension(host) == "dotnet") info.ArgumentList.Add(typeof(Program).Assembly.Location);
++        foreach (string arg in new[] { "--memo-play", character, seed, actions.ToString() }) info.ArgumentList.Add(arg);
++        foreach (string name in new[] { "STS2_HEADLESS_FAST_CHAIN", "STS2_HEADLESS_DECK_MEMO", "STS2_HEADLESS_HUD_MEMO", "STS2_NATIVE_CARD_MEMO_SHADOW", "STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW" })
++            info.Environment.Remove(name);
++        foreach (var (name, value) in env) info.Environment[name] = value;
++        return System.Diagnostics.Process.Start(info)!;
++    }
++
++    // Child pairing: the same games, memo off and on (deck, HUD, both, shadow), every decision state
++    // equal byte for byte. A switch without fast_chain stops the process at configuration.
++    static void MemoPairing()
++    {
++        var fast = new Dictionary<string, string> { ["STS2_HEADLESS_FAST_CHAIN"] = "1" };
++        Dictionary<string, string> With(params string[] names) => fast.Concat(names.Select(n => KeyValuePair.Create(n, "1"))).ToDictionary(p => p.Key, p => p.Value);
++        var lanes = new (string Name, Dictionary<string, string> Env)[]
++        {
++            ("off", new()), ("fast", fast), ("deck", With("STS2_HEADLESS_DECK_MEMO")), ("hud", With("STS2_HEADLESS_HUD_MEMO")),
++            ("both", With("STS2_HEADLESS_DECK_MEMO", "STS2_HEADLESS_HUD_MEMO")),
++            ("shadow", With("STS2_HEADLESS_DECK_MEMO", "STS2_HEADLESS_HUD_MEMO", "STS2_NATIVE_CARD_MEMO_SHADOW")),
++        };
++        int states = 0;
++        // The frozen list comes from the Defect corpus: Defect games must hit; other characters' starter types are
++        // off the list (they render live), so for them only byte equality and the shadow compares are required.
++        foreach (var (character, seed) in new[] { ("Defect", "MEMO_PAIR_D1"), ("Defect", "MEMO_PAIR_D2"), ("Necrobinder", "MEMO_PAIR_N1"), ("Regent", "MEMO_PAIR_R1") })
++        {
++            var running = lanes.Select(lane => (lane.Name, Process: StartMemoPlay(lane.Env, character, seed, 300))).ToList();
++            var results = running.Select(run =>
++            {
++                string stdout = run.Process.StandardOutput.ReadToEnd(), stderr = run.Process.StandardError.ReadToEnd();
++                Check(run.Process.WaitForExit(600_000), $"memo play {run.Name} {character} did not exit");
++                var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => line.StartsWith('{')).ToList();
++                Check(run.Process.ExitCode == 0 && lines.Count > 2, $"memo play {run.Name} {character}: exit {run.Process.ExitCode} {stderr[..Math.Min(stderr.Length, 2000)]}");
++                return (run.Name, States: lines.Take(lines.Count - 1).ToList(), Stats: JsonDocument.Parse(lines[^1]).RootElement.Clone());
++            }).ToList();
++            var baseline = results[0].States;
++            foreach (var result in results.Skip(1))
++            {
++                int differs = Enumerable.Range(0, Math.Max(result.States.Count, baseline.Count))
++                    .FirstOrDefault(i => i >= result.States.Count || i >= baseline.Count || result.States[i] != baseline[i], -1);
++                Check(differs < 0, $"{character} {result.Name}: decision state {differs} differs from memo off");
++                long Stat(string name) => result.Stats.GetProperty(name).GetInt64();
++                Check(result.Stats.GetProperty("divergence").ValueKind == JsonValueKind.Null, $"{character} {result.Name}: divergence");
++                if (result.Name == "shadow") Check(Stat("compares") > 0, $"{character} shadow: every frame must compare");
++                if (character == "Defect" && result.Name is "deck" or "both") Check(Stat("deck_hits") > 0, $"{character} {result.Name}: deck memo must be exercised");
++                if (character == "Defect" && result.Name is "hud" or "both") Check(Stat("hud_hits") > 0, $"{character} {result.Name}: HUD memo must be exercised");
++            }
++            states += baseline.Count;
++            Console.WriteLine($"memo pairing {character}: {baseline.Count} decision states equal across " + string.Join(",", results.Select(r =>
++                r.Name + (r.Stats.TryGetProperty("deck_hits", out var d) ? $"(d{d}/h{r.Stats.GetProperty("hud_hits")}/c{r.Stats.GetProperty("compares")})" : ""))));
++        }
++        var configure = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, UseShellExecute = false };
++        if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!) == "dotnet") configure.ArgumentList.Add(typeof(Program).Assembly.Location);
++        configure.ArgumentList.Add("--memo-configure-child");
++        using (var configured = System.Diagnostics.Process.Start(configure)!)
++        {
++            string text = configured.StandardOutput.ReadToEnd();
++            Check(configured.WaitForExit(60_000) && configured.ExitCode == 0 && text.Contains("game-not-loaded"), $"memo Configure must not load the game assembly: {text}");
++        }
++        // A memo switch without fast_chain fails at configuration, loudly.
++        using var refused = StartMemoPlay(new() { ["STS2_HEADLESS_DECK_MEMO"] = "1" }, "Defect", "MEMO_PAIR_REFUSED", 1);
++        string refusedErr = refused.StandardError.ReadToEnd();
++        refused.StandardOutput.ReadToEnd();
++        Check(refused.WaitForExit(120_000) && refused.ExitCode != 0 && refusedErr.Contains("native_card_memo_requires_fast_chain"),
++            "a memo switch without fast_chain must stop the process");
++        Console.WriteLine($"memo pairing: {states} decision states equal (off, fast, deck, hud, both, shadow); switch without fast_chain refused");
++    }
++
 +    static void FieldAccessAndCapacity()
 +    {
 +        const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
@@ -4834,10 +5108,10 @@ index 0000000..6147465
 +}
 diff --git a/src/Sts2Headless/NativeCardDetailCache.cs b/src/Sts2Headless/NativeCardDetailCache.cs
 new file mode 100644
-index 0000000..5e3e58f
+index 0000000..33fd0a2
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardDetailCache.cs
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,264 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -5007,6 +5281,9 @@ index 0000000..5e3e58f
 +
 +    private enum FieldKind { Scalar, Delegate, ScalarCollection, Other }
 +
++    /// <summary>A field type that AppendScalars keys completely (a scalar or a scalar collection).</summary>
++    internal static bool ScalarOrScalarCollection(Type type) => Kind(type) is FieldKind.Scalar or FieldKind.ScalarCollection;
++
 +    // The field-type tests of AppendScalars, taken once per field instead of per read.
 +    private static FieldKind Kind(Type type) =>
 +        Scalar(type) ? FieldKind.Scalar
@@ -5027,7 +5304,7 @@ index 0000000..5e3e58f
 +
 +    // Scalars and scalar collections are key parts. Delegates must be non-capturing.
 +    // References to other models (owner, pool, clone links, vars set) are context, not text inputs.
-+    private static bool AppendScalars(StringBuilder key, object value)
++    internal static bool AppendScalars(StringBuilder key, object value)
 +    {
 +        foreach ((NativeField field, FieldKind kind) in Fields(value.GetType()))
 +        {
@@ -5062,7 +5339,7 @@ index 0000000..5e3e58f
 +
 +    // Frozen from Friday shadow job 1454482 (92 corpus games, 0 divergence, 255 types with >= 1 compare)
 +    // on this game build only. Refreeze after any game update. Names are in MegaCrit.Sts2.Core.Models.Cards.
-+    private static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
++    internal static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
 +    private static readonly HashSet<string> ShadowedTypes = new(StringComparer.Ordinal)
 +    {
 +        "Abrasive", "Accuracy", "AdaptiveStrike", "Adrenaline", "Afterimage", "Alchemize", "AllForOne", "Anointed",
@@ -5870,6 +6147,349 @@ index 0000000..9503be1
 +            && fixedType.GetNestedTypes(NativeMembers).All(type => type.GetMethods(NativeMembers).All(IsUnpatched)
 +                && FixedConstructorsUnpatched(type));
 +    }
++}
+diff --git a/src/Sts2Headless/NativeCardProjectionMemo.cs b/src/Sts2Headless/NativeCardProjectionMemo.cs
+new file mode 100644
+index 0000000..03b7451
+--- /dev/null
++++ b/src/Sts2Headless/NativeCardProjectionMemo.cs
+@@ -0,0 +1,337 @@
++using System;
++using System.Collections.Generic;
++using System.Diagnostics;
++using System.Linq;
++using System.Reflection;
++using System.Text;
++using System.Text.Json;
++using System.Threading;
++using MegaCrit.Sts2.Core.Combat;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Helpers;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Models;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>
++/// fast_chain only, two switches, both default off: <see cref="Lane.Deck"/> (one master-deck card
++/// of the player summary, STS2_HEADLESS_DECK_MEMO=1) and <see cref="Lane.Hud"/> (one combat HUD
++/// pile card outside Hand and Play, STS2_HEADLESS_HUD_MEMO=1). Memoizes the whole public projection
++/// of that card (everything but native_ref), keyed by the card's live state. Off, or for an
++/// unkeyed card, the caller's original live code runs; this class assembles no text.
++///
++/// Invalidation is the key, not events: every render reads the key again from live state, so any
++/// change of the card face (upgrade, cost change, temporary cost, keyword, variable, pile, combat
++/// start or end) changes the key. Key = lane, runtime type, display and actual pile, combat in
++/// progress, upgrade preview type, owner's Osty alive, energy icon prefix, patch generation, every
++/// scalar and scalar-collection field of the card, its energy cost (with local modifiers and
++/// temporary star costs), live keywords, modified energy and star cost, and every variable's scalar
++/// state (base, preview, enchanted, upgraded flag).
++///
++/// Why that set is complete (game build of <see cref="NativeCardDetailCache"/>): a keyed card is never
++/// in Hand or Play, and its upgrade preview type is never Combat, so the native preview update runs
++/// no global hooks; its upgrade preview is a detached copy outside every pile, so it has no combat
++/// state either. Then every variable kept here derives its preview only from its own fields. Outside
++/// state reaches the text only through the inputs keyed above, except where excluded:
++/// - enchanted, afflicted or targeted cards, star-cost X, a card without an owner;
++/// - calculated variables (their delegates read the owner, piles or combat);
++/// - card types overriding the title, the description paths or extra description arguments;
++/// - card types declaring a non-scalar instance field;
++/// - card types whose hover tips read the owner or combat (<see cref="OutsideHoverTips"/>);
++/// - card types not in the frozen shadow list, or any other game build.
++///
++/// Reconcile: every 64th headless frame (every frame in shadow mode, STS2_NATIVE_CARD_MEMO_SHADOW=1)
++/// renders everything live and compares its JSON with the stored entry byte for byte; a difference
++/// is compact_state_divergence, which is fatal. Reconcile is part of the measured cost. Shadow mode
++/// also asserts that computing a key left the card's footprint unchanged.
++/// </summary>
++public static class NativeCardProjectionMemo
++{
++    public enum Lane { Deck = 0, Hud = 1 }
++
++    private const int ReconcilePeriod = 64;
++    private const int MaxEntries = 16384;
++    private const BindingFlags Declared = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
++
++    private sealed record Stored(Dictionary<string, object?> Value, string Json);
++
++    private static readonly bool Shadow =
++        Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_MEMO_SHADOW") == "1";
++    private static readonly bool Stats = Shadow
++        || Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_MEMO_STATS") == "1";
++    private static readonly Dictionary<string, Stored> Entries = new(StringComparer.Ordinal);
++    private static readonly Dictionary<Type, bool> MemoTypes = new();
++    private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
++    private static readonly long[] HitCount = new long[2], StoreCount = new long[2], CompareCount = new long[2], UnkeyedCount = new long[2];
++    private static readonly string[] RenderOverrides =
++        { "AddExtraArgsToDescription", "GetDescriptionForPile", "GetDescriptionForUpgradePreview", "get_HoverTips", "get_Title" };
++    // Static audit of every card type's ExtraHoverTips on this game build: these read the owner or combat.
++    private static readonly HashSet<string> OutsideHoverTips = new(StringComparer.Ordinal) { "Fasten", "FranticEscape" };
++    private static int _configured;
++    private static int _ownerThread;
++    private static long _frame;
++    private static long _reconcileTicks;
++
++    static NativeCardProjectionMemo()
++    {
++        if (Stats)
++            AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine("[native-card-memo] " + Summary());
++    }
++
++    public static bool DeckEnabled { get; private set; }
++    public static bool HudEnabled { get; private set; }
++    public static string? Divergence { get; private set; }
++    public static long Hits(Lane lane) => HitCount[(int)lane];
++    public static long Stores(Lane lane) => StoreCount[(int)lane];
++    public static long Compares(Lane lane) => CompareCount[(int)lane];
++    public static long Unkeyed(Lane lane) => UnkeyedCount[(int)lane];
++    /// <summary>Wall time of the live renders of reconcile frames that had a key (the price of the check).</summary>
++    public static double ReconcileMilliseconds => _reconcileTicks * 1000.0 / Stopwatch.Frequency;
++
++    /// <summary>
++    /// Process start only, once, by the Managed entry point. A switch requested without fast_chain
++    /// fails loudly instead of quietly staying off.
++    /// </summary>
++    public static void Configure(bool deck, bool hud)
++    {
++        if (Interlocked.Exchange(ref _configured, 1) != 0)
++            throw new InvalidOperationException("native_card_memo_configured_twice");
++        if ((deck || hud) && !NativePatchStateCache.Enabled)
++            throw new InvalidOperationException("native_card_memo_requires_fast_chain");
++        DeckEnabled = deck;
++        HudEnabled = hud;
++    }
++
++    /// <summary>One headless command. Off: no-op.</summary>
++    public static void BeginFrame()
++    {
++        if (DeckEnabled || HudEnabled) _frame++;
++    }
++
++    private static bool Enabled(Lane lane) =>
++        NativePatchStateCache.Enabled && (lane == Lane.Deck ? DeckEnabled : HudEnabled);
++
++    private static bool Reconciling => Shadow || _frame % ReconcilePeriod == 0;
++
++    private static bool OwnerThread()
++    {
++        int id = Environment.CurrentManagedThreadId;
++        int owner = Interlocked.CompareExchange(ref _ownerThread, id, 0);
++        return owner == 0 || owner == id;
++    }
++
++    /// <summary>
++    /// The card's projection without native_ref: a copy of the stored one, or <paramref name="render"/>
++    /// (the original live code). <paramref name="json"/> is that projection's default JSON when this
++    /// class produced or checked it, otherwise null; it is the same bytes the caller would serialize.
++    /// </summary>
++    internal static Dictionary<string, object?> Project(Lane lane, CardModel card, PileType displayPile,
++        Func<Dictionary<string, object?>> render, out string? json)
++    {
++        json = null;
++        if (!Enabled(lane)) return render();
++        string? key = Key(lane, card, displayPile);
++        if (key == null)
++        {
++            UnkeyedCount[(int)lane]++;
++            return render();
++        }
++        bool reconciling = Reconciling;
++        if (!reconciling && Entries.TryGetValue(key, out Stored? hit))
++        {
++            HitCount[(int)lane]++;
++            json = hit.Json;
++            return Copy(hit.Value);
++        }
++        long started = reconciling ? Stopwatch.GetTimestamp() : 0;
++        Dictionary<string, object?> live = render();
++        string text = JsonSerializer.Serialize(live);
++        if (Entries.TryGetValue(key, out Stored? stored))
++        {
++            CompareCount[(int)lane]++;
++            if (Shadow)
++            {
++                string name = lane + ":" + card.GetType().Name;
++                TypeCompares[name] = TypeCompares.GetValueOrDefault(name) + 1;
++            }
++            if (!string.Equals(stored.Json, text, StringComparison.Ordinal))
++            {
++                Divergence = $"compact_state_divergence: native card projection memo ({lane}) differs from live render for {card.GetType().FullName}";
++                throw new NativeCompactStateDivergenceException(Divergence);
++            }
++        }
++        else if (Copyable(live))
++        {
++            if (Entries.Count >= MaxEntries) Entries.Clear();
++            Entries[key] = new Stored(Copy(live), text);
++            StoreCount[(int)lane]++;
++        }
++        if (reconciling) _reconcileTicks += Stopwatch.GetTimestamp() - started;
++        json = text;
++        return live;
++    }
++
++    // Game-typed reflection lives here, not in the outer class: Configure runs at process start,
++    // before the game assembly resolver is installed, and must not load the game assembly.
++    private static class Game
++    {
++        internal static readonly HashSet<Type> LocalVariables = new()
++        {
++            typeof(DynamicVar), typeof(BlockVar), typeof(BoolVar), typeof(CardsVar), typeof(DamageVar), typeof(EnergyVar),
++            typeof(ExtraDamageVar), typeof(ForgeVar), typeof(GoldVar), typeof(HealVar), typeof(HpLossVar), typeof(IfUpgradedVar),
++            typeof(IntVar), typeof(MaxHpVar), typeof(OstyDamageVar), typeof(RepeatVar), typeof(StarsVar), typeof(StringVar),
++            typeof(SummonVar)
++        };
++        internal static readonly NativeField? TemporaryStarCosts =
++            NativeField.Of(typeof(CardModel).GetField("_temporaryStarCosts", Declared));
++        // CardModel getters that fill a field on first read. A key never reads one before it is filled: a card
++        // with any still empty renders live (the live render fills it), so computing a key changes nothing.
++        internal static readonly NativeField?[] LazyFields = new[] { "_dynamicVars", "_energyCost", "_pool", "_keywords" }
++            .Select(name => NativeField.Of(typeof(CardModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic))).ToArray();
++        internal static readonly NativeField? StarCostSet = NativeField.Of(typeof(CardModel).GetField("_starCostSet", BindingFlags.Instance | BindingFlags.NonPublic));
++        internal static readonly NativeField? LocalModifiers =
++            NativeField.Of(typeof(CardEnergyCost).GetField("_localModifiers", Declared));
++    }
++
++    /// <summary>Key of a card, or null when it must be rendered live. Reads only; never renders.</summary>
++    internal static string? Key(Lane lane, CardModel card, PileType displayPile)
++    {
++        if (!Enabled(lane) || !OwnerThread()) return null;
++        if (Game.LazyFields.Any(field => field == null || field.GetValue(card) == null) || Game.StarCostSet?.GetValue(card) is not true) return null;
++        // Shadow: every path out of the key, keyed or not, must leave the card footprint unchanged.
++        NativeDetachedCardPreviewFactory.SourceStamp? before = Shadow ? NativeDetachedCardPreviewFactory.SourceStamp.Card(card) : null;
++        string? result = KeyOf(lane, card, displayPile);
++        before?.AssertUnchanged();
++        return result;
++    }
++
++    private static string? KeyOf(Lane lane, CardModel card, PileType displayPile)
++    {
++        if (card.Enchantment != null || card.Affliction != null || card.CurrentTarget != null || card.Owner == null
++            || card.UpgradePreviewType == CardUpgradePreviewType.Combat || card.HasStarCostX)
++            return null;
++        Type type = card.GetType();
++        if (!MemoType(type)) return null;
++        PileType? pile = card.Pile?.Type;
++        if (lane == Lane.Deck
++                ? pile != PileType.Deck || displayPile != PileType.Deck || card.CombatState != null
++                : pile is null or PileType.Hand or PileType.Play || pile != displayPile)
++            return null;
++        foreach (DynamicVar variable in card.DynamicVars.Values)
++            if (!Game.LocalVariables.Contains(variable.GetType())
++                && !(variable.GetType().IsGenericType && variable.GetType().GetGenericTypeDefinition() == typeof(PowerVar<>)))
++                return null;
++        var key = new StringBuilder(512);
++        key.Append((int)lane).Append('|').Append(type.FullName).Append('|').Append((int)displayPile).Append('|').Append((int)pile!.Value)
++            .Append('|').Append(CombatManager.Instance.IsInProgress ? 'c' : 'n').Append('|').Append((int)card.UpgradePreviewType)
++            .Append('|').Append(card.Owner.IsOstyAlive ? 'o' : '-').Append('|').Append(EnergyIconHelper.GetPrefix(card))
++            .Append('|').Append(NativePatchStateCache.Generation);
++        if (!NativeCardDetailCache.AppendScalars(key, card)) return null;
++        CardEnergyCost cost = card.EnergyCost;
++        key.Append("|ec");
++        if (!NativeCardDetailCache.AppendScalars(key, cost)) return null;
++        if (Game.LocalModifiers?.GetValue(cost) is not System.Collections.IList modifiers) return null;
++        foreach (object? modifier in modifiers)
++        {
++            key.Append("|lm");
++            if (modifier == null || !NativeCardDetailCache.AppendScalars(key, modifier)) return null;
++        }
++        if (Game.TemporaryStarCosts?.GetValue(card) is not System.Collections.IList starCosts) return null;
++        foreach (object? starCost in starCosts)
++        {
++            key.Append("|ts");
++            if (starCost == null || !NativeCardDetailCache.AppendScalars(key, starCost)) return null;
++        }
++        key.Append("|kw");
++        foreach (int keyword in card.Keywords.Select(k => (int)k).OrderBy(k => k))
++            key.Append(',').Append(keyword);
++        key.Append("|e").Append(cost.CostsX ? "X" : cost.GetWithModifiers(CostModifiers.All).ToString())
++            .Append("|s").Append(card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : "-");
++        foreach (DynamicVar variable in card.DynamicVars.Values)
++        {
++            key.Append("|v:").Append(variable.GetType().FullName);
++            if (!NativeCardDetailCache.AppendScalars(key, variable)) return null;
++        }
++        return key.ToString();
++    }
++
++    private static bool MemoType(Type type)
++    {
++        if (MemoTypes.TryGetValue(type, out bool value)) return value;
++        // Shadow mode measures every structurally eligible type; otherwise only the frozen list.
++        value = type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && !OutsideHoverTips.Contains(type.Name)
++            && (Shadow || typeof(CardModel).Module.ModuleVersionId == NativeCardDetailCache.ShadowedGameMvid && FrozenTypes.Contains(type.Name));
++        for (Type? t = type; value && t != null && t != typeof(CardModel); t = t.BaseType)
++        {
++            if (t.GetMethods(Declared).Any(method => RenderOverrides.Contains(method.Name))) value = false;
++            if (t.GetFields(Declared).Any(field => !NativeCardDetailCache.ScalarOrScalarCollection(field.FieldType))) value = false;
++        }
++        MemoTypes[type] = value;
++        return value;
++    }
++
++    // The projection is a tree of string-keyed dictionaries, lists and arrays of plain values.
++    private static bool Copyable(object? value) => value switch
++    {
++        null or string or bool or int or long or decimal or double => true,
++        Dictionary<string, object?> map => map.Values.All(Copyable),
++        List<Dictionary<string, object?>> list => list.All(Copyable),
++        Dictionary<string, object?>[] array => array.All(Copyable),
++        List<string> or string[] => true,
++        List<object?> list => list.All(Copyable),
++        object?[] array => array.All(Copyable),
++        _ => false
++    };
++
++    private static Dictionary<string, object?> Copy(Dictionary<string, object?> map)
++    {
++        var copy = new Dictionary<string, object?>(map.Count);
++        foreach (var (name, value) in map) copy[name] = CopyValue(value);
++        return copy;
++    }
++
++    private static object? CopyValue(object? value) => value switch
++    {
++        null or string or bool or int or long or decimal or double => value,
++        Dictionary<string, object?> map => Copy(map),
++        List<Dictionary<string, object?>> list => list.Select(Copy).ToList(),
++        Dictionary<string, object?>[] array => array.Select(Copy).ToArray(),
++        List<string> list => new List<string>(list),
++        string[] array => (string[])array.Clone(),
++        List<object?> list => list.Select(CopyValue).ToList(),
++        object?[] array => array.Select(CopyValue).ToArray(),
++        _ => throw new InvalidOperationException("native_card_memo_uncopyable_value")
++    };
++
++    private static string Summary() =>
++        string.Join(' ', Enum.GetValues<Lane>().Select(lane => $"{lane.ToString().ToLowerInvariant()}:hits={Hits(lane)},stores={Stores(lane)},compares={Compares(lane)},unkeyed={Unkeyed(lane)}"))
++        + $" frames={_frame} entries={Entries.Count} reconcile_ms={ReconcileMilliseconds:F1} divergence={(Divergence == null ? 0 : 1)}"
++        + (Shadow ? " type-compares " + string.Join(',', TypeCompares.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "=" + pair.Value)) : "");
++
++    // Frozen from Friday shadow job 1458801 (92 corpus games, both lanes, every frame live vs memo plus the
++    // read-only key check: 1,461,862 compares, 0 divergence; 142 types with >= 1 compare) on this game build
++    // only (NativeCardDetailCache.ShadowedGameMvid). Refreeze after any game update.
++    // Names are in MegaCrit.Sts2.Core.Models.Cards.
++    private static readonly HashSet<string> FrozenTypes = new(StringComparer.Ordinal)
++    {
++        "AdaptiveStrike", "AllForOne", "Anointed", "Anticipate", "Backstab", "BallLightning", "BeamCell", "BeatDown",
++        "Beckon", "BiasedCognition", "Bombardment", "BoostAway", "BootSequence", "Buffer", "BulkUp", "Bulwark",
++        "Burn", "Capacitor", "Chaos", "ChargeBattery", "Chill", "Clash", "Claw", "CloakAndDagger", "Clumsy",
++        "ColdSnap", "Compact", "ConsumingShadow", "Coolant", "Coolheaded", "CurseOfTheBell", "DarkShackles",
++        "Darkness", "Dash", "Dazed", "DeadlyPoison", "DefendDefect", "Defragment", "Devastate", "DoubleEnergy",
++        "Doubt", "DramaticEntrance", "DualWield", "Dualcast", "EchoForm", "Enthralled", "Equilibrium", "Expose",
++        "Exterminate", "Feral", "Finesse", "FocusedStrike", "Ftl", "Fusion", "GeneticAlgorithm", "Glacier",
++        "Glasswork", "GoForTheEyes", "Greed", "Guilty", "GunkUp", "Hailstorm", "Hologram", "Hotfix", "Hyperbeam",
++        "IceLance", "Impatience", "Infection", "Injury", "Iteration", "Jackpot", "LeadingStrike", "Leap",
++        "LightningRod", "Loop", "Luminesce", "MachineLearning", "Metamorphosis", "MeteorStrike", "Modded",
++        "MomentumStrike", "MultiCast", "NegativePulse", "NeowsFury", "Null", "Outbreak", "Outmaneuver", "Overclock",
++        "PanicButton", "PiercingWail", "Poke", "Prolong", "Prowess", "Purity", "Quadcast", "Rainbow", "Reboot",
++        "Rebound", "Refract", "Restlessness", "RocketPunch", "Salvo", "Scavenge", "Scrape", "Scrawl",
++        "SecretTechnique", "SecretWeapon", "ShadowShield", "Shatter", "Shiv", "Shockwave", "Sidestep", "SignalBoost",
++        "Skim", "Slimed", "Smokestack", "Spinner", "Storm", "StrikeDefect", "Subroutine", "SuckerPunch", "Sunder",
++        "Supercritical", "SweepingBeam", "Synthesis", "Tempest", "TeslaCoil", "TheGambit", "ThrummingHatchet",
++        "Thunder", "ToricToughness", "Toxic", "Turbo", "UltimateDefend", "UltimateStrike", "Uproar", "Void", "Volley",
++        "Whistle", "WhiteNoise", "Wound", "Zap"
++    };
 +}
 diff --git a/src/Sts2Headless/NativeCardRenderTransaction.cs b/src/Sts2Headless/NativeCardRenderTransaction.cs
 new file mode 100644
@@ -7007,7 +7627,7 @@ index 0000000..6742e80
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
 new file mode 100644
-index 0000000..34d9344
+index 0000000..f0d996b
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardPreview.cs
 @@ -0,0 +1,229 @@
@@ -7157,7 +7777,7 @@ index 0000000..34d9344
 +    // An assertion of the audited invocation's original-object footprint. It
 +    // does not permit unknown code to run and does not restore/roll back state.
 +    // Only fixed native owner fields and plain CLR containers are inspected.
-+    private sealed class SourceStamp
++    internal sealed class SourceStamp
 +    {
 +        private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
 +        private readonly List<(object Owner, NativeField Field, object? Value)> fields = new();
@@ -9097,10 +9717,10 @@ index 0000000..0b46dc7
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..d67c2ee
+index 0000000..bdff6b0
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,174 @@
 +using MegaCrit.Sts2.Core.Combat;
 +using MegaCrit.Sts2.Core.Entities.Creatures;
 +using MegaCrit.Sts2.Core.Entities.Cards;
@@ -9142,16 +9762,14 @@ index 0000000..d67c2ee
 +            return player.Creature.CombatState?.PlayerCreatures.Any(potion.IsValidTarget) == true;
 +        return potion.IsValidTarget(potion.TargetType is TargetType.Self or TargetType.AnyPlayer ? player.Creature : null);
 +    }
-+    private static Dictionary<string,object?> Card(CardModel card, PileType pile, bool identity)
++    private static Dictionary<string,object?> Card(CardModel card, PileType pile, bool identity) => Card(card, pile, identity, out _);
++
++    // fast_chain HUD memo (STS2_HEADLESS_HUD_MEMO, default off): the projection of a card outside Hand
++    // and Play, keyed by its live state; otherwise Projection runs live as before. order is that
++    // projection's JSON when the memo produced or checked it: the same bytes as the draw-order key.
++    private static Dictionary<string,object?> Card(CardModel card, PileType pile, bool identity, out string? order)
 +    {
-+        var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, pile);
-+        if (!display.Complete)
-+            throw new InvalidOperationException("Current native combat card display is incomplete: " + card.Id.Entry + " " + string.Join(",", display.Missing));
-+        var result = new Dictionary<string,object?>(display.Card);
-+        result["public_details"] = display.PublicDetail;
-+        result["public_details_complete"] = display.Complete;
-+        result["public_details_missing"] = display.Missing;
-+        result["render_complete"] = true;
++        var result = NativeCardProjectionMemo.Project(NativeCardProjectionMemo.Lane.Hud, card, pile, () => Projection(card, pile), out order);
 +        if (identity) result["native_ref"] = NativeObjectIdentity.Get(card);
 +        if (pile == PileType.Hand)
 +        {
@@ -9162,17 +9780,32 @@ index 0000000..d67c2ee
 +        return result;
 +    }
 +
++    private static Dictionary<string,object?> Projection(CardModel card, PileType pile)
++    {
++        var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, pile);
++        if (!display.Complete)
++            throw new InvalidOperationException("Current native combat card display is incomplete: " + card.Id.Entry + " " + string.Join(",", display.Missing));
++        var result = new Dictionary<string,object?>(display.Card);
++        result["public_details"] = display.PublicDetail;
++        result["public_details_complete"] = display.Complete;
++        result["public_details_missing"] = display.Missing;
++        result["render_complete"] = true;
++        return result;
++    }
++
 +    private static Dictionary<string,object?> Pile(string name, PileType type, CardModel[] cards)
 +    {
-+        var visible = cards.Select(card => Card(card, type, true));
++        var visible = cards.Select(card => { var value = Card(card, type, true, out string? order); return (Value: value, Order: order); }).ToArray();
 +        return new()
 +        {
 +            ["pile"] = name,
 +            ["ordering_semantics"] = type == PileType.Draw ? "unordered_multiset" : "native_visible_order",
++            // Draw order: public content only. A memo order string is that same serialization.
 +            ["cards"] = (type == PileType.Draw
-+                ? visible.OrderBy(card => System.Text.Json.JsonSerializer.Serialize(card
++                ? visible.OrderBy(card => card.Order ?? System.Text.Json.JsonSerializer.Serialize(card.Value
 +                    .Where(pair => pair.Key != "native_ref").ToDictionary(pair => pair.Key, pair => pair.Value)), StringComparer.Ordinal)
-+                : visible).ToArray()
++                    .Select(card => card.Value)
++                : visible.Select(card => card.Value)).ToArray()
 +        };
 +    }
 +    private static List<Dictionary<string,object?>> Statuses(Creature creature)
@@ -10938,7 +11571,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..09dc66f 100644
+index 800f139..38cf159 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -10952,19 +11585,22 @@ index 800f139..09dc66f 100644
  
  namespace Sts2Headless;
  
-@@ -41,6 +44,11 @@ class Program
+@@ -41,6 +44,14 @@ class Program
  
      static void Main(string[] args)
      {
 +        // fast_chain native read caches (default off; off = original output byte for byte).
 +        NativePatchStateCache.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1");
++        // fast_chain card projection memo, two switches, default off; either without fast_chain fails here.
++        NativeCardProjectionMemo.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_DECK_MEMO") == "1",
++            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1");
 +        if (Environment.GetEnvironmentVariable("STS2_HEADLESS_QUIET") == "1")
 +            Console.SetError(TextWriter.Null);
 +
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -82,10 +90,18 @@ class Program
+@@ -82,10 +93,19 @@ class Program
              if (string.IsNullOrEmpty(line)) continue;
  
              Dictionary<string, object?>? result;
@@ -10975,6 +11611,7 @@ index 800f139..09dc66f 100644
 -                result = HandleCommand(sim, cmd);
 +                NativePatchStateCache.Revalidate(); // fast_chain patch-generation sampling point; off = no-op
 +                NativeCardDetailCache.BeginFrame(); // fast_chain card detail reconcile clock; off = no-op
++                NativeCardProjectionMemo.BeginFrame(); // card projection memo reconcile clock; off = no-op
 +                if (NativePatchStateCache.Enabled)
 +                {
 +                    commandName = cmd.TryGetProperty("cmd", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() ?? "" : "";
@@ -10984,7 +11621,7 @@ index 800f139..09dc66f 100644
              }
              catch (JsonException ex)
              {
-@@ -93,12 +109,30 @@ class Program
+@@ -93,12 +113,38 @@ class Program
              }
              catch (Exception ex)
              {
@@ -10998,6 +11635,14 @@ index 800f139..09dc66f 100644
 +                // Fatal, never retried or replaced by a live answer: the stream has stopped being exact.
 +                Console.Error.WriteLine("[native-card-detail-cache] " + divergence);
 +                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence", ["message"] = divergence });
++                Environment.Exit(70);
++            }
++
++            if (NativeCardProjectionMemo.Divergence is { } memoDivergence)
++            {
++                // Same: a memoized card projection that differs from live is fatal, never retried.
++                Console.Error.WriteLine("[native-card-memo] " + memoDivergence);
++                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence", ["message"] = memoDivergence });
 +                Environment.Exit(70);
 +            }
 +
@@ -11017,7 +11662,7 @@ index 800f139..09dc66f 100644
                  if (result.TryGetValue("type", out var resultTypeObj) &&
                      string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
                  {
-@@ -108,17 +142,64 @@ class Program
+@@ -108,17 +154,64 @@ class Program
          }
      }
  
@@ -11084,7 +11729,7 @@ index 800f139..09dc66f 100644
                  );
  
              case "action":
-@@ -143,6 +224,24 @@ class Program
+@@ -143,6 +236,24 @@ class Program
                  return sim.ExecuteAction(action, actionArgs);
              }
  
@@ -11109,7 +11754,7 @@ index 800f139..09dc66f 100644
              case "load_save":
              {
                  var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
-@@ -156,6 +255,7 @@ class Program
+@@ -156,6 +267,7 @@ class Program
                  if (saveJson == null)
                      return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                  var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
@@ -11117,7 +11762,7 @@ index 800f139..09dc66f 100644
                  return sim.LoadSave(saveJson, loadLang);
              }
              case "get_map":
-@@ -230,8 +330,68 @@ class Program
+@@ -230,8 +342,68 @@ class Program
          }
      }
  
@@ -11187,7 +11832,7 @@ index 800f139..09dc66f 100644
          Console.Out.Flush();
      }
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..0e24c9a 100644
+index 6b9de4a..26ff8e2 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -15379,7 +16024,7 @@ index 6b9de4a..0e24c9a 100644
              {
                  ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
                  ["stats"] = stats.Count > 0 ? stats : null,
-@@ -2965,38 +3795,90 @@ public class RunSimulator
+@@ -2965,105 +3795,316 @@ public class RunSimulator
          catch { return null; }
      }
  
@@ -15479,10 +16124,11 @@ index 6b9de4a..0e24c9a 100644
                  };
              }).Where(x => x != null).ToList(),
              ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-@@ -3005,25 +3887,20 @@ public class RunSimulator
-                 var dstats = new Dictionary<string, object?>();
-                 try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-                 var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
+             ["deck"] = player.Deck?.Cards?.Where(c => c != null).Select(c =>
+             {
+-                var dstats = new Dictionary<string, object?>();
+-                try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+-                var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
 -                var dcard = new Dictionary<string, object?>
 -                {
 -                    ["id"] = c.Id.ToString(),
@@ -15502,27 +16148,48 @@ index 6b9de4a..0e24c9a 100644
 -                    dcard["enchantment"] = _loc.Bilingual("enchantments", c.Enchantment.Id.Entry + ".title");
 -                    try { if (c.Enchantment.Amount != 0) dcard["enchantment_amount"] = c.Enchantment.Amount; } catch { }
 -                }
-+                // Use the same game-owned card rendering path as a normal pile hover. The
-+                // managed Host exports facts and exact identity; it does not reimplement
-+                // DynamicVar formatting or card rules.
-+                var dcard = VisibleHoverCard(c, PileType.Deck, capacity: 21);
+-                if (c.Affliction != null)
+-                {
+-                    dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
+-                    try { if (c.Affliction.Amount != 0) dcard["affliction_amount"] = c.Affliction.Amount; } catch { }
+-                }
++                // fast_chain deck memo (STS2_HEADLESS_DECK_MEMO, default off): the same projection,
++                // keyed by the card's live state; otherwise DeckCard runs live as before.
++                var dcard = NativeCardProjectionMemo.Project(NativeCardProjectionMemo.Lane.Deck, c, PileType.Deck, () => DeckCard(c), out _);
 +                dcard["native_ref"] = NativeObjectIdentity.Get(c);
-+                dcard["stats"] = dstats.Count > 0 ? dstats : null;
-+                dcard["keywords"] = dkws?.Count > 0 ? dkws : null;
-+                dcard["after_upgrade"] = GetUpgradedInfo(c);
-+                // The public deck and its linked hover details are one native
-+                // capture, matching Reference's BuildCard/CurrentPublicDetails.
-+                var publicDetails = NativePublicCardDetails.CaptureWithUpgradePreview(c, PileType.Deck);
-+                dcard["public_details"] = publicDetails.PublicDetail;
-+                dcard["public_details_complete"] = publicDetails.Complete;
-+                dcard["public_details_missing"] = publicDetails.Missing;
-                 if (c.Affliction != null)
-                 {
-                     dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,36 +3911,190 @@ public class RunSimulator
+                 return dcard;
+             }).ToList(),
          };
      }
  
++    // One master-deck card of the player summary without its identity (native_ref slot left null).
++    private Dictionary<string, object?> DeckCard(CardModel c)
++    {
++        var dstats = new Dictionary<string, object?>();
++        try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
++        var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
++        // Use the same game-owned card rendering path as a normal pile hover. The
++        // managed Host exports facts and exact identity; it does not reimplement
++        // DynamicVar formatting or card rules.
++        var dcard = VisibleHoverCard(c, PileType.Deck, capacity: 21);
++        dcard["native_ref"] = null; // the caller's slot, so the key order is unchanged
++        dcard["stats"] = dstats.Count > 0 ? dstats : null;
++        dcard["keywords"] = dkws?.Count > 0 ? dkws : null;
++        dcard["after_upgrade"] = GetUpgradedInfo(c);
++        // The public deck and its linked hover details are one native
++        // capture, matching Reference's BuildCard/CurrentPublicDetails.
++        var publicDetails = NativePublicCardDetails.CaptureWithUpgradePreview(c, PileType.Deck);
++        dcard["public_details"] = publicDetails.PublicDetail;
++        dcard["public_details_complete"] = publicDetails.Complete;
++        dcard["public_details_missing"] = publicDetails.Missing;
++        if (c.Affliction != null)
++        {
++            dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
++            try { if (c.Affliction.Amount != 0) dcard["affliction_amount"] = c.Affliction.Amount; } catch { }
++        }
++        return dcard;
++    }
++
 +    private sealed record VisibleHoverFactsResult(
 +        List<Dictionary<string, object?>> Keywords,
 +        List<Dictionary<string, object?>> CardPreviews,
@@ -15716,7 +16383,7 @@ index 6b9de4a..0e24c9a 100644
          return ctx;
      }
  
-@@ -3074,6 +4105,11 @@ public class RunSimulator
+@@ -3074,6 +4115,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -15728,7 +16395,7 @@ index 6b9de4a..0e24c9a 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +4135,6 @@ public class RunSimulator
+@@ -3099,14 +4145,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -15743,7 +16410,7 @@ index 6b9de4a..0e24c9a 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +4167,15 @@ public class RunSimulator
+@@ -3139,9 +4177,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -15759,7 +16426,7 @@ index 6b9de4a..0e24c9a 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3149,17 +4183,19 @@ public class RunSimulator
+@@ -3149,17 +4193,19 @@ public class RunSimulator
          {
              Console.Error.WriteLine($"[WARN] ModelIdSerializationCache.Init: {ex.Message}");
          }
@@ -15785,7 +16452,7 @@ index 6b9de4a..0e24c9a 100644
              _ => null
          };
      }
-@@ -3263,42 +4299,169 @@ public class RunSimulator
+@@ -3263,42 +4309,169 @@ public class RunSimulator
          }
      }
  
@@ -15834,17 +16501,17 @@ index 6b9de4a..0e24c9a 100644
 +            NativeRewardSetObservation.Register(set);
 +            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
 +            if (synchronizer.IsRewardsSetCompleted(set)) return;
++
++            foreach (var reward in set.Rewards)
++            {
++                reward.MarkContentAsSeen();
++            }
  
 -            // Patch YieldAwaitable.YieldAwaiter.IsCompleted to return true
 -            // This makes `await Task.Yield()` execute synchronously (continuation runs inline)
 -            var yieldAwaiterType = typeof(System.Runtime.CompilerServices.YieldAwaitable)
 -                .GetNestedType("YieldAwaiter");
 -            if (yieldAwaiterType != null)
-+            foreach (var reward in set.Rewards)
-+            {
-+                reward.MarkContentAsSeen();
-+            }
-+
 +            var context = new SelectionContext { Set = set };
 +            lock (_gate) _stack.Add(context);
 +            try
@@ -15977,7 +16644,7 @@ index 6b9de4a..0e24c9a 100644
      /// <summary>
      /// Card selector that creates a pending selection decision point.
      /// When the game needs the player to choose cards (upgrade, remove, transform, bundle pick),
-@@ -3306,6 +4469,12 @@ public class RunSimulator
+@@ -3306,6 +4479,12 @@ public class RunSimulator
      /// </summary>
      internal class HeadlessCardSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
      {
@@ -15990,13 +16657,14 @@ index 6b9de4a..0e24c9a 100644
          // Pending card selection — set by game engine, read by main loop
          public List<CardModel>? PendingOptions { get; private set; }
          public int PendingMinSelect { get; private set; }
-@@ -3313,36 +4482,278 @@ public class RunSimulator
+@@ -3313,36 +4492,278 @@ public class RunSimulator
          public string PendingPrompt { get; private set; } = "";
          private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
  
 -        public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
 +        public bool HasPending { get { lock (_selectionGate) return _pendingTcs != null && !_pendingTcs.Task.IsCompleted; } }
-+
+ 
+-        public Task<IEnumerable<CardModel>> GetSelectedCards(
 +        public DeckUpgradeSelection? PendingDeckUpgrade
 +        {
 +            get { lock (_selectionGate) return HasPending ? _deckUpgrade : null; }
@@ -16015,8 +16683,8 @@ index 6b9de4a..0e24c9a 100644
 +
 +        public NativeSelectorSelection? PendingNativeSelector
 +        { get { lock (_selectionGate) return HasPending ? _nativeSelector : null; } }
- 
-         public Task<IEnumerable<CardModel>> GetSelectedCards(
++
++        public Task<IEnumerable<CardModel>> GetSelectedCards(
              IEnumerable<CardModel> options, int minSelect, int maxSelect)
          {
              var optList = options.ToList();
@@ -16284,7 +16952,7 @@ index 6b9de4a..0e24c9a 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4768,36 @@ public class RunSimulator
+@@ -3357,15 +4778,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -16325,7 +16993,7 @@ index 6b9de4a..0e24c9a 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4807,110 @@ public class RunSimulator
+@@ -3375,55 +4817,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -16440,12 +17108,12 @@ index 6b9de4a..0e24c9a 100644
 +            }
          }
 -    }
--
+ 
 -    internal static class YieldPatches
 -    {
 -        // Only suppress Task.Yield() when this flag is set (during end_turn processing)
 -        public static volatile bool SuppressYield;
- 
+-
 -        public static bool IsCompletedPrefix(ref bool __result)
 +        public bool ResolveAlternative(object? expectedIdentity)
          {
@@ -16470,7 +17138,7 @@ index 6b9de4a..0e24c9a 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4934,108 @@ public class RunSimulator
+@@ -3447,178 +4944,108 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -16497,120 +17165,6 @@ index 6b9de4a..0e24c9a 100644
 -
 -            var locDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "localization_eng");
 -            if (Directory.Exists(locDir))
--            {
--                foreach (var file in Directory.GetFiles(locDir, "*.json"))
--                {
--                    try
--                    {
--                        var name = Path.GetFileNameWithoutExtension(file);
--                        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
--                            File.ReadAllText(file));
--                        if (data != null)
--                            tables[name] = new LocTable(name, data);
--                    }
--                    catch { }
--                }
--                Console.Error.WriteLine($"[INFO] Loaded {tables.Count} localization tables from {locDir}");
--            }
--            else
--            {
--                Console.Error.WriteLine($"[WARN] Localization dir not found: {locDir}");
--                // Fallback: empty tables
--                var tableNames = new[] {
--                    "achievements","acts","afflictions","ancients","ascension",
--                    "bestiary","card_keywords","card_library","card_reward_ui",
--                    "card_selection","cards","characters","combat_messages",
--                    "credits","enchantments","encounters","epochs","eras",
--                    "events","ftues","game_over_screen","gameplay_ui",
--                    "inspect_relic_screen","intents","main_menu_ui","map",
--                    "merchant_room","modifiers","monsters","orbs","potion_lab",
--                    "potions","powers","relic_collection","relics","rest_site_ui",
--                    "run_history","settings_ui","static_hover_tips","stats_screen",
--                    "timeline","vfx"
--                };
--                foreach (var name in tableNames)
--                    tables[name] = new LocTable(name, new Dictionary<string, string>());
--            }
--            tablesField!.SetValue(instance, tables);
--
--            // Set Language
--            var langProp = typeof(LocManager).GetProperty("Language",
--                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
--            try { langProp?.SetValue(instance, "eng"); } catch { }
--
--            // Set CultureInfo
--            var cultureProp = typeof(LocManager).GetProperty("CultureInfo",
--                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
--            try { cultureProp?.SetValue(instance, System.Globalization.CultureInfo.InvariantCulture); } catch { }
--
--            // Initialize _smartFormatter — the game uses `new SmartFormatter()`
--            try
--            {
--                var sfField = typeof(LocManager).GetField("_smartFormatter",
--                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
--                // Dump ALL fields (instance + static)
--                foreach (var f in typeof(LocManager).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
--                    Console.Error.WriteLine($"[DEBUG] LocManager {(f.IsStatic?"static":"inst")} field: {f.Name} ({f.FieldType.Name})");
--                Console.Error.WriteLine($"[DEBUG] sfField: {sfField?.Name ?? "null"} type: {sfField?.FieldType?.Name ?? "null"}");
--                if (sfField != null)
--                {
--                    try
--                    {
--                        // List constructors to find the right one
--                        var ctors = sfField.FieldType.GetConstructors(
--                            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
--                        Console.Error.WriteLine($"[DEBUG] SmartFormatter has {ctors.Length} constructors:");
--                        foreach (var ctor in ctors)
--                        {
--                            var ps = ctor.GetParameters();
--                            Console.Error.WriteLine($"  ({string.Join(", ", ps.Select(p => $"{p.ParameterType.Name} {p.Name}"))})");
--                        }
--                        // Try the one with fewest params
--                        var bestCtor = ctors.OrderBy(c => c.GetParameters().Length).First();
--                        var args2 = bestCtor.GetParameters().Select(p =>
--                            p.HasDefaultValue ? p.DefaultValue :
--                            p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null
--                        ).ToArray();
--                        var sf = bestCtor.Invoke(args2);
--                        // Register extensions using the game's own LoadLocFormatters logic
--                        // Call it via reflection on LocManager instance
--                        try
--                        {
--                            var loadMethod = typeof(LocManager).GetMethod("LoadLocFormatters",
--                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
--                            if (loadMethod != null)
--                            {
--                                loadMethod.Invoke(instance, null);
--                                Console.Error.WriteLine("[INFO] SmartFormatter initialized via LoadLocFormatters");
--                            }
--                            else
--                            {
--                                sfField.SetValue(null, sf);
--                                Console.Error.WriteLine("[INFO] SmartFormatter set (no LoadLocFormatters found)");
--                            }
--                        }
--                        catch (Exception lfEx)
--                        {
--                            sfField.SetValue(null, sf);
--                            Console.Error.WriteLine($"[WARN] LoadLocFormatters failed: {lfEx.InnerException?.Message ?? lfEx.Message}");
--                        }
--                    }
--                    catch (Exception sfEx)
--                    {
--                        Console.Error.WriteLine($"[WARN] SmartFormatter create failed: {sfEx.GetType().Name}: {sfEx.Message}");
--                        if (sfEx.InnerException != null)
--                            Console.Error.WriteLine($"  Inner: {sfEx.InnerException.GetType().Name}: {sfEx.InnerException.Message}");
--                    }
--                }
--                else
--                {
--                    Console.Error.WriteLine("[WARN] _smartFormatter field not found in LocManager");
--                }
--            }
--            catch (Exception ex) { Console.Error.WriteLine($"[WARN] _smartFormatter init: {ex.GetType().Name}: {ex.Message}\n{ex.InnerException?.Message}"); }
--
--            // Initialize _engTables to point to _tables (avoid null ref in fallback)
--            try
 +            var loadFormatters = typeof(LocManager).GetMethod("LoadLocFormatters",
 +                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
 +                ?? throw new MissingMethodException(typeof(LocManager).FullName, "LoadLocFormatters");
@@ -16692,6 +17246,129 @@ index 6b9de4a..0e24c9a 100644
 +            NativeSelectorCallScope.CombatHookReady=true;
 +            foreach (var entry in new[]
              {
+-                foreach (var file in Directory.GetFiles(locDir, "*.json"))
+-                {
+-                    try
+-                    {
+-                        var name = Path.GetFileNameWithoutExtension(file);
+-                        var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(
+-                            File.ReadAllText(file));
+-                        if (data != null)
+-                            tables[name] = new LocTable(name, data);
+-                    }
+-                    catch { }
+-                }
+-                Console.Error.WriteLine($"[INFO] Loaded {tables.Count} localization tables from {locDir}");
+-            }
+-            else
++                (Name: nameof(CardSelectCmd.FromSimpleGrid), Types: new[] { typeof(PlayerChoiceContext), typeof(IReadOnlyList<CardModel>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimplePrefix)),
++                (Name: nameof(CardSelectCmd.FromSimpleGridForRewards), Types: new[] { typeof(PlayerChoiceContext), typeof(List<CardCreationResult>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimpleRewardsPrefix))
++            })
+             {
+-                Console.Error.WriteLine($"[WARN] Localization dir not found: {locDir}");
+-                // Fallback: empty tables
+-                var tableNames = new[] {
+-                    "achievements","acts","afflictions","ancients","ascension",
+-                    "bestiary","card_keywords","card_library","card_reward_ui",
+-                    "card_selection","cards","characters","combat_messages",
+-                    "credits","enchantments","encounters","epochs","eras",
+-                    "events","ftues","game_over_screen","gameplay_ui",
+-                    "inspect_relic_screen","intents","main_menu_ui","map",
+-                    "merchant_room","modifiers","monsters","orbs","potion_lab",
+-                    "potions","powers","relic_collection","relics","rest_site_ui",
+-                    "run_history","settings_ui","static_hover_tips","stats_screen",
+-                    "timeline","vfx"
+-                };
+-                foreach (var name in tableNames)
+-                    tables[name] = new LocTable(name, new Dictionary<string, string>());
++                var method = AccessTools.Method(typeof(CardSelectCmd), entry.Name, entry.Types)
++                    ?? throw new MissingMethodException("Exact native simple-grid command changed: " + entry.Name);
++                harmony.Patch(method,
++                    prefix: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), entry.Prefix)),
++                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), nameof(NativeSelectorCallScope.Finalizer))));
+             }
+-            tablesField!.SetValue(instance, tables);
+-
+-            // Set Language
+-            var langProp = typeof(LocManager).GetProperty("Language",
+-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+-            try { langProp?.SetValue(instance, "eng"); } catch { }
++            NativeSelectorCallScope.SimpleHookReady = true;
+ 
+-            // Set CultureInfo
+-            var cultureProp = typeof(LocManager).GetProperty("CultureInfo",
+-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+-            try { cultureProp?.SetValue(instance, System.Globalization.CultureInfo.InvariantCulture); } catch { }
+-
+-            // Initialize _smartFormatter — the game uses `new SmartFormatter()`
+-            try
+-            {
+-                var sfField = typeof(LocManager).GetField("_smartFormatter",
+-                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+-                // Dump ALL fields (instance + static)
+-                foreach (var f in typeof(LocManager).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
+-                    Console.Error.WriteLine($"[DEBUG] LocManager {(f.IsStatic?"static":"inst")} field: {f.Name} ({f.FieldType.Name})");
+-                Console.Error.WriteLine($"[DEBUG] sfField: {sfField?.Name ?? "null"} type: {sfField?.FieldType?.Name ?? "null"}");
+-                if (sfField != null)
+-                {
+-                    try
+-                    {
+-                        // List constructors to find the right one
+-                        var ctors = sfField.FieldType.GetConstructors(
+-                            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+-                        Console.Error.WriteLine($"[DEBUG] SmartFormatter has {ctors.Length} constructors:");
+-                        foreach (var ctor in ctors)
+-                        {
+-                            var ps = ctor.GetParameters();
+-                            Console.Error.WriteLine($"  ({string.Join(", ", ps.Select(p => $"{p.ParameterType.Name} {p.Name}"))})");
+-                        }
+-                        // Try the one with fewest params
+-                        var bestCtor = ctors.OrderBy(c => c.GetParameters().Length).First();
+-                        var args2 = bestCtor.GetParameters().Select(p =>
+-                            p.HasDefaultValue ? p.DefaultValue :
+-                            p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null
+-                        ).ToArray();
+-                        var sf = bestCtor.Invoke(args2);
+-                        // Register extensions using the game's own LoadLocFormatters logic
+-                        // Call it via reflection on LocManager instance
+-                        try
+-                        {
+-                            var loadMethod = typeof(LocManager).GetMethod("LoadLocFormatters",
+-                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+-                            if (loadMethod != null)
+-                            {
+-                                loadMethod.Invoke(instance, null);
+-                                Console.Error.WriteLine("[INFO] SmartFormatter initialized via LoadLocFormatters");
+-                            }
+-                            else
+-                            {
+-                                sfField.SetValue(null, sf);
+-                                Console.Error.WriteLine("[INFO] SmartFormatter set (no LoadLocFormatters found)");
+-                            }
+-                        }
+-                        catch (Exception lfEx)
+-                        {
+-                            sfField.SetValue(null, sf);
+-                            Console.Error.WriteLine($"[WARN] LoadLocFormatters failed: {lfEx.InnerException?.Message ?? lfEx.Message}");
+-                        }
+-                    }
+-                    catch (Exception sfEx)
+-                    {
+-                        Console.Error.WriteLine($"[WARN] SmartFormatter create failed: {sfEx.GetType().Name}: {sfEx.Message}");
+-                        if (sfEx.InnerException != null)
+-                            Console.Error.WriteLine($"  Inner: {sfEx.InnerException.GetType().Name}: {sfEx.InnerException.Message}");
+-                    }
+-                }
+-                else
+-                {
+-                    Console.Error.WriteLine("[WARN] _smartFormatter field not found in LocManager");
+-                }
+-            }
+-            catch (Exception ex) { Console.Error.WriteLine($"[WARN] _smartFormatter init: {ex.GetType().Name}: {ex.Message}\n{ex.InnerException?.Message}"); }
+-
+-            // Initialize _engTables to point to _tables (avoid null ref in fallback)
+-            try
+-            {
 -                var engTablesField = typeof(LocManager).GetField("_engTables",
 -                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 -                engTablesField?.SetValue(instance, tables);
@@ -16715,20 +17392,11 @@ index 6b9de4a..0e24c9a 100644
 -            var prefix = typeof(LocPatches).GetMethod(nameof(LocPatches.GetRawTextPrefix),
 -                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
 -            if (getRawText != null && prefix != null)
-+                (Name: nameof(CardSelectCmd.FromSimpleGrid), Types: new[] { typeof(PlayerChoiceContext), typeof(IReadOnlyList<CardModel>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimplePrefix)),
-+                (Name: nameof(CardSelectCmd.FromSimpleGridForRewards), Types: new[] { typeof(PlayerChoiceContext), typeof(List<CardCreationResult>), typeof(Player), typeof(CardSelectorPrefs) }, Prefix: nameof(NativeSelectorCallScope.SimpleRewardsPrefix))
-+            })
-             {
+-            {
 -                harmony.Patch(getRawText, new HarmonyMethod(prefix));
 -                Console.Error.WriteLine("[INFO] Patched LocTable.GetRawText");
-+                var method = AccessTools.Method(typeof(CardSelectCmd), entry.Name, entry.Types)
-+                    ?? throw new MissingMethodException("Exact native simple-grid command changed: " + entry.Name);
-+                harmony.Patch(method,
-+                    prefix: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), entry.Prefix)),
-+                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), nameof(NativeSelectorCallScope.Finalizer))));
-             }
-+            NativeSelectorCallScope.SimpleHookReady = true;
- 
+-            }
+-
 -            // Patch GetLocString to not throw
 -            var getLocString = typeof(LocTable).GetMethod("GetLocString");
 -            var glsPrefix = typeof(LocPatches).GetMethod(nameof(LocPatches.GetLocStringPrefix),
@@ -16741,7 +17409,7 @@ index 6b9de4a..0e24c9a 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +5051,6 @@ public class RunSimulator
+@@ -3634,42 +5061,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -16784,7 +17452,7 @@ index 6b9de4a..0e24c9a 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +5058,79 @@ public class RunSimulator
+@@ -3677,85 +5068,79 @@ public class RunSimulator
          }
      }
  
@@ -16933,7 +17601,7 @@ index 6b9de4a..0e24c9a 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3774,11 +5149,12 @@ public class RunSimulator
+@@ -3774,11 +5159,12 @@ public class RunSimulator
              var sim = _bundleSimRef;
              if (sim != null)
              {
@@ -16949,7 +17617,7 @@ index 6b9de4a..0e24c9a 100644
                  return false;
              }
  
-@@ -3789,16 +5165,12 @@ public class RunSimulator
+@@ -3789,16 +5175,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -16968,7 +17636,7 @@ index 6b9de4a..0e24c9a 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5198,54 @@ public class RunSimulator
+@@ -3826,36 +5208,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -17042,7 +17710,7 @@ index 6b9de4a..0e24c9a 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5257,12 @@ public class RunSimulator
+@@ -3867,13 +5267,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -17059,7 +17727,7 @@ index 6b9de4a..0e24c9a 100644
              }
          }
          catch { }
-@@ -3896,15 +5285,126 @@ public class RunSimulator
+@@ -3896,15 +5295,126 @@ public class RunSimulator
      {
          try
          {

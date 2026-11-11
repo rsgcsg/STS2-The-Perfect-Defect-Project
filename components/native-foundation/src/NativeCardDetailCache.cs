@@ -167,6 +167,9 @@ public static class NativeCardDetailCache
 
     private enum FieldKind { Scalar, Delegate, ScalarCollection, Other }
 
+    /// <summary>A field type that AppendScalars keys completely (a scalar or a scalar collection).</summary>
+    internal static bool ScalarOrScalarCollection(Type type) => Kind(type) is FieldKind.Scalar or FieldKind.ScalarCollection;
+
     // The field-type tests of AppendScalars, taken once per field instead of per read.
     private static FieldKind Kind(Type type) =>
         Scalar(type) ? FieldKind.Scalar
@@ -187,7 +190,7 @@ public static class NativeCardDetailCache
 
     // Scalars and scalar collections are key parts. Delegates must be non-capturing.
     // References to other models (owner, pool, clone links, vars set) are context, not text inputs.
-    private static bool AppendScalars(StringBuilder key, object value)
+    internal static bool AppendScalars(StringBuilder key, object value)
     {
         foreach ((NativeField field, FieldKind kind) in Fields(value.GetType()))
         {
@@ -222,7 +225,7 @@ public static class NativeCardDetailCache
 
     // Frozen from Friday shadow job 1454482 (92 corpus games, 0 divergence, 255 types with >= 1 compare)
     // on this game build only. Refreeze after any game update. Names are in MegaCrit.Sts2.Core.Models.Cards.
-    private static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
+    internal static readonly Guid ShadowedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
     private static readonly HashSet<string> ShadowedTypes = new(StringComparer.Ordinal)
     {
         "Abrasive", "Accuracy", "AdaptiveStrike", "Adrenaline", "Afterimage", "Alchemize", "AllForOne", "Anointed",
