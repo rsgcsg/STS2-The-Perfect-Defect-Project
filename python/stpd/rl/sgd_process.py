@@ -1144,6 +1144,7 @@ class _SgdWorker:
 
         began = time.perf_counter()
         dataset = plan["dataset"]
+        direct = self.stage_executor is not None and self.device.type == "cuda"
         with open(plan["path"], "rb") as stream:
             mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         try:
@@ -1151,6 +1152,20 @@ class _SgdWorker:
                     memoryview(mapping)[:plan["used_bytes"]]).hexdigest() != plan["sha256"]):
                 raise _ChildViolation("sgd_prepared_file_integrity_changed")
             verified = time.perf_counter()
+
+            if direct:
+                # Stage thread: one tree walk (pin the file's slabs, H2D, map the
+                # tree once); the walks hold the GIL the stepping thread needs.
+                # The slab views are acyclic temporaries, so no gc pass is needed
+                # to release the mapping.
+                slabs, lease = self.pinned.pin_slabs(
+                    mapped_arrays(mapping, plan["arrays"]), self.pinned.epoch)
+                pinned = time.perf_counter()
+                device_batch, copies = bp.stage_pinned_slabs(
+                    pickle.loads(plan["tree"]), slabs, lease, self.device)
+                del slabs, lease
+                return self._staged_fields(plan, device_batch, copies, began, verified,
+                                           pinned)
 
             def load() -> Any:
                 arrays = mapped_arrays(mapping, plan["arrays"])
@@ -1162,7 +1177,8 @@ class _SgdWorker:
 
             batch = load()
         finally:
-            gc.collect()
+            if not direct:
+                gc.collect()
             with suppress(BufferError):
                 mapping.close()
         if batch.request.identity.sequence != dataset or len(batch.minibatches) != plan[
@@ -1171,6 +1187,14 @@ class _SgdWorker:
         pinned = time.perf_counter()
         device_batch, copies = bp.stage_batch(batch, self.device)
         del batch  # pinned slot returns once its H2D event completes
+        return self._staged_fields(plan, device_batch, copies, began, verified, pinned)
+
+    def _staged_fields(self, plan: dict[str, Any], device_batch: Any, copies: int,
+                       began: float, verified: float,
+                       pinned: float) -> tuple[Any, dict[str, Any]]:
+        if (device_batch.request.identity.sequence != plan["dataset"]
+                or len(device_batch.minibatches) != plan["minibatch_count"]):
+            raise _ChildViolation("sgd_prepared_batch_binding_changed")
         done = time.perf_counter()
         fields = dict(sha256=plan["sha256"], copies=copies,
                       verify_seconds=verified - began, pin_seconds=pinned - verified,

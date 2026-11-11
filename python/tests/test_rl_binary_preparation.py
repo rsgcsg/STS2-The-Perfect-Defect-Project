@@ -342,6 +342,51 @@ def test_pinned_double_buffer_event_lifetime_and_barrier_cancels_waiting_pin(mod
     pool.close()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires an authorized CUDA allocation")
+def test_pinned_slab_stage_matches_unpack_pin_stage(model, tmp_path):
+    """WP8 stage thread: pinning the file's slabs and mapping the tree once gives
+    the same device batch as unpack + pin + stage_batch (three tree walks)."""
+    import mmap
+
+    from stpd.rl.binary_preparation import _PinnedBuffers, _write_batch
+    from stpd.rl.sgd_process import mapped_arrays
+
+    value = segment(model)
+    batch = bp.assemble(request([value]), (source(model, value),))
+    path = tmp_path / "ready.bin"
+    with path.open("wb") as stream:
+        stream.truncate(1 << 24)
+    packed = _write_batch(batch, str(path))
+    specs = [(v.offset, v.count, v.dtype) for v in packed.arrays]
+    with path.open("rb") as stream:
+        mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    device = torch.device("cuda")
+    pool = _PinnedBuffers(64 * 1024**2)
+    old, _ = bp.stage_batch(pool.pin(bp.unpack_transport(
+        (packed.tree, mapped_arrays(mapping, specs))), pool.epoch), device)
+    slabs, lease = pool.pin_slabs(mapped_arrays(mapping, specs), pool.epoch)
+    new, copies = bp.stage_pinned_slabs(packed.tree, slabs, lease, device)
+    del slabs, lease
+    torch.cuda.synchronize()
+    assert copies == len(specs)
+
+    def tensors(value):
+        found = []
+        shape = bp._map_structure(value, lambda node: found.append(node) or (
+            "tensor", node.dtype, tuple(node.shape), node.device.type)
+            if isinstance(node, torch.Tensor) else node)
+        return shape, found
+
+    (old_shape, old_tensors), (new_shape, new_tensors) = tensors(old), tensors(new)
+    assert old_shape == new_shape and old_tensors
+    for left, right in zip(old_tensors, new_tensors, strict=True):
+        assert right.is_cuda and torch.equal(left, right)
+    assert torch.equal(new.actions.cpu(), batch.actions)
+    del old, new, old_tensors, new_tensors
+    pool.close()
+    mapping.close()
+
+
 def test_barrier_waits_actual_spawn_worker_and_releases_cancelled_public_future(model, tmp_path):
     import threading
     from concurrent.futures import CancelledError

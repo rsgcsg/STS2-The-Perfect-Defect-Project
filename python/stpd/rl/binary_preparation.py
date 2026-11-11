@@ -517,6 +517,22 @@ class _PinnedBuffers:
     def pin(self, batch: PreparedBatch, epoch: int) -> PreparedBatch:
         if not torch.cuda.is_available():
             return batch
+        index = self._acquire(epoch)
+        lease = _PinnedLease(self, index)
+        with self.allocation_lock:
+            return self._copy(batch, index, lease)
+
+    def pin_slabs(self, arrays: Any, epoch: int) -> tuple[list[torch.Tensor], _PinnedLease]:
+        """Pinned copies of already-packed slabs (one tree walk fewer than `pin`).
+
+        The caller keeps the lease until its H2D event is recorded on it.
+        """
+        index = self._acquire(epoch)
+        lease = _PinnedLease(self, index)
+        with self.allocation_lock:
+            return self._copy_slabs(arrays, index), lease
+
+    def _acquire(self, epoch: int) -> int:
         with self.condition:
             while True:
                 if self.closed or epoch != self.epoch:
@@ -530,15 +546,26 @@ class _PinnedBuffers:
                 if available:
                     index = available[0]
                     self.busy[index] = True
-                    break
+                    return index
                 self.condition.wait(0.01)
-        lease = _PinnedLease(self, index)
-        with self.allocation_lock:
-            return self._copy(batch, index, lease)
 
     def _copy(self, batch: PreparedBatch, index: int, lease: _PinnedLease) -> PreparedBatch:
-        buffers = self.buffers[index]
         tree, arrays = bp.pack_transport(batch)
+        views = self._copy_slabs(arrays, index)
+
+        def replace(node: Any) -> Any:
+            if isinstance(node, bp._TensorView):
+                tensor = views[node.slab][node.offset : node.offset + math_prod(node.shape)].view(
+                    node.shape
+                )
+                tensor._rl_pinned_lease = lease  # type: ignore[attr-defined]
+                return tensor
+            return node
+
+        return cast(PreparedBatch, bp._map_structure(tree, replace))
+
+    def _copy_slabs(self, arrays: Any, index: int) -> list[torch.Tensor]:
+        buffers = self.buffers[index]
         required: dict[torch.dtype, int] = {}
         for a in arrays:
             tensor = torch.from_numpy(a)
@@ -569,17 +596,7 @@ class _PinnedBuffers:
             view.copy_(tensor)
             views.append(view)
             cursors[dtype] = start + count
-
-        def replace(node: Any) -> Any:
-            if isinstance(node, bp._TensorView):
-                tensor = views[node.slab][node.offset : node.offset + math_prod(node.shape)].view(
-                    node.shape
-                )
-                tensor._rl_pinned_lease = lease  # type: ignore[attr-defined]
-                return tensor
-            return node
-
-        return cast(PreparedBatch, bp._map_structure(tree, replace))
+        return views
 
     def close(self) -> None:
         with self.condition:
