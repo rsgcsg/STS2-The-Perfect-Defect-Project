@@ -135,6 +135,7 @@ class _Env:
     closed: bool = False
     hello: dict[str, Any] | None = None
     sent: dict[int, int] = field(default_factory=dict)  # row_id -> request_id, until its outcome
+    forward: threading.Thread | None = None  # hands this link's read messages on, in order
 
     def write(self, message: dict[str, Any]) -> bool:
         line = json.dumps({"schema": LINK_SCHEMA, **message}, separators=(",", ":"),
@@ -213,6 +214,7 @@ class NodeAggregator:
         self._stats_lock = threading.Lock()
         self._envs: list[_Env] = []
         self._stopping = False
+        self._accept_lock = threading.Lock()  # close() vs a link being accepted
         self.failure: str | None = None
 
         self._upstreams: list[_Upstream] = []
@@ -403,13 +405,19 @@ class NodeAggregator:
                 connection, _ = self.listener.accept()
             except OSError:
                 return
-            env = _Env(connection, f"env-{len(self._envs)}")
-            self._envs.append(env)
-            self.stats["env_connections"] += 1
-            threading.Thread(target=self._read_env, args=(env,), daemon=True,
-                             name="fast-aggregator-env-read").start()
-            threading.Thread(target=self._forward_env, args=(env,), daemon=True,
-                             name="fast-aggregator-env-forward").start()
+            with self._accept_lock:
+                if self._stopping:  # close() began: this link is never served
+                    with contextlib.suppress(OSError):
+                        connection.close()
+                    return
+                env = _Env(connection, f"env-{len(self._envs)}")
+                env.forward = threading.Thread(target=self._forward_env, args=(env,),
+                                               daemon=True, name="fast-aggregator-env-forward")
+                self._envs.append(env)
+                self.stats["env_connections"] += 1
+                threading.Thread(target=self._read_env, args=(env,), daemon=True,
+                                 name="fast-aggregator-env-read").start()
+                env.forward.start()
 
     def _read_env(self, env: _Env) -> None:
         reader = env.connection.makefile("rb", buffering=1 << 20)
@@ -541,19 +549,34 @@ class NodeAggregator:
             with contextlib.suppress(OSError):
                 env.connection.shutdown(socket.SHUT_RDWR)
 
-    def close(self) -> dict[str, Any]:
-        self._stopping = True
-        for upstream in self._upstreams:
-            with upstream.lock:
-                self._flush_locked(upstream)
-                upstream.lock.notify_all()
+    def close(self, timeout: float = 30.0) -> dict[str, Any]:
+        """Stop taking link input, deliver what was already read, then close upstreams.
+
+        A link's forwarder may still be handing on messages it read before close
+        (a step_outcome, an episode_close): the upstream connections close only
+        after every forwarder ended, so such a message is sent, not met by a
+        closed connection (CI: `service_send:OSError` on a clean close). A
+        forwarder that does not end within `timeout` is a failure, reported.
+        """
+        with self._accept_lock:
+            self._stopping = True  # no link is added after this
         with contextlib.suppress(OSError):
             self.listener.close()
         for env in list(self._envs):
             with contextlib.suppress(OSError):
                 env.connection.shutdown(socket.SHUT_RDWR)
+        deadline = time.monotonic() + timeout
+        for env in list(self._envs):
+            if env.forward is not None:
+                env.forward.join(max(0.0, deadline - time.monotonic()))
+                if env.forward.is_alive():
+                    self._fail(f"env_forward_did_not_end:{env.name}")
         for upstream in self._upstreams:
-            with contextlib.suppress(OSError):
+            with upstream.lock:
+                self._flush_locked(upstream)
+                upstream.lock.notify_all()
+        for upstream in self._upstreams:
+            with upstream.lock, upstream.send, contextlib.suppress(OSError):
                 upstream.connection.close()
         self.pool.close()
         with contextlib.suppress(FileNotFoundError):
