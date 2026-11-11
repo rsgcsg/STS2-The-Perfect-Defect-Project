@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "270d0d67db1a09a9f98deb464a97648bd06ec2aeec985bb4392c708867949a1a",
-    "artifact_sha256": "e40a2cd571ebf89b922bf154429bfbb910628673f3cea86d7b897f36ec1d0d3b",
-    "artifact_mvid": "594c8f1f-f34a-4c58-b841-16d911537e64",
+    "source_patch_sha256": "67afbf315a823d9626e2eb7c271b1c9b24006a06c0bfc588921ee214739ecf02",
+    "artifact_sha256": "a3021dcb9d61b89ae68ef7daa73dc308989f9351aeb2dad982412029494936a6",
+    "artifact_mvid": "05e9d8e7-33f6-441c-a417-bea42aef9dea",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 8
       },
       "expected_build": {
-        "source_patch_sha256": "229e46caca2ca2cbf85a8dadee6f31cc65775288cc00a319d8c81586021bc354",
-        "artifact_sha256": "365a448803bad47ddfbc9efb7fd0744bc05ae6370ed5d48bcfa09db9a7af2434",
-        "artifact_mvid": "01ef39d4-cca3-4720-afee-6a203bd335a9",
+        "source_patch_sha256": "fe76cffec1f3f1493d4e3931f2f8494265e26abede828ffc6373cfefae009e27",
+        "artifact_sha256": "b77f5139d98d200ebc5aad84922a7a31b7659e2076e50c2a22b9a81fb8f61446",
+        "artifact_mvid": "ebde3fe8-c2c7-4562-94db-940b847b336d",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -411,15 +411,15 @@
       "id": "native_selector_visible_grid_order",
       "kind": "exact_native_presentation_sort",
       "risk": "medium",
-      "effect": "Use the exact NCardGrid.SetCards sorting used by NCombatPileCardSelectScreen: draw rarity/alphabet priorities under native locale, with cards of identical public content then reassigned among their own grid positions by the draw-order-independent key of native_draw_pile_identical_card_order; discard/exhaust retain native pile order. Hold only the reviewed _cardsAnimatingOutForSetCards animation barrier; original offered objects and input operands are unchanged.",
+      "effect": "Use the exact NCardGrid.SetCards sorting used by NCombatPileCardSelectScreen: draw rarity/alphabet priorities under native locale, with cards of identical public content (the whole displayed card) then reassigned among their own grid positions by the key of native_draw_pile_identical_card_order; cards that differ in anything displayed, even with the same rarity and title, keep this grid order, which a player sees too; discard/exhaust retain native pile order. Hold only the reviewed _cardsAnimatingOutForSetCards animation barrier; original offered objects and input operands are unchanged.",
       "regression": "m2e-r3-native-tests/M2eR3Native.csproj: Chinese/English title order, same-name duplicate objects, upgraded title, unchanged offer/discard/exhaust orders; rollback restores the previous Host candidate."
     },
     {
       "id": "native_draw_pile_identical_card_order",
       "kind": "public_fairness_order",
       "risk": "medium",
-      "effect": "The draw pile is an unordered multiset. Wherever native output lists draw-pile cards (combat HUD draw pile, combat-pile selector over the draw pile), cards with identical public content are ordered by a key that never reads a pile position: the index of the card's master-deck version in the owner's master deck (cards without one after), then the card's index in CombatState._allCards (registration order at creation, before any shuffle or insertion places it). The key is unique, so no tie falls back to draw position; a HUD draw card first projected there gets its native_ref in that order. Non-identical content order, other piles, offered objects and input operands are unchanged. A draw card outside the combat card scope fails loudly.",
-      "regression": "patch-cache-tests/Program.cs DrawOrderFairness: two identical-content groups with their true draw order exchanged give byte-identical HUD capture, selector refs and a later capture after an identity-chosen upgrade (fails on the previous candidate); DrawScopeChild over Defect/Ironclad/Silent/Regent confirms the combat card scope never reorders across reshuffles and holds every draw card. Friday corpus replay 1460099 (92-game corpus, fast_chain full output, recorded commands' refs translated): previous candidate 88/92 frame-exact; this candidate 87/92 equal with native refs masked, ref differences only in pile native_ref and selector entity ids; the one extra divergence is a recorded pick among three identical draw-pile cards, which the public output no longer distinguishes (replayed locally, one of the three picks matches the rest of the game). Rollback restores the previous Host candidate."
+      "effect": "The draw pile is an unordered multiset. Wherever native output lists draw-pile cards (combat HUD draw pile, combat-pile selector over the draw pile), cards with identical public content (the caller's whole public serialization of the card, free of per-object identity; cards differing in anything a player sees keep the game's order) are ordered by a key that reads no pile position: the index of the card's master-deck version in the owner's master deck (cards without one after), then the card's index in CombatState._allCards (creation order: the list only appends on CreateCard/CloneCard and is never reordered). The key is unique, so no tie falls back to draw position; a draw card first projected there gets its native_ref in that order. Premise, checked against the game (review F1): creation order is not derived from hidden draw positions; combat start clones the master deck in master-deck order and only then shuffles; in-combat creations into the draw pile are fixed card types at random positions, or transforms (Charge, Seance) of selector picks in the player's pick order (a batch transform creates replacements in input order and only re-inserts by pile index); no effect walks the draw pile in hidden order to create, clone or transform. The simple-grid and choose-a-card selectors keep the game's order: every caller passes newly generated cards (review F2), and an offer containing a draw-pile card is outside their qualified domain. Non-identical content order, other piles, offered objects and input operands are unchanged. A draw card outside the combat card scope fails loudly (the frame aborts; it is not caught as a missing field).",
+      "regression": "patch-cache-tests/Program.cs DrawOrderFairness: identical-content groups (generated Strikes, deck-linked Defends, existing Strikes, and two Souls made by CardCmd.TransformTo of draw cards in a fixed order) with their true draw order exchanged give byte-identical HUD capture, selector refs and a later capture after an identity-chosen upgrade, in three configurations: HUD first, selector allocating refs before any HUD capture, and HUD projection memo on (a hit); identical cards share the selector grouping text, which carries no native ref; a draw-pile card is outside the simple-grid and choose selectors' domain. The test fails on the previous candidate and when the key reads a pile position. DrawScopeChild over Defect/Ironclad/Silent/Regent confirms the combat card scope never reorders across reshuffles and holds every draw card. Friday corpus replay 1460099 and, for this build, 1460172 (92-game corpus, fast_chain full output, recorded commands' refs translated): previous candidate 88/92 frame-exact; this candidate 87/92 equal with native refs masked, ref differences only in pile native_ref and selector entity ids; the one extra divergence is a recorded pick among three identical draw-pile cards, which the public output no longer distinguishes (replayed locally, one of the three picks matches the rest of the game). Rollback restores the previous Host candidate."
     },
     {
       "id": "native_dense_vegetation_scene_calls",
