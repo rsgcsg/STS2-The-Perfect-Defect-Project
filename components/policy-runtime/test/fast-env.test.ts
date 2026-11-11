@@ -178,7 +178,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup().catch(() => undefined); });
 
 async function harness(options: { slots?: number; hooks?: (index: number) => NativeHooks; policy?: Policy; timeoutMs?: number;
-  edit?: (config: any) => void; sink?: (directory: string) => FastEvidenceSink } = {}) {
+  edit?: (config: any) => void; sink?: (directory: string) => FastEvidenceSink; onStart?: () => void } = {}) {
   const natives: FakeNative[] = [];
   let created = 0;
   const probe = await new FakeNative(-1, {}).init();
@@ -193,11 +193,12 @@ async function harness(options: { slots?: number; hooks?: (index: number) => Nat
     decision_link: { kind: "unix", path: "/unused" },
     inference: { timeout_ms: options.timeoutMs ?? 2000, actor_id: "actor-7", sampling: SAMPLING, single_choice: "score" },
     budget: { max_decisions_per_game: 50, max_native_steps_per_game: 100, game_wall_ms: 60_000 }, no_progress: null,
-    settling_timeout_ms: 1000, evidence: { directory: join(root, "evidence") } };
+    settling_timeout_ms: 1000, cold_start: { max_concurrent: 10, directory: join(root, "cold-start") },
+    evidence: { directory: join(root, "evidence") } };
   options.edit?.(rawConfig);
   const config: FastEnvConfig = parseFastEnvConfig(rawConfig);
   const factory: SlotNativeFactory = { hostVersion: "fixture-host",
-    async start() { const index = created++; const native = await new FakeNative(index, options.hooks?.(index) ?? {}).init(); natives.push(native); return native; } };
+    async start() { options.onStart?.(); const index = created++; const native = await new FakeNative(index, options.hooks?.(index) ?? {}).init(); natives.push(native); return native; } };
   const fromEnv = new PassThrough(), toEnv = new PassThrough();
   const linkMessages: any[] = [];
   const policy = options.policy ?? (decision => scored(decision));
@@ -308,6 +309,25 @@ describe("fast-env K-game process", () => {
     h.send({ cmd: "stop" });
     expect(await h.exit).toBe(0);
     expect(h.events.at(-1)).toMatchObject({ event: "stopped", games_closed: 1 });
+  });
+
+  it("cold starts hold the node-wide gate through their first reset: with one place, slots mount one at a time", async () => {
+    let active = 0, most = 0;
+    const h = await harness({ slots: 3, edit: config => { config.cold_start.max_concurrent = 1; },
+      onStart: () => { active += 1; most = Math.max(most, active); } });
+    await h.next(event => event.event === "ready");
+    let opened = 0;
+    const counted = h.next(event => {
+      if (event.event === "opened") { opened += 1; active -= 1; }
+      return opened === 3;
+    });
+    h.open(0); h.open(1); h.open(2);
+    await counted;
+    expect(most).toBe(1);
+    h.send({ cmd: "status" });
+    const status = await h.next(event => event.event === "status");
+    expect(status.counters).toMatchObject({ cold_starts: 3 });
+    expect(status.counters.cold_start_wait_ms).toBeGreaterThanOrEqual(0);
   });
 
   it("reuses the native for the next game and replaces it after an unknown delivery", async () => {
