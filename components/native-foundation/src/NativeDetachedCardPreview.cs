@@ -144,7 +144,7 @@ internal static class NativeDetachedCardPreviewFactory
     // An assertion of the audited invocation's original-object footprint. It
     // does not permit unknown code to run and does not restore/roll back state.
     // Only fixed native owner fields and plain CLR containers are inspected.
-    private sealed class SourceStamp
+    internal sealed class SourceStamp
     {
         private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         private readonly List<(object Owner, NativeField Field, object? Value)> fields = new();
