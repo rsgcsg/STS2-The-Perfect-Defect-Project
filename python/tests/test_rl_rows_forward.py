@@ -647,11 +647,64 @@ def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_perm
     (permute_rows(values, perm, "unit") * grad).sum().backward()
     expected = torch.zeros(6, 4).index_add(0, perm, grad)
     assert torch.equal(values.grad, expected)
-    assert torch.equal(permutation_inverse(perm)[perm], torch.arange(6))
-    with pytest.raises(RuntimeError):
-        permutation_inverse(torch.tensor([3, 0, 5, 1, 4, 4]))
+    assert torch.equal(permutation_inverse(perm, "unit")[perm], torch.arange(6))
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_permutation:unit"):
+        permutation_inverse(torch.tensor([3, 0, 5, 1, 4, 4]), "unit")
     with pytest.raises(ValueError, match="nodes_lever_requires_permutation:unit"):
         permute_rows(values, perm[:5], "unit")
+
+
+def test_nodes_lever_owner_maps_refuse_broken_reductions_loudly():
+    """A reduction that is not a partition, or whose row order is not a
+    permutation, fails with the lever's name instead of reading unset values."""
+    from stpd.p1.rows_kernels import _owners
+
+    buckets = ((2, 1), (1, 2), (0, 1))  # widths 2, 1, 1, 0 -> 4 terms, 4 rows
+    inverse = torch.tensor([2, 0, 3, 1])
+    owner, scale, empty = _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse), 4, 4, True)
+    order = torch.empty(4, dtype=torch.long)
+    order[inverse] = torch.arange(4)
+    assert torch.equal(owner[torch.tensor([3, 1, 0, 2])],
+                       torch.repeat_interleave(order, torch.tensor([2, 1, 1, 0])))
+    assert torch.equal(empty, torch.tensor([False, False, False, True])[order.argsort()])
+    assert torch.equal(scale > 0, ~empty)
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_partition"):
+        _owners((torch.tensor([3, 1, 1, 2]), buckets, inverse), 4, 4, True)
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_permutation:reduction_rows"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, torch.tensor([2, 0, 2, 1])), 4, 4, True)
+    with pytest.raises(ValueError, match="nodes_lever_requires_complete_reduction"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse), 4, 5, True)
+    with pytest.raises(ValueError, match="nodes_lever_requires_complete_reduction"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse[:3]), 4, 4, True)
+
+
+def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied):
+    """The compiled lever path (dynamic-shape block variants and node builder)
+    computes what the eager original computes (CPU, FP32)."""
+    from stpd.p1.rows_forward import forward_rows
+
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    for group in groups[:2] + [dc.replace(groups[0], policy=False)]:
+        rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
+        (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=False)
+        model.zero_grad(set_to_none=True)
+        out = forward_rows(model, rows, compile=True, packed=False, kernels="cross+heads+nodes")
+        (s1, l1, h1) = (value.detach() for value in out)
+        generator = torch.Generator().manual_seed(5)
+        total = out[2].mul(torch.randn(out[2].shape, generator=generator)).sum()
+        for value in out[:2]:
+            weights = torch.randn(value.shape, generator=generator)
+            total = total + value.masked_fill(~value.isfinite(), 0).mul(weights).sum()
+        total.backward()
+        g1 = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+        for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+            assert torch.equal(left.isneginf(), right.isneginf())
+            finite = left.isfinite()
+            torch.testing.assert_close(left[finite], right[finite], rtol=1e-5, atol=2e-6)
+        assert set(g0) == set(g1)
+        for name in g0:
+            torch.testing.assert_close(g0[name], g1[name], rtol=1e-4, atol=2e-6, msg=name)
 
 
 def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
