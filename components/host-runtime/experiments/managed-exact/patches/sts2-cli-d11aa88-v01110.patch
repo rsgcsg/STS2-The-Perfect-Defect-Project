@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..3062c55
+index 0000000..bb6cc25
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,1414 @@
+@@ -0,0 +1,1622 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1535,6 +1535,14 @@ index 0000000..3062c55
 +            Console.WriteLine(AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "sts2") ? "game-loaded" : "game-not-loaded");
 +            return;
 +        }
++        if (args.Length == 1 && args[0] == "--direct-no-fast-chain-child")
++        {
++            // The direct compact writer is a fast_chain switch: without fast_chain the process stops at configuration.
++            NativePatchStateCache.Configure(false);
++            try { Sts2Headless.NativeCompactStateWriter.ConfigureDirect(true, false); Console.WriteLine("accepted"); }
++            catch (InvalidOperationException error) { Console.WriteLine(error.Message); }
++            return;
++        }
 +        if (args.Length == 1 && args[0] == "--memo-no-serializer-child")
 +        {
 +            // Native Foundation does no JSON I/O: a memo switch without the entry point's serializer is refused.
@@ -1548,6 +1556,7 @@ index 0000000..3062c55
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", n.Name + ".dll")) : null;
 +        if (args.Length == 2 && args[0] == "--program-child") { ProgramChild(args[1]); return; }
 +        if (args.Length >= 3 && args[0] == "--memo-play") { MemoPlay(int.Parse(args[1]), args[2..]); return; }
++        if (args.Length >= 4 && args[0] == "--direct-live-child") { DirectLiveChild(args[1], int.Parse(args[2]), args[3..]); return; }
 +        sim = Activator.CreateInstance(Simulator)!;
 +        SetEnabled(false);
 +        var start = (Dictionary<string, object?>)Call("StartRun", "Defect", 0, "PATCHCACHE_COMPONENT", "zh", null)!;
@@ -1572,6 +1581,8 @@ index 0000000..3062c55
 +            FieldAccessAndCapacity();
 +            CardProjectionMemo();
 +            MemoPairing();
++            CompactDirect();
++            DirectPairing();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -2669,6 +2680,203 @@ index 0000000..3062c55
 +        Console.Out.Flush();
 +        foreach (string line in lines) Console.Out.WriteLine(line);
 +    }
++
++    // --- fast_chain direct compact writer (E3) ---------------------------------------------
++    static void SetDirect(bool direct, bool shadow)
++    {
++        CompactWriter.GetProperty("Direct")!.SetValue(null, direct);
++        WriterField("_directShadow", shadow);
++        WriterField("_directFrames", 0L); WriterField("_directChecks", 0L); WriterField("_genericFrames", 0L);
++        WriterField("_directOptionsFor", null);   // the next direct frame rebuilds its writers from the real options
++    }
++    static long WriterCount(string name) => (long)CompactWriter.GetField(name, Flags)!.GetValue(null)!;
++
++    /// <summary>
++    /// Direct frames from object trees equal the text path's frames byte for byte: every value type
++    /// the writer writes itself, tabling rules (piles, ordering_semantics, views, clash, bad refs),
++    /// delta / reconcile and the generic fallback; and a direct frame that differs from the text
++    /// path is compact_state_divergence on the check frame.
++    /// </summary>
++    static void CompactDirect()
++    {
++        var options = (JsonSerializerOptions)Simulator.Assembly.GetType("Sts2Headless.Program")!.GetField("JsonOpts", Flags)!.GetValue(null)!;
++        byte[] Bytes(object value) => Sts2Headless.NativeJsonLineWriter.Serialize(value, options).ToArray();
++        Dictionary<string, object?> Card(int r, string name, int cost = 1) => new() { ["native_ref"] = $"native-{r}", ["name"] = name, ["cost"] = cost };
++        Dictionary<string, object?> State(int hp = 70, object? extra = null, string handName = "打击", bool clash = false)
++        {
++            var player = new Dictionary<string, object?>
++            {
++                ["native_ref"] = "native-1", ["hp"] = hp, ["hand"] = new List<Dictionary<string, object?>> { Card(2, handName), Card(3, "Defend \"q\" \\ \u2028 <&>'+ é 😀") },
++                ["draw_pile"] = new List<object?> { Card(10, "in draw") },
++                ["discard_pile"] = new Dictionary<string, object?> { ["cards"] = new Dictionary<string, object?>[] { Card(11, "in discard") } },
++                ["exhaust_pile"] = new List<object?> { Card(12, "in exhaust") },
++                ["relics"] = new List<object?> { new Dictionary<string, object?> { ["native_ref"] = "native-20", ["counter"] = new Dictionary<string, object?> { ["native_ref"] = "native-21", ["v"] = 3 } } },
++            };
++            var state = new Dictionary<string, object?>
++            {
++                ["type"] = "decision", ["decision"] = "combat_play", ["native_ref"] = "native-99", ["player"] = player,
++                ["numbers"] = new object?[] { 0, -7, long.MaxValue, uint.MaxValue, ulong.MaxValue, (short)-3, (ushort)4, (byte)5, (sbyte)-6, 1.50m, -0.0001m, 0.1, 1e300, -2.5e-7, true, false, null },
++                ["strings"] = new[] { "", "a\tb\nc", "\u0001\u001f", "中文", "😀", "\ud800" },
++                ["string_list"] = new List<string> { "x", "y" },
++                ["empty_object"] = new Dictionary<string, object?>(), ["empty_array"] = new List<object?>(), ["nested"] = new List<object?> { new List<object?> { new List<object?>() } },
++                ["ordered"] = new Dictionary<string, object?> { ["native_ref"] = "native-44", ["cards"] = new List<object?> { Card(40, "before ordering") }, ["ordering_semantics"] = "top_first", ["after"] = Card(41, "after") },
++                ["draw_choices"] = new List<object?> { Card(42, "pile-named view") },
++                ["bad_refs"] = new List<object?> { new Dictionary<string, object?> { ["native_ref"] = "native-0" }, new Dictionary<string, object?> { ["native_ref"] = "native-01" },
++                    new Dictionary<string, object?> { ["native_ref"] = "native-9x" }, new Dictionary<string, object?> { ["native_ref"] = 7 } },
++                ["Odd-View"] = Card(43, "view sanitized"),
++                ["hand"] = new List<object?> { Card(2, clash ? "different body" : handName) },
++            };
++            if (extra != null) state["extra"] = extra;
++            return state;
++        }
++        List<string> Run(bool direct, bool shadow, IList<Dictionary<string, object?>> states, Action<int, Dictionary<string, object?>>? before = null)
++        {
++            ResetWriter(); SetDirect(direct, shadow);
++            var lines = new List<string>();
++            Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++            Sts2Headless.NativeCompactStateWriter.RetainFullLine(Bytes(states[0]));
++            lines.Add(Frame(s => Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 3, s, "\n")));
++            for (int k = 0; k < states.Count; k++)
++            {
++                before?.Invoke(k, states[k]);
++                var state = states[k];
++                lines.Add(direct ? Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrameDirect(state, options, s, "\n"))
++                    : Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrame(Bytes(state), s, "\n", startsInstance: false)));
++            }
++            return lines.Select(l => System.Text.RegularExpressions.Regex.Replace(l, "native-compact:[0-9]+:[0-9]+", "I")).ToList();
++        }
++        try
++        {
++            // 1. Direct (checked every frame, and unchecked) == text over a delta/reconcile sequence; the consumer rebuilds the full bytes.
++            var states = new[] { State(), State(), State(hp: 64), State(clash: true), State(handName: "打击+"), State(), State(hp: 1), State() };
++            var text = Run(false, false, states);
++            foreach (bool shadow in new[] { true, false })
++            {
++                var direct = Run(true, shadow, states);
++                Check(direct.SequenceEqual(text), $"direct frames differ from the text path (shadow={shadow})");
++                Check(WriterCount("_genericFrames") == 0 && WriterCount("_directChecks") == (shadow ? states.Length : 0), "direct counters");
++            }
++            var checker = new CompactChecker(3);
++            for (int k = 0; k < text.Count; k++)
++                Check(checker.Accept(text[k], out _) == System.Text.Encoding.UTF8.GetString(Bytes(k == 0 ? states[0] : states[k - 1])), "direct frame rebuild differs at " + k);
++
++            // 2. A value type the writer does not write itself: that frame takes the text path, same bytes.
++            var generic = new[] { State(), State(extra: 1.5f), State(extra: new { anonymous = 1 }), State(extra: new Dictionary<string, int> { ["n"] = 1 }), State() };
++            var genericText = Run(false, false, generic);
++            var genericDirect = Run(true, true, generic);
++            Check(WriterCount("_genericFrames") == 3, "generic frames: " + WriterCount("_genericFrames"));
++            Check(genericDirect.SequenceEqual(genericText), "generic fallback frames differ from the text path");
++
++            // 3. Loud failure: a direct writer whose bytes differ from the text path (its writer options swapped by
++            // reflection for an encoder that leaves <, >, & and ' unescaped) raises compact_state_divergence on the check frame.
++            foreach (bool shadow in new[] { true, false })
++            {
++                bool raised = false;
++                try
++                {
++                    Run(true, shadow, new[] { State(), State() }, (k, state) =>
++                    {
++                        if (k == 0) return;   // frame 1 is written with the real options and sets them up
++                        WriterField("_directOptions", new JsonWriterOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping, SkipValidation = true });
++                        foreach (var level in (System.Collections.IList)CompactWriter.GetField("Levels", Flags)!.GetValue(null)!)
++                            ((Utf8JsonWriter)level!.GetType().GetField("Item2")!.GetValue(level)!).Dispose();
++                        ((System.Collections.IList)CompactWriter.GetField("Levels", Flags)!.GetValue(null)!).Clear();
++                        if (!shadow) WriterField("_directFrames", 63L);   // the next frame is the 64th: checked
++                    });
++                }
++                catch (Sts2Headless.NativeCompactWriterException error) { raised = error.Message.Contains("differs from the full-text path"); }
++                Check(raised, $"a direct frame unlike the text path must fail loudly on the check frame (shadow={shadow})");
++            }
++
++            // 4. Off: the direct writer refuses.
++            ResetWriter(); SetDirect(false, false);
++            bool refused = false;
++            try { Frame(s => Sts2Headless.NativeCompactStateWriter.WriteFrameDirect(State(), options, s, "\n")); }
++            catch (Sts2Headless.NativeCompactWriterException error) { refused = error.Message == "direct writer is off"; }
++            Check(refused, "off: the direct writer refuses");
++        }
++        finally { ResetWriter(); SetDirect(false, false); }
++        Console.WriteLine("direct compact writer: text-path equality (checked/unchecked), generic fallback, loud check failure, off");
++    }
++
++    static string RunChild(params string[] args)
++    {
++        string host = Environment.ProcessPath!;
++        var info = new System.Diagnostics.ProcessStartInfo(host) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
++        if (Path.GetFileNameWithoutExtension(host) == "dotnet") info.ArgumentList.Add(typeof(Program).Assembly.Location);
++        foreach (string arg in args) info.ArgumentList.Add(arg);
++        using var child = System.Diagnostics.Process.Start(info)!;
++        var stderr = child.StandardError.ReadToEndAsync();
++        string output = child.StandardOutput.ReadToEnd();
++        child.WaitForExit();
++        Check(child.ExitCode == 0, $"child {string.Join(' ', args)} exited {child.ExitCode}: {stderr.Result[..Math.Min(400, stderr.Result.Length)]}");
++        return output.Trim();
++    }
++
++    // Child pairing: real games with both card memo lanes on, compact frames written by the text path and by the
++    // direct writer checked on every frame are byte-identical; no fast_chain → refused.
++    static void DirectPairing()
++    {
++        string[] games = { "Defect:PATCHCACHE_DIRECT:en", "Regent:PATCHCACHE_DIRECT:zh" };
++        // The game prints its own start-up lines on stdout: the child's result is its last line.
++        string text = RunChild(new[] { "--direct-live-child", "text", "200" }.Concat(games).ToArray()).Split('\n')[^1];
++        string shadow = RunChild(new[] { "--direct-live-child", "shadow", "200" }.Concat(games).ToArray()).Split('\n')[^1];
++        string Field(string line, string name) => line.Split(' ').First(part => part.StartsWith(name + "=", StringComparison.Ordinal))[(name.Length + 1)..];
++        Check(int.Parse(Field(text, "frames")) > 100 && Field(text, "sha") == Field(shadow, "sha"), $"direct frames differ from the text path: {text} | {shadow}");
++        Check(Field(shadow, "checks") == Field(shadow, "direct_frames") && Field(shadow, "generic_frames") == "0",
++            "direct shadow counters: " + shadow);
++        Check(RunChild("--direct-no-fast-chain-child") == "native_compact_direct_requires_fast_chain", "the direct switch without fast_chain must be refused");
++        Console.WriteLine($"direct compact pairing: {Field(text, "frames")} live frames equal");
++    }
++
++    static void DirectLiveChild(string mode, int actions, string[] games)
++    {
++        NativePatchStateCache.Configure(true);
++        NativeCardProjectionMemo.Configure(true, true, value => JsonSerializer.Serialize(value));
++        Sts2Headless.NativeCompactStateWriter.ConfigureDirect(mode != "text", mode == "shadow");
++        var opts = (JsonSerializerOptions)Simulator.Assembly.GetType("Sts2Headless.Program")!.GetField("JsonOpts", Flags)!.GetValue(null)!;
++        var sink = new MemoryStream();
++        double ms = 0; long frames = 0; var all = new MemoryStream();
++        foreach (string spec in games)
++        {
++            string[] p = spec.Split(':');
++            MethodInfo choose = Simulator.Assembly.GetType("Sts2Headless.PerformanceLab")!.GetMethod("ChooseAction", Flags)!;
++            object game = Activator.CreateInstance(Simulator)!;
++            ResetWriter();
++            Sts2Headless.NativeCompactStateWriter.BeforeCommand("start_run");
++            var state = (Dictionary<string, object?>)Simulator.GetMethod("StartRun", Flags)!.Invoke(game, new object?[] { p[0], 0, p[1], p[2], null })!;
++            Sts2Headless.NativeCompactStateWriter.StartAnswered(Sts2Headless.NativeCompactStateWriter.StartNewRun());
++            Sts2Headless.NativeCompactStateWriter.RetainFullLine(Sts2Headless.NativeJsonLineWriter.Serialize(state, opts));
++            Sts2Headless.NativeCompactStateWriter.Configure("managed-native-compact-1", 64, all, "\n");
++            for (int step = 0; step < actions; step++)
++            {
++                NativePatchStateCache.Revalidate(); NativeCardDetailCache.BeginFrame(); NativeCardProjectionMemo.BeginFrame();
++                Sts2Headless.NativeCompactStateWriter.BeforeCommand("action");
++                object? request = choose.Invoke(null, new object[] { state });
++                if (request == null && state.GetValueOrDefault("decision") as string != "shop_room") break;
++                string action = (string?)request?.GetType().GetProperty("Action")!.GetValue(request) ?? "";
++                var actionArgs = (Dictionary<string, object?>?)request?.GetType().GetProperty("Args")!.GetValue(request);
++                if (action == "select_card_reward" && state.GetValueOrDefault("cards") is System.Collections.IList { Count: > 0 } offered)
++                    actionArgs = new() { ["card_index"] = 0, ["card_ref"] = ((Dictionary<string, object?>)offered[0]!)["native_ref"] };
++                if (action == "choose_option" && state.GetValueOrDefault("decision") as string == "event_choice")
++                    actionArgs = new() { ["option_index"] = actionArgs!["option_index"], ["room_ref"] = state["room_ref"], ["event_ref"] = state["event_ref"],
++                        ["option_ref"] = ((System.Collections.IList)state["options"]!).Cast<Dictionary<string, object?>>()
++                            .First(option => Equals(option["index"], actionArgs["option_index"]))["native_ref"] };
++                if (action == "leave_room" && state.GetValueOrDefault("room_ref") != null) actionArgs = new() { ["room_ref"] = state["room_ref"] };
++                if (request == null && state.GetValueOrDefault("decision") as string == "shop_room") { action = "leave_room"; actionArgs = new() { ["room_ref"] = ((Dictionary<string, object?>)state["presentation_owner"]!)["room_ref"] }; }
++                state = (Dictionary<string, object?>)Simulator.GetMethod("ExecuteAction", Flags)!.Invoke(game, new object?[] { action, actionArgs })!;
++                if (state.GetValueOrDefault("type") as string != "decision") break;
++                var sw = System.Diagnostics.Stopwatch.StartNew();
++                if (mode == "text") Sts2Headless.NativeCompactStateWriter.WriteFrame(Sts2Headless.NativeJsonLineWriter.Serialize(state, opts), all, "\n", false);
++                else Sts2Headless.NativeCompactStateWriter.WriteFrameDirect(state, opts, all, "\n");
++                ms += sw.Elapsed.TotalMilliseconds; frames++;
++            }
++            Simulator.GetMethod("CleanUp", Flags)!.Invoke(game, null);
++        }
++        string text = System.Text.RegularExpressions.Regex.Replace(System.Text.Encoding.UTF8.GetString(all.ToArray()), "native-compact:[0-9]+:[0-9]+", "I");
++        Console.WriteLine($"frames={frames} sha={Sha(text)} write_ms_per_frame={ms / Math.Max(1, frames):F4} {Sts2Headless.NativeCompactStateWriter.DirectSummary()}");
++    }
++
 +
 +    static void MemoPlayOne(string character, string seed, string lang, int actions, List<string> lines)
 +    {
@@ -7070,12 +7278,312 @@ index 0000000..381119e
 +        catch { return false; }
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeCompactDirectWriter.cs b/src/Sts2Headless/NativeCompactDirectWriter.cs
+new file mode 100644
+index 0000000..6f098ac
+--- /dev/null
++++ b/src/Sts2Headless/NativeCompactDirectWriter.cs
+@@ -0,0 +1,294 @@
++using System.Buffers;
++using System.Collections;
++using System.Diagnostics;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json;
++using STS2Platform.NativeFoundation;
++
++namespace Sts2Headless;
++
++/// <summary>
++/// fast_chain only, default off (STS2_HEADLESS_COMPACT_DIRECT=1): writes a compact delta or
++/// reconcile frame straight from the decision state's object tree instead of first writing
++/// the full JSON text and scanning it again. The frame is the same bytes the text path
++/// writes for that state:
++/// - each value is written with the same Utf8JsonWriter settings and the same writer calls
++///   System.Text.Json makes for it (property names, strings, numbers, booleans, null), so
++///   the text of every subtree is the text the full writer emits;
++/// - tabling (native_ref + view, piles, ordering_semantics, clash), body digests, the delta
++///   rule and the reconcile rule are the text path's, applied while walking the tree; a
++///   delta reuses the held digest of a body whose bytes did not change, as the text path does;
++/// - objects_root_sha256 is reused from the last frame when no key was added, removed or
++///   changed digest (it is a function of the (key, digest) table only); a reconcile frame
++///   recomputes it.
++/// A value of any type this writer does not write itself (anything but Dictionary&lt;string,
++/// object?&gt;, IList, string, bool and the integral/decimal/double number types) makes that
++/// frame take the text path (counted as generic_frames); that path is the text writer itself.
++///
++/// Check: every 64th direct frame (STS2_HEADLESS_COMPACT_DIRECT_SHADOW=1: every frame) is
++/// also written by the text path from the same state, and the skeleton, table order, every
++/// body and every digest must be byte-identical; any difference is compact_state_divergence
++/// (fatal, exit 70, never repaired). The check cost is inside every measured number.
++/// Start frames (full) always take the text path.
++/// </summary>
++public static partial class NativeCompactStateWriter
++{
++    private static int _directConfigured;
++    public static bool Direct { get; private set; }
++    private static bool _directShadow;
++    private const int DirectCheckPeriod = 64;
++    private static long _directFrames, _directChecks, _genericFrames;
++    private static long _directCheckTicks;
++    private static JsonWriterOptions _directOptions;
++    private static JsonSerializerOptions? _directOptionsFor;
++    private static readonly List<(ArrayBufferWriter<byte> Buffer, Utf8JsonWriter Writer)> Levels = new();
++    private static readonly ArrayBufferWriter<byte> CheckSkeleton = new(1 << 16);
++    private static readonly ArrayBufferWriter<byte> CheckArena = new(1 << 16);
++    private static readonly List<(string Key, int Offset, int Length, string Digest)> CheckTable = new(256);
++
++    /// <summary>Process start. Either switch without fast_chain stops the process (never a silent off).</summary>
++    public static void ConfigureDirect(bool direct, bool shadow)
++    {
++        if (Interlocked.Exchange(ref _directConfigured, 1) != 0)
++            throw new InvalidOperationException("native_compact_direct_configured_twice");
++        if ((direct || shadow) && !NativePatchStateCache.Enabled)
++            throw new InvalidOperationException("native_compact_direct_requires_fast_chain");
++        Direct = direct || shadow;
++        _directShadow = shadow;
++        if (Direct && (shadow || Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_MEMO_STATS") == "1"))
++            AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine("[native-compact-direct] " + DirectSummary());
++    }
++
++    /// <summary>One stderr line for the timing harness (empty when off).</summary>
++    public static string DirectSummary() => !Direct ? "" :
++        $"direct_frames={_directFrames} checks={_directChecks} generic_frames={_genericFrames} " +
++        $"check_ms={_directCheckTicks * 1000.0 / Stopwatch.Frequency:F1}";
++
++    /// <summary>
++    /// A delta or reconcile frame of the held instance from the state object tree (Direct only;
++    /// start frames use <see cref="WriteFrame"/>). <paramref name="options"/> are the full writer's.
++    /// </summary>
++    public static void WriteFrameDirect(Dictionary<string, object?> state, JsonSerializerOptions options, Stream stdout, string newline)
++    {
++        if (!Direct) throw new NativeCompactWriterException("direct writer is off");
++        if (!_instanceValid || _instance == null) throw new NativeCompactWriterException("delta without a held episode instance");
++        _seq++;
++        string kind = _seq - _anchor >= _interval ? "reconcile" : "delta";
++        if (kind != "delta") _anchor = _seq;
++        bool fresh = kind != "delta";
++        _directFrames++;
++        bool check = _directShadow || _directFrames % DirectCheckPeriod == 0;
++        if (!EncodeDirect(state, options, fresh))
++        {
++            _genericFrames++;
++            Encode(NativeJsonLineWriter.Serialize(state, options), fresh);
++        }
++        else if (check)
++        {
++            long started = Stopwatch.GetTimestamp();
++            _directChecks++;
++            Snapshot();
++            Encode(NativeJsonLineWriter.Serialize(state, options), fresh);
++            CompareWithSnapshot();
++            _directCheckTicks += Stopwatch.GetTimestamp() - started;
++        }
++        WriteLine(kind, stdout, newline);
++        (_held, _next) = (_next, _held);
++        (_arena, _arenaNext) = (_arenaNext, _arena);
++        _next.Clear();
++        _arenaNext.ResetWrittenCount();
++    }
++
++    /// <summary>objects_root_sha256 of the table about to be sent (Direct: the same bytes hashed without per-key strings).</summary>
++    private static string FrameRoot()
++    {
++        if (!Direct) return Root(_next);
++        RootKeys.Clear();
++        foreach (string key in _next.Keys) RootKeys.Add(key);
++        RootKeys.Sort(StringComparer.Ordinal);
++        RootText.ResetWrittenCount();
++        foreach (string key in RootKeys)
++        {
++            WriteAscii(RootText, key);
++            RootText.Write("\t"u8);
++            WriteAscii(RootText, _next[key].Digest);
++            RootText.Write("\n"u8);
++        }
++        return Convert.ToHexStringLower(SHA256.HashData(RootText.WrittenSpan));
++    }
++
++    private static readonly List<string> RootKeys = new(256);
++    private static readonly ArrayBufferWriter<byte> RootText = new(1 << 14);
++
++    // --- direct encoding -------------------------------------------------------------
++
++    private sealed class GenericValueException : Exception;
++
++    /// <summary>Builds Skeleton, _next, _arenaNext and Order from the tree; false = a value type it does not write.</summary>
++    private static bool EncodeDirect(Dictionary<string, object?> state, JsonSerializerOptions options, bool fresh)
++    {
++        if (!ReferenceEquals(_directOptionsFor, options))
++        {
++            _directOptions = new JsonWriterOptions
++            {
++                Encoder = options.Encoder,
++                Indented = options.WriteIndented,
++                MaxDepth = options.MaxDepth == 0 ? 64 : options.MaxDepth,
++                SkipValidation = true,
++            };
++            foreach (var level in Levels) level.Writer.Dispose();
++            Levels.Clear();
++            _directOptionsFor = options;
++        }
++        _next.Clear();
++        _arenaNext.ResetWrittenCount();
++        Order.Clear();
++        var root = Level(0);
++        try
++        {
++            WriteObject(state, root, 0, null, pile: false, isRoot: true, fresh);
++            root.Flush();
++        }
++        catch (GenericValueException)
++        {
++            return false;
++        }
++        Skeleton.ResetWrittenCount();
++        Skeleton.Write(Levels[0].Buffer.WrittenSpan);
++        return true;
++    }
++
++    private static Utf8JsonWriter Level(int depth)
++    {
++        while (Levels.Count <= depth)
++        {
++            var buffer = new ArrayBufferWriter<byte>(1 << 12);
++            Levels.Add((buffer, new Utf8JsonWriter(buffer, _directOptions)));
++        }
++        var (b, w) = Levels[depth];
++        b.ResetWrittenCount();
++        w.Reset(b);
++        return w;
++    }
++
++    private static void WriteValue(object? value, Utf8JsonWriter w, int depth, string? view, bool pile, bool fresh)
++    {
++        switch (value)
++        {
++            case null: w.WriteNullValue(); return;
++            case string s: w.WriteStringValue(s); return;
++            case bool b: w.WriteBooleanValue(b); return;
++            case int i: w.WriteNumberValue(i); return;
++            case long l: w.WriteNumberValue(l); return;
++            case uint u: w.WriteNumberValue(u); return;
++            case ulong ul: w.WriteNumberValue(ul); return;
++            case short sh: w.WriteNumberValue(sh); return;
++            case ushort us: w.WriteNumberValue(us); return;
++            case byte by: w.WriteNumberValue(by); return;
++            case sbyte sb: w.WriteNumberValue(sb); return;
++            case decimal m: w.WriteNumberValue(m); return;
++            case double d when double.IsFinite(d): w.WriteNumberValue(d); return;
++            case Dictionary<string, object?> map when value.GetType() == typeof(Dictionary<string, object?>):
++                WriteObject(map, w, depth, view, pile, isRoot: false, fresh); return;
++            case IList list when value is not byte[] && (value.GetType().IsArray
++                    || value.GetType().IsGenericType && value.GetType().GetGenericTypeDefinition() == typeof(List<>)):
++                w.WriteStartArray();
++                foreach (object? item in list) WriteValue(item, w, depth, view, pile, fresh);
++                w.WriteEndArray();
++                return;
++            default:
++                throw new GenericValueException();
++        }
++    }
++
++    private static void WriteObject(Dictionary<string, object?> map, Utf8JsonWriter w, int depth, string? view, bool pile, bool isRoot, bool fresh)
++    {
++        bool ordering = map.TryGetValue("ordering_semantics", out object? semantics) && semantics is string;
++        string? key = null;
++        if (!isRoot && !pile && !ordering && view != null && map.TryGetValue("native_ref", out object? reference)
++            && reference is string text && IsNativeRef(text) && ValidView(view))
++            key = text + "#" + view;
++        int at = 0;
++        if (key == null)
++        {
++            WriteMembers(map, w, depth, pile, ordering, fresh);
++            return;
++        }
++        // A tabled candidate: its body in its own buffer, then table it (or inline it on a clash).
++        var body = Level(depth + 1);
++        WriteMembers(map, body, depth + 1, pile, ordering, fresh);
++        body.Flush();
++        ReadOnlySpan<byte> bytes = Levels[depth + 1].Buffer.WrittenSpan;
++        int offset = _arenaNext.WrittenCount;
++        _arenaNext.Write(bytes);
++        if (TableBody(key, offset, bytes.Length, fresh)) w.WriteRawValue(Placeholder(key), skipInputValidation: true);
++        else w.WriteRawValue(bytes, skipInputValidation: true);
++    }
++
++    private static void WriteMembers(Dictionary<string, object?> map, Utf8JsonWriter w, int depth, bool pile, bool ordering, bool fresh)
++    {
++        w.WriteStartObject();
++        foreach (var (name, value) in map)
++        {
++            w.WritePropertyName(name);
++            bool childPile = pile || ordering || name is "draw_pile" or "discard_pile" or "exhaust_pile";
++            WriteValue(value, w, depth, name, childPile, fresh);
++        }
++        w.WriteEndObject();
++    }
++
++    private static byte[] Placeholder(string key) => Encoding.ASCII.GetBytes("{\"$obj\":\"" + key + "\"}");
++
++    private static bool IsNativeRef(string value)
++    {
++        if (value.Length < 8 || !value.StartsWith("native-", StringComparison.Ordinal) || value[7] < '1' || value[7] > '9') return false;
++        for (int k = 8; k < value.Length; k++) if (value[k] < '0' || value[k] > '9') return false;
++        return true;
++    }
++
++    /// <summary>The text path's view rule on a member name.</summary>
++    private static bool ValidView(string name)
++    {
++        if (name.Length < 1 || name.Length > 32 || name[0] < 'a' || name[0] > 'z') return false;
++        foreach (char c in name)
++            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
++        return !(name.Contains("pile", StringComparison.Ordinal) || name.Contains("draw", StringComparison.Ordinal)
++            || name.Contains("discard", StringComparison.Ordinal) || name.Contains("exhaust", StringComparison.Ordinal));
++    }
++
++    // --- check -------------------------------------------------------------------------
++
++    private static void Snapshot()
++    {
++        CheckSkeleton.ResetWrittenCount();
++        CheckSkeleton.Write(Skeleton.WrittenSpan);
++        CheckArena.ResetWrittenCount();
++        CheckTable.Clear();
++        foreach (string key in Order)
++        {
++            var sent = _next[key];
++            int offset = CheckArena.WrittenCount;
++            CheckArena.Write(_arenaNext.WrittenSpan.Slice(sent.Offset, sent.Length));
++            CheckTable.Add((key, offset, sent.Length, sent.Digest));
++        }
++    }
++
++    private static void CompareWithSnapshot()
++    {
++        if (!CheckSkeleton.WrittenSpan.SequenceEqual(Skeleton.WrittenSpan))
++            throw new NativeCompactWriterException("direct writer: skeleton differs from the full-text path");
++        if (CheckTable.Count != Order.Count)
++            throw new NativeCompactWriterException($"direct writer: {CheckTable.Count} table keys, full-text path {Order.Count}");
++        for (int k = 0; k < Order.Count; k++)
++        {
++            var (key, offset, length, digest) = CheckTable[k];
++            if (!string.Equals(key, Order[k], StringComparison.Ordinal))
++                throw new NativeCompactWriterException("direct writer: table order differs at " + key);
++            var sent = _next[key];
++            if (!string.Equals(digest, sent.Digest, StringComparison.Ordinal)
++                || !CheckArena.WrittenSpan.Slice(offset, length).SequenceEqual(_arenaNext.WrittenSpan.Slice(sent.Offset, sent.Length)))
++                throw new NativeCompactWriterException("direct writer: body of " + key + " differs from the full-text path");
++        }
++    }
++}
 diff --git a/src/Sts2Headless/NativeCompactStateWriter.cs b/src/Sts2Headless/NativeCompactStateWriter.cs
 new file mode 100644
-index 0000000..5c381aa
+index 0000000..67e62ba
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCompactStateWriter.cs
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,498 @@
 +using System.Buffers;
 +using System.Security.Cryptography;
 +using System.Text;
@@ -7108,7 +7616,7 @@ index 0000000..5c381aa
 +///   reconcile_interval frames of an episode instance.
 +/// The written state therefore carries exactly the fields and values of today's full writer.
 +/// </summary>
-+public static class NativeCompactStateWriter
++public static partial class NativeCompactStateWriter
 +{
 +    public const string Format = "managed-native-compact-1";
 +
@@ -7268,30 +7776,40 @@ index 0000000..5c381aa
 +            if (!node.Tabled) continue;
 +            int offset = _arenaNext.WrittenCount;
 +            CopyWithPlaceholders(full, node.Start, node.End, index + 1, _arenaNext);
-+            int length = _arenaNext.WrittenCount - offset;
-+            var body = _arenaNext.WrittenSpan.Slice(offset, length);
-+            string key = node.Key!;
-+            if (_next.TryGetValue(key, out var existing))
-+            {
-+                var first = _arenaNext.WrittenSpan.Slice(existing.Offset, existing.Length);
-+                // The same object at the same kind of position twice: one body, two placeholders.
-+                // A different body under the same key stays inline (never two bodies per key).
-+                if (!first.SequenceEqual(body)) { node.Tabled = false; Nodes[index] = node; }
-+                _arenaNext.ResetWrittenCount();
-+                _arenaNext.Advance(offset);
-+                continue;
-+            }
-+            string? memo = _held.TryGetValue(key, out var held)
-+                && _arena.WrittenSpan.Slice(held.Offset, held.Length).SequenceEqual(body)
-+                ? held.Digest
-+                : null;
-+            string digest = memo != null && !fresh ? memo : Convert.ToHexStringLower(SHA256.HashData(body));
-+            if (memo != null && fresh && !string.Equals(memo, digest, StringComparison.Ordinal))
-+                throw new NativeCompactWriterException("reconcile: held digest of " + key + " differs from its body");
-+            _next[key] = new Sent(offset, length, digest);
-+            Order.Add(key);
++            if (!TableBody(node.Key!, offset, _arenaNext.WrittenCount - offset, fresh)) { node.Tabled = false; Nodes[index] = node; }
 +        }
 +        CopyWithPlaceholders(full, 0, full.Length, 1, Skeleton);
++    }
++
++    /// <summary>
++    /// The body just written to _arenaNext at [offset, offset+length) under key: true = tabled
++    /// (placeholder at its position), false = a different body already holds that key, so this
++    /// one stays inline. A repeat of the same body shares the first one's entry; either repeat
++    /// case drops the bytes just written.
++    /// </summary>
++    private static bool TableBody(string key, int offset, int length, bool fresh)
++    {
++        var body = _arenaNext.WrittenSpan.Slice(offset, length);
++        if (_next.TryGetValue(key, out var existing))
++        {
++            var first = _arenaNext.WrittenSpan.Slice(existing.Offset, existing.Length);
++            // The same object at the same kind of position twice: one body, two placeholders.
++            // A different body under the same key stays inline (never two bodies per key).
++            bool same = first.SequenceEqual(body);
++            _arenaNext.ResetWrittenCount();
++            _arenaNext.Advance(offset);
++            return same;
++        }
++        string? memo = _held.TryGetValue(key, out var held)
++            && _arena.WrittenSpan.Slice(held.Offset, held.Length).SequenceEqual(body)
++            ? held.Digest
++            : null;
++        string digest = memo != null && !fresh ? memo : Convert.ToHexStringLower(SHA256.HashData(body));
++        if (memo != null && fresh && !string.Equals(memo, digest, StringComparison.Ordinal))
++            throw new NativeCompactWriterException("reconcile: held digest of " + key + " differs from its body");
++        _next[key] = new Sent(offset, length, digest);
++        Order.Add(key);
++        return true;
 +    }
 +
 +    /// <summary>Copies full[start, end) replacing every outermost tabled object inside (node index from first) by its placeholder.</summary>
@@ -7526,7 +8044,7 @@ index 0000000..5c381aa
 +            WriteAscii(Line, _next[carried[k]].Digest); WriteAscii(Line, "\"");
 +        }
 +        WriteAscii(Line, "},\"objects_root_sha256\":\"");
-+        WriteAscii(Line, Root(_next));
++        WriteAscii(Line, FrameRoot());
 +        WriteAscii(Line, "\"}");
 +        WriteAscii(Line, newline);
 +        stdout.Write(Line.WrittenSpan);
@@ -11734,7 +12252,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..4e289df 100644
+index 800f139..02b41d8 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -11748,7 +12266,7 @@ index 800f139..4e289df 100644
  
  namespace Sts2Headless;
  
-@@ -41,6 +44,14 @@ class Program
+@@ -41,6 +44,17 @@ class Program
  
      static void Main(string[] args)
      {
@@ -11757,13 +12275,16 @@ index 800f139..4e289df 100644
 +        // fast_chain card projection memo, two switches, default off; either without fast_chain fails here.
 +        NativeCardProjectionMemo.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_DECK_MEMO") == "1",
 +            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1", value => JsonSerializer.Serialize(value));
++        // fast_chain compact frames written from the state object tree (default off; same bytes; checked every 64th frame).
++        NativeCompactStateWriter.ConfigureDirect(Environment.GetEnvironmentVariable("STS2_HEADLESS_COMPACT_DIRECT") == "1",
++            Environment.GetEnvironmentVariable("STS2_HEADLESS_COMPACT_DIRECT_SHADOW") == "1");
 +        if (Environment.GetEnvironmentVariable("STS2_HEADLESS_QUIET") == "1")
 +            Console.SetError(TextWriter.Null);
 +
          // Prevent unhandled exceptions from crashing the process
          AppDomain.CurrentDomain.UnhandledException += (_, e) =>
          {
-@@ -82,10 +93,19 @@ class Program
+@@ -82,10 +96,19 @@ class Program
              if (string.IsNullOrEmpty(line)) continue;
  
              Dictionary<string, object?>? result;
@@ -11784,7 +12305,7 @@ index 800f139..4e289df 100644
              }
              catch (JsonException ex)
              {
-@@ -93,12 +113,38 @@ class Program
+@@ -93,12 +116,38 @@ class Program
              }
              catch (Exception ex)
              {
@@ -11825,7 +12346,7 @@ index 800f139..4e289df 100644
                  if (result.TryGetValue("type", out var resultTypeObj) &&
                      string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
                  {
-@@ -108,17 +154,64 @@ class Program
+@@ -108,17 +157,64 @@ class Program
          }
      }
  
@@ -11892,7 +12413,7 @@ index 800f139..4e289df 100644
                  );
  
              case "action":
-@@ -143,6 +236,24 @@ class Program
+@@ -143,6 +239,24 @@ class Program
                  return sim.ExecuteAction(action, actionArgs);
              }
  
@@ -11917,7 +12438,7 @@ index 800f139..4e289df 100644
              case "load_save":
              {
                  var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
-@@ -156,6 +267,7 @@ class Program
+@@ -156,6 +270,7 @@ class Program
                  if (saveJson == null)
                      return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                  var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
@@ -11925,7 +12446,7 @@ index 800f139..4e289df 100644
                  return sim.LoadSave(saveJson, loadLang);
              }
              case "get_map":
-@@ -230,8 +342,68 @@ class Program
+@@ -230,8 +345,73 @@ class Program
          }
      }
  
@@ -11954,6 +12475,11 @@ index 800f139..4e289df 100644
 +                    : NativeCompactStateWriter.StartNewRun());
 +            NativeJsonLineWriter.WithStdout((stdout, newline) =>
 +            {
++                if (NativeCompactStateWriter.Configured && NativeCompactStateWriter.Direct && !starts)
++                {
++                    NativeCompactStateWriter.WriteFrameDirect(data, JsonOpts, stdout, newline);
++                    return;
++                }
 +                var full = NativeJsonLineWriter.Serialize(data, JsonOpts);
 +                if (NativeCompactStateWriter.Configured)
 +                {
