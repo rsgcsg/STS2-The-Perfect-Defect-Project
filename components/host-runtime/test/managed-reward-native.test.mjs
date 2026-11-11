@@ -124,7 +124,7 @@ test("both exact Hosts compile the same native reward/read qualification source"
     "NativeCalculatedVariableInventory.cs", "NativeCardPreviewReadQualification.Rendering.cs", "NativeCardPreviewReadQualification.cs",
     "NativeDetachedCardCopy.cs", "NativeDetachedCardPreview.cs", "NativeEnchantmentMethodInventory.cs",
     "NativeSettledRelicCounter.cs", "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs",
-    "NativePatchStateCache.cs", "NativeCardDetailCache.cs", "NativeFieldAccess.cs"])
+    "NativePatchStateCache.cs", "NativeCardDetailCache.cs", "NativeFieldAccess.cs", "NativeCardProjectionMemo.cs"])
     assert.equal(files.get(`src/Sts2Headless/${name}`),
       readFileSync(path.join(root, "../native-foundation/src", name), "utf8"));
 });
@@ -132,12 +132,20 @@ test("both exact Hosts compile the same native reward/read qualification source"
 test("only the Managed native entry point enables the fast_chain read cache", () => {
   const patch = readFileSync(path.join(root, "experiments/managed-exact/patches/sts2-cli-d11aa88-v01110.patch"), "utf8");
   const callers = new Map();
+  const memoCallers = new Map();
   for (const block of patch.split(/^diff --git /mu).slice(1)) {
     const file = block.split("\n")[0].split(" b/")[1];
     const added = block.split(/\r?\n/u).filter(line => line.startsWith("+") && !line.startsWith("+++")
       && line.includes("NativePatchStateCache.Configure("));
     if (added.length) callers.set(file, added);
+    const memo = block.split(/\r?\n/u).filter(line => line.startsWith("+") && !line.startsWith("+++") && !/^\+\s*\/\//u.test(line)
+      && /NativeCardProjectionMemo\.Configure\(|STS2_HEADLESS_(DECK|HUD)_MEMO/u.test(line));
+    if (memo.length) memoCallers.set(file, memo);
   }
+  // The card projection memo switches: read and configured only by the Managed entry point (and its tests).
+  assert.deepEqual([...memoCallers.keys()].sort(), ["patch-cache-tests/Program.cs", "src/Sts2Headless/Program.cs"]);
+  assert.match(memoCallers.get("src/Sts2Headless/Program.cs").join("\n"),
+    /NativeCardProjectionMemo\.Configure\(Environment\.GetEnvironmentVariable\("STS2_HEADLESS_DECK_MEMO"\) == "1",\n\+?\s*Environment\.GetEnvironmentVariable\("STS2_HEADLESS_HUD_MEMO"\) == "1", value => JsonSerializer\.Serialize\(value\)\);/u);
   assert.deepEqual([...callers.keys()].sort(), ["patch-cache-tests/Program.cs", "src/Sts2Headless/Program.cs"]);
   assert.equal(callers.get("src/Sts2Headless/Program.cs").length, 1);
   assert.match(callers.get("src/Sts2Headless/Program.cs")[0],
@@ -154,7 +162,7 @@ test("only the Managed native entry point enables the fast_chain read cache", ()
       else if (entry.name.endsWith(".cs")) {
         // Comment lines cannot enable or read the switch; only code is checked.
         const text = readFileSync(full, "utf8").split(/\r?\n/u).filter(line => !/^\s*\/\//u.test(line)).join("\n");
-        if (/NativePatchStateCache\s*\.\s*Configure\s*\(|STS2_HEADLESS_FAST_CHAIN/u.test(text)) offenders.push(path.relative(repository, full));
+        if (/NativePatchStateCache\s*\.\s*Configure\s*\(|NativeCardProjectionMemo\s*\.\s*Configure\s*\(|STS2_HEADLESS_(FAST_CHAIN|DECK_MEMO|HUD_MEMO)/u.test(text)) offenders.push(path.relative(repository, full));
       }
     }
   };
