@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -43,26 +43,50 @@ def prepare(frames: Sequence[TensorFrame], floors: Sequence[int]) -> Any:
                          deduplicate_text=True, layout="rows-v2")
 
 
+def inference_kernels(kernels: str) -> tuple[str, ...]:
+    """`rows_kernels.parse_kernels` for the inference forward: `embed` changes only the
+    embedding backward (training), so an inference lever set holding it is refused
+    rather than accepted as a no-op (#480 review S1)."""
+    from stpd.p1.rows_kernels import parse_kernels
+
+    levers = parse_kernels(kernels)
+    if "embed" in levers:
+        raise ValueError("invalid_inference_kernels:embed_is_backward_only")
+    return levers
+
+
 class RowsScorer:
     """Score prepared rows-v2 groups with one immutable mu on one device."""
 
-    def __init__(self, model: Any, *, bf16: bool = True, compile: bool = False) -> None:
+    def __init__(self, model: Any, *, bf16: bool = True, compile: bool = False,
+                 kernels: str = "") -> None:
         if model.training or any(p.requires_grad for p in model.parameters()):
             raise ValueError("rows_scorer_requires_immutable_eval_snapshot")
         if not hasattr(model, "rl4_heads"):
             raise ValueError("rl4_heads_not_enabled")
+        inference_kernels(kernels)  # '' (the original block) or a valid lever set; loud
         self.model = model
         self.device = next(model.parameters()).device
         self.bf16 = bf16 and self.device.type == "cuda"
         self.compile = compile
+        self.kernels = kernels
+
+    def forward_device(self, group: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The model call alone (caller holds inference mode and autocast): device
+        (scores, outcome logits, hp)."""
+        if self.kernels:
+            return cast(tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+                        self.model.forward_prepared_rl4(group, compile_rows=self.compile,
+                                                        kernels=self.kernels))
+        return cast(tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+                    self.model.forward_prepared_rl4(group, compile_rows=self.compile))
 
     def forward_tensors(self, group: Any) -> tuple[torch.Tensor, ...]:
         """Device forward only: CPU float (scores, outcome probabilities, logits, hp)."""
         autocast = (torch.autocast("cuda", dtype=torch.bfloat16) if self.bf16
                     else nullcontext())
         with torch.inference_mode(), autocast:
-            scores, logits, hp = self.model.forward_prepared_rl4(group,
-                                                                 compile_rows=self.compile)
+            scores, logits, hp = self.forward_device(group)
             probabilities = logits.float().softmax(-1)
         return (scores.float().cpu(), probabilities.cpu(), logits.float().cpu(),
                 hp.float().cpu())

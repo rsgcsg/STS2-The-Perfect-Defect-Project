@@ -703,7 +703,8 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
-                   arena: torch.Tensor | None = None, device_rows: bool = False) -> None:
+                   arena: torch.Tensor | None = None, device_rows: bool = False,
+                   kernels: str = "") -> None:
     """Spawned device process: models and forwards only, no per-row Python work
     (with `device_rows` it also turns a forward's tensors into per-row scores).
 
@@ -770,7 +771,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             if kind == "model":
                 model = torch.load(io.BytesIO(blob), map_location=device, weights_only=False)
                 model.eval().requires_grad_(False)
-                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile)
+                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile, kernels=kernels)
             else:
                 scorers.pop(key, None)
             control.send_bytes(b"ok")
@@ -874,6 +875,13 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         out[0]["load_seconds"] = parts[0].get("load_seconds", 0.0)
         out[0]["join_seconds"] = parts[0].get("join_seconds", 0.0)
         out[0]["stage_seconds"] = parts[0].get("stage_seconds", 0.0)
+        if scorer is not None and scorer.compile and scorer.kernels:
+            # V3 yin-device (#480 review S3): this process's dynamo counters, so a
+            # long run sees recompiles (frames_ok) and frames left eager past the
+            # recompile limit (frames_total - frames_ok; performance only).
+            from .rows_forward import compile_counters
+
+            out[0]["dynamo"] = compile_counters()
     return out
 
 
@@ -921,6 +929,33 @@ class _V3Link:
             self.connection.send_bytes(pack_message(envelope))
 
 
+# Runtime caches a process sets on a model object: torch.compile wrappers of
+# rows_forward (`_rows_block*`) and of the nodes lever (`_rows_nodes_compiled`).
+# They cannot be pickled and are never part of a published mu.
+# torch.compile wrappers set by rows_forward (compiled rows blocks, the nodes
+# lever's compiled builder) cannot be pickled: dropped from the shipped copy.
+RUNTIME_CACHE_PREFIXES = ("_rows_block", "_rows_nodes")
+# A learner mu from load_behavior_mu (or LocalInference) carries this process's
+# TextVectorCache, which holds an RLock and cannot be pickled. P1Model.__init__
+# declares both attributes as None, so the shipped copy keeps them as None.
+PROCESS_LOCAL_ATTRIBUTES = frozenset({"text_cache", "text_cache_namespace"})
+
+
+def model_blob(model: Any) -> bytes:
+    """The model's parameters and construction as a mu is shipped (one logic for
+    `FastInferenceService.publish` and `InferenceCard.publish`): torch.save of a
+    shallow copy without this process's runtime caches."""
+    import io
+
+    shipped = copy.copy(model)
+    shipped.__dict__ = {key: (None if key in PROCESS_LOCAL_ATTRIBUTES else value)
+                        for key, value in model.__dict__.items()
+                        if not key.startswith(RUNTIME_CACHE_PREFIXES)}
+    blob = io.BytesIO()
+    torch.save(shipped, blob)
+    return blob.getvalue()
+
+
 class FastInferenceService:
     """`stpd/rl-inference-3` scorer for many node aggregators on one device.
 
@@ -944,6 +979,11 @@ class FastInferenceService:
     so each part holds at least about `part_rows` rows: a small job goes to fewer
     workers instead of one row each, a large one still uses `job_parts` workers.
     It has no effect with `job_parts` = 1.
+
+    `kernels` (V3 yin-device option, default '' = the original forward) selects the
+    rows-v2 forward levers of `rows_kernels.LEVERS` (the V3 T6 training levers, same
+    parameters and function, BF16 tolerance) for the device forward, e.g.
+    "cross+heads+nodes"; an invalid value is refused at construction.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -955,7 +995,7 @@ class FastInferenceService:
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
                  part_rows: int = 0, device_rows: bool = False, trace: bool = False,
-                 audit_fraction: float = 0.01,
+                 audit_fraction: float = 0.01, kernels: str = "",
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None) -> None:
         import multiprocessing
@@ -975,6 +1015,9 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_arena")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
+        from .rows_scorer import inference_kernels
+
+        inference_kernels(kernels)  # V3 yin-device option, '' = the original forward; loud
         self.vocabulary = copy.deepcopy(vocabulary)
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.assembler = assembler
@@ -983,7 +1026,7 @@ class FastInferenceService:
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
         self.part_rows, self.device_rows = part_rows, bool(device_rows)
         self.trace = bool(trace)
-        self.bf16, self.compile = bf16, compile
+        self.bf16, self.compile, self.kernels = bf16, compile, kernels
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
                                  "sha256": encoder_sha256 or encoder_digest()}
@@ -1041,7 +1084,7 @@ class FastInferenceService:
             target=_device_worker, daemon=True, name="rl-inference-3-device",
             args=(control_child, device_inputs, results_child,
                   self.device, bf16, compile, device_threads, self.arena,
-                  self.device_rows))
+                  self.device_rows, kernels))
         self.device_process.start()
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
@@ -1116,21 +1159,14 @@ class FastInferenceService:
         The model reaches the device process before the assembler can plan a
         row on it, so a planned row never finds its mu missing in transit.
         """
-        import io
-
         from .rows_scorer import RowsScorer
 
-        RowsScorer(model, bf16=self.bf16, compile=self.compile)  # immutable eval snapshot
-        # Ship parameters and construction, not this process's runtime caches
-        # (a torch.compile wrapper set by rows_forward cannot be pickled).
-        shipped = copy.copy(model)
-        shipped.__dict__ = {key: value for key, value in model.__dict__.items()
-                            if not key.startswith("_rows_block")}
-        blob = io.BytesIO()
-        torch.save(shipped, blob)
+        RowsScorer(model, bf16=self.bf16, compile=self.compile,
+                   kernels=self.kernels)  # immutable eval snapshot
+        blob = model_blob(model)
         key = handoff.snapshot_sha256
         with self.control_lock:
-            self._device_control("model", key, blob.getvalue())
+            self._device_control("model", key, blob)
             try:
                 offer = self.assembler.offer_mu(handoff)
             except BaseException:
@@ -1463,6 +1499,8 @@ class FastInferenceService:
             self.stats["batches"] += part["forwards"]
             self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"],
                                                part["forward_rows"] * part["forwards"])
+        if "dynamo" in part:  # cumulative in the device process (kernels + compile only)
+            self.stats["device_dynamo"] = dict(part["dynamo"])
         if part.get("overflow"):
             print(json.dumps({"rl_inference_3_arena_overflow": part["overflow"]}),
                   file=sys.stderr, flush=True)
