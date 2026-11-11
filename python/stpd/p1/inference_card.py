@@ -286,7 +286,9 @@ class InferenceCard:
             for ready in wait(list(sentinels), timeout=1.0):
                 index = sentinels.pop(ready)
                 if not self._closing:
-                    self._fail(f"service_{index}_exited:{self.processes[index].exitcode}")
+                    process = self.processes[index]
+                    process.join(5)  # reap it: the sentinel can fire before the exit code
+                    self._fail(f"service_{index}_exited:{process.exitcode}")
                     return
 
     def _fail(self, reason: str) -> None:
