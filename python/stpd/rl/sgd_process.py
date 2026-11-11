@@ -971,11 +971,13 @@ class _SgdWorker:
         if init.get("stage_thread"):
             from concurrent.futures import ThreadPoolExecutor
 
-            device = self.device
+            # Same CUDA device as this thread ("cuda" alone carries no index).
+            index = (None if self.device.type != "cuda" else self.device.index
+                     if self.device.index is not None else torch.cuda.current_device())
             self.stage_executor = ThreadPoolExecutor(
                 1, thread_name_prefix="rl-sgd-stage",
-                initializer=(lambda: torch.cuda.set_device(device))
-                if device.type == "cuda" else None)
+                initializer=(lambda: torch.cuda.set_device(index))
+                if index is not None else None)
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
