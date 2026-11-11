@@ -948,3 +948,59 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
     assert stats["failure"] is None
     err = capfd.readouterr().err
     assert "hello_required" in err and "unexpected_link_message" in err
+
+
+# -- V3 gui-infer option (default off): part sizing ----------------------------------
+def _packet(encoded: list[Any], game: str, first_id: int) -> tuple[list[dict[str, Any]], bytes]:
+    rows, binary = [], bytearray()
+    for index, item in enumerate(encoded):
+        rows.append({"request_id": first_id + index, "game_instance_id": game,
+                     "step_index": index, "consumption_id": f"c{index}",
+                     "catalog_len": item.catalog_len, "catalog_sha256": item.catalog_sha256,
+                     "observation_sha256": item.observation_sha256, "in_combat": False,
+                     "floor": 2, "payload": {"offset": len(binary), "length": len(item.row),
+                                             "row_sha256": item.row_sha256}})
+        binary += item.row
+    return rows, bytes(binary)
+
+
+@pytest.mark.parametrize(("part_rows", "parts"), [(0, 3), (3, 2)])
+def test_part_rows_sets_the_parts_of_a_job_with_the_same_scores(vocabulary, model, part_rows,
+                                                               parts):
+    """6 rows, job_parts 4: off = ceil(6/4) rows a part = 3 parts; part_rows 3 = 2 parts."""
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    assembler = FakeAssembler()
+    identity = FrameCompiler(vocabulary).identity
+    service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
+                                   address=("127.0.0.1", 0), env_sha256=ENV,
+                                   prepare_workers=4, job_parts=4, part_rows=part_rows,
+                                   join_workers=1, window_ms=200.0)
+    assert service.publish(model, Handoff(MU))
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = _packet(encoded, "g1", 3)
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+    finally:
+        client.close()
+        report = service.close()
+    assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+    assert report["jobs"] == 1 and report["parts"] == parts and report["batches"] == 1
+    finished = {body[0]: body[1] for kind, body in assembler.calls if kind == "finish"}
+    for index, want in enumerate(expected):
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        assert torch.allclose(torch.tensor(finished[3 + index]["behavior_q"]),
+                              torch.tensor(behavior), atol=1e-6)
+
+
+@pytest.mark.parametrize("part_rows", [-1, 1.5])
+def test_invalid_part_rows_is_refused(vocabulary, model, part_rows):
+    with pytest.raises(ValueError, match="invalid_rl_inference_3_job_shape"):
+        _service(vocabulary, model, FakeAssembler(), part_rows=part_rows)

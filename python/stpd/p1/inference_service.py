@@ -895,6 +895,12 @@ class FastInferenceService:
     only forwards. Batching is adaptive: at most `in_flight` jobs are between
     dispatch and reply, so under load rows wait for a slot and the next job
     (up to `max_job_rows`) grows; with a free slot a job leaves after `window_ms`.
+
+    A job is split into `min(job_parts, rows)` parts, one per prepare worker.
+    `part_rows` > 0 (V3 option, default off) caps that at ceil(rows / part_rows),
+    so each part holds at least about `part_rows` rows: a small job goes to fewer
+    workers instead of one row each, a large one still uses `job_parts` workers.
+    It has no effect with `job_parts` = 1.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -905,8 +911,9 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
-                 audit_fraction: float = 0.01, failure_dir: str | Path | None = None,
-                 encoder_sha256: str | None = None, env_sha256: str | None = None) -> None:
+                 part_rows: int = 0, audit_fraction: float = 0.01,
+                 failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
+                 env_sha256: str | None = None) -> None:
         import multiprocessing
         from multiprocessing.connection import Listener
 
@@ -917,7 +924,8 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_max_rows")
         if prepare_cpus is not None and len(prepare_cpus) != prepare_workers:
             raise ValueError("prepare_cpus_per_worker")
-        if not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0:
+        if (not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0
+                or type(part_rows) is not int or part_rows < 0):
             raise ValueError("invalid_rl_inference_3_job_shape")
         if arena_row_bytes is not None and arena_row_bytes < 1:
             raise ValueError("invalid_rl_inference_3_arena")
@@ -929,6 +937,7 @@ class FastInferenceService:
         self.training_generation = training_generation
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
+        self.part_rows = part_rows
         self.bf16, self.compile = bf16, compile
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
@@ -956,7 +965,7 @@ class FastInferenceService:
                                       "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0,
-                                      "episodes_refused": 0}
+                                      "episodes_refused": 0, "parts": 0}
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
@@ -1289,7 +1298,8 @@ class FastInferenceService:
 
     def _dispatch(self, rows: list[_V3Row]) -> None:
         dispatching = time.perf_counter()
-        parts = min(self.job_parts, len(rows))
+        parts = min(self.job_parts, len(rows) if not self.part_rows
+                    else -(-len(rows) // self.part_rows))
         size = -(-len(rows) // parts)
         chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
         with self.jobs_lock:
@@ -1312,6 +1322,7 @@ class FastInferenceService:
         share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
         base = slot * self.slot_bytes
         self.stats["jobs"] += 1
+        self.stats["parts"] += len(chunks)
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
         for part, (chunk, worker) in enumerate(zip(chunks, workers, strict=True)):
