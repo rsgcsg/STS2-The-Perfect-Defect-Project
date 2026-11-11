@@ -4,32 +4,46 @@ The learner owns publication (`SegmentLearner._collect_publication` records the
 identity in its fast intake, then serves it through `get_mu`). This follower is
 the service-side half: it reads the learner's latest identity through a
 `MuSource` (production: `NodeMuSource` on the learner attachment, the same node
-cache transfer and load checks as the old S2-1 service), loads that snapshot on
-CPU and offers it with `FastInferenceService.publish(model, MuHandoff(...))`.
-From the next planned row on, `step_outcome` scores and segment headers carry
-the new identity (`mu_snapshot_sha256`), and the learner trains a fast segment
-only under a mu it recorded (`fast_segment_mu_not_published`).
+cache transfer and load checks as the old S2-1 service), checks its
+`compiler_identity` against the service's, loads that snapshot on CPU and
+offers it with `FastInferenceService.publish(model, MuHandoff(...))`. Rows bind
+their mu per segment (`FastSegmentAssembler.begin_row` keeps an open segment's
+mu), so the new identity takes effect from the next segment on; `step_outcome`
+scores and segment headers always carry the mu that scored the row
+(`mu_snapshot_sha256`), and the learner trains a fast segment only under a mu it
+recorded (`fast_segment_mu_not_published`).
 
 Rules:
 - one identity is offered at most once; the same weights under a new identity
   (a CP restore's new generation) are offered again, the assembler rebinds;
-- a refused offer (older generation) is counted, never forced in;
+- an identity whose `compiler_identity` differs from the service's (or lacks
+  one) is never loaded: it raises `MU_COMPILER_IDENTITY_DIFFERS` and counts as
+  a failure, like the old service's `_load`;
+- a refused offer (`MuLedger.offer` found every resident slot held by an open
+  segment or a pin) is counted and never forced in; it is not re-offered, the
+  next learner publication is;
 - reading `latest()` is an idempotent read and is polled again next interval;
-  a failed load or publish is counted with its error; `max_failures`
-  consecutive failures stop the follower and `check()` raises the first error.
-  The service keeps the mu it already holds (rows stay labelled with it), it
-  never scores with a substitute;
+  a failed check, load or publish is counted with its error. `max_failures`
+  consecutive failures are fatal: `on_fatal(error)` runs (default: the service
+  stops loudly, `FastInferenceService._stop("mu_follower_stopped")`, so later
+  rows are refused instead of scored by an ever older mu) and `check()` raises
+  the last error. Nothing is ever scored with a substitute mu;
+- shutdown order: `close()` stops this follower before it closes the service;
+  once the service is stopping the follower publishes nothing and exits;
 - weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
   production `mu_archive` exists yet (AUDIT F8), so an R7 game would fail loud
   in the assembler (`audit_mu_archive_unconfigured` / `audit_mu_weights_missing`).
 """
 from __future__ import annotations
 
+import json
+import sys
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
+from spireagent.json_boundary import BoundaryError
 from stpd.rl.fast_assembly import MuHandoff
 
 from .inference_service import MuSource
@@ -39,17 +53,21 @@ class FastMuFollower:
     """Poll the learner's latest mu and hot-swap it into a FastInferenceService."""
 
     def __init__(self, source: MuSource, service: Any, *, interval: float = 2.0,
-                 max_failures: int = 3, clock: Callable[[], float] = time.monotonic) -> None:
+                 max_failures: int = 3, clock: Callable[[], float] = time.monotonic,
+                 on_fatal: Callable[[BaseException], None] | None = None) -> None:
         if not interval > 0 or type(max_failures) is not int or max_failures < 1:
             raise ValueError("invalid_fast_mu_follower_settings")
         self.source, self.service = source, service
         self.interval, self.max_failures, self.clock = interval, max_failures, clock
         self.offered: dict[str, Any] | None = None
-        self.error: BaseException | None = None
+        self.error: BaseException | None = None  # the last failure
+        self.fatal: BaseException | None = None  # set once the follower gave up
+        self.on_fatal = self._stop_service if on_fatal is None else on_fatal
         self.failures = 0
         self.history: list[dict[str, Any]] = []
         self.counters = {"polls": 0, "published": 0, "refused": 0, "unchanged": 0,
-                         "failures": 0, "load_seconds": 0.0, "publish_seconds": 0.0}
+                         "failures": 0, "service_stopping": 0,
+                         "load_seconds": 0.0, "publish_seconds": 0.0}
         self.lock = threading.Lock()
         self.stopping = threading.Event()
         self.thread: threading.Thread | None = None
@@ -59,15 +77,27 @@ class FastMuFollower:
         return MuHandoff(identity["snapshot_sha256"], identity["training_generation"],
                          identity["version"], identity["updates"])
 
+    def _service_stopping(self) -> bool:
+        stopping = getattr(self.service, "stopping", None)
+        return stopping is not None and stopping.is_set()
+
+    def _stop_service(self, error: BaseException) -> None:
+        self.service._stop("mu_follower_stopped", repr(error))
+
     def step(self) -> bool:
         """One poll; True when a new identity was accepted by the service."""
         with self.lock:
             self.counters["polls"] += 1
+            if self._service_stopping():
+                self.counters["service_stopping"] += 1
+                return False
             identity = dict(self.source.latest())
             handoff = self.handoff(identity)
             if self.offered is not None and self.offered == handoff.identity():
                 self.counters["unchanged"] += 1
                 return False
+            if identity.get("compiler_identity") != self.service.compiler_identity:
+                raise BoundaryError("rl_mu", "MU_COMPILER_IDENTITY_DIFFERS")
             began = self.clock()
             model = self.source.load(identity)
             loaded = self.clock()
@@ -85,17 +115,28 @@ class FastMuFollower:
 
     def _run(self) -> None:
         while not self.stopping.is_set():
+            if self._service_stopping():
+                return  # the service already stopped (or is closing): nothing to feed
             try:
                 self.step()
                 self.failures = 0
             except BaseException as error:  # noqa: BLE001 - kept and re-raised by check()
+                if self._service_stopping():
+                    return  # a publish raced the service's own stop: not this follower's
                 self.failures += 1
                 self.counters["failures"] += 1
-                if self.error is None:
-                    self.error = error
+                self.error = error
                 if self.failures >= self.max_failures:
+                    self._give_up(error)
                     return
             self.stopping.wait(self.interval)
+
+    def _give_up(self, error: BaseException) -> None:
+        self.fatal = error
+        print(json.dumps({"fast_mu_follower_stopped": repr(error),
+                          "failures": self.failures, "offered": self.offered}),
+              file=sys.stderr, flush=True)
+        self.on_fatal(error)
 
     def start(self) -> FastMuFollower:
         if self.thread is not None:
@@ -108,16 +149,24 @@ class FastMuFollower:
         return self.thread is not None and not self.thread.is_alive()
 
     def check(self) -> None:
-        """Raise once the follower gave up; transient errors stay counted."""
-        if self.stopped() and not self.stopping.is_set() and self.error is not None:
-            raise self.error
+        """Raise the last error once the follower gave up; transient errors stay counted."""
+        if self.fatal is not None:
+            raise self.fatal
 
     def stop(self, timeout: float = 30.0) -> None:
         self.stopping.set()
         if self.thread is not None:
             self.thread.join(timeout)
 
+    def close(self, timeout: float = 30.0) -> Any:
+        """Stop following first, then close the service (never publish into a closed one)."""
+        self.stop(timeout)
+        if self.thread is not None and self.thread.is_alive():
+            raise RuntimeError("fast_mu_follower_did_not_stop")
+        return self.service.close()
+
     def status(self) -> dict[str, Any]:
         return {"offered": self.offered, "failures": self.failures,
                 "error": None if self.error is None else repr(self.error),
+                "fatal": None if self.fatal is None else repr(self.fatal),
                 "stopped": self.stopped(), **self.counters}

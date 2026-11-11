@@ -1074,7 +1074,16 @@ class FastInferenceService:
         key = handoff.snapshot_sha256
         with self.control_lock:
             self._device_control("model", key, blob.getvalue())
-            offer = self.assembler.offer_mu(handoff)
+            try:
+                offer = self.assembler.offer_mu(handoff)
+            except BaseException:
+                # Never leave a model on the device for a mu no row can name; a key the
+                # ledger still holds (an earlier accepted offer) stays loaded.
+                ledger = getattr(self.assembler, "ledger", None)
+                if ledger is not None and key not in ledger.resident:
+                    with contextlib.suppress(Exception):
+                        self._device_control("drop", key, None)
+                raise
             if not offer.accepted:
                 self._device_control("drop", key, None)
             for evicted in offer.evicted:
