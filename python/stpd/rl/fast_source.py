@@ -2,7 +2,8 @@
 
 Three pieces, none used by the old chain:
 
-- `decode_fast_packet`: one sealed `stpd/rl-fast-segment-1` -> `PreparedSource` plus
+- `decode_fast_packet`: one sealed fast segment (either byte format, `stpd/rl-fast-segment-1`
+  JSON rows or `-2` columns; `decode_segment` dispatches on the magic) -> `PreparedSource` plus
   the `{envelope, witness}` header the binary preparer already checks. Rows are
   rebuilt with `decode_row` (validator + row digest), targets come from the
   segment's own mu values (`categorical_lambda_targets`, no theta, no newer mu).
@@ -116,7 +117,11 @@ class FastIntakeError(ValueError):
 
 def fast_envelope(header: dict[str, Any], *, size: int, digest: str, run: str,
                   attestation: dict[str, Any], gae_lambda: float) -> dict[str, Any]:
-    """The learner's own record of one admitted segment (never sent anywhere)."""
+    """The learner's own record of one admitted segment (never sent anywhere).
+
+    `format` here is the fast-chain family key (`FAST_FORMAT`) used for routing, not
+    the segment's byte format: that is the magic / decoded header `format`.
+    """
     return {
         "format": FAST_FORMAT, "payload_kind": "ppo", "run": run,
         "training_generation": header["mu"]["training_generation"],

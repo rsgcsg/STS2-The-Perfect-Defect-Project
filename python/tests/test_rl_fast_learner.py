@@ -13,6 +13,7 @@ from test_rl_fast_source import Game, _sender, closed_for, message, train_seed
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.rl.fast_assembly import MuHandoff
+from stpd.rl.fast_segment import FORMAT, FORMAT_2
 from stpd.rl.fast_source import FAST_FORMAT
 from stpd.rl.segment_learner import SegmentLearner
 
@@ -38,10 +39,12 @@ def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
     return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
 
 
-def game(owner: SegmentLearner, name: str, *, terminal: bool = True) -> list[Any]:
+def game(owner: SegmentLearner, name: str, *, terminal: bool = True,
+         segment_format: str = FORMAT) -> list[Any]:
     """One real assembler game bound to this learner's generation and compiler."""
     g = Game(owner.generation, compiler=FrameCompiler(owner.model.vocabulary),
-             assembler_id="node-" + name, handoff=learner_mu(owner))
+             assembler_id="node-" + name, handoff=learner_mu(owner),
+             segment_format=segment_format)
     g.open(name)
     for _ in range(64 + 5 if terminal else 65):
         g.step(name)
@@ -84,11 +87,12 @@ def queued(owner: SegmentLearner) -> list[str]:
     return [record["segment_id"] for record in owner.queue.pending]
 
 
+@pytest.mark.parametrize("segment_format", [FORMAT, FORMAT_2])
 def test_handoff_connection_admits_attested_segments_and_prepares_a_batch(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, segment_format):
     owner = fast_learner(tmp_path, monkeypatch)
     try:
-        sealed = game(owner, "g1")
+        sealed = game(owner, "g1", segment_format=segment_format)
         assert admission(owner, "g1", 1) == {"admitted": True, "game_instance_id": "g1"}
         ours, theirs = multiprocessing.Pipe()
         process = multiprocessing.Process(target=_sender,
