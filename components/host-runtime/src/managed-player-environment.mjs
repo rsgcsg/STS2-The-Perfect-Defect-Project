@@ -3352,7 +3352,9 @@ export async function startManagedPlayerEnvironmentSession({
   validateSdk = true,
   quietDiagnostics = false,
   compactOutput = null,
-  fastChain = false
+  fastChain = false,
+  deckMemo = false,
+  hudMemo = false
 }) {
   validateManagedAscension(ascension);
   compactOutput = validateCompactOutput(compactOutput);
@@ -3362,7 +3364,9 @@ export async function startManagedPlayerEnvironmentSession({
     diskIdentity,
     requestTimeoutMs,
     quietDiagnostics,
-    fastChain
+    fastChain,
+    deckMemo,
+    hudMemo
   });
   const environmentFingerprint = digest({
     candidate_id: runtime.manifest.candidate_id,
