@@ -35,11 +35,15 @@ export interface FastEnvConfig {
   /** The other memo layers (WP8 v3 enablement; all off when `memo` is absent). This process is fast_chain only.
    *  - `native_card` (#460): the native's deck / HUD card projection memo (STS2_HEADLESS_DECK_MEMO / _HUD_MEMO);
    *    the native compares every 64th render frame of a lane itself; a difference is compact_state_divergence.
-   *  - `reduce` (E6): the SDK reduce memo; compared on reduction 0 and then after random gaps in
-   *    ceil(N/2)..N, N = `check_interval` (1 = every reduction). A difference (P1ReduceMemoDivergence)
-   *    is fatal for this whole process.
+   *  - `reduce` (E6): the SDK reduce memo; the first comparison falls on reduction ceil(N/2)..N (not on
+   *    reduction 0), then one after each random gap in ceil(N/2)..N, N = `check_interval` (1 = every
+   *    reduction). A difference (P1ReduceMemoDivergence) is fatal for this whole process.
    *  - `receipt_canonical` (E4): the receipt digest keeps the canonical text of deep-frozen subtrees;
-   *    compared the same way against the full walk; a difference is fatal for this whole process. */
+   *    compared against the full walk on digest 0 and then after random gaps in ceil(N/2)..N; a
+   *    difference is fatal for this whole process.
+   *  E4 and E6 only hit when E5 (`compact.projection_memo`) is on: they key on object identity, and only
+   *  E5 hands out unchanged subtrees as the same deep-frozen objects. Without E5 they stay correct but
+   *  are pure overhead (hits ≈ 0); allowed on their own so each layer can still be measured. */
   memo: { native_card: { deck: boolean; hud: boolean } | null; reduce: { check_interval: number } | null;
     receipt_canonical: { check_interval: number } | null };
   checks: { sample_rate: number };

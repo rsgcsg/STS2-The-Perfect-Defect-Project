@@ -619,6 +619,7 @@ export class SlotKernel {
       const lines: string[] = [];
       // Compact off, the only line can be the native's own divergence report: kept all the same.
       native.attachLines(line => lines.push(line)); native.attachLines(null);
+      this.#countProjectionMemo(native);
       await this.#replaceNative();
       if (divergence !== null) { countDivergence(ctx.stats, divergence); ctx.stopBuildOutput(divergence, this.index, null); }
       const reason = `reset_failed:${divergence ?? errorText(error)}`;

@@ -23,12 +23,20 @@ import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, par
 import { HostSlotNative, SampledCheckFailure, captureSampleOffset, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
 // The kernel's own reduce call can be made to report an E6 memo divergence (everything else is the real SDK).
-const reduceFault = vi.hoisted(() => ({ at: null as number | null, calls: 0 }));
+// With `follow` set, every lowering gains one follow rule whose resolution (resolveFollowBasis, which
+// reduces inside the SDK) reports the E6 divergence: the mid-fold path after a delivered step.
+const reduceFault = vi.hoisted(() => ({ at: null as number | null, calls: 0, follow: false }));
 vi.mock("@rsgcsg/sts2-connector-client/p1-global", async original => {
   const actual: any = await original();
   return { ...actual, reduce: (...args: any[]) => {
     if (reduceFault.at !== null && ++reduceFault.calls === reduceFault.at) throw new actual.P1ReduceMemoDivergence(reduceFault.calls, 12);
-    return actual.reduce(...args);
+    const result = actual.reduce(...args);
+    if (!reduceFault.follow || !result?.lowering) return result;
+    return { ...result, lowering: Object.fromEntries(Object.entries(result.lowering)
+      .map(([id, lowering]: [string, any]) => [id, { ...lowering, follow: [{ optional: false }, ...lowering.follow] }])) };
+  }, resolveFollowBasis: (...args: any[]) => {
+    if (reduceFault.follow) throw new actual.P1ReduceMemoDivergence(7, 3);
+    return actual.resolveFollowBasis(...args);
   } };
 });
 
@@ -874,11 +882,30 @@ describe("fast-env failure paths", () => {
       expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "p1_reduce_memo_divergence", slot: 0 });
       const fatal = await h.next(event => event.event === "fatal");
       expect(fatal.reason).toMatch(/^p1_reduce_memo_divergence:P1ReduceMemoDivergence:/u);
-      expect(fatal.counters).toMatchObject({ memo: { memo_divergences: 1, reduce: { mode: "on" } } });
+      expect(fatal.counters).toMatchObject({ memo: { memo_divergences: 1, reduce: { mode: "verify_all" } } });
       expect(await h.exit).toBe(1);
       // Nothing reopens: the process is gone.
       expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
     } finally { reduceFault.at = null; }
+  });
+
+  it("an E6 divergence inside resolveFollowBasis (after a delivered step) is fatal too, the row unknown", async () => {
+    reduceFault.follow = true;
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => { config.memo = { reduce: { check_interval: 64 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "unknown", detail: "p1_reduce_memo_divergence", native: "replaced", native_steps: 1 });
+      expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown" })]);
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "p1_reduce_memo_divergence", slot: 0 });
+      const fatal = await h.next(event => event.event === "fatal");
+      expect(fatal.reason).toMatch(/^p1_reduce_memo_divergence:P1ReduceMemoDivergence:/u);
+      // After the fatal divergence every E6 reduction is compared while the process drains; counters carry over.
+      expect(fatal.counters).toMatchObject({ memo: { memo_divergences: 1, reduce: { mode: "verify_all" } } });
+      expect(fatal.counters.memo.reduce.reductions).toBeGreaterThan(0);
+      expect(await h.exit).toBe(1);
+      expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
+    } finally { reduceFault.follow = false; }
   });
 
   it("memo config: off unless named, interval 1..1024, unknown keys refused", () => {

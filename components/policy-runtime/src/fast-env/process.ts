@@ -14,7 +14,7 @@ import { FastActionEvidenceSink } from "../global-fast-storage.js";
 import { hostSlotNativeFactory, type SlotNativeFactory } from "./host.js";
 import { coldStartGate, defaultColdStartDirectory, type ColdStartGate } from "./cold-start.js";
 import { SlotKernel, emptyStats, type KernelContext, type KernelStats } from "./kernel.js";
-import { configureReduceMemo, isDeepFrozen, reduceMemoStatus } from "@rsgcsg/sts2-connector-client/p1-global";
+import { configureReduceMemo, isDeepFrozen, reduceMemoStatus, type ReduceMemoStatus } from "@rsgcsg/sts2-connector-client/p1-global";
 import { CanonicalTextMemo } from "./json-bytes.js";
 
 const COMPACT_FORMAT = "managed-native-compact-1";
@@ -58,6 +58,8 @@ export class FastEnvProcess {
   #staleCloses = 0;
   #finished: Promise<number> | null = null;
   readonly #cpuStart = process.cpuUsage();
+  /** E6 counters up to a fatal divergence (reconfiguring to verify_all restarts the SDK counters). */
+  #reduceBefore: ReduceMemoStatus | null = null;
 
   constructor(private readonly deps: FastEnvDependencies) {
     let rowId = 0;
@@ -86,8 +88,17 @@ export class FastEnvProcess {
         directory: deps.config.cold_start.directory ?? defaultColdStartDirectory(), sleep: deps.sleep ?? (ms => delay(ms)) }),
       receiptCanonical: memo.receipt_canonical
         ? new CanonicalTextMemo({ checkInterval: memo.receipt_canonical.check_interval, isDeepFrozen }) : null,
-      // Loud and fatal: no slot keeps running on a memo that was wrong once, and nothing falls back.
-      memoFatal: reason => { void this.#finish(1, reason); }
+      // Loud and fatal, nothing falls back. The process drains: slots finish their current step before
+      // they stop (build output is already stopped). From here on every E4 digest and every E6 reduction
+      // is compared, so a second wrong memo result during the drain also ends its game unknown.
+      memoFatal: reason => {
+        this.#ctx.receiptCanonical?.verifyAll();
+        if (memo.reduce && this.#reduceBefore === null) {
+          this.#reduceBefore = reduceMemoStatus();
+          configureReduceMemo({ mode: "verify_all", fastChain: true });
+        }
+        void this.#finish(1, reason);
+      }
     };
     this.#slots = Array.from({ length: deps.config.slots }, (_, index) => new SlotKernel(index, this.#ctx));
     deps.link.setOpenInstances(id => this.#slots.some(slot => slot.gameInstanceId === id));
@@ -171,8 +182,14 @@ export class FastEnvProcess {
     if (!compact.projection_memo && !memo.native_card && !memo.reduce && !memo.receipt_canonical) return {};
     return { memo: { memo_divergences: this.stats.memo_divergences, native_card: memo.native_card,
       projection: compact.projection_memo ? { ...this.stats.projection_memo, check_interval: compact.projection_memo.check_interval } : null,
-      reduce: memo.reduce ? reduceMemoStatus() : null,
+      reduce: memo.reduce ? this.#reduceStatus() : null,
       receipt_canonical: this.#ctx.receiptCanonical?.status() ?? null } };
+  }
+
+  #reduceStatus(): ReduceMemoStatus {
+    const now = reduceMemoStatus(), before = this.#reduceBefore;
+    return before === null ? now : { ...now, reductions: before.reductions + now.reductions,
+      verified: before.verified + now.verified, hits: before.hits + now.hits, misses: before.misses + now.misses };
   }
 
   async #status(commandId: string): Promise<void> {

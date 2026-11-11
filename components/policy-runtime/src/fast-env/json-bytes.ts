@@ -166,6 +166,7 @@ export class CanonicalTextMemo {
   #digests = 0;
   #nextCheck = 0;
   #verified = 0;
+  #all = false;
   hits = 0;
   misses = 0;
 
@@ -191,8 +192,8 @@ export class CanonicalTextMemo {
   digest(raw: unknown, decoded: unknown): string {
     const index = this.#digests++;
     const text = canonicalText(raw, this);
-    if (index === this.#nextCheck) {
-      this.#nextCheck += this.#gap();
+    if (this.#all || index === this.#nextCheck) {
+      if (!this.#all) this.#nextCheck += this.#gap();
       const full = canonicalText(decoded, null);
       if (full !== text) {
         let offset = 0;
@@ -203,6 +204,9 @@ export class CanonicalTextMemo {
     }
     return createHash("sha256").update(text).digest("hex");
   }
+
+  /** From now on every digest is compared (after a fatal divergence, while the process drains). */
+  verifyAll(): void { this.#all = true; }
 
   status(): CanonicalTextMemoStatus {
     return { check_interval: this.#interval, digests: this.#digests, verified: this.#verified, hits: this.hits, misses: this.misses };

@@ -210,4 +210,14 @@ describe("fast-env E4 canonical text memo", () => {
     expect((thrown as CanonicalTextMemoDivergence).offset).toBeGreaterThan(0);
     expect(() => new CanonicalTextMemo({ checkInterval: 0, isDeepFrozen })).toThrow(/checkInterval/u);
   });
+
+  it("verifyAll (after a fatal divergence) compares every later digest", () => {
+    const memo = new CanonicalTextMemo({ checkInterval: 1024, checkSeed: 5, isDeepFrozen });
+    memo.digest({ a: 1 }, { a: 1 });
+    expect(() => memo.digest({ a: 1 }, { a: 2 })).not.toThrow();
+    memo.verifyAll();
+    expect(() => memo.digest({ a: 1 }, { a: 2 })).toThrow(CanonicalTextMemoDivergence);
+    memo.digest({ b: 1 }, { b: 1 }); memo.digest({ b: 2 }, { b: 2 });
+    expect(memo.status()).toMatchObject({ digests: 5, verified: 3 });
+  });
 });
