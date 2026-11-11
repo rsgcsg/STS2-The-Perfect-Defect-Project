@@ -51,7 +51,8 @@ def make_service(index: int, settings: dict[str, Any]) -> FastInferenceService:
     assembler.assembler_id = settings.get("assembler_id", f"asm-{index}")  # type: ignore[attr-defined]
     return FastInferenceService(vocabulary, FrameCompiler(vocabulary).identity, assembler,
                                 training_generation="gen-1", address=("127.0.0.1", 0),
-                                env_sha256=ENV, prepare_workers=1, device="cpu")
+                                env_sha256=ENV, prepare_workers=1, device="cpu",
+                                kernels=settings.get("kernels", ""))
 
 
 FACTORY = "test_p1_inference_card:make_service"
@@ -286,3 +287,28 @@ def test_mps_daemon_that_does_not_start_is_loud():
         InferenceCard(FACTORY, services=2, mps_root=root, mps_control=control)
     with pytest.raises(BoundaryError, match="mps_control_missing"):
         MpsDaemon(root, control=os.path.join(root, "missing")).start()
+
+
+def test_card_publish_ships_a_model_that_carries_compiled_runtime_caches(model):
+    """#480 review F1: the card ships a mu through the same `model_blob` as the
+    service: compiled rows blocks and the nodes lever's builder never travel."""
+    from stpd.p1.inference_card import model_blob
+    from stpd.p1.inference_service import model_blob as service_blob
+
+    def unpicklable() -> None:
+        pass
+
+    model.__dict__["_rows_nodes_compiled"] = unpicklable
+    model.__dict__["_rows_block_packed_compiled_heads"] = unpicklable
+    card = InferenceCard(FACTORY, services=1, mps=False,
+                         settings={"kernels": "cross+heads+nodes"})
+    try:
+        assert model_blob(model) == service_blob(model)
+        assert card.publish(model, Handoff(MU)) == [True]
+        assert card.failure is None
+        assert model.__dict__["_rows_nodes_compiled"] is unpicklable
+    finally:
+        closed = card.close()
+        del model.__dict__["_rows_nodes_compiled"]
+        del model.__dict__["_rows_block_packed_compiled_heads"]
+    assert closed["failure"] is None and closed["exitcodes"] == [0]

@@ -849,6 +849,13 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         out[0]["load_seconds"] = parts[0].get("load_seconds", 0.0)
         out[0]["join_seconds"] = parts[0].get("join_seconds", 0.0)
         out[0]["stage_seconds"] = parts[0].get("stage_seconds", 0.0)
+        if scorer is not None and scorer.compile and scorer.kernels:
+            # V3 yin-device (#480 review S3): this process's dynamo counters, so a
+            # long run sees recompiles (frames_ok) and frames left eager past the
+            # recompile limit (frames_total - frames_ok; performance only).
+            from .rows_forward import compile_counters
+
+            out[0]["dynamo"] = compile_counters()
     return out
 
 
@@ -892,6 +899,26 @@ class _V3Link:
     def send(self, envelope: dict[str, Any]) -> None:
         with self.send_lock:
             self.connection.send_bytes(pack_message(envelope))
+
+
+# Runtime caches a process sets on a model object: torch.compile wrappers of
+# rows_forward (`_rows_block*`) and of the nodes lever (`_rows_nodes_compiled`).
+# They cannot be pickled and are never part of a published mu.
+RUNTIME_CACHE_PREFIXES = ("_rows_block", "_rows_nodes")
+
+
+def model_blob(model: Any) -> bytes:
+    """The model's parameters and construction as a mu is shipped (one logic for
+    `FastInferenceService.publish` and `InferenceCard.publish`): torch.save of a
+    shallow copy without this process's runtime caches."""
+    import io
+
+    shipped = copy.copy(model)
+    shipped.__dict__ = {key: value for key, value in model.__dict__.items()
+                        if not key.startswith(RUNTIME_CACHE_PREFIXES)}
+    blob = io.BytesIO()
+    torch.save(shipped, blob)
+    return blob.getvalue()
 
 
 class FastInferenceService:
@@ -953,9 +980,9 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_arena")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
-        from .rows_kernels import parse_kernels
+        from .rows_scorer import inference_kernels
 
-        parse_kernels(kernels)  # V3 yin-device option, '' = the original forward; loud
+        inference_kernels(kernels)  # V3 yin-device option, '' = the original forward; loud
         self.vocabulary = copy.deepcopy(vocabulary)
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.assembler = assembler
@@ -1094,23 +1121,14 @@ class FastInferenceService:
         The model reaches the device process before the assembler can plan a
         row on it, so a planned row never finds its mu missing in transit.
         """
-        import io
-
         from .rows_scorer import RowsScorer
 
         RowsScorer(model, bf16=self.bf16, compile=self.compile,
                    kernels=self.kernels)  # immutable eval snapshot
-        # Ship parameters and construction, not this process's runtime caches
-        # (a torch.compile wrapper set by rows_forward / rows_kernels cannot be
-        # pickled: `_rows_block*`, and `_rows_nodes_compiled` of the nodes lever).
-        shipped = copy.copy(model)
-        shipped.__dict__ = {key: value for key, value in model.__dict__.items()
-                            if not key.startswith(("_rows_block", "_rows_nodes"))}
-        blob = io.BytesIO()
-        torch.save(shipped, blob)
+        blob = model_blob(model)
         key = handoff.snapshot_sha256
         with self.control_lock:
-            self._device_control("model", key, blob.getvalue())
+            self._device_control("model", key, blob)
             try:
                 offer = self.assembler.offer_mu(handoff)
             except BaseException:
@@ -1435,6 +1453,8 @@ class FastInferenceService:
             self.stats["batches"] += part["forwards"]
             self.stats["batch_rows_max"] = max(self.stats["batch_rows_max"],
                                                part["forward_rows"] * part["forwards"])
+        if "dynamo" in part:  # cumulative in the device process (kernels + compile only)
+            self.stats["device_dynamo"] = dict(part["dynamo"])
         if part.get("overflow"):
             print(json.dumps({"rl_inference_3_arena_overflow": part["overflow"]}),
                   file=sys.stderr, flush=True)

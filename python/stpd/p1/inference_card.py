@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import copy
 import importlib
 import io
 import json
@@ -171,15 +170,11 @@ def _host(conn: Connection, index: int, factory: str, settings: dict[str, Any],
 
 
 def model_blob(model: Any) -> bytes:
-    """The model's parameters and construction, as FastInferenceService.publish ships them."""
-    import torch
+    """The model's parameters and construction, as FastInferenceService.publish ships them
+    (the same function: `inference_service.model_blob`)."""
+    from .inference_service import model_blob as shipped_blob
 
-    shipped = copy.copy(model)
-    shipped.__dict__ = {key: value for key, value in model.__dict__.items()
-                        if not key.startswith("_rows_block")}
-    blob = io.BytesIO()
-    torch.save(shipped, blob)
-    return blob.getvalue()
+    return shipped_blob(model)
 
 
 class InferenceCard:

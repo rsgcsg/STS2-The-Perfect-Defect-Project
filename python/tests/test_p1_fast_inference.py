@@ -1167,3 +1167,56 @@ def test_publish_ships_a_model_that_carries_a_compiled_node_builder(vocabulary, 
         assert model.__dict__["_rows_nodes_compiled"] is unpicklable
     finally:
         del model.__dict__["_rows_nodes_compiled"]
+
+
+@pytest.mark.parametrize("kernels", ["embed+nodes", "cross+embed+heads+nodes"])
+def test_the_backward_only_embed_lever_is_refused_for_inference(vocabulary, model, kernels):
+    with pytest.raises(ValueError, match="invalid_inference_kernels:embed_is_backward_only"):
+        RowsScorer(model, kernels=kernels)
+    with pytest.raises(ValueError, match="invalid_inference_kernels:embed_is_backward_only"):
+        _service(vocabulary, model, FakeAssembler(), kernels=kernels)
+
+
+def test_levered_service_scores_each_published_mu_with_its_own_weights(vocabulary, model):
+    """#480 review S2: two mus with different weights published in turn to a service
+    with levers; rows planned on each mu score like that mu's own original forward."""
+    torch.manual_seed(11)
+    other = MStd(vocabulary, MStdExecution(
+        implementation="experimental-packed-v1", microbatch_size=4,
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1))
+    other.enable_rl4_heads(7)
+    other = other.eval().requires_grad_(False)
+    encoded, frames = _rich_frames(vocabulary, 4)
+    wants = {name: RowsScorer(mu).score(frames, [2] * len(frames))
+             for name, mu in (("first", model), ("second", other))}
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, window_ms=200.0, kernels=INFERENCE_LEVERS)
+    got: dict[str, dict[int, Any]] = {}
+    try:
+        for name, game, first_id in (("first", "g1", 3), ("second", "g2", 30)):
+            if name == "second":
+                assert service.publish(other, Handoff("b" * 64))
+            client = _open_client(service, RowsEncoder(vocabulary), game)
+            try:
+                rows, binary = _packet(encoded, game, first_id)
+                client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                                "packet_id": 1, "rows": rows}, binary))
+                envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            finally:
+                client.close()
+            assert [r["status"] for r in envelope["results"]] == ["scored"] * 4
+            got[name] = {body[0]: body[1] for kind, body in assembler.calls
+                         if kind == "finish" and first_id <= body[0] < first_id + 4}
+            assert {item["mu_snapshot_sha256"] for item in got[name].values()} == {
+                MU if name == "first" else "b" * 64}
+    finally:
+        service.close()
+    for name, first_id in (("first", 3), ("second", 30)):
+        for index, want in enumerate(wants[name]):
+            assert want is not None
+            _, behavior = distribution(want.scores, 1.5, 0.05)
+            assert torch.allclose(torch.tensor(got[name][first_id + index]["behavior_q"]),
+                                  torch.tensor(behavior), atol=1e-4)
+    assert any(not torch.allclose(torch.tensor(got["first"][3 + i]["behavior_q"]),
+                                  torch.tensor(got["second"][30 + i]["behavior_q"]), atol=1e-3)
+               for i in range(4))

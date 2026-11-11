@@ -43,6 +43,18 @@ def prepare(frames: Sequence[TensorFrame], floors: Sequence[int]) -> Any:
                          deduplicate_text=True, layout="rows-v2")
 
 
+def inference_kernels(kernels: str) -> tuple[str, ...]:
+    """`rows_kernels.parse_kernels` for the inference forward: `embed` changes only the
+    embedding backward (training), so an inference lever set holding it is refused
+    rather than accepted as a no-op (#480 review S1)."""
+    from stpd.p1.rows_kernels import parse_kernels
+
+    levers = parse_kernels(kernels)
+    if "embed" in levers:
+        raise ValueError("invalid_inference_kernels:embed_is_backward_only")
+    return levers
+
+
 class RowsScorer:
     """Score prepared rows-v2 groups with one immutable mu on one device."""
 
@@ -52,9 +64,7 @@ class RowsScorer:
             raise ValueError("rows_scorer_requires_immutable_eval_snapshot")
         if not hasattr(model, "rl4_heads"):
             raise ValueError("rl4_heads_not_enabled")
-        from stpd.p1.rows_kernels import parse_kernels
-
-        parse_kernels(kernels)  # '' (the original block) or a valid lever set; loud otherwise
+        inference_kernels(kernels)  # '' (the original block) or a valid lever set; loud
         self.model = model
         self.device = next(model.parameters()).device
         self.bf16 = bf16 and self.device.type == "cuda"
