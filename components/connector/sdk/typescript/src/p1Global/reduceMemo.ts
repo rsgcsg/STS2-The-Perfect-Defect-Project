@@ -5,8 +5,12 @@ import { canonicalJson } from "./canonical.js";
  * results for a frozen subtree the Host hands over again as the same object. The
  * switch is off by default; off runs the unchanged reducer walks.
  *
- * - "on": memoized walks; every `verifyEvery`-th reduction (default 64) is also
- *   recomputed without the memo and the two Reductions must be byte-identical.
+ * - "on": memoized walks; some reductions are also recomputed without the memo and
+ *   the two Reductions must be byte-identical. The gap between two compared
+ *   reductions is drawn uniformly from ceil(N/2)..N (N = `verifyEvery`, default 64),
+ *   so at most N reductions run uncompared and no call pattern with a fixed period
+ *   (main reduce plus a follow check, interleaved sessions) can keep one call site
+ *   out of the comparison.
  * - "verify_all": the corpus mode; every reduction is compared that way.
  *
  * A difference throws P1ReduceMemoDivergence. Nothing falls back silently and the
@@ -18,8 +22,10 @@ export interface ReduceMemoOptions {
   readonly mode: ReduceMemoMode;
   /** Must be true for any mode other than "off": only a fast_chain caller enables this. */
   readonly fastChain?: boolean;
-  /** Full comparison cadence for "on"; default 64. */
+  /** Largest gap between two compared reductions for "on"; default 64. */
   readonly verifyEvery?: number;
+  /** Seed of the gap draws (reproducing a run); default a fresh random seed. */
+  readonly verifySeed?: number;
 }
 
 export interface ReduceMemoStatus {
@@ -43,6 +49,8 @@ let mode: ReduceMemoMode = "off";
 let verifyEvery = 64;
 let reductions = 0;
 let verified = 0;
+let nextVerify = 0;
+let rng = 1;
 let active = false;
 let verifying = false;
 /** @internal hit/miss counters of the memoized walks (benchmark and test evidence). */
@@ -54,8 +62,18 @@ export function configureReduceMemo(options: ReduceMemoOptions): void {
   if (options.mode !== "off" && options.fastChain !== true) throw new Error("p1_reduce_memo_requires_fast_chain");
   const every = options.verifyEvery ?? 64;
   if (!Number.isSafeInteger(every) || every < 1 || every > 65536) throw new TypeError("verifyEvery must be an integer in 1..65536");
+  const seed = options.verifySeed ?? Math.floor(Math.random() * 0x100000000);
+  if (!Number.isSafeInteger(seed)) throw new TypeError("verifySeed must be a safe integer");
   mode = options.mode; verifyEvery = every; reductions = 0; verified = 0;
+  rng = (seed >>> 0) || 0x9e3779b9; nextVerify = gap();
   memoCounters.hits = 0; memoCounters.misses = 0;
+}
+
+/** Next gap, uniform in ceil(N/2)..N (xorshift32; only which reductions get compared depends on it). */
+function gap(): number {
+  rng ^= rng << 13; rng >>>= 0; rng ^= rng >>> 17; rng ^= rng << 5; rng >>>= 0;
+  const low = Math.ceil(verifyEvery / 2);
+  return low + rng % (verifyEvery - low + 1);
 }
 
 export function reduceMemoStatus(): ReduceMemoStatus {
@@ -100,7 +118,8 @@ export function memoCheck(memo: WeakMap<object, boolean>, value: unknown, check:
 export function withReduceMemo<T>(run: () => T): T {
   if (mode === "off" || active) return run();
   const reduction = ++reductions;
-  const verify = mode === "verify_all" || reduction % verifyEvery === 0;
+  const verify = mode === "verify_all" || reduction === nextVerify;
+  if (reduction === nextVerify) nextVerify += gap();
   active = true; verifying = verify;
   let fast: T;
   try { fast = run(); } finally { active = false; verifying = false; }

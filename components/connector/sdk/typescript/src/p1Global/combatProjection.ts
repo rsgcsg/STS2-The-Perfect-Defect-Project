@@ -5,7 +5,10 @@ import { deepFrozen, memoActive } from "./reduceMemo.js";
 /** Original bytes stay unchanged. Only native identity metadata and verified
  * compatibility aliases are omitted from the public semantic HUD. */
 export function projectCombatContext(source: Record<string, any>): { content: Record<string, any>; missing: string[] } {
-  if (memoActive() && deepFrozen(source)) return projectShared(source);
+  return memoActive() && deepFrozen(source) ? projectShared(source) : projectCopied(source);
+}
+
+function projectCopied(source: Record<string, any>): { content: Record<string, any>; missing: string[] } {
   const content = structuredClone(source);
   const missing: string[] = [];
   if (!completeCombat(source)) missing.push("required:combat:invalid_source_content");
@@ -88,7 +91,18 @@ function without(memo: WeakMap<object, Record<string, any>>, source: Record<stri
   }
   return projected;
 }
+/** True when one object stands at two enemy/companion/orb positions: structuredClone keeps
+ * that sharing, so the copied projection edits it once and reports it once. */
+function sharedEntries(source: Record<string, any>): boolean {
+  const seen = new Set<unknown>();
+  for (const list of [source.enemies, source.player?.companions, source.player?.orbs]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) if (isObject(entry)) { if (seen.has(entry)) return true; seen.add(entry); }
+  }
+  return false;
+}
 function projectShared(source: Record<string, any>): { content: Record<string, any>; missing: string[] } {
+  if (sharedEntries(source)) return projectCopied(source);
   const missing: string[] = [];
   if (!completeCombat(source)) missing.push("required:combat:invalid_source_content");
   const health = (value: Record<string, any>, path: string): string[] => {
