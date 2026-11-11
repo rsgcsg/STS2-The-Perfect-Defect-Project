@@ -339,15 +339,25 @@ def test_child_rejects_a_start_without_its_staged_plan(tmp_path, monkeypatch):
         owner.close()
 
 
+def _first_handoff(owner):
+    handoff = owner.pending_batch[1].result(timeout=60) if owner.pending_batch else None
+    if handoff is None:
+        active = owner._select()
+        owner.pending_batch = active, owner._submit_batch(active)
+        handoff = owner.pending_batch[1].result(timeout=60)
+    return handoff
+
+
+@pytest.mark.parametrize("threaded", [False, True])
 @pytest.mark.parametrize("damage", ["deleted", "changed"])
-def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch, damage):
-    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1)
+def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch, damage,
+                                                           threaded):
+    """Off: staging fails inline. On: it fails on the stage thread, and the child
+    still fails loudly with the same error (#456 review: stage-thread exception)."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1,
+                                 dataplane={"sgd_stage_thread": threaded})
     try:
-        handoff = owner.pending_batch[1].result(timeout=60) if owner.pending_batch else None
-        if handoff is None:
-            active = owner._select()
-            owner.pending_batch = active, owner._submit_batch(active)
-            handoff = owner.pending_batch[1].result(timeout=60)
+        handoff = _first_handoff(owner)
         path = Path(handoff.path)
         assert path.exists() and handoff.sha256
         if damage == "deleted":
@@ -360,12 +370,27 @@ def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch
         with pytest.raises(SgdProcessFailed) as caught:
             owner._prepare()
         child = caught.value.facts["child"]
-        assert child["stage"] == "stage"
+        assert child["stage"] == ("stage_wait" if threaded else "stage")
         assert (child["error_type"] == "FileNotFoundError" if damage == "deleted"
                 else child["error_code"] == "sgd_prepared_file_integrity_changed")
+        assert caught.value.facts["exitcode"] == 1
         assert owner.updates == 0
     finally:
         owner.close()
+
+
+def test_close_while_a_plan_is_staging_on_the_stage_thread(tmp_path, monkeypatch):
+    """#456 review: a shutdown that arrives while the side thread stages a plan
+    waits for that staging, then exits 0 (no kill, no failure, no hang)."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1,
+                                 dataplane={"sgd_stage_thread": True})
+    try:
+        owner._sgd_plan(_first_handoff(owner))  # sent; not waited for
+    finally:
+        owner.close()
+    exit_facts = owner.sgd.exit
+    assert exit_facts["exitcode"] == 0 and not exit_facts["shutdown_killed"]
+    assert exit_facts["failure"] is None
 
 
 def test_unsent_mu_snapshots_are_replaced_and_versions_stay_contiguous(tmp_path, monkeypatch):

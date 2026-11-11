@@ -661,3 +661,26 @@ def test_array_table_crosses_ipc_as_one_buffer_with_the_same_views(tmp_path):
                                  count=item.count, offset=item.offset)
         assert view.dtype == expected.dtype and np.array_equal(view, expected)
     del views, expected, view
+    for handle in handles.values():
+        handle.close()
+
+
+@pytest.mark.parametrize("place", [(1016, 2, "<i8"), (1024, 1, "|u1"), (-8, 1, "<i8")])
+def test_array_table_view_past_the_mapping_is_refused(tmp_path, place):
+    """#456 review: a slab beyond its mapped file fails loudly, never comes back short."""
+    import mmap
+
+    from stpd.rl.binary_preparation import _ArrayTable, _SharedArray
+
+    path = tmp_path / "a"
+    path.write_bytes(bytes(1024))
+    offset, count, dtype = place
+    table = _ArrayTable.of([_SharedArray(str(path), 0, 4, "<i8"),
+                            _SharedArray(str(path), offset, count, dtype)])
+    with path.open("rb") as stream:
+        handle = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        with pytest.raises(ValueError, match="binary_shared_array_out_of_bounds"):
+            table.views({str(path): handle})
+    finally:
+        handle.close()
