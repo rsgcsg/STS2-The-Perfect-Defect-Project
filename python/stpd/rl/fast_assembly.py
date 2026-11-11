@@ -86,15 +86,22 @@ from typing import Any
 from stpd.p1.trajectory import boss_clearance
 
 from .fast_segment import (
+    FORMAT,
+    FORMAT_2,
+    FORMATS,
     MAX_ROWS,
     ROW_FORMAT,
     InstanceClosed,
     RejectedSegment,
     SealedSegment,
     SegmentFormatError,
+    _same_json,
     check_value_distribution,
+    decode_segment,
     encode_segment,
+    encode_segment_columns,
     sha256,
+    unit_numbers,
 )
 from .heads import checked_terminal_class
 from .reward import episode_reward
@@ -105,6 +112,26 @@ SINGLE_CHOICE = ("score", "omit")
 TerminalLabeler = Callable[[Mapping[str, Any]], "Mapping[str, Any] | None"]
 MuArchive = Callable[["MuHandoff"], None]
 TERMINAL_RESULTS = {"victory": "win", "defeat": "loss"}
+_ATOMIC = frozenset({int, float, str, bool, type(None)})
+_FLOAT = {float}
+
+
+def _owned(value: Any) -> Any:
+    """`copy.deepcopy` for wire values, without its memo: scalars are shared as they are.
+
+    Messages come from JSON/pickle unpacking (trees, no shared parts, no
+    cycles); anything else still goes through `copy.deepcopy`.
+    """
+    kind = type(value)
+    if kind in _ATOMIC:
+        return value
+    if kind is dict:
+        return {key: _owned(item) for key, item in value.items()}
+    if kind is list:
+        return [_owned(item) for item in value]
+    return copy.deepcopy(value)
+
+
 # The fast chain serves A0 only (lead decision 2026-11-09); the gate is WP7's
 # (actor side, ascension != 0 refused at game open). The inference side does not
 # know the ascension, and the old chain's class table is the A0 one.
@@ -321,6 +348,9 @@ class _Game:
     acts: list[int] = field(default_factory=list)
     failure: str | None = None
     pending: tuple[dict[str, Any], bytes] | None = None
+    # request_id -> the rows holding it, in segment/row order (step_outcome lookup;
+    # the first entry is the row the old full scan found).
+    by_request: dict[Any, list[tuple[_Segment, dict[str, Any]]]] = field(default_factory=dict)
     sealed: dict[str, int] = field(default_factory=lambda: dict.fromkeys(
         ("bootstrap", "terminal", "truncated", "rejected"), 0))
 
@@ -336,10 +366,19 @@ class FastSegmentAssembler:
                  terminal_labeler: TerminalLabeler | None = public_terminal_label,
                  ledger: MuLedger | None = None, closed_memory: int = 65536,
                  mu_archive: MuArchive | None = None,
-                 on_closed: Callable[[InstanceClosed], None] | None = None) -> None:
+                 on_closed: Callable[[InstanceClosed], None] | None = None,
+                 segment_format: str = FORMAT, verify_every: int = 64) -> None:
         if (not isinstance(assembler_id, str) or not assembler_id or len(assembler_id) > 64
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
+        # T3 (fast_chain only, default off): `stpd/rl-fast-segment-2` seals the same
+        # logical segment columnar. Every `verify_every`-th format-2 segment (1 = every
+        # one) is decoded again and compared in full with the format-1 logical content;
+        # a difference keeps the original as rejected and raises (never a fallback).
+        if segment_format not in FORMATS or type(verify_every) is not int or verify_every < 1:
+            raise AssemblyError("invalid_segment_format")
+        self.segment_format, self.verify_every = segment_format, verify_every
+        self.columns_sealed = 0
         self.assembler_id, self.steps = assembler_id, MAX_ROWS
         self.instance_id = f"{assembler_id}.{secrets.token_hex(6)}"
         self.compiler_identity = copy.deepcopy(compiler_identity)
@@ -361,7 +400,8 @@ class FastSegmentAssembler:
             "outcomes_without_row": 0, "segments": {"bootstrap": 0, "terminal": 0,
                                                     "truncated": 0, "rejected": 0},
             "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
-            "terminal_label_refused": 0, "mu_archived": 0, "instances_closed": 0}
+            "terminal_label_refused": 0, "mu_archived": 0, "instances_closed": 0,
+            "segments_verified": 0}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -503,7 +543,8 @@ class FastSegmentAssembler:
             plan = RowPlan(game.game_instance_id, row["request_id"], step, current.segment_id,
                            len(current.rows), current.mu, tail)
             game.inflight = plan
-            game.pending = (copy.deepcopy(dict(row)), bytes(row_bytes))
+            game.pending = ({key: _owned(value) for key, value in row.items()},
+                            bytes(row_bytes))
         return plan
 
     def finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
@@ -536,15 +577,17 @@ class FastSegmentAssembler:
                 tail_values = self._values(tail_outcome_probabilities, plan.tail.floor)
             if tail_values is None:
                 raise AssemblyError("tail_value_required_at_tail_floor")
-        meta = {key: copy.deepcopy(row[key]) for key in (
+        # `row` is already the assembler's own copy (begin_row).
+        meta = {key: row[key] for key in (
             "request_id", "step_index", "consumption_id", "catalog_len", "catalog_sha256",
             "observation_sha256", "in_combat", "floor")}
         meta.update(payload={"row_sha256": row["payload"]["row_sha256"]},
                     selected_index=scored["selected_index"],
                     behavior_q=list(scored["behavior_q"]), selected_q=scored["selected_q"],
-                    applied=copy.deepcopy(dict(scored["applied"])),
+                    applied={key: _owned(value) for key, value in scored["applied"].items()},
                     outcome_probabilities=values, outcome=None)
         segment.rows.append(meta)
+        game.by_request.setdefault(meta["request_id"], []).append((segment, meta))
         segment.data.append(raw)
         segment.inflight = False
         game.inflight = None
@@ -610,8 +653,11 @@ class FastSegmentAssembler:
         if status not in ("completed", "not_started", "unknown"):
             raise AssemblyError("invalid_step_outcome")
         request = message.get("row_request_id")
-        target = next(((segment, row) for segment in game.segments for row in segment.rows
-                       if row["request_id"] == request), None)
+        try:
+            holders = game.by_request.get(request)
+        except TypeError:  # unhashable: equal to no int request id
+            holders = None
+        target = holders[0] if holders else None
         # Every check runs before any state changes.
         forced = message.get("forced_steps", 0)
         if type(forced) is not int or forced < 0:
@@ -635,7 +681,7 @@ class FastSegmentAssembler:
             self.counters["outcomes_without_row"] += 1
         else:
             segment, row = target
-            row["outcome"] = {key: copy.deepcopy(message[key]) for key in OUTCOME_FIELDS
+            row["outcome"] = {key: _owned(message[key]) for key in OUTCOME_FIELDS
                               if key in message}
             self.counters["forced_steps"] += forced
             facts = message.get("public_facts")
@@ -753,9 +799,7 @@ class FastSegmentAssembler:
                 or scored.get("row_in_segment") != plan.row_in_segment
                 or scored.get("mu_snapshot_sha256") != plan.mu.snapshot_sha256
                 or not isinstance(q, list) or len(q) != row["catalog_len"]
-                or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1
-                       for v in q)
-                or not math.isclose(sum(q), 1.0, abs_tol=1e-6)
+                or not unit_numbers(q) or not math.isclose(sum(q), 1.0, abs_tol=1e-6)
                 or type(index) is not int or not 0 <= index < len(q)
                 or q[index] != scored.get("selected_q") or not q[index] > 0
                 or scored.get("applied") != {
@@ -769,7 +813,8 @@ class FastSegmentAssembler:
         """The learner's distribution and floor-support checks (`check_value_distribution`)."""
         if not isinstance(values, (list, tuple)) or not values:
             raise AssemblyError("every_mu_value_required_including_forced")
-        result = [float(v) if type(v) in (int, float) else v for v in values]
+        result = (list(values) if set(map(type, values)) == _FLOAT
+                  else [float(v) if type(v) in (int, float) else v for v in values])
         try:
             check_value_distribution(result, floor)
         except SegmentFormatError as error:
@@ -812,7 +857,7 @@ class FastSegmentAssembler:
               terminal: dict[str, Any] | None = None,
               truncation: dict[str, Any] | None = None) -> SealedSegment | RejectedSegment:
         header = {
-            "format": "stpd/rl-fast-segment-1", "row_format": ROW_FORMAT,
+            "format": self.segment_format, "row_format": ROW_FORMAT,
             "segment_id": segment.segment_id, "assembler_id": self.assembler_id,
             "assembler_instance": self.instance_id,
             "game_instance_id": game.game_instance_id, "actor_id": game.actor_id,
@@ -828,7 +873,11 @@ class FastSegmentAssembler:
                                 for r in segment.rows)}
         result: SealedSegment | RejectedSegment
         try:
-            result = encode_segment(header, segment.data)
+            if self.segment_format == FORMAT_2:
+                result = encode_segment_columns(header, segment.data, bound=True)
+                self._verify(result, header, segment.data)
+            else:
+                result = encode_segment(header, segment.data)
         except (SegmentFormatError, TypeError, ValueError) as error:
             # Kept as original (`rejected/`), counted, and raised once emitted.
             result = RejectedSegment(segment.segment_id, copy.deepcopy(header),
@@ -836,6 +885,11 @@ class FastSegmentAssembler:
             kind = "rejected"
         # Only an encoded (or rejected-and-kept) segment leaves its game.
         game.segments.remove(segment)
+        for row in segment.rows:
+            holders = game.by_request.get(row["request_id"], [])
+            holders[:] = [held for held in holders if held[0] is not segment]
+            if not holders:
+                game.by_request.pop(row["request_id"], None)
         self.ledger.release(segment.mu.snapshot_sha256)
         self.counters["segments"][kind] += 1
         game.sealed[kind] += 1
@@ -843,6 +897,29 @@ class FastSegmentAssembler:
             by_reason = self.counters["truncated_by_reason"]
             by_reason[truncation["reason"]] = by_reason.get(truncation["reason"], 0) + 1
         return result
+
+    def _verify(self, sealed: SealedSegment, header: dict[str, Any], rows: list[bytes]) -> None:
+        """Every `verify_every`-th format-2 seal: decode it and compare with format 1.
+
+        The reference is what `encode_segment` would have sealed (its JSON-owned
+        logical header with format-1 offsets), re-laid out for format 2; the decoded
+        header, the returned header and the row bytes must all equal it.
+        """
+        self.columns_sealed += 1
+        if self.columns_sealed % self.verify_every:
+            return
+        decoded, decoded_rows = decode_segment(sealed.data)
+        reference = encode_segment({**header, "format": FORMAT}, rows).header
+        reference["format"] = FORMAT_2
+        for row in reference["rows"]:  # format 2 stores these as f8 (int q 1 -> 1.0)
+            row["behavior_q"] = list(map(float, row["behavior_q"]))
+            row["selected_q"] = float(row["selected_q"])
+            row["outcome_probabilities"] = list(map(float, row["outcome_probabilities"]))
+        # JSON-type strict (1 != 1.0 != True): a type drift is a difference too.
+        if (not _same_json(decoded, reference) or not _same_json(sealed.header, reference)
+                or decoded_rows != [bytes(row) for row in rows]):
+            raise SegmentFormatError("segment_columns_verify_mismatch")
+        self.counters["segments_verified"] += 1
 
     def _archive(self, handoff: MuHandoff) -> None:
         """Durably keep one mu's weights; outside `self.lock`, before it is bound."""
