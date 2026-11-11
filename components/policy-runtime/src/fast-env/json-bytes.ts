@@ -32,11 +32,28 @@ function byCodePoint(left: string, right: string): number {
   return a.length - b.length;
 }
 
+/**
+ * A string whose JSON spelling is itself in quotes: printable ASCII without `"` or `\`.
+ * Anything else (controls, DEL and every non-ASCII unit, surrogates included) takes
+ * JSON.stringify, as every string did before; the two spellings agree on this set.
+ */
+const NEEDS_STRINGIFY = /["\\\u0000-\u001f\u007f-￿]/;
+
+function quoted(text: string): string {
+  return NEEDS_STRINGIFY.test(text) ? JSON.stringify(text) : `"${text}"`;
+}
+
+/** Key order of Python sort_keys: plain sort when no key holds a surrogate (code units = code points). */
+function pythonKeyOrder(object: object): string[] {
+  const keys = Object.keys(object);
+  return keys.some(key => SURROGATE.test(key)) ? keys.sort(byCodePoint) : keys.sort();
+}
+
 function pyJson(value: unknown): string {
-  if (value === null) return "null";
   switch (typeof value) {
     case "boolean": return value ? "true" : "false";
     case "string":
+      if (!NEEDS_STRINGIFY.test(value)) return `"${value}"`;
       if (LONE_SURROGATE.test(value)) throw new TypeError("py_json_lone_surrogate");
       return JSON.stringify(value);
     case "number": {
@@ -45,10 +62,89 @@ function pyJson(value: unknown): string {
       return JSON.stringify(value);
     }
     case "object": {
-      if (Array.isArray(value)) return `[${value.map(pyJson).join(",")}]`;
-      const keys = Object.keys(value as object).sort(byCodePoint);
-      return `{${keys.map(key => `${JSON.stringify(key)}:${pyJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+      if (value === null) return "null";
+      if (Array.isArray(value)) {
+        let text = "[";
+        for (let index = 0; index < value.length; index += 1) text += (index ? "," : "") + pyJson(value[index]);
+        return `${text}]`;
+      }
+      const keys = pythonKeyOrder(value);
+      let text = "{";
+      for (let index = 0; index < keys.length; index += 1) {
+        const key = keys[index]!;
+        text += `${index ? "," : ""}${quoted(key)}:${pyJson((value as Record<string, unknown>)[key])}`;
+      }
+      return `${text}}`;
     }
     default: throw new TypeError("py_json_non_json_value");
   }
+}
+
+const omitted = (value: unknown): boolean => value === undefined || typeof value === "function" || typeof value === "symbol";
+
+/**
+ * The bytes of `evidence.canonicalJson` (JSON.stringify of the localeCompare-sorted
+ * copy) written in one pass, without building the sorted copy. Same key order, same
+ * omissions (undefined, functions and symbols: dropped in objects, null in arrays and
+ * holes), same primitive spelling, same key order (array-index keys first, as the copy
+ * has them). The one input the sorted copy treats differently, an
+ * own `toJSON` function (JSON.stringify of the copy would call it), is refused.
+ */
+export function canonicalJsonFast(value: unknown): string {
+  switch (typeof value) {
+    case "string": return quoted(value);
+    case "boolean": return value ? "true" : "false";
+    case "object": break;
+    default: return JSON.stringify(value);
+  }
+  if (value === null) return "null";
+  if (Array.isArray(value)) {
+    let text = "[";
+    for (let index = 0; index < value.length; index += 1) {
+      const item: unknown = value[index];
+      text += (index ? "," : "") + (omitted(item) ? "null" : canonicalJsonFast(item));
+    }
+    return `${text}]`;
+  }
+  let text = "{", first = true;
+  for (const key of canonicalKeyOrder(value)) {
+    const item: unknown = (value as Record<string, unknown>)[key];
+    if (omitted(item)) {
+      if (key === "toJSON" && typeof item === "function") throw new TypeError("canonical_json_to_json_function");
+      continue;
+    }
+    text += `${first ? "" : ","}${quoted(key)}:${canonicalJsonFast(item)}`;
+    first = false;
+  }
+  return `${text}}`;
+}
+
+const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
+const isArrayIndex = (key: string): boolean => ARRAY_INDEX.test(key) && Number(key) < 4294967295;
+
+/**
+ * The key order of canonicalJson's sorted copy: Object.fromEntries puts array-index keys
+ * first, ascending, whatever the sort did; the other keys follow in localeCompare order.
+ * Object.keys already lists the index keys first and ascending.
+ */
+function canonicalKeyOrder(object: object): string[] {
+  const keys = Object.keys(object);
+  if (keys.length < 2) return keys;
+  // localeCompare dominates once no copy is built; objects repeat a few shapes, so the
+  // order of one exact key list is kept (bounded, checked key by key on every hit).
+  const id = keys.join("\u0000"), hit = keyOrders.get(id);
+  if (hit && hit.keys.length === keys.length && hit.keys.every((key, index) => key === keys[index])) return hit.order;
+  let indices = 0;
+  while (indices < keys.length && isArrayIndex(keys[indices]!)) indices += 1;
+  const order = keys.slice(0, indices).concat(keys.slice(indices).sort((left, right) => left.localeCompare(right)));
+  if (keyOrders.size >= KEY_ORDER_LIMIT) keyOrders.clear();
+  keyOrders.set(id, { keys, order });
+  return order;
+}
+const KEY_ORDER_LIMIT = 4096;
+const keyOrders = new Map<string, { keys: string[]; order: string[] }>();
+
+/** `globalDigest` (sha256 of `canonicalJson`), the same hex from `canonicalJsonFast`. */
+export function globalDigestFast(value: unknown): string {
+  return createHash("sha256").update(canonicalJsonFast(value)).digest("hex");
 }
