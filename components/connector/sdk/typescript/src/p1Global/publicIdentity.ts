@@ -1,5 +1,5 @@
 import { P1G_NONCOMBAT_POTION_SCENES, P1G_REVISION, type P1Revision } from "./contracts.js";
-import { visibleCardSchema } from "../visibleState.js";
+import { visibleCard } from "./admission.js";
 import { isObject } from "./canonical.js";
 import type { PublicPath } from "./publicPath.js";
 
@@ -28,6 +28,22 @@ export const publicFieldPath = (path: string, key: string): string => {
   return plain ? (path ? `${path}.${key}` : key) : `${path}[${JSON.stringify(key)}]`;
 };
 export type PublicEntityRelation = "declared" | "reference";
+/**
+ * @internal A key such that, under one policy, two paths with equal keys give equal
+ * relations for themselves and for every descendant path. Outside `scene.` and
+ * `extra_reads` every path set is matched on the index-free form, so the key drops
+ * list indices there; under those two roots event and detail roots name literal
+ * indices, so the key is the literal path.
+ */
+export function relationMemoKey(node: PublicPath): string {
+  let key = node.relationKey;
+  if (key === undefined) {
+    const literal = node.path.replace(/^\$\.observation\./u, "").replace(/^\./u, "");
+    key = node.relationKey = literal.startsWith("scene.") || literal.startsWith("extra_reads")
+      ? `L${literal}` : `N${normalizePublicPath(node.path)}`;
+  }
+  return key;
+}
 const BASE_PATHS = [
   "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
   "commitments.reward_dispositions[].group", "map.content.nodes[].entity_id", "combat.content.player.player_entity_id",
@@ -101,13 +117,13 @@ export function createPublicIdentityPolicy(nativeKind: string,
     eventSurface.options.forEach((option, optionIndex) => {
       if (!isObject(option) || !Array.isArray(option.tooltips)) return;
       option.tooltips.forEach((tip, tipIndex) => {
-        if (isObject(tip) && tip.kind === "card" && visibleCardSchema.safeParse(tip.card).success)
+        if (isObject(tip) && tip.kind === "card" && visibleCard(tip.card))
           eventCards.add(`scene.content.surface.options[${optionIndex}].tooltips[${tipIndex}].card`);
       });
     });
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
-    && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));
+    && visibleCard(read.content) ? [`extra_reads[${index}].content`] : []));
   const shopDeclarations = new Set<string>();
   const shopCards = new Set<string>();
   extraReads.forEach((read, index) => {
@@ -157,6 +173,8 @@ export function createPublicIdentityPolicy(nativeKind: string,
   };
   return {
     relation,
+    /** @internal Stable for every policy with these path sets: equal tokens give equal relations. */
+    memoToken: relations as object,
     /** @internal The same answer as relation(node.path), for the reducer's interned paths. */
     relationAt(node: PublicPath): PublicEntityRelation | null {
       let found = relations.byNode.get(node);
