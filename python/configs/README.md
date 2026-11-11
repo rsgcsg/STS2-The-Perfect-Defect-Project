@@ -24,3 +24,12 @@ their exact hashes live only in the generated `.local/training-ready` handoff.
 experimental S1 checkpoint-to-Connector lane. It admits only the complete
 Defect A0 `play_card`/`end_turn` catalog and binds the exact local checkpoint,
 Qwen, game, Connector and Modset identities without changing training data.
+
+`rl41.json` and `rl5.json` are learner profiles (`"profile": "rl41"` / `"rl5"` in a
+run's learner JSON; explicit sections override them). `rl5.json` is the RL5 fast-chain
+long-run starting point: the RL4.2/S3 method values plus the measured training levers
+(rows-v2, `prepared_compile`, `prepared_kernels`, one row bucket per group). It needs
+`dataplane.sgd_process: true`; with `prepared_compile` the SGD process defaults to
+`recompile_limit` 16 and a 300 s stall floor unless the dataplane sets them. The run
+still supplies its paths, the inductor `cache_dir` (keep it across jobs) and up to 8
+warm-up dumps chosen with `python -m stpd.rl.offline_step warmup-cover`.

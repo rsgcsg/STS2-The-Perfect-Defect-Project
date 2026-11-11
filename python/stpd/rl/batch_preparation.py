@@ -477,6 +477,7 @@ def prepare_group(
     *,
     deduplicate_text: bool,
     layout: str = "padded-v1",
+    bucket_rows: int = ROW_BUCKET_ROWS,
 ) -> PreparedGroup:
     """CPU tensor-only forward inputs, including trainable-text occurrence mapping."""
     scene_width = _bucket(
@@ -561,7 +562,7 @@ def prepare_group(
         return group
     if layout != "rows-v2":
         raise ValueError("unsupported_prepared_layout")
-    return dataclasses.replace(group, layout=row_layout(group))
+    return dataclasses.replace(group, layout=row_layout(group, bucket_rows=bucket_rows))
 
 
 def _merged_reduction(parts: list[tuple[Reduction, dict[str, int]]], key: str,
@@ -1360,10 +1361,14 @@ def assemble(
     auxiliary_frames: tuple[AuxiliaryFrame, ...] = (),
     prepared_layout: str = "padded-v1",
     group_shards: int = 1,
+    prepared_bucket_rows: int = ROW_BUCKET_ROWS,
 ) -> PreparedBatch:
     began = time.perf_counter()
     if prepared_layout not in PREPARED_LAYOUTS:
         raise ValueError("unsupported_prepared_layout")
+    if (type(prepared_bucket_rows) is not int or prepared_bucket_rows < 1
+            or (prepared_bucket_rows != ROW_BUCKET_ROWS and prepared_layout != "rows-v2")):
+        raise ValueError("invalid_prepared_bucket_rows")
     if type(group_shards) is not int or not 1 <= group_shards <= 64:
         raise ValueError("invalid_group_shards")
     if type(request.epochs) is not int or request.epochs < 1:
@@ -1483,7 +1488,7 @@ def assemble(
             ):
                 groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
                     floor_tensor[group], deduplicate_text=deduplicate_text,
-                    layout=prepared_layout))
+                    layout=prepared_layout, bucket_rows=prepared_bucket_rows))
                 group, text_count, text_width, scene_width = [], 0, 0, 0
             group.append(row)
             text_count += frame.text_count
@@ -1492,7 +1497,7 @@ def assemble(
         if group:
             groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
                 floor_tensor[group], deduplicate_text=deduplicate_text,
-                    layout=prepared_layout))
+                    layout=prepared_layout, bucket_rows=prepared_bucket_rows))
         order = [row for group in groups for row in group.rows]
         selector = torch.tensor(order, dtype=torch.long)
         policy_indices = torch.nonzero(policy_mask[selector], as_tuple=True)[0]
@@ -1680,6 +1685,7 @@ class BatchPreparer:
         excluded_seeds: frozenset[str] = frozenset(),
         gae_lambda: float = 0.99,
         prepared_layout: str = "padded-v1",
+        prepared_bucket_rows: int = ROW_BUCKET_ROWS,
     ) -> None:
         if prepared_layout not in PREPARED_LAYOUTS:
             raise ValueError("unsupported_prepared_layout")
@@ -1701,6 +1707,8 @@ class BatchPreparer:
         )
         if prepared_layout != "padded-v1":
             self.options["prepared_layout"] = prepared_layout
+        if prepared_bucket_rows != ROW_BUCKET_ROWS:
+            self.options["prepared_bucket_rows"] = prepared_bucket_rows
         self.pending: Future[PreparedBatch] | None = None
 
     def submit(
