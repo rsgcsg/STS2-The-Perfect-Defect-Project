@@ -1,6 +1,8 @@
 """Vectorized joint reductions and text deduplication equal the per-bucket originals.
 
-The references below are the exact pre-change implementations. Every output is
+The joint reference is the live `tensor_input.joint_nodes` (unchanged; it is a
+rows-encoder reference source); the text reference is the pre-change per-text
+key loop. Every output is
 compared by dtype, shape, stride, storage offset and bytes, on fixture frames
 (alone, repeated, mixed, decoded from rows-v2) and on edge inputs that must take
 the per-text fallback.
@@ -19,50 +21,6 @@ from stpd.p1.input import V2_INPUT_SPEC, V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC
 from stpd.p1.rows_encoder_wire import decode_row, encode_row
 from stpd.p1.tensor_input import Reduction, TensorFrame, joint_nodes, text_batch
 from stpd.p1.vocabulary import public_vocabulary
-
-
-def reference_reductions(frames: list[TensorFrame]) -> dict[str, Reduction]:
-    sources = [frame.host or frame for frame in frames]
-    offsets = []
-    cumulative = dict.fromkeys(("ids", "numbers", "missing", "text", "refs", "vectors"), 0)
-    for frame in sources:
-        offsets.append(dict(cumulative))
-        for key, count in {
-            "ids": frame.tensors["identities"].numel(),
-            "numbers": frame.tensors["numbers"].numel(),
-            "missing": frame.tensors["missing_fields"].numel(),
-            "text": frame.tensors["text_fields"].numel(),
-            "refs": frame.entity_count, "vectors": frame.text_count,
-        }.items():
-            cumulative[key] += count
-    reductions = {}
-    for key in ("ids", "numbers", "text", "refs"):
-        buckets: dict[int, list[tuple[int, torch.Tensor, torch.Tensor]]] = {}
-        for frame, offset in zip(sources, offsets, strict=True):
-            reduction = frame.reductions[key]
-            packed_owners = reduction.inverse.argsort()
-            cursor = 0
-            for width, count, indices in reduction.buckets:
-                owners = packed_owners[cursor:cursor + count] + offset["refs"]
-                cursor += count
-                if key == "numbers":
-                    present = frame.tensors["numbers"].numel()
-                    indices = torch.where(indices < present, indices + offset["numbers"],
-                                          indices - present + cumulative["numbers"]
-                                          + offset["missing"])
-                else:
-                    indices = indices + offset[key]
-                buckets.setdefault(width, []).append((count, indices, owners))
-        combined = []
-        order: list[torch.Tensor] = []
-        for width, parts in buckets.items():
-            combined.append((width, sum(part[0] for part in parts),
-                             torch.cat([part[1] for part in parts])))
-            order.extend(part[2] for part in parts)
-        inverse = torch.empty(cumulative["refs"], dtype=torch.long)
-        inverse[torch.cat(order)] = torch.arange(cumulative["refs"])
-        reductions[key] = Reduction(tuple(combined), inverse)
-    return reductions
 
 
 def reference_unique(frames: list[TensorFrame]) -> tuple[list[int], list[int]]:
@@ -122,7 +80,9 @@ def fixture_frames() -> list[list[TensorFrame]]:
 @pytest.mark.parametrize("index", range(13))
 def test_joint_reductions_and_prepared_groups_equal_the_reference(index, monkeypatch):
     frames = fixture_frames()[index]
-    assert_same(joint_nodes(frames).reductions, reference_reductions(frames))
+    fast, oracle = batch_preparation._joint_nodes(frames), joint_nodes(frames)
+    assert_same(fast.tensors, oracle.tensors)
+    assert_same(fast.reductions, oracle.reductions)
     batch = text_batch(frames)
     assert batch_preparation._unique_texts(frames, *batch) == reference_unique(frames)
     floors = torch.zeros(len(frames), dtype=torch.long)
@@ -214,4 +174,4 @@ def test_joint_reduction_rejects_bucket_counts_that_do_not_cover_the_inverse():
     broken = TensorFrame(frame.tensors, dict(frame.reductions, ids=short), frame.choices,
                          frame.entity_count)
     with pytest.raises(ValueError, match="joint_reduction_inverse_length"):
-        joint_nodes([broken])
+        batch_preparation._joint_nodes([broken])

@@ -29,7 +29,7 @@ from spireagent.rl_contracts import HotPayloadRef, RowRef
 from spireagent.rl_dataplane_ports import BinaryRef
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.tensor_input import JointNodes, Reduction, TensorFrame, joint_nodes, text_batch
+from stpd.p1.tensor_input import JointNodes, Reduction, TensorFrame, text_batch
 
 from .heads import OUTCOME_CLASSES, outcome_mask
 from .prepared_batch import (
@@ -470,6 +470,95 @@ def _scene_layout(slots: Tensor, starts: Tensor, width: int, bucket_rows: int,
                         torch.cat(offsets))
 
 
+def _joint_nodes(frames: list[TensorFrame]) -> JointNodes:
+    """`tensor_input.joint_nodes` with each reduction merged in a constant number of
+    tensor ops (`_joint_reduction`); outputs are equal in dtype, shape, stride,
+    storage and bytes. Kept here, not in `tensor_input.py`, because that file is a
+    rows-encoder reference source and part of the compiler identity.
+    """
+    sources = [frame.host or frame for frame in frames]
+    if any(value.device.type != "cpu" for frame in sources for value in frame.tensors.values()):
+        raise ValueError("joint_nodes_requires_host_metadata")
+    names = ("identities", "identity_fields", "kinds", "positions", "number_fields",
+             "numbers", "missing_fields", "text_fields")
+    tensors = {key: torch.cat([frame.tensors[key] for frame in sources]) for key in names}
+    offsets = []
+    cumulative = dict.fromkeys(("ids", "numbers", "missing", "text", "refs", "vectors"), 0)
+    for frame in sources:
+        offsets.append(dict(cumulative))
+        for key, count in {
+            "ids": frame.tensors["identities"].numel(),
+            "numbers": frame.tensors["numbers"].numel(),
+            "missing": frame.tensors["missing_fields"].numel(),
+            "text": frame.tensors["text_fields"].numel(),
+            "refs": frame.entity_count, "vectors": frame.text_count,
+        }.items():
+            cumulative[key] += count
+    tensors["text_indices"] = torch.cat([
+        frame.tensors["text_indices"] + offset["vectors"]
+        for frame, offset in zip(sources, offsets, strict=True)])
+    reductions = {key: _joint_reduction(key, sources, offsets, cumulative)
+                  for key in ("ids", "numbers", "text", "refs")}
+    return JointNodes(tensors, reductions)
+
+
+def _joint_reduction(key: str, sources: list[TensorFrame], offsets: list[dict[str, int]],
+                     cumulative: dict[str, int]) -> Reduction:
+    """Merge one reduction across frames with a constant number of tensor ops.
+
+    Buckets keep first-seen width order and frame order within a width. Each
+    frame's inverse is a permutation of its own packed positions, so the joint
+    inverse is `position[local + base]`, where `position` maps every frame-local
+    packed slot to its joint slot. This equals scattering each frame's
+    `inverse.argsort()` owners, without one argsort and add per bucket.
+    """
+    groups: dict[int, list[tuple[Tensor, int, int, int, int]]] = {}
+    inverses: list[Tensor] = []
+    segments: dict[int, list[tuple[int, int]]] = {}
+    for frame, offset in zip(sources, offsets, strict=True):
+        reduction = frame.reductions[key]
+        if key == "numbers":
+            # Present values first, then missing ones after every present value.
+            present = frame.tensors["numbers"].numel()
+            low, high = offset["numbers"], cumulative["numbers"] + offset["missing"] - present
+        else:
+            present, low, high = 0, offset[key], offset[key]
+        cursor = 0
+        for width, count, indices in reduction.buckets:
+            groups.setdefault(width, []).append((indices, count, present, low, high))
+            segments.setdefault(width, []).append((offset["refs"] + cursor, count))
+            cursor += count
+        if cursor != reduction.inverse.numel():
+            raise ValueError("joint_reduction_inverse_length")
+        inverses.append(reduction.inverse + offset["refs"])
+    parts = [part for width_parts in groups.values() for part in width_parts]
+    raw = torch.cat([part[0] for part in parts])
+    sizes = torch.tensor([part[0].numel() for part in parts], dtype=torch.long)
+    columns = torch.tensor([part[2:] for part in parts], dtype=raw.dtype)
+    columns = columns.reshape(len(parts), 3).repeat_interleave(sizes, dim=0)
+    if key == "numbers":
+        joined = torch.where(raw < columns[:, 0], raw + columns[:, 1], raw + columns[:, 2])
+    else:
+        joined = raw + columns[:, 1]
+    pieces = joined.split([sum(part[0].numel() for part in width_parts)
+                           for width_parts in groups.values()])
+    # Own storage per bucket (clone), as torch.cat gave each bucket before.
+    combined = [(width, sum(part[1] for part in width_parts), piece.clone())
+                for (width, width_parts), piece in zip(groups.items(), pieces, strict=True)]
+    starts = [start for width in groups for start, _ in segments[width]]
+    counts = torch.tensor([count for width in groups for _, count in segments[width]],
+                          dtype=torch.long)
+    total = int(counts.sum())
+    if total != cumulative["refs"]:
+        raise ValueError("joint_reduction_inverse_length")
+    joint_starts = torch.cumsum(counts, 0) - counts
+    source = (torch.arange(total) + (torch.tensor(starts, dtype=torch.long)
+                                     - joint_starts).repeat_interleave(counts))
+    position = torch.empty(total, dtype=torch.long)
+    position[source] = torch.arange(total)
+    return Reduction(tuple(combined), position[torch.cat(inverses)])
+
+
 @lru_cache(maxsize=64)
 def _text_hash_multipliers(words: int) -> np.ndarray:
     multipliers = np.random.default_rng(0x5EED).integers(
@@ -547,7 +636,7 @@ def prepare_group(
     catalog_width = (
         _bucket(max(len(frame.choices) for frame in frames), (8, 32, 64, 128, 256)) if policy else 0
     )
-    combined = joint_nodes(frames)
+    combined = _joint_nodes(frames)
     text_ids, text_numbers, lengths = text_batch(frames)
     if deduplicate_text:
         selection, inverse = _unique_texts(frames, text_ids, text_numbers, lengths)
