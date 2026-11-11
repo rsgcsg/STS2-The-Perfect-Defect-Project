@@ -52,7 +52,7 @@
     "tf32": true,
     "prepared_forward": "rows-v2",
     "prepared_compile": true,
-    "prepared_kernels": "cross+heads+nodes",
+    "prepared_kernels": "cross+embed+heads+nodes",
     "prepared_bucket_rows": 100000
   }
 }

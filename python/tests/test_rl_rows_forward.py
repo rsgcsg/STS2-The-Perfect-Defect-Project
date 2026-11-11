@@ -571,7 +571,8 @@ def test_forward_arena_fails_loudly(model, varied):
         stage_joined(full, plan, torch.device("cpu"))
 
 
-@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "cross+heads+nodes"])
+@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "embed+nodes",
+                                     "cross+embed+heads+nodes"])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
@@ -601,7 +602,7 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
 
     assert PerformanceConfig().prepared_kernels == ""
     assert parse_kernels("") == () and parse_kernels("cross+heads") == ("cross", "heads")
-    for bad in ("heads+cross", "heads+heads", "flash", "+", None):
+    for bad in ("heads+cross", "heads+heads", "flash", "+", None, "embed", "cross+embed"):
         with pytest.raises(ValueError, match="invalid_prepared_kernels"):
             parse_kernels(bad)  # type: ignore[arg-type]
     with pytest.raises(BoundaryError, match="invalid_prepared_kernels"):
@@ -610,6 +611,41 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
         PerformanceConfig(prepared_kernels="heads")
     assert FOLD_CATALOG_LIMIT == 64
     assert parse_kernels("cross+heads+nodes") == ("cross", "heads", "nodes")
+    assert parse_kernels("cross+embed+heads+nodes") == ("cross", "embed", "heads", "nodes")
+    with pytest.raises(BoundaryError, match="prepared_kernels_embed_requires_compile"):
+        PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="embed+nodes")
+    PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True,
+                      prepared_kernels="cross+embed+heads+nodes")
+
+
+def test_embed_lever_private_copies_give_the_embedding_gradient():
+    """The private-copy weight gradient (eager and under compile: aot_eager, as
+    in this file's other compiled tests) equals the embedding gradient, repeats
+    included, for one and several copies; non-plain tables are refused."""
+    from stpd.p1 import rows_kernels
+    from stpd.p1.rows_kernels import lookup
+
+    torch.manual_seed(3)
+    for rows, width in ((5, 7), (300, 8)):
+        assert rows_kernels._copies(rows, width) == min(32, (1 << 21) // (rows * width))
+        table = torch.nn.Embedding(rows, width)
+        indices = torch.randint(0, rows, (97,))
+        indices[:9] = 4
+        upstream = torch.randn(len(indices), width)
+        reference = torch.autograd.grad((table(indices) * upstream).sum(), table.weight)[0]
+        def call(module, picked):
+            return lookup(module, picked, private=True)
+
+        for run in (call, torch.compile(call, dynamic=True, backend="aot_eager")):
+            out = run(table, indices)
+            torch.testing.assert_close(out, table(indices))
+            got = torch.autograd.grad((out * upstream).sum(), table.weight)[0]
+            torch.testing.assert_close(got, reference, rtol=1e-6, atol=1e-6)
+    assert rows_kernels._copies(8192, 192) == 1
+    for options in ({"padding_idx": 0}, {"max_norm": 1.0}, {"scale_grad_by_freq": True},
+                    {"sparse": True}):
+        with pytest.raises(ValueError, match="embed_lever_requires_plain_embedding"):
+            lookup(torch.nn.Embedding(5, 7, **options), torch.tensor([0, 1]), private=True)
 
 
 def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_permutations():
@@ -653,7 +689,8 @@ def test_nodes_lever_owner_maps_refuse_broken_reductions_loudly():
         _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse[:3]), 4, 4, True)
 
 
-def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, monkeypatch):
+@pytest.mark.parametrize("kernels", ["cross+heads+nodes", "cross+embed+heads+nodes"])
+def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, monkeypatch, kernels):
     """The compiled lever path (dynamic-shape block variants and node builder:
     dynamo capture and AOT autograd, `aot_eager` backend to keep the CPU test
     short; inductor codegen is the CUDA benchmark's) computes what the eager
@@ -662,19 +699,20 @@ def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, monk
     monkeypatch.setattr(torch, "compile",
                         lambda function, **keywords: compile_(
                             function, **{**keywords, "backend": "aot_eager"}))
+
     def compiled_names():
         return [name for name in vars(model) if name.startswith("_rows_") and "compiled" in name]
 
     for name in compiled_names():  # compiled once per model; restored after this test
         monkeypatch.delitem(model.__dict__, name)
     try:
-        check_compiled_levers(model)
+        check_compiled_levers(model, kernels)
     finally:
         for name in compiled_names():
             del model.__dict__[name]
 
 
-def check_compiled_levers(model):
+def check_compiled_levers(model, kernels):
     from stpd.p1.rows_forward import forward_rows
 
     batch = prepared(model)
@@ -683,7 +721,7 @@ def check_compiled_levers(model):
         rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
         (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=False)
         model.zero_grad(set_to_none=True)
-        out = forward_rows(model, rows, compile=True, packed=False, kernels="cross+heads+nodes")
+        out = forward_rows(model, rows, compile=True, packed=False, kernels=kernels)
         (s1, l1, h1) = (value.detach() for value in out)
         generator = torch.Generator().manual_seed(5)
         total = out[2].mul(torch.randn(out[2].shape, generator=generator)).sum()

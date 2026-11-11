@@ -111,7 +111,13 @@ class _ArrayTable:
         out = []
         for name, offset, count, dtype in self.rows.tolist():
             kind = dtypes[dtype]
-            out.append(bases[name][offset:offset + count * kind.itemsize].view(kind))
+            base = bases[name]
+            end = offset + count * kind.itemsize
+            # A slice past the mapping would silently come back short: refuse it,
+            # as np.frombuffer(handle, dtype, count, offset) would.
+            if offset < 0 or count < 0 or end > len(base):
+                raise ValueError("binary_shared_array_out_of_bounds")
+            out.append(base[offset:end].view(kind))
         return tuple(out)
 
 

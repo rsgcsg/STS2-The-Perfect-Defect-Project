@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..3062c55
+index 0000000..8f98beb
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,1414 @@
+@@ -0,0 +1,1651 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1547,6 +1547,8 @@ index 0000000..3062c55
 +        AssemblyLoadContext.Default.Resolving += (_, n) => File.Exists(Path.Combine(root, "lib", n.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", n.Name + ".dll")) : null;
 +        if (args.Length == 2 && args[0] == "--program-child") { ProgramChild(args[1]); return; }
++        if (args.Length == 4 && args[0] == "--draw-fair-child") { DrawFairChild(args[1] == "swapped", args[2] == "selector-first", args[3] == "hud-memo"); return; }
++        if (args.Length >= 2 && args[0] == "--draw-scope-child") { DrawScopeChild(args[1..]); return; }
 +        if (args.Length >= 3 && args[0] == "--memo-play") { MemoPlay(int.Parse(args[1]), args[2..]); return; }
 +        sim = Activator.CreateInstance(Simulator)!;
 +        SetEnabled(false);
@@ -1572,6 +1574,7 @@ index 0000000..3062c55
 +            FieldAccessAndCapacity();
 +            CardProjectionMemo();
 +            MemoPairing();
++            DrawOrderFairness();
 +            Console.WriteLine($"{checks} fast_chain patch-cache checks passed");
 +        }
 +        finally { Call("CleanUp"); }
@@ -2789,6 +2792,240 @@ index 0000000..3062c55
 +        Check(refused.WaitForExit(120_000) && refused.ExitCode != 0 && refusedErr.Contains("native_card_memo_requires_fast_chain"),
 +            "a memo switch without fast_chain must stop the process");
 +        Console.WriteLine($"memo pairing: {states} decision states equal (off, fast, deck, hud, both, shadow; one two-game en+zh process); switch without fast_chain refused");
++    }
++
++    // Fairness: the draw pile is an unordered multiset, so nothing public may depend on its hidden order. Two
++    // child processes set up the same combat and the same new cards, created in the same order; the second
++    // exchanges the true draw positions of identical-content cards: two deck-linked Defends, two generated
++    // Strikes (both first projected in this capture, so their native_refs are allocated here), two Souls made
++    // by transforming two draw cards in a fixed public order (CardCmd.TransformTo, the Seance/Charge path: the
++    // replacement is created at transform time, review F1) and two existing identical draw cards. The HUD
++    // capture (cards, order, native_refs), the combat-pile selector render of the draw pile and a later capture
++    // after g1 and d1 are upgraded must be byte-identical; the true draw orders must differ. selectorFirst
++    // allocates the draw native_refs in the selector before any HUD capture (a selector frame whose HUD is
++    // skipped, review F6); hudMemo runs the HUD through the fast_chain projection memo, second capture a hit.
++    static void DrawFairChild(bool swapped, bool selectorFirst, bool hudMemo)
++    {
++        if (hudMemo)
++        {
++            NativePatchStateCache.Configure(true);
++            NativeCardProjectionMemo.Configure(false, true, value => JsonSerializer.Serialize(value));
++        }
++        sim = Activator.CreateInstance(Simulator)!;
++        Call("StartRun", "Defect", 0, "PATCHCACHE_DRAWFAIR", "en", null);
++        Call("EnterRoom", "monster", null, null);
++        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++        Player player = run.Players[0];
++        var combat = player.Creature.CombatState!;
++        MethodInfo add = typeof(CardPileCmd).GetMethod("AddGeneratedCardToCombat")!;
++        object bottom = Enum.GetValues(add.GetParameters()[3].ParameterType).Cast<object>().First(value => value.ToString() == "Bottom");
++        CardModel[] deckDefends = player.Deck.Cards.Where(card => card is MegaCrit.Sts2.Core.Models.Cards.DefendDefect).Take(2).ToArray();
++        // Creation order is fixed: g1, d1, g2, d2, then a1, a2 (transformed below). d1 and d2 point at two
++        // different master-deck Defends.
++        var created = new List<CardModel>();
++        foreach (int i in new[] { 0, 1, 2, 3, 4, 5 })
++        {
++            CardModel card = i % 2 == 0 ? combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.StrikeDefect>(player)
++                : combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.DefendDefect>(player);
++            if (i == 1 || i == 3) typeof(CardModel).GetField("_deckVersion", Flags)!.SetValue(card, deckDefends[i / 2]);
++            ((Task)add.Invoke(null, new object?[] { card, PileType.Draw, player, bottom })!).GetAwaiter().GetResult();
++            created.Add(card);
++        }
++        CardModel g1 = created[0], d1 = created[1], g2 = created[2], d2 = created[3];
++        // A batch of draw cards transformed in a fixed public order: the Souls are registered in that order.
++        var souls = new List<CardModel>();
++        foreach (CardModel original in new[] { created[4], created[5] })
++        {
++            var result = CardCmd.TransformTo<MegaCrit.Sts2.Core.Models.Cards.Soul>(original).GetAwaiter().GetResult();
++            souls.Add(result?.cardAdded ?? throw new Exception("the transform must add a replacement"));
++        }
++        CardModel s1 = souls[0], s2 = souls[1];
++        created.RemoveRange(4, 2);
++        created.AddRange(souls);
++        var pile = (List<CardModel>)typeof(CardPile).GetField("_cards", Flags)!.GetValue(PileType.Draw.GetPile(player))!;
++        if (!pile.Contains(s1) || !pile.Contains(s2)) throw new Exception("the Souls must replace their originals in the draw pile");
++        CardModel[] old = pile.Where(card => !created.Contains(card) && card is MegaCrit.Sts2.Core.Models.Cards.StrikeDefect).Take(2).ToArray();
++        if (old.Length != 2) throw new Exception("the draw pile needs two existing Strikes");
++        var rest = pile.Where(card => !created.Contains(card)).ToList();
++        if (swapped) { int a = rest.IndexOf(old[0]), b = rest.IndexOf(old[1]); (rest[a], rest[b]) = (rest[b], rest[a]); }
++        pile.Clear();
++        pile.AddRange(swapped ? new[] { g2, s2, d2 } : new[] { g1, s1, d1 });
++        pile.AddRange(rest);
++        pile.AddRange(swapped ? new[] { g1, s1, d1 } : new[] { g2, s2, d2 });
++        string Label(CardModel card) => card == g1 ? "g1" : card == g2 ? "g2" : card == d1 ? "d1" : card == d2 ? "d2" : card == s1 ? "s1" : card == s2 ? "s2"
++            : card == old[0] ? "o1" : card == old[1] ? "o2" : "_";
++        string truth = string.Join(",", pile.Select(Label));
++        Type hud = Simulator.Assembly.GetType("Sts2Headless.NativeSelectorHud")!;
++        long memoHits = NativeCardProjectionMemo.Hits(NativeCardProjectionMemo.Lane.Hud);
++        string Hud()
++        {
++            if (hudMemo) { NativePatchStateCache.Revalidate(); NativeCardProjectionMemo.BeginFrame(); }
++            return JsonSerializer.Serialize(hud.GetMethod("Capture", Flags)!.Invoke(null, new object[] { player, combat })!);
++        }
++        // The combat-pile selector over the same draw pile (the game's grid order, then the fairness order).
++        Type selection = Simulator.Assembly.GetType("Sts2Headless.NativeSelectorSelection")!;
++        Type scope = Simulator.Assembly.GetType("Sts2Headless.NativeSelectorCallScope")!;
++        Type contextType = scope.GetNestedType("Context", Flags)!, kind = scope.GetNestedType("Kind", Flags)!;
++        var prefs = new CardSelectorPrefs(new MegaCrit.Sts2.Core.Localization.LocString("gameplay_ui", "CHOOSE_CARD_HEADER"), 1);
++        object context = contextType.GetConstructors(Flags)[0].Invoke(new object?[] { Enum.Parse(kind, "CombatPile"), new BlockingPlayerChoiceContext(),
++            player, null, null, PileType.Draw.GetPile(player), prefs, null, false, null });
++        object selector = selection.GetConstructors(Flags)[0].Invoke(new object[] { context, pile.ToList() });
++        // Render, then allocate native_refs in the rendered order (as Capture does), return refs and display keys.
++        (string Refs, Dictionary<string, string> Keys) Render()
++        {
++            object rendered = selection.GetMethod("Render", Flags)!.Invoke(selector, null)!;
++            var entries = ((System.Collections.IEnumerable)rendered.GetType().GetField("Item1")!.GetValue(rendered)!).Cast<object>().ToArray();
++            var refs = new List<string>();
++            var keys = new Dictionary<string, string>();
++            foreach (object entry in entries)
++            {
++                var card = (CardModel)entry.GetType().GetField("Item1")!.GetValue(entry)!;
++                refs.Add((string)Simulator.Assembly.GetType("Sts2Headless.NativeObjectIdentity")!.GetMethod("Get", Flags)!.Invoke(null, new object[] { card })!);
++                object display = entry.GetType().GetField("Item2")!.GetValue(entry)!;
++                if (Label(card) != "_") keys[Label(card)] = JsonSerializer.Serialize(display.GetType().GetProperty("Card")!.GetValue(display));
++            }
++            return (string.Join(",", refs), keys);
++        }
++        string capture, render;
++        Dictionary<string, string> keys;
++        if (selectorFirst) { (render, keys) = Render(); capture = Hud(); }
++        else
++        {
++            capture = Hud();
++            if (hudMemo) capture = Hud();
++            (render, keys) = Render();
++        }
++        var grid = (List<CardModel>)Simulator.Assembly.GetType("Sts2Headless.NativeSelectorVisibleOrder")!.GetMethod("Capture", Flags)!
++            .Invoke(null, new object[] { pile.ToList(), PileType.Draw })!;
++        string gridTruth = string.Join(",", grid.Select(Label).Where(label => label != "_"));
++        // Later, the same objects (chosen by identity, not position) become distinguishable: their native_refs
++        // must not depend on where they lay when first projected.
++        foreach (CardModel card in new[] { g1, d1 }) { card.UpgradeInternal(); card.FinalizeUpgradeInternal(); }
++        string later = Hud();
++        // Review F2: the simple-grid and choose selectors keep the game's order, so a draw card is outside their domain.
++        CardModel fresh = combat.CreateCard<MegaCrit.Sts2.Core.Models.Cards.StrikeDefect>(player);
++        MethodInfo none = Simulator.Assembly.GetType("Sts2Headless.NativeDrawPileOrder")!.GetMethod("NoneInDrawPile", Flags)!;
++        string guard = string.Join(",", new IEnumerable<CardModel>[] { new[] { fresh }, PileType.Hand.GetPile(player).Cards, new[] { fresh, g2 } }
++            .Select(cards => none.Invoke(null, new object[] { cards })));
++        Console.Out.Flush();
++        Console.Out.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string> { ["truth"] = truth, ["capture"] = capture, ["render"] = render,
++            ["later"] = later, ["grid_truth"] = gridTruth, ["keys"] = JsonSerializer.Serialize(keys), ["guard"] = guard,
++            ["memo_hits"] = (NativeCardProjectionMemo.Hits(NativeCardProjectionMemo.Lane.Hud) - memoHits).ToString() }));
++        Call("CleanUp");
++    }
++
++    // The fairness key's second part is a card's index in its combat card scope. Real games (benchmark policy, every
++    // action, reshuffles included) must show: the scope only appends or removes, never reorders, so a card's
++    // relative index is fixed when it is registered; and every draw card is in the scope. Counts how many draw-pile
++    // ties each key part resolved.
++    static void DrawScopeChild(string[] games)
++    {
++        NativePatchStateCache.Configure(true);
++        NativeCardProjectionMemo.Configure(false, false);
++        MethodInfo choose = Simulator.Assembly.GetType("Sts2Headless.PerformanceLab")!.GetMethod("ChooseAction", Flags)!;
++        FieldInfo scopeField = typeof(MegaCrit.Sts2.Core.Combat.CombatState).GetField("_allCards", Flags)!;
++        long frames = 0, combatFrames = 0, reshuffles = 0, deckTies = 0, scopeTies = 0, unregistered = 0, reordered = 0;
++        foreach (string spec in games)
++        {
++            string[] parts = spec.Split(':');
++            object game = Activator.CreateInstance(Simulator)!;
++            var state = (Dictionary<string, object?>)Simulator.GetMethod("StartRun", Flags)!.Invoke(game, new object?[] { parts[0], 0, parts[1], "en", null })!;
++            object? lastCombat = null; List<CardModel> previous = new(); int lastDraw = 0;
++            for (int step = 0; step < 400; step++)
++            {
++                NativePatchStateCache.Revalidate();
++                object? request = choose.Invoke(null, new object[] { state });
++                if (request == null && state.GetValueOrDefault("decision") as string != "shop_room") break;
++                string action = (string?)request?.GetType().GetProperty("Action")!.GetValue(request) ?? "";
++                var actionArgs = (Dictionary<string, object?>?)request?.GetType().GetProperty("Args")!.GetValue(request);
++                if (action == "select_card_reward" && state.GetValueOrDefault("cards") is System.Collections.IList { Count: > 0 } offered)
++                    actionArgs = new() { ["card_index"] = 0, ["card_ref"] = ((Dictionary<string, object?>)offered[0]!)["native_ref"] };
++                if (action == "choose_option" && state.GetValueOrDefault("decision") as string == "event_choice")
++                    actionArgs = new() { ["option_index"] = actionArgs!["option_index"], ["room_ref"] = state["room_ref"], ["event_ref"] = state["event_ref"],
++                        ["option_ref"] = ((System.Collections.IList)state["options"]!).Cast<Dictionary<string, object?>>()
++                            .First(option => Equals(option["index"], actionArgs["option_index"]))["native_ref"] };
++                if (action == "leave_room" && state.GetValueOrDefault("room_ref") != null) actionArgs = new() { ["room_ref"] = state["room_ref"] };
++                if (request == null && state.GetValueOrDefault("decision") as string == "shop_room") { action = "leave_room"; actionArgs = new() { ["room_ref"] = ((Dictionary<string, object?>)state["presentation_owner"]!)["room_ref"] }; }
++                state = (Dictionary<string, object?>)Simulator.GetMethod("ExecuteAction", Flags)!.Invoke(game, new object?[] { action, actionArgs })!;
++                if (state.GetValueOrDefault("type") as string == "error") break;
++                frames++;
++                var run = (RunState?)Simulator.GetField("_runState", Flags)!.GetValue(game);
++                Player? player = run?.Players.FirstOrDefault();
++                if (player?.Creature.CombatState is not MegaCrit.Sts2.Core.Combat.CombatState combat || player.PlayerCombatState == null) { lastCombat = null; continue; }
++                combatFrames++;
++                var scope = ((List<CardModel>)scopeField.GetValue(combat)!).ToList();
++                if (ReferenceEquals(combat, lastCombat))
++                {
++                    var kept = previous.Where(card => scope.Contains(card)).ToList();
++                    if (!kept.SequenceEqual(scope.Where(card => previous.Contains(card)))) reordered++;
++                }
++                var draw = PileType.Draw.GetPile(player).Cards.ToList();
++                if (ReferenceEquals(combat, lastCombat) && draw.Count > lastDraw + 1) reshuffles++;
++                unregistered += draw.Count(card => !scope.Contains(card));
++                foreach (var group in draw.GroupBy(card => card.Id.Entry + "+" + card.CurrentUpgradeLevel).Where(g => g.Count() > 1))
++                {
++                    var deckIndexes = group.Select(card => card.DeckVersion == null ? -1 : player.Deck.Cards.ToList().IndexOf(card.DeckVersion)).ToList();
++                    if (deckIndexes.All(index => index >= 0) && deckIndexes.Distinct().Count() == deckIndexes.Count) deckTies++; else scopeTies++;
++                }
++                lastCombat = combat; previous = scope; lastDraw = draw.Count;
++            }
++            Simulator.GetMethod("CleanUp", Flags)!.Invoke(game, null);
++        }
++        Console.Out.Flush();
++        Console.Out.WriteLine(JsonSerializer.Serialize(new Dictionary<string, long> { ["frames"] = frames, ["combat_frames"] = combatFrames, ["reshuffles"] = reshuffles,
++            ["scope_reordered"] = reordered, ["draw_unregistered"] = unregistered, ["groups_by_deck_index"] = deckTies, ["groups_needing_scope_index"] = scopeTies }));
++    }
++
++    static void DrawOrderFairness()
++    {
++        Dictionary<string, string> Child(string mode, string order, string memo)
++        {
++            var info = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
++            if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!) == "dotnet") info.ArgumentList.Add(typeof(Program).Assembly.Location);
++            foreach (string arg in new[] { "--draw-fair-child", mode, order, memo }) info.ArgumentList.Add(arg);
++            using var child = System.Diagnostics.Process.Start(info)!;
++            var stderr = child.StandardError.ReadToEndAsync();
++            string stdout = child.StandardOutput.ReadToEnd();
++            Check(child.WaitForExit(300_000) && child.ExitCode == 0, $"draw fairness child {mode} {order} {memo}: exit {child.ExitCode} {stderr.Result[..Math.Min(stderr.Result.Length, 2000)]}");
++            string line = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last(value => value.StartsWith("{\"truth\""));
++            return JsonSerializer.Deserialize<Dictionary<string, string>>(line)!;
++        }
++        Dictionary<string, string> plain = new(), swapped = new();
++        foreach (var (order, memo) in new[] { ("hud-first", "no-memo"), ("selector-first", "no-memo"), ("hud-first", "hud-memo") })
++        {
++            string config = order + " " + memo;
++            plain = Child("plain", order, memo);
++            swapped = Child("swapped", order, memo);
++            Check(plain["truth"] != swapped["truth"], $"{config}: the two children must hold different true draw orders");
++            Check(plain["capture"] == swapped["capture"], $"{config}: the HUD capture must not depend on the true draw order of identical cards");
++            Check(plain["render"] == swapped["render"], $"{config}: the combat-pile selector render must not depend on the true draw order of identical cards");
++            Check(plain["later"] == swapped["later"], $"{config}: native_refs first allocated in the draw pile must not depend on the true draw order");
++            Check(memo == "no-memo" ? plain["memo_hits"] == "0" : long.Parse(plain["memo_hits"]) > 0 && long.Parse(swapped["memo_hits"]) > 0,
++                $"{config}: the HUD memo must be used exactly when switched on ({plain["memo_hits"]} hits)");
++            // Review F5: "identical" is the whole public display; identical cards must share it (no per-object
++            // identity may enter it), and it must carry no native_ref.
++            var keys = JsonSerializer.Deserialize<Dictionary<string, string>>(plain["keys"])!;
++            Check(keys["g1"] == keys["g2"] && keys["g1"] == keys["o1"] && keys["o1"] == keys["o2"] && keys["d1"] == keys["d2"] && keys["s1"] == keys["s2"],
++                $"{config}: identical draw cards must share the selector's grouping text");
++            Check(keys["g1"] != keys["d1"] && keys["d1"] != keys["s1"] && keys.Values.All(key => !key.Contains("native_ref") && !key.Contains("native-")),
++                $"{config}: the selector's grouping text must be public content only");
++            Check(plain["guard"] == "True,True,False", $"{config}: a draw-pile card must be outside the simple and choose selectors' domain ({plain["guard"]})");
++        }
++        var scopeInfo = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
++        if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!) == "dotnet") scopeInfo.ArgumentList.Add(typeof(Program).Assembly.Location);
++        foreach (string arg in new[] { "--draw-scope-child", "Defect:DRAW_SCOPE_D1", "Ironclad:DRAW_SCOPE_I1", "Silent:DRAW_SCOPE_S1", "Regent:DRAW_SCOPE_R1" }) scopeInfo.ArgumentList.Add(arg);
++        using (var scopeChild = System.Diagnostics.Process.Start(scopeInfo)!)
++        {
++            var scopeErr = scopeChild.StandardError.ReadToEndAsync();
++            string scopeOut = scopeChild.StandardOutput.ReadToEnd();
++            Check(scopeChild.WaitForExit(600_000) && scopeChild.ExitCode == 0, $"draw scope child: exit {scopeChild.ExitCode} {scopeErr.Result[..Math.Min(scopeErr.Result.Length, 2000)]}");
++            var facts = JsonSerializer.Deserialize<Dictionary<string, long>>(scopeOut.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last(line => line.StartsWith("{\"frames\"")))!;
++            Check(facts["combat_frames"] > 200 && facts["reshuffles"] > 0, "the scope games must play combats with reshuffles");
++            Check(facts["scope_reordered"] == 0, "the combat card scope must never reorder its cards");
++            Check(facts["draw_unregistered"] == 0, "every draw card must be in its combat card scope");
++            Console.WriteLine("draw scope: " + JsonSerializer.Serialize(facts));
++        }
++        Console.WriteLine($"draw order fairness (hud-first, selector-first, hud-memo): truth {plain["truth"].Replace(",_", "")} vs {swapped["truth"].Replace(",_", "")}; HUD and selector bytes equal; game grid order of the test cards {plain["grid_truth"]} vs {swapped["grid_truth"]}");
 +    }
 +
 +    static void FieldAccessAndCapacity()
@@ -8126,6 +8363,112 @@ index 0000000..3122144
 +                && FixedConstructorsUnpatched(nested));
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeDrawPileOrder.cs b/src/Sts2Headless/NativeDrawPileOrder.cs
+new file mode 100644
+index 0000000..33b10eb
+--- /dev/null
++++ b/src/Sts2Headless/NativeDrawPileOrder.cs
+@@ -0,0 +1,100 @@
++using System.Reflection;
++using MegaCrit.Sts2.Core.Combat;
++using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.Models;
++
++namespace Sts2Headless;
++
++/// <summary>
++/// Fairness: the draw pile is an unordered multiset, so nothing public may depend on its hidden order.
++/// Wherever native output lists draw-pile cards, cards with identical public content are put in an order
++/// that never reads a pile position, and a draw-pile card first projected there gets its native_ref in that
++/// order (native_ref is allocated on first projection, so allocating in draw order would encode it).
++///
++/// Key, in this order (the key never reads a pile position):
++/// 1. the index of the card's master-deck version in the owner's master deck: public and fixed before the
++///    combat; cards without a master-deck version in the deck come after all that have one;
++/// 2. the card's index in its combat card scope: the order in which the combat registered (created) its
++///    cards. The scope only appends (CreateCard, CloneCard) and is never reordered.
++/// The index in the combat card scope is unique per card, so the key is a total order: no tie is left for a
++/// stable sort to resolve by draw position. A draw card outside the scope fails loudly.
++///
++/// Premise (checked against the game, card 1 review F1): the creation order itself is not derived from hidden
++/// draw positions. Combat start clones the master deck in master-deck order and only then shuffles the draw
++/// pile; every in-combat creation into the draw pile is a fixed card type inserted at a random position, or a
++/// transform (Charge, Seance) of cards the player picked in a selector, created in the player's pick order;
++/// no effect walks the draw pile in its hidden order to create, clone or transform cards. A future effect that
++/// does would make part 2 follow draw order again.
++///
++/// "Identical public content" is the caller's whole public serialization of the card (the HUD projection, the
++/// selector's displayed card): cards that differ in anything a player sees (upgrade, cost, enchantment,
++/// keyword) keep the game's own order, as a player sees it. The serialization must stay free of per-object
++/// identity (native_ref, entity ids, positions); patch-cache-tests pins that identical cards share it.
++/// </summary>
++internal static class NativeDrawPileOrder
++{
++    private static readonly FieldInfo CombatCards = typeof(CombatState).GetField("_allCards", BindingFlags.Instance | BindingFlags.NonPublic)
++        ?? throw new MissingFieldException(typeof(CombatState).FullName, "_allCards");
++
++    /// <summary>
++    /// Draw-pile entries by public content (ordinal), identical content by the key. The key is read only when
++    /// identical content exists.
++    /// </summary>
++    internal static T[] Order<T>(IReadOnlyList<T> entries, Func<T, CardModel> card, Func<T, string> content, Player player, ICombatState combat)
++    {
++        T[] byContent = entries.OrderBy(content, StringComparer.Ordinal).ToArray();
++        if (!HasTies(byContent.Select(content).ToArray())) return byContent;
++        var key = Key(player, combat);
++        return entries.OrderBy(content, StringComparer.Ordinal).ThenBy(entry => key(card(entry))).ToArray();
++    }
++
++    /// <summary>
++    /// A display order chosen by the game (the combat-pile grid), with the cards of each identical-content group
++    /// reassigned to that group's own positions by the key: the multiset shown at every position is unchanged.
++    /// </summary>
++    internal static List<T> WithinIdentical<T>(IReadOnlyList<T> entries, Func<T, CardModel> card, Func<T, string> content, Player player, ICombatState combat)
++    {
++        string[] contents = entries.Select(content).ToArray();
++        var result = entries.ToList();
++        if (!HasTies(contents.OrderBy(value => value, StringComparer.Ordinal).ToArray())) return result;
++        var key = Key(player, combat);
++        foreach (var group in Enumerable.Range(0, contents.Length).GroupBy(index => contents[index], StringComparer.Ordinal).Where(group => group.Count() > 1))
++        {
++            int[] positions = group.ToArray();
++            T[] members = positions.Select(index => entries[index]).OrderBy(entry => key(card(entry))).ToArray();
++            for (int i = 0; i < positions.Length; i++) result[positions[i]] = members[i];
++        }
++        return result;
++    }
++
++    /// <summary>
++    /// The simple-grid and choose-a-card selectors keep the game's order and do not apply the key: every caller
++    /// passes newly generated cards (CardFactory, CreateCard), never draw-pile cards (review F2). This guard keeps
++    /// that premise checked: a selector offering a draw-pile card is outside their qualified domain.
++    /// </summary>
++    internal static bool NoneInDrawPile(IEnumerable<CardModel> cards) =>
++        cards.All(card => card.Pile?.Type != MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw);
++
++    private static bool HasTies(string[] sorted)
++    {
++        for (int i = 1; i < sorted.Length; i++)
++            if (string.Equals(sorted[i], sorted[i - 1], StringComparison.Ordinal)) return true;
++        return false;
++    }
++
++    private static Func<CardModel, (int DeckGroup, int DeckIndex, int CombatIndex)> Key(Player player, ICombatState combat)
++    {
++        if (combat is not CombatState state) throw new InvalidOperationException("native_draw_order_requires_combat_state");
++        var deck = new Dictionary<CardModel, int>(ReferenceEqualityComparer.Instance);
++        var deckCards = player.Deck.Cards;
++        for (int i = 0; i < deckCards.Count; i++) deck.TryAdd(deckCards[i], i);
++        var scope = new Dictionary<CardModel, int>(ReferenceEqualityComparer.Instance);
++        var registered = (List<CardModel>)(CombatCards.GetValue(state) ?? throw new InvalidOperationException("native_draw_order_combat_scope_unavailable"));
++        for (int i = 0; i < registered.Count; i++) scope.TryAdd(registered[i], i);
++        return card =>
++        {
++            if (!scope.TryGetValue(card, out int index)) throw new InvalidOperationException("native_draw_order_card_outside_combat_scope: " + card.Id.Entry);
++            return card.DeckVersion is { } version && deck.TryGetValue(version, out int position) ? (0, position, index) : (1, 0, index);
++        };
++    }
++}
 diff --git a/src/Sts2Headless/NativeEnchantmentMethodInventory.cs b/src/Sts2Headless/NativeEnchantmentMethodInventory.cs
 new file mode 100644
 index 0000000..9823cd2
@@ -9880,10 +10223,10 @@ index 0000000..0b46dc7
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..bdff6b0
+index 0000000..d966847
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,185 @@
 +using MegaCrit.Sts2.Core.Combat;
 +using MegaCrit.Sts2.Core.Entities.Creatures;
 +using MegaCrit.Sts2.Core.Entities.Cards;
@@ -9897,7 +10240,8 @@ index 0000000..bdff6b0
 +namespace Sts2Headless;
 +
 +// Current post-prefix public combat facts only. Does not pump, wait, advertise
-+// play actions, or borrow a parent observation. Draw is an unordered read.
++// play actions, or borrow a parent observation. Draw is an unordered read: identical
++// cards in an order independent of the hidden draw order (NativeDrawPileOrder).
 +internal static class NativeSelectorHud
 +{
 +    internal static string HealthDisplay(HpDisplay mode) => mode switch
@@ -9956,19 +10300,29 @@ index 0000000..bdff6b0
 +        return result;
 +    }
 +
-+    private static Dictionary<string,object?> Pile(string name, PileType type, CardModel[] cards)
++    private static Dictionary<string,object?> Pile(string name, PileType type, CardModel[] cards, Player player, ICombatState combat)
 +    {
-+        var visible = cards.Select(card => { var value = Card(card, type, true, out string? order); return (Value: value, Order: order); }).ToArray();
++        if (type != PileType.Draw)
++            return new()
++            {
++                ["pile"] = name,
++                ["ordering_semantics"] = "native_visible_order",
++                ["cards"] = cards.Select(card => Card(card, type, true)).ToArray()
++            };
++        // Draw order: public content only (a memo order string is that same serialization); identical content by
++        // NativeDrawPileOrder's key, never by draw position. native_ref is allocated only after that order.
++        var visible = cards.Select(card =>
++        {
++            var value = Card(card, type, false, out string? order);
++            return (Native: card, Value: value, Order: order ?? System.Text.Json.JsonSerializer.Serialize(value));
++        }).ToArray();
++        var ordered = NativeDrawPileOrder.Order(visible, entry => entry.Native, entry => entry.Order, player, combat);
++        foreach (var entry in ordered) entry.Value["native_ref"] = NativeObjectIdentity.Get(entry.Native);
 +        return new()
 +        {
 +            ["pile"] = name,
-+            ["ordering_semantics"] = type == PileType.Draw ? "unordered_multiset" : "native_visible_order",
-+            // Draw order: public content only. A memo order string is that same serialization.
-+            ["cards"] = (type == PileType.Draw
-+                ? visible.OrderBy(card => card.Order ?? System.Text.Json.JsonSerializer.Serialize(card.Value
-+                    .Where(pair => pair.Key != "native_ref").ToDictionary(pair => pair.Key, pair => pair.Value)), StringComparer.Ordinal)
-+                    .Select(card => card.Value)
-+                : visible.Select(card => card.Value)).ToArray()
++            ["ordering_semantics"] = "unordered_multiset",
++            ["cards"] = ordered.Select(entry => entry.Value).ToArray()
 +        };
 +    }
 +    private static List<Dictionary<string,object?>> Statuses(Creature creature)
@@ -10021,8 +10375,8 @@ index 0000000..bdff6b0
 +            ["draw_pile_count"]=pcs.DrawPile.Cards.Count,["discard_pile_count"]=pcs.DiscardPile.Cards.Count,
 +            ["exhaust_pile_count"]=pcs.ExhaustPile.Cards.Count,["statuses"]=Statuses(player.Creature),["enemies"]=enemies,
 +            ["hand"]=hand.Select(card => Card(card, PileType.Hand, true)).ToArray(),
-+            ["combat_piles"]=new[] { Pile("draw", PileType.Draw, draw),
-+                Pile("discard", PileType.Discard, discard), Pile("exhaust", PileType.Exhaust, exhaust) },
++            ["combat_piles"]=new[] { Pile("draw", PileType.Draw, draw, player, combat),
++                Pile("discard", PileType.Discard, discard, player, combat), Pile("exhaust", PileType.Exhaust, exhaust, player, combat) },
 +            ["orb_slots"]=pcs.OrbQueue.Capacity,
 +            ["orbs"]=pcs.OrbQueue.Orbs.Select((orb,index)=>new Dictionary<string,object?>{["id"]=orb.Id.Entry,
 +                ["native_ref"]=NativeObjectIdentity.Get(orb),["name"]=orb.Title.GetFormattedText(),
@@ -10060,10 +10414,10 @@ index 0000000..bdff6b0
 +}
 diff --git a/src/Sts2Headless/NativeSelectorSelection.cs b/src/Sts2Headless/NativeSelectorSelection.cs
 new file mode 100644
-index 0000000..4327288
+index 0000000..399fbfe
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorSelection.cs
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,150 @@
 +using MegaCrit.Sts2.Core.Commands;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -10106,7 +10460,8 @@ index 0000000..4327288
 +            || Options.Count==0 || Options.Distinct(ReferenceEqualityComparer.Instance).Count()!=Options.Count
 +            || Options.Any(card=>!card.IsMutable || !ReferenceEquals(card.Owner,player))) return false;
 +        if (IsChoose)
-+            return Options.SequenceEqual(Context.Offered!,ReferenceEqualityComparer.Instance);
++            // Draw-pile cards would need NativeDrawPileOrder's key; no game caller offers them here.
++            return Options.SequenceEqual(Context.Offered!,ReferenceEqualityComparer.Instance) && NativeDrawPileOrder.NoneInDrawPile(Options);
 +        var p=Context.Preferences;
 +        // NCombatPileCardSelectScreen stages a selected set, clamps completion
 +        // to displayed holders, and exposes manual confirm at the native minimum.
@@ -10123,6 +10478,11 @@ index 0000000..4327288
 +    {
 +        var visible = IsChoose ? Options : NativeSelectorVisibleOrder.Capture(Options, DisplayPile);
 +        var values=visible.Select(card=>(Native:card,Display:NativeSelectorCardDisplay.Capture(card,DisplayPile))).ToList();
++        // The game's grid keeps draw order among identical cards; native_refs would expose it. Identical displays
++        // are reassigned within their own positions by NativeDrawPileOrder's key (the shown multiset is unchanged).
++        if (DisplayPile==PileType.Draw && Combat!=null)
++            values=NativeDrawPileOrder.WithinIdentical(values,value=>value.Native,
++                value=>System.Text.Json.JsonSerializer.Serialize(value.Display.Card),Context.Player,Combat);
 +        return (values,System.Text.Json.JsonSerializer.Serialize(values.Select(value=>value.Display.Card)));
 +    }
 +    internal Dictionary<string,object?> Capture(Player player)
@@ -18027,10 +18387,10 @@ index 6b9de4a..22c69d3 100644
  }
 diff --git a/src/Sts2Headless/SimpleGridSelection.cs b/src/Sts2Headless/SimpleGridSelection.cs
 new file mode 100644
-index 0000000..4116952
+index 0000000..ed3bc99
 --- /dev/null
 +++ b/src/Sts2Headless/SimpleGridSelection.cs
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,93 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Commands;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -18067,6 +18427,8 @@ index 0000000..4116952
 +        && _originals.SequenceEqual(_context.Offered!, ReferenceEqualityComparer.Instance)
 +        && _originals.Count > 0 && _originals.Distinct(ReferenceEqualityComparer.Instance).Count() == _originals.Count
 +        && _originals.All(card => card.IsMutable && ReferenceEquals(card.Owner, player))
++        // Draw-pile cards would need NativeDrawPileOrder's key; no game caller offers them here.
++        && NativeDrawPileOrder.NoneInDrawPile(_originals)
 +        && Prefs.MinSelect >= 0 && Prefs.MaxSelect >= Prefs.MinSelect && Prefs.MaxSelect <= _originals.Count
 +        // A zero minimum with automatic-at-max completion has a different
 +        // initial confirm-button transition. Retain its existing unsupported

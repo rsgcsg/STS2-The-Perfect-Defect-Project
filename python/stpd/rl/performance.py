@@ -64,7 +64,8 @@ class PerformanceConfig:
     # rows-v2 only: torch.compile of the per-bucket scene/heads/action block.
     prepared_compile: bool = False
     # rows-v2 only (V3 T6): '' or a '+'-joined sorted subset of `rows_kernels.LEVERS`
-    # ("cross", "heads", "nodes"). Same function, BF16 tolerance; '' keeps the old path.
+    # ("cross", "embed", "heads", "nodes"; embed needs nodes). Same function, BF16
+    # tolerance; '' keeps the old path.
     prepared_kernels: str = ""
     # rows-v2 only: scene rows per CPU layout bucket (`batch_preparation.ROW_BUCKET_ROWS`
     # = 256 by default). Any value >= the group's rows is one bucket per group
@@ -102,6 +103,9 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "invalid_prepared_kernels") from error
         if self.prepared_kernels and self.prepared_forward != "rows-v2":
             raise BoundaryError("rl_performance", "prepared_kernels_requires_rows_v2")
+        if "embed" in self.prepared_kernels.split("+") and not self.prepared_compile:
+            # Eager CUDA embedding backward already sorts; the lever pays only compiled.
+            raise BoundaryError("rl_performance", "prepared_kernels_embed_requires_compile")
         if (type(self.prepared_bucket_rows) is not int
                 or not 1 <= self.prepared_bucket_rows <= 2**20):
             raise BoundaryError("rl_performance", "invalid_prepared_bucket_rows")
