@@ -1032,3 +1032,49 @@ def test_device_rows_gives_the_same_scores_and_values(vocabulary, model, join_wo
                                            body[2])
                                  for kind, body in assembler.calls if kind == "finish"}
     assert len(finished[True]) == 6 and finished[True] == finished[False]
+
+
+# -- V3 option (default off): per-row stage times (chou-front) ---------------------
+@pytest.mark.parametrize("join_workers", [0, 1])
+def test_trace_counts_every_scored_row_per_stage_and_changes_no_result(vocabulary, model,
+                                                                      join_workers):
+    """`trace`: each scored row lands once in every stage histogram (0.25 ms bins) and
+    the replies and assembler calls equal the untraced path; off = no trace stats."""
+    from stpd.p1.inference_service import TRACE_BINS, TRACE_STAGES
+
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    finished: dict[bool, Any] = {}
+    reports: dict[bool, Any] = {}
+    for trace in (False, True):
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, trace=trace,
+                           join_workers=join_workers, window_ms=50.0)
+        client = _open_client(service, encoder, "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            # one refused row (unknown game) is never traced
+            bad, bad_binary = _packet(encoded[:1], "nope", 10)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 2, "rows": bad}, bad_binary))
+            refused, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            reports[trace] = service.close()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+        assert refused["results"][0]["error_code"] == "EPISODE_NOT_OPEN"
+        finished[trace] = {body[0]: (body[1]["behavior_q"], body[1]["selected_index"], body[2])
+                           for kind, body in assembler.calls if kind == "finish"}
+    assert finished[True] == finished[False] and len(finished[True]) == 6
+    assert "trace" not in reports[False]
+    bins = reports[True]["trace"]
+    assert set(bins) == set(TRACE_STAGES)
+    for stage in TRACE_STAGES:
+        assert len(bins[stage]) == TRACE_BINS and sum(bins[stage]) == 6, stage
+    # the window (50 ms) is spent in the batcher: every row waited there at least ~0 ms,
+    # and the total is never shorter than the forward
+    first = [next(i for i, n in enumerate(bins[stage]) if n) for stage in ("total", "forward")]
+    assert first[0] >= first[1]

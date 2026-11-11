@@ -26,6 +26,13 @@ own CPU per row. `--threads profile` (or a path prefix, to also write pstats fil
 runs those threads under cProfile timed by thread CPU and adds per-function self CPU
 per row (profiler overhead included: read shares, take absolutes from `cpu`).
 
+`--bind game`: like `NodeAggregator(services=...)` (#473), every node client links to
+all K services and binds each game by `service_for_game` (default `node`: node n ->
+service n % K, which is uneven when K does not divide the node count).
+Config keys handled here, not by the service: `segment_format` (the assembler's T3
+format, #466), `switch_interval_ms` (the service host's `sys.setswitchinterval`).
+`"trace": true` (service option): per-row stage time percentiles per load point.
+
 Example: python tools/bench_rl_inference_3.py obs.jsonl out.jsonl \
   --configs '[{"name":"S2","services":2,"prepare_workers":10,"in_flight":2}]' \
   --loads 24,48,72 --batch 25,30 --agg-ms 40 --prof
@@ -92,13 +99,24 @@ def connect(address: Any, authkey: bytes, encoder: dict[str, Any], compiler: dic
 
 def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler: dict[str, Any],
                 rows: list[Any], slots: int, think_ms: float, agg_ms: float,
-                batch: tuple[int, int] | None, seconds: float, offset: int, out: Any) -> None:
+                batch: tuple[int, int] | None, seconds: float, offset: int, out: Any,
+                services: list[tuple[Any, bytes]] | None = None) -> None:
+    """One node; with `services` (bind game) it links to all of them like the aggregator."""
+    from stpd.p1.fast_aggregator import service_for_game
     from stpd.p1.inference_service import V3_MAX_MESSAGE, V3_SCHEMA, pack_message, unpack_message
     rng = random.Random(offset)
     sigma = 0.35
     mu = math.log(think_ms / 1000) - sigma * sigma / 2
     names = [f"n{offset}-{g}" for g in range(slots)]
-    c, rid = connect(address, authkey, encoder, compiler, f"node-{offset}", names)
+    targets = services or [(address, authkey)]
+    bound = {name: service_for_game(name, len(targets)) for name in names}
+    links = []
+    rid = 0
+    for k, (k_address, k_auth) in enumerate(targets):
+        mine = [name for name in names if bound[name] == k]
+        link, last = connect(k_address, k_auth, encoder, compiler, f"node-{offset}-{k}", mine)
+        links.append(link)
+        rid = max(rid, last)
     step = dict.fromkeys(names, 0)
     cursor = {name: (offset * 7919 + i * 104729) % len(rows) for i, name in enumerate(names)}
     cond = threading.Condition()
@@ -116,7 +134,7 @@ def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler:
     outstanding = [0]
     failure: list[str] = []
 
-    def receiver() -> None:
+    def receiver(c: Any) -> None:
         while True:
             try:
                 envelope, _ = unpack_message(c.recv_bytes(V3_MAX_MESSAGE))
@@ -142,7 +160,8 @@ def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler:
                 if stop[0] and outstanding[0] == 0:
                     return
 
-    threading.Thread(target=receiver, daemon=True).start()
+    for link in links:
+        threading.Thread(target=receiver, args=(link,), daemon=True).start()
     pending: list[tuple[str, float]] = []
     first: float | None = None
     packet_id = 0
@@ -168,11 +187,11 @@ def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler:
                 send, pending, first = pending, [], None
                 target = rng.randint(*batch) if batch else 4096
             for name, (r, s_, floor) in outcomes:  # the env's step outcome, before its next row
-                c.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "step_outcome",
-                                           "row_request_id": r, "game_instance_id": name,
-                                           "step_index": s_, "status": "completed",
-                                           "receipt_sha256": "0" * 64,
-                                           "public_facts": {"floor": floor}, "terminal": None}))
+                links[bound[name]].send_bytes(pack_message({
+                    "schema": V3_SCHEMA, "kind": "step_outcome", "row_request_id": r,
+                    "game_instance_id": name, "step_index": s_, "status": "completed",
+                    "receipt_sha256": "0" * 64, "public_facts": {"floor": floor},
+                    "terminal": None}))
             if send is None:
                 if now >= end and not pending:
                     stop[0] = True
@@ -185,12 +204,13 @@ def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler:
                               + [now + 0.05]) - now
                 cond.wait(max(timeout, 0))
                 continue
-            wire, binary = [], bytearray()
+            wires: list[tuple[list[Any], bytearray]] = [([], bytearray()) for _ in links]
             sent = time.perf_counter()
             for name, at in send:
                 meta, data = rows[cursor[name] % len(rows)]
                 cursor[name] += 1
                 rid += 1
+                wire, binary = wires[bound[name]]
                 wire.append(wire_row(meta, data, rid, name, step[name], len(binary)))
                 binary += data
                 step[name] += 1
@@ -201,15 +221,19 @@ def node_client(address: Any, authkey: bytes, encoder: dict[str, Any], compiler:
             packets[0] += 1
             packets[1] += len(send)
         packet_id += 1
-        c.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
-                                   "packet_id": packet_id, "rows": wire}, binary))
+        for link, (wire, binary) in zip(links, wires, strict=True):
+            if wire:  # the node's packet, split by service as the aggregator binds games
+                link.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                              "packet_id": packet_id, "rows": wire}, binary))
     for name in names:  # free the games' segments in the assembler
         rid += 1
-        c.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "episode_close", "request_id": rid,
-                                   "game_instance_id": name, "reason": "stop",
-                                   "last_step_index": step[name] - 1 if step[name] else None}))
+        links[bound[name]].send_bytes(pack_message({
+            "schema": V3_SCHEMA, "kind": "episode_close", "request_id": rid,
+            "game_instance_id": name, "reason": "stop",
+            "last_step_index": step[name] - 1 if step[name] else None}))
     time.sleep(0.5)
-    c.close()
+    for link in links:
+        link.close()
     out.put((len(lat), lat, rtt, packets, time.process_time()))
 
 
@@ -436,6 +460,23 @@ def thread_report(rows: int, dump: str, top: int = 25) -> dict[str, Any]:
     return report
 
 
+def hist_pct(counts: list[int]) -> list[float | None]:
+    """[p50, p95, mean] in ms of a 0.25 ms-bin histogram (service trace)."""
+    total = sum(counts)
+    if not total:
+        return [None, None, None]
+    out: list[float | None] = []
+    for q in (0.5, 0.95):
+        seen = 0
+        for i, n in enumerate(counts):
+            seen += n
+            if seen >= q * total:
+                out.append(round((i + 0.5) / 4, 2))
+                break
+    out.append(round(sum((i + 0.5) / 4 * n for i, n in enumerate(counts)) / total, 2))
+    return out
+
+
 def pct(values: list[float], q: float) -> float | None:
     return round(1000 * values[min(len(values) - 1, int(len(values) * q))], 1) if values else None
 
@@ -493,17 +534,24 @@ def build(device: str, spec: str) -> tuple[Any, Any, Any]:
 def service_host(conn: Any, index: int, config: dict[str, Any], device: str, spec: str,
                  cpus: list[int] | None, prof: bool, threads: str | None = None,
                  stub: bool = False) -> None:
+    import sys
+
     from stpd.p1.inference_service import FastInferenceService
     from stpd.rl.fast_assembly import FastSegmentAssembler, MuHandoff
     if threads is not None:
         thread_profiling(threads != "cpu")
+    config = dict(config)
+    switch = config.pop("switch_interval_ms", None)
+    if switch is not None:
+        sys.setswitchinterval(switch / 1000)
+    formats = {"segment_format": config.pop("segment_format")} if "segment_format" in config else {}
     try:
         vocabulary, model, compiler = build(device, spec)
         if stub:
             model = StubForward()
         assembler = FastSegmentAssembler(assembler_id=f"bench-{index}",
                                          compiler_identity=compiler.identity,
-                                         emit=lambda segment: None)
+                                         emit=lambda segment: None, **formats)
         service = FastInferenceService(vocabulary, compiler.identity, assembler,
                                        training_generation="gen-1", address=("127.0.0.1", 0),
                                        prepare_cpus=cpus, max_rows=4096, device=device,
@@ -549,6 +597,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--phase-s", type=float, default=15.0)
     parser.add_argument("--sat", default="64x32", help="closed-loop conns x games; '' = none")
     parser.add_argument("--mps", action="store_true", help="label: running under CUDA MPS")
+    parser.add_argument("--bind", default="node", choices=("node", "game"),
+                        help="node: node n -> service n %% K; game: service_for_game per game")
     parser.add_argument("--prof", action="store_true")
     parser.add_argument("--stub-forward", action="store_true",
                         help="random device outputs of the real shapes: host side alone")
@@ -683,7 +733,13 @@ def main(argv: list[str] | None = None) -> None:
             busy = dict.fromkeys(("join_seconds", "stage_seconds", "finish_seconds",
                                   "dispatch_seconds"), 0.0)
             refused: dict[str, int] = {}
+            trace: dict[str, list[int]] = {}
             for (s0, c0, p0), (s1, c1, p1) in zip(before[0], after, strict=True):
+                for stage, counts in (s1.get("trace") or {}).items():
+                    old = (s0.get("trace") or {}).get(stage, [0] * len(counts))
+                    mine = trace.setdefault(stage, [0] * len(counts))
+                    for i, (x, y) in enumerate(zip(counts, old, strict=True)):
+                        mine[i] += x - y
                 forwards += s1["batches"] - s0["batches"]
                 rows_done += s1["rows"] - s0["rows"]
                 device_s += s1["device_seconds"] - s0["device_seconds"]
@@ -708,6 +764,8 @@ def main(argv: list[str] | None = None) -> None:
             if prof:
                 result["main_us_per_row"] = {k: round(1e6 * v / per_row, 1)
                                              for k, v in sorted(prof.items())}
+            if trace:
+                result["trace_ms"] = {stage: hist_pct(counts) for stage, counts in trace.items()}
             return result
 
         for phase, slots in enumerate(loads_here):
@@ -715,7 +773,8 @@ def main(argv: list[str] | None = None) -> None:
             out = context.Queue()
             clients = [context.Process(target=node_client, args=(
                 *args_of(n), slots, a.think_ms, a.agg_ms, batch, a.phase_s,
-                1000 * n + slots + 100000 * phase, out)) for n in range(a.nodes)]
+                1000 * n + slots + 100000 * phase, out,
+                addresses if a.bind == "game" else None)) for n in range(a.nodes)]
             for p in clients:
                 p.start()
             results = collect(out, clients)
