@@ -25,6 +25,7 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -532,6 +533,11 @@ class SegmentLearner:
                                  if self.dataplane is not None else 1)
         if type(self.prepared_batches) is not int or self.prepared_batches < 1:
             raise ValueError("positive_prepared_batches_required")
+        # Keep the read-ahead window filled while the loop waits for the next
+        # prepared batch (default off: the old loop only refills between steps).
+        self.ahead_while_waiting = (self.dataplane or {}).get("ahead_while_waiting", False)
+        if type(self.ahead_while_waiting) is not bool:
+            raise ValueError("ahead_while_waiting_must_be_explicit")
         self.performance = config.performance or PerformanceConfig(
             packed=True,
             tensor_cache=True,
@@ -2556,6 +2562,12 @@ class SegmentLearner:
             self.pending_batch = active, self._submit_batch(active)
         active, future = self.pending_batch
         began = time.perf_counter()
+        while self.ahead_while_waiting and not future.done():
+            # Same selections in the same order; they are only submitted while
+            # this one is still being prepared instead of after it.
+            wait_futures((future,), timeout=0.05)
+            if not future.done():
+                self._prepare_ahead()
         try:
             batch = future.result()
         except ValueError as error:
@@ -3173,6 +3185,8 @@ class SegmentLearner:
                         break
                     if self.checkpoint_requested:
                         self.checkpoint()
+                    if self.ahead_while_waiting:
+                        self._prepare_ahead()
                     if not self._prepare():
                         waiting = time.monotonic()
                         with self.condition:
