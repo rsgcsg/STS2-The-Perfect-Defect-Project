@@ -929,7 +929,15 @@ class FastInferenceService:
                  part_rows: int = 0, device_rows: bool = False,
                  audit_fraction: float = 0.01,
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
-                 env_sha256: str | None = None) -> None:
+                 env_sha256: str | None = None, exit_code_on_failure: int | None = None,
+                 exit_grace_seconds: float = 60.0) -> None:
+        """`exit_code_on_failure`: a launcher that runs this service as its process sets
+        it (non-zero). Once the service stops on a failure (`stop_reason` set by any
+        background thread, a failed publish, a gone device process, an audit
+        mismatch), a watcher closes it within `exit_grace_seconds` and ends the
+        process with that code, so a broken service never sits alive with its
+        connections open (its learner hand-off then sees EOF without an end).
+        """
         import multiprocessing
         from multiprocessing.connection import Listener
 
@@ -1061,17 +1069,59 @@ class FastInferenceService:
         self.listener = Listener(address or (ip, 0), authkey=self.auth, backlog=256)
         self.address = cast(tuple[str, int], self.listener.address)
         self.links: list[threading.Thread] = []
-        self.threads = [threading.Thread(target=self._accept, daemon=True,
+        self.threads = [threading.Thread(target=self._guarded(self._accept), daemon=True,
                                          name="rl-inference-3-accept"),
-                        threading.Thread(target=self._batch, daemon=True,
+                        threading.Thread(target=self._guarded(self._batch), daemon=True,
                                          name="rl-inference-3-batch"),
-                        threading.Thread(target=self._results, daemon=True,
+                        threading.Thread(target=self._guarded(self._results), daemon=True,
                                          name="rl-inference-3-results")]
-        self.threads += [threading.Thread(target=self._sender, args=(index,), daemon=True,
-                                          name=f"rl-inference-3-send-{index}")
+        self.threads += [threading.Thread(target=self._guarded(self._sender), args=(index,),
+                                          daemon=True, name=f"rl-inference-3-send-{index}")
                          for index in range(prepare_workers)]
         for thread in self.threads:
             thread.start()
+        if exit_code_on_failure is not None and (
+                type(exit_code_on_failure) is not int or exit_code_on_failure == 0):
+            raise ValueError("exit_code_on_failure_must_be_non_zero")
+        self.exit_code_on_failure, self.exit_grace_seconds = (
+            exit_code_on_failure, exit_grace_seconds)
+        self.exit_process: Callable[[int], Any] = os._exit  # replaced only by tests
+        self.closed = threading.Event()
+        if exit_code_on_failure is not None:
+            threading.Thread(target=self._exit_on_failure, daemon=True,
+                             name="rl-inference-3-exit-watch").start()
+
+    def _guarded(self, target: Callable[..., None]) -> Callable[..., None]:
+        """A background thread never dies silently: an unhandled error stops the service."""
+        def run(*args: Any) -> None:
+            try:
+                target(*args)
+            except BaseException as error:  # noqa: BLE001 - recorded, service stopped
+                name = threading.current_thread().name
+                self._stop("thread_failed", f"{name}: {type(error).__name__}: {str(error)[:200]}")
+                raise
+        return run
+
+    def _exit_on_failure(self) -> None:
+        self.stopping.wait()
+        if self.stop_reason is None:
+            return  # an orderly close(): the launcher owns the exit
+        closer = threading.Thread(target=self._close_after_failure, daemon=True,
+                                  name="rl-inference-3-failure-close")
+        closer.start()
+        closer.join(self.exit_grace_seconds)
+        print(json.dumps({"rl_inference_3_exit": self.exit_code_on_failure,
+                          "stop_reason": self.stop_reason, "closed": self.closed.is_set()}),
+              file=sys.stderr, flush=True)
+        assert self.exit_code_on_failure is not None
+        self.exit_process(self.exit_code_on_failure)
+
+    def _close_after_failure(self) -> None:
+        try:
+            self.close()
+        except BaseException as error:  # noqa: BLE001 - the process exits regardless
+            print(json.dumps({"rl_inference_3_close_failed": repr(error)[:300]}),
+                  file=sys.stderr, flush=True)
 
     # -- mu ------------------------------------------------------------------
     def _device_control(self, kind: str, key: str, blob: bytes | None) -> None:
@@ -1080,6 +1130,17 @@ class FastInferenceService:
             raise BoundaryError("rl_inference_3", "device_control_failed")
 
     def publish(self, model: Any, handoff: Any) -> bool:
+        """Offer a mu; any error on the way stops the service loudly (and is raised).
+
+        A refused offer is an answer (False), not an error.
+        """
+        try:
+            return self._publish(model, handoff)
+        except BaseException as error:
+            self._stop("publish_failed", f"{type(error).__name__}: {str(error)[:200]}")
+            raise
+
+    def _publish(self, model: Any, handoff: Any) -> bool:
         """Offer a mu to the assembler; the device holds it only when accepted.
 
         The model reaches the device process before the assembler can plan a
@@ -1598,6 +1659,7 @@ class FastInferenceService:
             self.device_process.kill()
         self.threads[2].join(10)
         self.control.close()
+        self.closed.set()
         batches = self.stats["batches"]
         return {"schema": V3_SCHEMA, "service_instance": self.service_instance, **self.stats,
                 "audited_games": len(self.audits),

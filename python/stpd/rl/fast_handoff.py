@@ -103,6 +103,10 @@ INSTANCE_CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 INSTANCE_CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id",
                                   "close_reason", "failure", "segments"})
 LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
+# The sender's orderly goodbye: every hand-off was acked. A channel that reaches EOF
+# without it lost its assembler (crash, killed process); the learner fences loudly.
+HANDOFF_END_SCHEMA = "stpd/rl-fast-handoff-end-1"
+HANDOFF_END_KEYS = frozenset({"schema", "assembler_id", "handed_off"})
 # Close reasons after which a game gets no labels (the learner excludes its unused segments).
 UNLABELLED_CLOSE_REASONS = frozenset({"unknown", "env_crash"})
 SEGMENT_KINDS = ("bootstrap", "terminal", "truncated", "rejected")
@@ -334,11 +338,16 @@ class ShmSegmentSender:
         self.connection.send(message)
 
     def close(self) -> None:
-        """Wait for every acknowledgement, then release the blocks."""
+        """Wait for every acknowledgement, say the orderly end, then release the blocks."""
         try:
             # Every block in flight is still mapped by the reader until its ack arrives;
             # unlinking one early would fence the learner's input (shm_open fails).
             self._drain(block=True, until_empty=True)
+            # Only after a complete drain: a sender that fails here sends no end, and the
+            # reader treats the EOF as a lost assembler.
+            self.connection.send({"schema": HANDOFF_END_SCHEMA,
+                                  "assembler_id": self.assembler_id,
+                                  "handed_off": self.sequence})
         finally:
             for block, _ in self.inflight.values():
                 block.close()
@@ -362,16 +371,28 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
     return message
 
 
+def check_handoff_end(message: Any) -> dict[str, Any]:
+    """Exact keys and types of the sender's orderly end; loud on anything else."""
+    if (not isinstance(message, dict) or message.get("schema") != HANDOFF_END_SCHEMA
+            or set(message) != HANDOFF_END_KEYS
+            or not isinstance(message["assembler_id"], str) or not message["assembler_id"]
+            or type(message["handed_off"]) is not int or message["handed_off"] < 0):
+        raise HandoffError("handoff_end_schema")
+    return message
+
+
 def receive_handoff(connection: Connection) -> tuple[str, Any]:
     """SGD-side reference reader for every message of the channel.
 
     Returns `("segment", (message, header, rows))` (as `receive_segment`),
     `("labels", (message, data))` (bytes verified, acked; the label rule and the
-    carried originals are the learner's to check) or `("instance_closed", message)`;
-    anything else raises.
+    carried originals are the learner's to check), `("instance_closed", message)` or
+    `("end", message)` (the sender's orderly end); anything else raises.
     """
     message = connection.recv()
     schema = message.get("schema") if isinstance(message, dict) else None
+    if schema == HANDOFF_END_SCHEMA:
+        return "end", check_handoff_end(message)
     if schema == INSTANCE_CLOSED_SCHEMA:
         return "instance_closed", check_instance_closed(message)
     if schema == LABELS_SCHEMA:

@@ -87,6 +87,7 @@ from .checkpoint_state import (
     validate_optimizer_order,
 )
 from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
+from .fast_handoff import HandoffError
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_source import (
     FastSegment,
@@ -1830,6 +1831,11 @@ class SegmentLearner:
                 try:
                     kind, message, data = read_handoff(connection)
                 except EOFError:
+                    self._fast_lost()
+                    return
+                if kind == "end":  # orderly: every hand-off of this assembler was acked
+                    self._event("fast_handoff_ended", assembler_id=message["assembler_id"],
+                                handed_off=message["handed_off"])
                     return
                 self.fast_intake.set_generation(self.generation)
                 if kind in ("segment", "labels"):
@@ -1845,6 +1851,16 @@ class SegmentLearner:
         except BaseException as error:
             self._fast_fence("fast_handoff", error)
             raise
+
+    def _fast_lost(self) -> None:
+        """EOF without the sender's end: its assembler/service died. Fence input loudly so
+        the training loop stops now instead of waiting for data until its deadline; a
+        learner that is already stopping only records it."""
+        with self.condition:
+            stopping = self.newlease_stopped
+        self._event("fast_handoff_lost", learner_stopping=stopping)
+        if not stopping:
+            self._fast_fence("fast_handoff_lost", HandoffError("assembler_gone_without_end"))
 
     def _fast_fence(self, operation: str, error: BaseException) -> None:
         with self.condition:

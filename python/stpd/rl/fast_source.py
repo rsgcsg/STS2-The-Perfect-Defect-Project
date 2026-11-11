@@ -82,7 +82,13 @@ from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.rows_encoder_wire import decode_row
 
 from . import batch_preparation as bp
-from .fast_handoff import HANDOFF_KEYS, HANDOFF_SCHEMA, HandoffError
+from .fast_handoff import (
+    HANDOFF_END_SCHEMA,
+    HANDOFF_KEYS,
+    HANDOFF_SCHEMA,
+    HandoffError,
+    check_handoff_end,
+)
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_segment import MU_KEYS, decode_segment, sha256
 from .heads import categorical_lambda_targets
@@ -300,14 +306,16 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
 
 
 def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | None]:
-    """One hand-off message: ("segment" | "labels", message, verified bytes) or
-    ("closed", message, None).
+    """One hand-off message: ("segment" | "labels", message, verified bytes),
+    ("closed", message, None) or ("end", message, None) (the sender's orderly end).
 
     A segment is acked by the caller (`ack`) only after it has been taken over, so the
     sender's in-flight bound stays the one back-pressure point.
     """
     message = connection.recv()
     schema = message.get("schema") if isinstance(message, dict) else None
+    if schema == HANDOFF_END_SCHEMA:
+        return "end", check_handoff_end(message), None
     if schema == CLOSED_SCHEMA:
         return "closed", check_instance_closed(message), None
     kind = "segment"
