@@ -6,6 +6,8 @@ import { publicFieldPath } from "./publicIdentity.js";
 export class PublicPath {
   private fields: Map<string, PublicPath> | undefined;
   private items: PublicPath[] | undefined;
+  /** @internal Lazily set by publicIdentity's relationMemoKey. */
+  relationKey: string | undefined;
   constructor(readonly path: string) {}
 
   field(key: string): PublicPath {

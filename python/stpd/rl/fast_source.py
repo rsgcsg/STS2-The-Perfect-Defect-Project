@@ -52,10 +52,13 @@ Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲
     loss coefficient is > 0 (an explicit list may not leave one out; lead
     ruling 11-10); `compare_hp_labels` still has to show the hp rule equal to
     the old chain on a corpus before a long run relies on hp. It switches to
-    `combat_end` once the native side emits it (WP1 slice 3). One difference
-    from the old chain: a reward-boundary battle's hp rows enter the pool at
-    game end, not at its segment's commit (pool timing only; same rows, same
-    values).
+    `combat_end` once the native side emits it (WP1 slice 3). Two differences
+    from the old chain (lead ruling on #450 review N1, accepted as current
+    behavior; stop/budget truncation is rare. Note: with the 11-10 default
+    above, hp is on whenever hp_coef > 0, and LossConfig.hp_coef is 0.1):
+    (1) hp rows enter the pool at game end, not at their segment's commit;
+    (2) a game without a clean close (truncated, failed, or across a
+    generation change) gives no hp labels.
 """
 
 from __future__ import annotations
@@ -495,8 +498,12 @@ class FastSegmentIntake:
 
     # -- hand-off ---------------------------------------------------------------------
     def offer(self, message: dict[str, Any], data: bytes) -> IntakeDecision:
-        """One verified hand-off segment (bytes already match message sha256)."""
-        header, _rows = decode_segment(data, expected_sha256=message["sha256"])
+        """One verified hand-off segment (bytes already match message sha256).
+
+        `read_handoff` hashed these bytes once; the header is parsed without a
+        second whole-segment or per-row hash (the decode worker binds every row
+        to its digest before any training use)."""
+        header, _rows = decode_segment(data, header_only=True)
         if (header["segment_id"] != message["segment_id"] or not header["trainable"]
                 or len(header["rows"]) != message["rows"]
                 or header["assembler_instance"] != message["assembler_id"]

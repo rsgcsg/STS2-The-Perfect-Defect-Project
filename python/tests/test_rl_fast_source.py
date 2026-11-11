@@ -377,11 +377,7 @@ def _sender(connection: Any, segments: list[SealedSegment], close: dict[str, Any
     if labels:
         send_labels(sender, segments)
     connection.send(close)
-    # ShmSegmentSender.close() currently waits for one ack only, then unlinks the
-    # rest (reported to the sender's owner); wait for every ack here until fixed.
-    while sender.inflight:
-        sender._drain(block=True)
-    sender.close()
+    sender.close()  # waits for every ack (#445)
 
 
 def test_read_handoff_verifies_acks_and_reads_the_close_in_order():
@@ -541,3 +537,26 @@ def test_terminal_close_without_labels_is_counted_when_enabled():
     i, sealed = labelled_intake(aux_labels=frozenset({"terminal"}))
     i.closed(closed_for(sealed))
     assert i.report()["closed_without_labels"] == 1
+
+
+def test_header_only_parse_skips_row_digests_but_the_decode_worker_still_binds_them():
+    from stpd.rl.fast_segment import SegmentFormatError, decode_segment, sha256
+
+    data = bytes(bootstrap_and_terminal()[0].data)
+    header, rows = decode_segment(data)
+    quick, none = decode_segment(data, header_only=True)
+    assert quick == header and none == [] and rows
+    # One flipped row byte: the header parse (bytes already bound by the hand-off
+    # digest) does not hash rows; every full decode refuses the bytes loudly.
+    length = int.from_bytes(data[8:16], "little")
+    row0 = 16 + length + (-length % 8)
+    bad = bytearray(data)
+    bad[row0] ^= 0xFF
+    assert decode_segment(bytes(bad), header_only=True)[0] == header
+    with pytest.raises(SegmentFormatError, match="row_digest"):
+        decode_segment(bytes(bad))
+    with pytest.raises(SegmentFormatError, match="segment_digest"):
+        decode_segment(bytes(bad), expected_sha256=sha256(data))
+    # Layout checks stay in the header parse: trailing bytes are still refused.
+    with pytest.raises(SegmentFormatError, match="trailing|out_of_bounds|offsets"):
+        decode_segment(data + b"\x00" * 8, header_only=True)

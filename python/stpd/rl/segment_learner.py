@@ -25,6 +25,7 @@ import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -532,6 +533,11 @@ class SegmentLearner:
                                  if self.dataplane is not None else 1)
         if type(self.prepared_batches) is not int or self.prepared_batches < 1:
             raise ValueError("positive_prepared_batches_required")
+        # Keep the read-ahead window filled while the loop waits for the next
+        # prepared batch (default off: the old loop only refills between steps).
+        self.ahead_while_waiting = (self.dataplane or {}).get("ahead_while_waiting", False)
+        if type(self.ahead_while_waiting) is not bool:
+            raise ValueError("ahead_while_waiting_must_be_explicit")
         self.performance = config.performance or PerformanceConfig(
             packed=True,
             tensor_cache=True,
@@ -758,6 +764,7 @@ class SegmentLearner:
                     * (self.prepared_batches + 2) // 4),
                 source_wait_seconds=self.dataplane.get("source_wait_seconds", 60),
                 handoff=self.sgd_options is not None,
+                persistent_pools=self.dataplane.get("persistent_pools", False),
                 **preparation_options)
         else:
             self.input_preparer = BatchPreparer(
@@ -959,7 +966,8 @@ class SegmentLearner:
             "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init(),
             **({"data_parallel": dict(options.data_parallel)}
                if options.data_parallel is not None else {}),
-            **({"compile": dict(options.compile)} if options.compile is not None else {})})
+            **({"compile": dict(options.compile)} if options.compile is not None else {}),
+            **({"stage_thread": True} if options.stage_thread else {})})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
@@ -1781,7 +1789,13 @@ class SegmentLearner:
             decision = self.fast_intake.attest(request)
         else:
             decision = self.fast_intake.exclude(request)
-        self._fast_apply(decision)
+        try:
+            self._fast_apply(decision)
+        except BaseException as error:
+            # Released buffered segments fail exactly as on the hand-off thread:
+            # input is fenced, not only reported back to this actor (review rec. 3).
+            self._fast_fence("fast_control", error)
+            raise
         assert decision.reply is not None
         return decision.reply
 
@@ -1819,14 +1833,17 @@ class SegmentLearner:
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
         except BaseException as error:
-            with self.condition:
-                self.input_fenced = self.newlease_stopped = True
-                self.input_failure = {"operation": "fast_handoff", "code": "INVALID_PACKET",
-                                      "error_type": type(error).__name__,
-                                      "error": str(error)[:200]}
-                self.condition.notify_all()
-                self._notify_capacity(force=True)
+            self._fast_fence("fast_handoff", error)
             raise
+
+    def _fast_fence(self, operation: str, error: BaseException) -> None:
+        with self.condition:
+            self.input_fenced = self.newlease_stopped = True
+            self.input_failure = {"operation": operation, "code": "INVALID_PACKET",
+                                  "error_type": type(error).__name__,
+                                  "error": str(error)[:200]}
+            self.condition.notify_all()
+            self._notify_capacity(force=True)
 
     def _fast_referenced(self) -> set[str]:
         """Segments a prepared (read-ahead) batch already holds: treated as used."""
@@ -1893,7 +1910,9 @@ class SegmentLearner:
         for record in self.queue.pending:
             if overflow <= 0:
                 break
-            if record["segment_id"] not in referenced:
+            # Only fast records: an old-chain lease's segment has its own episode
+            # accounting and is never a fast capacity drop (review S4).
+            if record.get("fast") and record["segment_id"] not in referenced:
                 victims.add(record["segment_id"])
                 overflow -= record["rows"]
         if overflow > 0:
@@ -2544,6 +2563,12 @@ class SegmentLearner:
             self.pending_batch = active, self._submit_batch(active)
         active, future = self.pending_batch
         began = time.perf_counter()
+        while self.ahead_while_waiting and not future.done():
+            # Same selections in the same order; they are only submitted while
+            # this one is still being prepared instead of after it.
+            wait_futures((future,), timeout=0.05)
+            if not future.done():
+                self._prepare_ahead()
         try:
             batch = future.result()
         except ValueError as error:
@@ -3161,6 +3186,8 @@ class SegmentLearner:
                         break
                     if self.checkpoint_requested:
                         self.checkpoint()
+                    if self.ahead_while_waiting:
+                        self._prepare_ahead()
                     if not self._prepare():
                         waiting = time.monotonic()
                         with self.condition:

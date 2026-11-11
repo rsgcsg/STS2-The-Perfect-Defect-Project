@@ -1,6 +1,7 @@
 export * from "./contracts.js";
 export * from "./canonical.js";
 export * from "./reducer.js";
+export { configureReduceMemo, reduceMemoStatus, P1ReduceMemoDivergence, type ReduceMemoMode, type ReduceMemoOptions, type ReduceMemoStatus } from "./reduceMemo.js";
 export * from "./publicGraph.js";
 export * from "./admission.js";
 export * from "./publicIdentity.js";

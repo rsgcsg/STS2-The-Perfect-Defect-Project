@@ -19,7 +19,9 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Sequence
 from concurrent.futures import CancelledError, Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
@@ -70,6 +72,49 @@ class _SharedArray:
     dtype: str
 
 
+@dc.dataclass(frozen=True)
+class _ArrayTable:
+    """A source's slab offsets as one int64 table (name, offset, count, dtype).
+
+    A 64-row segment has ~3,300 slabs. As a tuple of `_SharedArray` objects they
+    cost the learner process ~2 ms/segment to unpickle (pool result) and ~1.5 ms
+    to pickle again (assembly submit), all under its GIL; one numpy table
+    crosses both hops as a single buffer. Same offsets, same views.
+    """
+
+    names: tuple[str, ...]
+    dtypes: tuple[str, ...]
+    rows: np.ndarray  # int64 [n, 4]: name index, byte offset, element count, dtype index
+
+    @staticmethod
+    def of(arrays: Sequence[_SharedArray]) -> _ArrayTable:
+        names = tuple(dict.fromkeys(a.name for a in arrays))
+        dtypes = tuple(dict.fromkeys(a.dtype for a in arrays))
+        name_index = {name: i for i, name in enumerate(names)}
+        dtype_index = {dtype: i for i, dtype in enumerate(dtypes)}
+        rows = np.array([(name_index[a.name], a.offset, a.count, dtype_index[a.dtype])
+                         for a in arrays], dtype=np.int64).reshape(len(arrays), 4)
+        return _ArrayTable(names, dtypes, rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self) -> Any:
+        for name, offset, count, dtype in self.rows.tolist():
+            yield _SharedArray(self.names[name], offset, count, self.dtypes[dtype])
+
+    def views(self, handles: dict[str, Any]) -> tuple[np.ndarray, ...]:
+        # One byte view per mapped file, then a slice + dtype view per slab: the
+        # same arrays as np.frombuffer(handle, dtype, count, offset), cheaper.
+        bases = [np.frombuffer(handles[name], dtype=np.uint8) for name in self.names]
+        dtypes = [np.dtype(d) for d in self.dtypes]
+        out = []
+        for name, offset, count, dtype in self.rows.tolist():
+            kind = dtypes[dtype]
+            out.append(bases[name][offset:offset + count * kind.itemsize].view(kind))
+        return tuple(out)
+
+
 def _derived_path(descriptor: _Descriptor) -> str:
     """fast_chain only: the file holding one source's derived (decoded) slabs."""
     return f"{descriptor.name}.d{descriptor.epoch}.{descriptor.offset}"
@@ -104,7 +149,7 @@ class _ReadySource:
     # Old packets are slot views. fast_chain sources decode rows the slot does
     # not hold; those slabs live in the source's own derived file
     # (`_derived_path`, removed with the slot), so only offsets cross IPC.
-    arrays: tuple[_SharedArray, ...]
+    arrays: _ArrayTable
     header: dict[str, Any]
     seconds: float
     pid: int
@@ -155,6 +200,11 @@ def _timed(function: Any, *args: Any) -> _WorkerResult:
     wall, cpu = time.perf_counter(), time.process_time()
     value = function(*args)
     return _WorkerResult(value, os.getpid(), time.perf_counter() - wall, time.process_time() - cpu)
+
+
+def _warm_probe() -> int:
+    """Runs once per spawned worker at warm-up: the initializer has run."""
+    return os.getpid()
 
 
 def _write_batch(batch: PreparedBatch, path: str, *, handoff: bool = False) -> _PackedBatch:
@@ -212,7 +262,7 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
                 )
             tree, slabs = bp.pack_transport(_source)
             base = np.frombuffer(mapping, dtype=np.uint8).ctypes.data
-            arrays: tuple[_SharedArray, ...]
+            arrays: tuple[_SharedArray, ...] | list[_SharedArray]
             if descriptor.envelope.get("format") == FAST_FORMAT:
                 end = base + len(mapping)
                 inside = [base <= slab.ctypes.data and slab.ctypes.data + slab.nbytes <= end
@@ -246,7 +296,7 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
                 # does not unpickle/re-pickle thousands of per-frame objects.
                 # This is never a public packet or a durable restore format.
                 pickle.dumps(tree, protocol=5),
-                arrays,
+                _ArrayTable.of(arrays),
                 {"envelope": header["envelope"], "witness": witness},
                 time.perf_counter() - began,
                 os.getpid(),
@@ -261,7 +311,7 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
 
 def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
     handles = {}
-    for name in {array.name for item in ready for array in item.arrays} | {
+    for name in {name for item in ready for name in item.arrays.names} | {
             item.descriptor.name for item in ready}:
         with open(name, "rb") as stream:
             handles[name] = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
@@ -273,12 +323,7 @@ def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
                 d = item.descriptor
                 if int.from_bytes(handles[d.name][:8], "little") != d.epoch:
                     raise ValueError("binary_shared_slot_epoch_changed")
-                arrays = tuple(
-                    np.frombuffer(
-                        handles[a.name], dtype=np.dtype(a.dtype), count=a.count, offset=a.offset
-                    )
-                    for a in item.arrays
-                )
+                arrays = item.arrays.views(handles)
                 source = bp.unpack_transport((pickle.loads(item.tree), arrays))
                 source = dc.replace(
                     source, pid=item.pid, seconds={"binary_source_decode_seconds": item.seconds}
@@ -472,6 +517,22 @@ class _PinnedBuffers:
     def pin(self, batch: PreparedBatch, epoch: int) -> PreparedBatch:
         if not torch.cuda.is_available():
             return batch
+        index = self._acquire(epoch)
+        lease = _PinnedLease(self, index)
+        with self.allocation_lock:
+            return self._copy(batch, index, lease)
+
+    def pin_slabs(self, arrays: Any, epoch: int) -> tuple[list[torch.Tensor], _PinnedLease]:
+        """Pinned copies of already-packed slabs (one tree walk fewer than `pin`).
+
+        The caller keeps the lease until its H2D event is recorded on it.
+        """
+        index = self._acquire(epoch)
+        lease = _PinnedLease(self, index)
+        with self.allocation_lock:
+            return self._copy_slabs(arrays, index), lease
+
+    def _acquire(self, epoch: int) -> int:
         with self.condition:
             while True:
                 if self.closed or epoch != self.epoch:
@@ -485,15 +546,26 @@ class _PinnedBuffers:
                 if available:
                     index = available[0]
                     self.busy[index] = True
-                    break
+                    return index
                 self.condition.wait(0.01)
-        lease = _PinnedLease(self, index)
-        with self.allocation_lock:
-            return self._copy(batch, index, lease)
 
     def _copy(self, batch: PreparedBatch, index: int, lease: _PinnedLease) -> PreparedBatch:
-        buffers = self.buffers[index]
         tree, arrays = bp.pack_transport(batch)
+        views = self._copy_slabs(arrays, index)
+
+        def replace(node: Any) -> Any:
+            if isinstance(node, bp._TensorView):
+                tensor = views[node.slab][node.offset : node.offset + math_prod(node.shape)].view(
+                    node.shape
+                )
+                tensor._rl_pinned_lease = lease  # type: ignore[attr-defined]
+                return tensor
+            return node
+
+        return cast(PreparedBatch, bp._map_structure(tree, replace))
+
+    def _copy_slabs(self, arrays: Any, index: int) -> list[torch.Tensor]:
+        buffers = self.buffers[index]
         required: dict[torch.dtype, int] = {}
         for a in arrays:
             tensor = torch.from_numpy(a)
@@ -524,17 +596,7 @@ class _PinnedBuffers:
             view.copy_(tensor)
             views.append(view)
             cursors[dtype] = start + count
-
-        def replace(node: Any) -> Any:
-            if isinstance(node, bp._TensorView):
-                tensor = views[node.slab][node.offset : node.offset + math_prod(node.shape)].view(
-                    node.shape
-                )
-                tensor._rl_pinned_lease = lease  # type: ignore[attr-defined]
-                return tensor
-            return node
-
-        return cast(PreparedBatch, bp._map_structure(tree, replace))
+        return views
 
     def close(self) -> None:
         with self.condition:
@@ -567,6 +629,7 @@ class BinaryBatchPreparer:
         label_workers: int = 1,
         source_wait_seconds: float = 60,
         handoff: bool = False,
+        persistent_pools: bool = False,
         **existing_assembly_options: Any,
     ) -> None:
         if (
@@ -583,6 +646,13 @@ class BinaryBatchPreparer:
             raise ValueError("invalid_binary_source_wait_bound")
         if type(handoff) is not bool:
             raise ValueError("binary_handoff_mode_must_be_explicit")
+        if type(persistent_pools) is not bool:
+            raise ValueError("binary_persistent_pools_must_be_explicit")
+        # Opt-in: start every worker up front and keep the three pools across
+        # barriers (a broken pool is still replaced). Off = the original
+        # lazily spawned pools that every barrier rebuilds.
+        self.persistent_pools = persistent_pools
+        self.pool_warmups: list[dict[str, Any]] = []
         # Explicit S3 SGD-process profile: complete batches stay in their output
         # files until the SGD process reports them staged; this process never pins.
         self.handoff = handoff
@@ -651,6 +721,18 @@ class BinaryBatchPreparer:
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
+        if persistent_pools:
+            self._warm({"source": self.pool, "assembly": self.assembly_pool,
+                        "labels": self.label_pool})
+
+    def _warm(self, pools: dict[str, ProcessPoolExecutor]) -> None:
+        """Spawn every worker now, in parallel: a spawn-context pool otherwise
+        starts one process per submit, in the middle of the first batches."""
+        began = time.perf_counter()
+        futures = {role: [pool.submit(_warm_probe) for _ in range(pool._max_workers)]  # type: ignore[attr-defined]
+                   for role, pool in pools.items()}
+        started = {role: len({f.result() for f in items}) for role, items in futures.items()}
+        self.pool_warmups.append({"seconds": time.perf_counter() - began, "workers": started})
 
     def _record_worker(self, role: str, future: Future) -> None:
         with self.condition:
@@ -706,6 +788,8 @@ class BinaryBatchPreparer:
                 "window_seconds": window,
                 "workers": rows,
                 "failed_tasks_without_timing": dict(self._failed_tasks),
+                "persistent_pools": self.persistent_pools,
+                "pool_warmups": list(self.pool_warmups),
                 "busy_fraction_definition": (
                     "completed worker-function wall seconds / preparer lifetime; "
                     "excludes parent work and process startup"
@@ -821,7 +905,13 @@ class BinaryBatchPreparer:
                     envelope: dict[str, Any] | None, context: Any) -> dict[str, Any]:
         # Provider owns the borrow until the single complete byte copy finishes.
         with context as raw:
-            if len(raw) != ref.size or hashlib.sha256(raw).hexdigest() != ref.sha256:
+            # A fast segment's bytes were hashed once on receipt and are held as
+            # immutable bytes; the decode worker binds them to packet_sha256 again
+            # (decode_fast_packet), so the learner process does not hash them a
+            # third time here. Old packets keep this check unchanged.
+            if len(raw) != ref.size or (
+                    ref.format != FAST_FORMAT
+                    and hashlib.sha256(raw).hexdigest() != ref.sha256):
                 raise ValueError("binary_provider_integrity_changed")
             bound_envelope = (
                 envelope
@@ -1178,19 +1268,41 @@ class BinaryBatchPreparer:
                 self.condition.wait()
             self.pinned.fence()
             pending = tuple(self.pending)
+            sources = tuple(self.source_jobs.values())
         errors = []
         for future in pending:
             try:
                 future.result()
             except BaseException as error:
                 errors.append(error)
-        # No old-generation worker/mapping survives this return, even after a
+        pools = {"source": self.pool, "assembly": self.assembly_pool, "labels": self.label_pool}
+        if self.persistent_pools and not self.closed:
+            # Keep the workers: no task of the old generation may still run, so
+            # queued decodes are cancelled and running ones finish here (every
+            # worker task closes its arena mappings before it returns). A
+            # broken pool (a worker died) is replaced, never reused.
+            for future in sources:
+                future.cancel()
+            wait_futures(sources)
+            # A finished decode releases its arena through the callback thread,
+            # which may run just after wait() returns: wait for those releases
+            # (pool.shutdown would have joined them) before arenas are removed.
+            deadline = time.monotonic() + 60
+            with self.condition:
+                while any(arena.users for arena in self.arenas):
+                    if not self.condition.wait(max(0.0, deadline - time.monotonic())):
+                        raise RuntimeError("binary_barrier_sources_not_released")
+            replace = {role: pool for role, pool in pools.items()
+                       if getattr(pool, "_broken", False)}
+        else:
+            replace = pools
+        # No old-generation worker/mapping survives a rebuilt pool, even after a
         # failed task retained an exception traceback with shared tensor views.
-        self.pool.shutdown(wait=True, cancel_futures=True)
-        self.assembly_pool.shutdown(wait=True, cancel_futures=True)
-        self.label_pool.shutdown(wait=True, cancel_futures=True)
+        for pool in replace.values():
+            pool.shutdown(wait=True, cancel_futures=True)
         # Deferred releases still name these arenas; apply them before teardown.
         self.callbacks.submit(lambda: None).result()
+        fresh: dict[str, ProcessPoolExecutor] = {}
         with self.condition:
             for _index, descriptor in self.sources.values():
                 Path(_derived_path(descriptor)).unlink(missing_ok=True)
@@ -1210,10 +1322,16 @@ class BinaryBatchPreparer:
             self.preparing.clear()
             self.generation = generation
             if not self.closed:
-                self.pool = self._pool()
-                self.assembly_pool = self._pool(workers=self.assembly_workers)
-                self.label_pool = self._pool(workers=self.label_workers)
+                if "source" in replace:
+                    self.pool = fresh["source"] = self._pool()
+                if "assembly" in replace:
+                    self.assembly_pool = fresh["assembly"] = self._pool(
+                        workers=self.assembly_workers)
+                if "labels" in replace:
+                    self.label_pool = fresh["labels"] = self._pool(workers=self.label_workers)
                 self.fenced = False
+        if self.persistent_pools and not self.closed and fresh:
+            self._warm(fresh)
         self.last_barrier_failures = tuple(str(error) for error in errors)
         # Original Future objects preserve each failure. As with Executor.shutdown,
         # draining never rethrows an already-observed task error as a new failure.
