@@ -45,6 +45,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
@@ -68,6 +69,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();
@@ -96,6 +98,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();
@@ -128,6 +131,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();
@@ -143,7 +147,17 @@ internal static class NativeDetachedCardPreviewFactory
     private sealed class SourceStamp
     {
         private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        private readonly List<(object Owner, FieldInfo Field, object? Value)> fields = new();
+        private readonly List<(object Owner, NativeField Field, object? Value)> fields = new();
+        // Per declaring type: the same GetFields(Fields) list, read through NativeField.
+        private static readonly Dictionary<Type, NativeField[]> Declared = new();
+        private static readonly NativeField? CardEnchantment = NativeField.Of(typeof(CardModel).GetField("<Enchantment>k__BackingField", Fields));
+        private static readonly NativeField? CardAffliction = NativeField.Of(typeof(CardModel).GetField("<Affliction>k__BackingField", Fields));
+        private static readonly NativeField? CardKeywords = NativeField.Of(typeof(CardModel).GetField("_keywords", Fields));
+        private static readonly NativeField? CardTemporaryStarCosts = NativeField.Of(typeof(CardModel).GetField("_temporaryStarCosts", Fields));
+        private static readonly NativeField? CardEnergyCost = NativeField.Of(typeof(CardModel).GetField("_energyCost", Fields));
+        private static readonly NativeField? CostLocalModifiers = NativeField.Of(typeof(CardEnergyCost).GetField("_localModifiers", Fields));
+        private static readonly NativeField? EnchantmentVars = NativeField.Of(typeof(EnchantmentModel).GetField("_dynamicVars", Fields));
+        private static readonly NativeField? SetVars = NativeField.Of(typeof(DynamicVarSet).GetField("_vars", Fields));
         private readonly List<(System.Collections.IList List, object?[] Items)> lists = new();
         private readonly List<(HashSet<CardKeyword> Set, CardKeyword[] Items)> keywordSets = new();
 
@@ -158,21 +172,21 @@ internal static class NativeDetachedCardPreviewFactory
         internal static SourceStamp Card(CardModel card)
         {
             SourceStamp stamp = Model(card, typeof(CardModel));
-            if (typeof(CardModel).GetField("<Enchantment>k__BackingField", Fields)?.GetValue(card) is EnchantmentModel enchantment)
+            if (CardEnchantment?.GetValue(card) is EnchantmentModel enchantment)
             {
                 stamp.Add(enchantment, typeof(EnchantmentModel));
-                if (typeof(EnchantmentModel).GetField("_dynamicVars", Fields)?.GetValue(enchantment) is DynamicVarSet vars) stamp.AddVariables(vars);
+                if (EnchantmentVars?.GetValue(enchantment) is DynamicVarSet vars) stamp.AddVariables(vars);
             }
-            if (typeof(CardModel).GetField("<Affliction>k__BackingField", Fields)?.GetValue(card) is AfflictionModel affliction)
+            if (CardAffliction?.GetValue(card) is AfflictionModel affliction)
                 stamp.Add(affliction, typeof(AfflictionModel));
-            if (typeof(CardModel).GetField("_keywords", Fields)?.GetValue(card) is HashSet<CardKeyword> keywords)
+            if (CardKeywords?.GetValue(card) is HashSet<CardKeyword> keywords)
                 stamp.keywordSets.Add((keywords, keywords.ToArray()));
-            if (typeof(CardModel).GetField("_temporaryStarCosts", Fields)?.GetValue(card) is System.Collections.IList temporary)
+            if (CardTemporaryStarCosts?.GetValue(card) is System.Collections.IList temporary)
                 stamp.lists.Add((temporary, temporary.Cast<object?>().ToArray()));
-            if (typeof(CardModel).GetField("_energyCost", Fields)?.GetValue(card) is CardEnergyCost cost)
+            if (CardEnergyCost?.GetValue(card) is CardEnergyCost cost)
             {
                 stamp.Add(cost, typeof(CardEnergyCost));
-                if (typeof(CardEnergyCost).GetField("_localModifiers", Fields)?.GetValue(cost) is System.Collections.IList modifiers)
+                if (CostLocalModifiers?.GetValue(cost) is System.Collections.IList modifiers)
                 {
                     stamp.lists.Add((modifiers, modifiers.Cast<object?>().ToArray()));
                     foreach (object modifier in modifiers) stamp.Add(modifier, typeof(LocalCostModifier));
@@ -184,12 +198,19 @@ internal static class NativeDetachedCardPreviewFactory
         private void AddVariables(DynamicVarSet vars)
         {
             Add(vars, typeof(DynamicVarSet));
-            if (typeof(DynamicVarSet).GetField("_vars", Fields)?.GetValue(vars) is Dictionary<string, DynamicVar> values)
+            if (SetVars?.GetValue(vars) is Dictionary<string, DynamicVar> values)
                 foreach (DynamicVar value in values.Values) Add(value, typeof(DynamicVar));
         }
 
-        private void Add(object owner, Type declaring) => fields.AddRange(declaring.GetFields(Fields)
-            .Where(field => !field.IsStatic).Select(field => (owner, field, field.GetValue(owner))));
+        private void Add(object owner, Type declaring)
+        {
+            NativeField[] declared;
+            lock (Declared)
+                if (!Declared.TryGetValue(declaring, out declared!))
+                    Declared[declaring] = declared = declaring.GetFields(Fields).Where(field => !field.IsStatic)
+                        .Select(field => NativeField.Of(field)!).ToArray();
+            foreach (NativeField field in declared) fields.Add((owner, field, field.GetValue(owner)));
+        }
 
         private static bool Same(object? left, object? right) => ReferenceEquals(left, right)
             || left != null && right != null && left.GetType() == right.GetType()

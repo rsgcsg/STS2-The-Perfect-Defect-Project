@@ -37,7 +37,7 @@ public static class NativePublicCardDetails
     // source; these display-only cards are not gameplay operands or action IDs.
     private static Dictionary<string, object?> ToPublicCard(Dictionary<string, object?> card)
     {
-        var value = new Dictionary<string, object?>
+        var value = new Dictionary<string, object?>(NativeCapacity.Of(15))
         {
             ["entity_id"] = null, ["definition_id"] = card.GetValueOrDefault("id"),
             ["name"] = card.GetValueOrDefault("name"), ["type"] = card.GetValueOrDefault("type"),
@@ -84,9 +84,12 @@ public static class NativePublicCardDetails
                 ["card"] = upgraded.Complete ? upgraded.PublicCard : null } };
     }
 
+    private static readonly NativeField? IsMutable =
+        NativeField.Of(typeof(AbstractModel).GetField("<IsMutable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic));
+
     private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path, CardPreviewMode mode = CardPreviewMode.Normal)
     {
-        var visible = new Dictionary<string, object?>();
+        var visible = new Dictionary<string, object?>(NativeCapacity.Of(15));
         var missing = new List<string>();
         bool addedToPath = false;
         CardModel subject = card;
@@ -99,7 +102,7 @@ public static class NativePublicCardDetails
             // A native CardHoverTip may refer to a readonly canonical card.
             // Initialize/render only a qualified detached presentation copy;
             // retain the original reference in cycle detection throughout.
-            if (typeof(AbstractModel).GetField("<IsMutable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(card) is false)
+            if (IsMutable?.GetValue(card) is false)
             {
                 if (!NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(card, out CardModel? display, out string? gap)
                     || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
@@ -189,7 +192,8 @@ public static class NativePublicCardDetails
                 && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
                 missing.Add("native_selector_enchantment_description");
         }
-        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException)
+        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException
+            and not NativeFieldCompileException)
         {
             // Private, opt-in diagnosis of an actual render failure. Type metadata
             // avoids invoking a model getter after preflight has rejected it.
