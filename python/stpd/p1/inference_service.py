@@ -680,7 +680,8 @@ def _join_worker(inputs: list[Connection], outputs: list[Connection], keep: int,
                 continue
             parts, group = done
             message = {"joined": True, "parts": parts, "group": group}
-            outputs[parts[0]["device"]].send_bytes(bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
+            outputs[parts[0]["device"]].send_bytes(
+                bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
             sent.append(message)
 
 
