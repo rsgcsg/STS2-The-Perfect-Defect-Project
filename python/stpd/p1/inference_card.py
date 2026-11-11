@@ -9,19 +9,26 @@ K > 1). Node aggregators connect to every service (`NodeAggregator(services=
 card.services)`) and bind each game to one service by `service_for_game`.
 
 Failure is loud and final. A service that does not start stops the card before
-it serves; a host that exits, a publish that fails or that the services answer
-differently, and an MPS daemon that does not start each stop every service of
-the card (`failure`, `on_failure`). Nothing is restarted or retried, and the
-card never continues on fewer services: the aggregators lose a connection and
-fail their links, so their games end as not_started.
+it serves; a host that exits, a publish that raises or times out, and an MPS
+daemon that does not start each stop every service of the card (`failure`,
+`on_failure`; call `close()` afterwards, never another card command from the
+callback). Nothing is restarted or retried, and the card never continues on
+fewer services: the aggregators lose a connection and fail their links, so
+their games end as not_started. A card that is never closed is closed at
+interpreter exit (services, then the MPS daemon).
+
+A mu handoff reaches every service through `publish`. Each service's assembler
+accepts or refuses it from its own resident mu (its own open segments), so the
+answers are returned per service and may differ in normal running: a service
+that refuses keeps scoring on its current mu, exactly as one service would.
 
 Factory contract: ``factory(index, settings) -> FastInferenceService``. Each
-service needs its own assembler (distinct `assembler_id`, own segment output);
-a mu handoff reaches every service through `publish`, and all must accept or
-all refuse it. It decides no legality and holds no World.
+service needs its own assembler with a distinct `assembler_id` (checked at
+start) and its own segment output. It decides no legality and holds no World.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import copy
 import importlib
@@ -53,10 +60,11 @@ class MpsDaemon:
     """A CUDA MPS control daemon with this card's own pipe and log directories."""
 
     def __init__(self, root: str | Path, *, control: str = MPS_CONTROL,
-                 timeout: float = 30.0) -> None:
+                 timeout: float = 30.0, visible_devices: str | None = None) -> None:
         self.root = Path(root)
         self.control = control
         self.timeout = timeout
+        self.visible_devices = visible_devices  # this card's GPU only, when given
         self.env: dict[str, str] | None = None
 
     def _run(self, args: list[str], stdin: bytes | None) -> subprocess.CompletedProcess[bytes]:
@@ -74,6 +82,8 @@ class MpsDaemon:
         pipe.mkdir(parents=True, exist_ok=True)
         log.mkdir(parents=True, exist_ok=True)
         self.env = {"CUDA_MPS_PIPE_DIRECTORY": str(pipe), "CUDA_MPS_LOG_DIRECTORY": str(log)}
+        if self.visible_devices is not None:
+            self.env["CUDA_VISIBLE_DEVICES"] = self.visible_devices
         started = self._run(["-d"], None)
         if started.returncode != 0:
             _say({"mps_start_failed": started.returncode,
@@ -119,7 +129,8 @@ def _host(conn: Connection, index: int, factory: str, settings: dict[str, Any],
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         service = _factory(factory)(index, settings)
-        conn.send(("ready", service.address, service.auth, service.service_instance))
+        conn.send(("ready", service.address, service.auth, service.service_instance,
+                   getattr(service.assembler, "assembler_id", None)))
     except BaseException as error:
         with contextlib.suppress(OSError):
             conn.send(("failed", f"{type(error).__name__}: {str(error)[:300]}"))
@@ -137,7 +148,9 @@ def _host(conn: Connection, index: int, factory: str, settings: dict[str, Any],
                 if kind == "publish":
                     import torch
 
-                    model = torch.load(io.BytesIO(command[1]), weights_only=False)
+                    # CPU here: only the service's device process holds the model on CUDA.
+                    model = torch.load(io.BytesIO(command[1]), map_location="cpu",
+                                       weights_only=False)
                     answer: Any = bool(service.publish(model, command[2]))
                 elif kind == "audit":
                     answer = service.mark_full_audit(command[1])
@@ -173,7 +186,8 @@ class InferenceCard:
     def __init__(self, factory: str, *, services: int = 1,
                  settings: dict[str, Any] | list[dict[str, Any]] | None = None,
                  mps: bool | None = None, mps_root: str | Path | None = None,
-                 mps_control: str = MPS_CONTROL, start_timeout: float = 600.0,
+                 mps_control: str = MPS_CONTROL, gpu: int | str | None = None,
+                 start_timeout: float = 600.0,
                  command_timeout: float = 300.0,
                  on_failure: Callable[[str], None] | None = None) -> None:
         import multiprocessing
@@ -187,14 +201,18 @@ class InferenceCard:
         self.on_failure = on_failure
         self.failure: str | None = None
         self._closing = False
+        self._closed: dict[str, Any] | None = None
         self._lock = threading.Lock()  # one card command at a time
         self._failed = threading.Lock()
         self.mps: MpsDaemon | None = None
-        env: dict[str, str] = {}
+        # `gpu`: this card's device, as CUDA_VISIBLE_DEVICES for its MPS daemon and
+        # its hosts (each service then uses cuda:0); None keeps the inherited one.
+        visible = None if gpu is None else str(gpu)
+        env: dict[str, str] = {} if visible is None else {"CUDA_VISIBLE_DEVICES": visible}
         if services > 1 and mps is None or mps:
             self._mps_dir = tempfile.mkdtemp(prefix="inference-card-mps-",
                                              dir=None if mps_root is None else str(mps_root))
-            self.mps = MpsDaemon(self._mps_dir, control=mps_control)
+            self.mps = MpsDaemon(self._mps_dir, control=mps_control, visible_devices=visible)
             try:
                 env = self.mps.start()
             except BaseException:
@@ -218,6 +236,7 @@ class InferenceCard:
                 self.processes.append(process)
             self.services: list[tuple[tuple[str, int], bytes]] = []
             self.service_instances: list[str] = []
+            self.assembler_ids: list[Any] = []
             for index, connection in enumerate(self.connections):
                 answer = self._receive(index, connection, start_timeout, "start")
                 if answer[0] != "ready":
@@ -225,6 +244,12 @@ class InferenceCard:
                                         f"service {index}: {answer[1]}")
                 self.services.append((tuple(answer[1]), answer[2]))
                 self.service_instances.append(answer[3])
+                self.assembler_ids.append(answer[4])
+            if (len(set(self.assembler_ids)) != services
+                    or not all(isinstance(name, str) and name for name in self.assembler_ids)):
+                # Two assemblers with one id would overwrite each other's segments.
+                raise BoundaryError(STAGE, "service_start_failed",
+                                    f"assembler_id_not_distinct:{self.assembler_ids}")
         except BaseException as error:
             self._closing = True  # the raise reports it; on_failure is for a serving card
             self._fail(f"start:{getattr(error, 'code', type(error).__name__)}")
@@ -233,6 +258,10 @@ class InferenceCard:
         self._monitor = threading.Thread(target=self._watch, daemon=True,
                                          name="inference-card-monitor")
         self._monitor.start()
+        # A launcher that dies without close() must not leave hosts (they would
+        # wait on their pipes forever) or the MPS daemon behind. Registered after
+        # multiprocessing's own exit hook, so it runs first.
+        atexit.register(self.close)
 
     # -- commands ------------------------------------------------------------
     def _receive(self, index: int, connection: Connection, timeout: float,
@@ -264,13 +293,14 @@ class InferenceCard:
                 raise BoundaryError(STAGE, f"{what}_failed", str(self.failure))
             return [answer[1] for answer in answers]
 
-    def publish(self, model: Any, handoff: Any) -> bool:
-        """Offer one mu to every service; all must give the same answer."""
+    def publish(self, model: Any, handoff: Any) -> list[bool]:
+        """Offer one mu to every service; returns each service's accept/refuse.
+
+        A refusal is that service's normal answer (its resident mu are all in
+        use) and is not an error; an exception or timeout stops the card.
+        """
         accepted = self._broadcast(("publish", model_blob(model), handoff), "publish")
-        if len(set(accepted)) != 1:
-            self._fail(f"publish_disagreement:{accepted}")
-            raise BoundaryError(STAGE, "publish_disagreement", str(self.failure))
-        return bool(accepted[0])
+        return [bool(answer) for answer in accepted]
 
     def mark_full_audit(self, game_instance_id: str) -> None:
         """An R7 game (every row audited) on whichever service it is bound to."""
@@ -304,7 +334,12 @@ class InferenceCard:
             self.on_failure(reason)
 
     def close(self) -> dict[str, Any]:
+        """Stop every service and the MPS daemon; a second call returns the first report."""
+        if self._closed is not None:
+            return self._closed
         self._closing = True
+        with contextlib.suppress(Exception):
+            atexit.unregister(self.close)
         reports: list[Any] = []
         for index, (connection, process) in enumerate(zip(self.connections, self.processes,
                                                           strict=True)):
@@ -327,5 +362,6 @@ class InferenceCard:
         mps = self.mps.stop() if self.mps is not None else None
         if self.mps is not None:
             shutil.rmtree(self._mps_dir, ignore_errors=True)
-        return {"failure": self.failure, "services": reports, "mps": mps,
-                "exitcodes": [process.exitcode for process in self.processes]}
+        self._closed = {"failure": self.failure, "services": reports, "mps": mps,
+                        "exitcodes": [process.exitcode for process in self.processes]}
+        return self._closed

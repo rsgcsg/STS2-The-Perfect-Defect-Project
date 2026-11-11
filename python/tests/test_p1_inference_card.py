@@ -44,9 +44,11 @@ def make_service(index: int, settings: dict[str, Any]) -> FastInferenceService:
         raise RuntimeError("device unavailable")
     if "env_file" in settings:
         with open(f"{settings['env_file']}.{index}", "w") as handle:
-            handle.write(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", ""))
+            handle.write(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "") + "|"
+                         + os.environ.get("CUDA_VISIBLE_DEVICES", ""))
     vocabulary = public_vocabulary(V2_INPUT_SPEC)
     assembler = RefusingAssembler() if settings.get("refuse") == index else FakeAssembler()
+    assembler.assembler_id = settings.get("assembler_id", f"asm-{index}")  # type: ignore[attr-defined]
     return FastInferenceService(vocabulary, FrameCompiler(vocabulary).identity, assembler,
                                 training_generation="gen-1", address=("127.0.0.1", 0),
                                 env_sha256=ENV, prepare_workers=1, device="cpu")
@@ -116,7 +118,8 @@ def test_card_scores_each_game_on_its_bound_service(vocabulary, model):
     path = os.path.join(tempfile.mkdtemp(), "link.sock")
     aggregator = None
     try:
-        assert card.publish(model, Handoff(MU))
+        assert card.publish(model, Handoff(MU)) == [True, True]
+        assert card.assembler_ids == ["asm-0", "asm-1"]
         aggregator = NodeAggregator(vocabulary, services=card.services, socket_path=path,
                                     aggregator_id="node-1", python_env_sha256=ENV,
                                     encoder_workers=1)
@@ -191,22 +194,64 @@ def test_a_service_that_does_not_start_stops_the_card():
     assert "device unavailable" in caught.value.recovery
 
 
-def test_services_that_answer_a_publish_differently_stop_the_card(model):
+def test_a_refusing_service_is_its_own_answer_not_a_card_failure(model):
+    """Review M1: each assembler accepts or refuses a mu from its own resident
+    state, so answers differ in normal running; the card keeps serving."""
     card = InferenceCard(FACTORY, services=2, mps=False, settings={"refuse": 1})
     try:
-        with pytest.raises(BoundaryError, match="publish_disagreement"):
-            card.publish(model, Handoff(MU))
-        assert card.failure == "publish_disagreement:[True, False]"
-        _wait(lambda: not any(process.is_alive() for process in card.processes))
+        assert card.publish(model, Handoff(MU)) == [True, False]
+        assert card.failure is None and len(card.stats()) == 2
+        assert all(process.is_alive() for process in card.processes)
     finally:
-        card.close()
+        closed = card.close()
+    assert closed["failure"] is None and closed["exitcodes"] == [0, 0]
+
+
+def test_services_sharing_an_assembler_id_never_serve():
+    with pytest.raises(BoundaryError, match="service_start_failed") as caught:
+        InferenceCard(FACTORY, services=2, mps=False, settings={"assembler_id": "asm"})
+    assert "assembler_id_not_distinct" in caught.value.recovery
+
+
+_ABANDON = """
+import os, sys
+sys.path[:0] = {paths!r}
+from stpd.p1.inference_card import InferenceCard
+card = InferenceCard("test_p1_inference_card:make_service", services=2, mps_root={root!r},
+                     mps_control={control!r})
+print(" ".join(str(process.pid) for process in card.processes), flush=True)
+raise RuntimeError("launcher failed without close()")
+"""
+
+
+def test_a_launcher_that_dies_without_close_leaves_nothing_behind():
+    """Review M2: at interpreter exit the card closes its hosts and its MPS daemon
+    (before, the hosts waited on their pipes and the launcher never exited)."""
+    import subprocess
+    import sys
+
+    root = tempfile.mkdtemp()
+    control, log = _fake_control(root)
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = _ABANDON.format(paths=[here, os.path.dirname(here)], root=root, control=control)
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 1 and "launcher failed without close()" in done.stderr
+    pids = [int(pid) for pid in done.stdout.split()]
+    assert len(pids) == 2
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    with open(log) as handle:
+        assert handle.read().splitlines()[-1] == "quit"
 
 
 def _fake_control(root: str, code: int = 0) -> tuple[str, str]:
     log = os.path.join(root, "control.log")
     script = os.path.join(root, "mps-control")
     with open(script, "w") as handle:
-        handle.write(f'#!/bin/sh\necho "args:$* pipe:$CUDA_MPS_PIPE_DIRECTORY" >> {log}\n'
+        handle.write(f'#!/bin/sh\necho "args:$* pipe:$CUDA_MPS_PIPE_DIRECTORY'
+                     f' gpu:$CUDA_VISIBLE_DEVICES" >> {log}\n'
                      f'if [ "$#" -eq 0 ]; then cat >> {log}; fi\nexit {code}\n')
     os.chmod(script, os.stat(script).st_mode | stat.S_IEXEC)
     return script, log
@@ -216,22 +261,22 @@ def test_card_runs_its_services_under_its_own_mps_daemon(model):
     root = tempfile.mkdtemp()
     control, log = _fake_control(root)
     env_file = os.path.join(root, "env")
-    card = InferenceCard(FACTORY, services=2, mps_root=root, mps_control=control,
+    card = InferenceCard(FACTORY, services=2, mps_root=root, mps_control=control, gpu=3,
                          settings={"env_file": env_file})
     try:
         assert card.mps is not None
         pipe = card.mps.env["CUDA_MPS_PIPE_DIRECTORY"]  # type: ignore[index]
         for index in range(2):
             with open(f"{env_file}.{index}") as handle:
-                assert handle.read() == pipe  # set before the service started
-        assert card.publish(model, Handoff(MU))
+                assert handle.read() == f"{pipe}|3"  # set before the service started
+        assert card.publish(model, Handoff(MU)) == [True, True]
     finally:
         closed = card.close()
     assert closed["mps"] == "quit" and not os.path.exists(pipe)
     with open(log) as handle:
         lines = handle.read().splitlines()
-    assert lines == [f"args:-d pipe:{pipe}", f"args: pipe:{pipe}", "get_server_list",
-                     f"args: pipe:{pipe}", "quit"]
+    assert lines == [f"args:-d pipe:{pipe} gpu:3", f"args: pipe:{pipe} gpu:3",
+                     "get_server_list", f"args: pipe:{pipe} gpu:3", "quit"]
 
 
 def test_mps_daemon_that_does_not_start_is_loud():
