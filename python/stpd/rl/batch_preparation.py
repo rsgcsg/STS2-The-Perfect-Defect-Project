@@ -1838,6 +1838,33 @@ def unpack_transport(packed: Any) -> Any:
     return _map_structure(tree, replace)
 
 
+def stage_pinned_slabs(tree: Any, slabs: list[Tensor], lease: Any,
+                       device: torch.device) -> tuple[PreparedBatch, int]:
+    """CUDA: H2D each pinned slab once and map the packed tree onto device views.
+
+    Same tensors as `unpack_transport` + pin + `stage_batch`, with one tree walk.
+    The pinned lease is released only after this copy's event completes.
+    """
+    stream = torch.cuda.Stream(device=device)
+    with torch.cuda.stream(stream):
+        moved = [slab.to(device, non_blocking=True) for slab in slabs]
+        ready = torch.cuda.Event()
+        ready.record(stream)
+    consumer = torch.cuda.current_stream(device)
+    consumer.wait_event(ready)
+    for tensor in moved:
+        tensor.record_stream(consumer)
+    lease.copied(ready)
+
+    def replace(node: Any) -> Any:
+        if not isinstance(node, _TensorView):
+            return node
+        count = math.prod(node.shape)
+        return moved[node.slab][node.offset : node.offset + count].view(node.shape)
+
+    return cast(PreparedBatch, _map_structure(tree, replace)), len(moved)
+
+
 def stage_batch(batch: PreparedBatch, device: torch.device) -> tuple[PreparedBatch, int]:
     """One H2D copy per dtype slab, reused by all four optimizer minibatches.
 

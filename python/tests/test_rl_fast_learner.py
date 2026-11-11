@@ -375,3 +375,49 @@ def test_fast_aux_pools_follow_the_loss_coefficients(tmp_path, monkeypatch):
     owner = fast_learner(tmp_path / "e", monkeypatch, aux_labels=["terminal", "hp"],
                          hp_coef=0.0)
     owner.close()
+
+
+def test_capacity_drop_never_takes_an_old_chain_segment(tmp_path, monkeypatch):
+    """Review S4: an old-chain lease's segment queued ahead of fast segments keeps
+    its place (and its episode accounting); the oldest fast segment is dropped."""
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        capacity = owner.settings.capacity_rows
+        # The placeholder below has no source to read: park the source prefetch
+        # (a read-ahead hint only) so it never touches it.
+        owner.source_prefetch_stopping.set()
+        owner.source_prefetch_changed.set()
+        with owner.queue.condition:  # stands in for a committed old-chain lease
+            owner.queue.pending.append({"segment_id": "old-chain-1", "run_id": "old", "rows": 64})
+            owner.queue.rows += 64
+        fast = []
+        for index in range(1, capacity // 64 + 1):
+            name = f"g{index}"
+            bootstrap = game(owner, name, terminal=False)[0]
+            admission(owner, name, index)
+            offer(owner, bootstrap)
+            fast.append(bootstrap.segment_id)
+        assert queued(owner) == ["old-chain-1", *fast[1:]]
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        assert counters["capacity_dropped"] == 1 and counters["capacity_dropped_rows"] == 64
+        assert not owner.input_fenced
+    finally:
+        with owner.queue.condition:
+            owner.queue.discard({"old-chain-1"})
+        owner.close()
+
+
+def test_a_bad_buffered_segment_released_by_an_attest_fences_input(tmp_path, monkeypatch):
+    """Review record 3: the control thread fences exactly as the hand-off thread."""
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        bootstrap = game(owner, "g1", terminal=False)[0]
+        offer(owner, bootstrap)  # not attested yet: buffered by the intake
+        assert queued(owner) == [] and not owner.input_fenced
+        monkeypatch.setattr(owner, "compiler_identity", "another-compiler")
+        with pytest.raises(ValueError, match="fast_segment_compiler_identity_changed"):
+            admission(owner, "g1", 1)
+        assert owner.input_fenced and owner.newlease_stopped
+        assert owner.input_failure["operation"] == "fast_control"
+    finally:
+        owner.close()

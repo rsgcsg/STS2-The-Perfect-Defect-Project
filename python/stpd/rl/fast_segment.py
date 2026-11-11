@@ -286,8 +286,15 @@ def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
 
 
 def decode_segment(data: bytes | bytearray | memoryview, *,
-                   expected_sha256: str | None = None) -> tuple[dict[str, Any], list[bytes]]:
-    """Return (header, row bytes); every row is bound by its sha256."""
+                   expected_sha256: str | None = None,
+                   header_only: bool = False) -> tuple[dict[str, Any], list[bytes]]:
+    """Return (header, row bytes); every row is bound by its sha256.
+
+    `header_only` (bytes the caller has already bound to the sealed segment's
+    sha256): the same header, layout, padding and length checks, but no row
+    copies and no per-row sha256; returns no rows. Whoever decodes the rows
+    later (the decode worker) still binds every row to its digest.
+    """
     raw = memoryview(data)
     if len(raw) > MAX_SEGMENT_BYTES or len(raw) < 16 or bytes(raw[:8]) != MAGIC:
         _reject("segment_magic_or_size")
@@ -327,12 +334,13 @@ def decode_segment(data: bytes | bytearray | memoryview, *,
         start, end = base + cursor, base + cursor + payload["length"]
         if end + _pad(payload["length"]) > len(raw):
             _reject("segment_row_out_of_bounds")
-        row = bytes(raw[start:end])
-        if sha256(row) != payload["row_sha256"]:
-            _reject("segment_row_digest_mismatch")
+        if not header_only:
+            row = bytes(raw[start:end])
+            if sha256(row) != payload["row_sha256"]:
+                _reject("segment_row_digest_mismatch")
+            rows.append(row)
         if any(raw[end:end + _pad(payload["length"])]):
             _reject("segment_padding_nonzero")
-        rows.append(row)
         cursor += payload["length"] + _pad(payload["length"])
     if base + cursor != len(raw):
         _reject("segment_trailing_bytes")
