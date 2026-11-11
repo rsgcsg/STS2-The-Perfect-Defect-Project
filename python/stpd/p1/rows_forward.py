@@ -16,8 +16,9 @@ only work on padding is removed (S0-GPU 0-level items, measured 2026-11-07):
      tokens directly, so no padded scene tensor or key mask is built. Elsewhere
      (CPU, FP32) the same math runs on the bucket with a key mask;
   6. optional torch.compile of the per-bucket block (explicit selection);
-  7. optional V3 T6 levers (`rows_kernels`, explicit `prepared_kernels`): value
-     heads with folded key/value projections and a dense padded cross-attention.
+  7. optional V3 T6 levers (`rows_kernels`, explicit `prepared_kernels`): the value
+     heads and the action cross-attention fold their key/value projections into
+     the queries and attend straight to the encoded scene tokens.
 Float accumulation order differs from padded-v1 (BF16 tolerance, not bitwise).
 Dropout is not implemented here: the prepared RL step runs in eval mode and this
 forward refuses training mode instead of silently skipping dropout.
@@ -99,12 +100,13 @@ def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor)
 
 
 def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, max_q: int,
-                 max_k: int) -> Tensor:
+                 max_k: int, scale: float | None = None) -> Tensor:
     """Ragged attention over packed (tokens, heads, width) sequences, no mask.
 
     CUDA: the flash varlen kernel. Elsewhere: the same math one sequence at a
     time (a reference for CPU tests; never selected by the GPU step)."""
-    scale = 1.0 / math.sqrt(q.shape[-1])
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
     if q.is_cuda:
         return cast(Tensor, torch.ops.aten._flash_attention_forward(
             q.contiguous(), k.contiguous(), v.contiguous(), cu_q, cu_k, max_q, max_k,
@@ -251,11 +253,6 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     current = encoded.new_zeros((rows, encoded.shape[1])).index_add(0, owner, encoded)
     current = current / lengths[:, None].to(current.dtype)
     one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
-    padded = keep = None
-    if kernels:
-        from .rows_kernels import padded_view
-
-        padded, keep = padded_view(encoded, positions, lengths, rows, width, longest)
 
     def pooled(module: Any) -> Tensor:
         query = module.query.reshape(1, -1).expand(rows, -1)
@@ -263,10 +260,10 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
         return cast(Tensor, module.mlp(torch.cat((value, current), dim=1)))
 
     if "heads" in kernels:
-        from .rows_kernels import folded_heads
+        from .rows_kernels import packed_heads
 
-        outcome, value = folded_heads((model.rl4_heads.outcome, model.rl4_heads.hp),
-                                      cast(Tensor, padded), cast(Tensor, keep), current)
+        outcome, value = packed_heads((model.rl4_heads.outcome, model.rl4_heads.hp), encoded,
+                                      offsets, longest, current)
         logits, hp = outcome.float(), value[:, 0].float()
     else:
         logits = pooled(model.rl4_heads.outcome).float()
@@ -287,10 +284,12 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
     action = action + model.source_role(means[0]) + model.target_role(means[1])
-    if "cross" in kernels:
-        from .rows_kernels import padded_cross
+    from .rows_kernels import FOLD_CATALOG_LIMIT
 
-        read = padded_cross(model.cross, action, cast(Tensor, padded), cast(Tensor, keep))
+    if "cross" in kernels and catalog <= FOLD_CATALOG_LIMIT:
+        from .rows_kernels import packed_cross
+
+        read = packed_cross(model.cross, action, encoded, offsets, longest)
     else:
         read = packed_attention(model.cross, action.reshape(rows * catalog, -1), encoded,
                                 one * catalog, offsets, catalog, longest).view(action.shape)

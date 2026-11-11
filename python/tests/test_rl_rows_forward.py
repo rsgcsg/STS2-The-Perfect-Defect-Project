@@ -576,7 +576,7 @@ def test_forward_arena_fails_loudly(model, varied):
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
                                                     width_multiple):
-    """V3 T6: folded value heads and the padded cross-attention change only how the
+    """V3 T6: folded value heads and folded cross-attention change only how the
     readouts are computed (FP32 on CPU: tight tolerance; BF16 on CUDA: tolerance)."""
     batch = prepared(model)
     for group in (g for mb in batch.minibatches for g in mb.groups):
@@ -631,6 +631,11 @@ def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
     finally:
         rows_kernels.FOLD_CATALOG_LIMIT = limit
     torch.testing.assert_close(projected, expected, rtol=1e-5, atol=2e-6)
+    # Packed real tokens (flash varlen layout; CPU reference one row at a time).
+    encoded = torch.cat([padded[row, :int(length)] for row, length in enumerate(lengths)])
+    offsets = torch.cat((torch.zeros(1, dtype=torch.long), lengths.cumsum(0))).to(torch.int32)
+    packed = rows_kernels.packed_cross(module, action, encoded, offsets, 7)
+    torch.testing.assert_close(packed, expected, rtol=1e-5, atol=2e-6)
 
 
 def test_effective_config_records_prepared_kernels_only_when_selected():
