@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { JsonLineProcess, RAW_LINE, isNativeCompactDivergence } from "../src/json-line-process.mjs";
-import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { ManagedPlayerEnvironmentSession, startManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { ProjectionMemo } from "../src/managed-projection-memo.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
 import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
 import { createSession, reduce, modelView } from "@rsgcsg/sts2-connector-client/p1-global";
@@ -438,4 +439,86 @@ test("design C differential: with shareUnchanged and the light frozen capture, P
   const off = await run(false), on = await run(true);
   assert.equal(off.length, 2);
   assert.deepEqual(on, off);
+});
+
+/** Paths of objects that are the same object in both trees (outermost only). */
+function sharedSubtrees(left, right, path = "$", out = []) {
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return out;
+  if (left === right) { out.push(path); return out; }
+  for (const key of Object.keys(left)) if (Object.hasOwn(right, key)) sharedSubtrees(left[key], right[key], `${path}.${key}`, out);
+  return out;
+}
+
+test("E5 projection memo: two consecutive captures keep an unchanged subtree as the same frozen object", async () => {
+  const run = async (projectionMemo) => {
+    const target = new ManagedPlayerEnvironmentSession({ process: fakeNative(), runtimeInstanceId: "managed-runtime-test",
+      environmentFingerprint: "managed-environment-test", identityMode: "crypto",
+      compactOutput: { sampleRate: 0, shareUnchanged: true }, projectionMemo });
+    const snapshot = await target.mount({ seed: "SEED" });
+    const first = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 1, fullCheck: false });
+    await act(target, snapshot);
+    const second = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 2, fullCheck: false });
+    return { target, first, second };
+  };
+  const on = await run({ checkInterval: 1 });
+  const off = await run(null);
+  const deckCard = (basis) => basis.reads.find(read => read.kind === "run_deck").response.content.cards[0];
+  // The deck card did not change between the two native frames: same deep-frozen object.
+  assert.equal(deckCard(on.second.basis), deckCard(on.first.basis));
+  assert.ok(Object.isFrozen(deckCard(on.second.basis)));
+  assert.ok(sharedSubtrees(on.first.basis, on.second.basis).includes("$.reads.0.response.content.cards.0"));
+  // Without the memo the projection builds it anew each step.
+  assert.notEqual(deckCard(off.second.basis), deckCard(off.first.basis));
+  // Same public bytes either way (observed_at / capture clock aside), and the per-frame check ran.
+  assert.equal(JSON.stringify(stable(on.second.basis)), JSON.stringify(stable(off.second.basis)));
+  assert.deepEqual(on.target.projectionMemo.checks, 2);
+  assert.ok(on.target.projectionMemo.hits > 0);
+});
+
+function memoSession(native, projectionMemo, compactOutput = { sampleRate: 0, shareUnchanged: true }) {
+  return new ManagedPlayerEnvironmentSession({ process: native, runtimeInstanceId: "managed-runtime-test",
+    environmentFingerprint: "managed-environment-test", identityMode: "crypto", compactOutput, projectionMemo });
+}
+
+test("E5 projection memo is validated: shareUnchanged compact output and fast_chain only", async () => {
+  assert.throws(() => memoSession({ request() {} }, { checkInterval: 64 }, { sampleRate: 0 }), /shareUnchanged/u);
+  assert.throws(() => memoSession({ request() {} }, { checkInterval: 0 }), /checkInterval/u);
+  assert.throws(() => memoSession({ request() {} }, { every: 1 }), /projectionMemo.every/u);
+  assert.equal(memoSession({ request() {} }, null).projectionMemo, null);
+  assert.deepEqual(memoSession({ request() {} }, {}).projectionMemo, { hits: 0, misses: 0, checks: 0, check_interval: 64 });
+  await assert.rejects(startManagedPlayerEnvironmentSession({ compactOutput: { shareUnchanged: true }, projectionMemo: {} }),
+    /fast_chain only/u);
+});
+
+test("E5 projection memo: a memo that disagrees with a fresh projection fails the step loudly, no fallback", async () => {
+  const original = ProjectionMemo.prototype.value;
+  let corrupt = false;
+  ProjectionMemo.prototype.value = function (site, input, key, build) {
+    const value = original.call(this, site, input, key, build);
+    return corrupt && site === "run_deck_card" ? Object.freeze({ ...value, name: "stale" }) : value;
+  };
+  try {
+    const target = memoSession(fakeNative(), { checkInterval: 1 });
+    const snapshot = await target.mount({ seed: "SEED" });
+    corrupt = true;
+    const receipt = await act(target, snapshot);
+    assert.equal(receipt.delivery, "delivered");
+    assert.equal(receipt.reason_code, "managed_successor_projection_failed");
+    assert.match(receipt.detail, /^projection_memo_divergence: /u);
+    assert.equal(receipt.successor, null);
+    assert.equal(receipt.retry.allowed, false);
+    assert.throws(() => target.observe());
+  } finally {
+    ProjectionMemo.prototype.value = original;
+  }
+});
+
+test("E5 projection memo: the lazy raw-state digest has the eager value", async () => {
+  const run = async (projectionMemo) => {
+    const target = memoSession(fakeNative(), projectionMemo);
+    await target.mount({ seed: "SEED" });
+    return target.observe();
+  };
+  const on = await run({ checkInterval: 1024 }), off = await run(null);
+  assert.equal(JSON.stringify(stable(on)), JSON.stringify(stable(off)));
 });

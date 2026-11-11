@@ -26,7 +26,10 @@ export interface FastEnvConfig {
     character: string; language: string; ascension: number; request_timeout_ms: number;
   };
   agent_manifest: string;
-  compact: { enabled: boolean; reconcile_interval: number };
+  /** `projection_memo` (E5, off when absent or null; needs `enabled`): the Host keeps unchanged
+   *  projected subtrees as the same deep-frozen objects across steps and compares a memo-off
+   *  projection every `check_interval` frames (a difference fails the step). */
+  compact: { enabled: boolean; reconcile_interval: number; projection_memo: { check_interval: number } | null };
   checks: { sample_rate: number };
   decision_link: { kind: "unix"; path: string };
   inference: { timeout_ms: number; actor_id: string; sampling: Sampling; single_choice: "score" | "omit" };
@@ -124,7 +127,13 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     "decision_link", "inference", "budget", "no_progress", "settling_timeout_ms", "cold_start", "evidence"]);
   if (v.schema !== FAST_ENV_CONFIG_SCHEMA) throw new FastEnvContractError("schema");
   const host = obj(v.host, "host", ["package", "candidate_directory", "game_directory", "character", "language", "ascension", "request_timeout_ms"]);
-  const compact = obj(v.compact, "compact", ["enabled", "reconcile_interval"]);
+  const compact = obj(v.compact, "compact", ["enabled", "reconcile_interval", "projection_memo"]);
+  let projectionMemo: FastEnvConfig["compact"]["projection_memo"] = null;
+  if (compact.projection_memo !== null && compact.projection_memo !== undefined) {
+    const m = obj(compact.projection_memo, "compact.projection_memo", ["check_interval"]);
+    projectionMemo = { check_interval: int(m.check_interval, "compact.projection_memo.check_interval", 1, 1024) };
+    if (compact.enabled !== true) throw new FastEnvContractError("compact.projection_memo");
+  }
   const checks = obj(v.checks, "checks", ["sample_rate"]);
   const link = obj(v.decision_link, "decision_link", ["kind", "path"]);
   if (link.kind !== "unix") throw new FastEnvContractError("decision_link.kind");
@@ -151,7 +160,8 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
       request_timeout_ms: int(host.request_timeout_ms, "host.request_timeout_ms", 1000, 600_000)
     },
     agent_manifest: str(v.agent_manifest, "agent_manifest"),
-    compact: { enabled: bool(compact.enabled, "compact.enabled"), reconcile_interval: int(compact.reconcile_interval, "compact.reconcile_interval", 1, 1024) },
+    compact: { enabled: bool(compact.enabled, "compact.enabled"), reconcile_interval: int(compact.reconcile_interval, "compact.reconcile_interval", 1, 1024),
+      projection_memo: projectionMemo },
     checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1) },
     decision_link: { kind: "unix", path: str(link.path, "decision_link.path") },
     inference: { timeout_ms: int(inference.timeout_ms, "inference.timeout_ms", 1, 600_000),
