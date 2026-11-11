@@ -345,6 +345,59 @@ def streams(model: Any, frames: list[Any], floors: list[int], configs: list[dict
                       "rows_per_s": round(sum(counts) * n / wall)})
 
 
+def probe(model: Any, frames: list[Any], floors: list[int], configs: list[dict[str, Any]]
+          ) -> None:
+    """384-row probe (as #465): each config vs an FP32 reference forward and vs the
+    production path (BF16, eager, no levers) on the same rows, in batches of 128 and
+    one 384-row batch: max |behavior_q| diff, argmax and selected_index agreement."""
+    import torch
+
+    from stpd.p1.rows_scorer import RowsScorer, prepare
+    from stpd.p1.sampling import distribution, draw
+
+    count = 384
+    rows, rows_floors = frames[:count], floors[:count]
+
+    def scored(scorer: Any, size: int) -> list[Any]:
+        out: list[Any] = []
+        for start in range(0, count, size):
+            sub = rows[start:start + size]
+            out.extend(scorer.forward(prepare(sub, rows_floors[start:start + size]),
+                                      [len(f.choices) for f in sub]))
+        if any(r is None for r in out):
+            raise RuntimeError("probe_not_finite")
+        return out
+
+    def behaviors(out: list[Any]) -> list[list[float]]:
+        return [distribution(r.scores, 1.0, 0.0)[1] for r in out]
+
+    reference = behaviors(scored(RowsScorer(model, bf16=False), 64))
+    production = behaviors(scored(RowsScorer(model, bf16=True), 128))
+    picks = [draw(b, "bench-yin-device", f"c{i}") for i, b in enumerate(production)]
+
+    def compare(got: list[list[float]], want: list[list[float]]) -> dict[str, Any]:
+        diff = max(float((torch.tensor(g) - torch.tensor(w)).abs().max())
+                   for g, w in zip(got, want, strict=True))
+        argmax = sum(max(range(len(g)), key=g.__getitem__) == max(range(len(w)),
+                                                                    key=w.__getitem__)
+                     for g, w in zip(got, want, strict=True))
+        return {"max_behavior_q_diff": round(diff, 6), "argmax_agree": argmax}
+
+    for config in configs:
+        scorer = scorer_of(model, config)
+        for size in (128, 384):
+            got = behaviors(scored(scorer, size))
+            selected = sum(draw(b, "bench-yin-device", f"c{i}") == picks[i]
+                           for i, b in enumerate(got))
+            emit({"probe": config["name"], "batch": size, "rows": count,
+                  "vs_fp32": compare(got, reference), "vs_production": compare(got, production),
+                  "selected_agree_vs_production": selected,
+                  "selected_agree_vs_fp32": sum(
+                      draw(b, "bench-yin-device", f"c{i}") == draw(r, "bench-yin-device", f"c{i}")
+                      for i, (b, r) in enumerate(zip(got, reference, strict=True)))})
+        del scorer
+
+
 def main() -> None:
     global OUT
     obs, out, modes = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
@@ -358,7 +411,7 @@ def main() -> None:
     emit({"setup": True, "rows": len(frames), "gpu": torch.cuda.get_device_name(0),
           "torch": torch.__version__, "configs": configs, "sizes": SIZES,
           "mean_catalog": round(sum(len(f.choices) for f in frames) / len(frames), 1)})
-    table = {"curve": curve, "regions": regions, "profile": profile, "flops": flops,
+    table = {"probe": probe, "curve": curve, "regions": regions, "profile": profile, "flops": flops,
              "streams": streams}
     for mode in modes:
         try:
