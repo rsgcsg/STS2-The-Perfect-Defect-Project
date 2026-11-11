@@ -683,7 +683,7 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
-                   arena: torch.Tensor | None = None) -> None:
+                   arena: torch.Tensor | None = None, kernels: str = "") -> None:
     """Spawned device process: models and forwards only, no per-row Python work.
 
     The loading thread reads joined jobs from the joiners (or, without joiners,
@@ -747,7 +747,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             if kind == "model":
                 model = torch.load(io.BytesIO(blob), map_location=device, weights_only=False)
                 model.eval().requires_grad_(False)
-                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile)
+                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile, kernels=kernels)
             else:
                 scorers.pop(key, None)
             control.send_bytes(b"ok")
@@ -901,6 +901,11 @@ class FastInferenceService:
     so each part holds at least about `part_rows` rows: a small job goes to fewer
     workers instead of one row each, a large one still uses `job_parts` workers.
     It has no effect with `job_parts` = 1.
+
+    `kernels` (V3 yin-device option, default '' = the original forward) selects the
+    rows-v2 forward levers of `rows_kernels.LEVERS` (the V3 T6 training levers, same
+    parameters and function, BF16 tolerance) for the device forward, e.g.
+    "cross+heads+nodes"; an invalid value is refused at construction.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -911,7 +916,7 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
-                 part_rows: int = 0, audit_fraction: float = 0.01,
+                 kernels: str = "", part_rows: int = 0, audit_fraction: float = 0.01,
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None) -> None:
         import multiprocessing
@@ -931,6 +936,9 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_arena")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
+        from .rows_kernels import parse_kernels
+
+        parse_kernels(kernels)  # V3 yin-device option, '' = the original forward; loud
         self.vocabulary = copy.deepcopy(vocabulary)
         self.compiler_identity = copy.deepcopy(compiler_identity)
         self.assembler = assembler
@@ -938,7 +946,7 @@ class FastInferenceService:
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
         self.part_rows = part_rows
-        self.bf16, self.compile = bf16, compile
+        self.bf16, self.compile, self.kernels = bf16, compile, kernels
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
                                  "sha256": encoder_sha256 or encoder_digest()}
@@ -993,7 +1001,7 @@ class FastInferenceService:
         self.device_process = context.Process(
             target=_device_worker, daemon=True, name="rl-inference-3-device",
             args=(control_child, device_inputs, results_child,
-                  self.device, bf16, compile, device_threads, self.arena))
+                  self.device, bf16, compile, device_threads, self.arena, kernels))
         self.device_process.start()
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
@@ -1072,12 +1080,14 @@ class FastInferenceService:
 
         from .rows_scorer import RowsScorer
 
-        RowsScorer(model, bf16=self.bf16, compile=self.compile)  # immutable eval snapshot
+        RowsScorer(model, bf16=self.bf16, compile=self.compile,
+                   kernels=self.kernels)  # immutable eval snapshot
         # Ship parameters and construction, not this process's runtime caches
-        # (a torch.compile wrapper set by rows_forward cannot be pickled).
+        # (a torch.compile wrapper set by rows_forward / rows_kernels cannot be
+        # pickled: `_rows_block*`, and `_rows_nodes_compiled` of the nodes lever).
         shipped = copy.copy(model)
         shipped.__dict__ = {key: value for key, value in model.__dict__.items()
-                            if not key.startswith("_rows_block")}
+                            if not key.startswith(("_rows_block", "_rows_nodes"))}
         blob = io.BytesIO()
         torch.save(shipped, blob)
         key = handoff.snapshot_sha256

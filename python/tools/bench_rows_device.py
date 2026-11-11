@@ -87,8 +87,11 @@ class Batch:
         import torch
 
         from stpd.p1.rows_scorer import prepare
-        from stpd.rl.batch_preparation import (allocate_forward_arena, forward_arena_bytes,
-                                               write_forward_inputs)
+        from stpd.rl.batch_preparation import (
+            allocate_forward_arena,
+            forward_arena_bytes,
+            write_forward_inputs,
+        )
 
         total = len(frames)
         index = [(start + i) % total for i in range(n)]
@@ -113,9 +116,6 @@ def scorer_of(model: Any, config: dict[str, Any]) -> Any:
     kwargs: dict[str, Any] = {"bf16": True, "compile": config["compile"]}
     if config.get("kernels"):
         kwargs["kernels"] = config["kernels"]
-    for key in ("graphs",):
-        if config.get(key):
-            kwargs[key] = config[key]
     return RowsScorer(model, **kwargs)
 
 
@@ -211,8 +211,7 @@ def regions(model: Any, frames: list[Any], floors: list[int], configs: list[dict
 
     originals = {"packed_text": rows_forward.packed_text,
                  "owner_nodes": rows_kernels.owner_nodes,
-                 "rows_block_packed": rows_forward.rows_block_packed,
-                 "encode_varlen": rows_forward.encode_varlen}
+                 "rows_block_packed": rows_forward.rows_block_packed}
     tensor_nodes = type(model).tensor_nodes
     rows_forward.packed_text = timed("text", originals["packed_text"])
     rows_kernels.owner_nodes = timed("nodes", originals["owner_nodes"])
@@ -344,7 +343,6 @@ def streams(model: Any, frames: list[Any], floors: list[int], configs: list[dict
                 wall = time.perf_counter() - t0
                 emit({"streams": config["name"], "rows": n, "threads": threads,
                       "rows_per_s": round(sum(counts) * n / wall)})
-        del scorer
 
 
 def main() -> None:
