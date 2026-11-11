@@ -21,6 +21,7 @@ const PUBLIC_ERRORS = new Set([
   "managed_session_tainted_after_unknown",
   "managed_session_tainted_after_successor_projection_failure",
   "managed_session_tainted_after_compact_state_divergence",
+  "managed_session_tainted_after_projection_memo_divergence",
   "stale_game_continuity", "stale_managed_runtime_instance",
   "text_request_id_conflict_across_episodes",
   "mutation_request_id_conflict_between_routes",

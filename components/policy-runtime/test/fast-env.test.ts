@@ -753,6 +753,25 @@ describe("fast-env failure paths", () => {
     await expectBuildStopped(h);
   });
 
+  it("the Host's projection_memo_divergence (E5) ends the game unknown with its own detail, counter and build stop", async () => {
+    for (const via of ["receipt", "capture"] as const) {
+      const h = await harness({ hooks: () => via === "receipt"
+        ? { terminalAfter: 5, receiptReasonCode: () => "projection_memo_divergence" }
+        : { captureThrows: capture => capture === 2, taintReason: () => "projection_memo_divergence" } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      // Not mixed into managed_successor_projection_failed / env_crash, never retried: the game is unknown.
+      expect(closed).toMatchObject({ reason: "unknown", detail: "projection_memo_divergence", native: "replaced", native_steps: 1 });
+      expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown" })]);
+      h.send({ cmd: "status" });
+      expect((await h.next(event => event.event === "status")).counters).toMatchObject({ projection_memo_divergences: 1,
+        compact_divergences: 0, build_output_stopped: "projection_memo_divergence" });
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "projection_memo_divergence", slot: 0 });
+      h.open(0);
+      expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
+    }
+  });
+
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {
     const h = await harness({ sink: dir => defaultFastEvidenceSink(dir) });
     expect(defaultFastEvidenceSink("/unused")).toBeInstanceOf(FastActionEvidenceSink);

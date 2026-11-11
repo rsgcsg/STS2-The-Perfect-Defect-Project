@@ -15,6 +15,7 @@ import {
   COMPACT_FORMAT, CompactStateDivergence, CompactStateReconstructor, compactSampleSchedule,
   DEFAULT_RECONCILE_INTERVAL, DEFAULT_SAMPLE_RATE
 } from "./managed-native-compact.mjs";
+import { ProjectionMemo, ProjectionMemoDivergence, validateProjectionMemo } from "./managed-projection-memo.mjs";
 
 const ACTION_LIMIT = 512;
 const CARD_ALTERNATIVE_OUTCOMES = new Set(["do_nothing", "end_selection_and_complete_reward", "end_selection_and_do_not_complete_reward"]);
@@ -49,6 +50,12 @@ function canonicalValue(value) {
 
 function digest(value) {
   return createHash("sha256").update(JSON.stringify(canonicalValue(value))).digest("hex");
+}
+
+// A frozen native value (shared by the compact reconstructor) is immutable public data
+// already; under the E5 memo it is shared instead of copied. Same JSON either way.
+function cloneOrShare(value) {
+  return activeMemo === null ? structuredClone(value) : activeMemo.share(value);
 }
 
 function stableId(prefix, ...parts) {
@@ -88,12 +95,21 @@ function createProjectionContext({
   if (!["crypto", "sequence"].includes(identityMode)) {
     throw new TypeError("Managed projection identityMode must be crypto or sequence.");
   }
-  const rawStateSha = identityMode === "crypto" ? digest(state) : null;
+  // The private raw-state digest is only carried in bindings. Under the E5 memo
+  // (frozen inputs) it is computed on first read, from the same bytes.
+  let rawStateShaValue, rawStateShaDone = false;
+  const rawStateSha = () => {
+    if (!rawStateShaDone) { rawStateShaValue = identityMode === "crypto" ? digest(state) : null; rawStateShaDone = true; }
+    return rawStateShaValue;
+  };
+  if (activeMemo === null) rawStateSha();
   // This is the existing profile's projection version, not a P1 semantic
   // occurrence. Private state (including hidden order/RNG) never enters it.
   const snapshotId = `managed_${runtimeInstanceId}_s${sequence}`;
   const interactionId = `interaction_${runtimeInstanceId}_s${sequence}`;
   const referents = [];
+  // First referent per id: same answer as referents.find(r => r.referent_id === id), in O(1).
+  const firstReferents = new Map();
   const actions = [];
   const bindings = new Map();
   const projectionAliases = new Map();
@@ -174,16 +190,11 @@ function createProjectionContext({
     kind = "entity"
   }) {
     const referentId = id ?? makeId("ref", snapshotId, role, properties, occurrence);
-    const value = {
-      referent_id: referentId,
-      role,
-      kind,
-      label: label == null ? null : String(label),
-      state: visibleState({ enabled, selected }),
-      properties_schema: properties === null ? null : `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
-      properties: properties === null ? null : { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
-    };
+    // E5: a session-stable referent over memoized (frozen) properties is itself kept.
+    const value = referentValue(id === null ? null : activeMemo,
+      [referentId, role, kind, label == null ? null : String(label), enabled, selected, includeEntityId], properties);
     referents.push(value);
+    if (!firstReferents.has(referentId)) firstReferents.set(referentId, value);
     return value;
   }
 
@@ -208,7 +219,7 @@ function createProjectionContext({
     };
     actions.push(value);
     bindings.set(boundActionId, Object.freeze({
-      expected_raw_state_sha256: rawStateSha,
+      get expected_raw_state_sha256() { return rawStateSha(); },
       raw_request: canonicalValue(raw),
       action: value
     }));
@@ -218,10 +229,12 @@ function createProjectionContext({
   return {
     state,
     sequence,
-    rawStateSha,
+    get rawStateSha() { return rawStateSha(); },
     snapshotId,
     interactionId,
     referents,
+    hasReferent: id => firstReferents.has(id),
+    referentById: id => firstReferents.get(id),
     actions,
     bindings,
     detailReads: [],
@@ -370,24 +383,33 @@ function buildPersistentVisibleState(state, entityId) {
           hp: player.hp,
           max_hp: player.max_hp,
           gold: player.gold,
-          relics: relics.map(relic => ({
-            entity_id: entityId("relic", relic.native_ref),
-            definition_id: definitionId(relic.id),
-            name: relic.name ?? null,
-            description: relic.description ?? null,
-            ...(relic.counter == null ? {} : { counter: relic.counter }),
-            keywords: visibleHoverKeywords(relic.keywords),
-            card_previews: visibleHoverCards(relic.card_previews, "relic", relic.native_ref, entityId)
-          })),
-          potions: potions.map(potion => ({
-            entity_id: entityId("potion", potion.native_ref),
-            definition_id: definitionId(potion.id),
-            name: potion.name ?? null,
-            description: potion.description ?? null,
-            slot: potion.slot,
-            keywords: visibleHoverKeywords(potion.keywords),
-            card_previews: visibleHoverCards(potion.card_previews, "potion", potion.native_ref, entityId)
-          })),
+          // Memo key = the item's alias plus its preview aliases (allocated here, in the original order).
+          relics: relics.map(relic => {
+            const id = entityId("relic", relic.native_ref);
+            const previewIds = hoverCardIds(relic.card_previews, "relic", relic.native_ref, entityId);
+            return memoized("persistent_relic", relic, JSON.stringify([id, previewIds]), () => ({
+              entity_id: id,
+              definition_id: definitionId(relic.id),
+              name: relic.name ?? null,
+              description: relic.description ?? null,
+              ...(relic.counter == null ? {} : { counter: relic.counter }),
+              keywords: visibleHoverKeywords(relic.keywords),
+              card_previews: visibleHoverCards(relic.card_previews, "relic", relic.native_ref, entityId)
+            }));
+          }),
+          potions: potions.map(potion => {
+            const id = entityId("potion", potion.native_ref);
+            const previewIds = hoverCardIds(potion.card_previews, "potion", potion.native_ref, entityId);
+            return memoized("persistent_potion", potion, JSON.stringify([id, previewIds]), () => ({
+              entity_id: id,
+              definition_id: definitionId(potion.id),
+              name: potion.name ?? null,
+              description: potion.description ?? null,
+              slot: potion.slot,
+              keywords: visibleHoverKeywords(potion.keywords),
+              card_previews: visibleHoverCards(potion.card_previews, "potion", potion.native_ref, entityId)
+            }));
+          }),
           max_potion_slots: player.max_potion_slots
         },
         completeness: {
@@ -424,9 +446,12 @@ function currentMapContent(raw, entityId) {
   const copyCoordinate = value => ({ col: value.col, row: value.row, point_type: value.point_type });
   return { kind: "map", act_index: raw.act_index,
     current_position: raw.current_position === null ? null : copyCoordinate(raw.current_position),
-    visited: raw.visited.map(copyCoordinate), nodes: raw.nodes.map(node => ({ entity_id: entityId("map_point",node.native_ref),
-      col: node.col, row: node.row, point_type: node.point_type, state: node.state,
-      children: node.children.map(copyCoordinate) })) };
+    visited: raw.visited.map(copyCoordinate), nodes: raw.nodes.map(node => {
+      const id = entityId("map_point",node.native_ref);
+      return memoized("map_node", node, id, () => ({ entity_id: id,
+        col: node.col, row: node.row, point_type: node.point_type, state: node.state,
+        children: node.children.map(copyCoordinate) }));
+    }) };
 }
 
 function mapRead(snapshotId, state, makeId, entityId) {
@@ -593,17 +618,50 @@ function visibleHoverKeywords(keywords) {
   }));
 }
 
+function hoverCardIds(cards, ownerKind, ownerRef, entityId) {
+  return cards.map((card, index) =>
+    entityId("tooltip_card", JSON.stringify([ownerKind, ownerRef, index, card?.id, card?.is_upgraded])));
+}
+
 function visibleHoverCards(cards, ownerKind, ownerRef, entityId) {
+  const ids = hoverCardIds(cards, ownerKind, ownerRef, entityId);
   return cards.map((card, index) => {
-    const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...visible } = visibleCombatCard(
-      card,
-      entityId("tooltip_card", JSON.stringify([ownerKind, ownerRef, index, card?.id, card?.is_upgraded]))
-    );
+    const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...visible } = visibleCombatCard(card, ids[index]);
     return visible;
   });
 }
 
+/** One referent from its scalar fields and its properties. The memo key is exactly the field tuple
+ * the referent is built from, so no field that reaches the output can be missing from the key; with
+ * memo (null = build) a frozen properties object and an equal tuple give back the same frozen referent. */
+export function referentValue(memo, fields, properties) {
+  const build = () => {
+    const [referentId, role, kind, label, enabled, selected, includeEntityId] = fields;
+    return {
+      referent_id: referentId,
+      role,
+      kind,
+      label,
+      state: visibleState({ enabled, selected }),
+      properties_schema: properties === null ? null : `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
+      properties: properties === null ? null : { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
+    };
+  };
+  return memo == null ? build() : memo.value("referent", properties, JSON.stringify(fields), build);
+}
+
+/** E5: build() through the active projection memo (kept identity for a frozen input and the same
+ * scalar key), or directly when no memo runs. Every public id the output holds must be computed by
+ * the caller and be part of `key`, so a hit allocates nothing and skips no allocation. */
+function memoized(site, input, key, build) {
+  return activeMemo === null ? build() : activeMemo.value(site, input, key, build);
+}
+
 function visibleCombatCard(card, entityId, depth = 0) {
+  return memoized("visible_combat_card", card, `${entityId}\u0000${depth}`, () => buildVisibleCombatCard(card, entityId, depth));
+}
+
+function buildVisibleCombatCard(card, entityId, depth) {
   return {
     entity_id: entityId,
     definition_id: definitionId(card?.id ?? card?.name),
@@ -636,8 +694,11 @@ function visibleCombatCard(card, entityId, depth = 0) {
 }
 
 function visibleCardBase(card, entityId) {
-  const { keywords: _keywords, card_previews: _previews, ...base } = visibleCombatCard(card, entityId);
-  return base;
+  const build = () => {
+    const { keywords: _keywords, card_previews: _previews, ...base } = visibleCombatCard(card, entityId);
+    return base;
+  };
+  return memoized("visible_card_base", card, String(entityId), build);
 }
 
 function visibleStatus(status) {
@@ -1146,8 +1207,8 @@ function currentSurface(state, ctx) {
         const tooltips = (option?.tooltips ?? []).map(tip => {
           if (tip.kind === "text") return { kind: "text", name: visibleText(tip.name), description: visibleText(tip.description) };
           if (tip.kind !== "card" || !tip.card) throw new Error("unsupported_managed_event_tooltip");
-          const card = visibleCardBase(tip.card, ctx.derivedId("tooltip_card", optionId, tip.card.id ?? null, cardOrdinal++));
-          delete card.can_play; delete card.target_type;
+          const { can_play: _canPlay, target_type: _targetType, ...card } =
+            visibleCardBase(tip.card, ctx.derivedId("tooltip_card", optionId, tip.card.id ?? null, cardOrdinal++));
           return { kind: "card", card };
         });
         const item = ctx.referent({ role: "option", id: optionId,
@@ -2425,9 +2486,11 @@ function runDeckRead(snapshotId, state, makeId, entityId) {
         const cardEntityId = entityId("card", card.native_ref);
         // The Reference deck DTO contains no combat legality or inline hover
         // extensions. Rich hover facts are separate same-snapshot Reads below.
-        const { target_type: _targetType, can_play: _canPlay,
-          keywords: _keywords, card_previews: _previews, ...visible } = visibleCombatCard(card, cardEntityId);
-        return visible;
+        return memoized("run_deck_card", card, String(cardEntityId), () => {
+          const { target_type: _targetType, can_play: _canPlay,
+            keywords: _keywords, card_previews: _previews, ...visible } = visibleCombatCard(card, cardEntityId);
+          return visible;
+        });
       })
     },
     completeness: {
@@ -2464,9 +2527,9 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
           .map(([key, value]) => [key === "visibility_basis" ? "observation_source" : key, value])) } : {}),
       public_details_revision: plainObject(details) && Object.hasOwn(details, "upgrade_preview") ? "2" : "1", display_context: displayContext,
       parent_read_id: parentReadId, display_owner_entity_id: ownerId,
-      ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
-      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {}) },
+      ...(Array.isArray(details?.keywords) ? { keywords: cloneOrShare(details.keywords) } : {}),
+      ...(Array.isArray(details?.card_previews) ? { card_previews: cloneOrShare(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: cloneOrShare(details.upgrade_preview) } : {}) },
     completeness: { status: gaps.length === 0 ? "complete" : "partial",
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
@@ -2484,7 +2547,7 @@ function rewardCardBase(raw, entityId) {
 // native card instance and hover facts; Reference publishes both as reward_candidate.
 function rewardCandidateDetailRead(ctx, raw, entityId, ownerId) {
   const { keywords, card_previews: cardPreviews, ...base } = visibleCombatCard(raw, entityId);
-  if (!ctx.referents.some(referent => referent.referent_id === entityId))
+  if (!ctx.hasReferent(entityId))
     ctx.referent({ role: "card", id: entityId, label: base.name, properties: base });
   const missing = Array.isArray(raw.render_missing) ? [...raw.render_missing] : [];
   if (raw.render_complete !== true && missing.length === 0)
@@ -2498,7 +2561,7 @@ function deckCardDetailReads(ctx, state, deckRead) {
   if (deckRead === null) return [];
   return state.player.deck.map((card, index) => {
     const visible = deckRead.content.cards[index];
-    if (!ctx.referents.some(referent => referent.referent_id === visible.entity_id))
+    if (!ctx.hasReferent(visible.entity_id))
       ctx.referent({ role: "card", id: visible.entity_id, label: visible.name, properties: visible });
     const details = card.public_details;
     const missing = Array.isArray(card.public_details_missing) ? [...card.public_details_missing] : [];
@@ -2527,9 +2590,9 @@ function deckCardDetailReads(ctx, state, deckRead) {
         display_context: "deck",
         parent_read_id: deckRead.descriptor.read_id,
         display_owner_entity_id: null,
-        ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
-      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {})
+        ...(Array.isArray(details?.keywords) ? { keywords: cloneOrShare(details.keywords) } : {}),
+        ...(Array.isArray(details?.card_previews) ? { card_previews: cloneOrShare(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: cloneOrShare(details.upgrade_preview) } : {})
       },
       completeness: {
         status: missing.length === 0 ? "complete" : "partial",
@@ -2566,23 +2629,18 @@ function combatPilesRead(ctx, state) {
         // Project the complete allowed card facts BEFORE ordering/aliasing.
         // A stable tie between equal visible values carries no hidden identity:
         // equal occurrences receive separate public slots, without deduplication.
+        // The canonical sort text is computed once per card (same order as comparing it per pair).
         const cards = (zone.cards ?? []).map((raw) => ({ raw, visible: visibleCardBase(raw, null),
-          sort: visibleCombatCard(raw, null) }));
+          sort: zone.pile === "draw" ? JSON.stringify(canonicalValue(visibleCombatCard(raw, null))) : null }));
         if (zone.pile === "draw") {
-          cards.sort((left, right) => {
-            const a = JSON.stringify(canonicalValue(left.sort));
-            const b = JSON.stringify(canonicalValue(right.sort));
-            return a < b ? -1 : a > b ? 1 : 0;
-          });
+          cards.sort((left, right) => left.sort < right.sort ? -1 : left.sort > right.sort ? 1 : 0);
         }
         // Allocate from normalized public order, then use only those public
         // aliases to break ties. A previously visible original keeps its identity
         // across hand, selector and pile views without revealing a draw ordinal.
         for (const card of cards) card.entityId = ctx.entityId("card", card.raw.native_ref);
-        if (zone.pile === "draw") cards.sort((left, right) => {
-          const a = JSON.stringify(canonicalValue(left.sort)), b = JSON.stringify(canonicalValue(right.sort));
-          return a < b ? -1 : a > b ? 1 : left.entityId.localeCompare(right.entityId);
-        });
+        if (zone.pile === "draw") cards.sort((left, right) =>
+          left.sort < right.sort ? -1 : left.sort > right.sort ? 1 : left.entityId.localeCompare(right.entityId));
         return {
           zone: zone.pile,
           card_count: cards.length,
@@ -2590,7 +2648,7 @@ function combatPilesRead(ctx, state) {
           cards: cards.map(({ raw, visible }, index) => {
             const { target_type: _target, can_play: _canPlay, ...base } = visible;
             const card = { ...base, entity_id: cards[index].entityId };
-            if (!ctx.referents.some(referent => referent.referent_id === card.entity_id))
+            if (!ctx.hasReferent(card.entity_id))
               ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
             ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
               Array.isArray(raw.public_details_missing) ? raw.public_details_missing : [], zone.pile, null, parentReadId));
@@ -2616,14 +2674,29 @@ function handCardDetailReads(ctx, state) {
   const owner = ctx.entityId("player", playerRef);
   return hand.map(raw => {
     const card = visibleCardBase(raw, ctx.entityId("card", raw.native_ref));
-    if (!ctx.referents.some(referent => referent.referent_id === card.entity_id))
+    if (!ctx.hasReferent(card.entity_id))
       ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
     return publicCardDetailRead(ctx, Object.fromEntries(Object.entries(card).filter(([, value]) => value !== null)),
       raw.public_details, Array.isArray(raw.public_details_missing) ? raw.public_details_missing : [], "hand", owner);
   });
 }
 
-export function projectManagedCandidateDecision({
+// The E5 memo of the projection now running (projection is synchronous), else null.
+let activeMemo = null;
+
+export function projectManagedCandidateDecision(options) {
+  const memo = options.memo ?? null;
+  if (memo !== null && !(memo instanceof ProjectionMemo)) throw new TypeError("memo must be a ProjectionMemo or null.");
+  if (activeMemo !== null) throw new Error("managed projection is not reentrant");
+  activeMemo = memo;
+  try {
+    return projectDecision(options);
+  } finally {
+    activeMemo = null;
+  }
+}
+
+function projectDecision({
   state,
   runtimeInstanceId,
   environmentFingerprint,
@@ -2658,7 +2731,7 @@ export function projectManagedCandidateDecision({
     const potions = (state.player?.potions ?? []).filter(potion => potion?.can_discard === true);
     surface.surface.non_combat_discardable_potions = potions.map(potion => {
       const id = ctx.entityId("potion", potion.native_ref);
-      const subject = ctx.referents.find(item => item.referent_id === id)
+      const subject = ctx.referentById(id)
         ?? ctx.referent({ role: "potion", id, label: potion.name, properties: { entity_id: id, slot: potion.slot } });
       // Replace only the old reward-room discard carrier; retain all room actions.
       for (let i = ctx.actions.length - 1; i >= 0; i--) {
@@ -2759,7 +2832,7 @@ export function projectManagedCandidateDecision({
     snapshot,
     bindings: ctx.bindings,
     captureSettledRelicCounters: () => managedSettledRelicCounterWitness(state, ctx, snapshot, reads),
-    raw_state_sha256: ctx.rawStateSha,
+    get raw_state_sha256() { return ctx.rawStateSha; },
     reads: new Map(reads.map((read) => [read.descriptor.read_id, read])),
     performance: Object.freeze({
       context_ms: contextMs,
@@ -2891,6 +2964,7 @@ export class ManagedPlayerEnvironmentSession {
   #compactCheckAll = false;
   #compactInstances = new Set();
   #compactLineTap = null;
+  #memo = null;
 
   constructor({
     process,
@@ -2901,7 +2975,8 @@ export class ManagedPlayerEnvironmentSession {
     ascension = 0,
     identityMode = "crypto",
     validateSdk = true,
-    compactOutput = null
+    compactOutput = null,
+    projectionMemo = null
   }) {
     if (process == null || typeof process.request !== "function") {
       throw new TypeError("ManagedPlayerEnvironmentSession requires a JSON-line process.");
@@ -2916,6 +2991,13 @@ export class ManagedPlayerEnvironmentSession {
     this.#identityMode = identityMode;
     this.#validateSdk = validateSdk;
     this.#compact = validateCompactOutput(compactOutput);
+    const memo = validateProjectionMemo(projectionMemo, this.#compact);
+    this.#memo = memo === null ? null : new ProjectionMemo(memo);
+  }
+
+  /** E5 projection memo counters (null when off). */
+  get projectionMemo() {
+    return this.#memo?.stats() ?? null;
   }
 
   /** The native episode instance of the current compact run (null on the old chain). */
@@ -2988,6 +3070,7 @@ export class ManagedPlayerEnvironmentSession {
       this.#record("mount_transport_and_native", performance.now() - mountStarted);
       this.#ledger.clear();
       this.#publicEntityAliases.clear();
+      this.#memo?.reset();
       const snapshot = await this.#setState(state, timeoutMs);
       if (initialProgress != null) {
         const identity = await this.#request({ cmd: "run_identity" }, timeoutMs);
@@ -3000,6 +3083,7 @@ export class ManagedPlayerEnvironmentSession {
       return snapshot;
     } catch (cause) {
       if (cause instanceof CompactStateDivergence) this.#taintCompact();
+      else if (cause instanceof ProjectionMemoDivergence) { /* tainted with its own reason by #setState */ }
       else if (initialProgress != null) {
         this.#tainted = true;
         this.#taintReason = "initial_progress_mount_failed_replace_process";
@@ -3015,6 +3099,7 @@ export class ManagedPlayerEnvironmentSession {
     this.#projection = null;
     this.#ledger.clear();
     this.#publicEntityAliases.clear();
+    this.#memo?.reset();
     try {
       const state = await this.#nativeState({ cmd: "load_save", path, lang: this.#language }, timeoutMs,
         { startsInstance: "from_save" });
@@ -3024,6 +3109,7 @@ export class ManagedPlayerEnvironmentSession {
       return await this.#setState(state, timeoutMs);
     } catch (cause) {
       if (cause instanceof CompactStateDivergence) { this.#taintCompact(); throw cause; }
+      if (cause instanceof ProjectionMemoDivergence) throw cause;
       this.#tainted = true;
       this.#taintReason = "map_restore_failed";
       throw cause;
@@ -3039,6 +3125,8 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#taintReason === "compact_state_divergence")
       throw new Error("managed_session_tainted_after_compact_state_divergence");
+    if (this.#taintReason === "projection_memo_divergence")
+      throw new Error("managed_session_tainted_after_projection_memo_divergence");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
   }
@@ -3120,16 +3208,19 @@ export class ManagedPlayerEnvironmentSession {
     if (this.#tainted) {
       const projectionFailed = this.#taintReason === "successor_projection_failed";
       const diverged = this.#taintReason === "compact_state_divergence";
+      const memoDiverged = this.#taintReason === "projection_memo_divergence";
       const value = this.#makeReceipt({
         requestId,
         delivery: "not_delivered",
         action: unknownAction(boundActionId),
-        reasonCode: diverged ? "runtime_tainted_after_compact_state_divergence" : projectionFailed
-          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+        reasonCode: diverged ? "runtime_tainted_after_compact_state_divergence"
+          : memoDiverged ? "runtime_tainted_after_projection_memo_divergence" : projectionFailed
+            ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Mutation authority is closed until the process is replaced.",
         retry: { allowed: false, reason: diverged ? "compact_state_divergence_requires_process_replacement"
-          : projectionFailed ? "successor_projection_failure_requires_process_replacement"
-            : "unknown_delivery_requires_process_replacement" },
+          : memoDiverged ? "projection_memo_divergence_requires_process_replacement"
+            : projectionFailed ? "successor_projection_failure_requires_process_replacement"
+              : "unknown_delivery_requires_process_replacement" },
         successor: null
       });
       this.#ledger.set(requestId, { requestKey, receipt: value });
@@ -3234,6 +3325,21 @@ export class ManagedPlayerEnvironmentSession {
     } catch (error) {
       // The native reported divergence on the successor's enrichment read.
       if (error instanceof CompactStateDivergence) return diverged(error.message);
+      // The sampled memo check found a memoized projection differing from a fresh
+      // one: its own reason code, never mixed into a projection failure.
+      if (error instanceof ProjectionMemoDivergence) {
+        const value = this.#makeReceipt({
+          requestId,
+          delivery: "delivered",
+          action: binding.action,
+          reasonCode: "projection_memo_divergence",
+          detail: error.message,
+          retry: { allowed: false, reason: "projection_memo_divergence_requires_process_replacement" },
+          successor: null
+        });
+        this.#ledger.set(requestId, { requestKey, receipt: value });
+        return value;
+      }
       // A decision returned from the native action confirms delivery, but a
       // failed successor projection leaves no trustworthy current binding.
       this.#tainted = true;
@@ -3363,23 +3469,68 @@ export class ManagedPlayerEnvironmentSession {
     }
     this.#sequence += 1;
     const projectionStarted = performance.now();
-    this.#projection = projectManagedCandidateDecision({
+    const options = {
       state: enriched,
       runtimeInstanceId: this.#runtimeInstanceId,
       environmentFingerprint: this.#environmentFingerprint,
       sequence: this.#sequence,
-      publicEntityAliases: this.#publicEntityAliases,
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
-    });
-    this.#stateValue = enriched; this.#stateDigest = null;
+    };
+    // A due memo check projects the same state fresh, on copies of the alias tables
+    // taken before the memoized run, and compares the public bytes.
+    const check = this.#memo?.checkDue() === true ? copyAliasTables(this.#publicEntityAliases) : null;
+    const projection = projectManagedCandidateDecision({ ...options, publicEntityAliases: this.#publicEntityAliases, memo: this.#memo });
     this.#record("projection_total", performance.now() - projectionStarted);
+    if (check !== null) {
+      const checkStarted = performance.now();
+      const fresh = projectManagedCandidateDecision({ ...options, publicEntityAliases: check, memo: null });
+      const problem = projectionDifference(projection, fresh) ?? aliasTableDifference(this.#publicEntityAliases, check);
+      this.#record("projection_memo_check", performance.now() - checkStarted);
+      if (problem !== null) {
+        // Loud: no fallback to the fresh projection. The session needs a new process.
+        this.#tainted = true;
+        this.#taintReason = "projection_memo_divergence";
+        throw new ProjectionMemoDivergence(problem);
+      }
+    }
+    this.#projection = projection;
+    this.#stateValue = enriched; this.#stateDigest = null;
     for (const [name, milliseconds] of Object.entries(this.#projection.performance)) {
       if (name === "total_ms") continue;
       this.#record(`projection_${name.replace(/_ms$/u, "")}`, milliseconds);
     }
     return this.#projection.snapshot;
   }
+}
+
+function copyAliasTables(aliases) {
+  const copy = new Map(aliases);
+  const derived = aliases.get(DERIVED_ALIAS_TABLE);
+  if (derived !== undefined) copy.set(DERIVED_ALIAS_TABLE, new Map(derived));
+  return copy;
+}
+
+function aliasTableDifference(memoized, fresh) {
+  const flat = table => [...table].map(([key, value]) => [key, value instanceof Map ? [...value] : value]);
+  return JSON.stringify(flat(memoized)) === JSON.stringify(flat(fresh)) ? null : "public_entity_alias_tables";
+}
+
+/** Public bytes of a projection (snapshot without its clock, Reads, bound requests). */
+function projectionBytes(projection) {
+  const { observed_at: _clock, ...snapshot } = projection.snapshot;
+  return {
+    snapshot: JSON.stringify(snapshot),
+    reads: JSON.stringify([...projection.reads.values()]),
+    bindings: JSON.stringify([...projection.bindings].map(([id, binding]) =>
+      [id, binding.raw_request, binding.action, binding.expected_raw_state_sha256]))
+  };
+}
+
+function projectionDifference(memoized, fresh) {
+  const left = projectionBytes(memoized), right = projectionBytes(fresh);
+  for (const part of ["snapshot", "reads", "bindings"]) if (left[part] !== right[part]) return part;
+  return null;
 }
 
 export async function startManagedPlayerEnvironmentSession({
@@ -3394,12 +3545,15 @@ export async function startManagedPlayerEnvironmentSession({
   validateSdk = true,
   quietDiagnostics = false,
   compactOutput = null,
+  projectionMemo = null,
   fastChain = false,
   deckMemo = false,
   hudMemo = false
 }) {
   validateManagedAscension(ascension);
   compactOutput = validateCompactOutput(compactOutput);
+  if (projectionMemo != null && fastChain !== true) throw new TypeError("projectionMemo is fast_chain only.");
+  validateProjectionMemo(projectionMemo, compactOutput);
   const runtime = await startManagedCandidateRuntime({
     root,
     candidateDirectory,
@@ -3427,7 +3581,8 @@ export async function startManagedPlayerEnvironmentSession({
       ascension,
       identityMode,
       validateSdk,
-      compactOutput
+      compactOutput,
+      projectionMemo
     }),
     runtime,
     environmentFingerprint
