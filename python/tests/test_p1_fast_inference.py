@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import socket
@@ -948,3 +949,131 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
     assert stats["failure"] is None
     err = capfd.readouterr().err
     assert "hello_required" in err and "unexpected_link_message" in err
+
+
+# -- V3 gui-infer options (default off): several device processes, part sizing ----
+def _packet(encoded: list[Any], game: str, first_id: int) -> tuple[list[dict[str, Any]], bytes]:
+    rows, binary = [], bytearray()
+    for index, item in enumerate(encoded):
+        rows.append({"request_id": first_id + index, "game_instance_id": game,
+                     "step_index": index, "consumption_id": f"c{index}",
+                     "catalog_len": item.catalog_len, "catalog_sha256": item.catalog_sha256,
+                     "observation_sha256": item.observation_sha256, "in_combat": False,
+                     "floor": 2, "payload": {"offset": len(binary), "length": len(item.row),
+                                             "row_sha256": item.row_sha256}})
+        binary += item.row
+    return rows, bytes(binary)
+
+
+@pytest.mark.parametrize("join_workers", [0, 2])
+def test_several_device_processes_score_the_same_and_share_jobs(vocabulary, model,
+                                                                 join_workers):
+    """`device_workers=2`: every device process holds the mu; jobs go to the one
+    with fewer jobs in flight; scores equal one RowsScorer forward per row."""
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(8)]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, device_workers=2, in_flight=2,
+                       join_workers=join_workers, window_ms=0.0, max_job_rows=2)
+    assert len(service.device_processes) == 2
+    clients = [_open_client(service, encoder, f"g{index}") for index in range(4)]
+    try:
+        for index, client in enumerate(clients):  # four packets: jobs land on both devices
+            rows, binary = _packet(encoded[2 * index:2 * index + 2], f"g{index}", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+        envelopes = [unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0] for client in clients]
+    finally:
+        for client in clients:
+            client.close()
+        report = service.close()
+    assert all(r["status"] == "scored" for e in envelopes for r in e["results"])
+    assert sum(report["device_jobs"]) == report["jobs"] and min(report["device_jobs"]) >= 1
+    finished = [body[1] for kind, body in assembler.calls if kind == "finish"]
+    assert len(finished) == 8
+    for scored in finished:
+        index = 2 * int(scored["game_instance_id"][1:]) + scored["request_id"] - 3
+        want = expected[index]
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        assert torch.allclose(torch.tensor(scored["behavior_q"]), torch.tensor(behavior),
+                              atol=1e-6)
+
+
+def test_any_dead_device_process_stops_the_whole_service_loudly(vocabulary, model):
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler(), device_workers=2, in_flight=2)
+    client = _open_client(service, encoder, "g1")
+    try:
+        assert _score(client, encoded, 3, "g1")["status"] == "scored"
+        service.device_processes[1].kill()
+        service.threads[2].join(30)
+        assert service.stop_reason == "device_process_gone"
+        assert _score(client, encoded, 4, "g1")["error_code"] == "SERVICE_STOPPING"
+    finally:
+        client.close()
+        service.close()
+
+
+def test_part_rows_splits_a_job_into_parts_with_the_same_scores(vocabulary, model):
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    assembler = FakeAssembler()
+    identity = FrameCompiler(vocabulary).identity
+    service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
+                                   address=("127.0.0.1", 0), env_sha256=ENV,
+                                   prepare_workers=4, job_parts=4, part_rows=2, join_workers=1,
+                                   window_ms=200.0)
+    assert service.publish(model, Handoff(MU))
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = _packet(encoded, "g1", 3)
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+    finally:
+        client.close()
+        report = service.close()
+    assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+    # 6 rows / part_rows 2 = 3 parts (job_parts 4 is only the cap), one forward
+    assert report["jobs"] == 1 and report["parts"] == 3 and report["batches"] == 1
+    finished = {body[0]: body[1] for kind, body in assembler.calls if kind == "finish"}
+    for index, want in enumerate(expected):
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        assert torch.allclose(torch.tensor(finished[3 + index]["behavior_q"]),
+                              torch.tensor(behavior), atol=1e-6)
+
+
+@pytest.mark.parametrize("options", [{"device_workers": 0}, {"device_workers": 9},
+                                     {"part_rows": -1}, {"device_workers": 1.5}])
+def test_invalid_device_shape_is_refused(vocabulary, model, options):
+    with pytest.raises(ValueError, match="invalid_rl_inference_3_device_shape"):
+        _service(vocabulary, model, FakeAssembler(), **options)
+
+
+def test_one_sync_outputs_equal_the_per_tensor_copies(vocabulary, model):
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(4)]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    moved = copy.deepcopy(model).to(device)
+    from stpd.p1.rows_scorer import prepare
+    group = prepare(frames, [2] * len(frames))
+    plain = RowsScorer(moved).forward_tensors(group)
+    once = RowsScorer(moved, one_sync=True).forward_tensors(group)
+    assert len(plain) == len(once) == 4
+    for left, right in zip(plain, once, strict=True):
+        assert left.device.type == right.device.type == "cpu"
+        assert torch.equal(left, right)

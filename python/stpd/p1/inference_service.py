@@ -976,7 +976,8 @@ class FastInferenceService:
                                       "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0,
-                                      "episodes_refused": 0}
+                                      "episodes_refused": 0, "parts": 0,
+                                      "device_jobs": [0] * device_workers}
         context: Any = multiprocessing.get_context("spawn")
         controls = [context.Pipe(duplex=True) for _ in range(device_workers)]
         result_pipes = [context.Pipe(duplex=False) for _ in range(device_workers)]
@@ -1056,6 +1057,7 @@ class FastInferenceService:
                 raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
         self.outstanding = [0] * prepare_workers
         self.device_jobs = [0] * device_workers  # jobs in flight per device process
+        self.last_device = device_workers - 1
         # job id -> [remaining parts, parts' rows, workers, slot, device]
         self.jobs: dict[int, list[Any]] = {}
         self.jobs_lock = threading.Lock()
@@ -1340,8 +1342,13 @@ class FastInferenceService:
                 for worker in workers:
                     self.outstanding[worker] += 1
                 slot = self.free_slots.pop()  # a slot semaphore is held: one is free
-                device = min(range(len(self.device_jobs)), key=self.device_jobs.__getitem__)
+                # fewest jobs in flight; ties go round-robin after the last device
+                count = len(self.device_jobs)
+                device = min(range(count), key=lambda d: (
+                    self.device_jobs[d], (d - self.last_device - 1) % count))
+                self.last_device = device
                 self.device_jobs[device] += 1
+                self.stats["device_jobs"][device] += 1
                 self.jobs[job_id] = [len(chunks), chunks, workers, slot, device]
         if gone:  # the results thread has ended (#431 review S2): never dispatched
             for item in rows:
@@ -1352,6 +1359,7 @@ class FastInferenceService:
         share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
         base = slot * self.slot_bytes
         self.stats["jobs"] += 1
+        self.stats["parts"] += len(chunks)
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
         sink = job_id % self.join_workers if self.join_workers else device
