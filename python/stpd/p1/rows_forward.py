@@ -37,16 +37,24 @@ from .model import positions
 from .tensor_input import JointNodes
 
 
-def mean_terms_flat(values: Tensor, flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor],
-                    empty: Tensor) -> Tensor:
+def mean_terms_flat(values: Tensor, flat: tuple[Any, ...], empty: Tensor) -> Tensor:
     """`model._mean_terms` for a Reduction, with one gather for all width buckets.
 
     Same rows, same per-row mean length and term order; the backward is one
-    index_add instead of one full-size gradient per width bucket.
+    index_add instead of one full-size gradient per width bucket. `flat` is
+    (indices, buckets, inverse) or, under the V3 `nodes` lever, (indices,
+    buckets, inverse, partition): both gathers then backward as gathers.
     """
-    indices, buckets, inverse = flat
+    indices, buckets, inverse = flat[:3]
+    levered = len(flat) > 3
+    partition = levered and bool(flat[3])
     sizes = [width * count for width, count in buckets if width]
-    gathered = values.index_select(0, indices).split(sizes) if sizes else ()
+    if partition and sizes:
+        from .rows_kernels import permute_rows
+
+        gathered = permute_rows(values, indices, "terms").split(sizes)
+    else:
+        gathered = values.index_select(0, indices).split(sizes) if sizes else ()
     parts, cursor = [], 0
     for width, count in buckets:
         if width:
@@ -54,6 +62,10 @@ def mean_terms_flat(values: Tensor, flat: tuple[Tensor, tuple[tuple[int, int], .
             cursor += 1
         else:
             parts.append(empty.expand(count, -1))
+    if levered:
+        from .rows_kernels import permute_rows
+
+        return permute_rows(torch.cat(parts), inverse, "inverse")
     return torch.cat(parts).index_select(0, inverse)
 
 
@@ -374,15 +386,28 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
         vectors = model.ids.weight.new_empty((0, model.ids.weight.shape[1]))
     joint = JointNodes({**group.joint.tensors, "text_indices": layout.node_text_indices},
                        group.joint.reductions)
-    flat = {key: (move(indices), buckets, move(inverse))
+    nodes_lever = "nodes" in levers
+    if nodes_lever:
+        from .rows_kernels import PARTITION_REDUCTIONS, permute_rows
+
+        flat: dict[str, tuple[Any, ...]] = {
+            key: (move(indices), buckets, move(inverse), key in PARTITION_REDUCTIONS)
             for key, (indices, buckets, inverse) in layout.reductions.items()}
+    else:
+        flat = {key: (move(indices), buckets, move(inverse))
+                for key, (indices, buckets, inverse) in layout.reductions.items()}
     nodes = model.tensor_nodes(joint, vectors, flat=flat)
     _check_encoder(model.scene)
-    block = _compiled_block(model, packed, levers) if compile else _block(packed, levers)
+    block_levers = tuple(lever for lever in levers if lever in ("cross", "heads"))
+    block = (_compiled_block(model, packed, block_levers) if compile
+             else _block(packed, block_levers))
     buckets = layout.scene_buckets
     row_sizes = [bucket[0] for bucket in buckets]
     slot_sizes = [bucket[3] for bucket in buckets]
-    tokens = nodes.index_select(0, move(layout.scene_nodes)).split(slot_sizes)
+    if nodes_lever:
+        tokens = permute_rows(nodes, move(layout.scene_nodes), "scene").split(slot_sizes)
+    else:
+        tokens = nodes.index_select(0, move(layout.scene_nodes)).split(slot_sizes)
     positions = move(layout.scene_positions).split(slot_sizes)
     lengths = move(layout.scene_lengths).split(row_sizes)
     offsets = move(layout.scene_offsets).split([size + 1 for size in row_sizes])

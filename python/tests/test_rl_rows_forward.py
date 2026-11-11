@@ -571,7 +571,7 @@ def test_forward_arena_fails_loudly(model, varied):
         stage_joined(full, plan, torch.device("cpu"))
 
 
-@pytest.mark.parametrize("kernels", ["heads", "cross", "cross+heads"])
+@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "cross+heads+nodes"])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
@@ -609,6 +609,24 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
     with pytest.raises(BoundaryError, match="prepared_kernels_requires_rows_v2"):
         PerformanceConfig(prepared_kernels="heads")
     assert FOLD_CATALOG_LIMIT == 64
+    assert parse_kernels("cross+heads+nodes") == ("cross", "heads", "nodes")
+
+
+def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_permutations():
+    from stpd.p1.rows_kernels import permutation_inverse, permute_rows
+
+    torch.manual_seed(5)
+    values = torch.randn(6, 4, requires_grad=True)
+    perm = torch.tensor([3, 0, 5, 1, 4, 2])
+    grad = torch.randn(6, 4)
+    (permute_rows(values, perm, "unit") * grad).sum().backward()
+    expected = torch.zeros(6, 4).index_add(0, perm, grad)
+    assert torch.equal(values.grad, expected)
+    assert torch.equal(permutation_inverse(perm)[perm], torch.arange(6))
+    with pytest.raises(RuntimeError):
+        permutation_inverse(torch.tensor([3, 0, 5, 1, 4, 4]))
+    with pytest.raises(ValueError, match="nodes_lever_requires_permutation:unit"):
+        permute_rows(values, perm[:5], "unit")
 
 
 def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
@@ -662,11 +680,11 @@ def test_prepared_update_with_kernel_levers_steps_like_the_original_on_cpu(model
         result = prepared_update(
             model, optimizer, minibatch, config=config, target_kl=1e9,
             performance=PerformanceConfig(prepared_forward="rows-v2",
-                                          prepared_kernels="cross+heads"))
+                                          prepared_kernels="cross+heads+nodes"))
         expected = prepared_update(reference, reference_optimizer, minibatch, config=config,
                                    target_kl=1e9,
                                    performance=PerformanceConfig(prepared_forward="rows-v2"))
-        assert result["stepped"] and result["rows_forward"]["kernels"] == "cross+heads"
+        assert result["stepped"] and result["rows_forward"]["kernels"] == "cross+heads+nodes"
         assert "kernels" not in expected["rows_forward"]
         for key in ("policy_loss", "td_loss", "terminal_loss", "hp_loss", "gradient_norm"):
             assert result[key] == pytest.approx(expected[key], rel=1e-4, abs=1e-6)

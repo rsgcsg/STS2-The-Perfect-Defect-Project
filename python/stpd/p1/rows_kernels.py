@@ -10,6 +10,14 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            W_v (sum_t w_t e_t) + b_v because sum_t w_t = 1. So neither head
            projects every scene token to keys/values. The folded queries of both
            heads (2 x 4) attend in one call straight to the encoded tokens.
+``nodes``  Gathers that are permutations by construction take a gather as their
+           backward instead of an atomic index_add: the scene token gather (each
+           real row owns its own contiguous node range, all nodes are scene
+           tokens), each reduction's bucket inverse, and the term gathers of the
+           partition reductions (ids, numbers, text: every term has one owner).
+           A broken permutation fails loudly (device assert), never silently. The
+           text-vector lookup (many terms per unique text) uses the sorted
+           embedding backward instead of contended atomics.
 ``cross``  The action cross-attention folds the same way per (action, head):
            catalog x heads folded queries per row attend to the encoded tokens,
            so no key/value projection of the scene. Catalogs longer than
@@ -32,7 +40,9 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-LEVERS = ("cross", "heads")
+LEVERS = ("cross", "heads", "nodes")
+# Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
+PARTITION_REDUCTIONS = ("ids", "numbers", "text")
 # Folding costs ~4*C*H*E per key and saves 4*E*E of key/value projection:
 # fold while C*H*(E - d) <= E*E, i.e. C <= 64 for E=192, H=4.
 FOLD_CATALOG_LIMIT = 64
@@ -178,3 +188,38 @@ def packed_cross(module: torch.nn.MultiheadAttention, action: Tensor, encoded: T
     folded = _cross_queries(module, action).reshape(rows, catalog * heads, embed)
     pooled = _attend_tokens(folded, encoded, offsets, longest)
     return _values(module, pooled.view(rows, catalog, heads, embed))
+
+
+# Permutation gathers (eager node region).
+
+def permutation_inverse(perm: Tensor) -> Tensor:
+    """inverse[perm[i]] = i; asserts (device side, no sync) that perm is a bijection."""
+    inverse = torch.full_like(perm, -1)
+    inverse[perm] = torch.arange(perm.numel(), device=perm.device, dtype=perm.dtype)
+    torch._assert_async((inverse >= 0).all())
+    return inverse
+
+
+class _Permute(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, values: Tensor, perm: Tensor, inverse: Tensor) -> Tensor:
+        ctx.save_for_backward(inverse)
+        return values.index_select(0, perm)
+
+    @staticmethod
+    def backward(ctx: Any, grad: Tensor) -> tuple[Tensor, None, None]:
+        (inverse,) = ctx.saved_tensors
+        return grad.index_select(0, inverse), None, None
+
+
+def permute_rows(values: Tensor, perm: Tensor, what: str) -> Tensor:
+    """values.index_select(0, perm) for a permutation perm of values' rows; the
+    backward is the inverse gather (no atomics)."""
+    if perm.numel() != values.shape[0]:
+        raise ValueError("nodes_lever_requires_permutation:" + what)
+    return cast(Tensor, _Permute.apply(values, perm, permutation_inverse(perm)))
+
+
+def lookup_rows(table: Tensor, indices: Tensor) -> Tensor:
+    """table.index_select(0, indices) with the sorted embedding backward."""
+    return F.embedding(indices, table)
