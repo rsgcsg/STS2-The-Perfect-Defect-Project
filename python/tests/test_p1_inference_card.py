@@ -25,6 +25,7 @@ from test_p1_fast_inference import (
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.fast_aggregator import NodeAggregator, service_for_game
+from stpd.p1.fast_mu_follower import FastMuFollower
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.inference_card import InferenceCard, MpsDaemon
 from stpd.p1.inference_service import FastInferenceService
@@ -49,7 +50,10 @@ def make_service(index: int, settings: dict[str, Any]) -> FastInferenceService:
     vocabulary = public_vocabulary(V2_INPUT_SPEC)
     assembler = RefusingAssembler() if settings.get("refuse") == index else FakeAssembler()
     assembler.assembler_id = settings.get("assembler_id", f"asm-{index}")  # type: ignore[attr-defined]
-    return FastInferenceService(vocabulary, FrameCompiler(vocabulary).identity, assembler,
+    compiler = FrameCompiler(vocabulary).identity
+    if settings.get("other_compiler") == index:
+        compiler = {**compiler, "encoder": "other"}
+    return FastInferenceService(vocabulary, compiler, assembler,
                                 training_generation="gen-1", address=("127.0.0.1", 0),
                                 env_sha256=ENV, prepare_workers=1, device="cpu")
 
@@ -286,3 +290,60 @@ def test_mps_daemon_that_does_not_start_is_loud():
         InferenceCard(FACTORY, services=2, mps_root=root, mps_control=control)
     with pytest.raises(BoundaryError, match="mps_control_missing"):
         MpsDaemon(root, control=os.path.join(root, "missing")).start()
+
+
+class _Source:
+    def __init__(self, compiler: Any, loaded: Any) -> None:
+        self.current = {"snapshot_sha256": "c" * 64, "training_generation": "gen-1",
+                        "version": 2, "updates": 8, "compiler_identity": compiler}
+        self.model = loaded
+        self.fail_load = False
+
+    def latest(self) -> dict[str, Any]:
+        return dict(self.current)
+
+    def load(self, value: dict[str, Any]) -> Any:
+        if self.fail_load:
+            raise ValueError("behavior_snapshot_checksum_changed")
+        return self.model
+
+
+def test_a_follower_publishes_through_the_card_and_records_each_service(model):
+    """K > 1: the follower follows the card; one refusing service is `partial`."""
+    card = InferenceCard(FACTORY, services=2, mps=False, settings={"refuse": 1})
+    follower = FastMuFollower(_Source(card.compiler_identity, model), card)
+    try:
+        assert card.compiler_identity is not None and not card.stopping.is_set()
+        assert follower.step() is True
+        assert follower.counters["partial"] == 1 and follower.counters["published"] == 0
+        assert follower.history[-1]["accepted_by"] == [True, False]
+        assert follower.step() is False and follower.counters["unchanged"] == 1
+        assert card.failure is None
+    finally:
+        closed = follower.close()  # stops following, then closes the card
+    assert closed["failure"] is None and card.stopping.is_set()
+
+
+def test_a_follower_that_gives_up_stops_every_service_of_the_card(model):
+    card = InferenceCard(FACTORY, services=2, mps=False)
+    source = _Source(card.compiler_identity, model)
+    source.fail_load = True
+    follower = FastMuFollower(source, card, interval=0.01, max_failures=2).start()
+    try:
+        assert follower.thread is not None
+        follower.thread.join(30)
+        assert follower.stopped() and card.stopping.is_set()
+        assert card.failure is not None and card.failure.startswith("mu_follower_stopped:")
+        with pytest.raises(ValueError, match="behavior_snapshot_checksum_changed"):
+            follower.check()
+        with pytest.raises(BoundaryError, match="card_stopped"):
+            card.publish(model, Handoff(MU))  # no later mu reaches any service
+    finally:
+        closed = card.close()
+    assert closed["failure"].startswith("mu_follower_stopped:")
+
+
+def test_services_with_different_compiler_identities_never_serve():
+    with pytest.raises(BoundaryError, match="service_start_failed") as caught:
+        InferenceCard(FACTORY, services=2, mps=False, settings={"other_compiler": 1})
+    assert "compiler_identity_not_equal" in caught.value.recovery

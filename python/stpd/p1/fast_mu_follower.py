@@ -28,6 +28,13 @@ Rules:
   stops loudly, `FastInferenceService._stop("mu_follower_stopped")`, so later
   rows are refused instead of scored by an ever older mu) and `check()` raises
   the last error. Nothing is ever scored with a substitute mu;
+- the service may be an `InferenceCard` (K services): its `publish` answers per
+  service (`list[bool]`, each assembler from its own resident mu). The identity
+  counts as published when every service accepted it, refused when none did,
+  `partial` otherwise; `step()` is True when any service accepted it, and the
+  history keeps the per-service answers. A refusing service keeps its current
+  mu, as one service would; nothing is re-offered to it. Any other answer shape
+  is a failure (`MU_PUBLISH_ANSWER_INVALID`). The card's `_stop` stops all K;
 - shutdown order: `close()` stops this follower before it closes the service;
   once the service is stopping the follower publishes nothing and exits;
 - weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
@@ -65,7 +72,7 @@ class FastMuFollower:
         self.on_fatal = self._stop_service if on_fatal is None else on_fatal
         self.failures = 0
         self.history: list[dict[str, Any]] = []
-        self.counters = {"polls": 0, "published": 0, "refused": 0, "unchanged": 0,
+        self.counters = {"polls": 0, "published": 0, "refused": 0, "partial": 0, "unchanged": 0,
                          "failures": 0, "service_stopping": 0,
                          "load_seconds": 0.0, "publish_seconds": 0.0}
         self.lock = threading.Lock()
@@ -101,17 +108,34 @@ class FastMuFollower:
             began = self.clock()
             model = self.source.load(identity)
             loaded = self.clock()
-            accepted = bool(self.service.publish(model, handoff))
+            answer = self.service.publish(model, handoff)
             done = self.clock()
             self.counters["load_seconds"] += loaded - began
             self.counters["publish_seconds"] += done - loaded
             # Offered once either way: a refused identity is not offered again.
             self.offered = handoff.identity()
-            self.counters["published" if accepted else "refused"] += 1
-            self.history.append({**handoff.identity(), "accepted": accepted,
-                                 "load_seconds": loaded - began,
-                                 "publish_seconds": done - loaded, "at": done})
+            per_service = self._answers(answer)
+            accepted = any(per_service)
+            outcome = ("published" if all(per_service) else "refused" if not accepted
+                       else "partial")
+            self.counters[outcome] += 1
+            record = {**handoff.identity(), "accepted": accepted,
+                      "load_seconds": loaded - began,
+                      "publish_seconds": done - loaded, "at": done}
+            if not isinstance(answer, bool):
+                record["accepted_by"] = per_service
+            self.history.append(record)
             return accepted
+
+    @staticmethod
+    def _answers(answer: Any) -> list[bool]:
+        """One service answers a bool; a card answers one bool per service."""
+        if type(answer) is bool:
+            return [answer]
+        if (type(answer) is list and answer
+                and all(type(value) is bool for value in answer)):
+            return list(answer)
+        raise BoundaryError("rl_mu", "MU_PUBLISH_ANSWER_INVALID")
 
     def _run(self) -> None:
         while not self.stopping.is_set():

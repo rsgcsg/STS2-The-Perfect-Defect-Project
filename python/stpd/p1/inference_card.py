@@ -22,6 +22,12 @@ accepts or refuses it from its own resident mu (its own open segments), so the
 answers are returned per service and may differ in normal running: a service
 that refuses keeps scoring on its current mu, exactly as one service would.
 
+The card is also the service a `FastMuFollower` follows when K > 1: it has the
+follower's `stopping` (set on failure and at close), `compiler_identity` (every
+service's, which must be equal at start), `_stop` (a follower that gives up
+stops every service of the card, as it would stop one service) and `close`;
+`publish` returns the per-service answers, which the follower records as such.
+
 Factory contract: ``factory(index, settings) -> FastInferenceService``. Each
 service needs its own assembler with a distinct `assembler_id` (checked at
 start) and its own segment output. It decides no legality and holds no World.
@@ -130,7 +136,8 @@ def _host(conn: Connection, index: int, factory: str, settings: dict[str, Any],
     try:
         service = _factory(factory)(index, settings)
         conn.send(("ready", service.address, service.auth, service.service_instance,
-                   getattr(service.assembler, "assembler_id", None)))
+                   getattr(service.assembler, "assembler_id", None),
+                   json.loads(json.dumps(service.compiler_identity))))
     except BaseException as error:
         with contextlib.suppress(OSError):
             conn.send(("failed", f"{type(error).__name__}: {str(error)[:300]}"))
@@ -200,6 +207,8 @@ class InferenceCard:
         self.command_timeout = command_timeout
         self.on_failure = on_failure
         self.failure: str | None = None
+        self.stopping = threading.Event()  # failure or close: no further publish
+        self.compiler_identity: dict[str, Any] | None = None
         self._closing = False
         self._closed: dict[str, Any] | None = None
         self._lock = threading.Lock()  # one card command at a time
@@ -237,6 +246,7 @@ class InferenceCard:
             self.services: list[tuple[tuple[str, int], bytes]] = []
             self.service_instances: list[str] = []
             self.assembler_ids: list[Any] = []
+            identities: list[Any] = []
             for index, connection in enumerate(self.connections):
                 answer = self._receive(index, connection, start_timeout, "start")
                 if answer[0] != "ready":
@@ -245,11 +255,16 @@ class InferenceCard:
                 self.services.append((tuple(answer[1]), answer[2]))
                 self.service_instances.append(answer[3])
                 self.assembler_ids.append(answer[4])
+                identities.append(answer[5])
             if (len(set(self.assembler_ids)) != services
                     or not all(isinstance(name, str) and name for name in self.assembler_ids)):
                 # Two assemblers with one id would overwrite each other's segments.
                 raise BoundaryError(STAGE, "service_start_failed",
                                     f"assembler_id_not_distinct:{self.assembler_ids}")
+            if any(identity != identities[0] for identity in identities):
+                # One mu is offered to all K: a compiler mismatch must not depend on the game.
+                raise BoundaryError(STAGE, "service_start_failed", "compiler_identity_not_equal")
+            self.compiler_identity = identities[0]
         except BaseException as error:
             self._closing = True  # the raise reports it; on_failure is for a serving card
             self._fail(f"start:{getattr(error, 'code', type(error).__name__)}")
@@ -326,6 +341,7 @@ class InferenceCard:
             if self.failure is not None:
                 return
             self.failure = reason
+        self.stopping.set()
         _say({"failed": reason})
         for process in self.processes:
             if process.is_alive():
@@ -333,11 +349,16 @@ class InferenceCard:
         if self.on_failure is not None and not self._closing:
             self.on_failure(reason)
 
+    def _stop(self, reason: str, detail: Any = None) -> None:
+        """Stop every service loudly (a `FastMuFollower` that gave up); close() still follows."""
+        self._fail(reason if detail is None else f"{reason}:{detail}")
+
     def close(self) -> dict[str, Any]:
         """Stop every service and the MPS daemon; a second call returns the first report."""
         if self._closed is not None:
             return self._closed
         self._closing = True
+        self.stopping.set()
         with contextlib.suppress(Exception):
             atexit.unregister(self.close)
         reports: list[Any] = []

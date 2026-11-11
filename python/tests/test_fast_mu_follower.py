@@ -98,6 +98,46 @@ def test_each_identity_is_offered_once_and_a_new_generation_again():
     assert follower.status()["published"] == 2
 
 
+class Card(Service):
+    """An InferenceCard's publish: one answer per service."""
+
+    def __init__(self, answer: Any) -> None:
+        super().__init__()
+        self.answer = answer
+
+    def publish(self, scorer: Any, handoff: MuHandoff) -> Any:  # type: ignore[override]
+        self.published.append((scorer, handoff))
+        return self.answer
+
+
+@pytest.mark.parametrize(("answer", "accepted", "outcome"), [
+    ([True, True, True], True, "published"),
+    ([True, False, True], True, "partial"),
+    ([False, False], False, "refused"),
+])
+def test_per_service_answers_are_recorded_as_such(answer, accepted, outcome):
+    source, service = Source(identity(NEW)), Card(answer)
+    follower = FastMuFollower(source, service)
+    assert follower.step() is accepted
+    assert follower.counters[outcome] == 1
+    assert sum(follower.counters[key] for key in ("published", "partial", "refused")) == 1
+    assert follower.history[-1]["accepted_by"] == answer
+    assert follower.step() is False and len(service.published) == 1  # never re-offered
+
+
+@pytest.mark.parametrize("answer", [[], [True, 1], None, 1, "yes"])
+def test_an_answer_of_any_other_shape_is_a_failure(answer):
+    follower = FastMuFollower(Source(identity(NEW)), Card(answer))
+    with pytest.raises(BoundaryError, match="MU_PUBLISH_ANSWER_INVALID"):
+        follower.step()
+
+
+def test_one_service_history_keeps_its_old_shape():
+    follower = FastMuFollower(Source(identity(NEW)), Service())
+    assert follower.step() is True
+    assert "accepted_by" not in follower.history[-1]
+
+
 def test_a_refused_offer_is_counted_and_not_forced_again():
     source, service = Source(identity(NEW)), Service(accept=False)
     follower = FastMuFollower(source, service)
