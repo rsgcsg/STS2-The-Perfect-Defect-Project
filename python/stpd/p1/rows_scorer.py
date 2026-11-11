@@ -46,7 +46,8 @@ def prepare(frames: Sequence[TensorFrame], floors: Sequence[int]) -> Any:
 class RowsScorer:
     """Score prepared rows-v2 groups with one immutable mu on one device."""
 
-    def __init__(self, model: Any, *, bf16: bool = True, compile: bool = False) -> None:
+    def __init__(self, model: Any, *, bf16: bool = True, compile: bool = False,
+                 one_sync: bool = False) -> None:
         if model.training or any(p.requires_grad for p in model.parameters()):
             raise ValueError("rows_scorer_requires_immutable_eval_snapshot")
         if not hasattr(model, "rl4_heads"):
@@ -55,6 +56,9 @@ class RowsScorer:
         self.device = next(model.parameters()).device
         self.bf16 = bf16 and self.device.type == "cuda"
         self.compile = compile
+        # One stream synchronization for the four outputs (pinned non-blocking
+        # copies) instead of one per `.cpu()`; the values are the same.
+        self.one_sync = one_sync and self.device.type == "cuda"
 
     def forward_tensors(self, group: Any) -> tuple[torch.Tensor, ...]:
         """Device forward only: CPU float (scores, outcome probabilities, logits, hp)."""
@@ -64,6 +68,14 @@ class RowsScorer:
             scores, logits, hp = self.model.forward_prepared_rl4(group,
                                                                  compile_rows=self.compile)
             probabilities = logits.float().softmax(-1)
+            if self.one_sync:
+                outputs = (scores.float(), probabilities, logits.float(), hp.float())
+                host = tuple(torch.empty(value.shape, dtype=value.dtype, pin_memory=True)
+                             for value in outputs)
+                for target, value in zip(host, outputs, strict=True):
+                    target.copy_(value, non_blocking=True)
+                torch.cuda.current_stream(self.device).synchronize()
+                return host
         return (scores.float().cpu(), probabilities.cpu(), logits.float().cpu(),
                 hp.float().cpu())
 
