@@ -398,6 +398,67 @@ def probe(model: Any, frames: list[Any], floors: list[int], configs: list[dict[s
         del scorer
 
 
+def republish(model: Any, frames: list[Any], floors: list[int], configs: list[dict[str, Any]]
+              ) -> None:
+    """Cost of a new mu on a compiled config: the device process loads every published
+    model as a new object (torch.load), and the compiled wrappers are cached per model.
+    (a) fresh model, own wrappers: first/second forward ms (recompile stall);
+    (b) fresh model with different weights reusing the first model's wrappers: first
+        forward ms and whether the output is its own (vs its eager forward), not stale."""
+    import copy
+    import io
+
+    import torch
+
+
+    def shipped(source: Any, scale: float) -> Any:
+        clone = copy.copy(source)
+        clone.__dict__ = {k: v for k, v in source.__dict__.items() if not k.startswith("_rows_")}
+        blob = io.BytesIO()
+        torch.save(clone, blob)
+        out = torch.load(io.BytesIO(blob.getvalue()), map_location="cuda", weights_only=False)
+        out.eval().requires_grad_(False)
+        if scale != 1.0:
+            with torch.no_grad():
+                for name, parameter in out.named_parameters():
+                    if "norm" not in name:
+                        parameter.mul_(scale)
+        return out
+
+    batches = [Batch(frames, floors, 977 * v + 31 * 256, 256) for v in range(VARIANTS)]
+    for config in configs:
+        if not config["compile"]:
+            continue
+        base = shipped(model, 1.0)
+        scorer = scorer_of(base, config)
+        for _ in range(2):
+            for b in batches:
+                scorer.forward_tensors(b.stage())
+        for label, scale, share in (("fresh-own", 1.0, False), ("fresh-own-2", 1.0, False),
+                                    ("fresh-shared", 0.9, True)):
+            other = shipped(model, scale)
+            if share:
+                for key, value in base.__dict__.items():
+                    if key.startswith("_rows_"):
+                        other.__dict__[key] = value
+            other_scorer = scorer_of(other, config)
+            times = []
+            for b in batches[:3]:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                got = other_scorer.forward_tensors(b.stage())
+                times.append(round(1000 * (time.perf_counter() - t0), 1))
+            want = scorer_of(other, {"compile": False, "kernels": config.get("kernels", "")}
+                             ).forward_tensors(batches[2].stage())
+            stale = scorer.forward_tensors(batches[2].stage())
+            emit({"republish": config["name"], "case": label, "first_three_ms": times,
+                  "max_diff_vs_own_eager": round(float((got[0] - want[0]).abs().nan_to_num(
+                      0, 0, 0).max()), 5),
+                  "max_diff_vs_old_model": round(float((got[0] - stale[0]).abs().nan_to_num(
+                      0, 0, 0).max()), 5), **compile_state()})
+        del scorer
+
+
 def main() -> None:
     global OUT
     obs, out, modes = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
@@ -411,7 +472,8 @@ def main() -> None:
     emit({"setup": True, "rows": len(frames), "gpu": torch.cuda.get_device_name(0),
           "torch": torch.__version__, "configs": configs, "sizes": SIZES,
           "mean_catalog": round(sum(len(f.choices) for f in frames) / len(frames), 1)})
-    table = {"probe": probe, "curve": curve, "regions": regions, "profile": profile, "flops": flops,
+    table = {"republish": republish, "probe": probe, "curve": curve, "regions": regions,
+             "profile": profile, "flops": flops,
              "streams": streams}
     for mode in modes:
         try:
