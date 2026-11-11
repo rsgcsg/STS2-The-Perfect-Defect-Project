@@ -350,13 +350,25 @@ export async function inspectManagedCandidateBuild({ root, candidateDirectory, m
  * audit against the patch ledger, `dotnet --version` and the assembly fingerprint
  * build) run once per process and candidate directory. Every start still reads HEAD
  * and hashes the artifact; a start whose HEAD or artifact SHA differs from the checked
- * key fails loudly (no fallback, no re-check), and every start still binds
+ * key (HEAD, artifact SHA, digest of the selected manifest) fails loudly (no fallback, no re-check), and every start still binds
  * runtime_identity against the checked build. Limitation: repository edits that keep
  * HEAD and the artifact unchanged (working-tree source edits after the first check)
  * are not re-audited within the same process. The old chain checks every start.
  */
 const fastChainBuildChecks = new Map();
 const fastChainDotnet = new Map();
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]));
+  }
+  return value;
+}
+
+function manifestDigest(manifest) {
+  return sha256Buffer(JSON.stringify(canonicalJsonValue(manifest)));
+}
 
 export async function inspectManagedCandidateBuildOncePerProcess({
   root,
@@ -370,13 +382,13 @@ export async function inspectManagedCandidateBuildOncePerProcess({
   const artifact = candidateArtifact(resolvedCandidateDirectory, manifest);
   if (!existsSync(artifact)) throw new Error(`Managed candidate build output missing: ${artifact}`);
   const artifactSha = sha256File(artifact);
-  const expectedArtifactSha = manifest.expected_build?.artifact_sha256 ?? null;
+  const selectedManifestDigest = manifestDigest(manifest);
   let entry = fastChainBuildChecks.get(key);
   if (entry == null) {
     entry = {
       head,
       artifactSha,
-      expectedArtifactSha,
+      manifestDigest: selectedManifestDigest,
       inspection: inspect({ root, candidateDirectory: resolvedCandidateDirectory, manifest })
     };
     fastChainBuildChecks.set(key, entry);
@@ -384,10 +396,11 @@ export async function inspectManagedCandidateBuildOncePerProcess({
     entry.inspection.catch(() => {
       if (fastChainBuildChecks.get(key) === entry) fastChainBuildChecks.delete(key);
     });
-  } else if (entry.head !== head || entry.artifactSha !== artifactSha || entry.expectedArtifactSha !== expectedArtifactSha) {
+  } else if (entry.head !== head || entry.artifactSha !== artifactSha || entry.manifestDigest !== selectedManifestDigest) {
     throw new Error(
       `Managed candidate build changed after this process checked it (HEAD ${entry.head} -> ${head}, `
-      + `artifact SHA ${entry.artifactSha} -> ${artifactSha}); restart the process to check it again.`
+      + `artifact SHA ${entry.artifactSha} -> ${artifactSha}, selected manifest ${entry.manifestDigest} -> `
+      + `${selectedManifestDigest}); restart the process to check it again.`
     );
   }
   const build = await entry.inspection;

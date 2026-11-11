@@ -562,6 +562,16 @@ test("fast_chain fails loudly, without a re-check, when the artifact or HEAD cha
   assert.equal(candidate.calls(), 1);
 });
 
+test("fast_chain fails loudly, without a re-check, when the selected manifest changes after the check", async (context) => {
+  const candidate = onceCandidate(context);
+  await inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  const changed = { ...candidate.args(), manifest: { ...candidate.manifest, source_patch: "other.patch" } };
+  await assert.rejects(inspectManagedCandidateBuildOncePerProcess(changed), /selected manifest [0-9a-f]{64} -> [0-9a-f]{64}/u);
+  const reordered = { ...candidate.args(), manifest: { expected_build: candidate.manifest.expected_build, setup_contract: candidate.manifest.setup_contract } };
+  await inspectManagedCandidateBuildOncePerProcess(reordered);
+  assert.equal(candidate.calls(), 1);
+});
+
 test("fast_chain rejects a check whose result disagrees with the key it was started under", async (context) => {
   const candidate = onceCandidate(context);
   const gate = candidate.holdNext();
