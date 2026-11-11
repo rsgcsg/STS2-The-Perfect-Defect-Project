@@ -507,7 +507,9 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
         if not message:
             return
         # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None)]
-        job_id, part, parts, mu, rows, span = pickle.loads(message)
+        # sink: the joiner (or, without joiners, the device process) of this job;
+        # device: the device process that forwards it (always 0 with one device).
+        job_id, part, parts, mu, rows, span, sink, device = pickle.loads(message)
         frames, floors, kept, failed, audit = [], [], [], {}, []
         tails: dict[str, list[tuple[int, Any, int]]] = {}
         for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
@@ -565,9 +567,9 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
         prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts,
-                    "overflow": overflow}
+                    "overflow": overflow, "device": device}
         # every part of one job goes to the same joiner (or the device itself)
-        outputs[job_id % len(outputs)].send_bytes(
+        outputs[sink].send_bytes(
             bytes(ForkingPickler.dumps(prepared, pickle.HIGHEST_PROTOCOL)))
         sent.append(prepared)
 
@@ -640,7 +642,7 @@ def _receive(reader: Connection) -> dict[str, Any]:
     return message
 
 
-def _join_worker(inputs: list[Connection], output: Connection, keep: int,
+def _join_worker(inputs: list[Connection], outputs: list[Connection], keep: int,
                  arena: torch.Tensor | None = None) -> None:
     """Spawned joiner: maps a job's prepared parts and joins them into one group.
 
@@ -652,6 +654,7 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
     With the arena, a job's parts are already in its slot: the joiner only plans
     the join (C-SCALE `plan_forward_join`, all host index maps) and writes the
     plan after the parts, so the device process runs `stage_joined` alone.
+    A joined job goes to the device process its parts name (`device_workers`).
     """
     import collections
     from multiprocessing.connection import wait
@@ -660,7 +663,7 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
     import torch.multiprocessing
 
     torch.set_num_threads(1)
-    for end in (*inputs, output):
+    for end in (*inputs, *outputs):
         os.set_inheritable(end.fileno(), False)
     torch.multiprocessing.set_sharing_strategy("file_system")
     collector = (_Collector() if arena is None
@@ -677,13 +680,14 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
                 continue
             parts, group = done
             message = {"joined": True, "parts": parts, "group": group}
-            output.send_bytes(bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
+            outputs[parts[0]["device"]].send_bytes(
+                bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
             sent.append(message)
 
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
-                   arena: torch.Tensor | None = None) -> None:
+                   arena: torch.Tensor | None = None, one_sync: bool = False) -> None:
     """Spawned device process: models and forwards only, no per-row Python work.
 
     The loading thread reads joined jobs from the joiners (or, without joiners,
@@ -747,7 +751,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             if kind == "model":
                 model = torch.load(io.BytesIO(blob), map_location=device, weights_only=False)
                 model.eval().requires_grad_(False)
-                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile)
+                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile,
+                                          one_sync=one_sync)
             else:
                 scorers.pop(key, None)
             control.send_bytes(b"ok")
@@ -895,6 +900,17 @@ class FastInferenceService:
     only forwards. Batching is adaptive: at most `in_flight` jobs are between
     dispatch and reply, so under load rows wait for a slot and the next job
     (up to `max_job_rows`) grows; with a free slot a job leaves after `window_ms`.
+
+    V3 latency/throughput options (all default to the shape above):
+    `device_workers` > 1 spawns that many device processes on the same device,
+    each with its own copy of every resident mu; a job goes to the one with the
+    fewest jobs in flight, so one process launches while another's kernels run
+    (the forward is launch-bound at production batch sizes; with CUDA MPS their
+    kernels also overlap). Any device process gone stops the whole service.
+    `part_rows` > 0 splits a job into ceil(rows / part_rows) parts (at most
+    `job_parts`), so a small job is not prepared by one worker serially.
+    `one_sync` copies a forward's four outputs to pinned host memory with one
+    stream synchronization instead of four (same values).
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -905,6 +921,7 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
+                 device_workers: int = 1, part_rows: int = 0, one_sync: bool = False,
                  audit_fraction: float = 0.01, failure_dir: str | Path | None = None,
                  encoder_sha256: str | None = None, env_sha256: str | None = None) -> None:
         import multiprocessing
@@ -921,6 +938,9 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_job_shape")
         if arena_row_bytes is not None and arena_row_bytes < 1:
             raise ValueError("invalid_rl_inference_3_arena")
+        if (type(device_workers) is not int or not 1 <= device_workers <= 8
+                or type(part_rows) is not int or part_rows < 0):
+            raise ValueError("invalid_rl_inference_3_device_shape")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
         self.vocabulary = copy.deepcopy(vocabulary)
@@ -929,6 +949,7 @@ class FastInferenceService:
         self.training_generation = training_generation
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
+        self.part_rows, self.join_workers = part_rows, join_workers
         self.bf16, self.compile = bf16, compile
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
@@ -956,10 +977,11 @@ class FastInferenceService:
                                       "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0,
-                                      "episodes_refused": 0}
+                                      "episodes_refused": 0, "parts": 0,
+                                      "device_jobs": [0] * device_workers}
         context: Any = multiprocessing.get_context("spawn")
-        control, control_child = context.Pipe(duplex=True)
-        results, results_child = context.Pipe(duplex=False)
+        controls = [context.Pipe(duplex=True) for _ in range(device_workers)]
+        result_pipes = [context.Pipe(duplex=False) for _ in range(device_workers)]
         worker_pipes = [context.Pipe(duplex=True) for _ in range(prepare_workers)]
         self.slot_count = max(1, in_flight if in_flight is not None else prepare_workers)
         # One shared host arena (C-SCALE round 3): slot s holds one in-flight job,
@@ -973,24 +995,32 @@ class FastInferenceService:
             self.arena = allocate_forward_arena(self.slot_bytes * self.slot_count, shared=True)
         self.free_slots = list(range(self.slot_count))
         # Prepared parts go to joiner j = job % join_workers (pipes[worker][j]),
-        # each joiner sends joined jobs to the device; without joiners every
-        # worker sends its parts to the device, which joins them itself.
-        sinks = max(1, join_workers)
+        # each joiner sends joined jobs to the job's device process; without
+        # joiners every worker sends its parts to the job's device process
+        # (pipes[worker][device]), which joins them itself.
+        sinks = join_workers or device_workers
         part_pipes = [[context.Pipe(duplex=False) for _ in range(sinks)]
                       for _ in range(prepare_workers)]
-        joined_pipes = [context.Pipe(duplex=False) for _ in range(join_workers)]
-        device_inputs = ([reader for reader, _ in joined_pipes] if join_workers
-                         else [pipes[0][0] for pipes in part_pipes])
-        self.device_process = context.Process(
-            target=_device_worker, daemon=True, name="rl-inference-3-device",
-            args=(control_child, device_inputs, results_child,
-                  self.device, bf16, compile, device_threads, self.arena))
-        self.device_process.start()
+        joined_pipes = [[context.Pipe(duplex=False) for _ in range(device_workers)]
+                        for _ in range(join_workers)]
+        self.device_processes: list[Any] = []
+        for index in range(device_workers):
+            device_inputs = ([pipes[index][0] for pipes in joined_pipes] if join_workers
+                             else [pipes[index][0] for pipes in part_pipes])
+            process = context.Process(
+                target=_device_worker, daemon=True,
+                name="rl-inference-3-device" + (f"-{index}" if index else ""),
+                args=(controls[index][1], device_inputs, result_pipes[index][1],
+                      self.device, bf16, compile, device_threads, self.arena, one_sync))
+            process.start()
+            self.device_processes.append(process)
+        self.device_process = self.device_processes[0]
         self.joiners: list[Any] = []
-        for index, (_, writer) in enumerate(joined_pipes):
+        for index, pipes_out in enumerate(joined_pipes):
             process = context.Process(target=_join_worker, daemon=True,
                                       name=f"rl-inference-3-join-{index}",
-                                      args=([pipes[index][0] for pipes in part_pipes], writer,
+                                      args=([pipes[index][0] for pipes in part_pipes],
+                                            [writer for _, writer in pipes_out],
                                             self.slot_count + 2, self.arena))
             process.start()
             self.joiners.append(process)
@@ -1010,20 +1040,27 @@ class FastInferenceService:
             for reader, writer in pipes:
                 reader.close()
                 writer.close()
-        control_child.close()
-        results_child.close()
-        self.control, self.results = control, results
+        for _, child_end in (*controls, *result_pipes):
+            child_end.close()
+        self.controls = [parent_end for parent_end, _ in controls]
+        self.result_readers = [reader for reader, _ in result_pipes]
+        self.control, self.results = self.controls[0], self.result_readers[0]
         self.control_lock = threading.Lock()
-        if control.recv_bytes() != b"ready":
-            raise BoundaryError("rl_inference_3", "device_process_start_failed")
-        for reader, writer in joined_pipes:  # the joiners and the device own them now
-            reader.close()
-            writer.close()
+        for control in self.controls:
+            if control.recv_bytes() != b"ready":
+                raise BoundaryError("rl_inference_3", "device_process_start_failed")
+        for pipes_out in joined_pipes:  # the joiners and the devices own them now
+            for reader, writer in pipes_out:
+                reader.close()
+                writer.close()
         for _, connection, _ in self.workers:
             if connection.recv_bytes() != b"ready":
                 raise BoundaryError("rl_inference_3", "prepare_worker_start_failed")
         self.outstanding = [0] * prepare_workers
-        self.jobs: dict[int, list[Any]] = {}  # job id -> [remaining parts, parts' rows, workers]
+        self.device_jobs = [0] * device_workers  # jobs in flight per device process
+        self.last_device = device_workers - 1
+        # job id -> [remaining parts, parts' rows, workers, slot, device]
+        self.jobs: dict[int, list[Any]] = {}
         self.jobs_lock = threading.Lock()
         self.results_done = False
         self.job_ids = 0
@@ -1049,9 +1086,12 @@ class FastInferenceService:
 
     # -- mu ------------------------------------------------------------------
     def _device_control(self, kind: str, key: str, blob: bytes | None) -> None:
-        self.control.send_bytes(pickle.dumps((kind, key, blob), protocol=pickle.HIGHEST_PROTOCOL))
-        if self.control.recv_bytes() != b"ok":
-            raise BoundaryError("rl_inference_3", "device_control_failed")
+        message = pickle.dumps((kind, key, blob), protocol=pickle.HIGHEST_PROTOCOL)
+        for control in self.controls:  # every device process holds every resident mu
+            control.send_bytes(message)
+        for control in self.controls:
+            if control.recv_bytes() != b"ok":
+                raise BoundaryError("rl_inference_3", "device_control_failed")
 
     def publish(self, model: Any, handoff: Any) -> bool:
         """Offer a mu to the assembler; the device holds it only when accepted.
@@ -1289,7 +1329,8 @@ class FastInferenceService:
 
     def _dispatch(self, rows: list[_V3Row]) -> None:
         dispatching = time.perf_counter()
-        parts = min(self.job_parts, len(rows))
+        parts = min(self.job_parts, len(rows) if not self.part_rows
+                    else -(-len(rows) // self.part_rows))
         size = -(-len(rows) // parts)
         chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
         with self.jobs_lock:
@@ -1302,7 +1343,14 @@ class FastInferenceService:
                 for worker in workers:
                     self.outstanding[worker] += 1
                 slot = self.free_slots.pop()  # a slot semaphore is held: one is free
-                self.jobs[job_id] = [len(chunks), chunks, workers, slot]
+                # fewest jobs in flight; ties go round-robin after the last device
+                count = len(self.device_jobs)
+                device = min(range(count), key=lambda d: (
+                    self.device_jobs[d], (d - self.last_device - 1) % count))
+                self.last_device = device
+                self.device_jobs[device] += 1
+                self.stats["device_jobs"][device] += 1
+                self.jobs[job_id] = [len(chunks), chunks, workers, slot, device]
         if gone:  # the results thread has ended (#431 review S2): never dispatched
             for item in rows:
                 self._refuse(item, "SERVICE_STOPPING")
@@ -1312,8 +1360,10 @@ class FastInferenceService:
         share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
         base = slot * self.slot_bytes
         self.stats["jobs"] += 1
+        self.stats["parts"] += len(chunks)
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
+        sink = job_id % self.join_workers if self.join_workers else device
         for part, (chunk, worker) in enumerate(zip(chunks, workers, strict=True)):
             payload = []
             for item in chunk:
@@ -1327,7 +1377,8 @@ class FastInferenceService:
             span = (base + part * share, base + (part + 1) * share, base,
                     base + self.slot_bytes)
             self.workers[worker][2].put(pickle.dumps(
-                (job_id, part, len(chunks), mu, payload, span), protocol=pickle.HIGHEST_PROTOCOL))
+                (job_id, part, len(chunks), mu, payload, span, sink, device),
+                protocol=pickle.HIGHEST_PROTOCOL))
         self.stats["dispatch_seconds"] += time.perf_counter() - dispatching
 
     def _sender(self, index: int) -> None:
@@ -1342,16 +1393,23 @@ class FastInferenceService:
                 return
 
     def _results(self) -> None:
+        from multiprocessing.connection import wait
+
+        gone = False
         try:
-            while True:
-                try:
-                    message = self.results.recv_bytes()
-                except (EOFError, OSError):
-                    break
-                finishing = time.perf_counter()
-                for part in pickle.loads(message):
-                    self._finish_part(part)
-                self.stats["finish_seconds"] += time.perf_counter() - finishing
+            while not gone:
+                ready = (self.result_readers if len(self.result_readers) == 1
+                         else wait(self.result_readers))
+                for reader in ready:
+                    try:
+                        message = cast(Connection, reader).recv_bytes()
+                    except (EOFError, OSError):
+                        gone = True  # any device process gone stops the whole service
+                        break
+                    finishing = time.perf_counter()
+                    for part in pickle.loads(message):
+                        self._finish_part(part)
+                    self.stats["finish_seconds"] += time.perf_counter() - finishing
         except Exception as error:  # never die silently (#431 review M1)
             self._stop("results_failed", f"{type(error).__name__}: {str(error)[:200]}")
             print(json.dumps({"rl_inference_3_results_failed": type(error).__name__}),
@@ -1435,6 +1493,7 @@ class FastInferenceService:
                 del self.jobs[part["job"]]
                 # its outputs are on the host: the device read its arena slice
                 self.free_slots.append(job[3])
+                self.device_jobs[job[4]] -= 1
         if done:
             self.slots.release()
 
@@ -1540,7 +1599,8 @@ class FastInferenceService:
         self.queue.put(None)
         self.threads[1].join(60)
         deadline = time.perf_counter() + 60
-        while self.jobs and time.perf_counter() < deadline and self.device_process.is_alive():
+        while (self.jobs and time.perf_counter() < deadline
+               and all(process.is_alive() for process in self.device_processes)):
             time.sleep(0.01)
         for _, _, outbox in self.workers:
             outbox.put(b"")
@@ -1553,13 +1613,17 @@ class FastInferenceService:
             process.join(5)
             if process.is_alive():
                 process.kill()
-        with self.control_lock, contextlib.suppress(OSError):
-            self.control.send_bytes(b"")
-        self.device_process.join(10)
-        if self.device_process.is_alive():
-            self.device_process.kill()
+        with self.control_lock:
+            for control in self.controls:
+                with contextlib.suppress(OSError):
+                    control.send_bytes(b"")
+        for process in self.device_processes:
+            process.join(10)
+            if process.is_alive():
+                process.kill()
         self.threads[2].join(10)
-        self.control.close()
+        for control in self.controls:
+            control.close()
         batches = self.stats["batches"]
         return {"schema": V3_SCHEMA, "service_instance": self.service_instance, **self.stats,
                 "audited_games": len(self.audits),
