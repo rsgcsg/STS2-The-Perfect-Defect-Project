@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..8dde203
+index 0000000..3062c55
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,1398 @@
+@@ -0,0 +1,1414 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -1531,8 +1531,16 @@ index 0000000..8dde203
 +        {
 +            // Production Configure runs before the game assembly resolver exists: it must not load the game.
 +            NativePatchStateCache.Configure(true);
-+            NativeCardProjectionMemo.Configure(true, true);
++            NativeCardProjectionMemo.Configure(true, true, value => JsonSerializer.Serialize(value));
 +            Console.WriteLine(AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "sts2") ? "game-loaded" : "game-not-loaded");
++            return;
++        }
++        if (args.Length == 1 && args[0] == "--memo-no-serializer-child")
++        {
++            // Native Foundation does no JSON I/O: a memo switch without the entry point's serializer is refused.
++            NativePatchStateCache.Configure(true);
++            try { NativeCardProjectionMemo.Configure(true, false); Console.WriteLine("accepted"); }
++            catch (InvalidOperationException error) { Console.WriteLine(error.Message); }
 +            return;
 +        }
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -2483,8 +2491,10 @@ index 0000000..8dde203
 +        bool configuredTwice = false;
 +        SetEnabled(true);
 +        NativeCardProjectionMemo.Configure(false, false);
-+        try { NativeCardProjectionMemo.Configure(true, true); } catch (InvalidOperationException error) { configuredTwice = error.Message == "native_card_memo_configured_twice"; }
++        try { NativeCardProjectionMemo.Configure(true, true, value => JsonSerializer.Serialize(value)); } catch (InvalidOperationException error) { configuredTwice = error.Message == "native_card_memo_configured_twice"; }
 +        Check(configuredTwice && !NativeCardProjectionMemo.DeckEnabled && !NativeCardProjectionMemo.HudEnabled, "Configure is accepted once per process");
++        // The lanes are switched below by reflection; the entry point's serializer is what Configure would hold.
++        Memo.GetField("_serialize", Flags)!.SetValue(null, (Func<Dictionary<string, object?>, string>)(value => JsonSerializer.Serialize(value)));
 +        var run = (RunState)Simulator.GetField("_runState", Flags)!.GetValue(sim)!;
 +        Player player = run.Players[0];
 +        var combat = player.Creature.CombatState;
@@ -2641,7 +2651,7 @@ index 0000000..8dde203
 +    {
 +        NativePatchStateCache.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1");
 +        NativeCardProjectionMemo.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_DECK_MEMO") == "1",
-+            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1");
++            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1", value => JsonSerializer.Serialize(value));
 +        var lines = new List<string>();
 +        foreach (string spec in games)
 +        {
@@ -2765,6 +2775,12 @@ index 0000000..8dde203
 +        {
 +            string text = configured.StandardOutput.ReadToEnd();
 +            Check(configured.WaitForExit(60_000) && configured.ExitCode == 0 && text.Contains("game-not-loaded"), $"memo Configure must not load the game assembly: {text}");
++        }
++        configure.ArgumentList[^1] = "--memo-no-serializer-child";
++        using (var noSerializer = System.Diagnostics.Process.Start(configure)!)
++        {
++            string text = noSerializer.StandardOutput.ReadToEnd();
++            Check(noSerializer.WaitForExit(60_000) && text.Contains("native_card_memo_requires_serializer"), $"a memo switch without a serializer must be refused: {text}");
 +        }
 +        // A memo switch without fast_chain fails at configuration, loudly.
 +        using var refused = StartMemoPlay(new() { ["STS2_HEADLESS_DECK_MEMO"] = "1" }, 1, "Defect:MEMO_PAIR_REFUSED:en");
@@ -6250,17 +6266,16 @@ index 0000000..9503be1
 +}
 diff --git a/src/Sts2Headless/NativeCardProjectionMemo.cs b/src/Sts2Headless/NativeCardProjectionMemo.cs
 new file mode 100644
-index 0000000..fe7d11c
+index 0000000..a68451b
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardProjectionMemo.cs
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,384 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Diagnostics;
 +using System.Linq;
 +using System.Reflection;
 +using System.Text;
-+using System.Text.Json;
 +using System.Threading;
 +using MegaCrit.Sts2.Core.Combat;
 +using MegaCrit.Sts2.Core.Entities.Cards;
@@ -6304,6 +6319,10 @@ index 0000000..fe7d11c
 +/// is compact_state_divergence, which is fatal. Reconcile is part of the measured cost. Shadow mode
 +/// also asserts that computing a key left the card's footprint unchanged.
 +///
++/// JSON: this class does no JSON I/O itself (Native Foundation owns no serializer). The Managed entry
++/// point passes the full writer's default serializer to <see cref="Configure"/>; the stored text and
++/// every reconcile comparison use it.
++///
 +/// Episodes: <see cref="BeginEpisode"/> (run start or save load, where the output language is set)
 +/// drops every entry, so no text of an earlier language or episode is ever served.
 +/// </summary>
@@ -6338,6 +6357,7 @@ index 0000000..fe7d11c
 +    private static readonly long[] LaneCommand = { -1, -1 }, LaneFrames = new long[2], ReconcileFrameCount = new long[2];
 +    private static readonly bool[] LaneReconciling = new bool[2];
 +    private static int _buildChecked;
++    private static Func<Dictionary<string, object?>, string>? _serialize;
 +
 +    static NativeCardProjectionMemo()
 +    {
@@ -6358,15 +6378,19 @@ index 0000000..fe7d11c
 +    public static double ReconcileMilliseconds => _reconcileTicks * 1000.0 / Stopwatch.Frequency;
 +
 +    /// <summary>
-+    /// Process start only, once, by the Managed entry point. A switch requested without fast_chain
-+    /// fails loudly instead of quietly staying off.
++    /// Process start only, once, by the Managed entry point. A switch requested without fast_chain,
++    /// or without the serializer (<paramref name="serialize"/>: a projection's JSON text, as the
++    /// full writer's default serializer writes it), fails loudly instead of quietly staying off.
 +    /// </summary>
-+    public static void Configure(bool deck, bool hud)
++    public static void Configure(bool deck, bool hud, Func<Dictionary<string, object?>, string>? serialize = null)
 +    {
 +        if (Interlocked.Exchange(ref _configured, 1) != 0)
 +            throw new InvalidOperationException("native_card_memo_configured_twice");
 +        if ((deck || hud) && !NativePatchStateCache.Enabled)
 +            throw new InvalidOperationException("native_card_memo_requires_fast_chain");
++        if ((deck || hud) && serialize == null)
++            throw new InvalidOperationException("native_card_memo_requires_serializer");
++        _serialize = serialize;
 +        DeckEnabled = deck;
 +        HudEnabled = hud;
 +    }
@@ -6437,7 +6461,7 @@ index 0000000..fe7d11c
 +        }
 +        long started = reconciling ? Stopwatch.GetTimestamp() : 0;
 +        Dictionary<string, object?> live = render();
-+        string text = JsonSerializer.Serialize(live);
++        string text = _serialize!(live);
 +        if (Entries.TryGetValue(key, out Stored? stored))
 +        {
 +            CompareCount[(int)lane]++;
@@ -11710,7 +11734,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..38cf159 100644
+index 800f139..4e289df 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -11732,7 +11756,7 @@ index 800f139..38cf159 100644
 +        NativePatchStateCache.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_FAST_CHAIN") == "1");
 +        // fast_chain card projection memo, two switches, default off; either without fast_chain fails here.
 +        NativeCardProjectionMemo.Configure(Environment.GetEnvironmentVariable("STS2_HEADLESS_DECK_MEMO") == "1",
-+            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1");
++            Environment.GetEnvironmentVariable("STS2_HEADLESS_HUD_MEMO") == "1", value => JsonSerializer.Serialize(value));
 +        if (Environment.GetEnvironmentVariable("STS2_HEADLESS_QUIET") == "1")
 +            Console.SetError(TextWriter.Null);
 +

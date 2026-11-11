@@ -145,7 +145,7 @@ test("only the Managed native entry point enables the fast_chain read cache", ()
   // The card projection memo switches: read and configured only by the Managed entry point (and its tests).
   assert.deepEqual([...memoCallers.keys()].sort(), ["patch-cache-tests/Program.cs", "src/Sts2Headless/Program.cs"]);
   assert.match(memoCallers.get("src/Sts2Headless/Program.cs").join("\n"),
-    /NativeCardProjectionMemo\.Configure\(Environment\.GetEnvironmentVariable\("STS2_HEADLESS_DECK_MEMO"\) == "1",\n\+?\s*Environment\.GetEnvironmentVariable\("STS2_HEADLESS_HUD_MEMO"\) == "1"\);/u);
+    /NativeCardProjectionMemo\.Configure\(Environment\.GetEnvironmentVariable\("STS2_HEADLESS_DECK_MEMO"\) == "1",\n\+?\s*Environment\.GetEnvironmentVariable\("STS2_HEADLESS_HUD_MEMO"\) == "1", value => JsonSerializer\.Serialize\(value\)\);/u);
   assert.deepEqual([...callers.keys()].sort(), ["patch-cache-tests/Program.cs", "src/Sts2Headless/Program.cs"]);
   assert.equal(callers.get("src/Sts2Headless/Program.cs").length, 1);
   assert.match(callers.get("src/Sts2Headless/Program.cs")[0],

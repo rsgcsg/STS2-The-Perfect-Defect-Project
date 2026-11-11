@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -48,6 +47,10 @@ namespace STS2Platform.NativeFoundation;
 /// is compact_state_divergence, which is fatal. Reconcile is part of the measured cost. Shadow mode
 /// also asserts that computing a key left the card's footprint unchanged.
 ///
+/// JSON: this class does no JSON I/O itself (Native Foundation owns no serializer). The Managed entry
+/// point passes the full writer's default serializer to <see cref="Configure"/>; the stored text and
+/// every reconcile comparison use it.
+///
 /// Episodes: <see cref="BeginEpisode"/> (run start or save load, where the output language is set)
 /// drops every entry, so no text of an earlier language or episode is ever served.
 /// </summary>
@@ -82,6 +85,7 @@ public static class NativeCardProjectionMemo
     private static readonly long[] LaneCommand = { -1, -1 }, LaneFrames = new long[2], ReconcileFrameCount = new long[2];
     private static readonly bool[] LaneReconciling = new bool[2];
     private static int _buildChecked;
+    private static Func<Dictionary<string, object?>, string>? _serialize;
 
     static NativeCardProjectionMemo()
     {
@@ -102,15 +106,19 @@ public static class NativeCardProjectionMemo
     public static double ReconcileMilliseconds => _reconcileTicks * 1000.0 / Stopwatch.Frequency;
 
     /// <summary>
-    /// Process start only, once, by the Managed entry point. A switch requested without fast_chain
-    /// fails loudly instead of quietly staying off.
+    /// Process start only, once, by the Managed entry point. A switch requested without fast_chain,
+    /// or without the serializer (<paramref name="serialize"/>: a projection's JSON text, as the
+    /// full writer's default serializer writes it), fails loudly instead of quietly staying off.
     /// </summary>
-    public static void Configure(bool deck, bool hud)
+    public static void Configure(bool deck, bool hud, Func<Dictionary<string, object?>, string>? serialize = null)
     {
         if (Interlocked.Exchange(ref _configured, 1) != 0)
             throw new InvalidOperationException("native_card_memo_configured_twice");
         if ((deck || hud) && !NativePatchStateCache.Enabled)
             throw new InvalidOperationException("native_card_memo_requires_fast_chain");
+        if ((deck || hud) && serialize == null)
+            throw new InvalidOperationException("native_card_memo_requires_serializer");
+        _serialize = serialize;
         DeckEnabled = deck;
         HudEnabled = hud;
     }
@@ -181,7 +189,7 @@ public static class NativeCardProjectionMemo
         }
         long started = reconciling ? Stopwatch.GetTimestamp() : 0;
         Dictionary<string, object?> live = render();
-        string text = JsonSerializer.Serialize(live);
+        string text = _serialize!(live);
         if (Entries.TryGetValue(key, out Stored? stored))
         {
             CompareCount[(int)lane]++;
