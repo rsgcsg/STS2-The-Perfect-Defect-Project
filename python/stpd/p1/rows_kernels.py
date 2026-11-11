@@ -291,10 +291,11 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
              "text": t["text_fields"].numel(), "refs": 0}
     owners = {key: _owners(flat[key], rows, terms[key], key in PARTITION_REDUCTIONS)
               for key in ("ids", "numbers", "text", "refs")}
-    builder = _node_builder
+    builder: Any = _node_builder
     if compile:
         builder = getattr(model, "_rows_nodes_compiled", None)
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
             model.__dict__["_rows_nodes_compiled"] = builder  # learner-process runtime only
-    return cast(Tensor, builder(model, t, vectors.float(), owners, flat["refs"][0]))
+    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0])
+    return nodes

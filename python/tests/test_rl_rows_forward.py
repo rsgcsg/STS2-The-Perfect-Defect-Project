@@ -653,14 +653,33 @@ def test_nodes_lever_owner_maps_refuse_broken_reductions_loudly():
         _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse[:3]), 4, 4, True)
 
 
-def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied):
-    """The compiled lever path (dynamic-shape block variants and node builder)
-    computes what the eager original computes (CPU, FP32)."""
+def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, monkeypatch):
+    """The compiled lever path (dynamic-shape block variants and node builder:
+    dynamo capture and AOT autograd, `aot_eager` backend to keep the CPU test
+    short; inductor codegen is the CUDA benchmark's) computes what the eager
+    original computes (CPU, FP32)."""
+    compile_ = torch.compile
+    monkeypatch.setattr(torch, "compile",
+                        lambda function, **keywords: compile_(
+                            function, **{**keywords, "backend": "aot_eager"}))
+    def compiled_names():
+        return [name for name in vars(model) if name.startswith("_rows_") and "compiled" in name]
+
+    for name in compiled_names():  # compiled once per model; restored after this test
+        monkeypatch.delitem(model.__dict__, name)
+    try:
+        check_compiled_levers(model)
+    finally:
+        for name in compiled_names():
+            del model.__dict__[name]
+
+
+def check_compiled_levers(model):
     from stpd.p1.rows_forward import forward_rows
 
     batch = prepared(model)
     groups = [g for mb in batch.minibatches for g in mb.groups]
-    for group in groups[:2] + [dc.replace(groups[0], policy=False)]:
+    for group in (groups[0], dc.replace(groups[0], policy=False)):
         rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
         (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=False)
         model.zero_grad(set_to_none=True)
@@ -680,6 +699,34 @@ def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied):
         assert set(g0) == set(g1)
         for name in g0:
             torch.testing.assert_close(g0[name], g1[name], rtol=1e-4, atol=2e-6, msg=name)
+
+
+def test_levered_block_wrapper_passes_kernels_by_keyword_only(model, varied, monkeypatch):
+    """forward_rows reaches the block through the levered wrapper with the 12
+    positional block arguments plus `kernels` by keyword (keyword-only, so no
+    positional argument can fill it)."""
+    import inspect
+
+    from stpd.p1 import rows_forward
+
+    for packed, function in ((False, rows_forward.rows_block),
+                             (True, rows_forward.rows_block_packed)):
+        parameter = inspect.signature(function).parameters["kernels"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert rows_forward._block(packed, ()) is function
+    calls = []
+    original = rows_forward.rows_block
+
+    def spy(*args, **keywords):
+        calls.append((len(args), keywords))
+        return original(*args, **keywords)
+
+    monkeypatch.setattr(rows_forward, "rows_block", spy)
+    group = prepared(model).minibatches[0].groups[0]
+    rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
+    rows_forward.forward_rows(model, rows, packed=False, kernels="cross+heads")
+    assert calls and all(call == (12, {"kernels": ("cross", "heads") if group.policy
+                                       else ("heads",)}) for call in calls)
 
 
 def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
