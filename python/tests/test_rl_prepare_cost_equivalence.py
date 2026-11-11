@@ -157,9 +157,42 @@ def test_text_dedup_edges_keep_reference_selection_and_fallback():
     cases = [[base, with_text(base, ids, signed, lengths)],
              [base, with_text(base, dirty, numbers, lengths)],
              [with_text(base, ids, numbers, lengths), base, base]]
+    # -0.0 in the padding of a short text: the key ignores padding, so the texts still
+    # merge; only an integer-view padding check sees -0.0 and takes the exact path.
+    padded_negative = numbers.clone()
+    padded_negative[short, int(lengths[short]), 0] = -0.0
+    cases.append([base, with_text(base, ids, padded_negative, lengths)])
     for frames in cases:
         assert batch_preparation._unique_texts(frames, *text_batch(frames)) \
             == reference_unique(frames)
+
+
+def test_length_beyond_own_width_keeps_distinct_keys_on_the_exact_path():
+    base = FrameCompiler(public_vocabulary(V2_INPUT_SPEC)).compile(public_state())
+    numbers = torch.zeros((1, 2, 1), dtype=torch.float32)
+    # A: width 2, length 3 (its key clamps to 2 ids); B: width 3, length 3 (3 ids).
+    # Zero-padded to width 3 the two rows are equal, but their keys differ.
+    narrow = with_text(base, torch.tensor([[5, 6]]), numbers, torch.tensor([3]))
+    wide = with_text(base, torch.tensor([[5, 6, 0]]), torch.zeros((1, 3, 1)),
+                     torch.tensor([3]))
+    expected = reference_unique([narrow, wide])
+    assert expected == ([0, 1], [0, 1])
+    narrow, wide = (with_text(base, frame.tensors["text_ids"], frame.tensors["text_numbers"],
+                              frame.tensors["text_lengths"]) for frame in (narrow, wide))
+    frames = [narrow, wide]
+    assert batch_preparation._unique_texts(frames, *text_batch(frames)) == expected
+    assert all("text_keys" in frame.metadata_cache for frame in frames)  # exact path
+
+
+def test_host_cached_frames_take_the_exact_path():
+    base = FrameCompiler(public_vocabulary(V2_INPUT_SPEC)).compile(public_state())
+    expected = reference_unique([base, base])
+    host = TensorFrame(base.tensors, base.reductions, base.choices, base.entity_count)
+    cached = TensorFrame(base.tensors, base.reductions, base.choices, base.entity_count,
+                         host=host)
+    frames = [cached, cached]
+    assert batch_preparation._unique_texts(frames, *text_batch(frames)) == expected
+    assert "text_keys" in host.metadata_cache  # keys came from the host metadata
 
 
 def test_hash_collision_takes_the_exact_per_text_path(monkeypatch):
