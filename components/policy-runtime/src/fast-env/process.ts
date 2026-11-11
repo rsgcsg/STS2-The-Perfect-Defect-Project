@@ -12,6 +12,7 @@ import { connectUnixDecisionLink, type DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink } from "./evidence-sink.js";
 import { FastActionEvidenceSink } from "../global-fast-storage.js";
 import { hostSlotNativeFactory, type SlotNativeFactory } from "./host.js";
+import { coldStartGate, defaultColdStartDirectory, type ColdStartGate } from "./cold-start.js";
 import { SlotKernel, emptyStats, type KernelContext, type KernelStats } from "./kernel.js";
 
 const COMPACT_FORMAT = "managed-native-compact-1";
@@ -36,6 +37,8 @@ export interface FastEnvDependencies {
   write(line: string): void;
   sleep?(ms: number): Promise<void>;
   pid?: number;
+  /** Tests: a gate of their own; otherwise the node-wide gate the config names. */
+  coldStart?: ColdStartGate;
 }
 
 /**
@@ -73,7 +76,9 @@ export class FastEnvProcess {
         void this.#finish(1, `evidence_failed:${reason}`);
       },
       stopping: () => this.#stopping,
-      sleep: deps.sleep ?? (ms => delay(ms))
+      sleep: deps.sleep ?? (ms => delay(ms)),
+      coldStart: deps.coldStart ?? coldStartGate({ maxConcurrent: deps.config.cold_start.max_concurrent,
+        directory: deps.config.cold_start.directory ?? defaultColdStartDirectory(), sleep: deps.sleep ?? (ms => delay(ms)) })
     };
     this.#slots = Array.from({ length: deps.config.slots }, (_, index) => new SlotKernel(index, this.#ctx));
     deps.link.setOpenInstances(id => this.#slots.some(slot => slot.gameInstanceId === id));
@@ -147,7 +152,7 @@ export class FastEnvProcess {
       settle_waits: s.settle_waits, full_checks: s.full_checks, compact_divergences: s.compact_divergences, forced_chain_limit: s.forced_chain_limit, build_output_stopped: this.#buildStopped,
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
-      link_wait_ms: round(s.link_wait_ms) };
+      link_wait_ms: round(s.link_wait_ms), cold_starts: s.cold_starts, cold_start_wait_ms: round(s.cold_start_wait_ms) };
   }
 
   async #status(commandId: string): Promise<void> {

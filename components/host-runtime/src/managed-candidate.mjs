@@ -345,6 +345,85 @@ export async function inspectManagedCandidateBuild({ root, candidateDirectory, m
   };
 }
 
+/*
+ * P-REWRITE fast_chain only: the expensive parts of the candidate check (the source
+ * audit against the patch ledger, `dotnet --version` and the assembly fingerprint
+ * build) run once per process and candidate directory. Every start still reads HEAD
+ * and hashes the artifact; a start whose HEAD or artifact SHA differs from the checked
+ * key (HEAD, artifact SHA, digest of the selected manifest) fails loudly (no fallback, no re-check), and every start still binds
+ * runtime_identity against the checked build. Limitation: repository edits that keep
+ * HEAD and the artifact unchanged (working-tree source edits after the first check)
+ * are not re-audited within the same process. The old chain checks every start.
+ */
+const fastChainBuildChecks = new Map();
+const fastChainDotnet = new Map();
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]));
+  }
+  return value;
+}
+
+function manifestDigest(manifest) {
+  return sha256Buffer(JSON.stringify(canonicalJsonValue(manifest)));
+}
+
+export async function inspectManagedCandidateBuildOncePerProcess({
+  root,
+  candidateDirectory,
+  manifest,
+  inspect = inspectManagedCandidateBuild
+}) {
+  const resolvedCandidateDirectory = realpathSync.native(path.resolve(candidateDirectory));
+  const key = JSON.stringify([path.resolve(root), resolvedCandidateDirectory]);
+  const head = await git(["rev-parse", "HEAD"], resolvedCandidateDirectory);
+  const artifact = candidateArtifact(resolvedCandidateDirectory, manifest);
+  if (!existsSync(artifact)) throw new Error(`Managed candidate build output missing: ${artifact}`);
+  const artifactSha = sha256File(artifact);
+  const selectedManifestDigest = manifestDigest(manifest);
+  let entry = fastChainBuildChecks.get(key);
+  if (entry == null) {
+    entry = {
+      head,
+      artifactSha,
+      manifestDigest: selectedManifestDigest,
+      inspection: inspect({ root, candidateDirectory: resolvedCandidateDirectory, manifest })
+    };
+    fastChainBuildChecks.set(key, entry);
+    // A failed first check is not kept: the next start runs the full check again.
+    entry.inspection.catch(() => {
+      if (fastChainBuildChecks.get(key) === entry) fastChainBuildChecks.delete(key);
+    });
+  } else if (entry.head !== head || entry.artifactSha !== artifactSha || entry.manifestDigest !== selectedManifestDigest) {
+    throw new Error(
+      `Managed candidate build changed after this process checked it (HEAD ${entry.head} -> ${head}, `
+      + `artifact SHA ${entry.artifactSha} -> ${artifactSha}, selected manifest ${entry.manifestDigest} -> `
+      + `${selectedManifestDigest}); restart the process to check it again.`
+    );
+  }
+  const build = await entry.inspection;
+  if (build.upstream_revision !== head || build.artifact_sha256 !== artifactSha
+      || build.candidate_directory !== resolvedCandidateDirectory) {
+    throw new Error("Managed candidate build changed while this process was checking it.");
+  }
+  return structuredClone(build);
+}
+
+export async function resolveDotnetOncePerProcess() {
+  const key = process.env.DOTNET ?? "";
+  let pending = fastChainDotnet.get(key);
+  if (pending == null) {
+    pending = resolveDotnet();
+    fastChainDotnet.set(key, pending);
+    pending.catch(() => {
+      if (fastChainDotnet.get(key) === pending) fastChainDotnet.delete(key);
+    });
+  }
+  return { ...(await pending) };
+}
+
 export async function prepareManagedCandidate({
   root,
   localRoot,
@@ -502,13 +581,11 @@ export async function startManagedCandidateRuntime({
   const { manifest: loadedManifest } = loadManagedCandidateManifest(root);
   const manifest = selectManagedCandidateManifest(loadedManifest, diskIdentity);
   const exactGame = assertManagedCandidateGame(manifest, diskIdentity);
-  const build = await inspectManagedCandidateBuild({
-    root,
-    candidateDirectory,
-    manifest
-  });
+  const build = fastChain
+    ? await inspectManagedCandidateBuildOncePerProcess({ root, candidateDirectory, manifest })
+    : await inspectManagedCandidateBuild({ root, candidateDirectory, manifest });
   const resolvedCandidateDirectory = build.candidate_directory;
-  const dotnet = await resolveDotnet();
+  const dotnet = fastChain ? await resolveDotnetOncePerProcess() : await resolveDotnet();
   const gameDataDirectory = path.dirname(diskIdentity.sts2_assembly.path);
   const { process: child, ready } = await startJsonLineProcess({
     command: dotnet.command,
