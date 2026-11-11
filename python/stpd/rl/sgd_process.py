@@ -967,7 +967,6 @@ class _SgdWorker:
         # Opt-in: plans staged on one side thread, results delivered in plan order
         # by this thread (every send and every `staged` entry stays on it).
         self.staging: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
-        self.ready_events: dict[int, Any] = {}
         self.stage_executor = None
         if init.get("stage_thread"):
             from concurrent.futures import ThreadPoolExecutor
@@ -1102,18 +1101,10 @@ class _SgdWorker:
         return values
 
     def loop(self, next_message: Any) -> None:
-        from concurrent.futures import FIRST_COMPLETED, wait
-
         while True:
-            # The controller waits for `staged`: deliver finished stagings, but a
-            # `start` that is already here never waits for a later plan's staging.
-            self.drain_staging(block=False)
+            self.drain_staging(block=True)  # the controller waits for `staged`
             self.state["stage"] = "idle"
-            message = next_message(not self.staging)
-            if message is None:  # a staging is in flight and nothing arrived yet
-                wait([future for _, future in self.staging.values()], timeout=0.002,
-                     return_when=FIRST_COMPLETED)
-                continue
+            message = next_message(True)
             kind = message["kind"]
             if kind == "plan":
                 self.stage(message)
@@ -1170,11 +1161,8 @@ class _SgdWorker:
                 slabs, lease = self.pinned.pin_slabs(
                     mapped_arrays(mapping, plan["arrays"]), self.pinned.epoch)
                 pinned = time.perf_counter()
-                ready: list[Any] = []
                 device_batch, copies = bp.stage_pinned_slabs(
-                    pickle.loads(plan["tree"]), slabs, lease, self.device, ready_out=ready)
-                # waited on by the stepping thread when this dataset starts
-                self.ready_events[dataset] = ready[0]
+                    pickle.loads(plan["tree"]), slabs, lease, self.device)
                 del slabs, lease
                 return self._staged_fields(plan, device_batch, copies, began, verified,
                                            pinned)
@@ -1231,9 +1219,6 @@ class _SgdWorker:
         if not self.staged or next(iter(self.staged)) != dataset:
             raise _ChildViolation("sgd_start_without_staged_plan")
         _, (plan, device_batch) = self.staged.popitem(last=False)
-        ready = self.ready_events.pop(dataset, None)
-        if ready is not None:  # side-thread H2D: the default stream waits here, between steps
-            torch.cuda.default_stream(self.device).wait_event(ready)
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
         waited = time.perf_counter() - self.idle_since

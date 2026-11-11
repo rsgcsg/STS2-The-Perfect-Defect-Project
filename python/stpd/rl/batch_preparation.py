@@ -1838,29 +1838,20 @@ def unpack_transport(packed: Any) -> Any:
     return _map_structure(tree, replace)
 
 
-def stage_pinned_slabs(tree: Any, slabs: list[Tensor], lease: Any, device: torch.device,
-                       *, ready_out: list[Any] | None = None) -> tuple[PreparedBatch, int]:
+def stage_pinned_slabs(tree: Any, slabs: list[Tensor], lease: Any,
+                       device: torch.device) -> tuple[PreparedBatch, int]:
     """CUDA: H2D each pinned slab once and map the packed tree onto device views.
 
     Same tensors as `unpack_transport` + pin + `stage_batch`, with one tree walk.
     The pinned lease is released only after this copy's event completes.
-
-    The consumer is the device's default stream. Without `ready_out` it waits for
-    the copy here. With `ready_out` (a side thread staging the next dataset), the
-    copy's event is appended instead and the caller makes the consumer wait on it
-    right before first use: a wait enqueued from the side thread would land in
-    the middle of the step the main thread is launching and stall it.
     """
     stream = torch.cuda.Stream(device=device)
     with torch.cuda.stream(stream):
         moved = [slab.to(device, non_blocking=True) for slab in slabs]
         ready = torch.cuda.Event()
         ready.record(stream)
-    consumer = torch.cuda.default_stream(device)
-    if ready_out is None:
-        consumer.wait_event(ready)
-    else:
-        ready_out.append(ready)
+    consumer = torch.cuda.current_stream(device)
+    consumer.wait_event(ready)
     for tensor in moved:
         tensor.record_stream(consumer)
     lease.copied(ready)

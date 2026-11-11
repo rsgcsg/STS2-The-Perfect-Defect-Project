@@ -794,9 +794,9 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     """WP8 starvation: `sgd_stage_thread` moves verify/pin/H2D of the next plan to
     one side thread; batches, order and every update stay the same.
 
-    On CUDA this is the production path (#466 F1): pinned slabs staged from the
-    side thread with `ready_out`, the default stream waiting on the copy's event
-    in `run_dataset` right before first use. Those device views lay the batch out
+    On CUDA this is the production path: pinned slabs H2D-copied from the side
+    thread (`direct`), the default stream waiting on the copy's event. Those device
+    views lay the batch out
     differently from the inline `stage_batch` path, so kernels may round in the
     last float32 bits (1460100: ~1 ulp); the threaded path run twice
     must be bit-identical, and close to the inline one.
