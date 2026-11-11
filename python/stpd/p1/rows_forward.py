@@ -381,7 +381,7 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
         from .rows_kernels import owner_nodes, permute_rows
 
         nodes = owner_nodes(model, {key: move(value) for key, value in joint.tensors.items()},
-                            flat, vectors, compile=compile)
+                            flat, vectors, compile=compile, segment="embed" in levers)
     else:
         nodes = model.tensor_nodes(joint, vectors, flat=flat)
     _check_encoder(model.scene)

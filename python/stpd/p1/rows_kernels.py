@@ -25,6 +25,14 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            catalog x heads folded queries per row attend to the encoded tokens,
            so no key/value projection of the scene. Catalogs longer than
            FOLD_CATALOG_LIMIT keep the original projected attention (shape rule).
+``embed``  (with ``nodes``) Every row gather of the node builder (the ids,
+           fields, kinds and number slope/bias/missing tables, the text vectors
+           and the referenced nodes) takes its backward from the eager
+           sort-and-segment-sum kernel (`aten.embedding_dense_backward`, an
+           opaque custom op) instead of inductor's decomposition, an atomic
+           scatter-add whose same-row atomics serialize on small vocabularies
+           (fields: hundreds of thousands of lookups onto a few rows). Same sum,
+           different order (FP32).
 
 Packed (CUDA): the folded queries are one-head, full-width (embed) sequences for
 flash varlen: query sequence i (heads, or catalog x heads, positions) attends to
@@ -45,7 +53,7 @@ from torch.nn import functional as F
 
 from .model import positions
 
-LEVERS = ("cross", "heads", "nodes")
+LEVERS = ("cross", "embed", "heads", "nodes")
 # Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
 PARTITION_REDUCTIONS = ("ids", "numbers", "text")
 # Folding costs ~4*C*H*E per key and saves 4*E*E of key/value projection:
@@ -61,7 +69,7 @@ def parse_kernels(value: str) -> tuple[str, ...]:
         return ()
     parts = tuple(value.split("+"))
     if (len(set(parts)) != len(parts) or not set(parts) <= set(LEVERS)
-            or list(parts) != sorted(parts)):
+            or list(parts) != sorted(parts) or ("embed" in parts and "nodes" not in parts)):
         raise ValueError("invalid_prepared_kernels")
     return parts
 
@@ -252,11 +260,54 @@ def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
     return owner, scale, width == 0
 
 
+@torch.library.custom_op("stpd_rows::embedding_backward", mutates_args=())
+def _embedding_backward(grad: Tensor, indices: Tensor, rows: int) -> Tensor:
+    """Weight gradient of an embedding lookup by the eager kernel (CUDA: sort and
+    segment-sum); opaque to inductor, so it is not decomposed to atomics."""
+    return torch.ops.aten.embedding_dense_backward(grad, indices, rows, -1, False)
+
+
+@_embedding_backward.register_fake
+def _(grad: Tensor, indices: Tensor, rows: int) -> Tensor:
+    return grad.new_empty((rows, grad.shape[-1]))
+
+
+class _Lookup(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, weight: Tensor, indices: Tensor) -> Tensor:
+        ctx.save_for_backward(indices)
+        ctx.rows, ctx.dtype = weight.shape[0], weight.dtype
+        return F.embedding(indices, weight)
+
+    @staticmethod
+    def backward(ctx: Any, grad: Tensor) -> tuple[Tensor, None]:
+        (indices,) = ctx.saved_tensors
+        return _embedding_backward(grad.contiguous(), indices, ctx.rows).to(ctx.dtype), None
+
+
+def lookup(table: Any, indices: Tensor, *, segment: bool) -> Tensor:
+    """`table(indices)`; with `segment` the weight gradient is a segment sum."""
+    if not segment:
+        return cast(Tensor, table(indices))
+    return cast(Tensor, _Lookup.apply(table.weight, indices))
+
+
+def gather(values: Tensor, indices: Tensor, *, segment: bool) -> Tensor:
+    """`values.index_select(0, indices)`; with `segment` its backward too."""
+    if not segment:
+        return values.index_select(0, indices)
+    return cast(Tensor, _Lookup.apply(values, indices))
+
+
 def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
-                  owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor) -> Tensor:
+                  owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor,
+                  segment: bool = False) -> Tensor:
     """`MStd.tensor_nodes` (eval) from owner maps; same parameters and function."""
     rows = t["kinds"].shape[0]
     embed = model.ids.embedding_dim
+
+    def table(module: Any, key: str) -> Tensor:
+        return lookup(module, t[key], segment=segment)
 
     def mean(key: str, values: Tensor, empty: Tensor | None) -> Tensor:
         owner, scale, empty_rows = owners[key]
@@ -265,23 +316,24 @@ def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
             return total
         return torch.where(empty_rows[:, None], empty.to(total.dtype), total)
 
-    identities = model.ids(t["identities"]) + model.fields(t["identity_fields"])
+    identities = table(model.ids, "identities") + table(model.fields, "identity_fields")
     nodes = mean("ids", identities, model.ids.weight[0])
-    nodes = nodes + model.kinds(t["kinds"])
+    nodes = nodes + table(model.kinds, "kinds")
     nodes = nodes + positions(t["positions"], embed)
-    numbers = torch.cat((model.number_slope(t["number_fields"]) * t["numbers"][:, None]
-                         + model.number_bias(t["number_fields"]),
-                         model.number_missing(t["missing_fields"])))
+    numbers = torch.cat((table(model.number_slope, "number_fields") * t["numbers"][:, None]
+                         + table(model.number_bias, "number_fields"),
+                         table(model.number_missing, "missing_fields")))
     number_features = mean("numbers", numbers, model.no_numbers)
-    terms = vectors.index_select(0, t["text_indices"]) + model.fields(t["text_fields"])
+    terms = (gather(vectors, t["text_indices"], segment=segment)
+             + table(model.fields, "text_fields"))
     features = mean("text", terms, None)
     nodes = nodes + (features + number_features)
-    linked = mean("refs", nodes.index_select(0, refs), None)
+    linked = mean("refs", gather(nodes, refs, segment=segment), None)
     return cast(Tensor, model.node_norm(nodes + model.relations(linked)))
 
 
 def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors: Tensor, *,
-                compile: bool) -> Tensor:
+                compile: bool, segment: bool = False) -> Tensor:
     """Node vectors of a rows-v2 group through the owner-map builder."""
     rows = t["kinds"].shape[0]
     terms = {"ids": t["identities"].numel(),
@@ -295,4 +347,4 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
             setattr(model, "_rows_nodes_compiled", builder)  # learner-process runtime only
-    return cast(Tensor, builder(model, t, vectors.float(), owners, flat["refs"][0]))
+    return cast(Tensor, builder(model, t, vectors.float(), owners, flat["refs"][0], segment))

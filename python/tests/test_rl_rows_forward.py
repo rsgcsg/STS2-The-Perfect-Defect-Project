@@ -571,7 +571,8 @@ def test_forward_arena_fails_loudly(model, varied):
         stage_joined(full, plan, torch.device("cpu"))
 
 
-@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "cross+heads+nodes"])
+@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "embed+nodes",
+                                     "cross+embed+heads+nodes"])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
@@ -601,7 +602,7 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
 
     assert PerformanceConfig().prepared_kernels == ""
     assert parse_kernels("") == () and parse_kernels("cross+heads") == ("cross", "heads")
-    for bad in ("heads+cross", "heads+heads", "flash", "+", None):
+    for bad in ("heads+cross", "heads+heads", "flash", "+", None, "embed", "cross+embed"):
         with pytest.raises(ValueError, match="invalid_prepared_kernels"):
             parse_kernels(bad)  # type: ignore[arg-type]
     with pytest.raises(BoundaryError, match="invalid_prepared_kernels"):
@@ -610,6 +611,31 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
         PerformanceConfig(prepared_kernels="heads")
     assert FOLD_CATALOG_LIMIT == 64
     assert parse_kernels("cross+heads+nodes") == ("cross", "heads", "nodes")
+    assert parse_kernels("cross+embed+heads+nodes") == ("cross", "embed", "heads", "nodes")
+
+
+def test_embed_lever_segment_backward_is_the_gather_gradient():
+    """The segment-sum backward (eager kernel behind an opaque op, also under
+    compile) equals the index_select / embedding gradient, repeats included."""
+    from stpd.p1.rows_kernels import gather, lookup
+
+    torch.manual_seed(3)
+    table = torch.nn.Embedding(5, 7)
+    indices = torch.tensor([0, 4, 4, 4, 1, 0, 4, 2, 4])
+    upstream = torch.randn(len(indices), 7)
+    reference = torch.autograd.grad((table(indices) * upstream).sum(), table.weight)[0]
+    for run in (lambda: lookup(table, indices, segment=True),
+                torch.compile(lambda: lookup(table, indices, segment=True), dynamic=True)):
+        out = run()
+        torch.testing.assert_close(out, table(indices))
+        got = torch.autograd.grad((out * upstream).sum(), table.weight)[0]
+        torch.testing.assert_close(got, reference, rtol=1e-6, atol=1e-6)
+    values = torch.randn(6, 7, requires_grad=True)
+    picked = torch.tensor([5, 5, 0, 3, 5])
+    ups = torch.randn(len(picked), 7)
+    want = torch.autograd.grad((values.index_select(0, picked) * ups).sum(), values)[0]
+    got = torch.autograd.grad((gather(values, picked, segment=True) * ups).sum(), values)[0]
+    torch.testing.assert_close(got, want, rtol=1e-6, atol=1e-6)
 
 
 def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_permutations():

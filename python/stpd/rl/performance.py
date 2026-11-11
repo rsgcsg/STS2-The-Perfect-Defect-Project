@@ -64,7 +64,7 @@ class PerformanceConfig:
     # rows-v2 only: torch.compile of the per-bucket scene/heads/action block.
     prepared_compile: bool = False
     # rows-v2 only (V3 T6): '' or a '+'-joined sorted subset of `rows_kernels.LEVERS`
-    # ("cross", "heads", "nodes"). Same function, BF16 tolerance; '' keeps the old path.
+    # ("cross", "embed", "heads", "nodes"; embed needs nodes). Same function, BF16 tolerance; '' keeps the old path.
     prepared_kernels: str = ""
 
     def __post_init__(self) -> None:
