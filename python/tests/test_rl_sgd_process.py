@@ -744,3 +744,41 @@ def test_read_ahead_while_waiting_keeps_the_same_learning_and_fills_the_window(
             assert left[key] == right[key], key
     with pytest.raises(ValueError, match="ahead_while_waiting_must_be_explicit"):
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"ahead_while_waiting": 1})
+
+
+def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch):
+    """WP8 starvation: `sgd_stage_thread` moves verify/pin/H2D of the next plan to
+    one side thread; batches, order and every update stay the same."""
+    results = {}
+    for threaded in (False, True):
+        owner, _, _ = terminal_owner(tmp_path / f"stage-{threaded}", monkeypatch,
+                                     dataplane={"sgd_stage_thread": threaded,
+                                                "ahead_while_waiting": True})
+        threads: list[str] = []
+        staged = owner.sgd.on_staged
+
+        def seen(message, staged=staged, threads=threads):
+            threads.append(message["stage_thread"])
+            staged(message)
+
+        monkeypatch.setattr(owner.sgd, "on_staged", seen)
+        try:
+            events = train(owner, 3)
+            owner.checkpoint(final=True)
+            _, cp = read_cp(owner)
+            results[threaded] = cp, events, aux_uses(owner), threads
+        finally:
+            owner.close()
+    (base, base_events, base_aux, base_threads), (cp, events, aux, threads) = (
+        results[False], results[True])
+    assert base_threads and threads and len(base_threads) == len(threads)
+    assert not any(name.startswith("rl-sgd-stage") for name in base_threads)
+    assert all(name.startswith("rl-sgd-stage") for name in threads)
+    assert base.counters == cp.counters and base_aux == aux
+    for name in ("weights", "optimizer", "ema"):
+        assert_tree(getattr(base, name), getattr(cp, name))
+    for left, right in zip(base_events, events, strict=True):
+        for key in ("update", "first_use", "td_loss", "policy_loss", "stepped"):
+            assert left[key] == right[key], key
+    with pytest.raises(ValueError, match="invalid_sgd_stage_thread"):
+        terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"sgd_stage_thread": 1})

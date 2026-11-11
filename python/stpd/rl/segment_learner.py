@@ -966,7 +966,8 @@ class SegmentLearner:
             "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init(),
             **({"data_parallel": dict(options.data_parallel)}
                if options.data_parallel is not None else {}),
-            **({"compile": dict(options.compile)} if options.compile is not None else {})})
+            **({"compile": dict(options.compile)} if options.compile is not None else {}),
+            **({"stage_thread": True} if options.stage_thread else {})})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):

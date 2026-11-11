@@ -54,7 +54,7 @@ OPTION_KEYS = frozenset((
     "sgd_cpus", "sgd_offline_step_seconds", "memory_limit_bytes",
     "memory_headroom_fraction", "memory_budget",
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
-    "sgd_data_parallel", "sgd_compile",
+    "sgd_data_parallel", "sgd_compile", "sgd_stage_thread",
 ))
 DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
 COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup"))
@@ -95,6 +95,9 @@ class SgdOptions:
     # WP8: {"cache_dir", "recompile_limit", "warmup"} for `prepared_compile`;
     # None keeps torch's defaults and no warm-up (default).
     compile: dict[str, Any] | None = None
+    # WP8: stage the next prepared batch (verify, pin, H2D) on one side thread
+    # while the current dataset steps; False keeps staging inline (default).
+    stage_thread: bool = False
 
 
 def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
@@ -155,6 +158,9 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
             raise ValueError("invalid_sgd_compile")
         compiled = {"cache_dir": cache_dir, "recompile_limit": limit_value,
                     "warmup": list(warm)}
+    stage_thread = dataplane.get("sgd_stage_thread", False)
+    if type(stage_thread) is not bool:
+        raise ValueError("invalid_sgd_stage_thread")
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -167,6 +173,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         offline_dump=dump_options(dataplane),
         data_parallel=parallel,
         compile=compiled,
+        stage_thread=stage_thread,
     )
 
 
@@ -957,6 +964,18 @@ class _SgdWorker:
         self.root = Path(init["root"])
         self.pinned = _PinnedBuffers(init["pinned_bytes"], slots=2)
         self.staged: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
+        # Opt-in: plans staged on one side thread, results delivered in plan order
+        # by this thread (every send and every `staged` entry stays on it).
+        self.staging: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
+        self.stage_executor = None
+        if init.get("stage_thread"):
+            from concurrent.futures import ThreadPoolExecutor
+
+            device = self.device
+            self.stage_executor = ThreadPoolExecutor(
+                1, thread_name_prefix="rl-sgd-stage",
+                initializer=(lambda: torch.cuda.set_device(device))
+                if device.type == "cuda" else None)
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
@@ -1081,6 +1100,7 @@ class _SgdWorker:
 
     def loop(self, next_message: Any) -> None:
         while True:
+            self.drain_staging(block=True)  # the controller waits for `staged`
             self.state["stage"] = "idle"
             message = next_message(True)
             kind = message["kind"]
@@ -1096,13 +1116,32 @@ class _SgdWorker:
 
     def stage(self, plan: dict[str, Any]) -> None:
         """Map the original prepared-batch file, verify it, pin and H2D it."""
+        dataset = plan["dataset"]
+        last = max([*self.staged, *self.staging], default=None)
+        if last is not None and dataset <= last:
+            raise _ChildViolation("sgd_plan_order_changed")
+        if self.stage_executor is None:
+            self.state["stage"] = "stage"
+            self._staged_done(plan, *self._stage_work(plan))
+        else:
+            self.staging[dataset] = (plan, self.stage_executor.submit(self._stage_work, plan))
+
+    def drain_staging(self, *, block: bool) -> None:
+        """Deliver finished side-thread stagings in plan order; block = all of them."""
+        while self.staging:
+            dataset, (plan, future) = next(iter(self.staging.items()))
+            if not block and not future.done():
+                return
+            self.state["stage"] = "stage_wait"
+            result = future.result()  # a staging failure fails the child loudly
+            del self.staging[dataset]
+            self._staged_done(plan, *result)
+
+    def _stage_work(self, plan: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         from . import batch_preparation as bp
 
-        self.state["stage"] = "stage"
         began = time.perf_counter()
         dataset = plan["dataset"]
-        if dataset in self.staged or (self.staged and dataset <= next(reversed(self.staged))):
-            raise _ChildViolation("sgd_plan_order_changed")
         with open(plan["path"], "rb") as stream:
             mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         try:
@@ -1130,11 +1169,17 @@ class _SgdWorker:
         pinned = time.perf_counter()
         device_batch, copies = bp.stage_batch(batch, self.device)
         del batch  # pinned slot returns once its H2D event completes
-        self.staged[dataset] = (plan, device_batch)
         done = time.perf_counter()
         fields = dict(sha256=plan["sha256"], copies=copies,
                       verify_seconds=verified - began, pin_seconds=pinned - verified,
-                      stage_seconds=done - pinned, host_seconds=done - began)
+                      stage_seconds=done - pinned, host_seconds=done - began,
+                      stage_thread=threading.current_thread().name)
+        return device_batch, fields
+
+    def _staged_done(self, plan: dict[str, Any], device_batch: Any,
+                     fields: dict[str, Any]) -> None:
+        dataset = plan["dataset"]
+        self.staged[dataset] = (plan, device_batch)
         if self.parallel is not None and self.rank == 0:
             self.parallel.staged(dataset, fields)
         else:
@@ -1160,6 +1205,7 @@ class _SgdWorker:
                 if message["kind"] != "plan":
                     raise _ChildViolation("sgd_message_during_dataset_" + str(message["kind"]))
                 self.stage(message)
+            self.drain_staging(block=False)
             inbox = time.perf_counter() - inbox_began
             batch = device_batch.minibatches[minibatch]
             if batch.epoch_auxiliary:
@@ -1364,6 +1410,9 @@ class _SgdWorker:
 
     def close(self) -> None:
         self.state["stage"] = "shutdown"
+        if self.stage_executor is not None:
+            self.stage_executor.shutdown(wait=True, cancel_futures=True)
+            self.staging.clear()
         self.staged.clear()
         self.pinned.close()
         if self.device.type == "cuda":
