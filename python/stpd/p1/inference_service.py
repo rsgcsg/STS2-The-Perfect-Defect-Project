@@ -507,7 +507,9 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
         if not message:
             return
         # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None)]
-        job_id, part, parts, mu, rows, span = pickle.loads(message)
+        job_id, part, parts, mu, rows, span, *stamp = pickle.loads(message)
+        if stamp:  # trace (default off): [dispatched, received here]
+            stamp = [stamp[0], time.monotonic()]
         frames, floors, kept, failed, audit = [], [], [], {}, []
         tails: dict[str, list[tuple[int, Any, int]]] = {}
         for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
@@ -566,6 +568,8 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts,
                     "overflow": overflow}
+        if stamp:
+            prepared["trace"] = [*stamp, time.monotonic()]
         # every part of one job goes to the same joiner (or the device itself)
         outputs[job_id % len(outputs)].send_bytes(
             bytes(ForkingPickler.dumps(prepared, pickle.HIGHEST_PROTOCOL)))
@@ -640,6 +644,43 @@ def _receive(reader: Connection) -> dict[str, Any]:
     return message
 
 
+# Trace (FastInferenceService(trace=True), default off): monotonic stamps a part
+# collects on its way (CLOCK_MONOTONIC is one clock for every process of a host),
+# turned into per-row stage times by the service; nothing is stamped when off.
+# Stage edges: "join" without a joiner is prepare end -> device received (transfer
+# included); waiting for a job's other parts and arena staging count in
+# "device_queue"; "reply" ends before the response is sent on the link.
+TRACE_STAGES = ("link", "batch", "to_prepare", "prepare", "join", "to_device", "device_queue",
+                "forward", "back", "finish", "reply", "total")
+# Bins: 2000 fine 0.25 ms bins below 500 ms, then 950 coarse 10 ms bins up to
+# 10 s; the last bin holds everything >= 9990 ms. Beyond 500 ms is never folded
+# into one capped bin (#478 review F3); stats["trace_max_ms"] keeps each exact max.
+TRACE_FINE_BINS = 2000
+TRACE_BINS = TRACE_FINE_BINS + 950
+
+
+def trace_bin(ms: float) -> int:
+    """The trace histogram bin of a stage time in ms."""
+    if ms < TRACE_FINE_BINS / 4:
+        return max(0, int(ms * 4))
+    return min(TRACE_BINS - 1, TRACE_FINE_BINS + int((ms - TRACE_FINE_BINS / 4) / 10))
+
+
+def trace_bin_edges(index: int) -> tuple[float, float | None]:
+    """[low, high) in ms of a trace bin; high is None for the open last bin."""
+    if index < TRACE_FINE_BINS:
+        return index / 4, (index + 1) / 4
+    low = TRACE_FINE_BINS / 4 + 10 * (index - TRACE_FINE_BINS)
+    return low, None if index == TRACE_BINS - 1 else low + 10
+
+
+def _stamp(parts: list[dict[str, Any]]) -> None:
+    now = time.monotonic()
+    for part in parts:
+        if "trace" in part:
+            part["trace"].append(now)
+
+
 def _join_worker(inputs: list[Connection], output: Connection, keep: int,
                  arena: torch.Tensor | None = None) -> None:
     """Spawned joiner: maps a job's prepared parts and joins them into one group.
@@ -676,6 +717,7 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
             if done is None:
                 continue
             parts, group = done
+            _stamp(parts)
             message = {"joined": True, "parts": parts, "group": group}
             output.send_bytes(bytes(ForkingPickler.dumps(message, pickle.HIGHEST_PROTOCOL)))
             sent.append(message)
@@ -724,9 +766,10 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
         try:
             while (item := joined.get()) is not None:
                 parts, group = item
-                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group,
-                                                           device_rows),
-                                               protocol=pickle.HIGHEST_PROTOCOL))
+                _stamp(parts)
+                out = _device_job(scorers, parts, group, device_rows)
+                _stamp(out)
+                output.send_bytes(pickle.dumps(out, protocol=pickle.HIGHEST_PROTOCOL))
         except BaseException as failure:
             # The forward thread is gone (#431 review S1): end the whole device
             # process, so the service sees EOF and stops loudly, never waits.
@@ -764,6 +807,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                 return
             if part.get("joined"):
                 parts, group = part["parts"], part["group"]
+                _stamp(parts)
                 parts[0]["load_seconds"] += part["load_seconds"]
                 if arena is not None and isinstance(group, tuple):
                     ref, counts = group
@@ -776,6 +820,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                     parts[0]["stage_seconds"] = time.perf_counter() - staging
                 joined.put((parts, group))
                 continue
+            if "trace" in part:  # no joiner: received = joined (same slot in the trace)
+                part["trace"] += [time.monotonic()] * 2
             done = collector.add(part)
             if done is not None:
                 joined.put(done)
@@ -836,6 +882,8 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
                   "audit": part["audit"], "tails": tails, "error": error,
                   "overflow": part.get("overflow") or overflow, "fatal": fatal,
                   "outputs": part_outputs}
+        if "trace" in part:
+            result["trace"] = part["trace"]
         if device_rows and part_outputs is not None:
             # The same RowsScorer.rows, run here: the service unpickles plain
             # per-row lists instead of four tensors and skips the conversion.
@@ -879,6 +927,7 @@ class _V3Row:
     sampling: dict[str, Any]
     plan: Any = None
     audit: bool = False
+    trace: list[float] | None = None  # trace=True only: [received, queued, part stamps...]
 
 
 @dataclass
@@ -886,6 +935,7 @@ class _V3Packet:
     packet_id: int
     results: list[dict[str, Any] | None]
     remaining: int
+    traced: list[list[float]] = dataclasses.field(default_factory=list)
 
 
 class _V3Link:
@@ -966,7 +1016,7 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
-                 part_rows: int = 0, device_rows: bool = False,
+                 part_rows: int = 0, device_rows: bool = False, trace: bool = False,
                  audit_fraction: float = 0.01, kernels: str = "",
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None) -> None:
@@ -997,6 +1047,7 @@ class FastInferenceService:
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
         self.part_rows, self.device_rows = part_rows, bool(device_rows)
+        self.trace = bool(trace)
         self.bf16, self.compile, self.kernels = bf16, compile, kernels
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
@@ -1025,6 +1076,9 @@ class FastInferenceService:
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0,
                                       "episodes_refused": 0, "parts": 0}
+        if self.trace:
+            self.stats["trace"] = {stage: [0] * TRACE_BINS for stage in TRACE_STAGES}
+            self.stats["trace_max_ms"] = dict.fromkeys(TRACE_STAGES, 0.0)
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
@@ -1191,11 +1245,12 @@ class FastInferenceService:
         try:
             while not self.stopping.is_set():
                 data = link.connection.recv_bytes(V3_MAX_MESSAGE)
+                received = time.monotonic() if self.trace else 0.0
                 envelope, binary = unpack_message(data)
                 request_id = envelope.get("request_id")
                 kind = envelope.get("kind")
                 if kind == "score_request":
-                    self._score_request(link, envelope, binary)
+                    self._score_request(link, envelope, binary, received)
                     continue
                 if kind == "step_outcome":  # names its row; carries no request_id
                     if not link.attached:
@@ -1258,7 +1313,7 @@ class FastInferenceService:
                    "max_rows_per_packet": self.max_rows})
 
     def _score_request(self, link: _V3Link, envelope: dict[str, Any],
-                       binary: memoryview) -> None:
+                       binary: memoryview, received: float = 0.0) -> None:
         if not link.attached:
             raise BoundaryError("rl_inference_3", "attach_required")
         rows = envelope.get("rows")
@@ -1297,6 +1352,8 @@ class FastInferenceService:
                 self.stats["audited"] += 1
                 game = str(row.get("game_instance_id"))
                 self.audits[game] = self.audits.get(game, 0) + 1
+            if self.trace:
+                item.trace = [received, time.monotonic()]
             self.queue.put(item)
 
     # -- batching (adaptive: a job waits for a slot, so jobs grow under load) --
@@ -1399,8 +1456,10 @@ class FastInferenceService:
                                 (tail.mu, tail.floor) if needs_tail else None))
             span = (base + part * share, base + (part + 1) * share, base,
                     base + self.slot_bytes)
-            self.workers[worker][2].put(pickle.dumps(
-                (job_id, part, len(chunks), mu, payload, span), protocol=pickle.HIGHEST_PROTOCOL))
+            message: tuple[Any, ...] = (job_id, part, len(chunks), mu, payload, span)
+            if self.trace:
+                message += (time.monotonic(),)
+            self.workers[worker][2].put(pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL))
         self.stats["dispatch_seconds"] += time.perf_counter() - dispatching
 
     def _sender(self, index: int) -> None:
@@ -1422,7 +1481,10 @@ class FastInferenceService:
                 except (EOFError, OSError):
                     break
                 finishing = time.perf_counter()
+                arrived = time.monotonic() if self.trace else 0.0
                 for part in pickle.loads(message):
+                    if "trace" in part:
+                        part["trace"].append(arrived)
                     self._finish_part(part)
                 self.stats["finish_seconds"] += time.perf_counter() - finishing
         except Exception as error:  # never die silently (#431 review M1)
@@ -1471,6 +1533,10 @@ class FastInferenceService:
         if part["audit"]:
             self._audit_failure([(rows[index], detail) for index, detail in part["audit"]])
         kept = [rows[index] for index in part["kept"]]
+        if "trace" in part:
+            for item in kept:
+                if item.trace is not None:
+                    item.trace += part["trace"]
         if part.get("fatal"):
             self._stop("device_job_failed", part["fatal"])
         if self.audit_failed.is_set():
@@ -1595,15 +1661,38 @@ class FastInferenceService:
 
     def _complete(self, item: _V3Row, result: dict[str, Any]) -> None:
         packet = item.packet
+        if item.trace is not None and len(item.trace) == 10:
+            item.trace.append(time.monotonic())  # finished; the reply time follows
+            packet.traced.append(item.trace)
         with item.link.send_lock:
             packet.results[item.index] = result
             packet.remaining -= 1
             done = packet.remaining == 0
+        if done and packet.traced:
+            self._record_trace(packet.traced, time.monotonic())
         if done:
             # A gone link drops the response; its rows time out as not_started.
             with contextlib.suppress(OSError, ValueError):
                 item.link.send({"schema": V3_SCHEMA, "kind": "score_response",
                                 "packet_id": packet.packet_id, "results": packet.results})
+
+    def _record_trace(self, traced: list[list[float]], replied: float) -> None:
+        """Per-row stage times of a replied packet into the trace histograms (trace=True).
+
+        Stamps: received, queued, dispatched, prepare start/end, joined, device
+        received, forward start/end, results received, finished; then replied.
+        Unlocked: two threads finishing packets at once may lose a count (diagnostic).
+        """
+        bins = self.stats["trace"]
+        peak = self.stats["trace_max_ms"]
+        for stamps in traced:
+            stamps.append(replied)
+            spans = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
+            for stage, seconds in zip(TRACE_STAGES, [*spans, replied - stamps[0]], strict=True):
+                ms = 1000 * seconds
+                bins[stage][trace_bin(ms)] += 1
+                if ms > peak[stage]:
+                    peak[stage] = round(ms, 3)
 
     def close(self) -> dict[str, Any]:
         self.stopping.set()

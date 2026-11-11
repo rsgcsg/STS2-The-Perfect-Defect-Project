@@ -4,11 +4,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pickle
 import socket
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from multiprocessing.connection import Client
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1034,6 +1037,145 @@ def test_device_rows_gives_the_same_scores_and_values(vocabulary, model, join_wo
                                            body[2])
                                  for kind, body in assembler.calls if kind == "finish"}
     assert len(finished[True]) == 6 and finished[True] == finished[False]
+
+
+# -- V3 option (default off): per-row stage times (chou-front) ---------------------
+@pytest.mark.parametrize("join_workers", [0, 1])
+def test_trace_counts_every_scored_row_per_stage_and_changes_no_result(vocabulary, model,
+                                                                      join_workers):
+    """`trace`: each scored row lands once in every stage histogram (0.25 ms bins) and
+    the replies and assembler calls equal the untraced path; off = no trace stats."""
+    from stpd.p1.inference_service import TRACE_BINS, TRACE_STAGES
+
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    finished: dict[bool, Any] = {}
+    reports: dict[bool, Any] = {}
+    for trace in (False, True):
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, trace=trace,
+                           join_workers=join_workers, window_ms=50.0)
+        client = _open_client(service, encoder, "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            # one refused row (unknown game) is never traced
+            bad, bad_binary = _packet(encoded[:1], "nope", 10)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 2, "rows": bad}, bad_binary))
+            refused, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            reports[trace] = service.close()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+        assert refused["results"][0]["error_code"] == "EPISODE_NOT_OPEN"
+        finished[trace] = {body[0]: (body[1]["behavior_q"], body[1]["selected_index"], body[2])
+                           for kind, body in assembler.calls if kind == "finish"}
+    assert finished[True] == finished[False] and len(finished[True]) == 6
+    assert "trace" not in reports[False]
+    bins = reports[True]["trace"]
+    assert set(bins) == set(TRACE_STAGES)
+    for stage in TRACE_STAGES:
+        assert len(bins[stage]) == TRACE_BINS and sum(bins[stage]) == 6, stage
+    # the window (50 ms) is spent in the batcher: every row waited there at least ~0 ms,
+    # and the total is never shorter than the forward
+    first = [next(i for i, n in enumerate(bins[stage]) if n) for stage in ("total", "forward")]
+    assert first[0] >= first[1]
+
+
+class SlowForwardMStd(MStd):
+    """A model whose forward takes at least 40 ms (trace stage attribution)."""
+
+    def forward_prepared_rl4(self, group: Any, **options: Any) -> Any:
+        time.sleep(0.04)
+        return super().forward_prepared_rl4(group, **options)
+
+
+class _DispatchSpy:
+    """Stands in for `pickle` in the service module: records each dispatched tuple."""
+
+    def __init__(self) -> None:
+        self.tuples: list[tuple[Any, ...]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(pickle, name)
+
+    def dumps(self, value: Any, *args: Any, **kwargs: Any) -> bytes:
+        if isinstance(value, tuple):
+            self.tuples.append(value)
+        return pickle.dumps(value, *args, **kwargs)
+
+
+@pytest.mark.parametrize("join_workers", [0, 1])
+def test_trace_attributes_the_forward_to_the_forward_stage(vocabulary, model, monkeypatch,
+                                                           join_workers):
+    """#478 review F2/S4: a 40 ms forward lands in "forward" (not "device_queue" or
+    "back") for every row, and with trace off the dispatch stays the 6-tuple."""
+    import copy
+
+    from stpd.p1 import inference_service
+    from stpd.p1.inference_service import TRACE_STAGES, trace_bin
+
+    slow = copy.copy(model)
+    slow.__class__ = SlowForwardMStd
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(4)]
+    reports = {}
+    for trace in (False, True):
+        spy = _DispatchSpy()
+        monkeypatch.setattr(inference_service, "pickle", spy)
+        service = _service(vocabulary, slow, FakeAssembler(), trace=trace,
+                           join_workers=join_workers, window_ms=20.0)
+        client = _open_client(service, encoder, "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            reports[trace] = service.close()
+            monkeypatch.undo()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 4
+        dispatched = [t for t in spy.tuples if len(t) in (6, 7) and isinstance(t[4], list)]
+        assert dispatched and {len(t) for t in dispatched} == {7 if trace else 6}
+    bins = reports[True]["trace"]
+    floor = trace_bin(35.0)  # every row's forward stage is at least ~40 ms
+    assert sum(bins["forward"][floor:]) == 4
+    for stage in ("to_device", "device_queue", "back"):
+        # the forward's neighbours (one job: nothing to queue behind) never hold it
+        assert sum(bins[stage][floor:]) == 0, stage
+    assert set(bins) == set(TRACE_STAGES)
+    assert reports[True]["trace_max_ms"]["forward"] >= 35.0
+    assert reports[True]["trace_max_ms"]["total"] >= reports[True]["trace_max_ms"]["forward"]
+
+
+def test_trace_bins_report_beyond_500_ms_instead_of_capping():
+    """#478 review F3: times past 500 ms keep their size (10 ms bins up to 10 s), and
+    the bench reports rows over 500 ms and the max explicitly."""
+    import importlib.util
+
+    from stpd.p1.inference_service import TRACE_BINS, trace_bin, trace_bin_edges
+
+    assert trace_bin(0.1) == 0 and trace_bin(499.9) == 1999
+    assert trace_bin(500.0) == 2000 and trace_bin(864.0) == 2036
+    assert trace_bin(9989.0) == TRACE_BINS - 2 and trace_bin(60_000.0) == TRACE_BINS - 1
+    assert trace_bin_edges(2036) == (860.0, 870.0)
+    assert trace_bin_edges(TRACE_BINS - 1) == (9990.0, None)
+    spec = importlib.util.spec_from_file_location(
+        "bench_rl_inference_3", Path(__file__).parents[1] / "tools" / "bench_rl_inference_3.py")
+    assert spec is not None and spec.loader is not None
+    bench = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bench)
+    counts = [0] * TRACE_BINS
+    counts[trace_bin(10.0)] += 90
+    counts[trace_bin(864.0)] += 9
+    counts[trace_bin(20_000.0)] += 1
+    p50, p95, _mean, over, top = bench.hist_pct(counts)
+    assert p50 == 10.12 and p95 == 865.0 and over == 10 and top == ">=9990"
+    assert bench.hist_pct([0] * TRACE_BINS) == [None, None, None, 0, None]
 
 
 class NanRowMStd(MStd):
