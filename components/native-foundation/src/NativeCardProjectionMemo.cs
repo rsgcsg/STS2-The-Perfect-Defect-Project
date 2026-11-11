@@ -41,10 +41,15 @@ namespace STS2Platform.NativeFoundation;
 /// - card types whose hover tips read the owner or combat (<see cref="OutsideHoverTips"/>);
 /// - card types not in the frozen shadow list, or any other game build.
 ///
-/// Reconcile: every 64th headless frame (every frame in shadow mode, STS2_NATIVE_CARD_MEMO_SHADOW=1)
-/// renders everything live and compares its JSON with the stored entry byte for byte; a difference
+/// Reconcile: each lane counts its own render frames (headless commands in which it computed at least
+/// one key), not commands, so a command that renders no card cannot absorb the check. On every 64th
+/// render frame of a lane (every frame in shadow mode, STS2_NATIVE_CARD_MEMO_SHADOW=1) every keyed card
+/// of that lane renders live and its JSON is compared with the stored entry byte for byte; a difference
 /// is compact_state_divergence, which is fatal. Reconcile is part of the measured cost. Shadow mode
 /// also asserts that computing a key left the card's footprint unchanged.
+///
+/// Episodes: <see cref="BeginEpisode"/> (run start or save load, where the output language is set)
+/// drops every entry, so no text of an earlier language or episode is ever served.
 /// </summary>
 public static class NativeCardProjectionMemo
 {
@@ -72,6 +77,11 @@ public static class NativeCardProjectionMemo
     private static int _ownerThread;
     private static long _frame;
     private static long _reconcileTicks;
+    private static long _episodes;
+    // Per lane: the command of its last render frame, its render frame count, whether that frame reconciles.
+    private static readonly long[] LaneCommand = { -1, -1 }, LaneFrames = new long[2], ReconcileFrameCount = new long[2];
+    private static readonly bool[] LaneReconciling = new bool[2];
+    private static int _buildChecked;
 
     static NativeCardProjectionMemo()
     {
@@ -86,6 +96,8 @@ public static class NativeCardProjectionMemo
     public static long Stores(Lane lane) => StoreCount[(int)lane];
     public static long Compares(Lane lane) => CompareCount[(int)lane];
     public static long Unkeyed(Lane lane) => UnkeyedCount[(int)lane];
+    public static long RenderFrames(Lane lane) => LaneFrames[(int)lane];
+    public static long ReconcileFrames(Lane lane) => ReconcileFrameCount[(int)lane];
     /// <summary>Wall time of the live renders of reconcile frames that had a key (the price of the check).</summary>
     public static double ReconcileMilliseconds => _reconcileTicks * 1000.0 / Stopwatch.Frequency;
 
@@ -112,7 +124,30 @@ public static class NativeCardProjectionMemo
     private static bool Enabled(Lane lane) =>
         NativePatchStateCache.Enabled && (lane == Lane.Deck ? DeckEnabled : HudEnabled);
 
-    private static bool Reconciling => Shadow || _frame % ReconcilePeriod == 0;
+    /// <summary>
+    /// Run start or save load (the only places the native and output language are set). Drops every entry.
+    /// Off: no-op.
+    /// </summary>
+    public static void BeginEpisode()
+    {
+        if (!DeckEnabled && !HudEnabled) return;
+        Entries.Clear();
+        _episodes++;
+    }
+
+    // The first keyed card of a lane in a command opens that lane's render frame.
+    private static bool Reconciling(Lane lane)
+    {
+        int i = (int)lane;
+        if (LaneCommand[i] != _frame)
+        {
+            LaneCommand[i] = _frame;
+            LaneFrames[i]++;
+            LaneReconciling[i] = Shadow || LaneFrames[i] % ReconcilePeriod == 0;
+            if (LaneReconciling[i]) ReconcileFrameCount[i]++;
+        }
+        return LaneReconciling[i];
+    }
 
     private static bool OwnerThread()
     {
@@ -137,7 +172,7 @@ public static class NativeCardProjectionMemo
             UnkeyedCount[(int)lane]++;
             return render();
         }
-        bool reconciling = Reconciling;
+        bool reconciling = Reconciling(lane);
         if (!reconciling && Entries.TryGetValue(key, out Stored? hit))
         {
             HitCount[(int)lane]++;
@@ -198,6 +233,10 @@ public static class NativeCardProjectionMemo
     internal static string? Key(Lane lane, CardModel card, PileType displayPile)
     {
         if (!Enabled(lane) || !OwnerThread()) return null;
+        if (Interlocked.Exchange(ref _buildChecked, 1) == 0 && !Shadow
+            && typeof(CardModel).Module.ModuleVersionId != NativeCardDetailCache.ShadowedGameMvid)
+            Console.Error.WriteLine("[native-card-memo] game module " + typeof(CardModel).Module.ModuleVersionId
+                + " is not the build the type list was frozen on; every card renders live (refreeze with shadow mode)");
         if (Game.LazyFields.Any(field => field == null || field.GetValue(card) == null) || Game.StarCostSet?.GetValue(card) is not true) return null;
         // Shadow: every path out of the key, keyed or not, must leave the card footprint unchanged.
         NativeDetachedCardPreviewFactory.SourceStamp? before = Shadow ? NativeDetachedCardPreviewFactory.SourceStamp.Card(card) : null;
@@ -305,8 +344,8 @@ public static class NativeCardProjectionMemo
     };
 
     private static string Summary() =>
-        string.Join(' ', Enum.GetValues<Lane>().Select(lane => $"{lane.ToString().ToLowerInvariant()}:hits={Hits(lane)},stores={Stores(lane)},compares={Compares(lane)},unkeyed={Unkeyed(lane)}"))
-        + $" frames={_frame} entries={Entries.Count} reconcile_ms={ReconcileMilliseconds:F1} divergence={(Divergence == null ? 0 : 1)}"
+        string.Join(' ', Enum.GetValues<Lane>().Select(lane => $"{lane.ToString().ToLowerInvariant()}:hits={Hits(lane)},stores={Stores(lane)},compares={Compares(lane)},unkeyed={Unkeyed(lane)},render_frames={RenderFrames(lane)},reconcile_frames={ReconcileFrames(lane)}"))
+        + $" frames={_frame} episodes={_episodes} entries={Entries.Count} reconcile_ms={ReconcileMilliseconds:F1} divergence={(Divergence == null ? 0 : 1)}"
         + (Shadow ? " type-compares " + string.Join(',', TypeCompares.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => pair.Key + "=" + pair.Value)) : "");
 
     // Frozen from Friday shadow job 1458801 (92 corpus games, both lanes, every frame live vs memo plus the

@@ -38,9 +38,13 @@ public sealed class NativeCompactStateDivergenceException(string message) : Exce
 /// GetDescriptionForPile, GetDescriptionForUpgradePreview, HoverTips or Title; enchanted or afflicted cards; a card with a current
 /// target; a variable with a non-scalar field or a capturing delegate; any incomplete render.
 ///
-/// Reconcile: every 64th headless frame (every frame in shadow mode,
-/// STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW=1) renders everything live and compares it with the
-/// stored entry byte for byte; a difference is compact_state_divergence, which is fatal.
+/// Reconcile: the clock counts render frames (headless commands with at least one keyed render), not
+/// commands, so a command that renders no card cannot absorb the check. Every 64th render frame (every
+/// frame in shadow mode, STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW=1) renders everything live and compares
+/// it with the stored entry byte for byte; a difference is compact_state_divergence, which is fatal.
+///
+/// Episodes: <see cref="BeginEpisode"/> (run start or save load, where the native language is set)
+/// drops every entry, so no text of an earlier language is ever served.
 /// </summary>
 public static class NativeCardDetailCache
 {
@@ -57,6 +61,8 @@ public static class NativeCardDetailCache
     private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
     private static int _ownerThread;
     private static long _frame;
+    private static long _renderCommand = -1;
+    private static bool _renderReconciling;
 
     static NativeCardDetailCache()
     {
@@ -73,7 +79,27 @@ public static class NativeCardDetailCache
     public static string? Divergence { get; private set; }
 
     private static bool Active => NativePatchStateCache.Enabled && OwnerThread();
-    private static bool Reconciling => Shadow || _frame % ReconcilePeriod == 0;
+    public static long RenderFrames { get; private set; }
+    public static long ReconcileFrames { get; private set; }
+
+    // The first keyed render of a command opens a render frame.
+    private static bool Reconciling()
+    {
+        if (_renderCommand != _frame)
+        {
+            _renderCommand = _frame;
+            RenderFrames++;
+            _renderReconciling = Shadow || RenderFrames % ReconcilePeriod == 0;
+            if (_renderReconciling) ReconcileFrames++;
+        }
+        return _renderReconciling;
+    }
+
+    /// <summary>Run start or save load (where the native language is set): drops every entry. Off: no-op.</summary>
+    public static void BeginEpisode()
+    {
+        if (NativePatchStateCache.Enabled) Entries.Clear();
+    }
 
     private static bool OwnerThread()
     {
@@ -118,7 +144,7 @@ public static class NativeCardDetailCache
     /// <summary>The stored title and description for this key, outside reconcile frames.</summary>
     internal static Entry? TryServe(string? key)
     {
-        if (key == null || Reconciling || !Entries.TryGetValue(key, out Entry? entry)) return null;
+        if (key == null || Reconciling() || !Entries.TryGetValue(key, out Entry? entry)) return null;
         Hits++;
         return entry;
     }

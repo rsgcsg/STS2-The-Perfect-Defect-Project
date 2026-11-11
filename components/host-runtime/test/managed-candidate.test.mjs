@@ -47,7 +47,7 @@ test("built native act-selection source and retained measured builds remain expl
   );
   assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
-  assert.equal(manifest.expected_build.artifact_sha256, "15b6b3a1814b46549a15a198167c0e0b8d5cb9fa5b3a2990fcdf5adabbe25267");
+  assert.equal(manifest.expected_build.artifact_sha256, "5f780fd194080e2e039bbcdc54905b246dd200975d01beb981d0bf3e97bb5d2d");
   assert.equal(manifest.host63_previous_candidate_build.artifact_sha256, "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f");
   assert.equal(manifest.host63_previous_candidate_build.artifact_mvid, "1df7d09d-d37e-43b8-b166-894ae4adbbd2");
   assert.equal(manifest.host61_previous_candidate_build.artifact_sha256, "dec31cfc3da83f25890057737c25dbabeac23074652d514d4672a9cdb511d4a8");
@@ -61,7 +61,7 @@ test("built native act-selection source and retained measured builds remain expl
   assert.equal(manifest.pre_m2c_godot_stub_build.artifact_sha256, "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4"), true);
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
-  assert.equal(manifest.expected_build.artifact_mvid, "7c950d41-6eb6-417c-8868-45d2886f6cd3");
+  assert.equal(manifest.expected_build.artifact_mvid, "d46525e8-7201-4589-972c-ccf861aa74ca");
   assert.equal(manifest.pre_m2e_round3_build.artifact_mvid, "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8");
   assert.equal(manifest.host54_previous_candidate_build.artifact_mvid, "76bdb43e-d8ff-48b2-bea8-f7fc7925faf1");
   assert.equal(manifest.pre_m2d_enchanted_deck_build.artifact_mvid, "2d7dafda-95de-4631-9f13-63cf8610bfe9");
@@ -272,18 +272,18 @@ test("Linux x64 selects only its exact native and independently pinned candidate
   assert.equal(x86.replaceAll(`"${to}"`, `"${from}"`), original,
     "the only platform source delta is the eight exact native MVID literals");
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_sha256, "15b6b3a1814b46549a15a198167c0e0b8d5cb9fa5b3a2990fcdf5adabbe25267");
-  assert.equal(manifest.expected_build.artifact_mvid, "7c950d41-6eb6-417c-8868-45d2886f6cd3");
+  assert.equal(manifest.expected_build.artifact_sha256, "5f780fd194080e2e039bbcdc54905b246dd200975d01beb981d0bf3e97bb5d2d");
+  assert.equal(manifest.expected_build.artifact_mvid, "d46525e8-7201-4589-972c-ccf861aa74ca");
   assert.equal(baseline.status, "candidate_built_unqualified");
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "2f5e1eb8bdf4b9804f5038f5eb470b6710013cfb7d520ab1cfa9699085376e5a"
     && build.artifact_mvid === "de8e7321-721a-41c9-afa6-41167813edc9"));
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "a96c61b76831c1076eefaeb0d35c62c97d8bcebb692b2ea020963253b501dace"
     && build.artifact_mvid === "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd"));
   assert.equal(selected.expected_build.source_patch_sha256,
-    "d1bb114729cd83907fbf5b8b138a40e1daea1f73d296eef422f76812a7dbd58a");
+    "22e3c4a60b718a3165161fac19a531202395ae4826636f8af2b27cfeb48a74b7");
   assert.equal(selected.expected_build.artifact_sha256,
-    "4ebde26d989eec4cb6d973b91676676283d54a223a5ff5c1953032890c2f9ded");
-  assert.equal(selected.expected_build.artifact_mvid, "72c05f37-4f4f-4ed3-ae54-587477bcb76e");
+    "6bc37f233dbdd2dd27bc6b1ee5f46a3966815b0fa63e977661a34b6f01d2120b");
+  assert.equal(selected.expected_build.artifact_mvid, "2edc4fd1-6078-4dff-ace5-6ba6b4e78994");
   assert.ok(baseline.historical_builds.some(build => build.artifact_sha256 === "bb5513fd995595c1fc4aef25ad145255d226baea7192525f254f99ed0a93dd04"
     && build.artifact_mvid === "739f4182-a6e6-49fa-8589-ddb3af127a61"));
   assert.equal(baseline.historical_builds[0].artifact_sha256,
