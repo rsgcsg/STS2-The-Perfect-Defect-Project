@@ -194,7 +194,7 @@ def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
 def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, offsets: Tensor,
                rows: int, width: int, longest: int, outcome_valid: Tensor,
                action_types: Tensor | None, catalog_mask: Tensor | None,
-               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...], *,
                kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """Scene encoder + heads + action readout for one length bucket of rows
     (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
@@ -242,7 +242,7 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
                       offsets: Tensor, rows: int, width: int, longest: int,
                       outcome_valid: Tensor, action_types: Tensor | None,
                       catalog_mask: Tensor | None,
-                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...], *,
                       kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """`rows_block` on packed real scene tokens only (CUDA BF16 flash varlen).
 
@@ -303,10 +303,12 @@ def _kernel_dtype(reference: Tensor) -> torch.dtype:
 
 
 def _block(packed: bool, kernels: tuple[str, ...]) -> Any:
-    function = rows_block_packed if packed else rows_block
+    function: Any = rows_block_packed if packed else rows_block
     if not kernels:
         return function
 
+    # `kernels` is keyword-only in both blocks: the 12 positional block arguments
+    # can never fill it.
     def block(*args: Any) -> Any:
         return function(*args, kernels=kernels)
 
