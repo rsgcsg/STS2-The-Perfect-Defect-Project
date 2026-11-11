@@ -612,11 +612,16 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
     assert FOLD_CATALOG_LIMIT == 64
     assert parse_kernels("cross+heads+nodes") == ("cross", "heads", "nodes")
     assert parse_kernels("cross+embed+heads+nodes") == ("cross", "embed", "heads", "nodes")
+    with pytest.raises(BoundaryError, match="prepared_kernels_embed_requires_compile"):
+        PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="embed+nodes")
+    PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True,
+                      prepared_kernels="cross+embed+heads+nodes")
 
 
 def test_embed_lever_private_copies_give_the_embedding_gradient():
-    """The private-copy weight gradient (eager and under compile) equals the
-    embedding gradient, repeats included, for one and several copies."""
+    """The private-copy weight gradient (eager and under compile: aot_eager, as
+    in this file's other compiled tests) equals the embedding gradient, repeats
+    included, for one and several copies; non-plain tables are refused."""
     from stpd.p1 import rows_kernels
     from stpd.p1.rows_kernels import lookup
 
@@ -631,12 +636,16 @@ def test_embed_lever_private_copies_give_the_embedding_gradient():
         def call(module, picked):
             return lookup(module, picked, private=True)
 
-        for run in (call, torch.compile(call, dynamic=True)):
+        for run in (call, torch.compile(call, dynamic=True, backend="aot_eager")):
             out = run(table, indices)
             torch.testing.assert_close(out, table(indices))
             got = torch.autograd.grad((out * upstream).sum(), table.weight)[0]
             torch.testing.assert_close(got, reference, rtol=1e-6, atol=1e-6)
     assert rows_kernels._copies(8192, 192) == 1
+    for options in ({"padding_idx": 0}, {"max_norm": 1.0}, {"scale_grad_by_freq": True},
+                    {"sparse": True}):
+        with pytest.raises(ValueError, match="embed_lever_requires_plain_embedding"):
+            lookup(torch.nn.Embedding(5, 7, **options), torch.tensor([0, 1]), private=True)
 
 
 def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_permutations():

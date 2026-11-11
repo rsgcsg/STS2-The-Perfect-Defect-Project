@@ -31,7 +31,10 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            summed) instead of one atomic scatter-add whose same-row atomics
            serialize on small vocabularies (fields: hundreds of thousands of
            lookups onto a few rows). Same sum, different order (FP32); no host
-           synchronisation, still fusable under compile.
+           synchronisation, still fusable under compile. It pays only under
+           compile (eager CUDA embedding backward already sorts), so the
+           training config requires `prepared_compile` with it. Plain tables
+           only (no padding_idx/max_norm/scale_grad_by_freq/sparse): refused.
 
 Packed (CUDA): the folded queries are one-head, full-width (embed) sequences for
 flash varlen: query sequence i (heads, or catalog x heads, positions) attends to
@@ -296,6 +299,9 @@ def lookup(table: Any, indices: Tensor, *, private: bool) -> Tensor:
     """`table(indices)`; with `private` the weight gradient uses private copies."""
     if not private:
         return cast(Tensor, table(indices))
+    if (table.padding_idx is not None or table.max_norm is not None
+            or table.scale_grad_by_freq or table.sparse):
+        raise ValueError("embed_lever_requires_plain_embedding")
     return cast(Tensor, _Lookup.apply(table.weight, indices))
 
 
