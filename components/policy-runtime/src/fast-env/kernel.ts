@@ -26,6 +26,8 @@ export interface KernelStats {
   combat_end_unattributed: number;
   /** Games and opens ended by compact_state_divergence (Host- or native-detected), counted apart from other unknowns. */
   compact_divergences: number;
+  /** E5: games and opens ended by projection_memo_divergence (the Host's sampled memo check), counted apart. */
+  projection_memo_divergences: number;
   /** S1: games closed as budget `forced_steps_in_a_row` (more one-option steps in a row than the old chain allows),
    * counted apart from the other budget ends. */
   forced_chain_limit: number;
@@ -34,7 +36,7 @@ export interface KernelStats {
   cold_starts: number; cold_start_wait_ms: number;
 }
 export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
-  combat_end_unattributed: 0, compact_divergences: 0, forced_chain_limit: 0,
+  combat_end_unattributed: 0, compact_divergences: 0, projection_memo_divergences: 0, forced_chain_limit: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0, cold_starts: 0, cold_start_wait_ms: 0 });
 
 /** What every slot of one environment process shares. */
@@ -59,6 +61,19 @@ export interface KernelContext {
 }
 
 /** A game ends here; nothing is ever retried. */
+/** Session divergences: the game ends unknown (never retried), is counted apart and stops this build's output.
+ * The Host's memo divergence keeps its own close detail, build stop and counter; its pending outcome uses the
+ * frozen rl-inference-3 divergence reason (the outcome enum has no separate memo value). */
+type SessionDivergence = "compact_state_divergence" | "projection_memo_divergence";
+const sessionDivergence = (value: unknown): SessionDivergence | null =>
+  value === "compact_state_divergence" || value === "projection_memo_divergence" ? value : null;
+const divergenceEnd = (divergence: SessionDivergence) => new GameEnd("not_started", divergence, { replaceNative: true,
+  buildStop: divergence, pendingOutcome: { status: "unknown", reason: "compact_state_divergence" } });
+const countDivergence = (stats: KernelStats, divergence: SessionDivergence) => {
+  if (divergence === "compact_state_divergence") stats.compact_divergences += 1;
+  else stats.projection_memo_divergences += 1;
+};
+
 class GameEnd extends Error {
   constructor(readonly reason: CloseReason, readonly detail: string,
               readonly options: { replaceNative?: boolean; buildStop?: string; pendingOutcome?: { status: "unknown"; reason: OutcomeReason };
@@ -260,11 +275,8 @@ class GameRun {
         throw new GameEnd("env_crash", `capture:${error.message}`, { replaceNative: true, buildStop: "sampled_check_failed",
           pendingOutcome: { status: "unknown", reason: "native_crash" }, sampledMismatch: error.mismatch });
       }
-      const taint = this.native.taint();
-      if (taint.reason === "compact_state_divergence") {
-        throw new GameEnd("not_started", "compact_state_divergence", { replaceNative: true, buildStop: "compact_state_divergence",
-          pendingOutcome: { status: "unknown", reason: "compact_state_divergence" } });
-      }
+      const divergence = sessionDivergence(this.native.taint().reason);
+      if (divergence !== null) throw divergenceEnd(divergence);
       throw new GameEnd("env_crash", `capture:${error instanceof Error ? error.message : String(error)}`,
         { replaceNative: true, pendingOutcome: { status: "unknown", reason: "native_crash" } });
     } finally { this.ctx.stats.capture_ms += performance.now() - started; }
@@ -449,10 +461,10 @@ class GameRun {
         reason_code: decoded.reason_code ?? null, receipt_sha256: receiptSha });
       if (decoded.delivery === "unknown") { this.#unknownCause = `receipt_delivery_unknown:${decoded.reason_code ?? "none"}`; return "unknown"; }
       if (decoded.delivery === "not_delivered") { status = steps === 1 ? "not_started" : "interrupted_known"; break; }
-      if (decoded.reason_code === "compact_state_divergence") {
+      const divergence = sessionDivergence(decoded.reason_code);
+      if (divergence !== null) {
         if (row) this.#pendingOutcome = this.#newPending(row, receiptSha);
-        throw new GameEnd("not_started", "compact_state_divergence", { replaceNative: true, buildStop: "compact_state_divergence",
-          pendingOutcome: { status: "unknown", reason: "compact_state_divergence" } });
+        throw divergenceEnd(divergence);
       }
       const rule = lowering.follow[followIndex++];
       // Every known delivery gets an actual successor capture; a failure after a
@@ -557,14 +569,14 @@ export class SlotKernel {
         throw new Error("native_start_changed");
     } catch (error) {
       releaseColdStart?.();
-      const divergence = native.taint().reason === "compact_state_divergence";
+      const divergence = sessionDivergence(native.taint().reason);
       // The lines this mount emitted (a diverging first frame included) outlive the native.
       const lines: string[] = [];
       // Compact off, the only line can be the native's own divergence report: kept all the same.
       native.attachLines(line => lines.push(line)); native.attachLines(null);
       await this.#replaceNative();
-      if (divergence) { ctx.stats.compact_divergences += 1; ctx.stopBuildOutput("compact_state_divergence", this.index, null); }
-      const reason = `reset_failed:${divergence ? "compact_state_divergence" : errorText(error)}`;
+      if (divergence !== null) { countDivergence(ctx.stats, divergence); ctx.stopBuildOutput(divergence, this.index, null); }
+      const reason = `reset_failed:${divergence ?? errorText(error)}`;
       try { await ctx.evidence.refusedOpen({ slot: this.index, game_ref: command.game_ref, start: openStart, reason, native_lines: lines }); }
       catch (failure) { ctx.evidenceFailed(this.index, null, errorText(failure)); }
       return refuse(reason);
@@ -601,9 +613,10 @@ export class SlotKernel {
       // action's outcome is in question) stays not_started; both stop this build's output.
       if (game.awaitingSuccessor && reason === "not_started") {
         reason = "unknown"; replace = true;
-        if (detail !== "compact_state_divergence") detail = `delivered_successor_unreadable:${detail}`;
+        if (sessionDivergence(detail) === null) detail = `delivered_successor_unreadable:${detail}`;
       }
-      if (end.options.buildStop === "compact_state_divergence") ctx.stats.compact_divergences += 1;
+      const divergence = sessionDivergence(end.options.buildStop);
+      if (divergence !== null) countDivergence(ctx.stats, divergence);
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
       // The originals the sampled check disagreed with go into this game's evidence, and
       // every original of this game is kept, whatever else the close says.

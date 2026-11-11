@@ -743,6 +743,8 @@ def test_a_close_slot_never_reaches_the_next_game_on_the_same_slot(tmp_path):
      "fast_chain_unknown:delivered_successor_unreadable"),
     ({"reason": "unknown", "detail": "compact_state_divergence", "native": "replaced"},
      "infrastructure", "fast_chain_unknown:compact_state_divergence"),
+    ({"reason": "unknown", "detail": "projection_memo_divergence", "native": "replaced"},
+     "infrastructure", "fast_chain_unknown:projection_memo_divergence"),
     ({"reason": "unknown", "detail": "something_new", "native": "replaced"},
      "unclassified", "no_classifying_fact"),
 ])
