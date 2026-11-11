@@ -463,8 +463,8 @@ class MStd(nn.Module):
             raise ValueError("non_finite_rl4_head_outputs")
         return scores, logits, hp
 
-    def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False
-                             ) -> tuple[Tensor, Tensor, Tensor]:
+    def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False,
+                             kernels: str = "") -> tuple[Tensor, Tensor, Tensor]:
         """RL4.1 tensor region: metadata is complete before the GPU sees it.
 
         Text is encoded from current theta on every update, with gradients through
@@ -476,8 +476,8 @@ class MStd(nn.Module):
         if getattr(group, "layout", None) is not None:
             from .rows_forward import forward_rows
 
-            return forward_rows(self, group, compile=compile_rows)
-        if compile_rows:
+            return forward_rows(self, group, compile=compile_rows, kernels=kernels)
+        if compile_rows or kernels:
             raise ValueError("compiled_rows_forward_requires_row_layout")
         device = self.ids.weight.device
         t = {key: value.to(device, non_blocking=self.nonblocking_inputs)
