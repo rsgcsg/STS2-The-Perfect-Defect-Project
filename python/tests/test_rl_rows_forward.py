@@ -628,9 +628,11 @@ def test_embed_lever_private_copies_give_the_embedding_gradient():
         indices[:9] = 4
         upstream = torch.randn(len(indices), width)
         reference = torch.autograd.grad((table(indices) * upstream).sum(), table.weight)[0]
-        for run in (lambda: lookup(table, indices, private=True),
-                    torch.compile(lambda: lookup(table, indices, private=True), dynamic=True)):
-            out = run()
+        def call(module, picked):
+            return lookup(module, picked, private=True)
+
+        for run in (call, torch.compile(call, dynamic=True)):
+            out = run(table, indices)
             torch.testing.assert_close(out, table(indices))
             got = torch.autograd.grad((out * upstream).sum(), table.weight)[0]
             torch.testing.assert_close(got, reference, rtol=1e-6, atol=1e-6)
@@ -678,7 +680,8 @@ def test_nodes_lever_owner_maps_refuse_broken_reductions_loudly():
         _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse[:3]), 4, 4, True)
 
 
-def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied):
+@pytest.mark.parametrize("kernels", ["cross+heads+nodes", "cross+embed+heads+nodes"])
+def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels):
     """The compiled lever path (dynamic-shape block variants and node builder)
     computes what the eager original computes (CPU, FP32)."""
     from stpd.p1.rows_forward import forward_rows
@@ -689,7 +692,7 @@ def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied):
         rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
         (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=False)
         model.zero_grad(set_to_none=True)
-        out = forward_rows(model, rows, compile=True, packed=False, kernels="cross+heads+nodes")
+        out = forward_rows(model, rows, compile=True, packed=False, kernels=kernels)
         (s1, l1, h1) = (value.detach() for value in out)
         generator = torch.Generator().manual_seed(5)
         total = out[2].mul(torch.randn(out[2].shape, generator=generator)).sum()
