@@ -25,6 +25,7 @@ from test_p1_fast_inference import (  # noqa: F401 - fixtures
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.fast_mu_follower import FastMuFollower
+from stpd.p1.text_cache import TextVectorCache
 from stpd.rl.fast_assembly import MuHandoff
 
 NEW = "c" * 64
@@ -187,6 +188,8 @@ def test_rows_after_the_swap_carry_the_new_mu(vocabulary, model):  # noqa: F811
     with torch.no_grad():
         for parameter in newer.rl4_heads.parameters():
             parameter.add_(0.01)
+    # As load_behavior_mu returns it: a process-local text cache (holds an RLock).
+    newer.text_cache, newer.text_cache_namespace = TextVectorCache(limit=1024**2), NEW
     path = os.path.join(tempfile.mkdtemp(), "link.sock")
     aggregator = _aggregator(vocabulary, service, path)
     try:

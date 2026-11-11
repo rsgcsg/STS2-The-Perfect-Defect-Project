@@ -1065,10 +1065,13 @@ class FastInferenceService:
 
         RowsScorer(model, bf16=self.bf16, compile=self.compile)  # immutable eval snapshot
         # Ship parameters and construction, not this process's runtime caches
-        # (a torch.compile wrapper set by rows_forward cannot be pickled).
+        # (a torch.compile wrapper set by rows_forward cannot be pickled; a learner mu
+        # from load_behavior_mu carries this process's TextVectorCache and its lock).
         shipped = copy.copy(model)
         shipped.__dict__ = {key: value for key, value in model.__dict__.items()
                             if not key.startswith("_rows_block")}
+        if "text_cache" in shipped.__dict__:
+            shipped.__dict__.update(text_cache=None, text_cache_namespace=None)
         blob = io.BytesIO()
         torch.save(shipped, blob)
         key = handoff.snapshot_sha256
