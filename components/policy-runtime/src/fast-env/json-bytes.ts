@@ -91,6 +91,11 @@ const omitted = (value: unknown): boolean => value === undefined || typeof value
  * own `toJSON` function (JSON.stringify of the copy would call it), is refused.
  */
 export function canonicalJsonFast(value: unknown): string {
+  return canonicalText(value, null);
+}
+
+/** The one canonicalJsonFast walk; with a memo, a deeply frozen object's text is kept by identity. */
+function canonicalText(value: unknown, memo: CanonicalTextMemo | null): string {
   switch (typeof value) {
     case "string": return quoted(value);
     case "boolean": return value ? "true" : "false";
@@ -98,25 +103,114 @@ export function canonicalJsonFast(value: unknown): string {
     default: return JSON.stringify(value);
   }
   if (value === null) return "null";
+  let kept: string | undefined;
+  const frozen = memo !== null && memo.frozen(value);
+  if (frozen && (kept = memo.texts.get(value)) !== undefined) { memo.hits += 1; return kept; }
+  let text: string;
   if (Array.isArray(value)) {
-    let text = "[";
+    text = "[";
     for (let index = 0; index < value.length; index += 1) {
       const item: unknown = value[index];
-      text += (index ? "," : "") + (omitted(item) ? "null" : canonicalJsonFast(item));
+      text += (index ? "," : "") + (omitted(item) ? "null" : canonicalText(item, memo));
     }
-    return `${text}]`;
-  }
-  let text = "{", first = true;
-  for (const key of canonicalKeyOrder(value)) {
-    const item: unknown = (value as Record<string, unknown>)[key];
-    if (omitted(item)) {
-      if (key === "toJSON" && typeof item === "function") throw new TypeError("canonical_json_to_json_function");
-      continue;
+    text += "]";
+  } else {
+    text = "{";
+    let first = true;
+    for (const key of canonicalKeyOrder(value)) {
+      const item: unknown = (value as Record<string, unknown>)[key];
+      if (omitted(item)) {
+        if (key === "toJSON" && typeof item === "function") throw new TypeError("canonical_json_to_json_function");
+        continue;
+      }
+      text += `${first ? "" : ","}${quoted(key)}:${canonicalText(item, memo)}`;
+      first = false;
     }
-    text += `${first ? "" : ","}${quoted(key)}:${canonicalJsonFast(item)}`;
-    first = false;
+    text += "}";
   }
-  return `${text}}`;
+  if (frozen) { memo.texts.set(value, text); memo.misses += 1; }
+  return text;
+}
+
+/** E4 found a kept text that differs from the full walk: this process's memo is wrong. Fatal, never a fallback. */
+export class CanonicalTextMemoDivergence extends Error {
+  readonly code = "receipt_canonical_memo_divergence";
+  constructor(readonly digest: number, readonly offset: number) {
+    super(`receipt_canonical_memo_divergence: digest ${digest} differs from the full walk at byte ${offset}`);
+    this.name = "CanonicalTextMemoDivergence";
+  }
+}
+
+export interface CanonicalTextMemoStatus { check_interval: number; digests: number; verified: number; hits: number; misses: number }
+
+/**
+ * P-REWRITE fast_chain only (design v3 E4, off by default): the receipt digest keeps the
+ * canonical text of every deeply frozen subtree by object identity. It builds on the E5
+ * identity rule (the Host hands an unchanged projected subtree over again as the same
+ * deep-frozen object; `isDeepFrozen` is the SDK's one check of that premise) and on the
+ * strict receipt decode keeping content: every receipt object is strict, passthrough or
+ * opaque and nothing is defaulted or transformed, so the original receipt and its decoded
+ * copy have the same canonical text. Only the original keeps the identities.
+ *
+ * Safety: digest 0 and then one digest per gap, the gap drawn uniformly from ceil(N/2)..N
+ * (N = `checkInterval`; the scheme of the E5 projection memo and the E6 reduce memo), are
+ * computed again as the old path does, `canonicalJsonFast(decoded)` without the memo, and
+ * compared byte for byte. A difference throws CanonicalTextMemoDivergence. N = 1 compares
+ * every digest. The comparison is part of the measured cost.
+ */
+export class CanonicalTextMemo {
+  readonly texts = new WeakMap<object, string>();
+  readonly frozen: (value: object) => boolean;
+  readonly #interval: number;
+  #rng: number;
+  #digests = 0;
+  #nextCheck = 0;
+  #verified = 0;
+  #all = false;
+  hits = 0;
+  misses = 0;
+
+  constructor(options: { checkInterval: number; checkSeed?: number | null; isDeepFrozen: (value: object) => boolean }) {
+    if (!Number.isSafeInteger(options.checkInterval) || options.checkInterval < 1 || options.checkInterval > 1024)
+      throw new TypeError("checkInterval must be an integer in 1..1024");
+    this.#interval = options.checkInterval;
+    this.frozen = options.isDeepFrozen;
+    const seed = options.checkSeed ?? Math.floor(Math.random() * 0x100000000);
+    this.#rng = (seed >>> 0) || 0x9e3779b9;
+  }
+
+  /** Next gap, uniform in ceil(N/2)..N (xorshift32; it only picks which digests get compared). */
+  #gap(): number {
+    let x = this.#rng;
+    x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
+    this.#rng = x;
+    const low = Math.ceil(this.#interval / 2);
+    return low + x % (this.#interval - low + 1);
+  }
+
+  /** globalDigestFast(decoded), read from the original receipt `raw` (same canonical text). */
+  digest(raw: unknown, decoded: unknown): string {
+    const index = this.#digests++;
+    const text = canonicalText(raw, this);
+    if (this.#all || index === this.#nextCheck) {
+      if (!this.#all) this.#nextCheck += this.#gap();
+      const full = canonicalText(decoded, null);
+      if (full !== text) {
+        let offset = 0;
+        while (offset < text.length && text.charCodeAt(offset) === full.charCodeAt(offset)) offset += 1;
+        throw new CanonicalTextMemoDivergence(index, offset);
+      }
+      this.#verified += 1;
+    }
+    return createHash("sha256").update(text).digest("hex");
+  }
+
+  /** From now on every digest is compared (after a fatal divergence, while the process drains). */
+  verifyAll(): void { this.#all = true; }
+
+  status(): CanonicalTextMemoStatus {
+    return { check_interval: this.#interval, digests: this.#digests, verified: this.#verified, hits: this.hits, misses: this.misses };
+  }
 }
 
 const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;

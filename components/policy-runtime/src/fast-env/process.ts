@@ -14,6 +14,8 @@ import { FastActionEvidenceSink } from "../global-fast-storage.js";
 import { hostSlotNativeFactory, type SlotNativeFactory } from "./host.js";
 import { coldStartGate, defaultColdStartDirectory, type ColdStartGate } from "./cold-start.js";
 import { SlotKernel, emptyStats, type KernelContext, type KernelStats } from "./kernel.js";
+import { configureReduceMemo, isDeepFrozen, reduceMemoStatus, type ReduceMemoStatus } from "@rsgcsg/sts2-connector-client/p1-global";
+import { CanonicalTextMemo } from "./json-bytes.js";
 
 const COMPACT_FORMAT = "managed-native-compact-1";
 
@@ -56,9 +58,14 @@ export class FastEnvProcess {
   #staleCloses = 0;
   #finished: Promise<number> | null = null;
   readonly #cpuStart = process.cpuUsage();
+  /** E6 counters up to a fatal divergence (reconfiguring to verify_all restarts the SDK counters). */
+  #reduceBefore: ReduceMemoStatus | null = null;
 
   constructor(private readonly deps: FastEnvDependencies) {
     let rowId = 0;
+    const memo = deps.config.memo;
+    // E6 is process-wide SDK state: set from this config every time (off unless named).
+    configureReduceMemo(memo.reduce ? { mode: "on", fastChain: true, verifyEvery: memo.reduce.check_interval } : { mode: "off" });
     const emit = (event: string, data: Record<string, unknown>) => {
       if (event === "closed") this.#gamesClosed += 1;
       deps.write(`${JSON.stringify({ schema: FAST_ENV_EVENT_SCHEMA, event, ...data })}\n`);
@@ -78,7 +85,20 @@ export class FastEnvProcess {
       stopping: () => this.#stopping,
       sleep: deps.sleep ?? (ms => delay(ms)),
       coldStart: deps.coldStart ?? coldStartGate({ maxConcurrent: deps.config.cold_start.max_concurrent,
-        directory: deps.config.cold_start.directory ?? defaultColdStartDirectory(), sleep: deps.sleep ?? (ms => delay(ms)) })
+        directory: deps.config.cold_start.directory ?? defaultColdStartDirectory(), sleep: deps.sleep ?? (ms => delay(ms)) }),
+      receiptCanonical: memo.receipt_canonical
+        ? new CanonicalTextMemo({ checkInterval: memo.receipt_canonical.check_interval, isDeepFrozen }) : null,
+      // Loud and fatal, nothing falls back. The process drains: slots finish their current step before
+      // they stop (build output is already stopped). From here on every E4 digest and every E6 reduction
+      // is compared, so a second wrong memo result during the drain also ends its game unknown.
+      memoFatal: reason => {
+        this.#ctx.receiptCanonical?.verifyAll();
+        if (memo.reduce && this.#reduceBefore === null) {
+          this.#reduceBefore = reduceMemoStatus();
+          configureReduceMemo({ mode: "verify_all", fastChain: true });
+        }
+        void this.#finish(1, reason);
+      }
     };
     this.#slots = Array.from({ length: deps.config.slots }, (_, index) => new SlotKernel(index, this.#ctx));
     deps.link.setOpenInstances(id => this.#slots.some(slot => slot.gameInstanceId === id));
@@ -152,7 +172,24 @@ export class FastEnvProcess {
       settle_waits: s.settle_waits, full_checks: s.full_checks, compact_divergences: s.compact_divergences, projection_memo_divergences: s.projection_memo_divergences, forced_chain_limit: s.forced_chain_limit, build_output_stopped: this.#buildStopped,
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
-      link_wait_ms: round(s.link_wait_ms), cold_starts: s.cold_starts, cold_start_wait_ms: round(s.cold_start_wait_ms) };
+      link_wait_ms: round(s.link_wait_ms), cold_starts: s.cold_starts, cold_start_wait_ms: round(s.cold_start_wait_ms),
+      ...this.#memoCounters() };
+  }
+
+  /** Only when a memo layer is on (all off: the counters are exactly today's). */
+  #memoCounters(): Record<string, unknown> {
+    const { compact, memo } = this.deps.config;
+    if (!compact.projection_memo && !memo.native_card && !memo.reduce && !memo.receipt_canonical) return {};
+    return { memo: { memo_divergences: this.stats.memo_divergences, native_card: memo.native_card,
+      projection: compact.projection_memo ? { ...this.stats.projection_memo, check_interval: compact.projection_memo.check_interval } : null,
+      reduce: memo.reduce ? this.#reduceStatus() : null,
+      receipt_canonical: this.#ctx.receiptCanonical?.status() ?? null } };
+  }
+
+  #reduceStatus(): ReduceMemoStatus {
+    const now = reduceMemoStatus(), before = this.#reduceBefore;
+    return before === null ? now : { ...now, reductions: before.reductions + now.reductions,
+      verified: before.verified + now.verified, hits: before.hits + now.hits, misses: before.misses + now.misses };
   }
 
   async #status(commandId: string): Promise<void> {

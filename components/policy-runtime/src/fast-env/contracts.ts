@@ -32,6 +32,20 @@ export interface FastEnvConfig {
    *  A difference is `projection_memo_divergence`: the game ends unknown (never retried), is counted
    *  in `projection_memo_divergences` and stops this build's output. */
   compact: { enabled: boolean; reconcile_interval: number; projection_memo: { check_interval: number } | null };
+  /** The other memo layers (WP8 v3 enablement; all off when `memo` is absent). This process is fast_chain only.
+   *  - `native_card` (#460): the native's deck / HUD card projection memo (STS2_HEADLESS_DECK_MEMO / _HUD_MEMO);
+   *    the native compares every 64th render frame of a lane itself; a difference is compact_state_divergence.
+   *  - `reduce` (E6): the SDK reduce memo; the first comparison falls on reduction ceil(N/2)..N (not on
+   *    reduction 0), then one after each random gap in ceil(N/2)..N, N = `check_interval` (1 = every
+   *    reduction). A difference (P1ReduceMemoDivergence) is fatal for this whole process.
+   *  - `receipt_canonical` (E4): the receipt digest keeps the canonical text of deep-frozen subtrees;
+   *    compared against the full walk on digest 0 and then after random gaps in ceil(N/2)..N; a
+   *    difference is fatal for this whole process.
+   *  E4 and E6 only hit when E5 (`compact.projection_memo`) is on: they key on object identity, and only
+   *  E5 hands out unchanged subtrees as the same deep-frozen objects. Without E5 they stay correct but
+   *  are pure overhead (hits ≈ 0); allowed on their own so each layer can still be measured. */
+  memo: { native_card: { deck: boolean; hud: boolean } | null; reduce: { check_interval: number } | null;
+    receipt_canonical: { check_interval: number } | null };
   checks: { sample_rate: number };
   decision_link: { kind: "unix"; path: string };
   inference: { timeout_ms: number; actor_id: string; sampling: Sampling; single_choice: "score" | "omit" };
@@ -126,7 +140,7 @@ export function parseSampling(value: unknown, field = "sampling"): Sampling {
 
 export function parseFastEnvConfig(value: unknown): FastEnvConfig {
   const v = obj(value, "config", ["schema", "env_process_id", "slots", "host", "agent_manifest", "compact", "checks",
-    "decision_link", "inference", "budget", "no_progress", "settling_timeout_ms", "cold_start", "evidence"]);
+    "decision_link", "inference", "budget", "no_progress", "settling_timeout_ms", "cold_start", "evidence", "memo"]);
   if (v.schema !== FAST_ENV_CONFIG_SCHEMA) throw new FastEnvContractError("schema");
   const host = obj(v.host, "host", ["package", "candidate_directory", "game_directory", "character", "language", "ascension", "request_timeout_ms"]);
   const compact = obj(v.compact, "compact", ["enabled", "reconcile_interval", "projection_memo"]);
@@ -135,6 +149,14 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     const m = obj(compact.projection_memo, "compact.projection_memo", ["check_interval"]);
     projectionMemo = { check_interval: int(m.check_interval, "compact.projection_memo.check_interval", 1, 1024) };
     if (compact.enabled !== true) throw new FastEnvContractError("compact.projection_memo");
+  }
+  const memo = obj(v.memo ?? {}, "memo", ["native_card", "reduce", "receipt_canonical"]);
+  const interval = (value: unknown, field: string) => value === null || value === undefined ? null
+    : { check_interval: int(obj(value, field, ["check_interval"]).check_interval, `${field}.check_interval`, 1, 1024) };
+  let nativeCard: FastEnvConfig["memo"]["native_card"] = null;
+  if (memo.native_card !== null && memo.native_card !== undefined) {
+    const n = obj(memo.native_card, "memo.native_card", ["deck", "hud"]);
+    nativeCard = { deck: bool(n.deck, "memo.native_card.deck"), hud: bool(n.hud, "memo.native_card.hud") };
   }
   const checks = obj(v.checks, "checks", ["sample_rate"]);
   const link = obj(v.decision_link, "decision_link", ["kind", "path"]);
@@ -164,6 +186,8 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     agent_manifest: str(v.agent_manifest, "agent_manifest"),
     compact: { enabled: bool(compact.enabled, "compact.enabled"), reconcile_interval: int(compact.reconcile_interval, "compact.reconcile_interval", 1, 1024),
       projection_memo: projectionMemo },
+    memo: { native_card: nativeCard, reduce: interval(memo.reduce, "memo.reduce"),
+      receipt_canonical: interval(memo.receipt_canonical, "memo.receipt_canonical") },
     checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1) },
     decision_link: { kind: "unix", path: str(link.path, "decision_link.path") },
     inference: { timeout_ms: int(inference.timeout_ms, "inference.timeout_ms", 1, 600_000),

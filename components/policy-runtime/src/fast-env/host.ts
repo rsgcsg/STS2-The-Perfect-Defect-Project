@@ -40,6 +40,8 @@ export interface SlotNative {
    * to the step outcome; nothing reads them before the fair-projection review. */
   takeCombatEnd(): Record<string, unknown>[];
   nativeCpuMs(): Promise<number | null>;
+  /** E5 counters of this native's Host session since it started (null when the projection memo is off). */
+  projectionMemo?(): { hits: number; misses: number; checks: number } | null;
   shutdown(force: boolean): Promise<void>;
 }
 
@@ -258,6 +260,11 @@ export class HostSlotNative implements SlotNative {
     catch { return null; }
   }
 
+  projectionMemo(): { hits: number; misses: number; checks: number } | null {
+    const stats = this.started.session.projectionMemo;
+    return stats ? { hits: stats.hits, misses: stats.misses, checks: stats.checks } : null;
+  }
+
   async shutdown(force: boolean): Promise<void> {
     this.#control = null;
     await this.driver.shutdown({ force });
@@ -283,7 +290,10 @@ export async function hostSlotNativeFactory(config: FastEnvConfig): Promise<Slot
         validateSdk: false,
         ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate, shareUnchanged: true } } : {}),
         // E5: unchanged subtrees of driver.handle's basis stay the same frozen objects (kernel/SDK caches hit).
-        ...(config.compact.enabled && config.compact.projection_memo ? { projectionMemo: { checkInterval: config.compact.projection_memo.check_interval } } : {})
+        ...(config.compact.enabled && config.compact.projection_memo ? { projectionMemo: { checkInterval: config.compact.projection_memo.check_interval } } : {}),
+        // #460: the native card projection memo lanes (each off unless named).
+        ...(config.memo.native_card?.deck ? { deckMemo: true } : {}),
+        ...(config.memo.native_card?.hud ? { hudMemo: true } : {})
       });
       return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }),
         config.checks.sample_rate);

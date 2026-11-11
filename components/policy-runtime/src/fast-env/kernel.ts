@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS, P1ReduceMemoDivergence,
   type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import { canonicalJson } from "../evidence.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
@@ -9,7 +9,7 @@ import { supportsProfileValue, type AgentManifest } from "../agent-session-contr
 import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
-import { globalDigestFast, pyJsonSha256 } from "./json-bytes.js";
+import { CanonicalTextMemoDivergence, globalDigestFast, pyJsonSha256, type CanonicalTextMemo } from "./json-bytes.js";
 import type { ColdStartGate } from "./cold-start.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
@@ -34,10 +34,15 @@ export interface KernelStats {
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
   /** Native cold starts and their wait for the node-wide gate. */
   cold_starts: number; cold_start_wait_ms: number;
+  /** E6 / E4: memo divergences of this process (each one is fatal for the whole process). */
+  memo_divergences: number;
+  /** E5: the Host projection memo counters of every finished game (summed per native session). */
+  projection_memo: { hits: number; misses: number; checks: number };
 }
 export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
   combat_end_unattributed: 0, compact_divergences: 0, projection_memo_divergences: 0, forced_chain_limit: 0,
-  capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0, cold_starts: 0, cold_start_wait_ms: 0 });
+  capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0, cold_starts: 0, cold_start_wait_ms: 0,
+  memo_divergences: 0, projection_memo: { hits: 0, misses: 0, checks: 0 } });
 
 /** What every slot of one environment process shares. */
 export interface KernelContext {
@@ -58,6 +63,10 @@ export interface KernelContext {
   sleep(ms: number): Promise<void>;
   /** Node-wide bound on native cold starts (start + first reset or map load). */
   coldStart: ColdStartGate;
+  /** E4 (null = off): the receipt digest's canonical-text memo. */
+  receiptCanonical: CanonicalTextMemo | null;
+  /** A memo of this process (E6 reduce, E4 receipt text) differed from its full walk: the whole process stops. */
+  memoFatal(reason: string): void;
 }
 
 /** A game ends here; nothing is ever retried. */
@@ -77,10 +86,19 @@ const countDivergence = (stats: KernelStats, divergence: SessionDivergence) => {
 class GameEnd extends Error {
   constructor(readonly reason: CloseReason, readonly detail: string,
               readonly options: { replaceNative?: boolean; buildStop?: string; pendingOutcome?: { status: "unknown"; reason: OutcomeReason };
-                terminal?: { result: "victory" | "defeat" } | null; sampledMismatch?: SampledCheckMismatch } = {}) {
+                terminal?: { result: "victory" | "defeat" } | null; sampledMismatch?: SampledCheckMismatch; fatal?: string } = {}) {
     super(`${reason}:${detail}`);
   }
 }
+
+/** Memo divergences of this Node process (E6 reduce memo, E4 receipt text memo): the game ends (unknown once an
+ * action was delivered), never retried, this build's output stops and the whole process exits fatal. */
+type MemoDivergence = "p1_reduce_memo_divergence" | "receipt_canonical_memo_divergence";
+const memoDivergence = (error: unknown): MemoDivergence | null =>
+  error instanceof P1ReduceMemoDivergence ? "p1_reduce_memo_divergence"
+    : error instanceof CanonicalTextMemoDivergence ? "receipt_canonical_memo_divergence" : null;
+const memoDivergenceEnd = (kind: MemoDivergence, error: unknown) => new GameEnd("not_started", kind, { replaceNative: true,
+  buildStop: kind, fatal: `${kind}:${errorText(error)}`, pendingOutcome: { status: "unknown", reason: "native_crash" } });
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 /** One line of an original error for a close detail (never parsed, never retried on). */
@@ -453,12 +471,28 @@ class GameRun {
         this.#unknownCause = `receipt_unreadable:${errorText(error)}`;
         return "unknown";
       }
-      receiptSha = globalDigestFast(decoded); // = globalDigest(decoded), one pass
+      const textMemo = this.ctx.receiptCanonical;
+      let textMemoFailure: unknown = null;
+      if (textMemo === null) receiptSha = globalDigestFast(decoded); // = globalDigest(decoded), one pass
+      else {
+        // E4: the same digest, read from the original receipt (its frozen subtrees keep their text).
+        try { receiptSha = textMemo.digest(raw, decoded); }
+        catch (error) {
+          if (memoDivergence(error) === null) { stats.receipt_ms += performance.now() - receiptStarted; throw error; }
+          // The receipt was read; only the memo is wrong. The step is recorded with the full walk's digest.
+          textMemoFailure = error;
+          receiptSha = globalDigestFast(decoded);
+        }
+      }
       stats.receipt_ms += performance.now() - receiptStarted;
       steps += 1; this.nativeSteps += 1; stats.native_steps += 1;
       if (decoded.delivery === "delivered") this.awaitingSuccessor = true;
       record.native_steps.push({ fold_index: steps - 1, native_verb: String(step.verb), delivery: decoded.delivery,
         reason_code: decoded.reason_code ?? null, receipt_sha256: receiptSha });
+      if (textMemoFailure !== null) {
+        if (row) this.#pendingOutcome = this.#newPending(row, receiptSha);
+        throw memoDivergenceEnd("receipt_canonical_memo_divergence", textMemoFailure);
+      }
       if (decoded.delivery === "unknown") { this.#unknownCause = `receipt_delivery_unknown:${decoded.reason_code ?? "none"}`; return "unknown"; }
       if (decoded.delivery === "not_delivered") { status = steps === 1 ? "not_started" : "interrupted_known"; break; }
       const divergence = sessionDivergence(decoded.reason_code);
@@ -525,9 +559,20 @@ export class SlotKernel {
   /** The slot is free again before its closing event goes out, so the manager may reopen it at once. */
   #idle(): void { this.state = "idle"; this.gameInstanceId = null; this.#game = null; this.closeRequested = false; }
 
+  /** E5 counters: the Host session's totals are per native; only the growth since the last game is added. */
+  #memoSeen = { hits: 0, misses: 0, checks: 0 };
+  #countProjectionMemo(native: SlotNative): void {
+    const now = native.projectionMemo?.() ?? null;
+    if (now === null) return;
+    const total = this.ctx.stats.projection_memo, seen = this.#memoSeen;
+    total.hits += now.hits - seen.hits; total.misses += now.misses - seen.misses; total.checks += now.checks - seen.checks;
+    this.#memoSeen = { ...now };
+  }
+
   async #replaceNative(): Promise<void> {
     const native = this.#native;
     this.#native = null;
+    this.#memoSeen = { hits: 0, misses: 0, checks: 0 };
     if (native) await native.shutdown(true).catch(() => undefined);
   }
 
@@ -574,6 +619,7 @@ export class SlotKernel {
       const lines: string[] = [];
       // Compact off, the only line can be the native's own divergence report: kept all the same.
       native.attachLines(line => lines.push(line)); native.attachLines(null);
+      this.#countProjectionMemo(native);
       await this.#replaceNative();
       if (divergence !== null) { countDivergence(ctx.stats, divergence); ctx.stopBuildOutput(divergence, this.index, null); }
       const reason = `reset_failed:${divergence ?? errorText(error)}`;
@@ -602,7 +648,8 @@ export class SlotKernel {
     try {
       ({ reason, detail, terminal } = await game.play());
     } catch (error) {
-      const end = error instanceof GameEnd ? error
+      const memo = error instanceof GameEnd ? null : memoDivergence(error);
+      const end = error instanceof GameEnd ? error : memo !== null ? memoDivergenceEnd(memo, error)
         : new GameEnd("env_crash", `kernel:${error instanceof Error ? error.message : String(error)}`, { replaceNative: true });
       game.failPending(end);
       ({ reason, detail } = end);
@@ -613,11 +660,12 @@ export class SlotKernel {
       // action's outcome is in question) stays not_started; both stop this build's output.
       if (game.awaitingSuccessor && reason === "not_started") {
         reason = "unknown"; replace = true;
-        if (sessionDivergence(detail) === null) detail = `delivered_successor_unreadable:${detail}`;
+        if (sessionDivergence(detail) === null && !end.options.fatal) detail = `delivered_successor_unreadable:${detail}`;
       }
       const divergence = sessionDivergence(end.options.buildStop);
       if (divergence !== null) countDivergence(ctx.stats, divergence);
       if (end.options.buildStop) ctx.stopBuildOutput(end.options.buildStop, this.index, gameInstanceId);
+      if (end.options.fatal) { ctx.stats.memo_divergences += 1; ctx.memoFatal(end.options.fatal); }
       // The originals the sampled check disagreed with go into this game's evidence, and
       // every original of this game is kept, whatever else the close says.
       if (end.options.sampledMismatch) {
@@ -627,6 +675,7 @@ export class SlotKernel {
     }
     const fullChecks = native.fullChecks();
     ctx.stats.full_checks += fullChecks;
+    this.#countProjectionMemo(native);
     if (!replace) {
       try { await native.release(); } catch { replace = true; }
     }

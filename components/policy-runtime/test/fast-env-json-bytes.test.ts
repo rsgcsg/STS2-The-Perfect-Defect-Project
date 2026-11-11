@@ -4,7 +4,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJson } from "../src/evidence.js";
 import { globalDigest } from "../src/global-transport.js";
-import { canonicalJsonFast, globalDigestFast, pyJsonBytes, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
+import { CanonicalTextMemo, CanonicalTextMemoDivergence, canonicalJsonFast, globalDigestFast, pyJsonBytes, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
+import { isDeepFrozen } from "@rsgcsg/sts2-connector-client/p1-global";
 
 // Golden bytes and digests from Python `stpd.p1.data.json_bytes(json.loads(JSON.stringify(value)))`:
 // the encoder hashes what it parses from the decision line.
@@ -136,3 +137,87 @@ describe("fast-env one-pass writers", () => {
 function createHashHex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
+
+/** Equal subtrees become one deep-frozen object (what the E5 Host does for unchanged subtrees). */
+function intern(value: unknown, table: Map<string, object>): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const key = `${Array.isArray(value) ? "a" : "o"}${canonicalJson(value)}`;
+  const kept = table.get(key);
+  if (kept) return kept;
+  const copy: any = Array.isArray(value) ? value.map(item => intern(item, table))
+    : Object.fromEntries(Object.entries(value).map(([name, item]) => [name, intern(item, table)]));
+  table.set(key, Object.freeze(copy));
+  return copy;
+}
+
+describe("fast-env E4 canonical text memo", () => {
+  it("digests exactly globalDigest of the decoded copy, reusing frozen subtrees, and compares every digest at N = 1", () => {
+    const table = new Map<string, object>();
+    const memo = new CanonicalTextMemo({ checkInterval: 1, checkSeed: 7, isDeepFrozen });
+    const value = generator(4404);
+    for (let round = 0; round < 3; round += 1) {
+      for (const fixture of fixtures) {
+        const raw = { top: "receipt", successor: intern(fixture, table) };
+        const decoded = JSON.parse(JSON.stringify(raw));
+        expect(memo.digest(raw, decoded)).toBe(globalDigest(decoded));
+      }
+      for (let i = 0; i < 300; i += 1) {
+        const sample = JSON.parse(JSON.stringify({ s: value(0, false) }));
+        const raw = intern(sample, table);
+        expect(memo.digest(raw, sample)).toBe(globalDigest(sample));
+      }
+    }
+    const status = memo.status();
+    expect(status).toMatchObject({ check_interval: 1, digests: status.verified });
+    expect(status.hits).toBeGreaterThan(0);
+    expect(status.misses).toBeGreaterThan(0);
+  });
+
+  it("keeps nothing for objects that are not deeply frozen", () => {
+    const memo = new CanonicalTextMemo({ checkInterval: 4, isDeepFrozen });
+    const shallow = Object.freeze({ child: { n: 1 } });
+    const open = { a: [1, 2], b: { c: "x" } };
+    for (let i = 0; i < 5; i += 1) {
+      expect(memo.digest(open, open)).toBe(globalDigest(open));
+      expect(memo.digest(shallow, shallow)).toBe(globalDigest(shallow));
+      (shallow.child as { n: number }).n += 1;
+    }
+    expect(memo.status()).toMatchObject({ hits: 0, misses: 0 });
+  });
+
+  it("compares digest 0 and then after random gaps in ceil(N/2)..N", () => {
+    for (const [interval, seed] of [[64, 1], [64, 99], [7, 3], [2, 5]] as const) {
+      const memo = new CanonicalTextMemo({ checkInterval: interval, checkSeed: seed, isDeepFrozen });
+      const digests = 20_000;
+      for (let i = 0; i < digests; i += 1) memo.digest(i, i);
+      const { verified } = memo.status();
+      expect(verified).toBeGreaterThanOrEqual(Math.floor(digests / interval));
+      expect(verified).toBeLessThanOrEqual(Math.ceil(digests / Math.ceil(interval / 2)) + 1);
+    }
+  });
+
+  it("throws CanonicalTextMemoDivergence when the kept text and the full walk differ, never a fallback", () => {
+    const memo = new CanonicalTextMemo({ checkInterval: 64, checkSeed: 11, isDeepFrozen });
+    expect(() => memo.digest({ a: 1 }, { a: 2 })).toThrow(CanonicalTextMemoDivergence);
+    const poisoned = new CanonicalTextMemo({ checkInterval: 8, checkSeed: 11, isDeepFrozen });
+    const shared = Object.freeze({ deck: Object.freeze(["Zap", "Dualcast"]) });
+    poisoned.texts.set(shared, "{\"deck\":[\"Zap\"]}");
+    let thrown: unknown = null;
+    for (let i = 0; i < 9 && thrown === null; i += 1) {
+      try { poisoned.digest({ step: i, shared }, { step: i, shared: { deck: ["Zap", "Dualcast"] } }); } catch (error) { thrown = error; }
+    }
+    expect(thrown).toBeInstanceOf(CanonicalTextMemoDivergence);
+    expect((thrown as CanonicalTextMemoDivergence).offset).toBeGreaterThan(0);
+    expect(() => new CanonicalTextMemo({ checkInterval: 0, isDeepFrozen })).toThrow(/checkInterval/u);
+  });
+
+  it("verifyAll (after a fatal divergence) compares every later digest", () => {
+    const memo = new CanonicalTextMemo({ checkInterval: 1024, checkSeed: 5, isDeepFrozen });
+    memo.digest({ a: 1 }, { a: 1 });
+    expect(() => memo.digest({ a: 1 }, { a: 2 })).not.toThrow();
+    memo.verifyAll();
+    expect(() => memo.digest({ a: 1 }, { a: 2 })).toThrow(CanonicalTextMemoDivergence);
+    memo.digest({ b: 1 }, { b: 1 }); memo.digest({ b: 2 }, { b: 2 });
+    expect(memo.status()).toMatchObject({ digests: 5, verified: 3 });
+  });
+});
