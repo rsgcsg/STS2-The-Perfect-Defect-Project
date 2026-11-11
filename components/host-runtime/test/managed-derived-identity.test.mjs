@@ -119,6 +119,36 @@ test("revealed Draw candidates with hover cards stay independent of private orde
   assert.deepEqual(left, right);
 });
 
+test("combat_piles Draw zone of different cards: ids and listed order independent of private order (review of #463)", () => {
+  // The Draw zone is sorted by public content before any alias is allocated; equal cards tie-break
+  // by alias only. A draw-pile selector surface instead keeps the native display order (not covered here).
+  const withDraw = () => {
+    const state = selector();
+    const template = state.combat_piles[0].cards[0];
+    state.combat_piles[0].cards = [["native-201", "Strike", "CLAW"], ["native-202", "Defend", "ZAP"], ["native-203", "Zap", null],
+      ["native-204", "Strike", "CLAW"], ["native-205", "Defend", null]]
+      .map(([ref, name, tip]) => ({ ...structuredClone(template), native_ref: ref, id: name.toUpperCase(), name,
+        description: `${name} text.`, card_previews: tip === null ? [] : [preview(tip)] }));
+    state.combat_context.draw_pile_count = 5;
+    return state;
+  };
+  const view = projection => {
+    const { observed_at: _clock, ...snapshot } = projection.snapshot;
+    return JSON.stringify([snapshot, [...projection.reads.values()]]);
+  };
+  const first = projectManagedCandidateDecision({ ...base, sequence: 1, state: withDraw() });
+  const draw = [...first.reads.values()].find(read => read.descriptor.kind === "combat_piles").content.zones.find(zone => zone.zone === "draw");
+  assert.deepEqual(draw.cards.map(card => card.name).sort(), ["Defend", "Defend", "Strike", "Strike", "Zap"]);
+  assert.equal(new Set(draw.cards.map(card => card.entity_id)).size, 5);
+  const reference = view(first);
+  for (const order of [[4, 3, 2, 1, 0], [1, 3, 0, 4, 2], [2, 0, 4, 1, 3]]) {
+    const state = withDraw();
+    state.combat_piles[0].cards = order.map(index => state.combat_piles[0].cards[index]);
+    for (const other of [state, renamePrivateCounters(structuredClone(state))])
+      assert.equal(view(projectManagedCandidateDecision({ ...base, sequence: 1, state: other })), reference, `order ${order}`);
+  }
+});
+
 test("unbound selector and shop positions are stable within their owner", () => {
   const project = session();
   const state = selector({ choose: true });
