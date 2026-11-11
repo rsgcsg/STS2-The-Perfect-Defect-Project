@@ -211,7 +211,7 @@ class InferenceCard:
         self.compiler_identity: dict[str, Any] | None = None
         self._closing = False
         self._closed: dict[str, Any] | None = None
-        self._lock = threading.Lock()  # one card command at a time
+        self._lock = threading.RLock()  # one card command at a time; close() waits on it
         self._failed = threading.Lock()
         self.mps: MpsDaemon | None = None
         # `gpu`: this card's device, as CUDA_VISIBLE_DEVICES for its MPS daemon and
@@ -289,32 +289,45 @@ class InferenceCard:
             raise BoundaryError(STAGE, "service_gone", f"service {index}") from error
         return answer  # type: ignore[no-any-return]
 
-    def _broadcast(self, command: tuple[Any, ...], what: str) -> list[Any]:
+    def _broadcast(self, command: tuple[Any, ...], what: str,
+                   targets: list[int] | None = None) -> list[Any]:
+        """Send to every service (or `targets`, in that order); one answer each."""
+        indices = list(range(self.count)) if targets is None else targets
         with self._lock:
-            if self.failure is not None:
-                raise BoundaryError(STAGE, "card_stopped", self.failure)
+            if self.failure is not None or self.stopping.is_set():
+                # Failed or closing: refused here, the card's failure stays what it was.
+                raise BoundaryError(STAGE, "card_stopped", self.failure or "closing")
             try:
-                for connection in self.connections:
-                    connection.send(command)
-                answers = [self._receive(index, connection, self.command_timeout, what)
-                           for index, connection in enumerate(self.connections)]
+                for index in indices:
+                    self.connections[index].send(command)
+                answers = [self._receive(index, self.connections[index],
+                                         self.command_timeout, what) for index in indices]
             except (BoundaryError, OSError) as error:
                 self._fail(f"{what}:{getattr(error, 'code', type(error).__name__)}")
                 raise BoundaryError(STAGE, f"{what}_failed", str(self.failure)) from error
-            failed = [(index, answer[1]) for index, answer in enumerate(answers)
+            failed = [(index, answer[1]) for index, answer in zip(indices, answers, strict=True)
                       if answer[0] != "ok"]
             if failed:
                 self._fail(f"{what}_failed:service_{failed[0][0]}:{failed[0][1]}")
                 raise BoundaryError(STAGE, f"{what}_failed", str(self.failure))
             return [answer[1] for answer in answers]
 
-    def publish(self, model: Any, handoff: Any) -> list[bool]:
-        """Offer one mu to every service; returns each service's accept/refuse.
+    def publish(self, model: Any, handoff: Any,
+                services: list[int] | None = None) -> list[bool]:
+        """Offer one mu to every service (or `services`); returns each one's accept/refuse.
 
         A refusal is that service's normal answer (its resident mu are all in
         use) and is not an error; an exception or timeout stops the card.
+        `services` lets a follower offer the current mu again to the services
+        that refused it (a known answer, not an unknown delivery).
         """
-        accepted = self._broadcast(("publish", model_blob(model), handoff), "publish")
+        if services is not None and (
+                not services or len(set(services)) != len(services)
+                or not all(type(index) is int and 0 <= index < self.count
+                           for index in services)):
+            raise ValueError("inference_card_publish_services")
+        accepted = self._broadcast(("publish", model_blob(model), handoff), "publish",
+                                   services)
         return [bool(answer) for answer in accepted]
 
     def mark_full_audit(self, game_instance_id: str) -> None:
@@ -358,7 +371,15 @@ class InferenceCard:
         if self._closed is not None:
             return self._closed
         self._closing = True
-        self.stopping.set()
+        self.stopping.set()  # no new command starts; wait for one in progress to answer
+        locked = self._lock.acquire(timeout=self.command_timeout + 5.0)
+        try:
+            return self._close()
+        finally:
+            if locked:
+                self._lock.release()
+
+    def _close(self) -> dict[str, Any]:
         with contextlib.suppress(Exception):
             atexit.unregister(self.close)
         reports: list[Any] = []

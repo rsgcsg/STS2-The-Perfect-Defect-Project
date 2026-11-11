@@ -317,7 +317,15 @@ def test_a_follower_publishes_through_the_card_and_records_each_service(model):
         assert follower.step() is True
         assert follower.counters["partial"] == 1 and follower.counters["published"] == 0
         assert follower.history[-1]["accepted_by"] == [True, False]
-        assert follower.step() is False and follower.counters["unchanged"] == 1
+        assert follower.behind == [1]
+        # Review S3: the refusing service alone gets the current mu again.
+        assert follower.step() is False and follower.counters["reoffered"] == 1
+        assert follower.history[-1]["reoffer_to"] == [1]
+        assert card.publish(model, Handoff(MU), services=[1]) == [False]
+        assert card.publish(model, Handoff(MU), services=[0]) == [True]
+        for services in ([], [2], [0, 0]):
+            with pytest.raises(ValueError, match="inference_card_publish_services"):
+                card.publish(model, Handoff(MU), services=services)
         assert card.failure is None
     finally:
         closed = follower.close()  # stops following, then closes the card
@@ -347,3 +355,27 @@ def test_services_with_different_compiler_identities_never_serve():
     with pytest.raises(BoundaryError, match="service_start_failed") as caught:
         InferenceCard(FACTORY, services=2, mps=False, settings={"other_compiler": 1})
     assert "compiler_identity_not_equal" in caught.value.recovery
+
+
+def test_publish_after_or_during_close_is_card_stopped_and_keeps_the_failure(model):
+    """Review S2: a closing card refuses new commands as card_stopped (its failure
+    stays None) and close() waits for the command in progress to answer."""
+    card = InferenceCard(FACTORY, services=2, mps=False)
+    card._lock.acquire()  # stands for a publish in progress
+    closing = threading.Thread(target=card.close)
+    closing.start()
+    try:
+        for _ in range(500):
+            if card.stopping.is_set():
+                break
+            closing.join(0.01)
+        assert card.stopping.is_set() and closing.is_alive()  # waits for the command
+        assert all(process.is_alive() for process in card.processes)
+    finally:
+        card._lock.release()
+    closing.join(120)
+    assert not closing.is_alive()
+    with pytest.raises(BoundaryError, match="card_stopped") as caught:
+        card.publish(model, Handoff(MU))
+    assert caught.value.recovery == "closing"
+    assert card.failure is None and card.close()["failure"] is None

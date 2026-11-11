@@ -98,16 +98,26 @@ def test_each_identity_is_offered_once_and_a_new_generation_again():
     assert follower.status()["published"] == 2
 
 
+_UNSET = object()
+
+
 class Card(Service):
-    """An InferenceCard's publish: one answer per service."""
+    """An InferenceCard's publish: one answer per service offered (`services=`)."""
 
-    def __init__(self, answer: Any) -> None:
+    def __init__(self, answers: list[Any], raw: Any = _UNSET) -> None:
         super().__init__()
-        self.answer = answer
+        self.answers = answers  # per service: what it answers next
+        self.raw = raw  # when set, answered as is (an invalid shape)
+        self.calls: list[list[int] | None] = []
 
-    def publish(self, scorer: Any, handoff: MuHandoff) -> Any:  # type: ignore[override]
+    def publish(self, scorer: Any, handoff: MuHandoff,  # type: ignore[override]
+                services: list[int] | None = None) -> Any:
         self.published.append((scorer, handoff))
-        return self.answer
+        self.calls.append(services)
+        if self.raw is not _UNSET:
+            return self.raw
+        return [self.answers[index] for index in
+                (range(len(self.answers)) if services is None else services)]
 
 
 @pytest.mark.parametrize(("answer", "accepted", "outcome"), [
@@ -122,28 +132,91 @@ def test_per_service_answers_are_recorded_as_such(answer, accepted, outcome):
     assert follower.counters[outcome] == 1
     assert sum(follower.counters[key] for key in ("published", "partial", "refused")) == 1
     assert follower.history[-1]["accepted_by"] == answer
-    assert follower.step() is False and len(service.published) == 1  # never re-offered
+    assert follower.behind == [index for index, ok in enumerate(answer) if not ok]
+    assert source.loads == [NEW]
+
+
+def test_a_refusing_service_is_offered_the_current_mu_again_until_it_catches_up():
+    """Review S3: a refusal is a known answer; only the refusing services get the
+    current mu again, so each service's lag is bounded. A newer mu goes to all."""
+    source, service = Source(identity(NEW)), Card([True, False, False])
+    follower = FastMuFollower(source, service)
+    assert follower.step() is True and follower.behind == [1, 2]
+    assert follower.step() is False and service.calls[-1] == [1, 2]  # still refused
+    service.answers[2] = True
+    assert follower.step() is True and service.calls[-1] == [1, 2]
+    assert follower.behind == [1] and follower.counters["caught_up"] == 1
+    status = follower.status()
+    assert [mu and mu["version"] for mu in status["accepted_mu"]] == [2, None, 2]
+    assert status["behind"] == [1] and follower.history[-1]["reoffer_to"] == [1, 2]
+    # A newer publication replaces the re-offer: every service gets the new one.
+    source.current = identity("d" * 64, version=3, updates=12)
+    service.answers[1] = True
+    assert follower.step() is True and service.calls[-1] is None
+    assert follower.behind == [] and follower.model is None
+    assert [mu["version"] for mu in follower.status()["accepted_mu"]] == [3, 3, 3]
+    assert follower.step() is False and follower.counters["unchanged"] == 1
+    assert source.loads == [NEW, "d" * 64]  # a re-offer reuses the loaded model
+    assert follower.counters["reoffered"] == 2 and follower.counters["partial"] == 1
 
 
 @pytest.mark.parametrize("answer", [[], [True, 1], None, 1, "yes"])
-def test_an_answer_of_any_other_shape_is_a_failure(answer):
-    follower = FastMuFollower(Source(identity(NEW)), Card(answer))
+def test_an_answer_of_any_other_shape_is_fatal_at_once(answer):
+    """Review S1: whether the service took the mu is unknown: give up (by default
+    the service stops), never count it as one transient failure."""
+    source = Source(identity(NEW))
+    service = Card([True, True], raw=answer)
+    follower = FastMuFollower(source, service, interval=0.01, max_failures=3).start()
+    assert follower.thread is not None
+    follower.thread.join(10)
+    assert follower.stopped() and follower.fatal is not None
+    assert service.stop_reason == "mu_follower_stopped"
+    with pytest.raises(BoundaryError, match="MU_PUBLISH_ANSWER_INVALID"):
+        follower.check()
+    assert len(service.published) == 1 and follower.behind == []  # never repeated
+    assert follower.history[-1]["accepted"] is None
+    assert follower.status()["total_failures"] == 1
+
+
+def test_an_unknown_publish_is_never_repeated_even_to_a_service_behind():
+    source, service = Source(identity(NEW)), Card([True, False])
+    follower = FastMuFollower(source, service)
+    assert follower.step() is True and follower.behind == [1]
+    service.raw = OSError  # any non-bool shape stands for an unknown answer
     with pytest.raises(BoundaryError, match="MU_PUBLISH_ANSWER_INVALID"):
         follower.step()
+    assert follower.behind == [] and follower.fatal is not None
+
+
+def test_an_answer_for_a_different_number_of_services_is_invalid():
+    source, service = Source(identity(NEW)), Card([True, True])
+    follower = FastMuFollower(source, service)
+    assert follower.step() is True
+    source.current = identity("d" * 64, version=3)
+    service.answers = [True, True, True]
+    with pytest.raises(BoundaryError, match="MU_PUBLISH_ANSWER_INVALID"):
+        follower.step()
+    assert follower.fatal is not None and service.stop_reason == "mu_follower_stopped"
 
 
 def test_one_service_history_keeps_its_old_shape():
     follower = FastMuFollower(Source(identity(NEW)), Service())
     assert follower.step() is True
     assert "accepted_by" not in follower.history[-1]
+    status = follower.status()
+    assert status["accepted_mu"][0]["version"] == 2 and "failures" not in status
+    assert status["consecutive_failures"] == 0 and status["total_failures"] == 0
 
 
-def test_a_refused_offer_is_counted_and_not_forced_again():
+def test_a_refused_offer_is_counted_never_forced_and_offered_again():
     source, service = Source(identity(NEW)), Service(accept=False)
     follower = FastMuFollower(source, service)
     assert follower.step() is False and follower.step() is False
-    assert len(service.published) == 1
-    assert follower.counters["refused"] == 1 and follower.counters["unchanged"] == 1
+    assert len(service.published) == 2 and source.loads == [NEW]
+    assert follower.counters["refused"] == 1 and follower.counters["reoffered"] == 1
+    service.accept = True
+    assert follower.step() is True and follower.behind == []
+    assert follower.step() is False and follower.counters["unchanged"] == 1
 
 
 def test_transient_read_errors_recover_and_repeated_failures_stop_loudly():
