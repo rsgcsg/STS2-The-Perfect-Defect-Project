@@ -783,17 +783,19 @@ def test_a_results_thread_failure_stops_and_refuses_the_rows_in_flight(vocabular
     assert "rl_inference_3_results_failed" in capfd.readouterr().err
 
 
+@pytest.mark.parametrize("device_rows", [False, True])
 @pytest.mark.parametrize(("failure", "reason"), [(RuntimeError, "device_job_failed"),
                                                  (SystemExit, "device_process_gone")])
 def test_a_failing_forward_stops_the_service_never_per_row(vocabulary, model, failure, reason,
-                                                           capfd):
+                                                           device_rows, capfd):
     """Review S3 (an exception in the forward: SERVICE_STOPPING and stop, not
     NONFINITE_SCORES) and S1 (the forward thread itself dies: the device process
     exits, so the service sees EOF and stops)."""
     encoder = RowsEncoder(vocabulary)
     encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
     assembler = FakeAssembler()
-    service = _service(vocabulary, _raising(model, failure), assembler)
+    service = _service(vocabulary, _raising(model, failure), assembler,
+                       device_rows=device_rows)
     client = _open_client(service, encoder, "g1")
     try:
         assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
@@ -1078,3 +1080,43 @@ def test_trace_counts_every_scored_row_per_stage_and_changes_no_result(vocabular
     # and the total is never shorter than the forward
     first = [next(i for i, n in enumerate(bins[stage]) if n) for stage in ("total", "forward")]
     assert first[0] >= first[1]
+
+
+class NanRowMStd(MStd):
+    """A model whose forward gives row 1 a non-finite catalog score."""
+
+    def forward_prepared_rl4(self, group: Any, **options: Any) -> Any:
+        scores, logits, hp = super().forward_prepared_rl4(group, **options)
+        scores = scores.clone()
+        scores[1, 0] = float("nan")
+        return scores, logits, hp
+
+
+@pytest.mark.parametrize("device_rows", [False, True])
+def test_device_rows_refuses_a_non_finite_row_like_the_default(vocabulary, model,
+                                                               device_rows):
+    """Review L1: with `device_rows` a non-finite row is still NONFINITE_SCORES
+    (None from the device process), the other rows are scored, nothing stops."""
+    import copy
+
+    bad = copy.copy(model)
+    bad.__class__ = NanRowMStd
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(3)]
+    assembler = FakeAssembler()
+    service = _service(vocabulary, bad, assembler, device_rows=device_rows, window_ms=200.0)
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = _packet(encoded, "g1", 3)
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        assert not service.stopping.is_set()
+    finally:
+        client.close()
+        report = service.close()
+    results = {result["request_id"]: result for result in envelope["results"]}
+    statuses = [results[row["request_id"]].get("error_code", results[row["request_id"]]
+                                               ["status"]) for row in rows]
+    assert statuses == ["scored", "NONFINITE_SCORES", "scored"]
+    assert report["refused"] == {"NONFINITE_SCORES": 1}
