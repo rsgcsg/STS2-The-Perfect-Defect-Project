@@ -25,6 +25,16 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            catalog x heads folded queries per row attend to the encoded tokens,
            so no key/value projection of the scene. Catalogs longer than
            FOLD_CATALOG_LIMIT keep the original projected attention (shape rule).
+``embed``  (with ``nodes``) The node builder's embedding tables (ids, fields,
+           kinds, number slope/bias/missing) take their weight gradient through
+           K private copies (lookup i adds into copy i % K, then the copies are
+           summed) instead of one atomic scatter-add whose same-row atomics
+           serialize on small vocabularies (fields: hundreds of thousands of
+           lookups onto a few rows). Same sum, different order (FP32); no host
+           synchronisation, still fusable under compile. It pays only under
+           compile (eager CUDA embedding backward already sorts), so the
+           training config requires `prepared_compile` with it. Plain tables
+           only (no padding_idx/max_norm/scale_grad_by_freq/sparse): refused.
 
 Packed (CUDA): the folded queries are one-head, full-width (embed) sequences for
 flash varlen: query sequence i (heads, or catalog x heads, positions) attends to
@@ -45,7 +55,7 @@ from torch.nn import functional as F
 
 from .model import positions
 
-LEVERS = ("cross", "heads", "nodes")
+LEVERS = ("cross", "embed", "heads", "nodes")
 # Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
 PARTITION_REDUCTIONS = ("ids", "numbers", "text")
 # Folding costs ~4*C*H*E per key and saves 4*E*E of key/value projection:
@@ -61,7 +71,7 @@ def parse_kernels(value: str) -> tuple[str, ...]:
         return ()
     parts = tuple(value.split("+"))
     if (len(set(parts)) != len(parts) or not set(parts) <= set(LEVERS)
-            or list(parts) != sorted(parts)):
+            or list(parts) != sorted(parts) or ("embed" in parts and "nodes" not in parts)):
         raise ValueError("invalid_prepared_kernels")
     return parts
 
@@ -254,11 +264,56 @@ def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
     return owner, scale, width == 0
 
 
+# Privatized copies per table: rows x copies x embed x 4 B stays within ~8 MB/table.
+PRIVATE_ELEMENTS = 1 << 21
+PRIVATE_COPIES = 32
+
+
+def _copies(rows: int, width: int) -> int:
+    return max(1, min(PRIVATE_COPIES, PRIVATE_ELEMENTS // (rows * width)))
+
+
+class _Lookup(torch.autograd.Function):
+    """`F.embedding` whose weight gradient scatters lookup i into private copy
+    i % K of the table and sums the K copies: K times fewer same-address atomics,
+    still one fusable scatter and no host synchronisation."""
+
+    @staticmethod
+    def forward(ctx: Any, weight: Tensor, indices: Tensor) -> Tensor:
+        ctx.save_for_backward(indices)
+        ctx.rows = weight.shape[0]
+        return F.embedding(indices, weight)
+
+    @staticmethod
+    def backward(ctx: Any, grad: Tensor) -> tuple[Tensor, None]:
+        (indices,) = ctx.saved_tensors
+        rows, width = ctx.rows, grad.shape[-1]
+        copies = _copies(rows, width)
+        lane = torch.arange(indices.numel(), device=indices.device) % copies
+        private = grad.new_zeros((copies * rows, width)).index_add(
+            0, lane * rows + indices.reshape(-1), grad.reshape(-1, width))
+        return private.view(copies, rows, width).sum(0), None
+
+
+def lookup(table: Any, indices: Tensor, *, private: bool) -> Tensor:
+    """`table(indices)`; with `private` the weight gradient uses private copies."""
+    if not private:
+        return cast(Tensor, table(indices))
+    if (table.padding_idx is not None or table.max_norm is not None
+            or table.scale_grad_by_freq or table.sparse):
+        raise ValueError("embed_lever_requires_plain_embedding")
+    return cast(Tensor, _Lookup.apply(table.weight, indices))
+
+
 def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
-                  owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor) -> Tensor:
+                  owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor,
+                  private: bool = False) -> Tensor:
     """`MStd.tensor_nodes` (eval) from owner maps; same parameters and function."""
     rows = t["kinds"].shape[0]
     embed = model.ids.embedding_dim
+
+    def table(module: Any, key: str) -> Tensor:
+        return lookup(module, t[key], private=private)
 
     def mean(key: str, values: Tensor, empty: Tensor | None) -> Tensor:
         owner, scale, empty_rows = owners[key]
@@ -267,15 +322,15 @@ def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
             return total
         return torch.where(empty_rows[:, None], empty.to(total.dtype), total)
 
-    identities = model.ids(t["identities"]) + model.fields(t["identity_fields"])
+    identities = table(model.ids, "identities") + table(model.fields, "identity_fields")
     nodes = mean("ids", identities, model.ids.weight[0])
-    nodes = nodes + model.kinds(t["kinds"])
+    nodes = nodes + table(model.kinds, "kinds")
     nodes = nodes + positions(t["positions"], embed)
-    numbers = torch.cat((model.number_slope(t["number_fields"]) * t["numbers"][:, None]
-                         + model.number_bias(t["number_fields"]),
-                         model.number_missing(t["missing_fields"])))
+    numbers = torch.cat((table(model.number_slope, "number_fields") * t["numbers"][:, None]
+                         + table(model.number_bias, "number_fields"),
+                         table(model.number_missing, "missing_fields")))
     number_features = mean("numbers", numbers, model.no_numbers)
-    terms = vectors.index_select(0, t["text_indices"]) + model.fields(t["text_fields"])
+    terms = vectors.index_select(0, t["text_indices"]) + table(model.fields, "text_fields")
     features = mean("text", terms, None)
     nodes = nodes + (features + number_features)
     linked = mean("refs", nodes.index_select(0, refs), None)
@@ -283,7 +338,7 @@ def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
 
 
 def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors: Tensor, *,
-                compile: bool) -> Tensor:
+                compile: bool, private: bool = False) -> Tensor:
     """Node vectors of a rows-v2 group through the owner-map builder."""
     rows = t["kinds"].shape[0]
     terms = {"ids": t["identities"].numel(),
@@ -297,5 +352,5 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
             model.__dict__["_rows_nodes_compiled"] = builder  # learner-process runtime only
-    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0])
+    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0], private)
     return nodes

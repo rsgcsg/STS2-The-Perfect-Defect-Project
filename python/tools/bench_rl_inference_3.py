@@ -18,6 +18,13 @@ Saturation: closed-loop clients keep `conns x games` rows in flight.
 Correctness: a fixed 384-row probe per service vs an FP32 reference forward of the
 same rows: max |behavior_q| difference, argmax agreement, selected_index agreement.
 `--prof`: thread CPU per main-process function, per row (nested ones overlap).
+`--stub-forward`: the device forward is replaced by random outputs of the real shapes
+(masked by the real catalog and outcome-floor masks), so the device costs ~0 and the host side
+(main process, prepare workers, staging) is measured alone; no correctness probe.
+`--threads cpu`: at close each service host reports every main-process thread role's
+own CPU per row. `--threads profile` (or a path prefix, to also write pstats files)
+runs those threads under cProfile timed by thread CPU and adds per-function self CPU
+per row (profiler overhead included: read shares, take absolutes from `cpu`).
 
 Example: python tools/bench_rl_inference_3.py obs.jsonl out.jsonl \
   --configs '[{"name":"S2","services":2,"prepare_workers":10,"in_flight":2}]' \
@@ -46,6 +53,7 @@ SAMPLING: dict[str, Any] = {
 ENV_SHA = "e" * 64
 DRAIN_S = 60.0  # a reply missing this long after the end is a loud failure, not a hang
 PROFC: dict[str, list[float]] = {}
+THREAD_PROFILES: list[Any] = []  # [thread name, cProfile.Profile | None, thread CPU at end]
 
 
 def wire_row(meta: dict[str, Any], data: bytes, rid: int, name: str, step: int,
@@ -374,8 +382,96 @@ def instrument(service: Any, assembler: Any) -> None:
         setattr(assembler, name, profiled("asm." + name, getattr(assembler, name)))
 
 
+def thread_profiling(profile: bool) -> None:
+    """Record every later thread's own CPU; with `profile` also run it under cProfile."""
+    import cProfile
+
+    run = threading.Thread.run
+
+    def profiled_run(self: threading.Thread) -> None:
+        profiler = cProfile.Profile(time.thread_time) if profile else None
+        entry = [self.name, profiler, 0.0]
+        THREAD_PROFILES.append(entry)
+        if profiler is not None:
+            profiler.enable()
+        try:
+            run(self)
+        finally:
+            if profiler is not None:
+                profiler.disable()
+            entry[2] = time.thread_time()
+
+    setattr(threading.Thread, "run", profiled_run)  # noqa: B010
+
+
+def thread_report(rows: int, dump: str, top: int = 25) -> dict[str, Any]:
+    """Per thread role: thread CPU per row; when profiled, self CPU of its top functions
+    (and the merged stats written to `dump`.<role>.pstats when `dump` is set)."""
+    import pstats
+
+    roles: dict[str, list[Any]] = {}
+    for entry in THREAD_PROFILES:
+        name = entry[0]
+        role = name.rstrip("0123456789").rstrip("-") if "rl-inference-3" in name else "other"
+        roles.setdefault(role, []).append(entry)
+    report: dict[str, Any] = {}
+    per_row = 1e6 / max(rows, 1)
+    for role, entries in sorted(roles.items()):
+        here: dict[str, Any] = {"threads": len(entries), "cpu_us_per_row": round(
+            sum(entry[2] for entry in entries) * per_row, 1)}
+        profiles = [entry[1] for entry in entries if entry[1] is not None]
+        if profiles:
+            stats = pstats.Stats(profiles[0])
+            for profile in profiles[1:]:
+                stats.add(profile)
+            if dump:
+                stats.dump_stats(f"{dump}.{role}.pstats")
+            table = stats.stats  # type: ignore[attr-defined]
+            ranked = sorted(table.items(), key=lambda item: -item[1][2])[:top]
+            here["profiled_us_per_row"] = round(sum(e[2] for e in table.values()) * per_row, 1)
+            here["top"] = [[f"{func[0].rsplit('/', 1)[-1]}:{func[1]}:{func[2]}", entry[1],
+                            round(entry[2] * per_row, 1), round(entry[3] * per_row, 1)]
+                           for func, entry in ranked]
+        report[role] = here
+    return report
+
+
 def pct(values: list[float], q: float) -> float | None:
     return round(1000 * values[min(len(values) - 1, int(len(values) * q))], 1) if values else None
+
+
+class StubForward:
+    """Stands in for M-std on the device: random outputs of the real shapes."""
+
+    training = False
+
+    def __init__(self) -> None:
+        self.rl4_heads = True
+        self.calls = 0
+
+    def parameters(self) -> Any:
+        import torch
+
+        return iter([torch.zeros(1)])
+
+    def eval(self) -> StubForward:
+        return self
+
+    def requires_grad_(self, flag: bool) -> StubForward:
+        return self
+
+    def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False) -> Any:
+        import torch
+
+        mask = group.tensors["catalog_mask"]
+        rows = len(group.rows)
+        self.calls += 1
+        generator = torch.Generator().manual_seed(self.calls)
+        scores = torch.randn((rows, mask.shape[1]), generator=generator)
+        scores = scores.masked_fill(mask[:rows].to("cpu", torch.bool), -torch.inf)
+        valid = group.tensors["outcome_valid"][:rows].to("cpu", torch.bool)
+        logits = torch.randn(valid.shape, generator=generator).masked_fill(~valid, -torch.inf)
+        return scores, logits, torch.randn((rows,), generator=generator)
 
 
 def build(device: str, spec: str) -> tuple[Any, Any, Any]:
@@ -395,11 +491,16 @@ def build(device: str, spec: str) -> tuple[Any, Any, Any]:
 
 
 def service_host(conn: Any, index: int, config: dict[str, Any], device: str, spec: str,
-                 cpus: list[int] | None, prof: bool) -> None:
+                 cpus: list[int] | None, prof: bool, threads: str | None = None,
+                 stub: bool = False) -> None:
     from stpd.p1.inference_service import FastInferenceService
     from stpd.rl.fast_assembly import FastSegmentAssembler, MuHandoff
+    if threads is not None:
+        thread_profiling(threads != "cpu")
     try:
         vocabulary, model, compiler = build(device, spec)
+        if stub:
+            model = StubForward()
         assembler = FastSegmentAssembler(assembler_id=f"bench-{index}",
                                          compiler_identity=compiler.identity,
                                          emit=lambda segment: None)
@@ -421,8 +522,14 @@ def service_host(conn: Any, index: int, config: dict[str, Any], device: str, spe
                        {k: list(v) for k, v in PROFC.items()}))
         elif command == "close":
             report = service.close()
-            conn.send({k: report.get(k) for k in ("rows", "jobs", "batches", "audit_failures",
-                                                  "refused")})
+            summary = {k: report.get(k) for k in ("rows", "jobs", "batches", "audit_failures",
+                                                  "refused")}
+            if threads is not None:
+                time.sleep(0.5)  # the link threads end once their clients are gone
+                summary["threads"] = thread_report(int(report.get("rows") or 0),
+                                                   "" if threads in ("cpu", "profile")
+                                                   else f"{threads}.{index}")
+            conn.send(summary)
             return
 
 
@@ -443,6 +550,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--sat", default="64x32", help="closed-loop conns x games; '' = none")
     parser.add_argument("--mps", action="store_true", help="label: running under CUDA MPS")
     parser.add_argument("--prof", action="store_true")
+    parser.add_argument("--stub-forward", action="store_true",
+                        help="random device outputs of the real shapes: host side alone")
+    parser.add_argument("--threads", default=None,
+                        help="'cpu': each main-process thread's own CPU per row at close; "
+                             "'profile' or a path prefix: also cProfile every thread "
+                             "(prefix: write <prefix>.<service>.<role>.pstats)")
     a = parser.parse_args(argv)
     faulthandler.register(signal.SIGUSR1, all_threads=True)
 
@@ -514,7 +627,8 @@ def main(argv: list[str] | None = None) -> None:
                     if cpus and len(cpus) >= workers * services else None)
             parent, child = context.Pipe()
             p = context.Process(target=service_host,
-                                args=(child, k, config, a.device, a.spec, mine, a.prof))
+                                args=(child, k, config, a.device, a.spec, mine, a.prof,
+                                      a.threads, a.stub_forward))
             p.start()
             hosts.append((p, parent))
         addresses = []
@@ -532,7 +646,7 @@ def main(argv: list[str] | None = None) -> None:
 
         warm = time.perf_counter()
         worst: dict[str, Any] | None = None
-        for k in range(services):
+        for k in range(0 if a.stub_forward else services):
             out = context.Queue()
             for w in range(2):  # the first pass warms (compile buckets), the second is scored
                 p = context.Process(target=probe_client,

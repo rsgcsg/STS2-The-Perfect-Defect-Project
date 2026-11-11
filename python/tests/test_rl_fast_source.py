@@ -21,7 +21,7 @@ from stpd.rl import batch_preparation as bp
 from stpd.rl.critic import held_out
 from stpd.rl.fast_assembly import FastSegmentAssembler, MuHandoff
 from stpd.rl.fast_handoff import HandoffError, ShmSegmentSender
-from stpd.rl.fast_segment import SealedSegment, SegmentFormatError
+from stpd.rl.fast_segment import FORMAT, FORMAT_2, SealedSegment, SegmentFormatError
 from stpd.rl.fast_source import (
     CLOSED_SCHEMA,
     FastIntakeError,
@@ -68,7 +68,8 @@ class Game:
 
     def __init__(self, generation: str = "gen-1", terminal_class: int = 3,
                  compiler: FrameCompiler = COMPILER, assembler_id: str = "node-a",
-                 handoff: MuHandoff | None = None) -> None:
+                 handoff: MuHandoff | None = None, segment_format: str = FORMAT,
+                 instance_id: str | None = None) -> None:
         self.sealed: list[Any] = []
         self.row = encode_row(compiler.compile(public_state()))
         self.width = len(compiler.compile(public_state()).choices)
@@ -76,7 +77,10 @@ class Game:
             assembler_id=assembler_id, compiler_identity=compiler.identity,
             emit=self.sealed.append,
             terminal_labeler=lambda _summary: {
-                "class": terminal_class, "reward": float(class_reward_values()[terminal_class])})
+                "class": terminal_class, "reward": float(class_reward_values()[terminal_class])},
+            segment_format=segment_format, verify_every=1)
+        if instance_id is not None:  # format comparisons: the same segment ids
+            self.assembler.instance_id = instance_id
         self.assembler.offer_mu(handoff or mu(1, generation))
         self.request = 0
         self.steps: dict[str, int] = {}
@@ -133,8 +137,10 @@ class Game:
                                       "reason": reason, "last_step_index": None})
 
 
-def bootstrap_and_terminal(game: str = "g1", generation: str = "gen-1") -> list[SealedSegment]:
-    g = Game(generation)
+def bootstrap_and_terminal(game: str = "g1", generation: str = "gen-1",
+                           segment_format: str = FORMAT,
+                           instance_id: str | None = None) -> list[SealedSegment]:
+    g = Game(generation, segment_format=segment_format, instance_id=instance_id)
     g.open(game)
     for _ in range(64 + 5):
         g.step(game)
@@ -167,8 +173,10 @@ def envelope_for(segment: SealedSegment, game: str = "g1") -> dict[str, Any]:
                              "actor", "intent_id", "seed", "training_split")}, gae_lambda=0.99)
 
 
-def test_fast_segment_becomes_the_same_prepared_source_targets_as_the_old_formula():
-    for segment in bootstrap_and_terminal():
+@pytest.mark.parametrize("segment_format", [FORMAT, FORMAT_2])
+def test_fast_segment_becomes_the_same_prepared_source_targets_as_the_old_formula(
+        segment_format):
+    for segment in bootstrap_and_terminal(segment_format=segment_format):
         source, header = decode_fast_packet(segment.data, envelope=envelope_for(segment),
                                             compiler=COMPILER)
         rows = segment.header["rows"]
@@ -190,8 +198,26 @@ def test_fast_segment_becomes_the_same_prepared_source_targets_as_the_old_formul
         bp.validate_training_source(header["witness"], frozenset())
 
 
-def test_fast_sources_assemble_into_a_rows_v2_batch():
-    segments = bootstrap_and_terminal()
+def test_columnar_segments_become_the_same_prepared_sources():
+    """T3: format 2 reads into the same PreparedSource as format 1, field by field."""
+    old = bootstrap_and_terminal(instance_id="node-a.000000000001")
+    new = bootstrap_and_terminal(segment_format=FORMAT_2, instance_id="node-a.000000000001")
+    assert [s.data[:8] for s in new] == [b"STPDFS02"] * 2
+    for left, right in zip(old, new, strict=True):
+        assert {**left.header, "format": FORMAT_2} == right.header
+        a = decode_fast_packet(left.data, envelope=envelope_for(left), compiler=COMPILER)[0]
+        b = decode_fast_packet(right.data, envelope=envelope_for(right), compiler=COMPILER)[0]
+        for name in ("segment_id", "run_id", "floors", "row_refs", "actions",
+                     "policy_probabilities", "metadata", "labels"):
+            assert getattr(a, name) == getattr(b, name), name
+        for name in ("probabilities", "targets", "raw_advantages"):
+            assert torch.equal(getattr(a, name), getattr(b, name)), name
+        assert [f.choices for f in a.frames] == [f.choices for f in b.frames]
+
+
+@pytest.mark.parametrize("segment_format", [FORMAT, FORMAT_2])
+def test_fast_sources_assemble_into_a_rows_v2_batch(segment_format):
+    segments = bootstrap_and_terminal(segment_format=segment_format)
     sources = [decode_fast_packet(s.data, envelope=envelope_for(s), compiler=COMPILER)[0]
                for s in segments]
     count = sum(len(s.frames) for s in sources)
@@ -207,8 +233,9 @@ def test_fast_sources_assemble_into_a_rows_v2_batch():
     assert len(batch.metadata) == count
 
 
-def test_tampered_or_rebound_fast_packet_is_refused():
-    segment = bootstrap_and_terminal()[0]
+@pytest.mark.parametrize("segment_format", [FORMAT, FORMAT_2])
+def test_tampered_or_rebound_fast_packet_is_refused(segment_format):
+    segment = bootstrap_and_terminal(segment_format=segment_format)[0]
     envelope = envelope_for(segment)
     with pytest.raises(SegmentFormatError):
         decode_fast_packet(segment.data[:-8] + b"\1" * 8, envelope=envelope, compiler=COMPILER)
