@@ -1490,10 +1490,10 @@ index 0000000..dbbd3a0
 +</Project>
 diff --git a/patch-cache-tests/Program.cs b/patch-cache-tests/Program.cs
 new file mode 100644
-index 0000000..bfab3d8
+index 0000000..fc33279
 --- /dev/null
 +++ b/patch-cache-tests/Program.cs
-@@ -0,0 +1,992 @@
+@@ -0,0 +1,1050 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -2123,7 +2123,9 @@ index 0000000..bfab3d8
 +    /// <summary>Child: the real headless Program loop. <paramref name="inject"/> makes one stdout write of a compact frame throw.</summary>
 +    static void ProgramChild(string inject)
 +    {
-+        if (inject != "none")
++        if (inject == "compile-swallowed")
++            Console.SetIn(new CompileFailingInput(Console.In));
++        else if (inject != "none")
 +            typeof(Sts2Headless.NativeJsonLineWriter).GetField("_stdout", Flags)!.SetValue(null, new FailingStdout(Console.OpenStandardOutput(), inject));
 +        Simulator.Assembly.GetType("Sts2Headless.Program")!.GetMethod("Main", Flags)!.Invoke(null, new object[] { Array.Empty<string>() });
 +    }
@@ -2146,6 +2148,41 @@ index 0000000..bfab3d8
 +        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 +        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 +        public override void SetLength(long value) => throw new NotSupportedException();
++    }
++
++    /// <summary>
++    /// Before handing over the second command line, a field getter fails to compile inside a
++    /// catch-all (as a broad native catch would swallow it); the Program loop must still exit 70.
++    /// </summary>
++    sealed class CompileFailingInput(TextReader inner) : TextReader
++    {
++        int lines;
++        public override string? ReadLine()
++        {
++            if (++lines == 2)
++            {
++                var field = NativeField.Of(new UncompilableField(typeof(Fixture).GetField(nameof(Fixture.Text))!))!;
++                try { for (int read = 0; read <= 4096; read++) field.GetValue(new Fixture()); }
++                catch { } // swallowed on purpose
++            }
++            return inner.ReadLine();
++        }
++    }
++
++    /// <summary>A FieldInfo that reads like the real field but cannot be emitted (not a runtime field).</summary>
++    sealed class UncompilableField(FieldInfo real) : FieldInfo
++    {
++        public override FieldAttributes Attributes => real.Attributes;
++        public override RuntimeFieldHandle FieldHandle => throw new NotSupportedException();
++        public override Type FieldType => real.FieldType;
++        public override Type? DeclaringType => real.DeclaringType;
++        public override string Name => real.Name;
++        public override Type? ReflectedType => real.ReflectedType;
++        public override object? GetValue(object? obj) => real.GetValue(obj);
++        public override void SetValue(object? obj, object? value, BindingFlags invokeAttr, Binder? binder, System.Globalization.CultureInfo? culture) => real.SetValue(obj, value, invokeAttr, binder, culture);
++        public override object[] GetCustomAttributes(bool inherit) => real.GetCustomAttributes(inherit);
++        public override object[] GetCustomAttributes(Type attributeType, bool inherit) => real.GetCustomAttributes(attributeType, inherit);
++        public override bool IsDefined(Type attributeType, bool inherit) => real.IsDefined(attributeType, inherit);
 +    }
 +
 +    static (int Exit, List<JsonElement> Lines) RunChild(bool fastChain, string inject, params string[] commands)
@@ -2215,7 +2252,12 @@ index 0000000..bfab3d8
 +            Check(Kind(error) == "error" && Prop(error, "code") == "compact_state_divergence" && Prop(error, "message").Contains(reason),
 +                $"{inject}: " + error);
 +        }
-+        Console.WriteLine("program wiring: off, on (start/reset/read-only), 3 fatal compact writer exits checked");
++        // A getter compile failure swallowed by a catch-all still ends the stream before the next reply.
++        var swallowed = RunChild(true, "compile-swallowed", Start, Observe, Observe);
++        Check(swallowed.Exit == 70 && swallowed.Lines.Count == 3 && Kind(swallowed.Lines[2]) == "error"
++            && Prop(swallowed.Lines[2], "code") == "compact_state_divergence" && Prop(swallowed.Lines[2], "message").Contains("failed to compile"),
++            $"compile-swallowed: exit {swallowed.Exit}, lines " + string.Join(" | ", swallowed.Lines));
++        Console.WriteLine("program wiring: off, on (start/reset/read-only), 3 fatal compact writer exits, swallowed getter compile failure checked");
 +    }
 +
 +    static void CompactOutput()
@@ -2430,6 +2472,22 @@ index 0000000..bfab3d8
 +        fixture.Text = "compiled";
 +        Check(Equals(text.GetValue(fixture), "compiled"), "a compiled native read must be live, never a remembered value");
 +        Check(NativeField.Of(null) == null, "a missing field stays missing");
++
++        // A getter that cannot be compiled: reads before the threshold are reflection; the read that
++        // compiles throws NativeFieldCompileException (never a silent reflection fallback) and records
++        // the failure for the Program loop. Off, nothing is ever compiled.
++        FieldInfo realText = typeof(Fixture).GetField(nameof(Fixture.Text))!;
++        PropertyInfo compileFailure = typeof(NativeField).GetProperty(nameof(NativeField.CompileFailure))!;
++        SetEnabled(false);
++        NativeField offBroken = NativeField.Of(new UncompilableField(realText))!;
++        for (int read = 0; read <= 2 * compileAfter; read++) offBroken.GetValue(fixture);
++        Check(NativeField.CompileFailure == null, "off never compiles a getter");
++        SetEnabled(true);
++        NativeField broken = NativeField.Of(new UncompilableField(realText))!;
++        for (int read = 1; read < compileAfter; read++) Check(Equals(broken.GetValue(fixture), realText.GetValue(fixture)), "reflection read before the threshold");
++        Check(Outcome(() => broken.GetValue(fixture)) == "throws " + typeof(NativeFieldCompileException).FullName, "a getter compile failure must throw NativeFieldCompileException");
++        Check(NativeField.CompileFailure is { } recorded && recorded.StartsWith("compact_state_divergence: ") && recorded.Contains("Text"), "a getter compile failure must be recorded");
++        compileFailure.SetValue(null, null); // this process continues with the other checks
 +
 +        // Every field of every native card model and its variables reads the same through NativeField,
 +        // and the card-detail cache key is the same string on and off.
@@ -5043,10 +5101,10 @@ index 0000000..5e3e58f
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..d02a7dd
+index 0000000..b1b5623
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,321 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -5358,6 +5416,7 @@ index 0000000..d02a7dd
 +            gap = null;
 +            return true;
 +        }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -5369,10 +5428,10 @@ index 0000000..d02a7dd
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..4016920
+index 0000000..9503be1
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,439 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -5410,6 +5469,7 @@ index 0000000..4016920
 +    {
 +        if (NativePatchStateCache.Enabled) return NativePatchStateCache.IsUnpatched(method);
 +        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -5631,6 +5691,7 @@ index 0000000..4016920
 +            gap = null;
 +            return true;
 +        }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -5662,6 +5723,7 @@ index 0000000..4016920
 +            gap = null;
 +            return true;
 +        }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -5697,6 +5759,7 @@ index 0000000..4016920
 +            gap = null;
 +            return true;
 +        }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -5775,6 +5838,7 @@ index 0000000..4016920
 +            gap = null;
 +            return true;
 +        }
++        catch (NativeFieldCompileException) { throw; }
 +        catch { return false; }
 +    }
 +
@@ -6943,10 +7007,10 @@ index 0000000..6742e80
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
 new file mode 100644
-index 0000000..3d1e63e
+index 0000000..34d9344
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardPreview.cs
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,229 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -6994,6 +7058,7 @@ index 0000000..3d1e63e
 +            return true;
 +        }
 +        catch (NativePreviewReadStateViolationException) { throw; }
++        catch (NativeFieldCompileException) { throw; }
 +        catch
 +        {
 +            before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
@@ -7017,6 +7082,7 @@ index 0000000..3d1e63e
 +            return true;
 +        }
 +        catch (NativePreviewReadStateViolationException) { throw; }
++        catch (NativeFieldCompileException) { throw; }
 +        catch
 +        {
 +            before.AssertUnchanged();
@@ -7045,6 +7111,7 @@ index 0000000..3d1e63e
 +            return true;
 +        }
 +        catch (NativePreviewReadStateViolationException) { throw; }
++        catch (NativeFieldCompileException) { throw; }
 +        catch
 +        {
 +            before.AssertUnchanged();
@@ -7077,6 +7144,7 @@ index 0000000..3d1e63e
 +            return true;
 +        }
 +        catch (NativePreviewReadStateViolationException) { throw; }
++        catch (NativeFieldCompileException) { throw; }
 +        catch
 +        {
 +            before.AssertUnchanged();
@@ -7377,10 +7445,10 @@ index 0000000..b01ae4a
 +}
 diff --git a/src/Sts2Headless/NativeFieldAccess.cs b/src/Sts2Headless/NativeFieldAccess.cs
 new file mode 100644
-index 0000000..8536239
+index 0000000..76ac866
 --- /dev/null
 +++ b/src/Sts2Headless/NativeFieldAccess.cs
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,108 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Reflection;
@@ -7428,8 +7496,24 @@ index 0000000..8536239
 +        if (_get is { } get) return get(target);
 +        // A racing increment only moves the moment of compiling; both getters read the same field.
 +        if (++_reads < CompileAfter) return Info.GetValue(target);
-+        return (_get = Compile(Info))(target);
++        Func<object?, object?> compiled;
++        try { compiled = Compile(Info); }
++        catch (Exception error)
++        {
++            // Never a silent fallback to reflection or a "missing"/unqualified answer: recorded for the
++            // Program loop (fatal exit before the reply is written) and rethrown past every broad catch.
++            string failure = $"compact_state_divergence: native field getter for {Info.DeclaringType?.FullName}.{Info.Name} failed to compile: {error.GetType().FullName}: {error.Message}";
++            CompileFailure ??= failure;
++            throw new NativeFieldCompileException(failure, error);
++        }
++        return (_get = compiled)(target);
 +    }
++
++    /// <summary>
++    /// fast_chain: set once a getter failed to compile. The Program loop checks it after every
++    /// command and exits 70 with compact_state_divergence, whatever a caller's catch did.
++    /// </summary>
++    public static string? CompileFailure { get; private set; }
 +
 +    /// <summary>
 +    /// <c>target is Owner o ? (object)o.field : info.GetValue(target)</c>, emitted directly
@@ -7462,6 +7546,9 @@ index 0000000..8536239
 +        return (Func<object?, object?>)method.CreateDelegate(typeof(Func<object?, object?>), info);
 +    }
 +}
++
++/// <summary>A compiled field getter could not be built: fatal, never treated as an unqualified or missing read.</summary>
++public sealed class NativeFieldCompileException(string message, Exception inner) : Exception(message, inner);
 +
 +/// <summary>fast_chain only: dictionary capacities. Off: 0, the default constructor's capacity.</summary>
 +public static class NativeCapacity
@@ -8245,10 +8332,10 @@ index 0000000..21f689a
 +}
 diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
 new file mode 100644
-index 0000000..e603626
+index 0000000..08d0257
 --- /dev/null
 +++ b/src/Sts2Headless/NativePublicCardDetails.cs
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,211 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -8443,7 +8530,8 @@ index 0000000..e603626
 +                && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
 +                missing.Add("native_selector_enchantment_description");
 +        }
-+        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException)
++        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException
++            and not NativeFieldCompileException)
 +        {
 +            // Private, opt-in diagnosis of an actual render failure. Type metadata
 +            // avoids invoking a model getter after preflight has rejected it.
@@ -10850,7 +10938,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..4317787 100644
+index 800f139..09dc66f 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,10 @@
@@ -10896,7 +10984,7 @@ index 800f139..4317787 100644
              }
              catch (JsonException ex)
              {
-@@ -93,12 +109,22 @@ class Program
+@@ -93,12 +109,30 @@ class Program
              }
              catch (Exception ex)
              {
@@ -10911,6 +10999,14 @@ index 800f139..4317787 100644
 +                Console.Error.WriteLine("[native-card-detail-cache] " + divergence);
 +                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence", ["message"] = divergence });
 +                Environment.Exit(70);
++            }
++
++            if (NativeField.CompileFailure is { } compileFailure)
++            {
++                // Same: a field getter that failed to compile is fatal even if a caller caught it.
++                Console.Error.WriteLine("[native-field-access] " + compileFailure);
++                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["code"] = "compact_state_divergence", ["message"] = compileFailure });
++                Environment.Exit(70);
              }
  
              if (result != null)
@@ -10921,7 +11017,7 @@ index 800f139..4317787 100644
                  if (result.TryGetValue("type", out var resultTypeObj) &&
                      string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
                  {
-@@ -108,17 +134,64 @@ class Program
+@@ -108,17 +142,64 @@ class Program
          }
      }
  
@@ -10988,7 +11084,7 @@ index 800f139..4317787 100644
                  );
  
              case "action":
-@@ -143,6 +216,24 @@ class Program
+@@ -143,6 +224,24 @@ class Program
                  return sim.ExecuteAction(action, actionArgs);
              }
  
@@ -11013,7 +11109,7 @@ index 800f139..4317787 100644
              case "load_save":
              {
                  var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
-@@ -156,6 +247,7 @@ class Program
+@@ -156,6 +255,7 @@ class Program
                  if (saveJson == null)
                      return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                  var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
@@ -11021,7 +11117,7 @@ index 800f139..4317787 100644
                  return sim.LoadSave(saveJson, loadLang);
              }
              case "get_map":
-@@ -230,8 +322,68 @@ class Program
+@@ -230,8 +330,68 @@ class Program
          }
      }
  

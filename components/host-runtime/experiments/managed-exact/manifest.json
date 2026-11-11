@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "25fa2b73582f211300affafd086a7687dc033a0a36c76badbae73de5460e2655",
-    "artifact_sha256": "a27f4f16a67261fcdb60b9110a064618c8d3a351734b6d42c7eb6a0c11e268d2",
-    "artifact_mvid": "cd95fb9c-15e8-4e8a-8d9a-4344ae53948f",
+    "source_patch_sha256": "ee342d0ef6ba9be9ca7f18eee85aa196e3ae0cfb9cb374ed44dd3fa83b77e2a2",
+    "artifact_sha256": "bda22c05f531135e68ebf15367c63fa924136bf4ac52b16837282b6071881b2b",
+    "artifact_mvid": "ad375e9b-4f4b-4054-8b9c-7e7338908ef3",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 8
       },
       "expected_build": {
-        "source_patch_sha256": "0edc9a15c2a7275ebcf19d44a76f262b0177e9e670df53795f58380c9a29d13b",
-        "artifact_sha256": "7c962c1209c3bab5cf004186ecfb9504e5122c73150ef0f30f303d30f09654d3",
-        "artifact_mvid": "7f83f37e-66e6-4491-a3b6-d5752ea87486",
+        "source_patch_sha256": "f9c921c31d8f717519eb6a8def8cdffe06207acabc9b9ac73087f5afedda8f1b",
+        "artifact_sha256": "b2926723a9348972a1c78dfdb0d2ac38483d72de2ffb2962b2ce6246f59c4e57",
+        "artifact_mvid": "cdf61164-8a8a-400a-8a03-bfca084e2234",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -549,8 +549,8 @@
       "id": "fast_chain_compiled_field_reads",
       "kind": "native_read_performance",
       "risk": "low",
-      "effect": "Under the same fast_chain switch only: the card-detail cache key, the detached-copy preflight and the detached-preview source stamp read fields through FieldInfo.GetValue until that field has been read 2048 times (compiling costs about as many reads as it saves), then through an emitted getter; a target that is null or not of the declaring type, and static/literal/pointer/by-ref-like fields, still go to FieldInfo.GetValue, so values (boxed the same way), live-ness and exceptions are those of reflection. Per-type field lists and field-type tests are taken once instead of per read; fixed GetField lookups are hoisted to statics. The card dictionaries (card detail, public card, hover card, upgrade info) get their final capacity, which never changes insertion order. No value is remembered and no output byte changes; off, the original reflection path and default capacities run.",
-      "regression": "patch-cache-tests FieldAccessAndCapacity (fixture fields of every shape, null and wrong-type targets, on and off, equal value/type/exception; the same probes through the emitted getter directly and after the 2048-read threshold; a write after compiling is seen; every instance field of every card model and its dynamic variables equal through NativeField and the emitted getter; card-detail cache key identical on and off; dictionary capacity never changes serialized key order including after remove/re-add) plus ObservationEquality on/off state equality; getter mutations (no box, no type check, never compile) fail the suite; Friday corpus replay: fast and off byte-equal to the recorded originals."
+      "effect": "Under the same fast_chain switch only: the card-detail cache key, the detached-copy preflight and the detached-preview source stamp read fields through FieldInfo.GetValue until that field has been read 2048 times (compiling costs about as many reads as it saves), then through an emitted getter; a target that is null or not of the declaring type, and static/literal/pointer/by-ref-like fields, still go to FieldInfo.GetValue, so values (boxed the same way), live-ness and exceptions are those of reflection. A getter that fails to compile is never a silent fallback: it throws NativeFieldCompileException, which every broad catch on the read path rethrows (never an unqualified card or a missing field), and is recorded so the Program loop writes compact_state_divergence and exits 70 after that command even if a caller swallowed it. Per-type field lists and field-type tests are taken once instead of per read; fixed GetField lookups are hoisted to statics. The card dictionaries (card detail, public card, hover card, upgrade info) get their final capacity, which never changes insertion order. No value is remembered and no output byte changes. Off: field reads are FieldInfo.GetValue and dictionaries use the default capacity; the per-type field lists with precomputed field kinds, the SourceStamp per-type field table and the hoisted GetField statics are a refactor that runs in both modes, semantically equal to the original code (same classification order, same fallthrough when a value is not IEnumerable, same GetFields order).",
+      "regression": "patch-cache-tests FieldAccessAndCapacity (fixture fields of every shape, null and wrong-type targets, on and off, equal value/type/exception; the same probes through the emitted getter directly and after the 2048-read threshold; a write after compiling is seen; every instance field of every card model and its dynamic variables equal through NativeField and the emitted getter; card-detail cache key identical on and off; dictionary capacity never changes serialized key order including after remove/re-add) plus ObservationEquality on/off state equality; getter mutations (no box, no type check, never compile, compile failure falling back to reflection) fail the suite; a FieldInfo that cannot be emitted throws NativeFieldCompileException on the compiling read and records the failure, and off never compiles it; ProgramWiring runs a child whose getter compile failure is swallowed by a catch-all and still sees compact_state_divergence and exit 70 before the next reply (removing the Program check fails it); Friday corpus replay: fast and off byte-equal to the recorded originals."
     }
   ],
   "admission": {

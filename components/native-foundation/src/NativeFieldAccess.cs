@@ -45,8 +45,24 @@ public sealed class NativeField
         if (_get is { } get) return get(target);
         // A racing increment only moves the moment of compiling; both getters read the same field.
         if (++_reads < CompileAfter) return Info.GetValue(target);
-        return (_get = Compile(Info))(target);
+        Func<object?, object?> compiled;
+        try { compiled = Compile(Info); }
+        catch (Exception error)
+        {
+            // Never a silent fallback to reflection or a "missing"/unqualified answer: recorded for the
+            // Program loop (fatal exit before the reply is written) and rethrown past every broad catch.
+            string failure = $"compact_state_divergence: native field getter for {Info.DeclaringType?.FullName}.{Info.Name} failed to compile: {error.GetType().FullName}: {error.Message}";
+            CompileFailure ??= failure;
+            throw new NativeFieldCompileException(failure, error);
+        }
+        return (_get = compiled)(target);
     }
+
+    /// <summary>
+    /// fast_chain: set once a getter failed to compile. The Program loop checks it after every
+    /// command and exits 70 with compact_state_divergence, whatever a caller's catch did.
+    /// </summary>
+    public static string? CompileFailure { get; private set; }
 
     /// <summary>
     /// <c>target is Owner o ? (object)o.field : info.GetValue(target)</c>, emitted directly
@@ -79,6 +95,9 @@ public sealed class NativeField
         return (Func<object?, object?>)method.CreateDelegate(typeof(Func<object?, object?>), info);
     }
 }
+
+/// <summary>A compiled field getter could not be built: fatal, never treated as an unqualified or missing read.</summary>
+public sealed class NativeFieldCompileException(string message, Exception inner) : Exception(message, inner);
 
 /// <summary>fast_chain only: dictionary capacities. Off: 0, the default constructor's capacity.</summary>
 public static class NativeCapacity

@@ -45,6 +45,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
@@ -68,6 +69,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();
@@ -96,6 +98,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();
@@ -128,6 +131,7 @@ internal static class NativeDetachedCardPreviewFactory
             return true;
         }
         catch (NativePreviewReadStateViolationException) { throw; }
+        catch (NativeFieldCompileException) { throw; }
         catch
         {
             before.AssertUnchanged();

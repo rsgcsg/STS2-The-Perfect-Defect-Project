@@ -192,7 +192,8 @@ public static class NativePublicCardDetails
                 && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
                 missing.Add("native_selector_enchantment_description");
         }
-        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException)
+        catch (Exception error) when (error is not NativeRenderStateViolationException and not NativeCompactStateDivergenceException
+            and not NativeFieldCompileException)
         {
             // Private, opt-in diagnosis of an actual render failure. Type metadata
             // avoids invoking a model getter after preflight has rejected it.
