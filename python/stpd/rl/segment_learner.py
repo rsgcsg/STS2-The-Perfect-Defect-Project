@@ -65,6 +65,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
 
 from .batch_preparation import (
+    ROW_BUCKET_ROWS,
     BatchPreparer,
     pack_transport,
     stage_batch,
@@ -114,6 +115,7 @@ from .sgd_process import (
     WEIGHTS_SCHEMA,
     SgdProcess,
     SgdProcessFailed,
+    compiled_defaults,
     memory_budget,
     read_tree,
     sgd_options,
@@ -427,6 +429,10 @@ class SegmentLearner:
             # The faster rows-v2 step is what the in-process GIL convoy eats (S0-GPU
             # I0: 7.15x), so it is selected only together with the SGD process.
             raise BoundaryError("rl_learner", "rows_v2_requires_sgd_process")
+        if (self.sgd_options is not None and config.performance is not None
+                and config.performance.prepared_compile):
+            assert self.dataplane is not None
+            self.sgd_options = compiled_defaults(self.sgd_options, self.dataplane)
         self.fd_limits = None
         if self.dataplane is not None:
             from spireagent.rl_socket_transport import ensure_fd_capacity
@@ -682,6 +688,10 @@ class SegmentLearner:
             # S3 rows-v2: preparation workers add the CPU row layout; the forward
             # refuses any group whose layout does not match this selection.
             preparation_options["prepared_layout"] = self.performance.prepared_forward
+            if self.performance.prepared_bucket_rows != ROW_BUCKET_ROWS:
+                # Only a non-default partition is passed: default options stay byte-equal.
+                preparation_options["prepared_bucket_rows"] = (
+                    self.performance.prepared_bucket_rows)
         if (self.sgd_options is not None and self.sgd_options.compile is not None
                 and not self.performance.prepared_compile):
             raise BoundaryError("rl_learner", "sgd_compile_options_require_prepared_compile")

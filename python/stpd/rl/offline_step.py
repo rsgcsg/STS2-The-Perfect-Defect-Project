@@ -182,3 +182,84 @@ def replay(value: dict[str, Any], minibatch: Any, *, device: str = "cpu",
         target_kl=value.get("target_kl", 0.03) if target_kl is None else target_kl,
         diagnostics=value["diagnostics"], collect_policy_rows=False)
     return model, optimizer, result
+
+
+# Compile warm-up coverage (`dataplane.sgd_compile.warmup`, at most 8 dumps). With
+# `prepared_compile` and levers the block and node builder compile shape-generic, yet
+# dynamo still specializes on a few facts (V3 T6 recompile probes 1458888/1458938):
+# the inductor `can_fuse` size guard (192 * size >= 5242880 at embed 192), 0/1-sized
+# dimensions, the per-group cross fold (catalog <= 64) and value-only groups.
+FUSE_GUARD_SIZE = -(-5242880 // 192)  # 27307
+
+
+def _size_class(value: int) -> str:
+    return "0" if value == 0 else "1" if value == 1 else "2" if value == 2 else "n"
+
+
+def warmup_signatures(minibatch: Any, *, bucket_rows: int) -> set[tuple[str, ...]]:
+    """Compiled-shape classes this minibatch exercises under `bucket_rows` (rows-v2)."""
+    from stpd.p1.rows_kernels import FOLD_CATALOG_LIMIT
+
+    from .batch_preparation import row_layout
+
+    found: set[tuple[str, ...]] = set()
+    for group in minibatch.groups:
+        layout = row_layout(group, bucket_rows=bucket_rows)
+        catalog = int(group.tensors["action_types"].shape[1]) if group.policy else 0
+        kind = ("value" if not group.policy
+                else "fold" if catalog <= FOLD_CATALOG_LIMIT else "wide")
+        nodes = int(group.joint.tensors["kinds"].numel())
+        found.add(("nodes", "large" if nodes >= FUSE_GUARD_SIZE else "small"))
+        for index, (rows, _width, _longest, tokens) in enumerate(layout.scene_buckets):
+            terms = (tuple(_size_class(int(layout.roles[key][3][index]))
+                           for key in ("source", "target")) if group.policy else ("-", "-"))
+            found.add(("block", kind, "large" if tokens >= FUSE_GUARD_SIZE else "small",
+                       _size_class(rows), *terms))
+    return found
+
+
+def warmup_cover(paths: list[Path], *, bucket_rows: int, limit: int = 8) -> dict[str, Any]:
+    """Greedy choice of at most `limit` dumps covering the most shape classes.
+
+    Reports every class seen and the ones the choice leaves uncovered (those still
+    compile on first use online; nothing is hidden or treated as covered).
+    """
+    if type(limit) is not int or not 1 <= limit <= 8:
+        raise ValueError("invalid_warmup_limit")
+    seen: dict[str, set[tuple[str, ...]]] = {}
+    for path in paths:
+        _value, minibatch, _receipt = load(path)
+        seen[str(path)] = warmup_signatures(minibatch, bucket_rows=bucket_rows)
+    every = set().union(*seen.values()) if seen else set()
+    chosen: list[str] = []
+    covered: set[tuple[str, ...]] = set()
+    while len(chosen) < limit:
+        best = max(sorted(set(seen) - set(chosen)), default=None,
+                   key=lambda path: len(seen[path] - covered))
+        if best is None or not seen[best] - covered:
+            break
+        chosen.append(best)
+        covered |= seen[best]
+    return {"bucket_rows": bucket_rows, "warmup": chosen, "classes": len(every),
+            "covered": len(covered), "uncovered": sorted("/".join(c) for c in every - covered),
+            "scanned": len(seen)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m stpd.rl.offline_step")
+    commands = parser.add_subparsers(dest="command", required=True)
+    cover = commands.add_parser("warmup-cover", help="choose <= 8 dumps for sgd_compile.warmup")
+    cover.add_argument("--bucket-rows", type=int, required=True,
+                       help="performance.prepared_bucket_rows of the run being warmed")
+    cover.add_argument("--limit", type=int, default=8)
+    cover.add_argument("paths", type=Path, nargs="+")
+    args = parser.parse_args(argv)
+    print(json.dumps(warmup_cover(args.paths, bucket_rows=args.bucket_rows, limit=args.limit),
+                     indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

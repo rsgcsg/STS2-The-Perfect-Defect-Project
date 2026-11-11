@@ -100,6 +100,25 @@ class SgdOptions:
     stage_thread: bool = False
 
 
+# `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
+# node builder reach 11 graphs / 7 recompiles of one function in 300 real steps, over
+# torch's limit of 8 when shapes vary more; a cold-cache step can recompile several
+# times in a row (13-23 s each), which the 120 s stall floor would misreport.
+COMPILED_RECOMPILE_LIMIT = 16
+COMPILED_STALL_SECONDS = 300.0
+
+
+def compiled_defaults(options: SgdOptions, dataplane: dict[str, Any]) -> SgdOptions:
+    """Defaults for a learner that selected `prepared_compile`; explicit values win."""
+    compiled = dict(options.compile) if options.compile is not None else {
+        "cache_dir": None, "recompile_limit": None, "warmup": []}
+    if compiled["recompile_limit"] is None:
+        compiled["recompile_limit"] = COMPILED_RECOMPILE_LIMIT
+    stall = (options.stall_seconds if "sgd_stall_seconds" in dataplane
+             else max(options.stall_seconds, COMPILED_STALL_SECONDS))
+    return replace(options, compile=compiled, stall_seconds=stall)
+
+
 def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
     """None keeps the default in-process E4 byte-identical."""
     if dataplane is None:
@@ -1056,6 +1075,14 @@ class _SgdWorker:
         torch = self.torch
         began = time.perf_counter()
         _value, minibatch, _receipt = load(root)
+        if self.performance.prepared_forward == "rows-v2":
+            # Compile the shapes this run's preparation produces: a dump written with
+            # another bucket partition (or padded-v1) is re-laid out from its own
+            # CPU tensors exactly as `prepare_group` lays out a live group.
+            minibatch = dataclasses.replace(minibatch, groups=tuple(
+                dataclasses.replace(group, layout=bp.row_layout(
+                    group, bucket_rows=self.performance.prepared_bucket_rows))
+                for group in minibatch.groups))
         before = weights_digest(self.model.state_dict())
         staged = bp.stage_batch(minibatch, self.device)[0] if self.device.type == "cuda" else (
             minibatch)
