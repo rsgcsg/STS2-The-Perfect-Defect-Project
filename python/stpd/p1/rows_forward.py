@@ -284,9 +284,7 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
     action = action + model.source_role(means[0]) + model.target_role(means[1])
-    from .rows_kernels import FOLD_CATALOG_LIMIT
-
-    if "cross" in kernels and catalog <= FOLD_CATALOG_LIMIT:
+    if "cross" in kernels:  # forward_rows selects it only for catalogs <= FOLD_CATALOG_LIMIT
         from .rows_kernels import packed_cross
 
         read = packed_cross(model.cross, action, encoded, offsets, longest)
@@ -321,7 +319,9 @@ def _compiled_block(model: Any, packed: bool, kernels: tuple[str, ...] = ()) -> 
         name += "_" + "_".join(kernels)
     block = getattr(model, name, None)
     if block is None:
-        block = torch.compile(_block(packed, kernels), dynamic=None)
+        # Levered blocks start shape-generic: rows, tokens, widths and catalogs vary per
+        # group, and each first change would otherwise cost a recompile (V3 T6 probe).
+        block = torch.compile(_block(packed, kernels), dynamic=True if kernels else None)
         setattr(model, name, block)  # learner-process runtime only, not state
     return block
 
@@ -385,7 +385,12 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     else:
         nodes = model.tensor_nodes(joint, vectors, flat=flat)
     _check_encoder(model.scene)
-    block_levers = tuple(lever for lever in levers if lever in ("cross", "heads"))
+    from .rows_kernels import FOLD_CATALOG_LIMIT
+
+    # The fold is chosen per group outside the compiled block (no catalog guard inside).
+    block_levers = tuple(lever for lever in levers if lever == "heads" or (
+        lever == "cross" and group.policy
+        and int(group.tensors["action_types"].shape[1]) <= FOLD_CATALOG_LIMIT))
     block = (_compiled_block(model, packed, block_levers) if compile
              else _block(packed, block_levers))
     buckets = layout.scene_buckets

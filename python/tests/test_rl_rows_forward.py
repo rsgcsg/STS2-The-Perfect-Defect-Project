@@ -656,6 +656,16 @@ def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
     torch.testing.assert_close(packed, expected, rtol=1e-5, atol=2e-6)
 
 
+def test_cross_lever_keeps_the_original_attention_for_long_catalogs(model, varied, monkeypatch):
+    from stpd.p1 import rows_kernels
+
+    group = prepared(model, "rows-v2").minibatches[0].groups[0]
+    (s0, l0, h0), _ = forward_and_gradients(model, group, packed=True)
+    monkeypatch.setattr(rows_kernels, "FOLD_CATALOG_LIMIT", 0)
+    (s1, l1, h1), _ = forward_and_gradients(model, group, packed=True, kernels="cross")
+    assert torch.equal(s0, s1) and torch.equal(l0, l1) and torch.equal(h0, h1)
+
+
 def test_effective_config_records_prepared_kernels_only_when_selected():
     from stpd.rl.learner import LearnerConfig
     from stpd.rl.segment_learner import _resume_config
