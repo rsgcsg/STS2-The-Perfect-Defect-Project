@@ -783,17 +783,19 @@ def test_a_results_thread_failure_stops_and_refuses_the_rows_in_flight(vocabular
     assert "rl_inference_3_results_failed" in capfd.readouterr().err
 
 
+@pytest.mark.parametrize("device_rows", [False, True])
 @pytest.mark.parametrize(("failure", "reason"), [(RuntimeError, "device_job_failed"),
                                                  (SystemExit, "device_process_gone")])
 def test_a_failing_forward_stops_the_service_never_per_row(vocabulary, model, failure, reason,
-                                                           capfd):
+                                                           device_rows, capfd):
     """Review S3 (an exception in the forward: SERVICE_STOPPING and stop, not
     NONFINITE_SCORES) and S1 (the forward thread itself dies: the device process
     exits, so the service sees EOF and stops)."""
     encoder = RowsEncoder(vocabulary)
     encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
     assembler = FakeAssembler()
-    service = _service(vocabulary, _raising(model, failure), assembler)
+    service = _service(vocabulary, _raising(model, failure), assembler,
+                       device_rows=device_rows)
     client = _open_client(service, encoder, "g1")
     try:
         assert _score(client, encoded, 3, "g1")["error_code"] == "SERVICE_STOPPING"
@@ -948,3 +950,127 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
     assert stats["failure"] is None
     err = capfd.readouterr().err
     assert "hello_required" in err and "unexpected_link_message" in err
+
+
+# -- V3 gui-infer option (default off): part sizing ----------------------------------
+def _packet(encoded: list[Any], game: str, first_id: int) -> tuple[list[dict[str, Any]], bytes]:
+    rows, binary = [], bytearray()
+    for index, item in enumerate(encoded):
+        rows.append({"request_id": first_id + index, "game_instance_id": game,
+                     "step_index": index, "consumption_id": f"c{index}",
+                     "catalog_len": item.catalog_len, "catalog_sha256": item.catalog_sha256,
+                     "observation_sha256": item.observation_sha256, "in_combat": False,
+                     "floor": 2, "payload": {"offset": len(binary), "length": len(item.row),
+                                             "row_sha256": item.row_sha256}})
+        binary += item.row
+    return rows, bytes(binary)
+
+
+@pytest.mark.parametrize(("part_rows", "parts"), [(0, 3), (3, 2)])
+def test_part_rows_sets_the_parts_of_a_job_with_the_same_scores(vocabulary, model, part_rows,
+                                                               parts):
+    """6 rows, job_parts 4: off = ceil(6/4) rows a part = 3 parts; part_rows 3 = 2 parts."""
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    assembler = FakeAssembler()
+    identity = FrameCompiler(vocabulary).identity
+    service = FastInferenceService(vocabulary, identity, assembler, training_generation="gen-1",
+                                   address=("127.0.0.1", 0), env_sha256=ENV,
+                                   prepare_workers=4, job_parts=4, part_rows=part_rows,
+                                   join_workers=1, window_ms=200.0)
+    assert service.publish(model, Handoff(MU))
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = _packet(encoded, "g1", 3)
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+    finally:
+        client.close()
+        report = service.close()
+    assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+    assert report["jobs"] == 1 and report["parts"] == parts and report["batches"] == 1
+    finished = {body[0]: body[1] for kind, body in assembler.calls if kind == "finish"}
+    for index, want in enumerate(expected):
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        assert torch.allclose(torch.tensor(finished[3 + index]["behavior_q"]),
+                              torch.tensor(behavior), atol=1e-6)
+
+
+@pytest.mark.parametrize("part_rows", [-1, 1.5])
+def test_invalid_part_rows_is_refused(vocabulary, model, part_rows):
+    with pytest.raises(ValueError, match="invalid_rl_inference_3_job_shape"):
+        _service(vocabulary, model, FakeAssembler(), part_rows=part_rows)
+
+
+# -- V3 option (default off): per-row scores built in the device process -----------
+@pytest.mark.parametrize("join_workers", [0, 1])
+def test_device_rows_gives_the_same_scores_and_values(vocabulary, model, join_workers):
+    """`device_rows`: the device process runs RowsScorer.rows; every finished row's
+    behavior_q, selected index and outcome probabilities equal the default path."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    finished: dict[bool, dict[int, Any]] = {}
+    for device_rows in (False, True):
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, device_rows=device_rows,
+                           join_workers=join_workers, window_ms=200.0)
+        client = _open_client(service, encoder, "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            service.close()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+        finished[device_rows] = {body[0]: (body[1]["behavior_q"], body[1]["selected_index"],
+                                           body[2])
+                                 for kind, body in assembler.calls if kind == "finish"}
+    assert len(finished[True]) == 6 and finished[True] == finished[False]
+
+
+class NanRowMStd(MStd):
+    """A model whose forward gives row 1 a non-finite catalog score."""
+
+    def forward_prepared_rl4(self, group: Any, **options: Any) -> Any:
+        scores, logits, hp = super().forward_prepared_rl4(group, **options)
+        scores = scores.clone()
+        scores[1, 0] = float("nan")
+        return scores, logits, hp
+
+
+@pytest.mark.parametrize("device_rows", [False, True])
+def test_device_rows_refuses_a_non_finite_row_like_the_default(vocabulary, model,
+                                                               device_rows):
+    """Review L1: with `device_rows` a non-finite row is still NONFINITE_SCORES
+    (None from the device process), the other rows are scored, nothing stops."""
+    import copy
+
+    bad = copy.copy(model)
+    bad.__class__ = NanRowMStd
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(3)]
+    assembler = FakeAssembler()
+    service = _service(vocabulary, bad, assembler, device_rows=device_rows, window_ms=200.0)
+    client = _open_client(service, encoder, "g1")
+    try:
+        rows, binary = _packet(encoded, "g1", 3)
+        client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                        "packet_id": 1, "rows": rows}, binary))
+        envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        assert not service.stopping.is_set()
+    finally:
+        client.close()
+        report = service.close()
+    results = {result["request_id"]: result for result in envelope["results"]}
+    statuses = [results[row["request_id"]].get("error_code", results[row["request_id"]]
+                                               ["status"]) for row in rows]
+    assert statuses == ["scored", "NONFINITE_SCORES", "scored"]
+    assert report["refused"] == {"NONFINITE_SCORES": 1}

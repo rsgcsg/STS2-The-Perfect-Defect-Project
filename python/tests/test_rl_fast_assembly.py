@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import multiprocessing
 import time
 from pathlib import Path
@@ -27,6 +28,8 @@ from stpd.rl.fast_handoff import (
     receive_segment,
 )
 from stpd.rl.fast_segment import (
+    FORMAT,
+    FORMAT_2,
     InstanceClosed,
     SealedSegment,
     SegmentFormatError,
@@ -911,3 +914,158 @@ def test_a_missing_original_is_a_typed_handoff_error(tmp_path: Path):
         handoff.close()
     assert str(raised.value.__cause__) == "labels_original_unreadable"
     assert handoff.counters["labels_failed"] == 1
+
+
+# -- T3: columnar segment format (stpd/rl-fast-segment-2) ------------------------------
+FORMAT_1_GOLDEN = "dca2b69270f5efea5037b737b77a1a02c9a636946e483938ddb21aba7b156e5d"
+
+
+def _mixed_games(segment_format: str, **options: Any) -> Harness:
+    """Every seal kind, omit/forced steps, a failed outcome and a stop, in one harness."""
+    def labeler(summary: Any) -> dict | None:
+        return {"class": 5, "reward": 0.0054} if summary["game_instance_id"] == "t" else None
+
+    if segment_format != FORMAT:  # format 1 = the constructor as it was before T3
+        options["segment_format"] = segment_format
+    h = Harness(labeler, **options)
+    h.assembler.instance_id = "node-a.000000000001"
+    h.assembler.offer_mu(mu(1))
+    h.open("b", "omit")  # bootstrap + an open tail segment closed by stop
+    for index in range(66):
+        _, row = h.step("b", outcome=False, floor=1 + index // 30, combat=index % 3 != 0)
+        h.outcome(row, forced_steps=index % 3, combat_end=[{"won": True}] if index == 5 else [])
+    h.close("b", "stop")
+    h.open("t")  # natural terminal, labelled
+    h.step("t")
+    _, row = h.step("t", outcome=False, floor=5)
+    h.outcome(row, terminal={"result": "defeat"})
+    h.close("t", "terminal", row["step_index"])
+    h.open("u")  # unknown outcome -> truncated
+    h.step("u")
+    _, row = h.step("u", outcome=False)
+    h.outcome(row, "unknown", reason="delivery_unknown")
+    h.close("u", "unknown", row["step_index"])
+    return h
+
+
+def test_columnar_segments_hold_the_same_segment_for_every_seal_kind():
+    old, new = _mixed_games(FORMAT), _mixed_games(FORMAT_2, verify_every=1)
+    assert [s.kind for s in old.sealed] == [s.kind for s in new.sealed] == [
+        "bootstrap", "truncated", "terminal", "truncated"]
+    for left, right in zip(old.sealed, new.sealed, strict=True):
+        assert right.data[:8] == b"STPDFS02" and left.data[:8] == b"STPDFS01"
+        old_header, old_rows = decode_segment(left.data, expected_sha256=left.sha256)
+        new_header, new_rows = decode_segment(right.data, expected_sha256=right.sha256)
+        assert new_header == right.header == {**old_header, "format": FORMAT_2}
+        assert new_rows == old_rows
+        assert decode_segment(right.data, header_only=True) == (new_header, [])
+    assert new.assembler.report()["segments_verified"] == 4
+    assert old.assembler.report()["segments"] == new.assembler.report()["segments"]
+    # The format-1 path is the old one: these are the bytes the pre-T3 assembler
+    # (int 1229b3e7) seals for this harness.
+    assert hashlib.sha256(b"".join(s.data for s in old.sealed)).hexdigest() == FORMAT_1_GOLDEN
+
+
+def test_columnar_verify_difference_keeps_the_original_and_fails_loudly(monkeypatch):
+    import stpd.rl.fast_assembly as assembly
+
+    real = assembly.encode_segment_columns
+
+    def drifting(header: dict, rows: list, **kwargs: Any) -> Any:
+        changed = dict(header, rows=[dict(r) for r in header["rows"]])
+        changed["rows"][0]["consumption_id"] = "drifted"
+        return real(changed, rows, **kwargs)
+
+    monkeypatch.setattr(assembly, "encode_segment_columns", drifting)
+    h = Harness(segment_format=FORMAT_2, verify_every=1)
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    h.step("g1")
+    with pytest.raises(AssemblyError, match="segment_rejected:segment_columns_verify_mismatch"):
+        h.close("g1", "stop")
+    [kept] = h.sealed
+    assert kept.kind == "rejected" and not kept.trainable
+    assert h.assembler.report()["segments"]["rejected"] == 1
+
+
+def test_columnar_verify_is_json_type_strict(monkeypatch):
+    """An int q (accepted, as in format 1) is stored and returned as floats; a
+    change of JSON type alone (step_index 0 -> 0.0) is a verify difference."""
+    h = Harness(segment_format=FORMAT_2, verify_every=1)
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    row, data = h.row("g1")
+    plan = h.assembler.begin_row(row, data)
+    h.assembler.finish_row(plan, h.scored(plan, row, behavior_q=[0, 1], selected_q=1),
+                           values(row["floor"]))
+    h.outcome(row)
+    h.close("g1", "stop")
+    [sealed] = h.sealed
+    [stored] = decode_segment(sealed.data)[0]["rows"]
+    assert stored["behavior_q"] == [0.0, 1.0] and type(stored["selected_q"]) is float
+    assert sealed.header["rows"][0]["behavior_q"] == [0.0, 1.0]
+
+    import stpd.rl.fast_assembly as assembly
+
+    real = assembly.encode_segment_columns
+
+    def retyped(header: dict, rows: list, **kwargs: Any) -> Any:
+        sealed = real(header, rows, **kwargs)
+        sealed.header["rows"][0]["step_index"] = float(sealed.header["rows"][0]["step_index"])
+        return sealed
+
+    monkeypatch.setattr(assembly, "encode_segment_columns", retyped)
+    h.open("g2")
+    h.step("g2")
+    with pytest.raises(AssemblyError, match="segment_rejected:segment_columns_verify_mismatch"):
+        h.close("g2", "stop")
+
+
+def test_columnar_encoder_refuses_values_format_1_would_coerce():
+    h = Harness(segment_format=FORMAT_2)
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    row, data = h.row("g1")
+    row["in_combat"] = 1  # truthy, not a bool: format 2 stores a bool
+    plan = h.assembler.begin_row(row, data)
+    h.assembler.finish_row(plan, h.scored(plan, row), values(row["floor"]))
+    with pytest.raises(AssemblyError, match="segment_rejected:segment_column_applied"):
+        h.close("g1", "stop")
+    assert h.sealed[0].kind == "rejected"
+
+
+def test_columnar_segment_rejects_tampering():
+    h = _mixed_games(FORMAT_2)
+    segment = h.sealed[0]
+    header_length = int.from_bytes(segment.data[8:16], "little")
+    columns = 16 + header_length + (-header_length % 8)
+    # The segment digest binds every byte (an int column changed in place still
+    # decodes, as a changed JSON number does in format 1); the rest is structural.
+    data = bytearray(segment.data)
+    data[columns + 3] ^= 1
+    with pytest.raises(SegmentFormatError, match="segment_digest_mismatch"):
+        decode_segment(bytes(data), expected_sha256=segment.sha256)
+    in_combat = columns + 6 * 64 * 8  # after the six int64 columns of 64 rows
+    for position, value in ((in_combat, 2), (len(segment.data) - 9, None)):
+        data = bytearray(segment.data)
+        data[position] = value if value is not None else data[position] ^ 1
+        with pytest.raises(SegmentFormatError):
+            decode_segment(bytes(data))
+    stored = json.loads(segment.data[16:16 + header_length])
+    for change in ({"row_count": 63}, {"columns": stored["columns"][:-1]},
+                   {"format": FORMAT}, {"text": {**stored["text"], "row_sha256": []}}):
+        encoded = canonical_json({**stored, **change})
+        body = segment.data[columns:]
+        data = (b"STPDFS02" + len(encoded).to_bytes(8, "little") + encoded
+                + b"\0" * (-len(encoded) % 8) + body)
+        with pytest.raises(SegmentFormatError):
+            decode_segment(data)
+    with pytest.raises(SegmentFormatError, match="segment_magic_or_size"):
+        decode_segment(b"STPDFS03" + segment.data[8:])
+
+
+@pytest.mark.parametrize("options", [{"segment_format": "stpd/rl-fast-segment-3"},
+                                     {"verify_every": 0}, {"verify_every": True}])
+def test_segment_format_switch_values_are_checked(options: dict):
+    with pytest.raises(AssemblyError, match="invalid_segment_format"):
+        Harness(**options)

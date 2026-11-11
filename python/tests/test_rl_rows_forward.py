@@ -52,14 +52,14 @@ def prepared(model, *layouts, microbatch_size=8):
     return batches if len(batches) > 1 else batches[0]
 
 
-def forward_and_gradients(model, group, *, packed=None):
+def forward_and_gradients(model, group, *, packed=None, kernels=""):
     model.zero_grad(set_to_none=True)
     if packed is None:
-        scores, logits, hp = model.forward_prepared_rl4(group)
+        scores, logits, hp = model.forward_prepared_rl4(group, kernels=kernels)
     else:
         from stpd.p1.rows_forward import forward_rows
 
-        scores, logits, hp = forward_rows(model, group, packed=packed)
+        scores, logits, hp = forward_rows(model, group, packed=packed, kernels=kernels)
     generator = torch.Generator().manual_seed(5)
     total = hp.mul(torch.randn(hp.shape, generator=generator)).sum()
     for value in (scores, logits):
@@ -569,3 +569,273 @@ def test_forward_arena_fails_loudly(model, varied):
     plan = plan_forward_join(full, [part, part], 0, plan_arena=allocate_forward_arena(1 << 22))
     with pytest.raises(ValueError, match="plan_arena_mismatch"):
         stage_joined(full, plan, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "embed+nodes",
+                                     "cross+embed+heads+nodes"])
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
+def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
+                                                    width_multiple):
+    """V3 T6: folded value heads and folded cross-attention change only how the
+    readouts are computed (FP32 on CPU: tight tolerance; BF16 on CUDA: tolerance)."""
+    batch = prepared(model)
+    for group in (g for mb in batch.minibatches for g in mb.groups):
+        for plain in (group, dc.replace(group, policy=False)):
+            rows = dc.replace(plain, layout=row_layout(plain, bucket_rows=bucket_rows,
+                                                       width_multiple=width_multiple))
+            (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=packed)
+            (s1, l1, h1), g1 = forward_and_gradients(model, rows, packed=packed,
+                                                     kernels=kernels)
+            for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+                assert left.shape == right.shape
+                assert torch.equal(left.isneginf(), right.isneginf())
+                finite = left.isfinite()
+                torch.testing.assert_close(left[finite], right[finite], rtol=1e-5, atol=2e-6)
+            assert set(g0) == set(g1)
+            for name in g0:
+                torch.testing.assert_close(g0[name], g1[name], rtol=1e-4, atol=2e-6, msg=name)
+
+
+def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
+    from stpd.p1.rows_kernels import FOLD_CATALOG_LIMIT, parse_kernels
+
+    assert PerformanceConfig().prepared_kernels == ""
+    assert parse_kernels("") == () and parse_kernels("cross+heads") == ("cross", "heads")
+    for bad in ("heads+cross", "heads+heads", "flash", "+", None, "embed", "cross+embed"):
+        with pytest.raises(ValueError, match="invalid_prepared_kernels"):
+            parse_kernels(bad)  # type: ignore[arg-type]
+    with pytest.raises(BoundaryError, match="invalid_prepared_kernels"):
+        PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="heads+cross")
+    with pytest.raises(BoundaryError, match="prepared_kernels_requires_rows_v2"):
+        PerformanceConfig(prepared_kernels="heads")
+    assert FOLD_CATALOG_LIMIT == 64
+    assert parse_kernels("cross+heads+nodes") == ("cross", "heads", "nodes")
+    assert parse_kernels("cross+embed+heads+nodes") == ("cross", "embed", "heads", "nodes")
+    with pytest.raises(BoundaryError, match="prepared_kernels_embed_requires_compile"):
+        PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="embed+nodes")
+    PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True,
+                      prepared_kernels="cross+embed+heads+nodes")
+
+
+def test_embed_lever_private_copies_give_the_embedding_gradient():
+    """The private-copy weight gradient (eager and under compile: aot_eager, as
+    in this file's other compiled tests) equals the embedding gradient, repeats
+    included, for one and several copies; non-plain tables are refused."""
+    from stpd.p1 import rows_kernels
+    from stpd.p1.rows_kernels import lookup
+
+    torch.manual_seed(3)
+    for rows, width in ((5, 7), (300, 8)):
+        assert rows_kernels._copies(rows, width) == min(32, (1 << 21) // (rows * width))
+        table = torch.nn.Embedding(rows, width)
+        indices = torch.randint(0, rows, (97,))
+        indices[:9] = 4
+        upstream = torch.randn(len(indices), width)
+        reference = torch.autograd.grad((table(indices) * upstream).sum(), table.weight)[0]
+        def call(module, picked):
+            return lookup(module, picked, private=True)
+
+        for run in (call, torch.compile(call, dynamic=True, backend="aot_eager")):
+            out = run(table, indices)
+            torch.testing.assert_close(out, table(indices))
+            got = torch.autograd.grad((out * upstream).sum(), table.weight)[0]
+            torch.testing.assert_close(got, reference, rtol=1e-6, atol=1e-6)
+    assert rows_kernels._copies(8192, 192) == 1
+    for options in ({"padding_idx": 0}, {"max_norm": 1.0}, {"scale_grad_by_freq": True},
+                    {"sparse": True}):
+        with pytest.raises(ValueError, match="embed_lever_requires_plain_embedding"):
+            lookup(torch.nn.Embedding(5, 7, **options), torch.tensor([0, 1]), private=True)
+
+
+def test_nodes_lever_permutation_gathers_backward_as_gathers_and_refuse_non_permutations():
+    from stpd.p1.rows_kernels import permutation_inverse, permute_rows
+
+    torch.manual_seed(5)
+    values = torch.randn(6, 4, requires_grad=True)
+    perm = torch.tensor([3, 0, 5, 1, 4, 2])
+    grad = torch.randn(6, 4)
+    (permute_rows(values, perm, "unit") * grad).sum().backward()
+    expected = torch.zeros(6, 4).index_add(0, perm, grad)
+    assert torch.equal(values.grad, expected)
+    assert torch.equal(permutation_inverse(perm, "unit")[perm], torch.arange(6))
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_permutation:unit"):
+        permutation_inverse(torch.tensor([3, 0, 5, 1, 4, 4]), "unit")
+    with pytest.raises(ValueError, match="nodes_lever_requires_permutation:unit"):
+        permute_rows(values, perm[:5], "unit")
+
+
+def test_nodes_lever_owner_maps_refuse_broken_reductions_loudly():
+    """A reduction that is not a partition, or whose row order is not a
+    permutation, fails with the lever's name instead of reading unset values."""
+    from stpd.p1.rows_kernels import _owners
+
+    buckets = ((2, 1), (1, 2), (0, 1))  # widths 2, 1, 1, 0 -> 4 terms, 4 rows
+    inverse = torch.tensor([2, 0, 3, 1])
+    owner, scale, empty = _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse), 4, 4, True)
+    order = torch.empty(4, dtype=torch.long)
+    order[inverse] = torch.arange(4)
+    assert torch.equal(owner[torch.tensor([3, 1, 0, 2])],
+                       torch.repeat_interleave(order, torch.tensor([2, 1, 1, 0])))
+    assert torch.equal(empty, torch.tensor([False, False, False, True])[order.argsort()])
+    assert torch.equal(scale > 0, ~empty)
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_partition"):
+        _owners((torch.tensor([3, 1, 1, 2]), buckets, inverse), 4, 4, True)
+    with pytest.raises(RuntimeError, match="nodes_lever_requires_permutation:reduction_rows"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, torch.tensor([2, 0, 2, 1])), 4, 4, True)
+    with pytest.raises(ValueError, match="nodes_lever_requires_complete_reduction"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse), 4, 5, True)
+    with pytest.raises(ValueError, match="nodes_lever_requires_complete_reduction"):
+        _owners((torch.tensor([3, 1, 0, 2]), buckets, inverse[:3]), 4, 4, True)
+
+
+@pytest.mark.parametrize("kernels", ["cross+heads+nodes", "cross+embed+heads+nodes"])
+def test_compiled_kernel_levers_are_the_same_function_on_cpu(model, varied, monkeypatch, kernels):
+    """The compiled lever path (dynamic-shape block variants and node builder:
+    dynamo capture and AOT autograd, `aot_eager` backend to keep the CPU test
+    short; inductor codegen is the CUDA benchmark's) computes what the eager
+    original computes (CPU, FP32)."""
+    compile_ = torch.compile
+    monkeypatch.setattr(torch, "compile",
+                        lambda function, **keywords: compile_(
+                            function, **{**keywords, "backend": "aot_eager"}))
+
+    def compiled_names():
+        return [name for name in vars(model) if name.startswith("_rows_") and "compiled" in name]
+
+    for name in compiled_names():  # compiled once per model; restored after this test
+        monkeypatch.delitem(model.__dict__, name)
+    try:
+        check_compiled_levers(model, kernels)
+    finally:
+        for name in compiled_names():
+            del model.__dict__[name]
+
+
+def check_compiled_levers(model, kernels):
+    from stpd.p1.rows_forward import forward_rows
+
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    for group in (groups[0], dc.replace(groups[0], policy=False)):
+        rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
+        (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=False)
+        model.zero_grad(set_to_none=True)
+        out = forward_rows(model, rows, compile=True, packed=False, kernels=kernels)
+        (s1, l1, h1) = (value.detach() for value in out)
+        generator = torch.Generator().manual_seed(5)
+        total = out[2].mul(torch.randn(out[2].shape, generator=generator)).sum()
+        for value in out[:2]:
+            weights = torch.randn(value.shape, generator=generator)
+            total = total + value.masked_fill(~value.isfinite(), 0).mul(weights).sum()
+        total.backward()
+        g1 = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+        for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+            assert torch.equal(left.isneginf(), right.isneginf())
+            finite = left.isfinite()
+            torch.testing.assert_close(left[finite], right[finite], rtol=1e-5, atol=2e-6)
+        assert set(g0) == set(g1)
+        for name in g0:
+            torch.testing.assert_close(g0[name], g1[name], rtol=1e-4, atol=2e-6, msg=name)
+
+
+def test_levered_block_wrapper_passes_kernels_by_keyword_only(model, varied, monkeypatch):
+    """forward_rows reaches the block through the levered wrapper with the 12
+    positional block arguments plus `kernels` by keyword (keyword-only, so no
+    positional argument can fill it)."""
+    import inspect
+
+    from stpd.p1 import rows_forward
+
+    for packed, function in ((False, rows_forward.rows_block),
+                             (True, rows_forward.rows_block_packed)):
+        parameter = inspect.signature(function).parameters["kernels"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert rows_forward._block(packed, ()) is function
+    calls = []
+    original = rows_forward.rows_block
+
+    def spy(*args, **keywords):
+        calls.append((len(args), keywords))
+        return original(*args, **keywords)
+
+    monkeypatch.setattr(rows_forward, "rows_block", spy)
+    group = prepared(model).minibatches[0].groups[0]
+    rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
+    rows_forward.forward_rows(model, rows, packed=False, kernels="cross+heads")
+    assert calls and all(call == (12, {"kernels": ("cross", "heads") if group.policy
+                                       else ("heads",)}) for call in calls)
+
+
+def test_padded_cross_long_catalog_projects_keys_like_the_folded_form():
+    """Both cross forms (folded for short catalogs, projected for long) agree."""
+    from stpd.p1 import rows_kernels
+
+    torch.manual_seed(3)
+    module = torch.nn.MultiheadAttention(192, 4, batch_first=True).eval()
+    lengths = torch.tensor([5, 1, 7])
+    keep = torch.arange(7)[None, :] < lengths[:, None]
+    padded = torch.randn(3, 7, 192).masked_fill(~keep[..., None], 0)
+    action = torch.randn(3, 9, 192)
+    folded = rows_kernels.padded_cross(module, action, padded, keep)
+    expected, _ = module(action, padded, padded, key_padding_mask=~keep, need_weights=False)
+    torch.testing.assert_close(folded, expected, rtol=1e-5, atol=2e-6)
+    limit = rows_kernels.FOLD_CATALOG_LIMIT
+    try:
+        rows_kernels.FOLD_CATALOG_LIMIT = 0
+        projected = rows_kernels.padded_cross(module, action, padded, keep)
+    finally:
+        rows_kernels.FOLD_CATALOG_LIMIT = limit
+    torch.testing.assert_close(projected, expected, rtol=1e-5, atol=2e-6)
+    # Packed real tokens (flash varlen layout; CPU reference one row at a time).
+    encoded = torch.cat([padded[row, :int(length)] for row, length in enumerate(lengths)])
+    offsets = torch.cat((torch.zeros(1, dtype=torch.long), lengths.cumsum(0))).to(torch.int32)
+    packed = rows_kernels.packed_cross(module, action, encoded, offsets, 7)
+    torch.testing.assert_close(packed, expected, rtol=1e-5, atol=2e-6)
+
+
+def test_cross_lever_keeps_the_original_attention_for_long_catalogs(model, varied, monkeypatch):
+    from stpd.p1 import rows_kernels
+
+    group = prepared(model, "rows-v2").minibatches[0].groups[0]
+    (s0, l0, h0), _ = forward_and_gradients(model, group, packed=True)
+    monkeypatch.setattr(rows_kernels, "FOLD_CATALOG_LIMIT", 0)
+    (s1, l1, h1), _ = forward_and_gradients(model, group, packed=True, kernels="cross")
+    assert torch.equal(s0, s1) and torch.equal(l0, l1) and torch.equal(h0, h1)
+
+
+def test_effective_config_records_prepared_kernels_only_when_selected():
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segment_learner import _resume_config
+    from stpd.rl.segments import SegmentConfig
+
+    rows = PerformanceConfig(prepared_forward="rows-v2")
+    base = LearnerConfig(run="rows-unit", peer={"kind": "local", "directory": "/nonexistent"},
+                         performance=rows, segments=SegmentConfig())
+    selected = dc.replace(base, performance=dc.replace(rows, prepared_kernels="cross+heads"))
+    assert "prepared_kernels" not in base.frozen()["performance"]
+    assert selected.frozen()["performance"]["prepared_kernels"] == "cross+heads"
+    assert _resume_config(dc.asdict(base)) == _resume_config(dc.asdict(selected))
+
+
+def test_prepared_update_with_kernel_levers_steps_like_the_original_on_cpu(model, varied):
+    rows = prepared(model, "rows-v2")
+    config = LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01)
+    reference = copy.deepcopy(model)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3)
+    for minibatch in rows.minibatches:
+        result = prepared_update(
+            model, optimizer, minibatch, config=config, target_kl=1e9,
+            performance=PerformanceConfig(prepared_forward="rows-v2",
+                                          prepared_kernels="cross+heads+nodes"))
+        expected = prepared_update(reference, reference_optimizer, minibatch, config=config,
+                                   target_kl=1e9,
+                                   performance=PerformanceConfig(prepared_forward="rows-v2"))
+        assert result["stepped"] and result["rows_forward"]["kernels"] == "cross+heads+nodes"
+        assert "kernels" not in expected["rows_forward"]
+        for key in ("policy_loss", "td_loss", "terminal_loss", "hp_loss", "gradient_norm"):
+            assert result[key] == pytest.approx(expected[key], rel=1e-4, abs=1e-6)
+    for name, value in reference.state_dict().items():
+        torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
+                                   msg=name)

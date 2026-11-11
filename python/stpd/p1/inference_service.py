@@ -683,8 +683,9 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
-                   arena: torch.Tensor | None = None) -> None:
-    """Spawned device process: models and forwards only, no per-row Python work.
+                   arena: torch.Tensor | None = None, device_rows: bool = False) -> None:
+    """Spawned device process: models and forwards only, no per-row Python work
+    (with `device_rows` it also turns a forward's tensors into per-row scores).
 
     The loading thread reads joined jobs from the joiners (or, without joiners,
     prepared parts from every prepare worker, joining a job's parts once all are
@@ -722,7 +723,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
         try:
             while (item := joined.get()) is not None:
                 parts, group = item
-                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group),
+                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group,
+                                                           device_rows),
                                                protocol=pickle.HIGHEST_PROTOCOL))
         except BaseException as failure:
             # The forward thread is gone (#431 review S1): end the whole device
@@ -779,7 +781,9 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
 
 
 def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
-                joined: Any) -> list[dict[str, Any]]:
+                joined: Any, device_rows: bool = False) -> list[dict[str, Any]]:
+    from .rows_scorer import RowsScorer
+
     out = []
     mu = parts[0]["mu"]
     scorer = scorers.get(mu)
@@ -825,11 +829,18 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         error = ("SERVICE_STOPPING", "")
         outputs = {}
     for part, tails in zip(parts, part_tails, strict=True):
-        out.append({"job": part["job"], "part": part["part"], "kept": part["kept"],
-                    "lengths": part["lengths"], "failed": part["failed"],
-                    "audit": part["audit"], "tails": tails, "error": error,
-                    "overflow": part.get("overflow") or overflow, "fatal": fatal,
-                    "outputs": outputs.get(part["part"])})
+        part_outputs = outputs.get(part["part"])
+        result = {"job": part["job"], "part": part["part"], "kept": part["kept"],
+                  "lengths": part["lengths"], "failed": part["failed"],
+                  "audit": part["audit"], "tails": tails, "error": error,
+                  "overflow": part.get("overflow") or overflow, "fatal": fatal,
+                  "outputs": part_outputs}
+        if device_rows and part_outputs is not None:
+            # The same RowsScorer.rows, run here: the service unpickles plain
+            # per-row lists instead of four tensors and skips the conversion.
+            result["outputs"] = None
+            result["rows"] = RowsScorer.rows(part_outputs, part["lengths"])
+        out.append(result)
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
         out[0]["forwards"] = 1 if live and error is None else 0  # parts are joined
@@ -895,6 +906,16 @@ class FastInferenceService:
     only forwards. Batching is adaptive: at most `in_flight` jobs are between
     dispatch and reply, so under load rows wait for a slot and the next job
     (up to `max_job_rows`) grows; with a free slot a job leaves after `window_ms`.
+
+    A job is split into `min(job_parts, rows)` parts, one per prepare worker.
+    `device_rows` (V3 option, default off): the device process turns each
+    forward's output tensors into per-row scores (`RowsScorer.rows`, the same
+    function and values), so this process unpickles plain lists instead of
+    tensors and does not convert them; it holds the GIL less per row.
+    `part_rows` > 0 (V3 option, default off) caps that at ceil(rows / part_rows),
+    so each part holds at least about `part_rows` rows: a small job goes to fewer
+    workers instead of one row each, a large one still uses `job_parts` workers.
+    It has no effect with `job_parts` = 1.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -905,8 +926,10 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
-                 audit_fraction: float = 0.01, failure_dir: str | Path | None = None,
-                 encoder_sha256: str | None = None, env_sha256: str | None = None) -> None:
+                 part_rows: int = 0, device_rows: bool = False,
+                 audit_fraction: float = 0.01,
+                 failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
+                 env_sha256: str | None = None) -> None:
         import multiprocessing
         from multiprocessing.connection import Listener
 
@@ -917,7 +940,8 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_max_rows")
         if prepare_cpus is not None and len(prepare_cpus) != prepare_workers:
             raise ValueError("prepare_cpus_per_worker")
-        if not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0:
+        if (not 1 <= job_parts <= prepare_workers or max_job_rows < 1 or join_workers < 0
+                or type(part_rows) is not int or part_rows < 0):
             raise ValueError("invalid_rl_inference_3_job_shape")
         if arena_row_bytes is not None and arena_row_bytes < 1:
             raise ValueError("invalid_rl_inference_3_arena")
@@ -929,6 +953,7 @@ class FastInferenceService:
         self.training_generation = training_generation
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
+        self.part_rows, self.device_rows = part_rows, bool(device_rows)
         self.bf16, self.compile = bf16, compile
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
@@ -956,7 +981,7 @@ class FastInferenceService:
                                       "stage_seconds": 0.0,
                                       "finish_seconds": 0.0, "dispatch_seconds": 0.0,
                                       "audited": 0, "audit_failures": 0,
-                                      "episodes_refused": 0}
+                                      "episodes_refused": 0, "parts": 0}
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
@@ -984,7 +1009,8 @@ class FastInferenceService:
         self.device_process = context.Process(
             target=_device_worker, daemon=True, name="rl-inference-3-device",
             args=(control_child, device_inputs, results_child,
-                  self.device, bf16, compile, device_threads, self.arena))
+                  self.device, bf16, compile, device_threads, self.arena,
+                  self.device_rows))
         self.device_process.start()
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
@@ -1074,7 +1100,16 @@ class FastInferenceService:
         key = handoff.snapshot_sha256
         with self.control_lock:
             self._device_control("model", key, blob.getvalue())
-            offer = self.assembler.offer_mu(handoff)
+            try:
+                offer = self.assembler.offer_mu(handoff)
+            except BaseException:
+                # Never leave a model on the device for a mu no row can name; a key the
+                # ledger still holds (an earlier accepted offer) stays loaded.
+                ledger = getattr(self.assembler, "ledger", None)
+                if ledger is not None and key not in ledger.resident:
+                    with contextlib.suppress(Exception):
+                        self._device_control("drop", key, None)
+                raise
             if not offer.accepted:
                 self._device_control("drop", key, None)
             for evicted in offer.evicted:
@@ -1289,7 +1324,8 @@ class FastInferenceService:
 
     def _dispatch(self, rows: list[_V3Row]) -> None:
         dispatching = time.perf_counter()
-        parts = min(self.job_parts, len(rows))
+        parts = min(self.job_parts, len(rows) if not self.part_rows
+                    else -(-len(rows) // self.part_rows))
         size = -(-len(rows) // parts)
         chunks = [rows[start:start + size] for start in range(0, len(rows), size)]
         with self.jobs_lock:
@@ -1312,6 +1348,7 @@ class FastInferenceService:
         share = self.slot_bytes * 3 // 4 // len(chunks) // 64 * 64
         base = slot * self.slot_bytes
         self.stats["jobs"] += 1
+        self.stats["parts"] += len(chunks)
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
         for part, (chunk, worker) in enumerate(zip(chunks, workers, strict=True)):
@@ -1418,7 +1455,8 @@ class FastInferenceService:
                 for index, value in zip(indices, RowsScorer.rows(values, lengths), strict=True):
                     tails[index] = ("NONFINITE_SCORES" if value is None
                                     else value.outcome_probabilities)
-            outputs = RowsScorer.rows(part["outputs"], part["lengths"])
+            outputs = (part["rows"] if self.device_rows
+                       else RowsScorer.rows(part["outputs"], part["lengths"]))
             for index, item, output in zip(part["kept"], kept, outputs, strict=True):
                 tail = tails.get(index)
                 if output is None:

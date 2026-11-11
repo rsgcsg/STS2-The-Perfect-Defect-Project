@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import json
+import math
 import os
 import signal
 import socket
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="real spawned SGD pro
 
 
 def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None,
-                   dataplane=None, generation="g-sgd-equal"):
+                   dataplane=None, generation="g-sgd-equal", device="cpu"):
     """Each episode: two 2-row segments, the second terminal, so terminal aux rows
     are verified, sampled and charged exactly like the in-process owner."""
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
@@ -43,7 +44,7 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
     tmp_path.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(20261107)  # the fixture's start package draws from global torch RNG
     config, io = configuration(tmp_path, monkeypatch, generation=generation)
-    config = dc.replace(config, segments=dc.replace(
+    config = dc.replace(config, device=device, segments=dc.replace(
         config.segments, minibatches=2, episode_rows=8, archive_min_free_bytes=0,
         archive_min_free_inodes=0, **(segments or {})))
     io = dc.replace(io, dataplane={
@@ -339,15 +340,25 @@ def test_child_rejects_a_start_without_its_staged_plan(tmp_path, monkeypatch):
         owner.close()
 
 
+def _first_handoff(owner):
+    handoff = owner.pending_batch[1].result(timeout=60) if owner.pending_batch else None
+    if handoff is None:
+        active = owner._select()
+        owner.pending_batch = active, owner._submit_batch(active)
+        handoff = owner.pending_batch[1].result(timeout=60)
+    return handoff
+
+
+@pytest.mark.parametrize("threaded", [False, True])
 @pytest.mark.parametrize("damage", ["deleted", "changed"])
-def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch, damage):
-    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1)
+def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch, damage,
+                                                           threaded):
+    """Off: staging fails inline. On: it fails on the stage thread, and the child
+    still fails loudly with the same error (#456 review: stage-thread exception)."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1,
+                                 dataplane={"sgd_stage_thread": threaded})
     try:
-        handoff = owner.pending_batch[1].result(timeout=60) if owner.pending_batch else None
-        if handoff is None:
-            active = owner._select()
-            owner.pending_batch = active, owner._submit_batch(active)
-            handoff = owner.pending_batch[1].result(timeout=60)
+        handoff = _first_handoff(owner)
         path = Path(handoff.path)
         assert path.exists() and handoff.sha256
         if damage == "deleted":
@@ -360,12 +371,27 @@ def test_prepared_file_must_survive_unchanged_until_staged(tmp_path, monkeypatch
         with pytest.raises(SgdProcessFailed) as caught:
             owner._prepare()
         child = caught.value.facts["child"]
-        assert child["stage"] == "stage"
+        assert child["stage"] == ("stage_wait" if threaded else "stage")
         assert (child["error_type"] == "FileNotFoundError" if damage == "deleted"
                 else child["error_code"] == "sgd_prepared_file_integrity_changed")
+        assert caught.value.facts["exitcode"] == 1
         assert owner.updates == 0
     finally:
         owner.close()
+
+
+def test_close_while_a_plan_is_staging_on_the_stage_thread(tmp_path, monkeypatch):
+    """#456 review: a shutdown that arrives while the side thread stages a plan
+    waits for that staging, then exits 0 (no kill, no failure, no hang)."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1,
+                                 dataplane={"sgd_stage_thread": True})
+    try:
+        owner._sgd_plan(_first_handoff(owner))  # sent; not waited for
+    finally:
+        owner.close()
+    exit_facts = owner.sgd.exit
+    assert exit_facts["exitcode"] == 0 and not exit_facts["shutdown_killed"]
+    assert exit_facts["failure"] is None
 
 
 def test_unsent_mu_snapshots_are_replaced_and_versions_stay_contiguous(tmp_path, monkeypatch):
@@ -746,14 +772,39 @@ def test_read_ahead_while_waiting_keeps_the_same_learning_and_fills_the_window(
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"ahead_while_waiting": 1})
 
 
-def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch):
+def assert_close_tree(left, right):
+    """`assert_tree` with float tensors equal to a few float32 ulps (CUDA layouts)."""
+    if isinstance(left, torch.Tensor) and left.is_floating_point():
+        torch.testing.assert_close(left.cpu(), right.cpu(), rtol=1e-4, atol=1e-9)
+    elif isinstance(left, dict):
+        assert left.keys() == right.keys()
+        for key in left:
+            assert_close_tree(left[key], right[key])
+    elif isinstance(left, (tuple, list)):
+        assert len(left) == len(right)
+        for one, two in zip(left, right, strict=True):
+            assert_close_tree(one, two)
+    else:
+        assert_tree(left, right)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="requires an authorized CUDA allocation"))])
+def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     """WP8 starvation: `sgd_stage_thread` moves verify/pin/H2D of the next plan to
-    one side thread; batches, order and every update stay the same."""
+    one side thread; batches, order and every update stay the same.
+
+    On CUDA this is the production path: pinned slabs H2D-copied from the side
+    thread (`direct`), the default stream waiting on the copy's event. CUDA
+    training is not bit-deterministic run to run here (1460164: the same path
+    twice differs by ~1 float32 ulp), so on CUDA the updates must agree to a few
+    ulps; a batch read before its copy landed would be far off.
+    """
     results = {}
     for threaded in (False, True):
         owner, _, _ = terminal_owner(tmp_path / f"stage-{threaded}", monkeypatch,
                                      dataplane={"sgd_stage_thread": threaded,
-                                                "ahead_while_waiting": True})
+                                                "ahead_while_waiting": True}, device=device)
         threads: list[str] = []
         staged = owner.sgd.on_staged
 
@@ -775,10 +826,19 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch):
     assert not any(name.startswith("rl-sgd-stage") for name in base_threads)
     assert all(name.startswith("rl-sgd-stage") for name in threads)
     assert base.counters == cp.counters and base_aux == aux
-    for name in ("weights", "optimizer", "ema"):
-        assert_tree(getattr(base, name), getattr(cp, name))
-    for left, right in zip(base_events, events, strict=True):
-        for key in ("update", "first_use", "td_loss", "policy_loss", "stepped"):
-            assert left[key] == right[key], key
+    if device == "cuda":
+        for name in ("weights", "optimizer", "ema"):
+            assert_close_tree(getattr(base, name), getattr(cp, name))
+        for left, right in zip(base_events, events, strict=True):
+            for key in ("update", "first_use", "stepped"):
+                assert left[key] == right[key], key
+            for key in ("td_loss", "policy_loss"):
+                assert math.isclose(left[key], right[key], rel_tol=1e-4, abs_tol=1e-9), key
+    else:
+        for name in ("weights", "optimizer", "ema"):
+            assert_tree(getattr(base, name), getattr(cp, name))
+        for left, right in zip(base_events, events, strict=True):
+            for key in ("update", "first_use", "td_loss", "policy_loss", "stepped"):
+                assert left[key] == right[key], key
     with pytest.raises(ValueError, match="invalid_sgd_stage_thread"):
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"sgd_stage_thread": 1})

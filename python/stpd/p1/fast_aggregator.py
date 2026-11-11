@@ -12,7 +12,11 @@ connect to its Unix socket and speak `sts2.policy-runtime/fast-env-link-1`
   meaning (rl-inference-3 field names), in each connection's order;
 * packs rows from every connection into `score_request` packets, flushed after
   `window_ms` or at `max_rows_per_packet`, on one TCP connection with
-  TCP_NODELAY;
+  TCP_NODELAY per service;
+* with several services (`services`, one card's K independent services), binds
+  each game to one of them by `service_for_game` (a digest of the game id, so
+  fixed for the game's life and never chosen per row); every message of a game
+  goes to its service, in order, and each service has its own open packet;
 * routes each `scored` / `refused` result back to the connection and row id
   that sent it.
 
@@ -23,11 +27,13 @@ whose connection is gone. A row that cannot be encoded or whose bindings differ
 is answered `refused` (ROW_DECODE_FAILED / IDENTITY_MISMATCH) without reaching
 the service. A lost service connection is fatal: every environment link is
 closed (their pending rows resolve as disconnected = not_started), nothing is
-reconnected or retried.
+reconnected or retried. With several services the loss of any one is fatal in
+the same way; its games are never moved to another service.
 """
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -56,6 +62,18 @@ _DECISION_HEAD = re.compile(
     rb'^\{"schema":"[^"]+","type":"decision","row_id":(\d+),"game_instance_id":"([A-Za-z0-9._:-]{1,128})",'
     rb'"step_index":(\d+),"consumption_id":"[^"]*","catalog_len":\d+,"catalog_sha256":"([0-9a-f]{64})"')
 _BINDING_FIELDS = ("catalog_len", "in_combat", "floor")
+
+
+def service_for_game(game_instance_id: str, services: int) -> int:
+    """The service (0..services-1) a game is bound to, for all of its messages.
+
+    A pure function of the game id, so every aggregator, a restart and a reader
+    of the records agree; it is never chosen per row or by load.
+    """
+    if services == 1:
+        return 0
+    head = hashlib.sha256(game_instance_id.encode()).digest()[:8]
+    return int.from_bytes(head, "big") % services
 
 
 def agent_input_spec(identity: dict[str, Any]) -> dict[str, str]:
@@ -133,6 +151,25 @@ class _Env:
 
 
 @dataclass
+class _Upstream:
+    """One service connection with its own open packet, ids and pending rows."""
+
+    index: int
+    connection: Any
+    max_rows: int
+    service_instance: str
+    lock: threading.Condition = field(default_factory=threading.Condition)
+    send: threading.Lock = field(default_factory=threading.Lock)
+    request_id: int = 0
+    packet_id: int = 0
+    rows: list[tuple[_Decision, dict[str, Any], bytes]] = field(default_factory=list)
+    games_in_packet: set[str] = field(default_factory=set)
+    opened: float = 0.0
+    pending: dict[int, _Decision] = field(default_factory=dict)
+    sent_rows: int = 0
+
+
+@dataclass
 class _Decision:
     env: _Env
     row_id: int
@@ -142,12 +179,22 @@ class _Decision:
 
 
 class NodeAggregator:
-    def __init__(self, vocabulary: dict[str, Any], *, service_address: tuple[str, int],
-                 authkey: bytes, socket_path: str, aggregator_id: str,
+    def __init__(self, vocabulary: dict[str, Any], *,
+                 service_address: tuple[str, int] | None = None,
+                 authkey: bytes | None = None, socket_path: str, aggregator_id: str,
                  python_env_sha256: str, encoder_workers: int,
                  encoder_cpus: list[int] | None = None,
                  window_ms: float = 1.5, cache_bytes: int | None = None,
-                 verify_every: int = 0) -> None:
+                 verify_every: int = 0,
+                 services: list[tuple[tuple[str, int], bytes]] | None = None) -> None:
+        # One service (service_address + authkey, the default) or a card's K
+        # services as [(address, authkey), ...]; never both, never empty.
+        if services is None:
+            if service_address is None or authkey is None:
+                raise ValueError("fast_aggregator_service_required")
+            services = [(service_address, authkey)]
+        elif service_address is not None or authkey is not None or not services:
+            raise ValueError("fast_aggregator_services_or_service_address")
         options: dict[str, Any] = {"workers": encoder_workers, "cpus": encoder_cpus,
                                    "verify_every": verify_every,
                                    "handler": "stpd.p1.fast_aggregator:encode_link_decision"}
@@ -163,29 +210,27 @@ class NodeAggregator:
         self.stats: dict[str, Any] = {"rows": 0, "packets": 0, "replies": 0,
                                       "replies_without_env": 0, "refused_here": {},
                                       "refused_service": {}, "env_connections": 0}
-        self._lock = threading.Condition()
-        self._request_id = 0
-        self._packet_id = 0
-        self._rows: list[tuple[_Decision, dict[str, Any], bytes]] = []
-        self._games_in_packet: set[str] = set()
-        self._opened = 0.0
-        self._pending: dict[int, _Decision] = {}
+        self._stats_lock = threading.Lock()
         self._envs: list[_Env] = []
         self._stopping = False
         self.failure: str | None = None
 
-        self.service = Client(service_address, authkey=authkey)
-        tcp_nodelay(self.service)
-        self._service_send = threading.Lock()
-        self._send_control({"kind": "attach", "aggregator_id": aggregator_id,
-                            "chain": "fast_chain", "python_env_sha256": python_env_sha256,
-                            "compiler_identity": self.compiler_identity,
-                            "encoder": identity["encoder"], "row_format": identity["row_format"]})
-        attached, _ = unpack_message(self.service.recv_bytes(V3_MAX_MESSAGE))
-        if attached.get("kind") != "attached":
-            raise BoundaryError("p1_fast_aggregator", "attach_refused")
-        self.max_rows = min(int(attached["max_rows_per_packet"]), 4096)
-        self.service_instance = attached["service_instance"]
+        self._upstreams: list[_Upstream] = []
+        try:
+            for index, (address, key) in enumerate(services):
+                self._upstreams.append(self._attach(index, address, key, python_env_sha256,
+                                                    identity))
+        except BaseException:
+            for upstream in self._upstreams:
+                with contextlib.suppress(OSError):
+                    upstream.connection.close()
+            self.pool.close()
+            raise
+        first = self._upstreams[0]
+        self.service = first.connection
+        self.service_instance = first.service_instance
+        self.service_instances = [upstream.service_instance for upstream in self._upstreams]
+        self.max_rows = min(upstream.max_rows for upstream in self._upstreams)
 
         with contextlib.suppress(FileNotFoundError):
             os.unlink(socket_path)
@@ -193,38 +238,69 @@ class NodeAggregator:
         self.listener.bind(socket_path)
         self.listener.listen(256)
         self.socket_path = socket_path
-        targets = ((self._accept, "fast-aggregator-accept"),
-                   (self._flusher, "fast-aggregator-flush"),
-                   (self._replies, "fast-aggregator-replies"))
-        self.threads = [threading.Thread(target=target, daemon=True, name=name)
-                        for target, name in targets]
+        targets: list[tuple[Any, tuple[Any, ...], str]] = [
+            (self._accept, (), "fast-aggregator-accept")]
+        for upstream in self._upstreams:
+            suffix = f"-{upstream.index}" if upstream.index else ""
+            targets += [(self._flusher, (upstream,), "fast-aggregator-flush" + suffix),
+                        (self._replies, (upstream,), "fast-aggregator-replies" + suffix)]
+        self.threads = [threading.Thread(target=target, args=args, daemon=True, name=name)
+                        for target, args, name in targets]
         for thread in self.threads:
             thread.start()
 
     # -- service side --------------------------------------------------------
-    def _send_control(self, message: dict[str, Any]) -> None:
-        with self._service_send:
+    def _attach(self, index: int, address: tuple[str, int], key: bytes,
+                python_env_sha256: str, identity: dict[str, Any]) -> _Upstream:
+        connection = Client(address, authkey=key)
+        tcp_nodelay(connection)
+        upstream = _Upstream(index, connection, 0, "")
+        self._send_control(upstream, {
+            "kind": "attach", "aggregator_id": self.aggregator_id, "chain": "fast_chain",
+            "python_env_sha256": python_env_sha256, "compiler_identity": self.compiler_identity,
+            "encoder": identity["encoder"], "row_format": identity["row_format"]})
+        attached, _ = unpack_message(connection.recv_bytes(V3_MAX_MESSAGE))
+        if attached.get("kind") != "attached":
+            raise BoundaryError("p1_fast_aggregator", "attach_refused")
+        upstream.max_rows = min(int(attached["max_rows_per_packet"]), 4096)
+        upstream.service_instance = attached["service_instance"]
+        return upstream
+
+    def _bound(self, game_instance_id: Any) -> _Upstream:
+        """The upstream of a game's service (the only one with several services)."""
+        if len(self._upstreams) == 1:
+            return self._upstreams[0]
+        if not isinstance(game_instance_id, str):
+            raise BoundaryError("p1_fast_aggregator", "game_instance_id_required")
+        return self._upstreams[service_for_game(game_instance_id, len(self._upstreams))]
+
+    def _count(self, key: str, amount: int = 1) -> None:
+        with self._stats_lock:
+            self.stats[key] += amount
+
+    def _send_control(self, upstream: _Upstream, message: dict[str, Any]) -> None:
+        with upstream.send:
             envelope = {"schema": V3_SCHEMA, **message}
             if message["kind"] != "step_outcome":
-                self._request_id += 1
-                envelope["request_id"] = self._request_id
-            self.service.send_bytes(pack_message(envelope))
+                upstream.request_id += 1
+                envelope["request_id"] = upstream.request_id
+            upstream.connection.send_bytes(pack_message(envelope))
 
-    def _flush_locked(self) -> None:
+    def _flush_locked(self, upstream: _Upstream) -> None:
         """Send the open packet; request ids are assigned here, in send order."""
-        if not self._rows:
+        if not upstream.rows:
             return
-        rows, self._rows = self._rows, []
-        self._games_in_packet = set()
+        rows, upstream.rows = upstream.rows, []
+        upstream.games_in_packet = set()
         binary = bytearray()
         wire = []
-        with self._service_send:
-            self._packet_id += 1
+        with upstream.send:
+            upstream.packet_id += 1
             for decision, meta, row in rows:
-                self._request_id += 1
-                self._pending[self._request_id] = decision
-                decision.env.sent[decision.row_id] = self._request_id
-                wire.append({"request_id": self._request_id,
+                upstream.request_id += 1
+                upstream.pending[upstream.request_id] = decision
+                decision.env.sent[decision.row_id] = upstream.request_id
+                wire.append({"request_id": upstream.request_id,
                              "game_instance_id": decision.game_instance_id,
                              "step_index": meta["step_index"],
                              "consumption_id": meta["consumption_id"],
@@ -236,66 +312,74 @@ class NodeAggregator:
                                          "row_sha256": meta["row_sha256"]}})
                 binary += row
             try:
-                self.service.send_bytes(pack_message(
+                upstream.connection.send_bytes(pack_message(
                     {"schema": V3_SCHEMA, "kind": "score_request",
-                     "packet_id": self._packet_id, "rows": wire}, binary))
+                     "packet_id": upstream.packet_id, "rows": wire}, binary))
             except (OSError, ValueError) as error:
-                self._fail(f"service_send:{type(error).__name__}")
+                self._fail(self._where(upstream, f"service_send:{type(error).__name__}"))
                 return
-        self.stats["packets"] += 1
-        self.stats["rows"] += len(rows)
+        upstream.sent_rows += len(rows)
+        with self._stats_lock:
+            self.stats["packets"] += 1
+            self.stats["rows"] += len(rows)
+
+    def _where(self, upstream: _Upstream, reason: str) -> str:
+        return reason if len(self._upstreams) == 1 else f"{reason}@service_{upstream.index}"
 
     def _add_row(self, decision: _Decision, meta: dict[str, Any], row: bytes) -> None:
-        with self._lock:
-            if not self._rows:
-                self._opened = time.perf_counter()
-                self._lock.notify()
-            self._rows.append((decision, meta, row))
-            self._games_in_packet.add(decision.game_instance_id)
-            if len(self._rows) >= self.max_rows:
-                self._flush_locked()
+        upstream = self._bound(decision.game_instance_id)
+        with upstream.lock:
+            if not upstream.rows:
+                upstream.opened = time.perf_counter()
+                upstream.lock.notify()
+            upstream.rows.append((decision, meta, row))
+            upstream.games_in_packet.add(decision.game_instance_id)
+            if len(upstream.rows) >= upstream.max_rows:
+                self._flush_locked(upstream)
 
     def _control(self, message: dict[str, Any]) -> None:
-        with self._lock:
+        upstream = self._bound(message.get("game_instance_id"))
+        with upstream.lock:
             # A control naming a game whose row is still in the open packet goes
             # after that row (Stop / timeout races); otherwise it goes now.
-            if message.get("game_instance_id") in self._games_in_packet:
-                self._flush_locked()
+            if message.get("game_instance_id") in upstream.games_in_packet:
+                self._flush_locked(upstream)
             try:
-                self._send_control(message)
+                self._send_control(upstream, message)
             except (OSError, ValueError) as error:
-                self._fail(f"service_send:{type(error).__name__}")
+                self._fail(self._where(upstream, f"service_send:{type(error).__name__}"))
 
-    def _flusher(self) -> None:
-        with self._lock:
+    def _flusher(self, upstream: _Upstream) -> None:
+        with upstream.lock:
             while not self._stopping:
-                if not self._rows:
-                    self._lock.wait()
+                if not upstream.rows:
+                    upstream.lock.wait()
                     continue
-                remaining = self._opened + self.window - time.perf_counter()
+                remaining = upstream.opened + self.window - time.perf_counter()
                 if remaining > 0:
-                    self._lock.wait(remaining)
+                    upstream.lock.wait(remaining)
                     continue
-                self._flush_locked()
+                self._flush_locked(upstream)
 
-    def _replies(self) -> None:
+    def _replies(self, upstream: _Upstream) -> None:
         while True:
             try:
-                envelope, _ = unpack_message(self.service.recv_bytes(V3_MAX_MESSAGE))
+                envelope, _ = unpack_message(upstream.connection.recv_bytes(V3_MAX_MESSAGE))
             except (OSError, EOFError, ValueError) as error:
                 if not self._stopping:
-                    self._fail(f"service_receive:{type(error).__name__}")
+                    self._fail(self._where(upstream,
+                                           f"service_receive:{type(error).__name__}"))
                 return
             if envelope.get("kind") != "score_response":
-                self._fail("service_unexpected_message")
+                self._fail(self._where(upstream, "service_unexpected_message"))
                 return
             for result in envelope.get("results") or []:
-                with self._lock:
-                    decision = self._pending.pop(result.get("request_id"), None)
+                with upstream.lock:
+                    decision = upstream.pending.pop(result.get("request_id"), None)
                 if decision is None:
-                    self._fail("service_reply_unknown_request")
+                    self._fail(self._where(upstream, "service_reply_unknown_request"))
                     return
-                self.stats["replies"] += 1
+                self._count("replies")
                 if result.get("status") == "scored":
                     reply = {key: result[key] for key in (
                         "mu_snapshot_sha256", "segment_id", "row_in_segment", "selected_index",
@@ -303,13 +387,14 @@ class NodeAggregator:
                     reply.update(type="scored")
                 else:
                     code = str(result.get("error_code"))
-                    self.stats["refused_service"][code] = (
-                        self.stats["refused_service"].get(code, 0) + 1)
+                    with self._stats_lock:
+                        self.stats["refused_service"][code] = (
+                            self.stats["refused_service"].get(code, 0) + 1)
                     reply = {"type": "refused", "error_code": code}
                 reply.update(row_id=decision.row_id, game_instance_id=decision.game_instance_id,
                              catalog_sha256=decision.catalog_sha256)
                 if not decision.env.write(reply):
-                    self.stats["replies_without_env"] += 1
+                    self._count("replies_without_env")
 
     # -- environment side ----------------------------------------------------
     def _accept(self) -> None:
@@ -409,8 +494,9 @@ class NodeAggregator:
         self._add_row(decision, meta, row)
 
     def _refuse_here(self, decision: _Decision, code: str) -> None:
-        refused = self.stats["refused_here"]
-        refused[code] = refused.get(code, 0) + 1
+        with self._stats_lock:
+            refused = self.stats["refused_here"]
+            refused[code] = refused.get(code, 0) + 1
         decision.env.write({"type": "refused", "row_id": decision.row_id,
                             "game_instance_id": decision.game_instance_id,
                             "catalog_sha256": decision.catalog_sha256, "error_code": code})
@@ -430,7 +516,8 @@ class NodeAggregator:
             raise BoundaryError("p1_fast_aggregator", "hello_required")
         body = {key: value for key, value in message.items() if key not in {"schema", "type"}}
         if kind == "step_outcome":
-            body["row_request_id"] = self._row_request_id(env, body.pop("row_id", None))
+            body["row_request_id"] = self._row_request_id(
+                env, body.pop("row_id", None), self._bound(body.get("game_instance_id")))
             if body["row_request_id"] is None:
                 return  # the row never reached the service (refused here): nothing to resolve
         elif kind == "episode_close":
@@ -440,8 +527,8 @@ class NodeAggregator:
             raise BoundaryError("p1_fast_aggregator", "unexpected_link_message")
         self._control({"kind": kind, **body})
 
-    def _row_request_id(self, env: _Env, row_id: Any) -> int | None:
-        with self._lock:
+    def _row_request_id(self, env: _Env, row_id: Any, upstream: _Upstream) -> int | None:
+        with upstream.lock:
             return env.sent.pop(row_id, None) if type(row_id) is int else None
 
     # -- lifecycle -----------------------------------------------------------
@@ -456,18 +543,23 @@ class NodeAggregator:
 
     def close(self) -> dict[str, Any]:
         self._stopping = True
-        with self._lock:
-            self._flush_locked()
-            self._lock.notify_all()
+        for upstream in self._upstreams:
+            with upstream.lock:
+                self._flush_locked(upstream)
+                upstream.lock.notify_all()
         with contextlib.suppress(OSError):
             self.listener.close()
         for env in list(self._envs):
             with contextlib.suppress(OSError):
                 env.connection.shutdown(socket.SHUT_RDWR)
-        with contextlib.suppress(OSError):
-            self.service.close()
+        for upstream in self._upstreams:
+            with contextlib.suppress(OSError):
+                upstream.connection.close()
         self.pool.close()
         with contextlib.suppress(FileNotFoundError):
             os.unlink(self.socket_path)
-        return {"aggregator_id": self.aggregator_id, "failure": self.failure, **self.stats,
-                "pending": len(self._pending)}
+        report = {"aggregator_id": self.aggregator_id, "failure": self.failure, **self.stats,
+                  "pending": sum(len(upstream.pending) for upstream in self._upstreams)}
+        if len(self._upstreams) > 1:
+            report["service_rows"] = [upstream.sent_rows for upstream in self._upstreams]
+        return report

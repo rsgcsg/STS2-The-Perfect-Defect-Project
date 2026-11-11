@@ -30,7 +30,8 @@ PREPARED_PERFORMANCE_FIELDS = (
 # Training-forward implementation (S3 rows-v2): exported only when selected, so a
 # default config, its effective file and the binary recipe digest stay byte-equal.
 # Not a resume-compared objective field: a new generation may switch it from a CP.
-FORWARD_IMPLEMENTATION_DEFAULTS = {"prepared_forward": "padded-v1", "prepared_compile": False}
+FORWARD_IMPLEMENTATION_DEFAULTS = {"prepared_forward": "padded-v1", "prepared_compile": False,
+                                   "prepared_kernels": ""}
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class PerformanceConfig:
     prepared_forward: str = "padded-v1"
     # rows-v2 only: torch.compile of the per-bucket scene/heads/action block.
     prepared_compile: bool = False
+    # rows-v2 only (V3 T6): '' or a '+'-joined sorted subset of `rows_kernels.LEVERS`
+    # ("cross", "embed", "heads", "nodes"; embed needs nodes). Same function, BF16
+    # tolerance; '' keeps the old path.
+    prepared_kernels: str = ""
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -85,6 +90,17 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "invalid_prepared_forward")
         if self.prepared_compile and self.prepared_forward != "rows-v2":
             raise BoundaryError("rl_performance", "prepared_compile_requires_rows_v2")
+        from stpd.p1.rows_kernels import parse_kernels
+
+        try:
+            parse_kernels(self.prepared_kernels)
+        except ValueError as error:
+            raise BoundaryError("rl_performance", "invalid_prepared_kernels") from error
+        if self.prepared_kernels and self.prepared_forward != "rows-v2":
+            raise BoundaryError("rl_performance", "prepared_kernels_requires_rows_v2")
+        if "embed" in self.prepared_kernels.split("+") and not self.prepared_compile:
+            # Eager CUDA embedding backward already sorts; the lever pays only compiled.
+            raise BoundaryError("rl_performance", "prepared_kernels_embed_requires_compile")
         if self.tensor_cache and not self.packed:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
         if self.device_cache and not self.tensor_cache:
