@@ -1830,7 +1830,9 @@ class SegmentLearner:
             while True:
                 try:
                     kind, message, data = read_handoff(connection)
-                except EOFError:
+                except (EOFError, ConnectionResetError):
+                    # A sender process that dies with our ack unread resets the socket
+                    # instead of a clean EOF: the same lost assembler.
                     self._fast_lost()
                     return
                 if kind == "end":  # orderly: every hand-off of this assembler was acked
