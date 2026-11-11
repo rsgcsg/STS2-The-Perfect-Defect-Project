@@ -341,6 +341,30 @@ def closed_client(address: Any, authkey: bytes, encoder: dict[str, Any], compile
     out.put((done[0], time.perf_counter() - started, latencies, time.process_time()))
 
 
+def teardown(hosts: list[tuple[Any, Any]], wait: float = 30.0) -> None:
+    """Close every service host still alive, then end every other child process.
+
+    Graceful first (the host closes its service and that service's processes),
+    then SIGTERM, then SIGKILL; a client process left by a failed phase ends too.
+    """
+    for process, conn in hosts:
+        if process.is_alive():
+            try:
+                conn.send("close")
+                if conn.poll(wait):
+                    conn.recv()
+            except (OSError, EOFError):
+                pass  # the host is already gone; its exit code says why
+            process.join(wait)
+    for process in [p for p, _ in hosts] + mp.active_children():
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+
+
 def collect(out: Any, procs: list[Any]) -> list[Any]:
     """One result per client process; a client that died loudly fails the bench."""
     import queue
@@ -661,6 +685,7 @@ def main(argv: list[str] | None = None) -> None:
 
     context = mp.get_context("spawn")
     loads = [int(x) for x in a.loads.split(",") if x]
+    failed: list[str] = []
     for config in json.loads(a.configs):
         config = dict(config)
         name = config.pop("name")
@@ -670,149 +695,164 @@ def main(argv: list[str] | None = None) -> None:
         services = config.pop("services", 1)
         loads_here = [int(x) for x in str(config.pop("loads", "")).split(",") if x] or loads
         workers = config.get("prepare_workers", 2)
-        started = time.perf_counter()
-        hosts = []
-        for k in range(services):
-            mine = (cpus[len(cpus) - workers * (k + 1):len(cpus) - workers * k]
-                    if cpus and len(cpus) >= workers * services else None)
-            parent, child = context.Pipe()
-            p = context.Process(target=service_host,
-                                args=(child, k, config, a.device, a.spec, mine, a.prof,
-                                      a.threads, a.stub_forward))
-            p.start()
-            hosts.append((p, parent))
-        addresses = []
-        for _, conn in hosts:
-            state, address, auth = conn.recv()
-            if state != "ready":
-                raise SystemExit(f"service_host_failed:{address}")
-            addresses.append((address, auth))
-        emit({"config": name, "services": services, "kwargs": config, "mps": a.mps,
-              "start_s": round(time.perf_counter() - started, 1)})
-
-        def args_of(k: int) -> tuple[Any, ...]:
-            address, auth = addresses[k % services]  # noqa: B023 - this config's services
-            return (address, auth, encoder.identity, compiler.identity, rows)
-
-        warm = time.perf_counter()
-        worst: dict[str, Any] | None = None
-        for k in range(0 if a.stub_forward else services):
-            out = context.Queue()
-            for w in range(2):  # the first pass warms (compile buckets), the second is scored
-                p = context.Process(target=probe_client,
-                                    args=(*args_of(k), probe_n, f"{k}x{w}", out))
+        hosts: list[tuple[Any, Any]] = []
+        try:
+            started = time.perf_counter()
+            for k in range(services):
+                mine = (cpus[len(cpus) - workers * (k + 1):len(cpus) - workers * k]
+                        if cpus and len(cpus) >= workers * services else None)
+                parent, child = context.Pipe()
+                p = context.Process(target=service_host,
+                                    args=(child, k, config, a.device, a.spec, mine, a.prof,
+                                          a.threads, a.stub_forward))
                 p.start()
-                got = collect(out, [p])[0]
-            diffs = [max(abs(x - y) for x, y in zip(got[i][0], ref_behavior[i], strict=True))
-                     for i in range(probe_n)]
-            argmax = sum(max(range(len(got[i][0])), key=got[i][0].__getitem__)
-                         == max(range(len(ref_behavior[i])), key=ref_behavior[i].__getitem__)
-                         for i in range(probe_n))
-            selected = sum(got[i][1] == draw(ref_behavior[i], SAMPLING["seed"],
-                                             f"probe{k}x1-{i % 64}-{i // 64}")
-                           for i in range(probe_n))
-            here = {"service": k, "rows": probe_n, "max_behavior_q_abs_diff_vs_fp32": max(diffs),
-                    "argmax_agree": argmax, "selected_agree": selected}
-            if worst is None or (here["max_behavior_q_abs_diff_vs_fp32"]
-                                 > worst["max_behavior_q_abs_diff_vs_fp32"]):
-                worst = here
-        emit({"config": name, "warm_s": round(time.perf_counter() - warm, 1), "correct": worst})
+                hosts.append((p, parent))
+            addresses = []
+            for _, conn in hosts:
+                state, address, auth = conn.recv()
+                if state != "ready":
+                    raise SystemExit(f"service_host_failed:{address}")
+                addresses.append((address, auth))
+            emit({"config": name, "services": services, "kwargs": config, "mps": a.mps,
+                  "start_s": round(time.perf_counter() - started, 1)})
 
-        def snapshot() -> tuple[list[Any], float]:
-            for _, conn in hosts:  # noqa: B023 - this config's hosts
-                conn.send("snap")
-            return [conn.recv() for _, conn in hosts], time.perf_counter()  # noqa: B023
+            def args_of(k: int) -> tuple[Any, ...]:
+                address, auth = addresses[k % services]  # noqa: B023 - this config's services
+                return (address, auth, encoder.identity, compiler.identity, rows)
 
-        def deltas(before: tuple[list[Any], float], wall: float) -> dict[str, Any]:
-            after, _ = snapshot()
-            forwards = rows_done = 0
-            device_s = 0.0
-            cpu: dict[str, float] = {}
-            main_max = 0.0
-            prof: dict[str, float] = {}
-            busy = dict.fromkeys(("join_seconds", "stage_seconds", "finish_seconds",
-                                  "dispatch_seconds"), 0.0)
-            refused: dict[str, int] = {}
-            trace: dict[str, list[int]] = {}
-            for (s0, c0, p0), (s1, c1, p1) in zip(before[0], after, strict=True):
-                for stage, counts in (s1.get("trace") or {}).items():
-                    old = (s0.get("trace") or {}).get(stage, [0] * len(counts))
-                    mine = trace.setdefault(stage, [0] * len(counts))
-                    for i, (x, y) in enumerate(zip(counts, old, strict=True)):
-                        mine[i] += x - y
-                forwards += s1["batches"] - s0["batches"]
-                rows_done += s1["rows"] - s0["rows"]
-                device_s += s1["device_seconds"] - s0["device_seconds"]
-                for k in busy:
-                    busy[k] += s1[k] - s0[k]
-                for k in c1:
-                    cpu[k] = cpu.get(k, 0.0) + c1[k] - c0[k]
-                main_max = max(main_max, c1["main"] - c0["main"])
-                for k, v in p1.items():
-                    prof[k] = prof.get(k, 0.0) + v[0] - p0.get(k, [0.0, 0])[0]
-                for k, v in s1["refused"].items():
-                    refused[k] = refused.get(k, 0) + v - s0["refused"].get(k, 0)
-            per_row = max(rows_done, 1)
-            result = {"forwards": forwards,
-                      "rows_per_forward": round(rows_done / max(forwards, 1), 1),
-                      "device_busy": round(device_s / wall, 3),
-                      "busy": {k: round(v / wall, 3) for k, v in busy.items()},
-                      "cpu_cores": {k: round(v / wall, 2) for k, v in cpu.items()},
-                      "main_cores_max": round(main_max / wall, 2),
-                      "cpu_us_per_row": {k: round(1e6 * v / per_row, 1) for k, v in cpu.items()},
-                      "refused": {k: v for k, v in refused.items() if v}}
-            if prof:
-                result["main_us_per_row"] = {k: round(1e6 * v / per_row, 1)
-                                             for k, v in sorted(prof.items())}
-            if trace:
-                result["trace_ms"] = {stage: hist_pct(counts) for stage, counts in trace.items()}
-            return result
+            warm = time.perf_counter()
+            worst: dict[str, Any] | None = None
+            for k in range(0 if a.stub_forward else services):
+                out = context.Queue()
+                for w in range(2):  # the first pass warms (compile buckets), the second is scored
+                    p = context.Process(target=probe_client,
+                                        args=(*args_of(k), probe_n, f"{k}x{w}", out))
+                    p.start()
+                    got = collect(out, [p])[0]
+                diffs = [max(abs(x - y) for x, y in zip(got[i][0], ref_behavior[i], strict=True))
+                         for i in range(probe_n)]
+                argmax = sum(max(range(len(got[i][0])), key=got[i][0].__getitem__)
+                             == max(range(len(ref_behavior[i])), key=ref_behavior[i].__getitem__)
+                             for i in range(probe_n))
+                selected = sum(got[i][1] == draw(ref_behavior[i], SAMPLING["seed"],
+                                                 f"probe{k}x1-{i % 64}-{i // 64}")
+                               for i in range(probe_n))
+                here = {"service": k, "rows": probe_n,
+                        "max_behavior_q_abs_diff_vs_fp32": max(diffs),
+                        "argmax_agree": argmax, "selected_agree": selected}
+                if worst is None or (here["max_behavior_q_abs_diff_vs_fp32"]
+                                     > worst["max_behavior_q_abs_diff_vs_fp32"]):
+                    worst = here
+            emit({"config": name, "warm_s": round(time.perf_counter() - warm, 1), "correct": worst})
 
-        for phase, slots in enumerate(loads_here):
-            before = snapshot()
-            out = context.Queue()
-            clients = [context.Process(target=node_client, args=(
-                *args_of(n), slots, a.think_ms, a.agg_ms, batch, a.phase_s,
-                1000 * n + slots + 100000 * phase, out,
-                addresses if a.bind == "game" else None)) for n in range(a.nodes)]
-            for p in clients:
-                p.start()
-            results = collect(out, clients)
-            wall = time.perf_counter() - before[1]
-            lat = sorted(x for r in results for x in r[1])
-            rtt = sorted(x for r in results for x in r[2])
-            packets = sum(r[3][0] for r in results)
-            emit({"config": name, "load": {"nodes": a.nodes, "slots_per_node": slots},
-                  "rows_per_s": round(len(lat) / a.phase_s),
-                  "W_p50_ms": pct(lat, 0.5), "W_p95_ms": pct(lat, 0.95),
-                  "rtt_p50_ms": pct(rtt, 0.5), "rtt_p95_ms": pct(rtt, 0.95),
-                  "rtt_p99_ms": pct(rtt, 0.99),
-                  "rows_per_packet": round(sum(r[3][1] for r in results) / max(packets, 1), 1),
-                  "client_cores": round(sum(r[4] for r in results) / wall, 2),
-                  **deltas(before, wall)})
-        if sat:
-            conns, games = (int(x) for x in sat.split("x"))
-            before = snapshot()
-            out = context.Queue()
-            procs = 4 * services
-            clients = [context.Process(target=closed_client, args=(
-                *args_of(n), max(1, conns // procs), games, a.phase_s, 900 + n, out))
-                for n in range(procs)]
-            for p in clients:
-                p.start()
-            results = collect(out, clients)
-            wall = max(r[1] for r in results)
-            lat = sorted(x for r in results for x in r[2])
-            emit({"config": name, "saturation": sat, "in_flight_rows": conns * games,
-                  "rows_per_s": round(sum(r[0] for r in results) / wall),
-                  "p50_ms": pct(lat, 0.5), "p95_ms": pct(lat, 0.95),
-                  **deltas(before, time.perf_counter() - before[1])})
-        closed = []
-        for p, conn in hosts:
-            conn.send("close")
-            closed.append(conn.recv())
-            p.join(30)
-        emit({"config": name, "closed": closed})
+            def snapshot() -> tuple[list[Any], float]:
+                for _, conn in hosts:  # noqa: B023 - this config's hosts
+                    conn.send("snap")
+                return [conn.recv() for _, conn in hosts], time.perf_counter()  # noqa: B023
+
+            def deltas(before: tuple[list[Any], float], wall: float) -> dict[str, Any]:
+                after, _ = snapshot()
+                forwards = rows_done = 0
+                device_s = 0.0
+                cpu: dict[str, float] = {}
+                main_max = 0.0
+                prof: dict[str, float] = {}
+                busy = dict.fromkeys(("join_seconds", "stage_seconds", "finish_seconds",
+                                      "dispatch_seconds"), 0.0)
+                refused: dict[str, int] = {}
+                trace: dict[str, list[int]] = {}
+                for (s0, c0, p0), (s1, c1, p1) in zip(before[0], after, strict=True):
+                    for stage, counts in (s1.get("trace") or {}).items():
+                        old = (s0.get("trace") or {}).get(stage, [0] * len(counts))
+                        mine = trace.setdefault(stage, [0] * len(counts))
+                        for i, (x, y) in enumerate(zip(counts, old, strict=True)):
+                            mine[i] += x - y
+                    forwards += s1["batches"] - s0["batches"]
+                    rows_done += s1["rows"] - s0["rows"]
+                    device_s += s1["device_seconds"] - s0["device_seconds"]
+                    for k in busy:
+                        busy[k] += s1[k] - s0[k]
+                    for k in c1:
+                        cpu[k] = cpu.get(k, 0.0) + c1[k] - c0[k]
+                    main_max = max(main_max, c1["main"] - c0["main"])
+                    for k, v in p1.items():
+                        prof[k] = prof.get(k, 0.0) + v[0] - p0.get(k, [0.0, 0])[0]
+                    for k, v in s1["refused"].items():
+                        refused[k] = refused.get(k, 0) + v - s0["refused"].get(k, 0)
+                per_row = max(rows_done, 1)
+                result = {"forwards": forwards,
+                          "rows_per_forward": round(rows_done / max(forwards, 1), 1),
+                          "device_busy": round(device_s / wall, 3),
+                          "busy": {k: round(v / wall, 3) for k, v in busy.items()},
+                          "cpu_cores": {k: round(v / wall, 2) for k, v in cpu.items()},
+                          "main_cores_max": round(main_max / wall, 2),
+                          "cpu_us_per_row": {k: round(1e6 * v / per_row, 1)
+                                             for k, v in cpu.items()},
+                          "refused": {k: v for k, v in refused.items() if v}}
+                if prof:
+                    result["main_us_per_row"] = {k: round(1e6 * v / per_row, 1)
+                                                 for k, v in sorted(prof.items())}
+                if trace:
+                    result["trace_ms"] = {stage: hist_pct(counts)
+                                          for stage, counts in trace.items()}
+                return result
+
+            for phase, slots in enumerate(loads_here):
+                before = snapshot()
+                out = context.Queue()
+                clients = [context.Process(target=node_client, args=(
+                    *args_of(n), slots, a.think_ms, a.agg_ms, batch, a.phase_s,
+                    1000 * n + slots + 100000 * phase, out,
+                    addresses if a.bind == "game" else None)) for n in range(a.nodes)]
+                for p in clients:
+                    p.start()
+                results = collect(out, clients)
+                wall = time.perf_counter() - before[1]
+                lat = sorted(x for r in results for x in r[1])
+                rtt = sorted(x for r in results for x in r[2])
+                packets = sum(r[3][0] for r in results)
+                emit({"config": name, "load": {"nodes": a.nodes, "slots_per_node": slots},
+                      "rows_per_s": round(len(lat) / a.phase_s),
+                      "W_p50_ms": pct(lat, 0.5), "W_p95_ms": pct(lat, 0.95),
+                      "rtt_p50_ms": pct(rtt, 0.5), "rtt_p95_ms": pct(rtt, 0.95),
+                      "rtt_p99_ms": pct(rtt, 0.99),
+                      "rows_per_packet": round(sum(r[3][1] for r in results) / max(packets, 1), 1),
+                      "client_cores": round(sum(r[4] for r in results) / wall, 2),
+                      **deltas(before, wall)})
+            if sat:
+                conns, games = (int(x) for x in sat.split("x"))
+                before = snapshot()
+                out = context.Queue()
+                procs = 4 * services
+                clients = [context.Process(target=closed_client, args=(
+                    *args_of(n), max(1, conns // procs), games, a.phase_s, 900 + n, out))
+                    for n in range(procs)]
+                for p in clients:
+                    p.start()
+                results = collect(out, clients)
+                wall = max(r[1] for r in results)
+                lat = sorted(x for r in results for x in r[2])
+                emit({"config": name, "saturation": sat, "in_flight_rows": conns * games,
+                      "rows_per_s": round(sum(r[0] for r in results) / wall),
+                      "p50_ms": pct(lat, 0.5), "p95_ms": pct(lat, 0.95),
+                      **deltas(before, time.perf_counter() - before[1])})
+            closed = []
+            for p, conn in hosts:
+                conn.send("close")
+                closed.append(conn.recv())
+                p.join(30)
+            emit({"config": name, "closed": closed})
+        except BaseException as error:  # noqa: BLE001 - reported, then the next config runs
+            failed.append(name)
+            emit({"config": name, "failed": f"{type(error).__name__}: {str(error)[:300]}"})
+            if isinstance(error, KeyboardInterrupt):
+                raise
+        finally:
+            # A failed phase must not leave this config's services holding the GPU
+            # (job 1460356 hung 38 min on them): close, then terminate, then kill.
+            teardown(hosts)
+    if failed:
+        raise SystemExit(f"bench_configs_failed:{failed}")
 
 
 if __name__ == "__main__":
