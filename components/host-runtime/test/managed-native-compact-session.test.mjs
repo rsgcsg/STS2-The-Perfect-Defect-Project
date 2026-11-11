@@ -467,6 +467,14 @@ test("E5 projection memo: two consecutive captures keep an unchanged subtree as 
   assert.equal(deckCard(on.second.basis), deckCard(on.first.basis));
   assert.ok(Object.isFrozen(deckCard(on.second.basis)));
   assert.ok(sharedSubtrees(on.first.basis, on.second.basis).includes("$.reads.0.response.content.cards.0"));
+  // Same public position, changed native content (option 0 retitled; its id stays the same under A1):
+  // the memo key is the native input object, so the changed option is rebuilt, never served stale.
+  const option = (basis) => basis.snapshot.interaction.content.surface.options[0];
+  assert.equal(option(on.first.basis).title, "Open");
+  assert.equal(option(on.second.basis).title, "Opened");
+  const optionReferent = (basis) => basis.snapshot.referents.find(item => item.referent_id === option(basis).entity_id);
+  assert.equal(optionReferent(on.second.basis).referent_id, optionReferent(on.first.basis).referent_id);
+  assert.notEqual(optionReferent(on.second.basis), optionReferent(on.first.basis));
   // Without the memo the projection builds it anew each step.
   assert.notEqual(deckCard(off.second.basis), deckCard(off.first.basis));
   // Same public bytes either way (observed_at / capture clock aside), and the per-frame check ran.
