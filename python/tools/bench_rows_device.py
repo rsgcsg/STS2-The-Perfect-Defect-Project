@@ -209,14 +209,15 @@ def regions(model: Any, frames: list[Any], floors: list[int], configs: list[dict
             return out
         return wrapper
 
-    originals = {"packed_text": rows_forward.packed_text,
+    originals: dict[str, Any] = {"packed_text": rows_forward.packed_text,
                  "owner_nodes": rows_kernels.owner_nodes,
                  "rows_block_packed": rows_forward.rows_block_packed}
     tensor_nodes = type(model).tensor_nodes
-    rows_forward.packed_text = timed("text", originals["packed_text"])
-    rows_kernels.owner_nodes = timed("nodes", originals["owner_nodes"])
-    type(model).tensor_nodes = timed("nodes", tensor_nodes)
-    rows_forward.rows_block_packed = timed("blocks", originals["rows_block_packed"])
+    setattr(rows_forward, "packed_text", timed("text", originals["packed_text"]))  # noqa: B010
+    setattr(rows_kernels, "owner_nodes", timed("nodes", originals["owner_nodes"]))  # noqa: B010
+    setattr(type(model), "tensor_nodes", timed("nodes", tensor_nodes))  # noqa: B010
+    setattr(rows_forward, "rows_block_packed",  # noqa: B010
+            timed("blocks", originals["rows_block_packed"]))
     try:
         for config in configs:
             if config["compile"]:
@@ -241,10 +242,10 @@ def regions(model: Any, frames: list[Any], floors: list[int], configs: list[dict
                       **{f"{k}_ms": round(1000 * v / 8, 3) for k, v in spent.items()},
                       "rest_ms": round(1000 * (total - sum(spent.values())) / 8, 3)})
     finally:
-        rows_forward.packed_text = originals["packed_text"]
-        rows_kernels.owner_nodes = originals["owner_nodes"]
-        rows_forward.rows_block_packed = originals["rows_block_packed"]
-        type(model).tensor_nodes = tensor_nodes
+        setattr(rows_forward, "packed_text", originals["packed_text"])  # noqa: B010
+        setattr(rows_kernels, "owner_nodes", originals["owner_nodes"])  # noqa: B010
+        setattr(rows_forward, "rows_block_packed", originals["rows_block_packed"])  # noqa: B010
+        setattr(type(model), "tensor_nodes", tensor_nodes)  # noqa: B010
 
 
 def profile(model: Any, frames: list[Any], floors: list[int], configs: list[dict[str, Any]]
