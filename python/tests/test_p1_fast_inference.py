@@ -1074,3 +1074,149 @@ def test_device_rows_refuses_a_non_finite_row_like_the_default(vocabulary, model
                                                ["status"]) for row in rows]
     assert statuses == ["scored", "NONFINITE_SCORES", "scored"]
     assert report["refused"] == {"NONFINITE_SCORES": 1}
+
+
+INFERENCE_LEVERS = "cross+heads+nodes"
+
+
+def _rich_frames(vocabulary: dict[str, Any], count: int) -> tuple[list[Any], list[Any]]:
+    """Rows with several entities, texts and catalog choices (the levers' owner maps)."""
+    encoder = RowsEncoder(vocabulary)
+    compiler = FrameCompiler(vocabulary)
+    observations = []
+    for index in range(count):
+        observation = public_state()
+        observation["status"] = {"hp": index, "cards": [{"id": index + k, "x": [1, k]}
+                                                        for k in range(1 + index % 4)]}
+        observations.append(observation)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in observations]
+    frames = [decode_row(e.row, validator=compiler, expected_sha256=e.row_sha256)
+              for e in encoded]
+    return encoded, frames
+
+
+def test_rows_scorer_levers_match_the_original_forward(vocabulary, model):
+    """`kernels` changes how the readouts are computed, not the function (CPU FP32)."""
+    _, frames = _rich_frames(vocabulary, 7)
+    floors = [2] * len(frames)
+    original = RowsScorer(model).score(frames, floors)
+    levered = RowsScorer(model, kernels=INFERENCE_LEVERS).score(frames, floors)
+    for want, got in zip(original, levered, strict=True):
+        assert want is not None and got is not None
+        assert len(got.scores) == len(want.scores)
+        assert torch.allclose(torch.tensor(got.scores), torch.tensor(want.scores), atol=1e-4)
+        assert torch.allclose(torch.tensor(got.outcome_probabilities),
+                              torch.tensor(want.outcome_probabilities), atol=1e-5)
+        assert abs(got.hp - want.hp) <= 1e-4
+        assert max(range(len(got.scores)), key=got.scores.__getitem__) == max(
+            range(len(want.scores)), key=want.scores.__getitem__)
+
+
+@pytest.mark.parametrize("kernels", ["heads+cross", "fast", "nodes+nodes", 3])
+def test_invalid_kernels_are_refused(vocabulary, model, kernels):
+    with pytest.raises(ValueError, match="invalid_prepared_kernels"):
+        RowsScorer(model, kernels=kernels)
+    with pytest.raises(ValueError, match="invalid_prepared_kernels"):
+        _service(vocabulary, model, FakeAssembler(), kernels=kernels)
+
+
+def test_service_levers_score_rows_like_the_original(vocabulary, model):
+    """The device process runs the levered forward: same behavior_q within tolerance,
+    same draws (selected_index) as the original forward on the same rows."""
+    encoded, frames = _rich_frames(vocabulary, 6)
+    expected = RowsScorer(model).score(frames, [2] * len(frames))
+    results = {}
+    for kernels in ("", INFERENCE_LEVERS):
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, window_ms=200.0, kernels=kernels)
+        client = _open_client(service, RowsEncoder(vocabulary), "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            service.close()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+        results[kernels] = ({body[0]: body[1] for kind, body in assembler.calls
+                             if kind == "finish"}, envelope["results"])
+    (base, base_results), (lever, lever_results) = results[""], results[INFERENCE_LEVERS]
+    for index, want in enumerate(expected):
+        assert want is not None
+        _, behavior = distribution(want.scores, 1.5, 0.05)
+        assert torch.allclose(torch.tensor(base[3 + index]["behavior_q"]),
+                              torch.tensor(behavior), atol=1e-6)  # off: the old path
+        assert torch.allclose(torch.tensor(lever[3 + index]["behavior_q"]),
+                              torch.tensor(behavior), atol=1e-4)
+    picks = [lever[3 + index]["selected_index"] for index in range(6)]
+    assert all(type(pick) is int for pick in picks)
+    assert picks == [base[3 + index]["selected_index"] for index in range(6)]
+    assert len(lever_results) == len(base_results) == 6
+
+
+def test_publish_ships_a_model_that_carries_a_compiled_node_builder(vocabulary, model):
+    """The nodes lever's compiled builder is a runtime cache too, never shipped."""
+    def unpicklable() -> None:
+        pass
+
+    model.__dict__["_rows_nodes_compiled"] = unpicklable
+    try:
+        service = _service(vocabulary, model, FakeAssembler(), kernels=INFERENCE_LEVERS)
+        service.close()
+        assert model.__dict__["_rows_nodes_compiled"] is unpicklable
+    finally:
+        del model.__dict__["_rows_nodes_compiled"]
+
+
+@pytest.mark.parametrize("kernels", ["embed+nodes", "cross+embed+heads+nodes"])
+def test_the_backward_only_embed_lever_is_refused_for_inference(vocabulary, model, kernels):
+    with pytest.raises(ValueError, match="invalid_inference_kernels:embed_is_backward_only"):
+        RowsScorer(model, kernels=kernels)
+    with pytest.raises(ValueError, match="invalid_inference_kernels:embed_is_backward_only"):
+        _service(vocabulary, model, FakeAssembler(), kernels=kernels)
+
+
+def test_levered_service_scores_each_published_mu_with_its_own_weights(vocabulary, model):
+    """#480 review S2: two mus with different weights published in turn to a service
+    with levers; rows planned on each mu score like that mu's own original forward."""
+    torch.manual_seed(11)
+    other = MStd(vocabulary, MStdExecution(
+        implementation="experimental-packed-v1", microbatch_size=4,
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1))
+    other.enable_rl4_heads(7)
+    other = other.eval().requires_grad_(False)
+    encoded, frames = _rich_frames(vocabulary, 4)
+    wants = {name: RowsScorer(mu).score(frames, [2] * len(frames))
+             for name, mu in (("first", model), ("second", other))}
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, window_ms=200.0, kernels=INFERENCE_LEVERS)
+    got: dict[str, dict[int, Any]] = {}
+    try:
+        for name, game, first_id in (("first", "g1", 3), ("second", "g2", 30)):
+            if name == "second":
+                assert service.publish(other, Handoff("b" * 64))
+            client = _open_client(service, RowsEncoder(vocabulary), game)
+            try:
+                rows, binary = _packet(encoded, game, first_id)
+                client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                                "packet_id": 1, "rows": rows}, binary))
+                envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+            finally:
+                client.close()
+            assert [r["status"] for r in envelope["results"]] == ["scored"] * 4
+            got[name] = {body[0]: body[1] for kind, body in assembler.calls
+                         if kind == "finish" and first_id <= body[0] < first_id + 4}
+            assert {item["mu_snapshot_sha256"] for item in got[name].values()} == {
+                MU if name == "first" else "b" * 64}
+    finally:
+        service.close()
+    for name, first_id in (("first", 3), ("second", 30)):
+        for index, want in enumerate(wants[name]):
+            assert want is not None
+            _, behavior = distribution(want.scores, 1.5, 0.05)
+            assert torch.allclose(torch.tensor(got[name][first_id + index]["behavior_q"]),
+                                  torch.tensor(behavior), atol=1e-4)
+    assert any(not torch.allclose(torch.tensor(got["first"][3 + i]["behavior_q"]),
+                                  torch.tensor(got["second"][30 + i]["behavior_q"]), atol=1e-3)
+               for i in range(4))

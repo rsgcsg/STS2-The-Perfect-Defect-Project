@@ -1,6 +1,7 @@
 """One card's K rl-inference-3 services: per-game binding, MPS daemon, loud failure (CPU)."""
 from __future__ import annotations
 
+import io
 import os
 import signal
 import stat
@@ -55,7 +56,8 @@ def make_service(index: int, settings: dict[str, Any]) -> FastInferenceService:
         compiler = {**compiler, "encoder": "other"}
     return FastInferenceService(vocabulary, compiler, assembler,
                                 training_generation="gen-1", address=("127.0.0.1", 0),
-                                env_sha256=ENV, prepare_workers=1, device="cpu")
+                                env_sha256=ENV, prepare_workers=1, device="cpu",
+                                kernels=settings.get("kernels", ""))
 
 
 FACTORY = "test_p1_inference_card:make_service"
@@ -290,6 +292,61 @@ def test_mps_daemon_that_does_not_start_is_loud():
         InferenceCard(FACTORY, services=2, mps_root=root, mps_control=control)
     with pytest.raises(BoundaryError, match="mps_control_missing"):
         MpsDaemon(root, control=os.path.join(root, "missing")).start()
+
+
+def test_a_mu_carrying_a_text_cache_publishes_through_service_and_card(model):
+    """Friday s1c: load_behavior_mu attaches a TextVectorCache (holds an RLock);
+    the shipped bytes drop it, the same for the single service and the card."""
+
+    from stpd.p1.inference_service import model_blob
+    from stpd.p1.text_cache import TextVectorCache
+
+    plain = model_blob(model)
+    model.text_cache, model.text_cache_namespace = TextVectorCache(limit=1024**2), MU
+    try:
+        assert model_blob(model) == plain
+        shipped = torch.load(io.BytesIO(plain), weights_only=False)
+        assert shipped.text_cache is None and shipped.text_cache_namespace is None
+        service = make_service(0, {})
+        try:
+            assert service.publish(model, Handoff(MU)) is True
+        finally:
+            service.close()
+        card = InferenceCard(FACTORY, services=1, mps=False)
+        try:
+            assert card.publish(model, Handoff(MU)) == [True]
+            assert card.failure is None
+        finally:
+            closed = card.close()
+        assert closed["failure"] is None
+        assert isinstance(model.text_cache, TextVectorCache)  # the caller keeps its own
+    finally:
+        model.text_cache, model.text_cache_namespace = None, None
+
+
+def test_card_publish_ships_a_model_that_carries_compiled_runtime_caches(model):
+    """#480 review F1: the card ships a mu through the same `model_blob` as the
+    service: compiled rows blocks and the nodes lever's builder never travel."""
+    from stpd.p1.inference_card import model_blob
+    from stpd.p1.inference_service import model_blob as service_blob
+
+    def unpicklable() -> None:
+        pass
+
+    model.__dict__["_rows_nodes_compiled"] = unpicklable
+    model.__dict__["_rows_block_packed_compiled_heads"] = unpicklable
+    card = InferenceCard(FACTORY, services=1, mps=False,
+                         settings={"kernels": "cross+heads+nodes"})
+    try:
+        assert model_blob(model) == service_blob(model)
+        assert card.publish(model, Handoff(MU)) == [True]
+        assert card.failure is None
+        assert model.__dict__["_rows_nodes_compiled"] is unpicklable
+    finally:
+        closed = card.close()
+        del model.__dict__["_rows_nodes_compiled"]
+        del model.__dict__["_rows_block_packed_compiled_heads"]
+    assert closed["failure"] is None and closed["exitcodes"] == [0]
 
 
 class _Source:
