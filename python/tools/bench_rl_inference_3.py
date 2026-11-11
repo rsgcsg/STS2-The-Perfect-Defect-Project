@@ -31,7 +31,10 @@ all K services and binds each game by `service_for_game` (default `node`: node n
 service n % K, which is uneven when K does not divide the node count).
 Config keys handled here, not by the service: `segment_format` (the assembler's T3
 format, #466), `switch_interval_ms` (the service host's `sys.setswitchinterval`).
-`"trace": true` (service option): per-row stage time percentiles per load point.
+`"trace": true` (service option): per-row stage time percentiles per load point
+(`trace_ms` = [p50, p95, mean, rows_over_500ms, max] ms, see `hist_pct`). Trace is
+diagnostic: the stage histograms are updated without a lock, so concurrent packet
+completions may rarely lose a count.
 
 Example: python tools/bench_rl_inference_3.py obs.jsonl out.jsonl \
   --configs '[{"name":"S2","services":2,"prepare_workers":10,"in_flight":2}]' \
@@ -59,6 +62,7 @@ SAMPLING: dict[str, Any] = {
                 "noncombat": {"temperature": 1.0, "uniform_mix": 0.0}}}
 ENV_SHA = "e" * 64
 DRAIN_S = 60.0  # a reply missing this long after the end is a loud failure, not a hang
+CLOSE_WAIT_S = 120.0  # a service close slower than this is a failed config (teardown)
 PROFC: dict[str, list[float]] = {}
 THREAD_PROFILES: list[Any] = []  # [thread name, cProfile.Profile | None, thread CPU at end]
 
@@ -346,6 +350,8 @@ def teardown(hosts: list[tuple[Any, Any]], wait: float = 30.0) -> None:
 
     Graceful first (the host closes its service and that service's processes),
     then SIGTERM, then SIGKILL; a client process left by a failed phase ends too.
+    A terminated host's own children (prepare/join/device) are not killed here:
+    they exit on their pipes' EOF. Hosts are waited for one after another.
     """
     for process, conn in hosts:
         if process.is_alive():
@@ -484,20 +490,44 @@ def thread_report(rows: int, dump: str, top: int = 25) -> dict[str, Any]:
     return report
 
 
-def hist_pct(counts: list[int]) -> list[float | None]:
-    """[p50, p95, mean] in ms of a 0.25 ms-bin histogram (service trace)."""
+def hist_pct(counts: list[int]) -> list[Any]:
+    """[p50, p95, mean, rows_over_500ms, max] in ms of a service trace histogram.
+
+    Bins are 0.25 ms below 500 ms, then 10 ms up to 10 s (`trace_bin_edges`), so a
+    p95 above 500 ms is reported as such, never capped (#478 review F3). A value in
+    a bin is its midpoint; in the open last bin it is the string ">=9990". `max` is
+    the upper edge of the highest non-empty bin (">=9990" when open); the service's
+    exact running max is `trace_max_ms` in the snapshot.
+    """
+    from stpd.p1.inference_service import TRACE_FINE_BINS, trace_bin_edges
+
     total = sum(counts)
     if not total:
-        return [None, None, None]
-    out: list[float | None] = []
+        return [None, None, None, 0, None]
+
+    def mid(index: int) -> float | str:
+        low, high = trace_bin_edges(index)
+        return f">={low:g}" if high is None else round((low + high) / 2, 2)
+
+    out: list[Any] = []
     for q in (0.5, 0.95):
         seen = 0
         for i, n in enumerate(counts):
             seen += n
             if seen >= q * total:
-                out.append(round((i + 0.5) / 4, 2))
+                out.append(mid(i))
                 break
-    out.append(round(sum((i + 0.5) / 4 * n for i, n in enumerate(counts)) / total, 2))
+    # the open last bin counts at its lower edge: the mean is then a lower bound
+    weighted = 0.0
+    for i, n in enumerate(counts):
+        if n:
+            low, high = trace_bin_edges(i)
+            weighted += n * (low if high is None else (low + high) / 2)
+    out.append(round(weighted / total, 2))
+    out.append(sum(counts[TRACE_FINE_BINS:]))
+    top = max(i for i, n in enumerate(counts) if n)
+    low, high = trace_bin_edges(top)
+    out.append(f">={low:g}" if high is None else high)
     return out
 
 
@@ -795,6 +825,14 @@ def main(argv: list[str] | None = None) -> None:
                 if trace:
                     result["trace_ms"] = {stage: hist_pct(counts)
                                           for stage, counts in trace.items()}
+                    result["trace_fields"] = ["p50", "p95", "mean", "rows_over_500ms",
+                                              "max"]
+                    peaks: dict[str, float] = {}
+                    for s1, _, _ in after:
+                        for stage, ms in (s1.get("trace_max_ms") or {}).items():
+                            peaks[stage] = max(peaks.get(stage, 0.0), ms)
+                    if peaks:
+                        result["trace_max_ms_since_start"] = peaks
                 return result
 
             for phase, slots in enumerate(loads_here):
@@ -837,8 +875,13 @@ def main(argv: list[str] | None = None) -> None:
                       "p50_ms": pct(lat, 0.5), "p95_ms": pct(lat, 0.95),
                       **deltas(before, time.perf_counter() - before[1])})
             closed = []
-            for p, conn in hosts:
+            for _, conn in hosts:
                 conn.send("close")
+            for p, conn in hosts:
+                # #478 review S1: a stuck close goes to teardown, never waits for the
+                # job's timeout (job 1460356 idled 38 min).
+                if not conn.poll(CLOSE_WAIT_S):
+                    raise TimeoutError(f"service_close_timeout:{CLOSE_WAIT_S}s")
                 closed.append(conn.recv())
                 p.join(30)
             emit({"config": name, "closed": closed})

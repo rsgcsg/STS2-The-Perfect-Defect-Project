@@ -647,9 +647,31 @@ def _receive(reader: Connection) -> dict[str, Any]:
 # Trace (FastInferenceService(trace=True), default off): monotonic stamps a part
 # collects on its way (CLOCK_MONOTONIC is one clock for every process of a host),
 # turned into per-row stage times by the service; nothing is stamped when off.
+# Stage edges: "join" without a joiner is prepare end -> device received (transfer
+# included); waiting for a job's other parts and arena staging count in
+# "device_queue"; "reply" ends before the response is sent on the link.
 TRACE_STAGES = ("link", "batch", "to_prepare", "prepare", "join", "to_device", "device_queue",
                 "forward", "back", "finish", "reply", "total")
-TRACE_BINS = 2000  # 0.25 ms bins; the last one holds everything >= 499.75 ms
+# Bins: 2000 fine 0.25 ms bins below 500 ms, then 950 coarse 10 ms bins up to
+# 10 s; the last bin holds everything >= 9990 ms. Beyond 500 ms is never folded
+# into one capped bin (#478 review F3); stats["trace_max_ms"] keeps each exact max.
+TRACE_FINE_BINS = 2000
+TRACE_BINS = TRACE_FINE_BINS + 950
+
+
+def trace_bin(ms: float) -> int:
+    """The trace histogram bin of a stage time in ms."""
+    if ms < TRACE_FINE_BINS / 4:
+        return max(0, int(ms * 4))
+    return min(TRACE_BINS - 1, TRACE_FINE_BINS + int((ms - TRACE_FINE_BINS / 4) / 10))
+
+
+def trace_bin_edges(index: int) -> tuple[float, float | None]:
+    """[low, high) in ms of a trace bin; high is None for the open last bin."""
+    if index < TRACE_FINE_BINS:
+        return index / 4, (index + 1) / 4
+    low = TRACE_FINE_BINS / 4 + 10 * (index - TRACE_FINE_BINS)
+    return low, None if index == TRACE_BINS - 1 else low + 10
 
 
 def _stamp(parts: list[dict[str, Any]]) -> None:
@@ -1056,6 +1078,7 @@ class FastInferenceService:
                                       "episodes_refused": 0, "parts": 0}
         if self.trace:
             self.stats["trace"] = {stage: [0] * TRACE_BINS for stage in TRACE_STAGES}
+            self.stats["trace_max_ms"] = dict.fromkeys(TRACE_STAGES, 0.0)
         context: Any = multiprocessing.get_context("spawn")
         control, control_child = context.Pipe(duplex=True)
         results, results_child = context.Pipe(duplex=False)
@@ -1654,18 +1677,22 @@ class FastInferenceService:
                                 "packet_id": packet.packet_id, "results": packet.results})
 
     def _record_trace(self, traced: list[list[float]], replied: float) -> None:
-        """Per-row stage times of a replied packet into 0.25 ms histograms (trace=True).
+        """Per-row stage times of a replied packet into the trace histograms (trace=True).
 
         Stamps: received, queued, dispatched, prepare start/end, joined, device
         received, forward start/end, results received, finished; then replied.
+        Unlocked: two threads finishing packets at once may lose a count (diagnostic).
         """
         bins = self.stats["trace"]
+        peak = self.stats["trace_max_ms"]
         for stamps in traced:
             stamps.append(replied)
-            edges = list(zip(stamps, stamps[1:], strict=False))
-            for stage, (start, end) in zip(TRACE_STAGES, edges, strict=False):
-                bins[stage][min(TRACE_BINS - 1, max(0, int((end - start) * 4000)))] += 1
-            bins["total"][min(TRACE_BINS - 1, int((replied - stamps[0]) * 4000))] += 1
+            spans = [b - a for a, b in zip(stamps, stamps[1:], strict=False)]
+            for stage, seconds in zip(TRACE_STAGES, [*spans, replied - stamps[0]], strict=True):
+                ms = 1000 * seconds
+                bins[stage][trace_bin(ms)] += 1
+                if ms > peak[stage]:
+                    peak[stage] = round(ms, 3)
 
     def close(self) -> dict[str, Any]:
         self.stopping.set()
