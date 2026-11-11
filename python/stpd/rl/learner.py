@@ -70,6 +70,9 @@ ROOT = Path(__file__).resolve().parents[2]
 T = TypeVar("T")
 
 
+PROFILES = ("rl41", "rl5")
+
+
 @dataclass(frozen=True)
 class LearnerConfig:
     run: str
@@ -167,9 +170,11 @@ class LearnerConfig:
             raise BoundaryError("rl_learner", "unsupported_config")
         profile = value.pop("profile", None)
         if profile is not None:
-            if profile != "rl41":
+            # rl41: the RL4.1 card profile; rl5: the RL5 fast-chain long run (measured
+            # learner levers; needs `dataplane.sgd_process`, see configs/README.md).
+            if profile not in PROFILES:
                 raise BoundaryError("rl_learner", "unsupported_profile")
-            defaults = json.loads((ROOT / "configs/rl41.json").read_bytes())
+            defaults = json.loads((ROOT / f"configs/{profile}.json").read_bytes())
             if defaults.pop("schema", None) != CONFIG_SCHEMA:
                 raise BoundaryError("rl_learner", "unsupported_profile_config")
             for section in ("loss", "performance", "segments"):

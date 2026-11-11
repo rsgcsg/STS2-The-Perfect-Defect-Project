@@ -31,7 +31,7 @@ PREPARED_PERFORMANCE_FIELDS = (
 # default config, its effective file and the binary recipe digest stay byte-equal.
 # Not a resume-compared objective field: a new generation may switch it from a CP.
 FORWARD_IMPLEMENTATION_DEFAULTS = {"prepared_forward": "padded-v1", "prepared_compile": False,
-                                   "prepared_kernels": ""}
+                                   "prepared_kernels": "", "prepared_bucket_rows": 256}
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,11 @@ class PerformanceConfig:
     # rows-v2 only (V3 T6): '' or a '+'-joined sorted subset of `rows_kernels.LEVERS`
     # ("cross", "heads", "nodes"). Same function, BF16 tolerance; '' keeps the old path.
     prepared_kernels: str = ""
+    # rows-v2 only: scene rows per CPU layout bucket (`batch_preparation.ROW_BUCKET_ROWS`
+    # = 256 by default). Any value >= the group's rows is one bucket per group
+    # (C-SCALE/V3 T6 measured -3.1..-3.3% step time on the 80 GB A100 with the levers).
+    # Same rows, members and denominators; only the bucket partition changes.
+    prepared_bucket_rows: int = 256
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -97,6 +102,11 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "invalid_prepared_kernels") from error
         if self.prepared_kernels and self.prepared_forward != "rows-v2":
             raise BoundaryError("rl_performance", "prepared_kernels_requires_rows_v2")
+        if (type(self.prepared_bucket_rows) is not int
+                or not 1 <= self.prepared_bucket_rows <= 2**20):
+            raise BoundaryError("rl_performance", "invalid_prepared_bucket_rows")
+        if self.prepared_bucket_rows != 256 and self.prepared_forward != "rows-v2":
+            raise BoundaryError("rl_performance", "prepared_bucket_rows_requires_rows_v2")
         if self.tensor_cache and not self.packed:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
         if self.device_cache and not self.tensor_cache:

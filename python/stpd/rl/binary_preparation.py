@@ -692,6 +692,7 @@ class BinaryBatchPreparer:
             "text_attention_area",
             "prepared_layout",
             "group_shards",
+            "prepared_bucket_rows",
         }
         if set(existing_assembly_options) - allowed:
             raise TypeError("unknown_binary_assembly_options")
