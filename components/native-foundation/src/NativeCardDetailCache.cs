@@ -53,7 +53,7 @@ public static class NativeCardDetailCache
         Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_DETAIL_CACHE_SHADOW") == "1";
     private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
     private static readonly Dictionary<Type, bool> CacheableTypes = new();
-    private static readonly Dictionary<Type, FieldInfo[]> ScalarFields = new();
+    private static readonly Dictionary<Type, (NativeField Field, FieldKind Kind)[]> ScalarFields = new();
     private static readonly Dictionary<string, long> TypeCompares = new(StringComparer.Ordinal);
     private static int _ownerThread;
     private static long _frame;
@@ -165,13 +165,22 @@ public static class NativeCardDetailCache
     private static bool Scalar(Type type) => type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal)
         || Nullable.GetUnderlyingType(type) is { } inner && Scalar(inner);
 
-    private static FieldInfo[] Fields(Type type)
+    private enum FieldKind { Scalar, Delegate, ScalarCollection, Other }
+
+    // The field-type tests of AppendScalars, taken once per field instead of per read.
+    private static FieldKind Kind(Type type) =>
+        Scalar(type) ? FieldKind.Scalar
+        : typeof(Delegate).IsAssignableFrom(type) ? FieldKind.Delegate
+        : type.IsGenericType && type.GetGenericArguments() is [var item] && Scalar(item) ? FieldKind.ScalarCollection
+        : FieldKind.Other;
+
+    private static (NativeField Field, FieldKind Kind)[] Fields(Type type)
     {
-        if (ScalarFields.TryGetValue(type, out FieldInfo[]? fields)) return fields;
+        if (ScalarFields.TryGetValue(type, out (NativeField Field, FieldKind Kind)[]? fields)) return fields;
         var list = new List<FieldInfo>();
         for (Type? t = type; t != null && t != typeof(object); t = t.BaseType)
             list.AddRange(t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly));
-        fields = list.ToArray();
+        fields = list.Select(field => (NativeField.Of(field)!, Kind(field.FieldType))).ToArray();
         ScalarFields[type] = fields;
         return fields;
     }
@@ -180,15 +189,15 @@ public static class NativeCardDetailCache
     // References to other models (owner, pool, clone links, vars set) are context, not text inputs.
     private static bool AppendScalars(StringBuilder key, object value)
     {
-        foreach (FieldInfo field in Fields(value.GetType()))
+        foreach ((NativeField field, FieldKind kind) in Fields(value.GetType()))
         {
             Type type = field.FieldType;
-            if (Scalar(type))
+            if (kind == FieldKind.Scalar)
             {
                 key.Append(';').Append(field.Name).Append('=').Append(field.GetValue(value));
                 continue;
             }
-            if (typeof(Delegate).IsAssignableFrom(type))
+            if (kind == FieldKind.Delegate)
             {
                 if (field.GetValue(value) is not Delegate call) continue;
                 if (field.DeclaringType != null && typeof(DynamicVar).IsAssignableFrom(field.DeclaringType))
@@ -199,7 +208,7 @@ public static class NativeCardDetailCache
                 }
                 continue;
             }
-            if (type.IsGenericType && field.GetValue(value) is IEnumerable items && type.GetGenericArguments() is [var item] && Scalar(item))
+            if (kind == FieldKind.ScalarCollection && field.GetValue(value) is IEnumerable items)
             {
                 var parts = items.Cast<object?>().Select(element => Convert.ToString(element) ?? "").ToList();
                 if (!typeof(IList).IsAssignableFrom(type)) parts.Sort(StringComparer.Ordinal);

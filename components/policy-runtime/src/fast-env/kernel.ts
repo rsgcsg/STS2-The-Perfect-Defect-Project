@@ -4,13 +4,13 @@ import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-co
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
   type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import { canonicalJson } from "../evidence.js";
-import { globalDigest } from "../global-transport.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
 import { supportsProfileValue, type AgentManifest } from "../agent-session-contracts.js";
 import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
-import { pyJsonSha256 } from "./json-bytes.js";
+import { globalDigestFast, pyJsonSha256 } from "./json-bytes.js";
+import type { ColdStartGate } from "./cold-start.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
 import { SampledCheckFailure, type SampledCheckMismatch, type SlotNative, type SlotNativeFactory } from "./host.js";
@@ -30,10 +30,12 @@ export interface KernelStats {
    * counted apart from the other budget ends. */
   forced_chain_limit: number;
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
+  /** Native cold starts and their wait for the node-wide gate. */
+  cold_starts: number; cold_start_wait_ms: number;
 }
 export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
   combat_end_unattributed: 0, compact_divergences: 0, forced_chain_limit: 0,
-  capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0 });
+  capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0, cold_starts: 0, cold_start_wait_ms: 0 });
 
 /** What every slot of one environment process shares. */
 export interface KernelContext {
@@ -52,6 +54,8 @@ export interface KernelContext {
   evidenceFailed(slot: number, gameInstanceId: string | null, reason: string): void;
   stopping(): boolean;
   sleep(ms: number): Promise<void>;
+  /** Node-wide bound on native cold starts (start + first reset or map load). */
+  coldStart: ColdStartGate;
 }
 
 /** A game ends here; nothing is ever retried. */
@@ -437,7 +441,7 @@ class GameRun {
         this.#unknownCause = `receipt_unreadable:${errorText(error)}`;
         return "unknown";
       }
-      receiptSha = globalDigest(decoded);
+      receiptSha = globalDigestFast(decoded); // = globalDigest(decoded), one pass
       stats.receipt_ms += performance.now() - receiptStarted;
       steps += 1; this.nativeSteps += 1; stats.native_steps += 1;
       if (decoded.delivery === "delivered") this.awaitingSuccessor = true;
@@ -524,9 +528,16 @@ export class SlotKernel {
     let nativeTag: "started" | "reused" = "reused";
     // A Host map load needs a process that never mounted a run.
     if (command.start.kind === "from_save") await this.#replaceNative();
+    // A cold start holds one node-wide gate place through its first reset (or map load).
+    let releaseColdStart: (() => void) | null = null;
     if (!this.#native) {
+      const waitStarted = performance.now();
+      releaseColdStart = await ctx.coldStart.acquire(() => ctx.stopping());
+      ctx.stats.cold_start_wait_ms += performance.now() - waitStarted;
+      if (!releaseColdStart) return refuse("stopping");
+      ctx.stats.cold_starts += 1;
       try { this.#native = await ctx.factory.start(); nativeTag = "started"; }
-      catch (error) { return refuse(`native_start_failed:${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) { releaseColdStart(); return refuse(`native_start_failed:${error instanceof Error ? error.message : String(error)}`); }
     }
     const native = this.#native;
     const openStart: FastGameMeta["start"] = command.start.kind === "from_save"
@@ -545,6 +556,7 @@ export class SlotKernel {
       if (start.kind !== command.start.kind || (expectedSave !== null && start.save_sha256 !== expectedSave))
         throw new Error("native_start_changed");
     } catch (error) {
+      releaseColdStart?.();
       const divergence = native.taint().reason === "compact_state_divergence";
       // The lines this mount emitted (a diverging first frame included) outlive the native.
       const lines: string[] = [];
@@ -557,6 +569,7 @@ export class SlotKernel {
       catch (failure) { ctx.evidenceFailed(this.index, null, errorText(failure)); }
       return refuse(reason);
     }
+    releaseColdStart?.();
     this.gameInstanceId = gameInstanceId;
     this.state = "running";
     ctx.stats.games += 1;
@@ -617,8 +630,8 @@ export class SlotKernel {
     // The decision link hears the close only after this game's evidence is closed: a game whose
     // evidence failed gets no terminal label and its unsealed rows are sealed truncated
     // (`env_crash` on the link; the evidence and the `closed` event keep the real reason). Per
-    // D1=A the learner then excludes the game: segments not yet used are dropped, segments
-    // sealed and trained before the exclusion arrived are only counted.
+    // D1=A the learner then excludes the game: segments not yet used are dropped; a segment
+    // already selected into a prefetched batch counts as used and is only counted.
     ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason: evidenceFailed ? "env_crash" : reason,
       last_step_index: game.lastStepIndex });
     this.#idle();

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -148,19 +149,32 @@ def suite_names() -> tuple[str, ...]:
 
 def seed_membership(seed: str) -> tuple[str, ...]:
     """All reserved evaluation sets, including the sealed test set, without exposure."""
-    canonical = require_canonical_game_seed(seed)
-    legacy = tuple(name for name in suite_names() if canonical in load_suite(name)["seeds"])
-    reserved = tuple(derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11))
-    checkpoint = tuple(m["suite_id"] for m in (
-        *(checkpoint_reference_manifest("v0.111.0", character) for character in CHARACTERS),
-        checkpoint_reference_manifest("v0.111.0", "Defect", 10),
-    ) if canonical in m["seeds"])
-    t2 = tuple(m["suite_id"] for m in (t2_managed_manifest("v0.111.0", a) for a in (0, 10))
-               if canonical in m["seeds"])
+    return _membership_index().get(require_canonical_game_seed(seed), ())
+
+
+@lru_cache(maxsize=1)
+def _membership_index() -> dict[str, tuple[str, ...]]:
+    # The reserved sets are frozen, versioned package facts. Build the seed ->
+    # suites index once per process instead of rereading and revalidating every
+    # manifest for each queried seed. Order per seed is the original order:
+    # legacy suites, the four-agent reservation, checkpoint, T2, learning curve.
     rl3 = rl3_learning_curve_manifest("v0.111.0")
-    learning_curve = (rl3["suite_id"],) if canonical in rl3["seeds"] else ()
-    return (legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
-            + checkpoint + t2 + learning_curve)
+    sets: list[tuple[str, list[str]]] = [
+        *((name, load_suite(name)["seeds"]) for name in suite_names()),
+        (FOUR_AGENT_SUITE_ID, [derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11)]),
+        *((m["suite_id"], m["seeds"]) for m in (
+            *(checkpoint_reference_manifest("v0.111.0", character) for character in CHARACTERS),
+            checkpoint_reference_manifest("v0.111.0", "Defect", 10),
+        )),
+        *((m["suite_id"], m["seeds"]) for m in (t2_managed_manifest("v0.111.0", a)
+                                                for a in (0, 10))),
+        (rl3["suite_id"], rl3["seeds"]),
+    ]
+    index: dict[str, list[str]] = {}
+    for suite_id, seeds in sets:
+        for member in dict.fromkeys(seeds):
+            index.setdefault(member, []).append(suite_id)
+    return {member: tuple(ids) for member, ids in index.items()}
 
 
 def require_non_evaluation_seed(seed: str) -> str:

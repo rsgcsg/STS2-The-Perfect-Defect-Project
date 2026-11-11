@@ -309,6 +309,7 @@ public static partial class NativeCardPreviewReadQualification
             gap = null;
             return true;
         }
+        catch (NativeFieldCompileException) { throw; }
         catch { return false; }
     }
 
