@@ -683,8 +683,9 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
 
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
-                   arena: torch.Tensor | None = None) -> None:
-    """Spawned device process: models and forwards only, no per-row Python work.
+                   arena: torch.Tensor | None = None, device_rows: bool = False) -> None:
+    """Spawned device process: models and forwards only, no per-row Python work
+    (with `device_rows` it also turns a forward's tensors into per-row scores).
 
     The loading thread reads joined jobs from the joiners (or, without joiners,
     prepared parts from every prepare worker, joining a job's parts once all are
@@ -722,7 +723,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
         try:
             while (item := joined.get()) is not None:
                 parts, group = item
-                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group),
+                output.send_bytes(pickle.dumps(_device_job(scorers, parts, group,
+                                                           device_rows),
                                                protocol=pickle.HIGHEST_PROTOCOL))
         except BaseException as failure:
             # The forward thread is gone (#431 review S1): end the whole device
@@ -779,7 +781,9 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
 
 
 def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
-                joined: Any) -> list[dict[str, Any]]:
+                joined: Any, device_rows: bool = False) -> list[dict[str, Any]]:
+    from .rows_scorer import RowsScorer
+
     out = []
     mu = parts[0]["mu"]
     scorer = scorers.get(mu)
@@ -825,11 +829,18 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         error = ("SERVICE_STOPPING", "")
         outputs = {}
     for part, tails in zip(parts, part_tails, strict=True):
-        out.append({"job": part["job"], "part": part["part"], "kept": part["kept"],
-                    "lengths": part["lengths"], "failed": part["failed"],
-                    "audit": part["audit"], "tails": tails, "error": error,
-                    "overflow": part.get("overflow") or overflow, "fatal": fatal,
-                    "outputs": outputs.get(part["part"])})
+        part_outputs = outputs.get(part["part"])
+        result = {"job": part["job"], "part": part["part"], "kept": part["kept"],
+                  "lengths": part["lengths"], "failed": part["failed"],
+                  "audit": part["audit"], "tails": tails, "error": error,
+                  "overflow": part.get("overflow") or overflow, "fatal": fatal,
+                  "outputs": part_outputs}
+        if device_rows and part_outputs is not None:
+            # The same RowsScorer.rows, run here: the service unpickles plain
+            # per-row lists instead of four tensors and skips the conversion.
+            result["outputs"] = None
+            result["rows"] = RowsScorer.rows(part_outputs, part["lengths"])
+        out.append(result)
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
         out[0]["forwards"] = 1 if live and error is None else 0  # parts are joined
@@ -897,6 +908,10 @@ class FastInferenceService:
     (up to `max_job_rows`) grows; with a free slot a job leaves after `window_ms`.
 
     A job is split into `min(job_parts, rows)` parts, one per prepare worker.
+    `device_rows` (V3 option, default off): the device process turns each
+    forward's output tensors into per-row scores (`RowsScorer.rows`, the same
+    function and values), so this process unpickles plain lists instead of
+    tensors and does not convert them; it holds the GIL less per row.
     `part_rows` > 0 (V3 option, default off) caps that at ceil(rows / part_rows),
     so each part holds at least about `part_rows` rows: a small job goes to fewer
     workers instead of one row each, a large one still uses `job_parts` workers.
@@ -911,7 +926,8 @@ class FastInferenceService:
                  max_job_rows: int = 256, job_parts: int = 1, join_workers: int = 0,
                  arena_row_bytes: int | None = 256 * 1024, device: str | None = None,
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
-                 part_rows: int = 0, audit_fraction: float = 0.01,
+                 part_rows: int = 0, device_rows: bool = False,
+                 audit_fraction: float = 0.01,
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None) -> None:
         import multiprocessing
@@ -937,7 +953,7 @@ class FastInferenceService:
         self.training_generation = training_generation
         self.max_rows, self.window = max_rows, window_ms / 1000
         self.max_job_rows, self.job_parts = max_job_rows, job_parts
-        self.part_rows = part_rows
+        self.part_rows, self.device_rows = part_rows, bool(device_rows)
         self.bf16, self.compile = bf16, compile
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
@@ -993,7 +1009,8 @@ class FastInferenceService:
         self.device_process = context.Process(
             target=_device_worker, daemon=True, name="rl-inference-3-device",
             args=(control_child, device_inputs, results_child,
-                  self.device, bf16, compile, device_threads, self.arena))
+                  self.device, bf16, compile, device_threads, self.arena,
+                  self.device_rows))
         self.device_process.start()
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
@@ -1438,7 +1455,8 @@ class FastInferenceService:
                 for index, value in zip(indices, RowsScorer.rows(values, lengths), strict=True):
                     tails[index] = ("NONFINITE_SCORES" if value is None
                                     else value.outcome_probabilities)
-            outputs = RowsScorer.rows(part["outputs"], part["lengths"])
+            outputs = (part["rows"] if self.device_rows
+                       else RowsScorer.rows(part["outputs"], part["lengths"]))
             for index, item, output in zip(part["kept"], kept, outputs, strict=True):
                 tail = tails.get(index)
                 if output is None:
