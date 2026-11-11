@@ -904,7 +904,13 @@ class _V3Link:
 # Runtime caches a process sets on a model object: torch.compile wrappers of
 # rows_forward (`_rows_block*`) and of the nodes lever (`_rows_nodes_compiled`).
 # They cannot be pickled and are never part of a published mu.
+# torch.compile wrappers set by rows_forward (compiled rows blocks, the nodes
+# lever's compiled builder) cannot be pickled: dropped from the shipped copy.
 RUNTIME_CACHE_PREFIXES = ("_rows_block", "_rows_nodes")
+# A learner mu from load_behavior_mu (or LocalInference) carries this process's
+# TextVectorCache, which holds an RLock and cannot be pickled. P1Model.__init__
+# declares both attributes as None, so the shipped copy keeps them as None.
+PROCESS_LOCAL_ATTRIBUTES = frozenset({"text_cache", "text_cache_namespace"})
 
 
 def model_blob(model: Any) -> bytes:
@@ -914,7 +920,8 @@ def model_blob(model: Any) -> bytes:
     import io
 
     shipped = copy.copy(model)
-    shipped.__dict__ = {key: value for key, value in model.__dict__.items()
+    shipped.__dict__ = {key: (None if key in PROCESS_LOCAL_ATTRIBUTES else value)
+                        for key, value in model.__dict__.items()
                         if not key.startswith(RUNTIME_CACHE_PREFIXES)}
     blob = io.BytesIO()
     torch.save(shipped, blob)

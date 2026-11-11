@@ -1,6 +1,7 @@
 """One card's K rl-inference-3 services: per-game binding, MPS daemon, loud failure (CPU)."""
 from __future__ import annotations
 
+import io
 import os
 import signal
 import stat
@@ -25,6 +26,7 @@ from test_p1_fast_inference import (
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.fast_aggregator import NodeAggregator, service_for_game
+from stpd.p1.fast_mu_follower import FastMuFollower
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.inference_card import InferenceCard, MpsDaemon
 from stpd.p1.inference_service import FastInferenceService
@@ -49,7 +51,10 @@ def make_service(index: int, settings: dict[str, Any]) -> FastInferenceService:
     vocabulary = public_vocabulary(V2_INPUT_SPEC)
     assembler = RefusingAssembler() if settings.get("refuse") == index else FakeAssembler()
     assembler.assembler_id = settings.get("assembler_id", f"asm-{index}")  # type: ignore[attr-defined]
-    return FastInferenceService(vocabulary, FrameCompiler(vocabulary).identity, assembler,
+    compiler = FrameCompiler(vocabulary).identity
+    if settings.get("other_compiler") == index:
+        compiler = {**compiler, "encoder": "other"}
+    return FastInferenceService(vocabulary, compiler, assembler,
                                 training_generation="gen-1", address=("127.0.0.1", 0),
                                 env_sha256=ENV, prepare_workers=1, device="cpu",
                                 kernels=settings.get("kernels", ""))
@@ -289,6 +294,36 @@ def test_mps_daemon_that_does_not_start_is_loud():
         MpsDaemon(root, control=os.path.join(root, "missing")).start()
 
 
+def test_a_mu_carrying_a_text_cache_publishes_through_service_and_card(model):
+    """Friday s1c: load_behavior_mu attaches a TextVectorCache (holds an RLock);
+    the shipped bytes drop it, the same for the single service and the card."""
+
+    from stpd.p1.inference_service import model_blob
+    from stpd.p1.text_cache import TextVectorCache
+
+    plain = model_blob(model)
+    model.text_cache, model.text_cache_namespace = TextVectorCache(limit=1024**2), MU
+    try:
+        assert model_blob(model) == plain
+        shipped = torch.load(io.BytesIO(plain), weights_only=False)
+        assert shipped.text_cache is None and shipped.text_cache_namespace is None
+        service = make_service(0, {})
+        try:
+            assert service.publish(model, Handoff(MU)) is True
+        finally:
+            service.close()
+        card = InferenceCard(FACTORY, services=1, mps=False)
+        try:
+            assert card.publish(model, Handoff(MU)) == [True]
+            assert card.failure is None
+        finally:
+            closed = card.close()
+        assert closed["failure"] is None
+        assert isinstance(model.text_cache, TextVectorCache)  # the caller keeps its own
+    finally:
+        model.text_cache, model.text_cache_namespace = None, None
+
+
 def test_card_publish_ships_a_model_that_carries_compiled_runtime_caches(model):
     """#480 review F1: the card ships a mu through the same `model_blob` as the
     service: compiled rows blocks and the nodes lever's builder never travel."""
@@ -312,3 +347,119 @@ def test_card_publish_ships_a_model_that_carries_compiled_runtime_caches(model):
         del model.__dict__["_rows_nodes_compiled"]
         del model.__dict__["_rows_block_packed_compiled_heads"]
     assert closed["failure"] is None and closed["exitcodes"] == [0]
+
+
+class _Source:
+    def __init__(self, compiler: Any, loaded: Any) -> None:
+        self.current = {"snapshot_sha256": "c" * 64, "training_generation": "gen-1",
+                        "version": 2, "updates": 8, "compiler_identity": compiler}
+        self.model = loaded
+        self.fail_load = False
+
+    def latest(self) -> dict[str, Any]:
+        return dict(self.current)
+
+    def load(self, value: dict[str, Any]) -> Any:
+        if self.fail_load:
+            raise ValueError("behavior_snapshot_checksum_changed")
+        return self.model
+
+
+def test_a_follower_publishes_through_the_card_and_records_each_service(model):
+    """K > 1: the follower follows the card; one refusing service is `partial`."""
+    card = InferenceCard(FACTORY, services=2, mps=False, settings={"refuse": 1})
+    follower = FastMuFollower(_Source(card.compiler_identity, model), card)
+    try:
+        assert card.compiler_identity is not None and not card.stopping.is_set()
+        assert follower.step() is True
+        assert follower.counters["partial"] == 1 and follower.counters["published"] == 0
+        assert follower.history[-1]["accepted_by"] == [True, False]
+        assert follower.behind == [1]
+        # Review S3: the refusing service alone gets the current mu again.
+        assert follower.step() is False and follower.counters["reoffered"] == 1
+        assert follower.history[-1]["reoffer_to"] == [1]
+        assert card.publish(model, Handoff(MU), services=[1]) == [False]
+        assert card.publish(model, Handoff(MU), services=[0]) == [True]
+        for services in ([], [2], [0, 0]):
+            with pytest.raises(ValueError, match="inference_card_publish_services"):
+                card.publish(model, Handoff(MU), services=services)
+        assert card.failure is None
+    finally:
+        closed = follower.close()  # stops following, then closes the card
+    assert closed["failure"] is None and card.stopping.is_set()
+
+
+def test_a_follower_that_gives_up_stops_every_service_of_the_card(model):
+    card = InferenceCard(FACTORY, services=2, mps=False)
+    source = _Source(card.compiler_identity, model)
+    source.fail_load = True
+    follower = FastMuFollower(source, card, interval=0.01, max_failures=2).start()
+    try:
+        assert follower.thread is not None
+        follower.thread.join(30)
+        assert follower.stopped() and card.stopping.is_set()
+        assert card.failure is not None and card.failure.startswith("mu_follower_stopped:")
+        with pytest.raises(ValueError, match="behavior_snapshot_checksum_changed"):
+            follower.check()
+        with pytest.raises(BoundaryError, match="card_stopped"):
+            card.publish(model, Handoff(MU))  # no later mu reaches any service
+    finally:
+        closed = card.close()
+    assert closed["failure"].startswith("mu_follower_stopped:")
+
+
+def test_services_with_different_compiler_identities_never_serve():
+    with pytest.raises(BoundaryError, match="service_start_failed") as caught:
+        InferenceCard(FACTORY, services=2, mps=False, settings={"other_compiler": 1})
+    assert "compiler_identity_not_equal" in caught.value.recovery
+
+
+def test_publish_after_or_during_close_is_card_stopped_and_keeps_the_failure(model):
+    """Review S2: a closing card refuses new commands as card_stopped (its failure
+    stays None) and close() waits for the command in progress to answer."""
+    card = InferenceCard(FACTORY, services=2, mps=False)
+    card._lock.acquire()  # stands for a publish in progress
+    closing = threading.Thread(target=card.close)
+    closing.start()
+    try:
+        for _ in range(500):
+            if card.stopping.is_set():
+                break
+            closing.join(0.01)
+        assert card.stopping.is_set() and closing.is_alive()  # waits for the command
+        assert all(process.is_alive() for process in card.processes)
+    finally:
+        card._lock.release()
+    closing.join(120)
+    assert not closing.is_alive()
+    with pytest.raises(BoundaryError, match="card_stopped") as caught:
+        card.publish(model, Handoff(MU))
+    assert caught.value.recovery == "closing"
+    assert card.failure is None and card.close()["failure"] is None
+
+
+def test_aggregator_close_delivers_what_a_link_already_read(vocabulary, model, monkeypatch):
+    """CI flake (run 42998622726): close() closed the service connections while a
+    link was still forwarding an episode_close it had read, so a clean close
+    reported `service_send:OSError`. close() now waits for every forwarder."""
+    import time
+
+    link, close = NodeAggregator._link_message, NodeAggregator.close
+
+    def slow_link(self: Any, env: Any, message: dict[str, Any]) -> None:
+        if message.get("type") == "episode_close":
+            time.sleep(0.2)  # still forwarding when close() runs
+        link(self, env, message)
+
+    def slow_close(self: Any, timeout: float = 30.0) -> dict[str, Any]:
+        pool_close = self.pool.close
+
+        def slow_pool() -> None:
+            time.sleep(1.0)  # a loaded runner: the encoder pool stops slowly
+            pool_close()
+        self.pool.close = slow_pool
+        return close(self, timeout)
+
+    monkeypatch.setattr(NodeAggregator, "_link_message", slow_link)
+    monkeypatch.setattr(NodeAggregator, "close", slow_close)
+    test_card_scores_each_game_on_its_bound_service(vocabulary, model)

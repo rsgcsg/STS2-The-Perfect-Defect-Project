@@ -20,14 +20,30 @@ Rules:
   one) is never loaded: it raises `MU_COMPILER_IDENTITY_DIFFERS` and counts as
   a failure, like the old service's `_load`;
 - a refused offer (`MuLedger.offer` found every resident slot held by an open
-  segment or a pin) is counted and never forced in; it is not re-offered, the
-  next learner publication is;
+  segment or a pin) is counted and never forced in. A refusal is a known
+  answer, not an unknown delivery: the next poll offers the current mu again
+  to the services that refused it (and only to them; a newer publication is
+  offered to every service instead), so each service lags the learner by a
+  bounded time, not by an unbounded run of refusals. A publish that raises,
+  times out or answers in any other shape is never repeated;
 - reading `latest()` is an idempotent read and is polled again next interval;
   a failed check, load or publish is counted with its error. `max_failures`
   consecutive failures are fatal: `on_fatal(error)` runs (default: the service
   stops loudly, `FastInferenceService._stop("mu_follower_stopped")`, so later
   rows are refused instead of scored by an ever older mu) and `check()` raises
   the last error. Nothing is ever scored with a substitute mu;
+- the service may be an `InferenceCard` (K services): its `publish` answers per
+  service (`list[bool]`, each assembler from its own resident mu), and takes
+  `services=` for the re-offer. A first offer counts as published when every
+  service accepted it, refused when none did, `partial` otherwise; a re-offer
+  counts as `reoffered` (and `caught_up` per accepting service). `step()` is
+  True when any service accepted; the history keeps the per-service answers
+  and `status()["accepted_mu"]` each service's last accepted mu. Until a
+  refusing service catches up it scores on its older mu, as one service would
+  (rows always carry the mu that scored them). Any other answer shape is fatal
+  at once (`MU_PUBLISH_ANSWER_INVALID`: `on_fatal`, by default the card stops
+  all K): whether the service took that mu is unknown. The card's `_stop`
+  stops all K;
 - shutdown order: `close()` stops this follower before it closes the service;
   once the service is stopping the follower publishes nothing and exits;
 - weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
@@ -60,12 +76,17 @@ class FastMuFollower:
         self.source, self.service = source, service
         self.interval, self.max_failures, self.clock = interval, max_failures, clock
         self.offered: dict[str, Any] | None = None
+        self.behind: list[int] = []  # services that refused `offered` (re-offered next poll)
+        self.model: Any = None  # `offered`'s model, kept only while a service is behind
+        self.per_service: bool | None = None  # True: the service is a card (list answers)
+        self.accepted_mu: list[dict[str, Any] | None] | None = None
         self.error: BaseException | None = None  # the last failure
         self.fatal: BaseException | None = None  # set once the follower gave up
         self.on_fatal = self._stop_service if on_fatal is None else on_fatal
         self.failures = 0
         self.history: list[dict[str, Any]] = []
-        self.counters = {"polls": 0, "published": 0, "refused": 0, "unchanged": 0,
+        self.counters = {"polls": 0, "published": 0, "refused": 0, "partial": 0,
+                         "reoffered": 0, "caught_up": 0, "unchanged": 0,
                          "failures": 0, "service_stopping": 0,
                          "load_seconds": 0.0, "publish_seconds": 0.0}
         self.lock = threading.Lock()
@@ -85,7 +106,7 @@ class FastMuFollower:
         self.service._stop("mu_follower_stopped", repr(error))
 
     def step(self) -> bool:
-        """One poll; True when a new identity was accepted by the service."""
+        """One poll; True when a service accepted the identity it was offered."""
         with self.lock:
             self.counters["polls"] += 1
             if self._service_stopping():
@@ -94,24 +115,81 @@ class FastMuFollower:
             identity = dict(self.source.latest())
             handoff = self.handoff(identity)
             if self.offered is not None and self.offered == handoff.identity():
-                self.counters["unchanged"] += 1
-                return False
+                if not self.behind:
+                    self.counters["unchanged"] += 1
+                    return False
+                return self._offer(self.model, handoff, list(self.behind), 0.0)
             if identity.get("compiler_identity") != self.service.compiler_identity:
                 raise BoundaryError("rl_mu", "MU_COMPILER_IDENTITY_DIFFERS")
             began = self.clock()
             model = self.source.load(identity)
-            loaded = self.clock()
-            accepted = bool(self.service.publish(model, handoff))
-            done = self.clock()
-            self.counters["load_seconds"] += loaded - began
-            self.counters["publish_seconds"] += done - loaded
-            # Offered once either way: a refused identity is not offered again.
-            self.offered = handoff.identity()
-            self.counters["published" if accepted else "refused"] += 1
-            self.history.append({**handoff.identity(), "accepted": accepted,
-                                 "load_seconds": loaded - began,
-                                 "publish_seconds": done - loaded, "at": done})
-            return accepted
+            load_seconds = self.clock() - began
+            self.counters["load_seconds"] += load_seconds
+            return self._offer(model, handoff, None, load_seconds)
+
+    def _offer(self, model: Any, handoff: MuHandoff, targets: list[int] | None,
+               load_seconds: float) -> bool:
+        """Offer `handoff` to every service (`targets` None) or to the ones that refused it."""
+        # This delivery happens once: from here on only an explicit refusal is
+        # answered again; a raise or an invalid answer leaves nobody behind.
+        self.offered, self.behind, self.model = handoff.identity(), [], None
+        began = self.clock()
+        if targets is not None and self.per_service:
+            answer = self.service.publish(model, handoff, services=targets)
+        else:
+            answer = self.service.publish(model, handoff)
+        done = self.clock()
+        self.counters["publish_seconds"] += done - began
+        record = {**handoff.identity(), "load_seconds": load_seconds,
+                  "publish_seconds": done - began, "at": done}
+        try:
+            per_service = self._answers(answer, targets)
+        except BoundaryError as error:
+            self.history.append({**record, "accepted": None,
+                                 "answer_invalid": repr(answer)[:200]})
+            self.counters["failures"] += 1
+            self.error = error
+            self._give_up(error)
+            raise
+        indices = list(range(len(per_service))) if targets is None else targets
+        if self.accepted_mu is None:
+            self.accepted_mu = [None] * len(per_service)
+        for index, accepted_here in zip(indices, per_service, strict=True):
+            if accepted_here:
+                self.accepted_mu[index] = {"version": handoff.version,
+                                           "training_generation": handoff.training_generation,
+                                           "snapshot_sha256": handoff.snapshot_sha256}
+        self.behind = [index for index, accepted_here in zip(indices, per_service, strict=True)
+                       if not accepted_here]
+        if self.behind:
+            self.model = model  # kept for the re-offer, dropped once nobody is behind
+        accepted = any(per_service)
+        if targets is None:
+            self.counters["published" if all(per_service) else "refused" if not accepted
+                          else "partial"] += 1
+        else:
+            self.counters["reoffered"] += 1
+            self.counters["caught_up"] += sum(per_service)
+            record["reoffer_to"] = targets
+        record["accepted"] = accepted
+        if self.per_service:
+            record["accepted_by"] = per_service
+        self.history.append(record)
+        return accepted
+
+    def _answers(self, answer: Any, targets: list[int] | None) -> list[bool]:
+        """One service answers a bool; a card answers one bool per service offered."""
+        if type(answer) is bool and not self.per_service:
+            self.per_service = False
+            return [answer]
+        expected = (len(targets) if targets is not None
+                    else None if self.accepted_mu is None else len(self.accepted_mu))
+        if (self.per_service is not False and type(answer) is list and answer
+                and all(type(value) is bool for value in answer)
+                and (expected is None or len(answer) == expected)):
+            self.per_service = True
+            return list(answer)
+        raise BoundaryError("rl_mu", "MU_PUBLISH_ANSWER_INVALID")
 
     def _run(self) -> None:
         while not self.stopping.is_set():
@@ -121,6 +199,8 @@ class FastMuFollower:
                 self.step()
                 self.failures = 0
             except BaseException as error:  # noqa: BLE001 - kept and re-raised by check()
+                if self.fatal is not None:
+                    return  # step() already gave up (an invalid publish answer)
                 if self._service_stopping():
                     return  # a publish raced the service's own stop: not this follower's
                 self.failures += 1
@@ -166,7 +246,11 @@ class FastMuFollower:
         return self.service.close()
 
     def status(self) -> dict[str, Any]:
-        return {"offered": self.offered, "failures": self.failures,
+        counters = {key: value for key, value in self.counters.items() if key != "failures"}
+        return {"offered": self.offered, "behind": list(self.behind),
+                "accepted_mu": None if self.accepted_mu is None else list(self.accepted_mu),
+                "consecutive_failures": self.failures,
+                "total_failures": self.counters["failures"],
                 "error": None if self.error is None else repr(self.error),
                 "fatal": None if self.fatal is None else repr(self.fatal),
-                "stopped": self.stopped(), **self.counters}
+                "stopped": self.stopped(), **counters}

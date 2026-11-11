@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
-import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PlayerEnvironmentRestClient, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
 import { ReferenceGlobalTransport } from "../src/global-transport.js";
 import { createGlobalProgramManifest } from "../src/global-program.js";
-import { pyJsonSha256 } from "../src/fast-env/json-bytes.js";
+import { CanonicalTextMemo, CanonicalTextMemoDivergence, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
+import { globalDigest } from "../src/global-transport.js";
 import { canonicalJson } from "../src/evidence.js";
 import { GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { FastEnvProcess, defaultFastEvidenceSink, requireFastEnvManifest } from "../src/fast-env/process.js";
@@ -20,6 +21,36 @@ import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } fr
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
 import { HostSlotNative, SampledCheckFailure, captureSampleOffset, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
+
+// The kernel's own reduce call can be made to report an E6 memo divergence (everything else is the real SDK).
+// With `follow` set, every lowering gains one follow rule whose resolution (resolveFollowBasis, which
+// reduces inside the SDK) reports the E6 divergence: the mid-fold path after a delivered step.
+const reduceFault = vi.hoisted(() => ({ at: null as number | null, calls: 0, follow: false }));
+vi.mock("@rsgcsg/sts2-connector-client/p1-global", async original => {
+  const actual: any = await original();
+  return { ...actual, reduce: (...args: any[]) => {
+    if (reduceFault.at !== null && ++reduceFault.calls === reduceFault.at) throw new actual.P1ReduceMemoDivergence(reduceFault.calls, 12);
+    const result = actual.reduce(...args);
+    if (!reduceFault.follow || !result?.lowering) return result;
+    return { ...result, lowering: Object.fromEntries(Object.entries(result.lowering)
+      .map(([id, lowering]: [string, any]) => [id, { ...lowering, follow: [{ optional: false }, ...lowering.follow] }])) };
+  }, resolveFollowBasis: (...args: any[]) => {
+    if (reduceFault.follow) throw new actual.P1ReduceMemoDivergence(7, 3);
+    return actual.resolveFollowBasis(...args);
+  } };
+});
+
+/** Equal subtrees become one deep-frozen object, kept across steps (what the E5 Host hands over). */
+function internFrozen(value: unknown, table: Map<string, object>): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const key = `${Array.isArray(value) ? "a" : "o"}${canonicalJson(value)}`;
+  const kept = table.get(key);
+  if (kept) return kept;
+  const copy: any = Array.isArray(value) ? value.map(item => internFrozen(item, table))
+    : Object.fromEntries(Object.entries(value).map(([name, item]) => [name, internFrozen(item, table)]));
+  table.set(key, Object.freeze(copy));
+  return copy;
+}
 
 const p1Fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const SAMPLING = { mode: "temperature_uniform", seed: "actor-7", arm_id: "control",
@@ -53,6 +84,10 @@ interface NativeHooks {
   script?: (step: number) => "multi" | "single" | "terminal";
   /** The successor frame of these native steps carries one native combat_end fact. */
   combatEndOn?: number[];
+  /** Receipts come back deep-frozen, equal subtrees as the same objects across steps (E5 identity). */
+  internReceipts?: boolean;
+  /** E5 counters this native's Host session reports. */
+  projectionMemo?: () => { hits: number; misses: number; checks: number };
 }
 
 /** A state of the scripted fixture game; every one gets its own snapshot id and the fixture's session. */
@@ -142,8 +177,11 @@ class FakeNative implements SlotNative {
     }
     this.#line(`{"frame":"delta","seq":${step}}`);
     const reasonCode = this.hooks.receiptReasonCode?.(step);
-    return reasonCode === undefined ? receipt : { ...receipt, reason_code: reasonCode };
+    const value = reasonCode === undefined ? receipt : { ...receipt, reason_code: reasonCode };
+    return this.hooks.internReceipts ? internFrozen(value, this.#interned) : value;
   }
+  #interned = new Map<string, object>();
+  projectionMemo() { return this.hooks.projectionMemo?.() ?? null; }
   async release() { await this.transport.release(); }
   taint() { const reason = this.hooks.taintReason?.() ?? null; return { tainted: reason !== null, reason }; }
   #lines: string[] = [];
@@ -770,6 +808,121 @@ describe("fast-env failure paths", () => {
       h.open(0);
       expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
     }
+  });
+
+  it("memo layers all off (default): no memo counters, the status is exactly today's", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 2 }) });
+    expect(h.config.memo).toEqual({ native_card: null, reduce: null, receipt_canonical: null });
+    h.open(0);
+    await h.next(event => event.event === "closed");
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).not.toHaveProperty("memo");
+  });
+
+  it("E4 + E6 on, compared on every step (interval 1): digests are globalDigest of the decoded receipts, counters reported", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 4, internReceipts: true, projectionMemo: () => ({ hits: 5, misses: 2, checks: 1 }) }),
+      edit: config => {
+        config.compact = { enabled: true, reconcile_interval: 64, projection_memo: { check_interval: 1 } };
+        config.memo = { native_card: { deck: true, hud: true }, reduce: { check_interval: 1 }, receipt_canonical: { check_interval: 1 } };
+      } });
+    const receipts: unknown[] = [];
+    const real = FakeNative.prototype.step;
+    const spy = vi.spyOn(FakeNative.prototype, "step").mockImplementation(async function (this: FakeNative, input) {
+      const receipt = await real.call(this, input); receipts.push(receipt); return receipt;
+    });
+    try {
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "terminal", native_steps: 4 });
+      const digests = new Set(receipts.map(receipt => globalDigest(decodePublicSourceReceipt(receipt).data)));
+      const outcomes = linkOf(h.linkMessages, "step_outcome", closed.game_instance_id);
+      expect(outcomes.length).toBeGreaterThan(0);
+      for (const outcome of outcomes) expect(digests.has(outcome.receipt_sha256)).toBe(true);
+      h.send({ cmd: "status" });
+      const { memo } = (await h.next(event => event.event === "status")).counters;
+      expect(memo).toMatchObject({ memo_divergences: 0, native_card: { deck: true, hud: true },
+        projection: { hits: 5, misses: 2, checks: 1, check_interval: 1 },
+        reduce: { mode: "on", verifyEvery: 1 }, receipt_canonical: { check_interval: 1, digests: 4, verified: 4 } });
+      expect(memo.reduce.reductions).toBeGreaterThan(0);
+      expect(memo.reduce.verified).toBe(memo.reduce.reductions);
+      // Later receipts reuse the kept text of the subtrees an earlier receipt already had.
+      expect(memo.receipt_canonical.hits).toBeGreaterThan(0);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("an E4 receipt-text divergence: game unknown, build output stopped, the whole process exits fatal", async () => {
+    const real = CanonicalTextMemo.prototype.digest;
+    let calls = 0;
+    const spy = vi.spyOn(CanonicalTextMemo.prototype, "digest").mockImplementation(function (this: CanonicalTextMemo, raw, decoded) {
+      if (++calls === 2) throw new CanonicalTextMemoDivergence(1, 40);
+      return real.call(this, raw, decoded);
+    });
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => { config.memo = { receipt_canonical: { check_interval: 64 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "unknown", detail: "receipt_canonical_memo_divergence", native: "replaced", native_steps: 2 });
+      expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id).map(message => message.status)).toEqual(["completed", "unknown"]);
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "receipt_canonical_memo_divergence", slot: 0 });
+      const fatal = await h.next(event => event.event === "fatal");
+      expect(fatal.reason).toMatch(/^receipt_canonical_memo_divergence:CanonicalTextMemoDivergence:/u);
+      expect(fatal.counters.memo).toMatchObject({ memo_divergences: 1 });
+      expect(await h.exit).toBe(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("an E6 P1ReduceMemoDivergence is fatal for the whole Node process, the game unknown and never retried", async () => {
+    reduceFault.at = 2; reduceFault.calls = 0;
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => { config.memo = { reduce: { check_interval: 64 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "unknown", detail: "p1_reduce_memo_divergence", native: "replaced", native_steps: 1 });
+      expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown" })]);
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "p1_reduce_memo_divergence", slot: 0 });
+      const fatal = await h.next(event => event.event === "fatal");
+      expect(fatal.reason).toMatch(/^p1_reduce_memo_divergence:P1ReduceMemoDivergence:/u);
+      expect(fatal.counters).toMatchObject({ memo: { memo_divergences: 1, reduce: { mode: "verify_all" } } });
+      expect(await h.exit).toBe(1);
+      // Nothing reopens: the process is gone.
+      expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
+    } finally { reduceFault.at = null; }
+  });
+
+  it("an E6 divergence inside resolveFollowBasis (after a delivered step) is fatal too, the row unknown", async () => {
+    reduceFault.follow = true;
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => { config.memo = { reduce: { check_interval: 64 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "unknown", detail: "p1_reduce_memo_divergence", native: "replaced", native_steps: 1 });
+      expect(linkOf(h.linkMessages, "step_outcome", closed.game_instance_id)).toEqual([expect.objectContaining({ status: "unknown" })]);
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "p1_reduce_memo_divergence", slot: 0 });
+      const fatal = await h.next(event => event.event === "fatal");
+      expect(fatal.reason).toMatch(/^p1_reduce_memo_divergence:P1ReduceMemoDivergence:/u);
+      // After the fatal divergence every E6 reduction is compared while the process drains; counters carry over.
+      expect(fatal.counters).toMatchObject({ memo: { memo_divergences: 1, reduce: { mode: "verify_all" } } });
+      expect(fatal.counters.memo.reduce.reductions).toBeGreaterThan(0);
+      expect(await h.exit).toBe(1);
+      expect(h.events.filter(event => event.event === "opened")).toHaveLength(1);
+    } finally { reduceFault.follow = false; }
+  });
+
+  it("memo config: off unless named, interval 1..1024, unknown keys refused", () => {
+    const raw = (memo: unknown) => ({ schema: "sts2.policy-runtime/fast-env-config-1", env_process_id: "e", slots: 1,
+      host: { package: "p", candidate_directory: "c", game_directory: null, character: "Defect", language: "en", ascension: 0, request_timeout_ms: 30000 },
+      agent_manifest: "m", compact: { enabled: false, reconcile_interval: 64 }, checks: { sample_rate: 0 }, decision_link: { kind: "unix", path: "/l" },
+      inference: { timeout_ms: 1000, actor_id: "a", single_choice: "omit", sampling: SAMPLING },
+      budget: { max_decisions_per_game: 1, max_native_steps_per_game: 1, game_wall_ms: 1 }, no_progress: null, evidence: { directory: "/e" }, memo });
+    expect(parseFastEnvConfig(raw(undefined)).memo).toEqual({ native_card: null, reduce: null, receipt_canonical: null });
+    expect(parseFastEnvConfig(raw(null)).memo).toEqual({ native_card: null, reduce: null, receipt_canonical: null });
+    expect(parseFastEnvConfig(raw({ native_card: { deck: true, hud: false }, reduce: { check_interval: 1 }, receipt_canonical: { check_interval: 1024 } })).memo)
+      .toEqual({ native_card: { deck: true, hud: false }, reduce: { check_interval: 1 }, receipt_canonical: { check_interval: 1024 } });
+    expect(() => parseFastEnvConfig(raw({ reduce: { check_interval: 0 } }))).toThrow(/memo.reduce.check_interval/u);
+    expect(() => parseFastEnvConfig(raw({ receipt_canonical: { check_interval: 1025 } }))).toThrow(/memo.receipt_canonical.check_interval/u);
+    expect(() => parseFastEnvConfig(raw({ reduce: { mode: "on" } }))).toThrow(/memo.reduce/u);
+    expect(() => parseFastEnvConfig(raw({ native_card: { deck: true } }))).toThrow(/memo.native_card.hud/u);
+    expect(() => parseFastEnvConfig(raw({ projection: {} }))).toThrow(/memo.projection/u);
   });
 
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {
