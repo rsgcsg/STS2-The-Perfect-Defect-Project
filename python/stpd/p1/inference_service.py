@@ -829,17 +829,17 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         error = ("SERVICE_STOPPING", "")
         outputs = {}
     for part, tails in zip(parts, part_tails, strict=True):
-        tensors = outputs.get(part["part"])
+        part_outputs = outputs.get(part["part"])
         result = {"job": part["job"], "part": part["part"], "kept": part["kept"],
                   "lengths": part["lengths"], "failed": part["failed"],
                   "audit": part["audit"], "tails": tails, "error": error,
                   "overflow": part.get("overflow") or overflow, "fatal": fatal,
-                  "outputs": tensors}
-        if device_rows and tensors is not None:
+                  "outputs": part_outputs}
+        if device_rows and part_outputs is not None:
             # The same RowsScorer.rows, run here: the service unpickles plain
             # per-row lists instead of four tensors and skips the conversion.
             result["outputs"] = None
-            result["rows"] = RowsScorer.rows(tensors, part["lengths"])
+            result["rows"] = RowsScorer.rows(part_outputs, part["lengths"])
         out.append(result)
     if out:
         out[0]["device_seconds"] = time.perf_counter() - started
