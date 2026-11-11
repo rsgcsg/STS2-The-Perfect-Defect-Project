@@ -294,5 +294,5 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
         builder = getattr(model, "_rows_nodes_compiled", None)
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
-            setattr(model, "_rows_nodes_compiled", builder)  # learner-process runtime only
+            model.__dict__["_rows_nodes_compiled"] = builder  # learner-process runtime only
     return cast(Tensor, builder(model, t, vectors.float(), owners, flat["refs"][0]))
