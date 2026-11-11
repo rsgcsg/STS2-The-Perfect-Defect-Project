@@ -78,6 +78,10 @@ function visibleState({ enabled = null, selected = null } = {}) {
   };
 }
 
+// Reserved key of the session alias map that holds the A1 derived-id table (entity
+// keys are JSON arrays, so this key never collides with one).
+const DERIVED_ALIAS_TABLE = "derived-id-table";
+
 function createProjectionContext({
   state, runtimeInstanceId, sequence, identityMode = "crypto", publicEntityAliases
 }) {
@@ -118,9 +122,44 @@ function createProjectionContext({
     if (!publicEntityAliases.has(key)) {
       // Only a first PUBLIC appearance allocates this alias. The native token's
       // value/allocation counter is a private map key, not an alias ingredient.
-      publicEntityAliases.set(key, publicId(kind, `visible_s${sequence}`, publicEntityAliases.size + 1));
+      publicEntityAliases.set(key, publicId(kind, `visible_s${sequence}`, entityOrdinal()));
     }
     return publicEntityAliases.get(key);
+  }
+
+  // Entity ordinals count entity aliases only: the derived table below lives under
+  // one reserved key, so adding derived ids never renumbers a later entity id.
+  function entityOrdinal() {
+    return publicEntityAliases.size + 1 - (publicEntityAliases.has(DERIVED_ALIAS_TABLE) ? 1 : 0);
+  }
+
+  // A1 (stable derived ids): an id that lives inside a parent's public content
+  // (hover/tooltip card, a position whose native object has no unique ref) is
+  // keyed by its parent's stable identity plus a public position, so the same
+  // public position keeps its id from step to step. Allocation follows the entityId
+  // rule (first public appearance) with its own table and ordinals, so entity ids
+  // keep exactly their previous values. The parent key is the parent's public
+  // id or its native token; like entityId's token it is only a private map key,
+  // never an alias ingredient. Positions are public UI facts (preview index,
+  // tooltip ordinal, offered slot index); no native-internal order is a key.
+  // Without a stable parent key the id stays snapshot-scoped exactly as before,
+  // so two different screens can never share an identity.
+  function derivedId(kind, parentKey, ...position) {
+    if (!position.every(part => part === null || typeof part === "string" || typeof part === "boolean"
+        || Number.isSafeInteger(part))) throw new TypeError("derived id position must be public scalars");
+    if (typeof parentKey !== "string" || parentKey.length === 0) return makeId(kind, ...position);
+    let table = publicEntityAliases.get(DERIVED_ALIAS_TABLE);
+    if (table === undefined) publicEntityAliases.set(DERIVED_ALIAS_TABLE, table = new Map());
+    const key = JSON.stringify([kind, parentKey, ...position]);
+    if (!table.has(key)) table.set(key, publicId(kind, `derived_s${sequence}`, table.size + 1));
+    return table.get(key);
+  }
+
+  // A non-entity referent whose id is also its content entity_id (rest option, card
+  // reward alternative): derived the same way under the "ref" prefix; without a
+  // stable parent it keeps today's snapshot-scoped id (null = referent() default).
+  function stableReferentId(role, parentKey, index) {
+    return typeof parentKey === "string" && parentKey.length > 0 ? derivedId("ref", parentKey, role, index) : null;
   }
 
   function referent({
@@ -189,6 +228,8 @@ function createProjectionContext({
     catalogReads: [],
     id: makeId,
     entityId,
+    derivedId,
+    stableReferentId,
     existingEntityId: (kind, nativeRef) => publicEntityAliases.get(JSON.stringify([kind, nativeRef])) ?? null,
     referent,
     action
@@ -814,9 +855,9 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
   const base = entry => ({ slot_entity_id: ctx.entityId("shop_slot", entry.slot_ref), inventory_index: entry.inventory_index, price: entry.cost, stocked: entry.is_stocked,
     visible: entry.visible, affordable: entry.affordable, can_purchase: exact && entry.can_purchase,
     ...(entry.blocked_reason == null ? {} : { blocked_reason: entry.blocked_reason }) });
-  const bind = (entry, kind, properties, label, action) => {
+  const bind = (entry, kind, properties, label, action, index = 0) => {
     const item = ctx.referent({ role: "shop_entry", id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
-      ? ctx.entityId("shop_entry", entry.native_ref) : ctx.id("unbound_shop_entry", kind, entry.inventory_index, ctx.referents.length), label,
+      ? ctx.entityId("shop_entry", entry.native_ref) : ctx.derivedId("unbound_shop_entry", state.shop_ref, kind, index), label,
       enabled: exact && entry.can_purchase, properties });
     // Labels follow the Reference native-UI descriptors, including the removal selector opener.
     if (surfaceActive && inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item,
@@ -825,7 +866,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
         ...(action === "remove_card" ? { room_ref: state.room_ref } : {}) } } });
     return item.properties;
   };
-  const cards = (Array.isArray(state.cards) ? state.cards : []).map(entry => {
+  const cards = (Array.isArray(state.cards) ? state.cards : []).map((entry, index) => {
     let card = null;
     if (plainObject(entry.card)) {
       const raw = entry.card;
@@ -836,20 +877,20 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
         Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"], "shop_offer",
         ctx.entityId("shop_entry", entry.native_ref), surfaceActive && inventoryOpen ? null : ctx.id("read", ctx.snapshotId, "shop_catalog")));
     } else if (entry.is_stocked) missing.push("native_shop_stocked_card_display");
-    return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, ...(card == null ? {} : { card }) }, card?.name ?? "Sold card", "buy_card");
+    return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, ...(card == null ? {} : { card }) }, card?.name ?? "Sold card", "buy_card", index);
   });
-  const relics = (Array.isArray(state.relics) ? state.relics : []).map(entry => {
+  const relics = (Array.isArray(state.relics) ? state.relics : []).map((entry, index) => {
     const raw = entry.relic;
     const relic = raw == null ? null : { entity_id: ctx.entityId("relic", raw.native_ref), definition_id: raw.id,
       name: raw.name, description: visibleText(raw.description), keywords: visibleHoverKeywords(raw.keywords),
       ...(raw.counter == null ? {} : { counter: raw.counter }),
       card_previews: visibleHoverCards(raw.card_previews, "relic", raw.native_ref, ctx.entityId) };
     if (entry.is_stocked && relic == null) missing.push("native_shop_stocked_relic_display");
-    return bind(entry, "shop_relic", { ...base(entry), ...(relic == null ? {} : { relic }) }, relic?.name ?? "Sold relic", "buy_relic");
+    return bind(entry, "shop_relic", { ...base(entry), ...(relic == null ? {} : { relic }) }, relic?.name ?? "Sold relic", "buy_relic", index);
   });
-  const potions = (Array.isArray(state.potions) ? state.potions : []).map(entry => bind(entry, "shop_potion", { ...base(entry),
+  const potions = (Array.isArray(state.potions) ? state.potions : []).map((entry, index) => bind(entry, "shop_potion", { ...base(entry),
     definition_id: entry.id, name: entry.name, description: visibleText(entry.description), rarity: entry.rarity },
-    entry.name ?? "Sold potion", "buy_potion"));
+    entry.name ?? "Sold potion", "buy_potion", index));
   const removal = state.card_removal == null ? null : bind(state.card_removal, "shop_service",
     { ...base(state.card_removal), next_price_increase: state.card_removal.next_price_increase }, "card removal", "remove_card");
   if (surfaceActive && inventoryOpen && exact) ctx.action({ verb: "close", label: "Close shop inventory", raw: { cmd: "action", action: "close_shop_inventory",
@@ -948,7 +989,7 @@ function publicNativeSelectorCard(card, id, ctx, depth = 0) { return ({
         is_selectable: card?.is_selectable === true, is_deselectable: card?.is_deselectable === true,
         keywords: Array.isArray(card?.keywords) ? card.keywords.map((tip) => ({ name: visibleText(tip?.name), description: visibleText(tip?.description) })) : [],
         card_previews: depth < 16 && Array.isArray(card?.card_previews) ? card.card_previews.map((preview, index) =>
-          publicNativeSelectorCard(preview, ctx.id("hover_card", id, depth, index), ctx, depth + 1)) : []
+          publicNativeSelectorCard(preview, ctx.derivedId("hover_card", id, depth, index), ctx, depth + 1)) : []
       });
 }
 
@@ -1100,12 +1141,12 @@ function currentSurface(state, ctx) {
         const unlocked = option?.is_locked === false && option?.is_enabled === true;
         const optionId = typeof option?.native_ref === "string" && option.native_ref.length > 0
           && currentOptions.filter(entry => entry?.native_ref === option.native_ref).length === 1
-          ? ctx.entityId("option", option.native_ref) : ctx.id("unbound_option", index);
+          ? ctx.entityId("option", option.native_ref) : ctx.derivedId("unbound_option", state.event_ref, index);
         let cardOrdinal = 0;
         const tooltips = (option?.tooltips ?? []).map(tip => {
           if (tip.kind === "text") return { kind: "text", name: visibleText(tip.name), description: visibleText(tip.description) };
           if (tip.kind !== "card" || !tip.card) throw new Error("unsupported_managed_event_tooltip");
-          const card = visibleCardBase(tip.card, ctx.id("tooltip_card", optionId, tip.card.id, cardOrdinal++));
+          const card = visibleCardBase(tip.card, ctx.derivedId("tooltip_card", optionId, tip.card.id ?? null, cardOrdinal++));
           delete card.can_play; delete card.target_type;
           return { kind: "card", card };
         });
@@ -1154,7 +1195,7 @@ function currentSurface(state, ctx) {
       const options = (state.options ?? []).map((option, index) => {
         const enabled = option.is_enabled !== false;
         const item = ctx.referent({
-          role: "rest_option",
+          role: "rest_option", id: ctx.stableReferentId("rest_option", state.room_ref, index),
           label: option.name ?? option.option_id ?? `Option ${index + 1}`,
           enabled,
           occurrence: index,
@@ -1216,7 +1257,7 @@ function currentSurface(state, ctx) {
       const stage = closed ? "closed" : choosing ? "relic_choice" : "completed";
       const relics = currentRelics.map((relic,index) => {
         const unique = typeof relic?.native_ref === "string" && refs.filter(ref => ref === relic.native_ref).length === 1;
-        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic",relic.native_ref) : ctx.id("unbound_treasure_relic",index),
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic",relic.native_ref) : ctx.derivedId("unbound_treasure_relic",state.room_ref,index),
           label: relic?.name ?? "Unavailable relic", enabled: complete, properties: {
             definition_id: relic == null ? null : definitionId(relic.id), name: relic?.name ?? null,
             description: visibleText(relic?.description), rarity: relic?.rarity ?? null,
@@ -1387,7 +1428,7 @@ function currentSurface(state, ctx) {
         && new Set(relics.map(relic => relic.native_ref)).size === relics.length;
       const offered = relics.map((relic, index) => {
         const unique = typeof relic?.native_ref === "string" && relics.filter(option => option?.native_ref === relic.native_ref).length === 1;
-        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic", relic.native_ref) : ctx.id("unbound_relic", index),
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic", relic.native_ref) : ctx.derivedId("unbound_relic", state.selector_ref, index),
           label: relic.name, occurrence: index, enabled: exact,
           properties: { definition_id: definitionId(relic.id), name: visibleText(relic.name), description: visibleText(relic.description),
             counter: relic.counter ?? null, keywords: visibleHoverKeywords(relic.keywords ?? []),
@@ -1449,10 +1490,10 @@ function currentSurface(state, ctx) {
       const cards = rawCards.map((card, index) => {
         const item = ctx.referent({
           role: "card",
-          id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index),
+          id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.derivedId("unbound_card", state.parent_reward_ref, index),
           label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: rewardCardBase(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index))
+          properties: rewardCardBase(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.derivedId("unbound_card", state.parent_reward_ref, index))
         });
         if (parentComplete) ctx.detailReads.push(rewardCandidateDetailRead(ctx, card,
           item.referent_id, ctx.entityId("reward_group", state.parent_reward_ref)));
@@ -1464,7 +1505,8 @@ function currentSurface(state, ctx) {
       });
       const alternatives = rawAlternatives.map((alternative, index) => {
         const item = ctx.referent({
-          role: "card_reward_alternative", label: alternative?.name ?? `Alternative ${index + 1}`,
+          role: "card_reward_alternative", id: ctx.stableReferentId("card_reward_alternative", state.parent_reward_ref, index),
+          label: alternative?.name ?? `Alternative ${index + 1}`,
           occurrence: index,
           properties: { option_id: alternative?.option_id ?? alternative?.id ?? null,
             index, label: alternative?.name ?? null, enabled: true, title: alternative?.title ?? null,
@@ -1837,7 +1879,7 @@ function currentSurface(state, ctx) {
         && hudComplete;
       const items = cards.map((card, index) => {
         const id = nativeSelectorText(card?.native_ref) && refs.filter(ref => ref === card.native_ref).length === 1
-          ? ctx.entityId("card", card.native_ref) : ctx.id("unbound_hand_card", index);
+          ? ctx.entityId("card", card.native_ref) : ctx.derivedId("unbound_hand_card", state.selector_ref, index);
         const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...base } = visibleCardBase(card, id);
         const visible = { ...base, is_selected: card?.is_selected === true };
         const item = ctx.referent({ role: "card", id, label: visible.name,
@@ -1917,7 +1959,7 @@ function currentSurface(state, ctx) {
           && Array.isArray(card.public_details_missing) && card.public_details_missing.length === 0);
         const generated = cards.map((card,index) => {
           const unique = typeof card?.native_ref === "string" && refs.filter(ref => ref === card.native_ref).length === 1;
-          const id = unique ? ctx.entityId("card",card.native_ref) : ctx.id("unbound_generated_card",index);
+          const id = unique ? ctx.entityId("card",card.native_ref) : ctx.derivedId("unbound_generated_card",state.selector_ref,index);
           const { target_type: _target, can_play: _play, ...visible } = visibleCardBase(card,id);
           const item = ctx.referent({ role: "card",id,label: visible.name,enabled: complete,properties: visible });
           ctx.detailReads.push(publicCardDetailRead(ctx,visible,card.public_details,
@@ -1942,7 +1984,7 @@ function currentSurface(state, ctx) {
       }
       const referents = cards.map((card, index) => {
         const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;
-        const id = unique ? ctx.entityId("card", card.native_ref) : ctx.id("unbound_card", index);
+        const id = unique ? ctx.entityId("card", card.native_ref) : ctx.derivedId("unbound_card", state.selector_ref, index);
         return ctx.referent({ role: "card", label: card?.name ?? "Unavailable card", occurrence: index, id,
           enabled: exact && (card.is_selectable || card.is_deselectable), selected: card?.is_selected === true,
           properties: publicCard(card, id) });
