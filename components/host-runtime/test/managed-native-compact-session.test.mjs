@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { JsonLineProcess, RAW_LINE, isNativeCompactDivergence } from "../src/json-line-process.mjs";
-import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { ManagedPlayerEnvironmentSession, referentValue, startManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { ProjectionMemo, ProjectionMemoDivergence } from "../src/managed-projection-memo.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
 import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
 import { createSession, reduce, modelView } from "@rsgcsg/sts2-connector-client/p1-global";
@@ -438,4 +439,153 @@ test("design C differential: with shareUnchanged and the light frozen capture, P
   const off = await run(false), on = await run(true);
   assert.equal(off.length, 2);
   assert.deepEqual(on, off);
+});
+
+/** Paths of objects that are the same object in both trees (outermost only). */
+function sharedSubtrees(left, right, path = "$", out = []) {
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return out;
+  if (left === right) { out.push(path); return out; }
+  for (const key of Object.keys(left)) if (Object.hasOwn(right, key)) sharedSubtrees(left[key], right[key], `${path}.${key}`, out);
+  return out;
+}
+
+test("E5 projection memo: two consecutive captures keep an unchanged subtree as the same frozen object", async () => {
+  const run = async (projectionMemo) => {
+    const target = new ManagedPlayerEnvironmentSession({ process: fakeNative(), runtimeInstanceId: "managed-runtime-test",
+      environmentFingerprint: "managed-environment-test", identityMode: "crypto",
+      compactOutput: { sampleRate: 0, shareUnchanged: true }, projectionMemo });
+    const snapshot = await target.mount({ seed: "SEED" });
+    const first = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 1, fullCheck: false });
+    await act(target, snapshot);
+    const second = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 2, fullCheck: false });
+    return { target, first, second };
+  };
+  const on = await run({ checkInterval: 1 });
+  const off = await run(null);
+  const deckCard = (basis) => basis.reads.find(read => read.kind === "run_deck").response.content.cards[0];
+  // The deck card did not change between the two native frames: same deep-frozen object.
+  assert.equal(deckCard(on.second.basis), deckCard(on.first.basis));
+  assert.ok(Object.isFrozen(deckCard(on.second.basis)));
+  assert.ok(sharedSubtrees(on.first.basis, on.second.basis).includes("$.reads.0.response.content.cards.0"));
+  // Same public position, changed native content (option 0 retitled; its id stays the same under A1):
+  // the memo key is the native input object, so the changed option is rebuilt, never served stale.
+  const option = (basis) => basis.snapshot.interaction.content.surface.options[0];
+  assert.equal(option(on.first.basis).title, "Open");
+  assert.equal(option(on.second.basis).title, "Opened");
+  const optionReferent = (basis) => basis.snapshot.referents.find(item => item.referent_id === option(basis).entity_id);
+  assert.equal(optionReferent(on.second.basis).referent_id, optionReferent(on.first.basis).referent_id);
+  assert.notEqual(optionReferent(on.second.basis), optionReferent(on.first.basis));
+  // Without the memo the projection builds it anew each step.
+  assert.notEqual(deckCard(off.second.basis), deckCard(off.first.basis));
+  // Same public bytes either way (observed_at / capture clock aside), and the per-frame check ran.
+  assert.equal(JSON.stringify(stable(on.second.basis)), JSON.stringify(stable(off.second.basis)));
+  assert.deepEqual(on.target.projectionMemo.checks, 2);
+  assert.ok(on.target.projectionMemo.hits > 0);
+});
+
+function memoSession(native, projectionMemo, compactOutput = { sampleRate: 0, shareUnchanged: true }) {
+  return new ManagedPlayerEnvironmentSession({ process: native, runtimeInstanceId: "managed-runtime-test",
+    environmentFingerprint: "managed-environment-test", identityMode: "crypto", compactOutput, projectionMemo });
+}
+
+test("E5 projection memo is validated: shareUnchanged compact output and fast_chain only", async () => {
+  assert.throws(() => memoSession({ request() {} }, { checkInterval: 64 }, { sampleRate: 0 }), /shareUnchanged/u);
+  assert.throws(() => memoSession({ request() {} }, { checkInterval: 0 }), /checkInterval/u);
+  assert.throws(() => memoSession({ request() {} }, { every: 1 }), /projectionMemo.every/u);
+  assert.throws(() => memoSession({ request() {} }, { checkSeed: 1.5 }), /checkSeed/u);
+  assert.equal(memoSession({ request() {} }, null).projectionMemo, null);
+  assert.deepEqual(memoSession({ request() {} }, {}).projectionMemo, { hits: 0, misses: 0, checks: 0, check_interval: 64 });
+  await assert.rejects(startManagedPlayerEnvironmentSession({ compactOutput: { shareUnchanged: true }, projectionMemo: {} }),
+    /fast_chain only/u);
+});
+
+test("E5 projection memo: a memo that disagrees with a fresh projection fails the step loudly, no fallback", async () => {
+  const original = ProjectionMemo.prototype.value;
+  let corrupt = false;
+  ProjectionMemo.prototype.value = function (site, input, key, build) {
+    const value = original.call(this, site, input, key, build);
+    return corrupt && site === "run_deck_card" ? Object.freeze({ ...value, name: "stale" }) : value;
+  };
+  try {
+    const target = memoSession(fakeNative(), { checkInterval: 1 });
+    const snapshot = await target.mount({ seed: "SEED" });
+    corrupt = true;
+    const receipt = await act(target, snapshot);
+    // Its own reason code, never mixed into managed_successor_projection_failed.
+    assert.equal(receipt.delivery, "delivered");
+    assert.equal(receipt.reason_code, "projection_memo_divergence");
+    assert.match(receipt.detail, /^projection_memo_divergence: /u);
+    assert.equal(receipt.successor, null);
+    assert.deepEqual(receipt.retry, { allowed: false, reason: "projection_memo_divergence_requires_process_replacement" });
+    assert.equal(target.taintReason, "projection_memo_divergence");
+    assert.throws(() => target.observe(), /managed_session_tainted_after_projection_memo_divergence/u);
+    const later = await act(target, snapshot, "r2");
+    assert.equal(later.delivery, "not_delivered");
+    assert.equal(later.reason_code, "runtime_tainted_after_projection_memo_divergence");
+    assert.equal(later.retry.reason, "projection_memo_divergence_requires_process_replacement");
+    // Frame 0 is always checked: a divergence while mounting taints the session the same way.
+    const mounting = memoSession(fakeNative(), { checkInterval: 64 });
+    await assert.rejects(mounting.mount({ seed: "SEED" }), ProjectionMemoDivergence);
+    assert.equal(mounting.taintReason, "projection_memo_divergence");
+  } finally {
+    ProjectionMemo.prototype.value = original;
+  }
+});
+
+test("E5 projection memo: check gaps are uniform in ceil(N/2)..N, frame 0 included, seeded and restarted by reset", () => {
+  const dueFrames = (checkInterval, checkSeed, frames) => {
+    const memo = new ProjectionMemo({ checkInterval, checkSeed });
+    const due = [];
+    for (let frame = 0; frame < frames; frame++) if (memo.checkDue()) due.push(frame);
+    return { memo, due };
+  };
+  for (const n of [1, 2, 7, 64]) {
+    const { memo, due } = dueFrames(n, 12345, 40_000);
+    assert.equal(due[0], 0);
+    const gaps = due.slice(1).map((frame, index) => frame - due[index]);
+    const low = Math.ceil(n / 2);
+    assert.ok(gaps.every(gap => gap >= low && gap <= n), `N=${n}`);
+    // Every gap value in the range occurs (not a fixed phase).
+    assert.equal(new Set(gaps).size, n - low + 1, `N=${n}`);
+    assert.equal(memo.checks, due.length);
+  }
+  assert.deepEqual(dueFrames(64, 7, 2000).due, dueFrames(64, 7, 2000).due);
+  assert.notDeepEqual(dueFrames(64, 7, 2000).due, dueFrames(64, 8, 2000).due);
+  // reset() starts a new run: frame 0 is checked again.
+  const { memo } = dueFrames(64, 7, 5);
+  memo.reset();
+  assert.equal(memo.checkDue(), true);
+});
+
+test("E5 projection memo: every referent field is in its memo key (one changed field rebuilds)", () => {
+  const memo = new ProjectionMemo({ checkInterval: 64, checkSeed: 1 });
+  const card = Object.freeze({ name: "Strike", cost: "1" });
+  // [referentId, role, kind, label, enabled, selected, includeEntityId]
+  const fields = ["card-1", "card", "entity", "Strike", true, false, true];
+  const base = referentValue(memo, fields, card);
+  assert.ok(Object.isFrozen(base));
+  assert.equal(referentValue(memo, [...fields], card), base);
+  // The same frozen card object with only `selected` switched must be rebuilt, and so on for each field.
+  const variants = [["card-2", 0], ["hand", 1], ["other", 2], ["Bash", 3], [false, 4], [true, 5], [false, 6]];
+  for (const [value, index] of variants) {
+    const changed = fields.with(index, value);
+    const memoized = referentValue(memo, changed, card);
+    assert.notEqual(memoized, base, `field ${index}`);
+    assert.deepEqual(memoized, referentValue(null, changed, card), `field ${index}`);
+    assert.notDeepEqual(memoized, base, `field ${index}`);
+  }
+  assert.equal(referentValue(memo, fields.with(5, true), card).state.selected, true);
+  assert.equal(referentValue(memo, fields.with(0, "card-2"), card).referent_id, "card-2");
+  // An equal but different properties object is not the same native input.
+  assert.notEqual(referentValue(memo, fields, Object.freeze({ ...card })), base);
+});
+
+test("E5 projection memo: the lazy raw-state digest has the eager value", async () => {
+  const run = async (projectionMemo) => {
+    const target = memoSession(fakeNative(), projectionMemo);
+    await target.mount({ seed: "SEED" });
+    return target.observe();
+  };
+  const on = await run({ checkInterval: 1024 }), off = await run(null);
+  assert.equal(JSON.stringify(stable(on)), JSON.stringify(stable(off)));
 });

@@ -222,14 +222,17 @@ from pathlib import Path
 from stpd.models.structured_engine import StructuredTrainingEngine
 def spill_and_hang(self):
     folder = Path(tempfile.gettempdir())
+    markers = Path(""" + repr(str(markers)) + """)
+    (markers/(folder.name+'.started')).write_text('started')
     (folder/'spill').write_bytes(b'x'*(9*1024*1024))
-    (Path(""" + repr(str(markers)) + """)/folder.name).write_text('ready')
+    (markers/(folder.name+'.spilled')).write_text('spilled')
     time.sleep(20)
 StructuredTrainingEngine.advance_chunk = spill_and_hang
 """)
     first = service.start(request)["operation"]
     deadline = time.monotonic()+15
-    while len(list(markers.iterdir())) < 1:
+    # The first attempt stays under budget, so its post-spill marker always lands.
+    while not list(markers.glob("*.spilled")):
         assert service._thread.is_alive(), service.status()
         assert time.monotonic() < deadline
         time.sleep(.02)
@@ -258,7 +261,9 @@ StructuredTrainingEngine.advance_chunk = spill_and_hang
     assert stopped["error"]["code"] == "scratch_budget_exhausted", stopped
     assert stopped["child_exit"]["forced"] and stopped["worker_state"] == "terminal"
     assert stopped["child_exit"]["exit_code"] != 0 and stopped["checkpoint_id"]
-    assert len(list(markers.iterdir())) == 2
+    # The second attempt is killed mid- or post-spill by the budget watcher, so only
+    # its pre-spill marker is guaranteed; two distinct scratch folders must have run.
+    assert len(list(markers.glob("*.started"))) == 2
     assert retained.stat().st_size == 9*1024*1024  # No cleanup of retained evidence.
     before = path.read_bytes()
     artifacts = set(store.manifest_ids())

@@ -56,6 +56,7 @@ FAST_CHAIN_ENVIRONMENT_PREFIXES = ('fast_chain_unknown:delivery_unknown:',
                                    'fast_chain_unknown:delivered_successor_unreadable:')
 FAST_CHAIN_INFRASTRUCTURE_CODES = frozenset({
     'fast_chain_close_reason_invalid', 'fast_chain_unknown:compact_state_divergence',
+    'fast_chain_unknown:projection_memo_divergence',
     'fast_chain_unknown:native_crash',
     'fast_chain_unknown:stop_latency_bound_exceeded',
     'fast_chain_unknown:fast_env_game_close_unconfirmed',

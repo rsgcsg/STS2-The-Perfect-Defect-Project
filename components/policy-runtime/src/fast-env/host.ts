@@ -281,7 +281,9 @@ export async function hostSlotNativeFactory(config: FastEnvConfig): Promise<Slot
         // Strict SDK decodes of the projection run on the sampled captures (verifyPublicBasis)
         // and on every receipt in the kernel; the Host does not repeat them per step.
         validateSdk: false,
-        ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate, shareUnchanged: true } } : {})
+        ...(config.compact.enabled ? { compactOutput: { reconcileInterval: config.compact.reconcile_interval, sampleRate: config.checks.sample_rate, shareUnchanged: true } } : {}),
+        // E5: unchanged subtrees of driver.handle's basis stay the same frozen objects (kernel/SDK caches hit).
+        ...(config.compact.enabled && config.compact.projection_memo ? { projectionMemo: { checkInterval: config.compact.projection_memo.check_interval } } : {})
       });
       return new HostSlotNative(started, new host.ManagedPeDriverSession(started, { requestTimeoutMs: config.host.request_timeout_ms }),
         config.checks.sample_rate);
