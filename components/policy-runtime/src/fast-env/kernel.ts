@@ -4,13 +4,12 @@ import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-co
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
   type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import { canonicalJson } from "../evidence.js";
-import { globalDigest } from "../global-transport.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
 import { supportsProfileValue, type AgentManifest } from "../agent-session-contracts.js";
 import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
-import { pyJsonSha256 } from "./json-bytes.js";
+import { globalDigestFast, pyJsonSha256 } from "./json-bytes.js";
 import type { ColdStartGate } from "./cold-start.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
@@ -442,7 +441,7 @@ class GameRun {
         this.#unknownCause = `receipt_unreadable:${errorText(error)}`;
         return "unknown";
       }
-      receiptSha = globalDigest(decoded);
+      receiptSha = globalDigestFast(decoded); // = globalDigest(decoded), one pass
       stats.receipt_ms += performance.now() - receiptStarted;
       steps += 1; this.nativeSteps += 1; stats.native_steps += 1;
       if (decoded.delivery === "delivered") this.awaitingSuccessor = true;
