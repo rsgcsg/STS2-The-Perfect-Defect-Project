@@ -7,8 +7,10 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync
+  symlinkSync,
+  writeFileSync
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,6 +24,7 @@ import {
   addedPatchPaths,
   canonicalizeManagedCandidateDirectory,
   inspectManagedCandidateBuild,
+  inspectManagedCandidateBuildOncePerProcess,
   assertManagedCandidateGame,
   chooseManagedCandidateAction,
   loadManagedCandidateManifest,
@@ -490,4 +493,105 @@ test("managed probes reject invalid workload dimensions before touching a runtim
     workerCounts: [0],
     evidenceRoot: "unused"
   }), /workerCount must be a positive integer/u);
+});
+
+function onceCandidate(context) {
+  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "sts2-once-candidate-")));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  git("init", "-q");
+  mkdirSync(path.join(directory, "out"));
+  writeFileSync(path.join(directory, "out", "candidate.dll"), "artifact-1");
+  writeFileSync(path.join(directory, "README"), "one");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "one");
+  const sha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+  const artifact = path.join(directory, "out", "candidate.dll");
+  const manifest = { setup_contract: { managed_artifact: "out/candidate.dll" }, expected_build: { artifact_sha256: sha(artifact) } };
+  let calls = 0;
+  let failNext = null;
+  let hold = null;
+  const inspect = async ({ candidateDirectory }) => {
+    calls += 1;
+    if (hold) { const current = hold; hold = null; current.started(); await current.release; }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (failNext) { const error = failNext; failNext = null; throw error; }
+    return {
+      candidate_directory: candidateDirectory,
+      upstream_revision: git("rev-parse", "HEAD"),
+      artifact_sha256: sha(artifact),
+      localization: { files: ["a"] }
+    };
+  };
+  return {
+    directory, git, artifact, manifest, inspect,
+    calls: () => calls,
+    failNext: (error) => { failNext = error; },
+    holdNext: () => {
+      let started, release;
+      const startedPromise = new Promise((resolve) => { started = resolve; });
+      const releasePromise = new Promise((resolve) => { release = resolve; });
+      hold = { started, release: releasePromise };
+      return { started: startedPromise, release };
+    },
+    args: () => ({ root: ROOT, candidateDirectory: directory, manifest, inspect })
+  };
+}
+
+test("fast_chain checks one candidate build once per process and hands each start its own copy", async (context) => {
+  const candidate = onceCandidate(context);
+  const builds = await Promise.all(Array.from({ length: 5 }, () => inspectManagedCandidateBuildOncePerProcess(candidate.args())));
+  assert.equal(candidate.calls(), 1);
+  for (const build of builds) assert.deepEqual(build, builds[0]);
+  builds[0].localization.files.push("mutated");
+  const again = await inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  assert.equal(candidate.calls(), 1);
+  assert.deepEqual(again.localization.files, ["a"]);
+});
+
+test("fast_chain fails loudly, without a re-check, when the artifact or HEAD changes after the check", async (context) => {
+  const candidate = onceCandidate(context);
+  await inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  writeFileSync(candidate.artifact, "artifact-2");
+  await assert.rejects(inspectManagedCandidateBuildOncePerProcess(candidate.args()), /changed after this process checked it/u);
+  writeFileSync(candidate.artifact, "artifact-1");
+  await inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  writeFileSync(path.join(candidate.directory, "README"), "two");
+  candidate.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-am", "two");
+  await assert.rejects(inspectManagedCandidateBuildOncePerProcess(candidate.args()), /changed after this process checked it/u);
+  assert.equal(candidate.calls(), 1);
+});
+
+test("fast_chain rejects a check whose result disagrees with the key it was started under", async (context) => {
+  const candidate = onceCandidate(context);
+  const gate = candidate.holdNext();
+  const pending = inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  await gate.started;
+  writeFileSync(candidate.artifact, "artifact-raced");
+  gate.release();
+  await assert.rejects(pending, /changed while this process was checking it/u);
+});
+
+test("fast_chain does not keep a failed first check", async (context) => {
+  const candidate = onceCandidate(context);
+  candidate.failNext(new Error("source diff does not match"));
+  const results = await Promise.allSettled([
+    inspectManagedCandidateBuildOncePerProcess(candidate.args()),
+    inspectManagedCandidateBuildOncePerProcess(candidate.args())
+  ]);
+  assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
+  assert.match(results[1].reason.message, /source diff does not match/u);
+  assert.equal(candidate.calls(), 1);
+  await inspectManagedCandidateBuildOncePerProcess(candidate.args());
+  assert.equal(candidate.calls(), 2);
+});
+
+test("only fast_chain starts use the per-process check; every start still binds runtime_identity", () => {
+  const source = readFileSync(path.join(ROOT, "src", "managed-candidate.mjs"), "utf8");
+  const runtimeStart = source.indexOf("export async function startManagedCandidateRuntime(");
+  const runtime = source.slice(runtimeStart, source.indexOf("\nfunction stateDigest", runtimeStart));
+  assert.match(runtime, /fastChain\s*\? await inspectManagedCandidateBuildOncePerProcess\(\{ root, candidateDirectory, manifest \}\)\s*: await inspectManagedCandidateBuild\(\{ root, candidateDirectory, manifest \}\)/u);
+  assert.match(runtime, /fastChain \? await resolveDotnetOncePerProcess\(\) : await resolveDotnet\(\)/u);
+  assert.match(runtime, /runtimeIdentity\.host_assembly_sha256 !== build\.artifact_sha256/u);
+  assert.match(runtime, /runtimeIdentity\.sts2_assembly_sha256 !== build\.runtime_sts2_sha256/u);
 });
