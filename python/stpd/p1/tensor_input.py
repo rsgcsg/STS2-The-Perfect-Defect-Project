@@ -132,34 +132,66 @@ def joint_nodes(frames: list[TensorFrame]) -> JointNodes:
     tensors["text_indices"] = torch.cat([
         frame.tensors["text_indices"] + offset["vectors"]
         for frame, offset in zip(sources, offsets, strict=True)])
-    reductions = {}
-    for key in ("ids", "numbers", "text", "refs"):
-        buckets: dict[int, list[tuple[int, Tensor, Tensor]]] = {}
-        for frame, offset in zip(sources, offsets, strict=True):
-            reduction = frame.reductions[key]
-            packed_owners = reduction.inverse.argsort()
-            cursor = 0
-            for width, count, indices in reduction.buckets:
-                owners = packed_owners[cursor:cursor + count] + offset["refs"]
-                cursor += count
-                if key == "numbers":
-                    present = frame.tensors["numbers"].numel()
-                    indices = torch.where(indices < present, indices + offset["numbers"],
-                                          indices - present + cumulative["numbers"]
-                                          + offset["missing"])
-                else:
-                    indices = indices + offset[key]
-                buckets.setdefault(width, []).append((count, indices, owners))
-        combined = []
-        order: list[Tensor] = []
-        for width, parts in buckets.items():
-            combined.append((width, sum(part[0] for part in parts),
-                             torch.cat([part[1] for part in parts])))
-            order.extend(part[2] for part in parts)
-        inverse = torch.empty(cumulative["refs"], dtype=torch.long)
-        inverse[torch.cat(order)] = torch.arange(cumulative["refs"])
-        reductions[key] = Reduction(tuple(combined), inverse)
+    reductions = {key: _joint_reduction(key, sources, offsets, cumulative)
+                  for key in ("ids", "numbers", "text", "refs")}
     return JointNodes(tensors, reductions)
+
+
+def _joint_reduction(key: str, sources: list[TensorFrame], offsets: list[dict[str, int]],
+                     cumulative: dict[str, int]) -> Reduction:
+    """Merge one reduction across frames with a constant number of tensor ops.
+
+    Buckets keep first-seen width order and frame order within a width. Each
+    frame's inverse is a permutation of its own packed positions, so the joint
+    inverse is `position[local + base]`, where `position` maps every frame-local
+    packed slot to its joint slot. This equals scattering each frame's
+    `inverse.argsort()` owners, without one argsort and add per bucket.
+    """
+    groups: dict[int, list[tuple[Tensor, int, int, int, int]]] = {}
+    inverses: list[Tensor] = []
+    segments: dict[int, list[tuple[int, int]]] = {}
+    for frame, offset in zip(sources, offsets, strict=True):
+        reduction = frame.reductions[key]
+        if key == "numbers":
+            # Present values first, then missing ones after every present value.
+            present = frame.tensors["numbers"].numel()
+            low, high = offset["numbers"], cumulative["numbers"] + offset["missing"] - present
+        else:
+            present, low, high = 0, offset[key], offset[key]
+        cursor = 0
+        for width, count, indices in reduction.buckets:
+            groups.setdefault(width, []).append((indices, count, present, low, high))
+            segments.setdefault(width, []).append((offset["refs"] + cursor, count))
+            cursor += count
+        if cursor != reduction.inverse.numel():
+            raise ValueError("joint_reduction_inverse_length")
+        inverses.append(reduction.inverse + offset["refs"])
+    parts = [part for width_parts in groups.values() for part in width_parts]
+    raw = torch.cat([part[0] for part in parts])
+    sizes = torch.tensor([part[0].numel() for part in parts], dtype=torch.long)
+    columns = torch.tensor([part[2:] for part in parts], dtype=raw.dtype)
+    columns = columns.reshape(len(parts), 3).repeat_interleave(sizes, dim=0)
+    if key == "numbers":
+        joined = torch.where(raw < columns[:, 0], raw + columns[:, 1], raw + columns[:, 2])
+    else:
+        joined = raw + columns[:, 1]
+    pieces = joined.split([sum(part[0].numel() for part in width_parts)
+                           for width_parts in groups.values()])
+    # Own storage per bucket (clone), as torch.cat gave each bucket before.
+    combined = [(width, sum(part[1] for part in width_parts), piece.clone())
+                for (width, width_parts), piece in zip(groups.items(), pieces, strict=True)]
+    starts = [start for width in groups for start, _ in segments[width]]
+    counts = torch.tensor([count for width in groups for _, count in segments[width]],
+                          dtype=torch.long)
+    total = int(counts.sum())
+    if total != cumulative["refs"]:
+        raise ValueError("joint_reduction_inverse_length")
+    joint_starts = torch.cumsum(counts, 0) - counts
+    source = (torch.arange(total) + (torch.tensor(starts, dtype=torch.long)
+                                     - joint_starts).repeat_interleave(counts))
+    position = torch.empty(total, dtype=torch.long)
+    position[source] = torch.arange(total)
+    return Reduction(tuple(combined), position[torch.cat(inverses)])
 
 
 def compile_frame(frame: Frame, model: FrameEncoding) -> TensorFrame:

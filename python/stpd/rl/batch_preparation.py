@@ -20,6 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -469,6 +470,65 @@ def _scene_layout(slots: Tensor, starts: Tensor, width: int, bucket_rows: int,
                         torch.cat(offsets))
 
 
+@lru_cache(maxsize=64)
+def _text_hash_multipliers(words: int) -> np.ndarray:
+    multipliers = np.random.default_rng(0x5EED).integers(
+        0, np.iinfo(np.uint64).max, size=words, dtype=np.uint64, endpoint=True) | np.uint64(1)
+    multipliers.setflags(write=False)
+    return multipliers
+
+
+def _unique_texts(frames: list[TensorFrame], text_ids: Tensor, text_numbers: Tensor,
+                  lengths: Tensor) -> tuple[list[int], list[int]]:
+    """First-occurrence text selection and inverse, exactly as by `frame.text_keys`.
+
+    A text key is (length, ids[:length], numbers[:length]). When every frame is a
+    host frame whose text padding is zero and no length exceeds its own frame's
+    width, two keys are equal exactly when the zero-padded rows of `text_batch`
+    with the same length are byte-equal. Those rows are then deduplicated in one
+    `np.unique`; any other input takes the per-text key path unchanged.
+    """
+    rows = len(lengths)
+    if rows and text_ids.device.type == "cpu" and text_numbers.device.type == "cpu" \
+            and lengths.device.type == "cpu" and text_ids.dim() == 2 and text_ids.shape[1] \
+            and all(frame.host is None for frame in frames) \
+            and all(frame.text_count == 0 or int(frame.tensors["text_lengths"].min()) >= 0
+                    and int(frame.tensors["text_lengths"].max()) <= frame.text_width
+                    for frame in frames):
+        ids = np.ascontiguousarray(text_ids.numpy())
+        numbers = np.ascontiguousarray(text_numbers.numpy()).reshape(rows, ids.shape[1], -1)
+        counts = lengths.numpy()
+        padding = np.arange(ids.shape[1])[None, :] >= counts[:, None]
+        number_bits = numbers.view(f"u{numbers.itemsize}") != 0  # -0.0 is not padding
+        if not ((ids != 0) & padding).any() and not (number_bits.any(axis=2) & padding).any():
+            parts = [counts.astype("<i8").reshape(rows, 1).view(np.uint8),
+                     ids.view(np.uint8).reshape(rows, -1),
+                     numbers.view(np.uint8).reshape(rows, -1)]
+            tail = -sum(part.shape[1] for part in parts) % 8
+            block = np.concatenate([*parts, np.zeros((rows, tail), dtype=np.uint8)], axis=1)
+            words = block.view(np.uint64)
+            # A 64-bit row hash groups candidates; every group is then checked
+            # byte for byte, so a collision falls back instead of merging texts.
+            hashes = (words * _text_hash_multipliers(words.shape[1])).sum(axis=1)
+            _, first, inverse = np.unique(hashes, return_index=True, return_inverse=True)
+            inverse = inverse.reshape(rows)
+            if np.array_equal(words, words[first[inverse]]):
+                order = np.argsort(first, kind="stable")
+                rank = np.empty_like(order)
+                rank[order] = np.arange(order.size)
+                return first[order].tolist(), rank[inverse].tolist()
+    keys = tuple(key for frame in frames for key in frame.text_keys)
+    unique: dict[bytes, int] = {}
+    selection: list[int] = []
+    inverse_list: list[int] = []
+    for i, text_key in enumerate(keys):
+        if text_key not in unique:
+            unique[text_key] = len(selection)
+            selection.append(i)
+        inverse_list.append(unique[text_key])
+    return selection, inverse_list
+
+
 def prepare_group(
     frames: list[TensorFrame],
     rows: tuple[int, ...],
@@ -490,15 +550,7 @@ def prepare_group(
     combined = joint_nodes(frames)
     text_ids, text_numbers, lengths = text_batch(frames)
     if deduplicate_text:
-        keys = tuple(key for frame in frames for key in frame.text_keys)
-        unique: dict[bytes, int] = {}
-        selection: list[int] = []
-        inverse: list[int] = []
-        for i, text_key in enumerate(keys):
-            if text_key not in unique:
-                unique[text_key] = len(selection)
-                selection.append(i)
-            inverse.append(unique[text_key])
+        selection, inverse = _unique_texts(frames, text_ids, text_numbers, lengths)
         selection_tensor = torch.tensor(selection, dtype=torch.long)
         text_ids = text_ids.index_select(0, selection_tensor)
         text_numbers = text_numbers.index_select(0, selection_tensor)
