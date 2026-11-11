@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import json
+import math
 import os
 import signal
 import socket
@@ -771,6 +772,22 @@ def test_read_ahead_while_waiting_keeps_the_same_learning_and_fills_the_window(
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"ahead_while_waiting": 1})
 
 
+def assert_close_tree(left, right):
+    """`assert_tree` with float tensors equal to a few float32 ulps (CUDA layouts)."""
+    if isinstance(left, torch.Tensor) and left.is_floating_point():
+        torch.testing.assert_close(left.cpu(), right.cpu(), rtol=1e-4, atol=1e-9)
+    elif isinstance(left, dict):
+        assert left.keys() == right.keys()
+        for key in left:
+            assert_close_tree(left[key], right[key])
+    elif isinstance(left, (tuple, list)):
+        assert len(left) == len(right)
+        for one, two in zip(left, right, strict=True):
+            assert_close_tree(one, two)
+    else:
+        assert_tree(left, right)
+
+
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
     not torch.cuda.is_available(), reason="requires an authorized CUDA allocation"))])
 def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
@@ -779,11 +796,16 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
 
     On CUDA this is the production path (#466 F1): pinned slabs staged from the
     side thread with `ready_out`, the default stream waiting on the copy's event
-    in `run_dataset` right before first use."""
+    in `run_dataset` right before first use. Those device views lay the batch out
+    differently from the inline `stage_batch` path, so kernels may round in the
+    last float32 bits (1460100: ~1 ulp); the threaded path run twice
+    must be bit-identical, and close to the inline one.
+    """
     results = {}
-    for threaded in (False, True):
+    runs = (False, True, "again") if device == "cuda" else (False, True)
+    for threaded in runs:
         owner, _, _ = terminal_owner(tmp_path / f"stage-{threaded}", monkeypatch,
-                                     dataplane={"sgd_stage_thread": threaded,
+                                     dataplane={"sgd_stage_thread": bool(threaded),
                                                 "ahead_while_waiting": True}, device=device)
         threads: list[str] = []
         staged = owner.sgd.on_staged
@@ -806,10 +828,23 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     assert not any(name.startswith("rl-sgd-stage") for name in base_threads)
     assert all(name.startswith("rl-sgd-stage") for name in threads)
     assert base.counters == cp.counters and base_aux == aux
-    for name in ("weights", "optimizer", "ema"):
-        assert_tree(getattr(base, name), getattr(cp, name))
-    for left, right in zip(base_events, events, strict=True):
-        for key in ("update", "first_use", "td_loss", "policy_loss", "stepped"):
-            assert left[key] == right[key], key
+    if device == "cuda":
+        again, again_events, again_aux, _ = results["again"]
+        assert again.counters == cp.counters and again_aux == aux
+        for name in ("weights", "optimizer", "ema"):
+            assert_tree(getattr(cp, name), getattr(again, name))
+            assert_close_tree(getattr(base, name), getattr(cp, name))
+        for left, right, third in zip(base_events, events, again_events, strict=True):
+            for key in ("update", "first_use", "stepped"):
+                assert left[key] == right[key] == third[key], key
+            for key in ("td_loss", "policy_loss"):
+                assert right[key] == third[key], key
+                assert math.isclose(left[key], right[key], rel_tol=1e-4, abs_tol=1e-9), key
+    else:
+        for name in ("weights", "optimizer", "ema"):
+            assert_tree(getattr(base, name), getattr(cp, name))
+        for left, right in zip(base_events, events, strict=True):
+            for key in ("update", "first_use", "td_loss", "policy_loss", "stepped"):
+                assert left[key] == right[key], key
     with pytest.raises(ValueError, match="invalid_sgd_stage_thread"):
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"sgd_stage_thread": 1})
