@@ -617,8 +617,8 @@ export class SlotKernel {
     // The decision link hears the close only after this game's evidence is closed: a game whose
     // evidence failed gets no terminal label and its unsealed rows are sealed truncated
     // (`env_crash` on the link; the evidence and the `closed` event keep the real reason). Per
-    // D1=A the learner then excludes the game: segments not yet used are dropped, segments
-    // sealed and trained before the exclusion arrived are only counted.
+    // D1=A the learner then excludes the game: segments not yet used are dropped; a segment
+    // already selected into a prefetched batch counts as used and is only counted.
     ctx.link.send({ type: "episode_close", game_instance_id: gameInstanceId, reason: evidenceFailed ? "env_crash" : reason,
       last_step_index: game.lastStepIndex });
     this.#idle();
