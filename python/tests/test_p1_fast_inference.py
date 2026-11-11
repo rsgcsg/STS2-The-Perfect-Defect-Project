@@ -1004,3 +1004,31 @@ def test_part_rows_sets_the_parts_of_a_job_with_the_same_scores(vocabulary, mode
 def test_invalid_part_rows_is_refused(vocabulary, model, part_rows):
     with pytest.raises(ValueError, match="invalid_rl_inference_3_job_shape"):
         _service(vocabulary, model, FakeAssembler(), part_rows=part_rows)
+
+
+# -- V3 option (default off): per-row scores built in the device process -----------
+@pytest.mark.parametrize("join_workers", [0, 1])
+def test_device_rows_gives_the_same_scores_and_values(vocabulary, model, join_workers):
+    """`device_rows`: the device process runs RowsScorer.rows; every finished row's
+    behavior_q, selected index and outcome probabilities equal the default path."""
+    encoder = RowsEncoder(vocabulary)
+    encoded = [encoder.encode(json.dumps(item).encode()) for item in _observations(6)]
+    finished: dict[bool, dict[int, Any]] = {}
+    for device_rows in (False, True):
+        assembler = FakeAssembler()
+        service = _service(vocabulary, model, assembler, device_rows=device_rows,
+                           join_workers=join_workers, window_ms=200.0)
+        client = _open_client(service, encoder, "g1")
+        try:
+            rows, binary = _packet(encoded, "g1", 3)
+            client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
+                                            "packet_id": 1, "rows": rows}, binary))
+            envelope, _ = unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
+        finally:
+            client.close()
+            service.close()
+        assert [result["status"] for result in envelope["results"]] == ["scored"] * 6
+        finished[device_rows] = {body[0]: (body[1]["behavior_q"], body[1]["selected_index"],
+                                           body[2])
+                                 for kind, body in assembler.calls if kind == "finish"}
+    assert len(finished[True]) == 6 and finished[True] == finished[False]
