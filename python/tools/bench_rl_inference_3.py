@@ -5,7 +5,7 @@ model is a random-init production-shape M-std; rows are real encoded observation
 (an `obs.jsonl` of public observations). Each config runs K independent services
 (`"services": K`, default 1), each in its own spawned host process with its own
 main process, assembler (the real `FastSegmentAssembler`, emit discarded),
-prepare workers and device process(es); node clients are split over the services
+prepare workers and device process; node clients are split over the services
 round-robin, as nodes over inference cards.
 
 Load: `--nodes` node clients (one TCP link each, like a node aggregator), each with
@@ -336,7 +336,7 @@ def ticks(pid: int) -> float:
 
 def cpu_of(service: Any) -> dict[str, float]:
     return {"main": ticks(os.getpid()),
-            "devices": sum(ticks(p.pid) for p in service.device_processes),
+            "devices": ticks(service.device_process.pid),
             "joiners": sum(ticks(p.pid) for p in service.joiners),
             "workers": sum(ticks(w[0].pid) for w in service.workers)}
 
