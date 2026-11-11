@@ -379,3 +379,30 @@ def test_publish_after_or_during_close_is_card_stopped_and_keeps_the_failure(mod
         card.publish(model, Handoff(MU))
     assert caught.value.recovery == "closing"
     assert card.failure is None and card.close()["failure"] is None
+
+
+def test_aggregator_close_delivers_what_a_link_already_read(vocabulary, model, monkeypatch):
+    """CI flake (run 42998622726): close() closed the service connections while a
+    link was still forwarding an episode_close it had read, so a clean close
+    reported `service_send:OSError`. close() now waits for every forwarder."""
+    import time
+
+    link, close = NodeAggregator._link_message, NodeAggregator.close
+
+    def slow_link(self: Any, env: Any, message: dict[str, Any]) -> None:
+        if message.get("type") == "episode_close":
+            time.sleep(0.2)  # still forwarding when close() runs
+        link(self, env, message)
+
+    def slow_close(self: Any, timeout: float = 30.0) -> dict[str, Any]:
+        pool_close = self.pool.close
+
+        def slow_pool() -> None:
+            time.sleep(1.0)  # a loaded runner: the encoder pool stops slowly
+            pool_close()
+        self.pool.close = slow_pool
+        return close(self, timeout)
+
+    monkeypatch.setattr(NodeAggregator, "_link_message", slow_link)
+    monkeypatch.setattr(NodeAggregator, "close", slow_close)
+    test_card_scores_each_game_on_its_bound_service(vocabulary, model)
