@@ -393,7 +393,8 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
     `validate_header`, every row is bound by its sha256), plus the column types:
     ints are int64 ints, `in_combat` a bool, the text fields strings and every
     row's `applied` what `sampling` gives it (same JSON types). Returns the
-    logical header, owned except for the row outcomes when `bound`.
+    logical header (q and values as floats, as decoded), owned except for the
+    row outcomes when `bound`.
 
     `bound` (the assembler only): every row's `payload.row_sha256` was computed
     from these exact immutable bytes when the row was accepted, and the per-row
@@ -426,10 +427,6 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
                 _reject("segment_row_digest_mismatch")
         row = dict(meta)
         row["payload"] = {"offset": offset, "length": len(raw), "row_sha256": digest}
-        row["behavior_q"] = list(meta["behavior_q"]) if isinstance(
-            meta["behavior_q"], list) else meta["behavior_q"]
-        row["outcome_probabilities"] = list(meta["outcome_probabilities"]) if isinstance(
-            meta["outcome_probabilities"], list) else meta["outcome_probabilities"]
         if not bound:
             try:
                 row["outcome"] = _json_tree(meta["outcome"])
@@ -449,6 +446,11 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
                                                                 expected[row["in_combat"]]):
             _reject("segment_column_applied")
         row["applied"] = dict(expected[row["in_combat"]])
+        # Checked numbers in [0, 1] (no bools); stored as f8, so the logical header
+        # holds the floats the decoder gives back (an int q 1 becomes 1.0).
+        row["behavior_q"] = list(map(float, row["behavior_q"]))
+        row["selected_q"] = float(row["selected_q"])
+        row["outcome_probabilities"] = list(map(float, row["outcome_probabilities"]))
     text = {name: [row["payload"]["row_sha256"] if name == "row_sha256" else row[name]
                    for row in owned_rows] for name in TEXT_COLUMNS_2}
     if any(type(v) is not str for values in text.values() for v in values):

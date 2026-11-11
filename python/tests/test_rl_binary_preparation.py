@@ -343,10 +343,16 @@ def test_pinned_double_buffer_event_lifetime_and_barrier_cancels_waiting_pin(mod
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires an authorized CUDA allocation")
-def test_pinned_slab_stage_matches_unpack_pin_stage(model, tmp_path):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_pinned_slab_stage_matches_unpack_pin_stage(model, tmp_path, deferred):
     """WP8 stage thread: pinning the file's slabs and mapping the tree once gives
-    the same device batch as unpack + pin + stage_batch (three tree walks)."""
+    the same device batch as unpack + pin + stage_batch (three tree walks).
+
+    `deferred` is the production stage-thread path: the copy is staged from a side
+    thread with `ready_out`, and the default stream only waits on its event right
+    before first use (no synchronize in between), as `run_dataset` does."""
     import mmap
+    import threading
 
     from stpd.rl.binary_preparation import _PinnedBuffers, _write_batch
     from stpd.rl.sgd_process import mapped_arrays
@@ -364,10 +370,22 @@ def test_pinned_slab_stage_matches_unpack_pin_stage(model, tmp_path):
     pool = _PinnedBuffers(64 * 1024**2)
     old, _ = bp.stage_batch(pool.pin(bp.unpack_transport(
         (packed.tree, mapped_arrays(mapping, specs))), pool.epoch), device)
-    slabs, lease = pool.pin_slabs(mapped_arrays(mapping, specs), pool.epoch)
-    new, copies = bp.stage_pinned_slabs(packed.tree, slabs, lease, device)
-    del slabs, lease
     torch.cuda.synchronize()
+    slabs, lease = pool.pin_slabs(mapped_arrays(mapping, specs), pool.epoch)
+    if deferred:
+        events: list = []
+        staged: list = []
+        side = threading.Thread(target=lambda *args: staged.append(bp.stage_pinned_slabs(
+            *args, ready_out=events)), args=(packed.tree, slabs, lease, device))
+        side.start()
+        side.join()
+        [(new, copies)] = staged
+        assert len(events) == 1
+        torch.cuda.default_stream(device).wait_event(events[0])
+    else:
+        new, copies = bp.stage_pinned_slabs(packed.tree, slabs, lease, device)
+        torch.cuda.synchronize()
+    del slabs, lease
     assert copies == len(specs)
 
     def tensors(value):

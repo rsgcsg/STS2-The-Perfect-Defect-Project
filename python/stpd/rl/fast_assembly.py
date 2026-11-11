@@ -95,6 +95,7 @@ from .fast_segment import (
     RejectedSegment,
     SealedSegment,
     SegmentFormatError,
+    _same_json,
     check_value_distribution,
     decode_segment,
     encode_segment,
@@ -910,7 +911,12 @@ class FastSegmentAssembler:
         decoded, decoded_rows = decode_segment(sealed.data)
         reference = encode_segment({**header, "format": FORMAT}, rows).header
         reference["format"] = FORMAT_2
-        if (decoded != reference or sealed.header != reference
+        for row in reference["rows"]:  # format 2 stores these as f8 (int q 1 -> 1.0)
+            row["behavior_q"] = list(map(float, row["behavior_q"]))
+            row["selected_q"] = float(row["selected_q"])
+            row["outcome_probabilities"] = list(map(float, row["outcome_probabilities"]))
+        # JSON-type strict (1 != 1.0 != True): a type drift is a difference too.
+        if (not _same_json(decoded, reference) or not _same_json(sealed.header, reference)
                 or decoded_rows != [bytes(row) for row in rows]):
             raise SegmentFormatError("segment_columns_verify_mismatch")
         self.counters["segments_verified"] += 1

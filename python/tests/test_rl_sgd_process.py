@@ -35,7 +35,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="real spawned SGD pro
 
 
 def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None,
-                   dataplane=None, generation="g-sgd-equal"):
+                   dataplane=None, generation="g-sgd-equal", device="cpu"):
     """Each episode: two 2-row segments, the second terminal, so terminal aux rows
     are verified, sampled and charged exactly like the in-process owner."""
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
@@ -43,7 +43,7 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
     tmp_path.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(20261107)  # the fixture's start package draws from global torch RNG
     config, io = configuration(tmp_path, monkeypatch, generation=generation)
-    config = dc.replace(config, segments=dc.replace(
+    config = dc.replace(config, device=device, segments=dc.replace(
         config.segments, minibatches=2, episode_rows=8, archive_min_free_bytes=0,
         archive_min_free_inodes=0, **(segments or {})))
     io = dc.replace(io, dataplane={
@@ -771,14 +771,20 @@ def test_read_ahead_while_waiting_keeps_the_same_learning_and_fills_the_window(
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"ahead_while_waiting": 1})
 
 
-def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch):
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="requires an authorized CUDA allocation"))])
+def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
     """WP8 starvation: `sgd_stage_thread` moves verify/pin/H2D of the next plan to
-    one side thread; batches, order and every update stay the same."""
+    one side thread; batches, order and every update stay the same.
+
+    On CUDA this is the production path (#466 F1): pinned slabs staged from the
+    side thread with `ready_out`, the default stream waiting on the copy's event
+    in `run_dataset` right before first use."""
     results = {}
     for threaded in (False, True):
         owner, _, _ = terminal_owner(tmp_path / f"stage-{threaded}", monkeypatch,
                                      dataplane={"sgd_stage_thread": threaded,
-                                                "ahead_while_waiting": True})
+                                                "ahead_while_waiting": True}, device=device)
         threads: list[str] = []
         staged = owner.sgd.on_staged
 

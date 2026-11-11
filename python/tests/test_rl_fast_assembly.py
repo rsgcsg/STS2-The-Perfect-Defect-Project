@@ -917,12 +917,17 @@ def test_a_missing_original_is_a_typed_handoff_error(tmp_path: Path):
 
 
 # -- T3: columnar segment format (stpd/rl-fast-segment-2) ------------------------------
+FORMAT_1_GOLDEN = "dca2b69270f5efea5037b737b77a1a02c9a636946e483938ddb21aba7b156e5d"
+
+
 def _mixed_games(segment_format: str, **options: Any) -> Harness:
     """Every seal kind, omit/forced steps, a failed outcome and a stop, in one harness."""
     def labeler(summary: Any) -> dict | None:
         return {"class": 5, "reward": 0.0054} if summary["game_instance_id"] == "t" else None
 
-    h = Harness(labeler, segment_format=segment_format, **options)
+    if segment_format != FORMAT:  # format 1 = the constructor as it was before T3
+        options["segment_format"] = segment_format
+    h = Harness(labeler, **options)
     h.assembler.instance_id = "node-a.000000000001"
     h.assembler.offer_mu(mu(1))
     h.open("b", "omit")  # bootstrap + an open tail segment closed by stop
@@ -955,8 +960,10 @@ def test_columnar_segments_hold_the_same_segment_for_every_seal_kind():
         assert new_rows == old_rows
         assert decode_segment(right.data, header_only=True) == (new_header, [])
     assert new.assembler.report()["segments_verified"] == 4
-    # the format-1 path is the old one: same counters, same bytes as before T3
     assert old.assembler.report()["segments"] == new.assembler.report()["segments"]
+    # The format-1 path is the old one: these are the bytes the pre-T3 assembler
+    # (int 1229b3e7) seals for this harness.
+    assert hashlib.sha256(b"".join(s.data for s in old.sealed)).hexdigest() == FORMAT_1_GOLDEN
 
 
 def test_columnar_verify_difference_keeps_the_original_and_fails_loudly(monkeypatch):
@@ -979,6 +986,39 @@ def test_columnar_verify_difference_keeps_the_original_and_fails_loudly(monkeypa
     [kept] = h.sealed
     assert kept.kind == "rejected" and not kept.trainable
     assert h.assembler.report()["segments"]["rejected"] == 1
+
+
+def test_columnar_verify_is_json_type_strict(monkeypatch):
+    """An int q (accepted, as in format 1) is stored and returned as floats; a
+    change of JSON type alone (step_index 0 -> 0.0) is a verify difference."""
+    h = Harness(segment_format=FORMAT_2, verify_every=1)
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    row, data = h.row("g1")
+    plan = h.assembler.begin_row(row, data)
+    h.assembler.finish_row(plan, h.scored(plan, row, behavior_q=[0, 1], selected_q=1),
+                           values(row["floor"]))
+    h.outcome(row)
+    h.close("g1", "stop")
+    [sealed] = h.sealed
+    [stored] = decode_segment(sealed.data)[0]["rows"]
+    assert stored["behavior_q"] == [0.0, 1.0] and type(stored["selected_q"]) is float
+    assert sealed.header["rows"][0]["behavior_q"] == [0.0, 1.0]
+
+    import stpd.rl.fast_assembly as assembly
+
+    real = assembly.encode_segment_columns
+
+    def retyped(header: dict, rows: list, **kwargs: Any) -> Any:
+        sealed = real(header, rows, **kwargs)
+        sealed.header["rows"][0]["step_index"] = float(sealed.header["rows"][0]["step_index"])
+        return sealed
+
+    monkeypatch.setattr(assembly, "encode_segment_columns", retyped)
+    h.open("g2")
+    h.step("g2")
+    with pytest.raises(AssemblyError, match="segment_rejected:segment_columns_verify_mismatch"):
+        h.close("g2", "stop")
 
 
 def test_columnar_encoder_refuses_values_format_1_would_coerce():
