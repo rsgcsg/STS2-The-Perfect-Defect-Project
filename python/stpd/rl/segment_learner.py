@@ -1826,6 +1826,7 @@ class SegmentLearner:
 
     def _fast_receive(self, connection: Any) -> None:
         assert self.fast_intake is not None
+        last_sequence, assembler = 0, None  # what this connection carried so far
         try:
             while True:
                 try:
@@ -1836,9 +1837,17 @@ class SegmentLearner:
                     self._fast_lost()
                     return
                 if kind == "end":  # orderly: every hand-off of this assembler was acked
+                    if (message["handed_off"] != last_sequence
+                            or assembler not in (None, message["assembler_id"])):
+                        raise HandoffError("handoff_end_mismatch")
                     self._event("fast_handoff_ended", assembler_id=message["assembler_id"],
                                 handed_off=message["handed_off"])
                     return
+                if assembler not in (None, message["assembler_id"]):
+                    raise HandoffError("handoff_assembler_changed")
+                assembler = message["assembler_id"]
+                if kind in ("segment", "labels"):
+                    last_sequence = message["handoff_sequence"]
                 self.fast_intake.set_generation(self.generation)
                 if kind in ("segment", "labels"):
                     assert data is not None

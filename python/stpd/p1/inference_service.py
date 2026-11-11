@@ -976,8 +976,16 @@ class FastInferenceService:
         background thread, a failed publish, a gone device process, an audit
         mismatch), a watcher closes it within `exit_grace_seconds` and ends the
         process with that code, so a broken service never sits alive with its
-        connections open (its learner hand-off then sees EOF without an end).
+        connections open (its learner hand-off then sees EOF without an end). When
+        `close()` does not finish within the grace period, the device, prepare and
+        join processes are killed before the exit. Shared-memory blocks of this
+        process's assembler hand-off that were still in flight are not unlinked by
+        such an exit: the launcher (or node cleanup) owns `/dev/shm` leftovers.
         """
+        # Refuse settings before any thread or process starts (nothing to leak).
+        if exit_code_on_failure is not None and (
+                type(exit_code_on_failure) is not int or exit_code_on_failure == 0):
+            raise ValueError("exit_code_on_failure_must_be_non_zero")
         import multiprocessing
         from multiprocessing.connection import Listener
 
@@ -1123,9 +1131,6 @@ class FastInferenceService:
                          for index in range(prepare_workers)]
         for thread in self.threads:
             thread.start()
-        if exit_code_on_failure is not None and (
-                type(exit_code_on_failure) is not int or exit_code_on_failure == 0):
-            raise ValueError("exit_code_on_failure_must_be_non_zero")
         self.exit_code_on_failure, self.exit_grace_seconds = (
             exit_code_on_failure, exit_grace_seconds)
         self.exit_process: Callable[[int], Any] = os._exit  # replaced only by tests
@@ -1153,6 +1158,12 @@ class FastInferenceService:
                                   name="rl-inference-3-failure-close")
         closer.start()
         closer.join(self.exit_grace_seconds)
+        if not self.closed.is_set():
+            # close() did not finish: never leave a device process (GPU) behind.
+            for process in [self.device_process, *self.joiners,
+                            *(worker[0] for worker in self.workers)]:
+                with contextlib.suppress(Exception):
+                    process.kill()
         print(json.dumps({"rl_inference_3_exit": self.exit_code_on_failure,
                           "stop_reason": self.stop_reason, "closed": self.closed.is_set()}),
               file=sys.stderr, flush=True)

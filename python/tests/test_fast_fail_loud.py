@@ -45,6 +45,18 @@ def _wait(condition: Any, seconds: float = 20.0) -> bool:
     return False
 
 
+def _exitcode(process: Any, seconds: float = 30.0) -> int | None:
+    """`process.exitcode` after it ended, robust to CPython's reaping race: the learner's
+    pools start worker processes lazily from its reader thread, and every
+    `Process.start()` runs `multiprocessing.process._cleanup()`, which polls (waitpid)
+    *all* children, this test's sender included. When that poll reaps the sender while
+    this thread is in `join()`, this thread's `waitpid` fails with ECHILD and
+    `popen_fork.poll` returns None once; the other poll then stores the real code."""
+    process.join(seconds)
+    _wait(lambda: process.exitcode is not None, seconds)
+    return process.exitcode
+
+
 # -- service: any failure stops it, and the process ends non-zero --------------------
 
 def test_a_failed_publish_stops_the_service_loudly(vocabulary, model):  # noqa: F811
@@ -184,14 +196,13 @@ def test_the_sender_says_an_orderly_end_after_every_ack():
                              "assembler_id": segments[0].header["assembler_instance"],
                              "handed_off": 2}
             break
-    process.join(30)
-    assert process.exitcode == 0 and kinds == ["segment", "segment", "closed", "end"]
+    assert _exitcode(process) == 0 and kinds == ["segment", "segment", "closed", "end"]
 
 
 def test_the_reference_reader_and_the_end_schema():
     ours, theirs = multiprocessing.Pipe()
     sender = ShmSegmentSender(theirs, assembler_id="node-1")
-    sender.close()  # nothing in flight: the end at once
+    sender.finish()  # nothing in flight: the end at once
     assert receive_handoff(ours) == ("end", {"schema": HANDOFF_END_SCHEMA,
                                              "assembler_id": "node-1", "handed_off": 0})
     for bad in ({"schema": HANDOFF_END_SCHEMA, "assembler_id": "", "handed_off": 0},
@@ -201,31 +212,69 @@ def test_the_reference_reader_and_the_end_schema():
             check_handoff_end(bad)
 
 
-def _crashing_sender(connection: Any, segments: list[Any]) -> None:
-    sender = ShmSegmentSender(connection, assembler_id=segments[0].header["assembler_instance"])
-    sender.send(segments[0], Path(__file__))
-    sender._drain(block=True)
+def _lost_sender(connection: Any, segments: list[Any], stacks: str, how: str) -> None:
+    """Hand one segment off, wait for its ack, then end without the orderly end:
+    `crash` dies (os._exit), `close` is a failure path's `finally: sender.close()`."""
+    import faulthandler
+
+    with open(stacks, "w") as handle:  # only read when the test fails
+        faulthandler.dump_traceback_later(15, file=handle)
+        sender = ShmSegmentSender(connection,
+                                  assembler_id=segments[0].header["assembler_instance"])
+        sender.send(segments[0], Path(__file__))
+        sender._drain(block=True)
+        if how == "close":
+            sender.close()  # release only: never the orderly end
+            faulthandler.cancel_dump_traceback_later()
+            connection.close()
+            return
+        faulthandler.cancel_dump_traceback_later()
     os._exit(1)  # the service process dies: no end, the channel just reaches EOF
 
 
-def test_eof_without_the_end_fences_the_learner_so_training_stops(tmp_path, monkeypatch):
-    owner = fast_learner(tmp_path, monkeypatch)
+@pytest.mark.parametrize("how,exitcode", [("crash", 1), ("close", 0)])
+def test_a_channel_ending_without_the_end_fences_the_learner(tmp_path, monkeypatch, how,
+                                                            exitcode):
+    owner = fast_learner(tmp_path / "learner", monkeypatch)
+    stacks = tmp_path / "sender-stacks.txt"
+    process = None
     try:
         sealed = game(owner, "g1")
         admission(owner, "g1", 1)
         ours, theirs = multiprocessing.Pipe()
-        process = multiprocessing.Process(target=_crashing_sender, args=(theirs, sealed))
+        process = multiprocessing.Process(target=_lost_sender,
+                                          args=(theirs, sealed, str(stacks), how))
         process.start()
         theirs.close()
         reader = owner.attach_fast_handoff(ours)
-        process.join(30)
-        assert process.exitcode == 1
+        reader.join(60)
+        state = {"reader_alive": reader.is_alive(), "fenced": owner.input_fenced,
+                 "failure": owner.input_failure, "sender_exitcode": process.exitcode,
+                 "sender_stacks": stacks.read_text() if stacks.exists() else None}
+        # The learner's verdict first, then the sender.
+        assert not state["reader_alive"], state
+        assert owner.input_fenced and owner.newlease_stopped, state
+        assert owner.input_failure is not None, state
+        assert owner.input_failure["operation"] == "fast_handoff_lost", state
+        assert owner.input_failure["error"] == "assembler_gone_without_end", state
+        assert _exitcode(process) == exitcode, state
+    finally:
+        if process is not None and process.is_alive():
+            process.kill()
+        owner.close()
+
+
+def test_an_end_that_does_not_match_the_channel_fences_the_learner(tmp_path, monkeypatch):
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        ours, theirs = multiprocessing.Pipe()
+        reader = owner.attach_fast_handoff(ours)
+        theirs.send({"schema": HANDOFF_END_SCHEMA, "assembler_id": "node-1",
+                     "handed_off": 3})  # nothing was handed off on this channel
         reader.join(30)
-        assert not reader.is_alive()
-        assert owner.input_fenced and owner.newlease_stopped
+        assert not reader.is_alive() and owner.input_fenced
         assert owner.input_failure is not None
-        assert owner.input_failure["operation"] == "fast_handoff_lost"
-        assert owner.input_failure["error"] == "assembler_gone_without_end"
+        assert owner.input_failure["error"] == "handoff_end_mismatch"
     finally:
         owner.close()
 
@@ -241,9 +290,35 @@ def test_an_orderly_end_leaves_the_learner_running(tmp_path, monkeypatch):
         process.start()
         theirs.close()
         reader = owner.attach_fast_handoff(ours)
-        process.join(30)
         reader.join(30)
-        assert process.exitcode == 0 and not reader.is_alive()
+        assert _exitcode(process) == 0 and not reader.is_alive()
         assert not owner.input_fenced and owner.input_failure is None
     finally:
         owner.close()
+
+
+def test_segment_handoff_says_the_end_only_on_a_clean_finish(tmp_path):
+    from stpd.rl.fast_handoff import DurableSegmentWriter, SegmentHandoff
+
+    class Sender:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def finish(self) -> None:
+            self.calls.append("finish")
+
+        def close(self) -> None:
+            self.calls.append("close")
+
+    def handoff(sender: Sender) -> SegmentHandoff:
+        return SegmentHandoff(DurableSegmentWriter(tmp_path, instance_id="node-1"),
+                              sender)  # type: ignore[arg-type]
+
+    clean, closed, failed = Sender(), Sender(), Sender()
+    handoff(clean).finish()
+    handoff(closed).close()  # a launcher's `finally`: release only
+    broken = handoff(failed)
+    broken.write_error = OSError("disk_full")
+    with pytest.raises(HandoffError, match="segment_write_failed"):
+        broken.finish()  # a failed assembler never says the orderly end
+    assert (clean.calls, closed.calls, failed.calls) == (["finish"], ["close"], ["close"])
