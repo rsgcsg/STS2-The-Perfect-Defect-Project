@@ -234,9 +234,9 @@ def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
     device = inverse.device
     order = torch.empty_like(inverse)
     order[inverse] = torch.arange(rows, device=device, dtype=inverse.dtype)
-    widths = torch.tensor([width for width, _ in buckets], dtype=torch.long)
-    counts = torch.tensor([count for _, count in buckets], dtype=torch.long)
-    per_position = widths.repeat_interleave(counts).to(device, non_blocking=True)
+    # Built on the device: a pageable host->device copy would sync the stream.
+    per_position = torch.cat([torch.full((count,), width, device=device, dtype=torch.long)
+                              for width, count in buckets]) if buckets else inverse.new_zeros(0)
     width = torch.empty(rows, device=device, dtype=torch.long)
     width[order] = per_position
     listed = sum(w * c for w, c in buckets)
