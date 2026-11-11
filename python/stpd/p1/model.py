@@ -305,13 +305,7 @@ class MStd(nn.Module):
         number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
         number_features = reduce(number_values, "numbers", self.no_numbers)
         if len(t["text_fields"]):
-            if flat is not None and len(flat["text"]) > 3:  # V3 `nodes` lever
-                from .rows_kernels import lookup_rows
-
-                text_vectors = lookup_rows(vectors, t["text_indices"])
-            else:
-                text_vectors = vectors.index_select(0, t["text_indices"])
-            terms = text_vectors + self.fields(t["text_fields"])
+            terms = vectors.index_select(0, t["text_indices"]) + self.fields(t["text_fields"])
         else:
             terms = vectors.new_zeros((0, 192))
         features = reduce(terms, "text", nodes.new_zeros(192))

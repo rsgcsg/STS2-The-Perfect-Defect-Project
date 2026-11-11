@@ -10,14 +10,17 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            W_v (sum_t w_t e_t) + b_v because sum_t w_t = 1. So neither head
            projects every scene token to keys/values. The folded queries of both
            heads (2 x 4) attend in one call straight to the encoded tokens.
-``nodes``  Gathers that are permutations by construction take a gather as their
-           backward instead of an atomic index_add: the scene token gather (each
-           real row owns its own contiguous node range, all nodes are scene
-           tokens), each reduction's bucket inverse, and the term gathers of the
-           partition reductions (ids, numbers, text: every term has one owner).
-           A broken permutation fails loudly (device assert), never silently. The
-           text-vector lookup (many terms per unique text) uses the sorted
-           embedding backward instead of contended atomics.
+``nodes``  The node builder (`MStd.tensor_nodes`) as one function of owner maps:
+           every partition reduction (ids, numbers, text: each term has one
+           owner) is a scatter-sum of its terms straight onto their owner node,
+           scaled by 1/terms, with no width buckets, splits, concatenations or
+           inverse gathers; refs (a node may be referenced many times) gather the
+           referenced nodes and scatter onto owners the same way. Under
+           compile it is one dynamic-shape graph (the original runs eager).
+           The scene token gather (a permutation: each real row owns its own
+           contiguous node range and all nodes are scene tokens) takes a gather
+           as its backward instead of an atomic index_add. A broken partition or
+           permutation fails loudly (device assert), never silently.
 ``cross``  The action cross-attention folds the same way per (action, head):
            catalog x heads folded queries per row attend to the encoded tokens,
            so no key/value projection of the scene. Catalogs longer than
@@ -39,6 +42,8 @@ from typing import Any, cast
 import torch
 from torch import Tensor
 from torch.nn import functional as F
+
+from .model import positions
 
 LEVERS = ("cross", "heads", "nodes")
 # Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
@@ -220,6 +225,74 @@ def permute_rows(values: Tensor, perm: Tensor, what: str) -> Tensor:
     return cast(Tensor, _Permute.apply(values, perm, permutation_inverse(perm)))
 
 
-def lookup_rows(table: Tensor, indices: Tensor) -> Tensor:
-    """table.index_select(0, indices) with the sorted embedding backward."""
-    return F.embedding(indices, table)
+def _owners(flat: tuple[Tensor, tuple[tuple[int, int], ...], Tensor], rows: int,
+            terms: int, partition: bool) -> tuple[Tensor, Tensor, Tensor]:
+    """(owner per term, 1/terms per row (0 when empty), empty-row mask) of a
+    reduction. Partition owners are in original term order; refs owners follow
+    the layout's bucket term order (its `indices` say which node each term reads)."""
+    indices, buckets, inverse = flat
+    device = inverse.device
+    order = torch.empty_like(inverse)
+    order[inverse] = torch.arange(rows, device=device, dtype=inverse.dtype)
+    widths = torch.tensor([width for width, _ in buckets], dtype=torch.long)
+    counts = torch.tensor([count for _, count in buckets], dtype=torch.long)
+    per_position = widths.repeat_interleave(counts).to(device, non_blocking=True)
+    width = torch.empty(rows, device=device, dtype=torch.long)
+    width[order] = per_position
+    listed = sum(w * c for w, c in buckets)
+    if listed != indices.numel() or (partition and listed != terms):
+        raise ValueError("nodes_lever_requires_complete_reduction")
+    owner = torch.repeat_interleave(order, per_position, output_size=listed)
+    if partition:
+        by_term = torch.full((terms,), -1, device=device, dtype=owner.dtype)
+        by_term[indices] = owner
+        torch._assert_async((by_term >= 0).all())
+        owner = by_term
+    scale = torch.where(width > 0, 1.0 / width.clamp(min=1).float(), 0.0)
+    return owner, scale, width == 0
+
+
+def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
+                  owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor) -> Tensor:
+    """`MStd.tensor_nodes` (eval) from owner maps; same parameters and function."""
+    rows = t["kinds"].shape[0]
+    embed = model.ids.embedding_dim
+
+    def mean(key: str, values: Tensor, empty: Tensor | None) -> Tensor:
+        owner, scale, empty_rows = owners[key]
+        total = values.new_zeros((rows, embed)).index_add(0, owner, values) * scale[:, None]
+        if empty is None:
+            return total
+        return torch.where(empty_rows[:, None], empty.to(total.dtype), total)
+
+    identities = model.ids(t["identities"]) + model.fields(t["identity_fields"])
+    nodes = mean("ids", identities, model.ids.weight[0])
+    nodes = nodes + model.kinds(t["kinds"])
+    nodes = nodes + positions(t["positions"], embed)
+    numbers = torch.cat((model.number_slope(t["number_fields"]) * t["numbers"][:, None]
+                         + model.number_bias(t["number_fields"]),
+                         model.number_missing(t["missing_fields"])))
+    number_features = mean("numbers", numbers, model.no_numbers)
+    terms = vectors.index_select(0, t["text_indices"]) + model.fields(t["text_fields"])
+    features = mean("text", terms, None)
+    nodes = nodes + (features + number_features)
+    linked = mean("refs", nodes.index_select(0, refs), None)
+    return cast(Tensor, model.node_norm(nodes + model.relations(linked)))
+
+
+def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors: Tensor, *,
+                compile: bool) -> Tensor:
+    """Node vectors of a rows-v2 group through the owner-map builder."""
+    rows = t["kinds"].shape[0]
+    terms = {"ids": t["identities"].numel(),
+             "numbers": t["numbers"].numel() + t["missing_fields"].numel(),
+             "text": t["text_fields"].numel(), "refs": 0}
+    owners = {key: _owners(flat[key], rows, terms[key], key in PARTITION_REDUCTIONS)
+              for key in ("ids", "numbers", "text", "refs")}
+    builder = _node_builder
+    if compile:
+        builder = getattr(model, "_rows_nodes_compiled", None)
+        if builder is None:
+            builder = torch.compile(_node_builder, dynamic=True)
+            setattr(model, "_rows_nodes_compiled", builder)  # learner-process runtime only
+    return cast(Tensor, builder(model, t, vectors.float(), owners, flat["refs"][0]))
