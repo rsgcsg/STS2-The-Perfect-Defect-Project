@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { JsonLineProcess, RAW_LINE, isNativeCompactDivergence } from "../src/json-line-process.mjs";
-import { ManagedPlayerEnvironmentSession, startManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
-import { ProjectionMemo } from "../src/managed-projection-memo.mjs";
+import { ManagedPlayerEnvironmentSession, referentValue, startManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { ProjectionMemo, ProjectionMemoDivergence } from "../src/managed-projection-memo.mjs";
 import { objectsRoot } from "../src/managed-native-compact.mjs";
 import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
 import { createSession, reduce, modelView } from "@rsgcsg/sts2-connector-client/p1-global";
@@ -492,6 +492,7 @@ test("E5 projection memo is validated: shareUnchanged compact output and fast_ch
   assert.throws(() => memoSession({ request() {} }, { checkInterval: 64 }, { sampleRate: 0 }), /shareUnchanged/u);
   assert.throws(() => memoSession({ request() {} }, { checkInterval: 0 }), /checkInterval/u);
   assert.throws(() => memoSession({ request() {} }, { every: 1 }), /projectionMemo.every/u);
+  assert.throws(() => memoSession({ request() {} }, { checkSeed: 1.5 }), /checkSeed/u);
   assert.equal(memoSession({ request() {} }, null).projectionMemo, null);
   assert.deepEqual(memoSession({ request() {} }, {}).projectionMemo, { hits: 0, misses: 0, checks: 0, check_interval: 64 });
   await assert.rejects(startManagedPlayerEnvironmentSession({ compactOutput: { shareUnchanged: true }, projectionMemo: {} }),
@@ -510,15 +511,73 @@ test("E5 projection memo: a memo that disagrees with a fresh projection fails th
     const snapshot = await target.mount({ seed: "SEED" });
     corrupt = true;
     const receipt = await act(target, snapshot);
+    // Its own reason code, never mixed into managed_successor_projection_failed.
     assert.equal(receipt.delivery, "delivered");
-    assert.equal(receipt.reason_code, "managed_successor_projection_failed");
+    assert.equal(receipt.reason_code, "projection_memo_divergence");
     assert.match(receipt.detail, /^projection_memo_divergence: /u);
     assert.equal(receipt.successor, null);
-    assert.equal(receipt.retry.allowed, false);
-    assert.throws(() => target.observe());
+    assert.deepEqual(receipt.retry, { allowed: false, reason: "projection_memo_divergence_requires_process_replacement" });
+    assert.equal(target.taintReason, "projection_memo_divergence");
+    assert.throws(() => target.observe(), /managed_session_tainted_after_projection_memo_divergence/u);
+    const later = await act(target, snapshot, "r2");
+    assert.equal(later.delivery, "not_delivered");
+    assert.equal(later.reason_code, "runtime_tainted_after_projection_memo_divergence");
+    assert.equal(later.retry.reason, "projection_memo_divergence_requires_process_replacement");
+    // Frame 0 is always checked: a divergence while mounting taints the session the same way.
+    const mounting = memoSession(fakeNative(), { checkInterval: 64 });
+    await assert.rejects(mounting.mount({ seed: "SEED" }), ProjectionMemoDivergence);
+    assert.equal(mounting.taintReason, "projection_memo_divergence");
   } finally {
     ProjectionMemo.prototype.value = original;
   }
+});
+
+test("E5 projection memo: check gaps are uniform in ceil(N/2)..N, frame 0 included, seeded and restarted by reset", () => {
+  const dueFrames = (checkInterval, checkSeed, frames) => {
+    const memo = new ProjectionMemo({ checkInterval, checkSeed });
+    const due = [];
+    for (let frame = 0; frame < frames; frame++) if (memo.checkDue()) due.push(frame);
+    return { memo, due };
+  };
+  for (const n of [1, 2, 7, 64]) {
+    const { memo, due } = dueFrames(n, 12345, 40_000);
+    assert.equal(due[0], 0);
+    const gaps = due.slice(1).map((frame, index) => frame - due[index]);
+    const low = Math.ceil(n / 2);
+    assert.ok(gaps.every(gap => gap >= low && gap <= n), `N=${n}`);
+    // Every gap value in the range occurs (not a fixed phase).
+    assert.equal(new Set(gaps).size, n - low + 1, `N=${n}`);
+    assert.equal(memo.checks, due.length);
+  }
+  assert.deepEqual(dueFrames(64, 7, 2000).due, dueFrames(64, 7, 2000).due);
+  assert.notDeepEqual(dueFrames(64, 7, 2000).due, dueFrames(64, 8, 2000).due);
+  // reset() starts a new run: frame 0 is checked again.
+  const { memo } = dueFrames(64, 7, 5);
+  memo.reset();
+  assert.equal(memo.checkDue(), true);
+});
+
+test("E5 projection memo: every referent field is in its memo key (one changed field rebuilds)", () => {
+  const memo = new ProjectionMemo({ checkInterval: 64, checkSeed: 1 });
+  const card = Object.freeze({ name: "Strike", cost: "1" });
+  // [referentId, role, kind, label, enabled, selected, includeEntityId]
+  const fields = ["card-1", "card", "entity", "Strike", true, false, true];
+  const base = referentValue(memo, fields, card);
+  assert.ok(Object.isFrozen(base));
+  assert.equal(referentValue(memo, [...fields], card), base);
+  // The same frozen card object with only `selected` switched must be rebuilt, and so on for each field.
+  const variants = [["card-2", 0], ["hand", 1], ["other", 2], ["Bash", 3], [false, 4], [true, 5], [false, 6]];
+  for (const [value, index] of variants) {
+    const changed = fields.with(index, value);
+    const memoized = referentValue(memo, changed, card);
+    assert.notEqual(memoized, base, `field ${index}`);
+    assert.deepEqual(memoized, referentValue(null, changed, card), `field ${index}`);
+    assert.notDeepEqual(memoized, base, `field ${index}`);
+  }
+  assert.equal(referentValue(memo, fields.with(5, true), card).state.selected, true);
+  assert.equal(referentValue(memo, fields.with(0, "card-2"), card).referent_id, "card-2");
+  // An equal but different properties object is not the same native input.
+  assert.notEqual(referentValue(memo, fields, Object.freeze({ ...card })), base);
 });
 
 test("E5 projection memo: the lazy raw-state digest has the eager value", async () => {

@@ -28,7 +28,9 @@ export interface FastEnvConfig {
   agent_manifest: string;
   /** `projection_memo` (E5, off when absent or null; needs `enabled`): the Host keeps unchanged
    *  projected subtrees as the same deep-frozen objects across steps and compares a memo-off
-   *  projection every `check_interval` frames (a difference fails the step). */
+   *  projection on frame 0 and then after random gaps uniform in ceil(N/2)..N, N = `check_interval`.
+   *  A difference is `projection_memo_divergence`: the game ends unknown (never retried), is counted
+   *  in `projection_memo_divergences` and stops this build's output. */
   compact: { enabled: boolean; reconcile_interval: number; projection_memo: { check_interval: number } | null };
   checks: { sample_rate: number };
   decision_link: { kind: "unix"; path: string };

@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { checkPublicBasisLight, decodePublicBasis, PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE, PUBLIC_BASIS_PROFILE, PUBLIC_BASIS_READ_PROFILE } from '@rsgcsg/sts2-connector-client';
+import { deepFreeze } from './managed-deep-freeze.mjs';
+
+export { deepFreeze };
 
 /** Called synchronously inside the existing driver actor. Observe and Read copy one
  * already materialized projection; no process request, await or live refresh occurs.
@@ -35,16 +38,4 @@ export function captureManagedPublicBasis(session, { generationId, gameContinuit
     total_bytes: Buffer.byteLength(serializedObservation), sha256: createHash('sha256').update(serializedObservation).digest('hex'),
     first_cursor: 'inline', capture_ordinal: ordinal },
     basis, serializedObservation };
-}
-
-/** Freezes every object and array reachable from value (already frozen subtrees are skipped). */
-export function deepFreeze(value) {
-  const pending = [value];
-  while (pending.length) {
-    const item = pending.pop();
-    if (item === null || typeof item !== "object" || Object.isFrozen(item)) continue;
-    Object.freeze(item);
-    for (const key of Object.keys(item)) pending.push(item[key]);
-  }
-  return value;
 }

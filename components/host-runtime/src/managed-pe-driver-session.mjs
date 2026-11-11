@@ -14,6 +14,7 @@ const TEXT_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-conte
 function taintError(reason) {
   if (reason === "successor_projection_failed") return "managed_session_tainted_after_successor_projection_failure";
   if (reason === "compact_state_divergence") return "managed_session_tainted_after_compact_state_divergence";
+  if (reason === "projection_memo_divergence") return "managed_session_tainted_after_projection_memo_divergence";
   return "managed_session_tainted_after_unknown";
 }
 

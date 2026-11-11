@@ -149,7 +149,7 @@ export class FastEnvProcess {
     return { late_replies_discarded: this.deps.link.lateReplies, invalid_replies_discarded: this.deps.link.invalidReplies,
       games: s.games, games_closed: this.#gamesClosed, stale_close_slot_ignored: this.#staleCloses, decisions: s.decisions, forced_steps: s.forced, native_steps: s.native_steps,
       combat_end_unattributed: s.combat_end_unattributed,
-      settle_waits: s.settle_waits, full_checks: s.full_checks, compact_divergences: s.compact_divergences, forced_chain_limit: s.forced_chain_limit, build_output_stopped: this.#buildStopped,
+      settle_waits: s.settle_waits, full_checks: s.full_checks, compact_divergences: s.compact_divergences, projection_memo_divergences: s.projection_memo_divergences, forced_chain_limit: s.forced_chain_limit, build_output_stopped: this.#buildStopped,
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
       link_wait_ms: round(s.link_wait_ms), cold_starts: s.cold_starts, cold_start_wait_ms: round(s.cold_start_wait_ms) };

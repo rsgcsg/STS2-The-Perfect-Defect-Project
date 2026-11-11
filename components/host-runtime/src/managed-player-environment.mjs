@@ -190,19 +190,9 @@ function createProjectionContext({
     kind = "entity"
   }) {
     const referentId = id ?? makeId("ref", snapshotId, role, properties, occurrence);
-    const build = () => ({
-      referent_id: referentId,
-      role,
-      kind,
-      label: label == null ? null : String(label),
-      state: visibleState({ enabled, selected }),
-      properties_schema: properties === null ? null : `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
-      properties: properties === null ? null : { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
-    });
     // E5: a session-stable referent over memoized (frozen) properties is itself kept.
-    const value = activeMemo === null || id === null ? build()
-      : activeMemo.value("referent", properties, JSON.stringify([referentId, role, kind, label == null ? null : String(label),
-        enabled, selected, includeEntityId]), build);
+    const value = referentValue(id === null ? null : activeMemo,
+      [referentId, role, kind, label == null ? null : String(label), enabled, selected, includeEntityId], properties);
     referents.push(value);
     if (!firstReferents.has(referentId)) firstReferents.set(referentId, value);
     return value;
@@ -639,6 +629,25 @@ function visibleHoverCards(cards, ownerKind, ownerRef, entityId) {
     const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...visible } = visibleCombatCard(card, ids[index]);
     return visible;
   });
+}
+
+/** One referent from its scalar fields and its properties. The memo key is exactly the field tuple
+ * the referent is built from, so no field that reaches the output can be missing from the key; with
+ * memo (null = build) a frozen properties object and an equal tuple give back the same frozen referent. */
+export function referentValue(memo, fields, properties) {
+  const build = () => {
+    const [referentId, role, kind, label, enabled, selected, includeEntityId] = fields;
+    return {
+      referent_id: referentId,
+      role,
+      kind,
+      label,
+      state: visibleState({ enabled, selected }),
+      properties_schema: properties === null ? null : `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
+      properties: properties === null ? null : { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
+    };
+  };
+  return memo == null ? build() : memo.value("referent", properties, JSON.stringify(fields), build);
 }
 
 /** E5: build() through the active projection memo (kept identity for a frozen input and the same
@@ -3074,6 +3083,7 @@ export class ManagedPlayerEnvironmentSession {
       return snapshot;
     } catch (cause) {
       if (cause instanceof CompactStateDivergence) this.#taintCompact();
+      else if (cause instanceof ProjectionMemoDivergence) { /* tainted with its own reason by #setState */ }
       else if (initialProgress != null) {
         this.#tainted = true;
         this.#taintReason = "initial_progress_mount_failed_replace_process";
@@ -3099,6 +3109,7 @@ export class ManagedPlayerEnvironmentSession {
       return await this.#setState(state, timeoutMs);
     } catch (cause) {
       if (cause instanceof CompactStateDivergence) { this.#taintCompact(); throw cause; }
+      if (cause instanceof ProjectionMemoDivergence) throw cause;
       this.#tainted = true;
       this.#taintReason = "map_restore_failed";
       throw cause;
@@ -3114,6 +3125,8 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#taintReason === "compact_state_divergence")
       throw new Error("managed_session_tainted_after_compact_state_divergence");
+    if (this.#taintReason === "projection_memo_divergence")
+      throw new Error("managed_session_tainted_after_projection_memo_divergence");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
   }
@@ -3195,16 +3208,19 @@ export class ManagedPlayerEnvironmentSession {
     if (this.#tainted) {
       const projectionFailed = this.#taintReason === "successor_projection_failed";
       const diverged = this.#taintReason === "compact_state_divergence";
+      const memoDiverged = this.#taintReason === "projection_memo_divergence";
       const value = this.#makeReceipt({
         requestId,
         delivery: "not_delivered",
         action: unknownAction(boundActionId),
-        reasonCode: diverged ? "runtime_tainted_after_compact_state_divergence" : projectionFailed
-          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+        reasonCode: diverged ? "runtime_tainted_after_compact_state_divergence"
+          : memoDiverged ? "runtime_tainted_after_projection_memo_divergence" : projectionFailed
+            ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Mutation authority is closed until the process is replaced.",
         retry: { allowed: false, reason: diverged ? "compact_state_divergence_requires_process_replacement"
-          : projectionFailed ? "successor_projection_failure_requires_process_replacement"
-            : "unknown_delivery_requires_process_replacement" },
+          : memoDiverged ? "projection_memo_divergence_requires_process_replacement"
+            : projectionFailed ? "successor_projection_failure_requires_process_replacement"
+              : "unknown_delivery_requires_process_replacement" },
         successor: null
       });
       this.#ledger.set(requestId, { requestKey, receipt: value });
@@ -3309,6 +3325,21 @@ export class ManagedPlayerEnvironmentSession {
     } catch (error) {
       // The native reported divergence on the successor's enrichment read.
       if (error instanceof CompactStateDivergence) return diverged(error.message);
+      // The sampled memo check found a memoized projection differing from a fresh
+      // one: its own reason code, never mixed into a projection failure.
+      if (error instanceof ProjectionMemoDivergence) {
+        const value = this.#makeReceipt({
+          requestId,
+          delivery: "delivered",
+          action: binding.action,
+          reasonCode: "projection_memo_divergence",
+          detail: error.message,
+          retry: { allowed: false, reason: "projection_memo_divergence_requires_process_replacement" },
+          successor: null
+        });
+        this.#ledger.set(requestId, { requestKey, receipt: value });
+        return value;
+      }
       // A decision returned from the native action confirms delivery, but a
       // failed successor projection leaves no trustworthy current binding.
       this.#tainted = true;
@@ -3459,7 +3490,7 @@ export class ManagedPlayerEnvironmentSession {
       if (problem !== null) {
         // Loud: no fallback to the fresh projection. The session needs a new process.
         this.#tainted = true;
-        this.#taintReason ??= "successor_projection_failed";
+        this.#taintReason = "projection_memo_divergence";
         throw new ProjectionMemoDivergence(problem);
       }
     }
