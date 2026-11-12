@@ -62,11 +62,15 @@ class NodeMuSource:
     """
 
     def __init__(self, learner_attachment: Path, root: Path, *, interval: float = 0,
-                 keep: int = 18, transfer_timeout: float = 60.0) -> None:
+                 keep: int = 18, transfer_timeout: float = 60.0,
+                 handshake_timeout: float | None = 30.0) -> None:
         # keep >= the service's resident limit, so any mu it can still hold in
         # memory can also be reloaded from this node after an eviction.
         self.path, self.root, self.interval, self.keep = learner_attachment, root, interval, keep
         self.transfer_timeout = transfer_timeout  # per message of a get_mu transfer
+        self.handshake_timeout = handshake_timeout  # TCP connect + authkey handshake
+        # Set by FastMuFollower: names the read's sub-steps (read.lock, read.connect, ...).
+        self.on_stage: Any = None
         self.cache: Any = None
         self.generation: str | None = None
 
@@ -79,8 +83,10 @@ class NodeMuSource:
             self.cache = NodeMuCache(attachment, self.root / attachment["run"] / generation,
                                      interval=self.interval, keep=self.keep,
                                      max_bytes=self.keep * 64 * 1024**2,
-                                     transfer_timeout=self.transfer_timeout)
+                                     transfer_timeout=self.transfer_timeout,
+                                     handshake_timeout=self.handshake_timeout)
             self.generation = generation
+        self.cache.on_stage = self.on_stage
         return self.cache
 
     def latest(self) -> dict[str, Any]:

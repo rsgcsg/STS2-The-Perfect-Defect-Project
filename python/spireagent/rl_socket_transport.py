@@ -18,12 +18,13 @@ import socket
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import (
     Client,
+    Connection,
     Listener,
     answer_challenge,
     deliver_challenge,
@@ -743,6 +744,7 @@ class NodeMuCache:
         max_bytes: int = 512 * 1024**2,
         keep: int = 3,
         transfer_timeout: float = 60.0,
+        handshake_timeout: float | None = None,
     ) -> None:
         if (
             type(interval) not in (float, int)
@@ -750,11 +752,17 @@ class NodeMuCache:
             or max_bytes < 1
             or keep < 2
             or not transfer_timeout > 0
+            or (handshake_timeout is not None and not handshake_timeout > 0)
         ):
             raise ValueError("invalid_node_mu_cache_bounds")
         self.attachment = copy.deepcopy(attachment)
         self.root, self.interval, self.max_bytes, self.keep = root, interval, max_bytes, keep
         self.transfer_timeout = transfer_timeout
+        # None keeps multiprocessing's Client (no connect/auth limit); a number
+        # bounds the TCP connect and the authkey handshake (MU_HANDSHAKE_TIMEOUT).
+        self.handshake_timeout = handshake_timeout
+        # Optional observer of the refresh sub-steps (the mu follower's stage marks).
+        self.on_stage: Callable[[str], None] | None = None
         self.last_transfer: dict[str, Any] = {}
         root.mkdir(parents=True, exist_ok=True)
 
@@ -764,10 +772,75 @@ class NodeMuCache:
             raise DataplaneError("MU_TRANSFER_TIMEOUT")
         return bytes(connection.recv_bytes(maximum))
 
+    def _stage(self, name: str) -> None:
+        if self.on_stage is not None:
+            self.on_stage(name)
+
+    def _connect(self, address: tuple[str, int], authkey: bytes) -> Any:
+        """`Client(address, authkey)`, with a limit on connect and handshake when set.
+
+        `Client` has no timeout: a peer that accepts but never answers the
+        challenge leaves the read waiting forever. Past the limit the socket is
+        shut down, so the blocked handshake returns and the read fails loudly
+        (`MU_HANDSHAKE_TIMEOUT`); a read is idempotent and polled again.
+        """
+        self._stage("read.connect")
+        if self.handshake_timeout is None:
+            connection = Client(address, authkey=authkey)
+            self._stage("read.request")
+            return connection
+        try:
+            raw = socket.create_connection(address, timeout=self.handshake_timeout)
+        except TimeoutError:
+            raise DataplaneError("MU_HANDSHAKE_TIMEOUT") from None
+        raw.settimeout(None)
+        connection = Connection(raw.detach())
+        self._stage("read.auth")
+        guard = threading.Lock()
+        state = {"done": False, "expired": False}
+
+        def expire() -> None:
+            with guard:
+                if state["done"]:
+                    return
+                state["expired"] = True
+                try:
+                    channel = socket.socket(fileno=connection.fileno())
+                    try:
+                        channel.shutdown(socket.SHUT_RDWR)
+                    finally:
+                        channel.detach()
+                except OSError:
+                    pass
+
+        timer = threading.Timer(self.handshake_timeout, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            answer_challenge(connection, authkey)
+            deliver_challenge(connection, authkey)
+        except (OSError, EOFError):
+            connection.close()
+            if state["expired"]:
+                raise DataplaneError("MU_HANDSHAKE_TIMEOUT") from None
+            raise
+        except BaseException:
+            connection.close()
+            raise
+        finally:
+            with guard:
+                state["done"] = True
+            timer.cancel()
+        if state["expired"]:
+            connection.close()
+            raise DataplaneError("MU_HANDSHAKE_TIMEOUT")
+        self._stage("read.request")
+        return connection
+
     def _download(self) -> dict[str, Any]:
         attachment = self.attachment
-        with Client(
-            tuple(attachment["address"]), authkey=bytes.fromhex(os.environ[AUTH_ENV])
+        with self._connect(
+            tuple(attachment["address"]), bytes.fromhex(os.environ[AUTH_ENV])
         ) as connection:
             cached = [p.name for p in self.root.iterdir() if (p / "COMPLETE").is_file()]
             connection.send_bytes(
@@ -839,6 +912,7 @@ class NodeMuCache:
                 # No second request for this version: get_mu metadata permits
                 # the client to close before bodies; the service sees EOF.
                 return identity
+            self._stage("read.body")
             staged = Path(tempfile.mkdtemp(prefix="incoming-", dir=self.root))
             try:
                 for item in files:
@@ -919,13 +993,16 @@ class NodeMuCache:
         from spireagent.instance_lock import instance_lock
 
         with ExitStack() as pin:
+            self._stage("read.lock")
             with instance_lock(self.root / "refresh.lock", blocking=True):
                 current = self.root / "CURRENT.json"
                 record = _json(current.read_bytes()) if current.exists() else None
                 if record is None or time.time() - record["checked_at"] >= self.interval:
+                    self._stage("read.trim")
                     if record is not None and not self._trim(record["identity"]["snapshot_sha256"]):
                         raise DataplaneError("CAPACITY_WAIT")
                     identity = self._download()
+                    self._stage("read.current")
                     previous = record or {}
                     record = {
                         "identity": identity,
@@ -941,6 +1018,7 @@ class NodeMuCache:
                     temporary.write_bytes(json_bytes(record))
                     temporary.replace(current)
                 identity = record["identity"]
+                self._stage("read.pin")
                 pin.enter_context(
                     instance_lock(
                         self.root / identity["snapshot_sha256"] / "readers.lock",

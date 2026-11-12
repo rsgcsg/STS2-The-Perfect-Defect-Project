@@ -1626,3 +1626,42 @@ def test_node_mu_source_passes_its_transfer_timeout_to_the_cache(tmp_path):
     attachment.write_text(json.dumps({"run": "r", "training_generation": "g"}))
     source = NodeMuSource(attachment, tmp_path / "mu", transfer_timeout=7.5)
     assert source._cache().transfer_timeout == 7.5
+
+
+def test_a_bounded_get_mu_names_its_steps_and_still_reads_the_snapshot(tmp_path, monkeypatch):
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    server, identity, attachment = _mu_server(tmp_path, monkeypatch)
+    node = NodeMuCache(attachment, tmp_path / "node", interval=0, handshake_timeout=5)
+    stages: list[str] = []
+    node.on_stage = stages.append
+    try:
+        with node.latest() as current:
+            assert current == identity
+    finally:
+        server.close()
+    assert stages == ["read.lock", "read.trim", "read.connect", "read.auth", "read.request",
+                      "read.body", "read.current", "read.pin"]
+
+
+def test_a_get_mu_peer_that_accepts_but_never_authenticates_times_out(tmp_path, monkeypatch):
+    """s1f: a read froze 300 s in a step without a limit (Client connect/auth has none)."""
+    import socket
+
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    monkeypatch.setenv(AUTH_ENV, (b"m" * 32).hex())
+    listener = socket.create_server(("127.0.0.1", 0))
+    held = []
+    threading.Thread(target=lambda: held.append(listener.accept()), daemon=True).start()
+    attachment = {"address": list(listener.getsockname()), "schema": "s", "pool_id": "p",
+                  "adapter": "x", "run": "r", "training_generation": "g"}
+    node = NodeMuCache(attachment, tmp_path / "node", interval=0, handshake_timeout=0.5)
+    stages: list[str] = []
+    node.on_stage = stages.append
+    began = time.monotonic()
+    with pytest.raises(DataplaneError, match="MU_HANDSHAKE_TIMEOUT"), node.latest():
+        pass
+    assert time.monotonic() - began < 10
+    assert stages[-1] == "read.auth"
+    listener.close()

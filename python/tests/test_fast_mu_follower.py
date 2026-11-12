@@ -445,3 +445,54 @@ def test_a_failed_offer_drops_the_model_it_just_loaded(vocabulary, model):  # no
         assert controls == [("model", MU)]
     finally:
         service.close()
+
+
+class StagedHangingSource(HangingSource):
+    """s1f: the read hung inside one of its sub-steps; the source names them."""
+
+    def __init__(self, latest: dict[str, Any]) -> None:
+        super().__init__(latest)
+        self.on_stage: Any = None
+
+    def latest(self) -> dict[str, Any]:
+        self.on_stage("read.lock")
+        if self.hang.is_set():
+            self.on_stage("read.auth")
+            self.release.wait(30)
+        return dict(self.current)
+
+
+def test_a_stage_over_its_own_limit_gives_up_and_names_the_stage():
+    source, service = StagedHangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=30,
+                              stage_seconds={"read": 0.3, "load": 5, "publish": 5}).start()
+    assert source.on_stage == follower._enter
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert len(service.published) == 1
+    source.hang.set()
+    source.current = identity("d" * 64, version=3)
+    follower.watchdog.join(10)
+    assert not follower.watchdog.is_alive()  # well before the 30 s poll limit
+    with pytest.raises(BoundaryError, match="MU_FOLLOWER_STALLED.*stalled_stage=read.auth"):
+        follower.check()
+    status = follower.status()
+    assert status["stalled"]["stage"] == "read.auth" and status["stalled"]["limit"] == 0.3
+    assert status["stage"] == "read.auth" and service.stop_reason == "mu_follower_stopped"
+    assert {"read.lock", "load", "publish"} <= set(status["stage_max_seconds"])
+    source.release.set()
+    follower.thread.join(10)
+    assert follower.stopped() and len(service.published) == 1
+
+
+def test_stage_limits_are_checked():
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), stall_seconds=10,
+                       stage_seconds={"read": 20})
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), stage_seconds={"connect": 5})
+    follower = FastMuFollower(Source(identity(NEW)), Service(), interval=0.01,
+                              stall_seconds=0.3)
+    assert follower.stage_seconds == {"read": 0.3, "load": 0.3, "publish": 0.3}
