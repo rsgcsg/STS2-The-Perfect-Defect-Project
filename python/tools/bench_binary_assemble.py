@@ -54,6 +54,41 @@ OPTIONS = {"microbatch_size": 1280, "deduplicate_text": True,
            "prepared_layout": "rows-v2"}
 
 
+class SegmentCompiler(FrameCompiler):
+    """Same vocabulary/spec; carries the segments' recorded identity."""
+
+    recorded: dict[str, Any] = {}
+    identity = property(lambda self: self.recorded)
+
+
+def _worker_init(identity: dict[str, Any], unfreeze: bool) -> None:
+    """The production initializer, then the segments' identity (and, for A/B, unfreeze)."""
+    import gc
+
+    binary._initialize(public_vocabulary(V2_R19_INPUT_SPEC), 1)
+    SegmentCompiler.recorded = identity
+    binary._worker_compiler = SegmentCompiler(public_vocabulary(V2_R19_INPUT_SPEC))
+    if unfreeze:
+        gc.unfreeze()
+
+
+def _worker_decode(descriptors: list[Any]) -> float:
+    began = time.perf_counter()
+    for descriptor in descriptors:
+        binary._decode_source(descriptor)
+    return time.perf_counter() - began
+
+
+def worker_decode(identity: dict[str, Any], descriptors: list[Any], unfreeze: bool) -> float:
+    """All member sources decoded in one real spawned worker (per-source gc.collect included)."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_worker_init, initargs=(identity, unfreeze)) as pool:
+        return pool.submit(_worker_decode, descriptors).result()
+
+
 def load(directory: str, rows: int) -> tuple[Any, list[tuple[bytes, dict[str, Any]]]]:
     paths = sorted(glob.glob(os.path.join(directory, "**", "*.stfs"), recursive=True))
     if not paths:
@@ -62,11 +97,7 @@ def load(directory: str, rows: int) -> tuple[Any, list[tuple[bytes, dict[str, An
     identity = decode_segment(first, expected_sha256=hashlib.sha256(first).hexdigest())[0][
         "compiler_identity"]
 
-    class SegmentCompiler(FrameCompiler):
-        """Same vocabulary/spec; carries the segments' recorded identity."""
-
-        identity = property(lambda self: identity)
-
+    SegmentCompiler.recorded = identity
     compiler = SegmentCompiler(public_vocabulary(V2_R19_INPUT_SPEC))
     seed = next(s for i in range(1, 300) if not held_out(s := derive_game_seed("bench", i))
                 and not seed_membership(s))
@@ -126,6 +157,8 @@ def main() -> None:
     parser.add_argument("--aux", type=int, default=256)
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--variants", default="current,gc,full-aux")
+    parser.add_argument("--worker-decode", action="store_true",
+                        help="also time source decode in a spawned worker, frozen vs unfrozen GC")
     parser.add_argument("--work", default=None, help="node-local directory for arena files")
     args = parser.parse_args()
     compiler, raws = load(args.segments, args.rows)
@@ -143,6 +176,18 @@ def main() -> None:
         ready = [binary._decode_source(binary._Descriptor(arena, offset, size, epoch, env))
                  for offset, size, env in places]
         decode = time.perf_counter() - began
+        if args.worker_decode:
+            descriptors = [binary._Descriptor(arena + ".w", offset, size, epoch, env)
+                           for offset, size, env in places]
+            for unfreeze in (False, True):
+                shutil.copyfile(arena, arena + ".w")  # fresh derived-slab paths per run
+                seconds = worker_decode(SegmentCompiler.recorded, descriptors, unfreeze)
+                for path in glob.glob(arena + ".w*"):
+                    os.unlink(path)
+                print(json.dumps({"worker_decode": "unfrozen" if unfreeze else "current",
+                                  "sources": len(descriptors), "seconds": round(seconds, 3),
+                                  "ms_per_row": round(1000 * seconds / sum(
+                                      e["rows"] for _o, _s, e in places), 3)}), flush=True)
         rng, auxiliary = random.Random(3), []
         for _ in range(args.aux):
             index = rng.randrange(len(raws))

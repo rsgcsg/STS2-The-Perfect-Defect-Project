@@ -53,6 +53,12 @@ def _initialize(vocabulary: dict[str, Any], threads: int) -> None:
     if torch.get_num_interop_threads() != 1:
         torch.set_num_interop_threads(1)
     _worker_compiler = FrameCompiler(vocabulary)
+    # Import-time objects (torch, numpy, stpd, the compiler: ~2e5) never die.
+    # Move them out of the collector's view once, so the per-task
+    # `gc.collect()` scans only what the task created (~60 ms -> ~0 per call
+    # on fc430, once per decoded source).
+    gc.collect()
+    gc.freeze()
 
 
 @dc.dataclass(frozen=True)
