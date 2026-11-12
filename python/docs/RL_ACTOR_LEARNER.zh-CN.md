@@ -247,6 +247,10 @@ profile回执写实际fd限制、探测结果及容量，status有当前连接�
 接收body+arena实际两份，P1的prepared/pinned预算另计，不能当总共20GiB。
 arena全忙时释放部分reservation，在condition上等完成/释放通知，至多`source_wait_seconds`（默认60 s，最大120 s）；
 超时返回现有typed `CAPACITY_WAIT`，不改旧输入或重投World。后台投机预取只提示，不占着gate等容量。
+`prepare_dispatch_workers`（默认4）为把批源字节拷进arena的并发线程数；各批拷贝可重叠，
+但交给preparer的submit仍按派发顺序逐个执行，某批拷贝失败只让该批失败。
+batch_ready的`frontend_prefetch_credit_wait_seconds/frontend_prefetch_copy_seconds/frontend_order_wait_seconds`
+分别报告等arena额度、实际拷贝和等前序submit的时间。
 准备worker与拼批worker分别由
 `preparation_workers/assembly_workers`控制，health给配置数与实际PID/忙时。
 

@@ -430,6 +430,11 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
         settings = config.segments
         self.dataplane = copy.deepcopy(io.dataplane)
+        # Threads that copy batch sources into preparer arenas concurrently.
+        self.dispatch_workers = (self.dataplane.get("prepare_dispatch_workers", 4)
+                                 if self.dataplane is not None else 1)
+        if type(self.dispatch_workers) is not int or self.dispatch_workers < 1:
+            raise ValueError("invalid_prepare_dispatch_workers")
         # Explicit S3 alternative only; None keeps the default in-process E4.
         self.sgd_options = sgd_options(self.dataplane)
         self.sgd: SgdProcess | None = None
@@ -807,8 +812,13 @@ class SegmentLearner:
         )
         # Source reservation/copy may wait for arena credit. It must not sit on
         # the theta owner's path before an already-ready GPU minibatch.
+        # Several dispatch threads copy different batches' sources at once (one
+        # thread capped the chain at ~1/(per-batch copy) batch/s); each task's
+        # preparer submission still runs alone and in dispatch order.
         self.preparation_dispatch = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rl-prepare-dispatch")
+            max_workers=self.dispatch_workers, thread_name_prefix="rl-prepare-dispatch")
+        self.dispatch_order = threading.Condition()
+        self.dispatch_issued = self.dispatch_turn = 0
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
             mp_context=multiprocessing.get_context("spawn"),
@@ -2222,12 +2232,19 @@ class SegmentLearner:
             seen.add(item["segment_id"])
         return tuple(result)
 
-    def _prefetch_members(self, members: tuple[BatchMember, ...], *, wait: bool = True) -> None:
+    def _prefetch_members(self, members: tuple[BatchMember, ...], *,
+                          wait: bool = True) -> tuple[float, float]:
+        """Copy members into preparer arenas; returns (credit wait, copy) seconds."""
+        waited = copied = 0.0
         if self.wal is not None:
             for member in members:
                 assert isinstance(member.payload, BinaryRef)
-                cast("BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
+                wait_seconds, copy_seconds = cast(
+                    "BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
                     self._binary_owner(member.payload).envelope(member.payload), wait=wait)
+                waited += wait_seconds
+                copied += copy_seconds
+        return waited, copied
 
     def _source_prefetch_loop(self) -> None:
         """Coalesce commit hints; copy/decode sources before numerical selection.
@@ -2458,16 +2475,18 @@ class SegmentLearner:
             if self.wal is None:
                 for member in members:
                     self._retain(member.payload, owner)
+            def prefetch_labels(members: tuple[BatchMember, ...] = members) -> None:
+                self._prefetch_members(members)
+
             def submit_labels(request: dict[str, Any] = request,
                               members: tuple[BatchMember, ...] = members) -> Future[Any]:
-                self._prefetch_members(members)
                 return (cast("BinaryBatchPreparer", self.input_preparer).verify_labels(
                          request, members)
                      if self.wal is not None
                      else self.input_preparer.pool.submit(verify_auxiliary, request, members))
             self.pending_labels.append(
                 (
-                    self._dispatch_preparation(submit_labels),
+                    self._dispatch_preparation(prefetch_labels, submit_labels),
                     members,
                     owner,
                 )
@@ -2555,7 +2574,16 @@ class SegmentLearner:
             self._notify_capacity()
             self.source_prefetch_changed.set()
 
-    def _dispatch_preparation(self, submit: Callable[[], Future[Any]]) -> Future[Any]:
+    def _dispatch_preparation(self, prefetch: Callable[[], Any],
+                              submit: Callable[[], Future[Any]]) -> Future[Any]:
+        """Run `prefetch` on any dispatch thread, then `submit` alone in issue order.
+
+        The executor starts tasks FIFO, so every earlier ticket already holds a
+        thread or has finished; a prefetch never waits for a later ticket (a
+        copied source keeps no arena credit while its task waits for its turn).
+        A failed prefetch still takes and passes its turn, failing only its own
+        result, so a later task never waits forever.
+        """
         result: Future[Any] = Future()
 
         def complete(future: Future[Any]) -> None:
@@ -2564,13 +2592,30 @@ class SegmentLearner:
             except BaseException as error:
                 result.set_exception(error)
 
-        def dispatch() -> None:
+        def dispatch(ticket: int) -> None:
+            failure: BaseException | None = None
             try:
+                prefetch()
+            except BaseException as error:
+                failure = error
+            with self.dispatch_order:
+                while self.dispatch_turn != ticket:
+                    self.dispatch_order.wait()
+            try:
+                if failure is not None:
+                    raise failure
                 submit().add_done_callback(complete)
             except BaseException as error:
                 result.set_exception(error)
+            finally:
+                with self.dispatch_order:
+                    self.dispatch_turn += 1
+                    self.dispatch_order.notify_all()
 
-        self.preparation_dispatch.submit(dispatch)
+        # Ticket order must equal executor FIFO order; a refused submit takes none.
+        with self.dispatch_order:
+            self.preparation_dispatch.submit(dispatch, self.dispatch_issued)
+            self.dispatch_issued += 1
         return result
 
     def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
@@ -2582,12 +2627,18 @@ class SegmentLearner:
             self._retain(member.payload, owner)
         inputs = tuple(row["prepared_input"] for kind in ("terminal", "hp") for row in active[kind])
         scheduled = time.perf_counter()
+        marks: dict[str, float] = {}
+
+        def prefetch() -> None:
+            marks["started"] = time.perf_counter()
+            marks["credit_wait"], marks["copy"] = self._prefetch_members(request.members)
+            marks["prefetched"] = time.perf_counter()
+
         def submit() -> Future[PreparedBatch]:
-            started = time.perf_counter()
-            self._prefetch_members(request.members)
-            prefetched = time.perf_counter()
+            turn = time.perf_counter()
             future = self.input_preparer.submit(request, inputs)
             submitted = time.perf_counter()
+            started, prefetched = marks["started"], marks["prefetched"]
 
             def observe(finished: Future[PreparedBatch]) -> None:
                 if not finished.cancelled() and finished.exception() is None:
@@ -2595,12 +2646,15 @@ class SegmentLearner:
                         frontend_retain_seconds=scheduled - began,
                         frontend_dispatch_queue_seconds=started - scheduled,
                         frontend_prefetch_seconds=prefetched - started,
-                        frontend_submit_seconds=submitted - prefetched,
+                        frontend_prefetch_credit_wait_seconds=marks["credit_wait"],
+                        frontend_prefetch_copy_seconds=marks["copy"],
+                        frontend_order_wait_seconds=turn - prefetched,
+                        frontend_submit_seconds=submitted - turn,
                         frontend_wall_seconds=submitted - started)
 
             future.add_done_callback(observe)
             return future
-        return self._dispatch_preparation(submit)
+        return self._dispatch_preparation(prefetch, submit)
 
     def _prepare_ahead(self) -> None:
         while (self.settings.prepare_ahead
