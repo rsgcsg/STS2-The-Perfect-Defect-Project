@@ -664,12 +664,12 @@ class FastSegmentIntake:
         headers: dict[str, dict[str, Any]] = {}
         if self.aux_labels:
             for sid, (_digest, body) in bodies.items():
-                # Full row verification, as before, only now outside the lock:
-                # every row is copied and bound to its own sha256 here, whether
-                # or not the row is ever used. The whole body was bound to
-                # `digest` (the digest offer() received) just above, so it is
-                # not hashed a second time.
-                header, _rows = decode_segment(body)
+                # Header, layout, padding and length checks only, outside the
+                # lock. The whole body was bound to `digest` (the digest offer()
+                # received) just above, and the decode worker binds every row to
+                # its own sha256 when the source is prepared, so no row is
+                # copied or hashed here.
+                header, _rows = decode_segment(body, header_only=True)
                 headers[sid] = header
         with self.lock:
             if self.generation != generation or self.instances.get(instance_id) is not instance:

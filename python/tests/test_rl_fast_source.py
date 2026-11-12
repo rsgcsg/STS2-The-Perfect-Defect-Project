@@ -604,8 +604,8 @@ def test_header_only_parse_skips_row_digests_but_the_decode_worker_still_binds_t
 
 # ------------------------------------------------ intake lock: no heavy work under it
 def test_label_body_corrupted_after_offer_fails_loudly():
-    """Labels still bind every carried body to its offer() digest and every row of
-    it to its own row sha256 (now outside the intake lock), used or not."""
+    """Labels bind every carried body to its offer() digest (outside the intake
+    lock); rows are bound to their own sha256 later, by the decode worker."""
     from stpd.rl.fast_segment import decode_segment, sha256
     from stpd.rl.fast_source import build_instance_labels
 
@@ -619,8 +619,9 @@ def test_label_body_corrupted_after_offer_fails_loudly():
         i.labels(labels_message(fields), bytes(bad))
 
     # (b) A row whose bytes do not match its row sha256 under a consistent whole
-    # digest: offer() parses the header only and admits it; labels must refuse it
-    # through the full per-row check (it never waits for a later decode).
+    # digest: offer() and labels() both parse the header only (the body is bound
+    # to its offered digest), so labels admits it; the decode worker's full decode
+    # of that same body refuses it loudly before any of its rows is used.
     i = intake(aux_labels=frozenset({"terminal", "hp"}))
     i.attest(attest("g1"))
     sealed = combat_game()
@@ -636,12 +637,21 @@ def test_label_body_corrupted_after_offer_fails_loudly():
     entry = fields["segments"][0]
     data = data[:entry["offset"]] + raw + data[entry["offset"] + entry["size"]:]
     fields["segments"][0] = {**entry, "sha256": sha256(raw)}
+    decision = i.labels(labels_message(fields), data)
+    carried = [row for _, _, rows in decision.auxiliary for row in rows
+               if row["segment"].data == raw]
+    assert carried
     with pytest.raises(SegmentFormatError, match="row_digest"):
-        i.labels(labels_message(fields), data)
+        decode_segment(carried[0]["segment"].data,
+                       expected_sha256=carried[0]["envelope"]["packet_sha256"])
 
 
 def _blocking_decode(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
-    """Make labels()'s full decode wait until released (offer's header parse never waits)."""
+    """Make labels()'s unlocked header decode wait until released.
+
+    Only the thread named "labels-worker" waits; offer() on other threads parses
+    the same way (header only) and must never wait for it.
+    """
     import threading
 
     import stpd.rl.fast_source as fs
@@ -650,7 +660,7 @@ def _blocking_decode(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
     real = fs.decode_segment
 
     def decode(data: Any, **kwargs: Any) -> Any:
-        if not kwargs.get("header_only"):
+        if threading.current_thread().name == "labels-worker":
             entered.set()
             assert release.wait(10)
         return real(data, **kwargs)
@@ -670,7 +680,7 @@ def test_labels_decode_runs_outside_the_intake_lock(monkeypatch):
     fields, data = build_instance_labels(sealed)
     entered, release = _blocking_decode(monkeypatch)
     result: dict[str, Any] = {}
-    worker = threading.Thread(
+    worker = threading.Thread(name="labels-worker",
         target=lambda: result.setdefault("d", i.labels(labels_message(fields), data)))
     worker.start()
     try:
@@ -702,7 +712,7 @@ def test_generation_change_during_unlocked_labels_work_drops_the_labels(monkeypa
     fields, data = build_instance_labels(sealed)
     entered, release = _blocking_decode(monkeypatch)
     result: dict[str, Any] = {}
-    worker = threading.Thread(
+    worker = threading.Thread(name="labels-worker",
         target=lambda: result.setdefault("d", i.labels(labels_message(fields), data)))
     worker.start()
     assert entered.wait(10)
