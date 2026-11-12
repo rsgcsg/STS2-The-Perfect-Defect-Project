@@ -15,8 +15,10 @@ HMAC covers the connection handshake only, so hosts belong on a trusted cluster
 network. A failed or timed-out task raises on the learner (no local fallback, no
 retry); the broken connection is dropped and a new one is opened for a later task.
 
-Bytes equal a local batch only for the same code and worker settings, which the
-SGD sha256 check cannot see (it covers the transfer). The hello therefore
+Bytes equal a local batch only for the same code and worker settings, and only
+on the same CPU class with the same torch/numpy versions (across CPU classes,
+float features may differ at ulp level; integers, structure and labels do not).
+The SGD sha256 check cannot see any of this (it covers the transfer). The hello therefore
 carries a digest of the preparation source (`stpd/rl`, `stpd/p1`) and the
 learner's worker thread count; a host started for other values refuses it. The
 host cache is keyed by packet sha256 and the exact envelope (it carries
@@ -34,12 +36,14 @@ import os
 import pickle
 import queue
 import socket
+import struct
 import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Iterator
 from concurrent.futures import Future, ProcessPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from multiprocessing import get_context
 from multiprocessing.connection import (
     Client,
@@ -48,6 +52,7 @@ from multiprocessing.connection import (
     answer_challenge,
     deliver_challenge,
 )
+from multiprocessing.reduction import ForkingPickler
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +104,39 @@ def cpu_fingerprint() -> dict[str, str]:
                 break
     info["torch_capability"] = str(torch.backends.cpu.get_cpu_capability())
     return info
+
+
+@contextmanager
+def _deadline_socket(connection: Connection, timeout: float) -> Iterator[socket.socket]:
+    """A raw view of the connection's socket whose sends and receives time out.
+
+    The timeout puts the shared file description in non-blocking mode, so it is
+    restored before the framed Connection is used again."""
+    raw = socket.socket(fileno=os.dup(connection.fileno()))
+    try:
+        raw.settimeout(timeout)
+        yield raw
+    except TimeoutError as error:
+        raise TimeoutError("remote_prepare_timeout") from error
+    finally:
+        with suppress(OSError):
+            raw.settimeout(None)
+        raw.close()
+
+
+def _send_frame(raw: socket.socket, body: bytes) -> None:
+    """`Connection.send_bytes` framing (big-endian length), sent with a deadline."""
+    if len(body) > 0x7FFFFFFF:
+        raise ValueError("remote_prepare_frame_too_large")
+    raw.sendall(struct.pack("!i", len(body)))
+    raw.sendall(body)
+
+
+def _send(connection: Connection, timeout: float, message: Any) -> None:
+    """`Connection.send` with a deadline (same pickler, same framing)."""
+    body = ForkingPickler.dumps(message)
+    with _deadline_socket(connection, timeout) as raw:
+        _send_frame(raw, bytes(body))
 
 
 def source_key(envelope: dict[str, Any]) -> str:
@@ -201,17 +239,31 @@ class _Host:
         if len(raw) != envelope.get("packet_size"):
             raise ValueError("remote_prepare_packet_size_changed")
         path = self.scratch / f"src-{digest[:32]}-{uuid.uuid4().hex[:8]}"
-        with path.open("xb") as stream:
-            os.chmod(path, 0o600)
-            stream.write((1).to_bytes(8, "little"))
-            stream.write(raw)
         descriptor = binary._Descriptor(str(path), 8, len(raw), 1, dict(envelope))
         files = (str(path), binary._derived_path(descriptor))
         with self.lock:
             placeholder = self.sources[digest][0]
-            self.sources[digest] = placeholder, files, len(raw)
-            self.held += len(raw)
-        job = self.decode.submit(binary._decode_source, descriptor)
+        try:
+            with path.open("xb") as stream:
+                os.chmod(path, 0o600)
+                stream.write((1).to_bytes(8, "little"))
+                stream.write(raw)
+            with self.lock:
+                self.sources[digest] = placeholder, files, len(raw)
+                self.held += len(raw)
+            job = self.decode.submit(binary._decode_source, descriptor)
+        except BaseException as error:
+            # Never leave a file behind or a waiter on a placeholder nobody settles.
+            with self.lock:
+                if self.sources.get(digest, (None,))[0] is placeholder:
+                    if self.sources[digest][1]:
+                        self.held -= len(raw)
+                    del self.sources[digest]
+            for name in files:
+                Path(name).unlink(missing_ok=True)
+            if not placeholder.done():
+                placeholder.set_exception(error)
+            raise
 
         def settle(done: Future) -> None:
             error = None if done.cancelled() else done.exception()
@@ -306,6 +358,8 @@ def _unpack_labels(data: bytes, ready: tuple[Any, ...]) -> Any:
     class Unpickler(pickle.Unpickler):
         def persistent_load(self, token: Any) -> Any:
             index, source, member = token
+            if type(index) is not int or not 0 <= index < len(ready):
+                raise ValueError("binary_remote_labels_index_out_of_range")
             return AuxiliaryInput(source, member, body(index), ready[index].descriptor.envelope)
 
     return Unpickler(io.BytesIO(data)).load()
@@ -339,7 +393,7 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
             digests = [source_key(envelope) for envelope in task["sources"]]
             missing = host.reserve(digests)
             try:
-                connection.send({"need": missing})
+                _send(connection, timeout, {"need": missing})
                 delivered = 0
                 try:
                     for digest in missing:
@@ -361,10 +415,10 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     else:
                         result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
-                    connection.send({"error": f"{type(error).__name__}: {error}"})
+                    _send(connection, timeout, {"error": f"{type(error).__name__}: {error}"})
                     return
                 if task.get("kind") == "labels":
-                    connection.send({
+                    _send(connection, timeout, {
                         "value": value,
                         "pid": labelled.pid, "wall": labelled.wall_seconds,
                         "cpu": labelled.cpu_seconds, "decode_seconds": decoded,
@@ -374,7 +428,7 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                 try:
                     packed = result.value
                     used = packed.summary["used_bytes"]
-                    connection.send({
+                    _send(connection, timeout, {
                         "tree": packed.tree, "summary": packed.summary,
                         "arrays": [(a.offset, a.count, a.dtype) for a in packed.arrays],
                         "pid": result.pid, "wall": result.wall_seconds, "cpu": result.cpu_seconds,
@@ -383,11 +437,10 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     with open(output, "rb") as stream:
                         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
                     try:
-                        view = memoryview(mapping)
                         # Unframed: the learner reads exactly `used` bytes.
-                        with socket.socket(fileno=os.dup(connection.fileno())) as raw:
+                        with memoryview(mapping) as view, \
+                                _deadline_socket(connection, timeout) as raw:
                             raw.sendall(view[:used])
-                        view.release()
                     finally:
                         mapping.close()
                 finally:
@@ -499,16 +552,14 @@ class RemoteAssembly:
                     raise ValueError("binary_prepared_output_byte_limit")
                 # Raw bytes after the framed reply, straight into the hand-off
                 # file: no intermediate buffers, and recv_into releases the GIL.
-                view = memoryview(mapping)
                 cursor = 0
-                with socket.socket(fileno=os.dup(connection.fileno())) as raw:
+                with memoryview(mapping) as view, \
+                        _deadline_socket(connection, self.timeout) as raw:
                     while cursor < used:
-                        _wait(connection, self.timeout)
                         count = raw.recv_into(view[cursor:used], min(used - cursor, CHUNK_BYTES))
                         if count == 0:
                             raise RuntimeError("binary_remote_assembly_short_transfer")
                         cursor += count
-                view.release()
             finally:
                 mapping.close()
             healthy = True
@@ -544,10 +595,11 @@ class RemoteAssembly:
         """Send the task, the sources the host lacks, and wait for its reply."""
         if connection is None:
             connection = self._connect(endpoint)
-        connection.send({**task, "sources": [item.descriptor.envelope for item in ready]})
+        _send(connection, self.timeout,
+              {**task, "sources": [item.descriptor.envelope for item in ready]})
         _wait(connection, self.timeout)
         need = set(connection.recv()["need"])
-        sent = self._send_sources(connection, ready, set(need))
+        sent = self._send_sources(connection, ready, set(need), self.timeout)
         _wait(connection, self.timeout)  # covers the host's decode + work
         reply = connection.recv()
         if "error" in reply:
@@ -579,7 +631,8 @@ class RemoteAssembly:
             self.idle.put((endpoint, connection if healthy and not self.closed else None))
 
     @staticmethod
-    def _send_sources(connection: Connection, ready: tuple[Any, ...], need: set[str]) -> int:
+    def _send_sources(connection: Connection, ready: tuple[Any, ...], need: set[str],
+                      timeout: float) -> int:
         # One file open at a time per task: concurrent tasks x arenas must not
         # exhaust descriptors. The copy is small next to the network send.
         sent = 0
@@ -598,7 +651,8 @@ class RemoteAssembly:
                 os.close(fd)
             if len(body) != d.length:
                 raise ValueError("binary_shared_slot_short_read")
-            connection.send_bytes(body)
+            with _deadline_socket(connection, timeout) as raw:
+                _send_frame(raw, body)
             sent += d.length
         if need:
             raise RuntimeError("remote_prepare_unknown_source_requested")

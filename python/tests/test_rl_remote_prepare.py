@@ -225,3 +225,71 @@ def test_remote_labels_equal_local_labels_and_the_learner_never_decodes(model, t
     assert out["remote"][:2] == out["local"][:2]  # AuxiliaryInput equality includes body
     pools = {row["pool"] for row in out["remote"][2]["workers"]}
     assert "remote_labels" in pools and not pools & {"source", "labels", "assembly"}
+
+
+def test_a_host_that_drops_mid_stream_fails_the_batch_with_the_real_error(model, tmp_path,
+                                                                           monkeypatch):
+    monkeypatch.setenv(remote_prepare.AUTH_ENV, "12" * 16)
+    listener = Listener(("127.0.0.1", 0), authkey=remote_prepare.authkey())
+
+    def dropping():  # replies, streams a few bytes of a large batch, then hangs up
+        connection = listener.accept()
+        connection.recv()
+        connection.send({"protocol": remote_prepare.PROTOCOL})
+        task = connection.recv()
+        assert task["sources"]
+        connection.send({"need": []})
+        connection.send({"tree": b"", "summary": {"used_bytes": 1 << 20}, "arrays": [],
+                         "pid": 1, "wall": 0.0, "cpu": 0.0, "host_seconds": 0.0,
+                         "decode_seconds": 0.0})
+        connection.send_bytes(b"x" * 1000)
+        connection.close()
+
+    threading.Thread(target=dropping, daemon=True).start()
+    provider = BytesProvider()
+    preparer = prepare(model, tmp_path / "p", provider, handoff=True, remote_prepare={
+        "endpoints": [f"127.0.0.1:{listener.address[1]}"], "connections": 1,
+        "timeout_seconds": 10})
+    enc = encoder(model, tmp_path / "spool")
+    value = segment(model)
+    try:
+        member, _ = admit(enc, preparer, provider, value, "current")
+        with pytest.raises(RuntimeError, match="short_transfer"):  # not BufferError
+            preparer.submit(dc.replace(request([value]), members=(member,))).result(timeout=60)
+        assert preparer.summary()["failed_tasks_without_timing"]["remote_assembly"] == 1
+    finally:
+        preparer.shutdown(wait=True, cancel_futures=True)
+        listener.close()
+
+
+def test_label_tokens_must_name_a_ready_source():
+    import io
+    import pickle
+
+    class Pickler(pickle.Pickler):
+        def persistent_id(self, item):
+            return (-1, None, None) if item == "body" else None
+
+    stream = io.BytesIO()
+    Pickler(stream, protocol=5).dump(["body"])
+    with pytest.raises(ValueError, match="index_out_of_range"):
+        remote_prepare._unpack_labels(stream.getvalue(), ())
+
+
+def test_a_failed_decode_submit_cleans_up_and_fails_the_waiter(model, host, monkeypatch):
+    state, _endpoint = host
+    state.start(model.vocabulary, 1, remote_prepare.code_digest())
+    digest = "d" * 64
+    assert state.reserve([digest]) == [digest]
+    placeholder = state.sources[digest][0]
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("pool broken")
+
+    monkeypatch.setattr(state.decode, "submit", refuse)
+    with pytest.raises(RuntimeError, match="pool broken"):
+        state.add(digest, {"packet_size": 3}, b"abc")
+    assert digest not in state.sources and state.held == 0
+    assert not list(state.scratch.glob("src-*"))
+    with pytest.raises(RuntimeError, match="pool broken"):
+        placeholder.result(timeout=1)

@@ -261,6 +261,8 @@ def learner(argv: list[str]) -> None:
 def _check(local: str, remote: str, local_batch: Any, remote_first: dict[str, Any],
            cpu: dict[str, str]) -> dict[str, Any]:
     """Bytes when host and learner CPU fingerprints match, else per-array tolerance."""
+    if not cpu or not remote_first.get("cpu"):  # unknown is not "different": fail loudly
+        raise SystemExit("local_check needs both CPU fingerprints")
     same_cpu = remote_first["cpu"] == cpu
     out: dict[str, Any] = {"same_cpu": same_cpu, "bytes_equal": local == remote,
                            "learner_cpu": cpu, "host_cpu": remote_first["cpu"]}
