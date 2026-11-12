@@ -1204,6 +1204,10 @@ class BinaryBatchPreparer:
                         self.condition.notify_all()
                         raise
                     pending = pending[stop:]
+                    if stop:
+                        # Progress: like per-member prefetch, the next wait gets
+                        # its own full bound, never a whole-batch one.
+                        deadline = time.monotonic() + self.source_wait_seconds
                     if stop == 0:
                         # Nothing reserved; this caller holds no credit while it waits.
                         if not wait:

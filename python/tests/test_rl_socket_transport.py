@@ -1004,15 +1004,15 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     values, deliveries = {}, []
     tensor_init = TensorFrame.__init__
     prefetch_entered, prefetch_release = threading.Event(), threading.Event()
-    original_prefetch = owner.input_preparer.prefetch
+    original_prefetch = owner.input_preparer.prefetch_many
 
-    def delayed_prefetch(ref, envelope, **options):
+    def delayed_prefetch(items, **options):
         if not prefetch_entered.is_set():
             prefetch_entered.set()
             assert prefetch_release.wait(5)
-        return original_prefetch(ref, envelope, **options)
+        return original_prefetch(items, **options)
 
-    monkeypatch.setattr(owner.input_preparer, "prefetch", delayed_prefetch)
+    monkeypatch.setattr(owner.input_preparer, "prefetch_many", delayed_prefetch)
 
     def no_control_tensor(self, *args, **kwargs):
         if threading.current_thread().name == "rl-channel":

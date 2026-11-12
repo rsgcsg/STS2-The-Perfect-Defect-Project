@@ -255,6 +255,7 @@ batch_ready的`frontend_prefetch_credit_wait_seconds/frontend_prefetch_copy_seco
 `frontend_prefetch_{envelope,reserve_lock_wait,reserve,publish_lock_wait,publish,other}_seconds`为各阶段。
 `gil_switch_interval_seconds`（可选，0.0001–0.005，省略=解释器默认5 ms）设进程GIL切换间隔；
 数百忙线程下每次让出GIL要等约一个间隔才拿回。
+它是整个进程的全局设置，在构造函数早期、其余校验之前设定，之后不恢复（构造失败也不恢复）。
 准备worker与拼批worker分别由
 `preparation_workers/assembly_workers`控制，health给配置数与实际PID/忙时。
 

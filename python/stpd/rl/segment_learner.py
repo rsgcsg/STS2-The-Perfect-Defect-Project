@@ -488,6 +488,8 @@ class SegmentLearner:
         # Opt-in, process-wide: a thread that gives up the GIL (lock wait, I/O)
         # waits up to one switch interval to get it back while hundreds of
         # learner threads are busy. None keeps the interpreter default (5 ms).
+        # Process-global, set here before later constructor validation and
+        # never restored: a failed construction can leave it changed.
         switch = (self.dataplane or {}).get("gil_switch_interval_seconds")
         if switch is not None:
             if type(switch) is not float or not 0.0001 <= switch <= 0.005:

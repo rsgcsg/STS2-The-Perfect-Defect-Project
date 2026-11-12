@@ -986,3 +986,41 @@ def test_concurrent_prefetch_many_under_one_arena_credit_never_deadlocks(model, 
         if held:
             preparer._release(held)
         preparer.shutdown()
+
+
+def test_prefetch_many_wait_bound_restarts_after_each_reserving_round(model, tmp_path):
+    # Each member got its own source_wait_seconds before; a long batch must not
+    # hit CAPACITY_WAIT just because earlier rounds already waited.
+    import time as clock
+
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    packets = [enc.encode(segment(model, name=f"actor/{i}", run_id=f"episode-{i}"))
+               for i in range(4)]
+    preparer = BinaryBatchPreparer(provider=provider, vocabulary=model.vocabulary,
+        workers=1, threads=1, scratch=tmp_path / "prepare", source_slots=1,
+        max_source_bytes=max(len(p.packet) for p in packets) + 8, source_wait_seconds=30)
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    try:
+        # Warm the spawn decode worker so only the injected delay counts.
+        preparer.prefetch(refs[0], packets[0].envelope)
+        preparer.source_jobs[refs[0]].result(timeout=60)
+        preparer.source_wait_seconds = 1.5
+        real_wait = preparer._wait_for_source
+        rounds: set[frozenset] = set()
+
+        def slow(deadline):
+            cached = frozenset(preparer.sources)
+            if cached not in rounds:  # first wait of each round: 0.9 s
+                rounds.add(cached)
+                clock.sleep(0.9)
+            return real_wait(deadline)
+
+        preparer._wait_for_source = slow
+        preparer.prefetch_many([(r, p.envelope) for r, p in zip(refs[1:], packets[1:],
+                                                                strict=True)])
+        # Two or more 0.9 s waits exceed one 1.5 s bound; each fits its own.
+        assert refs[3] in preparer.sources and len(rounds) >= 2
+        preparer.source_jobs[refs[3]].result(timeout=30)
+    finally:
+        preparer.shutdown()
