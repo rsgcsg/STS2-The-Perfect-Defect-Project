@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from dataclasses import asdict
@@ -534,8 +535,13 @@ def test_concurrent_first_get_mu_from_many_nodes_is_consistent(tmp_path, monkeyp
             server.close()
 
 
-def test_get_mu_announces_exactly_the_bytes_it_sends(tmp_path, monkeypatch):
-    """A body rewritten between announcing and sending never desynchronizes the stream."""
+@pytest.mark.parametrize("truncated", [3, 4])
+def test_get_mu_announces_exactly_the_bytes_it_sends(tmp_path, monkeypatch, truncated):
+    """A body rewritten between announcing and sending never desynchronizes the stream.
+
+    Truncating the last file (4, heads-manifest.json) is the s1d deadlock: the old
+    server announced more bytes than it sent and the client waited forever.
+    """
     from spireagent.rl_socket_transport import NodeMuCache
 
     class Shrinking:
@@ -562,8 +568,8 @@ def test_get_mu_announces_exactly_the_bytes_it_sends(tmp_path, monkeypatch):
 
     def wrap(answer):
         identity, files, publication = answer
-        name, path = files[3]  # model-manifest.json
-        files = [*files[:3], (name, Shrinking(path)), *files[4:]]
+        name, path = files[truncated]
+        files = [*files[:truncated], (name, Shrinking(path)), *files[truncated + 1 :]]
         return identity, files, publication
 
     server, identity, attachment = _mu_server(tmp_path, monkeypatch, wrap=wrap)
@@ -1611,3 +1617,12 @@ def test_durable_begin_releases_control_lock_and_serializes_duplicate_and_STOP(t
             owner._notify_capacity(force=True)
         workers.shutdown(wait=True)
         owner.wal.close()
+
+
+def test_node_mu_source_passes_its_transfer_timeout_to_the_cache(tmp_path):
+    from stpd.p1.inference_service import NodeMuSource
+
+    attachment = tmp_path / "learner.json"
+    attachment.write_text(json.dumps({"run": "r", "training_generation": "g"}))
+    source = NodeMuSource(attachment, tmp_path / "mu", transfer_timeout=7.5)
+    assert source._cache().transfer_timeout == 7.5

@@ -158,6 +158,12 @@ class FastMuFollower:
         self.counters["publish_seconds"] += done - began
         record = {**handoff.identity(), "load_seconds": load_seconds,
                   "publish_seconds": done - began, "at": done}
+        if self.fatal is not None:
+            # The watchdog gave up while this publish hung: the delivery is kept as
+            # history, but it changes nothing (no accepted mu, counters or failures).
+            self.history.append({**record, "accepted": None, "after_fatal": True,
+                                 "answer": repr(answer)[:200]})
+            return False
         try:
             per_service = self._answers(answer, targets)
         except BoundaryError as error:
@@ -214,6 +220,8 @@ class FastMuFollower:
             self.step_began = self.clock()
             try:
                 self.step()
+                if self.fatal is not None:
+                    return  # the watchdog gave up meanwhile: a late result updates nothing
                 self.failures = 0
             except BaseException as error:  # noqa: BLE001 - kept and re-raised by check()
                 if self.fatal is not None:
@@ -242,6 +250,7 @@ class FastMuFollower:
                 return
             began = self.step_began
             if began is not None and self.clock() - began > self.stall_seconds:
+                self.failures += 1
                 self.counters["failures"] += 1
                 error = BoundaryError("rl_mu", "MU_FOLLOWER_STALLED")
                 self.error = error

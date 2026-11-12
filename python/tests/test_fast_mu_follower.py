@@ -322,6 +322,44 @@ def test_a_poll_that_hangs_stops_the_service_loudly_instead_of_following_nothing
     assert follower.stopped() and len(service.published) == 1
 
 
+class HangingPublishService(Service):
+    """A publish that waits on the device (cold compile) past the stall limit."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hang, self.release = threading.Event(), threading.Event()
+
+    def publish(self, scorer: Any, handoff: MuHandoff) -> bool:
+        if self.hang.is_set():
+            self.release.wait(30)
+        return super().publish(scorer, handoff)
+
+
+def test_a_publish_that_returns_after_the_watchdog_gave_up_changes_nothing():
+    source, service = Source(identity(NEW)), HangingPublishService()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=0.3).start()
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert len(service.published) == 1 and follower.accepted_mu[0]["snapshot_sha256"] == NEW
+    service.hang.set()
+    source.current = identity("d" * 64, version=3)
+    follower.watchdog.join(10)
+    with pytest.raises(BoundaryError, match="MU_FOLLOWER_STALLED"):
+        follower.check()
+    service.release.set()  # the hung publish answers True after the give-up
+    follower.thread.join(10)
+    status = follower.status()
+    # The late answer is recorded, but the status stays consistent: still the old
+    # accepted mu, the failure is not cleared and nothing counts as published.
+    assert follower.accepted_mu[0]["snapshot_sha256"] == NEW
+    assert status["consecutive_failures"] == 1
+    assert follower.counters["failures"] == 1 and follower.counters["published"] == 1
+    assert follower.history[-1]["after_fatal"] is True
+    assert status["fatal"] and follower.stopped()
+
+
 def test_a_slow_but_returning_poll_is_not_a_stall():
     source, service = HangingSource(identity(NEW)), Service()
     follower = FastMuFollower(source, service, interval=0.01, stall_seconds=5).start()
