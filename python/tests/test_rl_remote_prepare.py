@@ -141,7 +141,7 @@ def test_a_host_that_never_replies_fails_the_batch_within_the_timeout(model, tmp
         connection = listener.accept()
         held.append(connection)
         connection.recv()
-        connection.send({"protocol": remote_prepare.PROTOCOL})
+        connection.send({"protocol": remote_prepare.PROTOCOL, "codec": "none"})
         connection.recv()
 
     threading.Thread(target=silent, daemon=True).start()
@@ -235,7 +235,7 @@ def test_a_host_that_drops_mid_stream_fails_the_batch_with_the_real_error(model,
     def dropping():  # replies, streams a few bytes of a large batch, then hangs up
         connection = listener.accept()
         connection.recv()
-        connection.send({"protocol": remote_prepare.PROTOCOL})
+        connection.send({"protocol": remote_prepare.PROTOCOL, "codec": "none"})
         task = connection.recv()
         assert task["sources"]
         connection.send({"need": []})
@@ -293,3 +293,46 @@ def test_a_failed_decode_submit_cleans_up_and_fails_the_waiter(model, host, monk
     assert not list(state.scratch.glob("src-*"))
     with pytest.raises(RuntimeError, match="pool broken"):
         placeholder.result(timeout=1)
+
+
+@pytest.fixture
+def lz4_frame(monkeypatch):
+    """Real lz4 when installed; otherwise a stand-in with the same frame API."""
+    import importlib
+
+    try:
+        frame = importlib.import_module("lz4.frame")
+    except ImportError:
+        import sys
+        import types
+        import zlib
+
+        frame = types.ModuleType("lz4.frame")
+        frame.compress = lambda data: zlib.compress(bytes(data), 1)  # type: ignore[attr-defined]
+        frame.decompress = lambda data: zlib.decompress(bytes(data))  # type: ignore[attr-defined]
+        package = types.ModuleType("lz4")
+        package.frame = frame  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "lz4", package)
+        monkeypatch.setitem(sys.modules, "lz4.frame", frame)
+    return frame
+
+
+def test_lz4_codec_hands_off_the_same_bytes_and_hello_binds_the_codec(model, tmp_path, host,
+                                                                       lz4_frame, monkeypatch):
+    state, endpoint = host
+    monkeypatch.setattr(remote_prepare, "LZ4_CHUNK_BYTES", 64 * 1024)  # many frames per batch
+    local, _summary, _ = _handoffs(model, tmp_path, "local")
+    state.codec = "lz4"
+    remote, _summary, stats = _handoffs(model, tmp_path, "remote", remote_prepare={
+        "endpoints": [endpoint], "connections": 1, "codec": "lz4"})
+    assert [r[:2] for r in remote] == [r[:2] for r in local]
+    assert all(sha == digest for sha, _, digest, *_ in remote)  # sha256 of decompressed file
+    assert [r[3:] for r in remote] == [r[3:] for r in local]
+    assert 0 < stats["wire_received_bytes"] < stats["received_bytes"]
+    plain = remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
+                                          threads=1)
+    with pytest.raises(RuntimeError, match="codec_changed"):
+        plain._connect(endpoint)
+    with pytest.raises(ValueError, match="codec_unknown"):
+        remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
+                                      threads=1, codec="zstd")
