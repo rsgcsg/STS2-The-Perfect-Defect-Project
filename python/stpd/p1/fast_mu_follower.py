@@ -26,8 +26,10 @@ Rules:
   offered to every service instead), so each service lags the learner by a
   bounded time, not by an unbounded run of refusals. A publish that raises,
   times out or answers in any other shape is never repeated;
+- a publish that raises stops the service itself at once (`publish_failed`,
+  never repeated); the follower then keeps that error and exits;
 - reading `latest()` is an idempotent read and is polled again next interval;
-  a failed check, load or publish is counted with its error. `max_failures`
+  a failed check or load is counted with its error. `max_failures`
   consecutive failures are fatal: `on_fatal(error)` runs (default: the service
   stops loudly, `FastInferenceService._stop("mu_follower_stopped")`, so later
   rows are refused instead of scored by an ever older mu) and `check()` raises
@@ -202,7 +204,10 @@ class FastMuFollower:
                 if self.fatal is not None:
                     return  # step() already gave up (an invalid publish answer)
                 if self._service_stopping():
-                    return  # a publish raced the service's own stop: not this follower's
+                    # The service stopped itself (a failed publish stops it at once as
+                    # `publish_failed`, never retried): keep the error for status().
+                    self.error = error
+                    return
                 self.failures += 1
                 self.counters["failures"] += 1
                 self.error = error

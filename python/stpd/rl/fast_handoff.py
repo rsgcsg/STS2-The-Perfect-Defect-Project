@@ -103,6 +103,10 @@ INSTANCE_CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 INSTANCE_CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id",
                                   "close_reason", "failure", "segments"})
 LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
+# The sender's orderly goodbye: every hand-off was acked. A channel that reaches EOF
+# without it lost its assembler (crash, killed process); the learner fences loudly.
+HANDOFF_END_SCHEMA = "stpd/rl-fast-handoff-end-1"
+HANDOFF_END_KEYS = frozenset({"schema", "assembler_id", "handed_off"})
 # Close reasons after which a game gets no labels (the learner excludes its unused segments).
 UNLABELLED_CLOSE_REASONS = frozenset({"unknown", "env_crash"})
 SEGMENT_KINDS = ("bootstrap", "terminal", "truncated", "rejected")
@@ -333,8 +337,24 @@ class ShmSegmentSender:
         check_instance_closed(message)
         self.connection.send(message)
 
+    def finish(self) -> None:
+        """The orderly end: every ack in, then the end message, then release.
+
+        Call it only when the assembler really finished cleanly. A sender that fails
+        before the end is sent sends none, and the reader treats the EOF as a lost
+        assembler (fence).
+        """
+        try:
+            self._drain(block=True, until_empty=True)
+            self.connection.send({"schema": HANDOFF_END_SCHEMA,
+                                  "assembler_id": self.assembler_id,
+                                  "handed_off": self.sequence})
+        finally:
+            self.close()
+
     def close(self) -> None:
-        """Wait for every acknowledgement, then release the blocks."""
+        """Release only, never the orderly end (safe in `finally` on a failure path):
+        wait for the acks still due, then release the blocks."""
         try:
             # Every block in flight is still mapped by the reader until its ack arrives;
             # unlinking one early would fence the learner's input (shm_open fails).
@@ -362,16 +382,28 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
     return message
 
 
+def check_handoff_end(message: Any) -> dict[str, Any]:
+    """Exact keys and types of the sender's orderly end; loud on anything else."""
+    if (not isinstance(message, dict) or message.get("schema") != HANDOFF_END_SCHEMA
+            or set(message) != HANDOFF_END_KEYS
+            or not isinstance(message["assembler_id"], str) or not message["assembler_id"]
+            or type(message["handed_off"]) is not int or message["handed_off"] < 0):
+        raise HandoffError("handoff_end_schema")
+    return message
+
+
 def receive_handoff(connection: Connection) -> tuple[str, Any]:
     """SGD-side reference reader for every message of the channel.
 
     Returns `("segment", (message, header, rows))` (as `receive_segment`),
     `("labels", (message, data))` (bytes verified, acked; the label rule and the
-    carried originals are the learner's to check) or `("instance_closed", message)`;
-    anything else raises.
+    carried originals are the learner's to check), `("instance_closed", message)` or
+    `("end", message)` (the sender's orderly end); anything else raises.
     """
     message = connection.recv()
     schema = message.get("schema") if isinstance(message, dict) else None
+    if schema == HANDOFF_END_SCHEMA:
+        return "end", check_handoff_end(message)
     if schema == INSTANCE_CLOSED_SCHEMA:
         return "instance_closed", check_instance_closed(message)
     if schema == LABELS_SCHEMA:
@@ -596,11 +628,24 @@ class SegmentHandoff:
                 except BaseException as error:  # noqa: BLE001 - recorded and re-raised
                     self.write_error = self.write_error or error
 
-    def close(self) -> None:
+    def finish(self) -> None:
+        """Orderly end: write/send what is queued, then the sender's end message.
+
+        Only when nothing failed; otherwise this is `close()` (no end message, so the
+        learner fences on the EOF) and the failure is raised.
+        """
+        self.close(orderly=True)
+
+    def close(self, *, orderly: bool = False) -> None:
+        """Write/send what is queued and release; never says the orderly end unless
+        called through `finish()` with no write or hand-off failure."""
         self.queue.put(None)
         self.thread.join()
         try:
             if self.sender is not None and self.send_error is None:
-                self.sender.close()
+                if orderly and self.write_error is None:
+                    self.sender.finish()
+                else:
+                    self.sender.close()
         finally:
             self.raise_if_failed()

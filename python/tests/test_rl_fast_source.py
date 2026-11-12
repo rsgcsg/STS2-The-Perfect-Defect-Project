@@ -404,7 +404,7 @@ def _sender(connection: Any, segments: list[SealedSegment], close: dict[str, Any
     if labels:
         send_labels(sender, segments)
     connection.send(close)
-    sender.close()  # waits for every ack (#445)
+    sender.finish()  # waits for every ack (#445), then the orderly end
 
 
 def test_read_handoff_verifies_acks_and_reads_the_close_in_order():
