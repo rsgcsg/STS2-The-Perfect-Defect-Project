@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import functools
 import gzip
 import io
 import json
@@ -48,8 +49,12 @@ def _reject(code: str) -> NoReturn:
     raise BoundaryError("p1_frame_compiler", code)
 
 
+@functools.cache
 def compiler_digest() -> str:
     """Bind actual encoding/codec sources and dependency versions, never theta."""
+    # Read once per process: the code identity of the running process. s1g/h100b: a
+    # per-mu-load reread of these files on NFS sat > 120 s in an open (D state) and the
+    # follower watchdog stopped the run.
     root = Path(__file__).parent
     sources = {name: digest((root / name).read_bytes()) for name in CODE_FILES}
     sources["checkpoint_codec.py"] = digest(
