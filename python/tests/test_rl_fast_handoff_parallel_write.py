@@ -8,6 +8,10 @@ slow writer and check that parallel writes keep every hand-off rule.
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -184,3 +188,101 @@ def test_labels_read_back_runs_off_the_hand_off_thread_with_the_same_message(tmp
     assert readers and all(name.startswith("fast-segment-read-back") for name in readers)
     assert handoff.counters["labels_sent"] == 1 and not handoff._prefetch
     assert not handoff._submitted
+
+
+def _run_child(code: str, timeout: float = 60) -> subprocess.CompletedProcess[str]:
+    tests = Path(__file__).resolve().parent
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(tests.parent), str(tests)])}
+    return subprocess.run([sys.executable, "-c", textwrap.dedent(code)], env=env,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+_CHILD_SETUP = """
+    import sys, tempfile, threading
+    from pathlib import Path
+    from test_rl_fast_assembly import _carry_all, _clean_game, _Recorder
+    from stpd.rl.fast_handoff import DurableSegmentWriter, SegmentHandoff
+
+    instance, segments, closed_message = _clean_game()
+    root = Path(tempfile.mkdtemp())
+"""
+
+
+def test_exit_without_close_does_not_hang_on_a_stuck_hand_off(tmp_path: Path):
+    # Review #504: a read-back used to wait (non-daemon) for the hand-off thread to pass
+    # its segment, so a stuck `send` kept the process from exiting.
+    result = _run_child(_CHILD_SETUP + """
+    class Stuck(_Recorder):
+        def send(self, segment, path):
+            threading.Event().wait()  # never returns
+
+    handoff = SegmentHandoff(DurableSegmentWriter(root, instance_id=instance),
+                             Stuck(instance), labeler=_carry_all)
+    for item in segments:
+        handoff.submit(item)
+    handoff.submit_closed(closed_message)
+    sys.exit(3)
+    """)
+    assert result.returncode == 3, result.stderr
+
+
+def test_close_returns_and_is_loud_when_the_hand_off_thread_dies(tmp_path: Path):
+    result = _run_child(_CHILD_SETUP + """
+    from stpd.rl.fast_handoff import HandoffError
+
+    def dies(self, queued):
+        raise RuntimeError("hand-off thread gone")  # not one of the per-segment cases
+
+    SegmentHandoff._hand_off = dies
+    handoff = SegmentHandoff(DurableSegmentWriter(root, instance_id=instance),
+                             _Recorder(instance), labeler=_carry_all, max_queue=2)
+    loud = []
+    for step in [*(lambda item=item: handoff.submit(item) for item in segments),
+                 lambda: handoff.submit_closed(closed_message), handoff.close]:
+        try:
+            step()
+        except HandoffError as error:
+            loud.append(str(error))
+    print("loud", loud[-1])  # close() itself returned and raised
+    sys.exit(0 if loud else 4)
+    """)
+    assert result.returncode == 0, result.stderr
+    assert "loud segment_handoff_failed" in result.stdout
+
+
+def test_two_threads_writing_the_same_original_one_wins(tmp_path: Path, monkeypatch):
+    from test_rl_fast_assembly import _clean_game
+
+    from stpd.rl import fast_handoff
+    from stpd.rl.fast_handoff import DurableSegmentWriter
+
+    instance, segments, _ = _clean_game()
+    original = fast_handoff._durable_write
+    entered = threading.Barrier(2, timeout=10)
+
+    def slow(target: Path, data: bytes, code: str) -> None:
+        time.sleep(0.2)  # both threads are past the claim check before either renames
+        original(target, data, code)
+
+    monkeypatch.setattr(fast_handoff, "_durable_write", slow)
+    writer = DurableSegmentWriter(tmp_path, instance_id=instance)
+    outcomes: list[str] = []
+
+    def write() -> None:
+        entered.wait()
+        try:
+            writer.write(segments[0])
+            outcomes.append("written")
+        except HandoffError as error:
+            outcomes.append(str(error))
+
+    threads = [threading.Thread(target=write) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ["segment_original_already_exists", "written"]
+    assert not writer._claimed  # a written target leaves the set
+    with pytest.raises(HandoffError, match="segment_original_already_exists"):
+        writer.write(segments[0])  # later: refused by the file on disk, same code
+    assert not writer._claimed
