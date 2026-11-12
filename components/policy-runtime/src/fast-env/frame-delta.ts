@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { pyJsonSha256, pyJsonText } from "./json-bytes.js";
+import { jsonWithPySha256, pyJsonText } from "./json-bytes.js";
 
 /**
  * P-REWRITE design v3 E7, `fast-env-link-2`: a decision line carries only the observation parts
@@ -28,7 +28,7 @@ import { pyJsonSha256, pyJsonText } from "./json-bytes.js";
  * line's, which `encode` builds from per-part cached pyJson bytes. Any difference refuses the row;
  * nothing falls back to a full frame. Here, frame 0 and then one frame per gap drawn uniformly from
  * ceil(N/2)..N (N = `checkInterval`, the E4 scheme) are compared against the old full computation
- * (JSON.stringify(view) and pyJsonSha256(view)); a difference throws ObservationFrameDivergence.
+ * (JSON.stringify(view) and pyJsonSha256(view), via R5 jsonWithPySha256); a difference throws ObservationFrameDivergence.
  */
 
 /** Top-level keys a frame may carry: ASCII, so JSON and Python spell and sort them alike. */
@@ -173,8 +173,9 @@ export class ObservationFrames {
     if (frameIndex === this.#nextCheck) {
       this.#nextCheck += this.#gap();
       const text = `{${keys.map(key => `"${key}":${parts.get(key)!.text}`).join(",")}}`;
-      if (JSON.stringify(view) !== text) throw new ObservationFrameDivergence(frameIndex, "text");
-      if (pyJsonSha256(view) !== observationSha256) throw new ObservationFrameDivergence(frameIndex, "observation_sha256");
+      const full = jsonWithPySha256(view); // = JSON.stringify(view) and pyJsonSha256(view) (R5)
+      if (full.json !== text) throw new ObservationFrameDivergence(frameIndex, "text");
+      if (full.sha256() !== observationSha256) throw new ObservationFrameDivergence(frameIndex, "observation_sha256");
       this.#verified += 1;
     }
     const lengths = sent.map(item => Buffer.byteLength(item, "utf8"));

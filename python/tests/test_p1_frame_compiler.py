@@ -222,6 +222,24 @@ def test_compressed_payload_limit_is_applied_before_decode(monkeypatch):
         compiler.decode(seal(wire))
 
 
+
+def _clear_code_identity() -> None:
+    """The code-identity digests are read once per process; a test that edits the
+    files it binds recomputes them, and never leaves an edited digest cached."""
+    from stpd.p1 import export, vocabulary
+
+    frame_compiler._compiler_source_digests.cache_clear()
+    export._adapter_identity.cache_clear()
+    vocabulary._public_vocabulary_text.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_code_identity():
+    _clear_code_identity()
+    yield
+    _clear_code_identity()
+
+
 def test_extracted_encoding_changes_every_existing_executable_identity(monkeypatch):
     vocabulary = public_vocabulary()
     frame = project(public_state(), input_projection=V2_INPUT_SPEC)
@@ -245,6 +263,7 @@ def test_extracted_encoding_changes_every_existing_executable_identity(monkeypat
         return raw + b"\n# alternate encoding source\n" if path.name == "input_encoding.py" else raw
 
     monkeypatch.setattr(Path, "read_bytes", changed_encoding)
+    _clear_code_identity()
     after = identities()
     assert before.keys() == after.keys()
     assert all(before[key] != after[key] for key in before)
@@ -267,4 +286,26 @@ def test_wire_identity_tracks_its_actual_codec_dependencies(monkeypatch, depende
             return raw
 
         monkeypatch.setattr(Path, "read_bytes", changed_codec)
+    _clear_code_identity()
     assert frame_compiler.compiler_digest() != before
+
+
+def test_a_mu_load_rereads_no_source_files_after_the_first(monkeypatch):
+    """s1g/h100b: the per-mu-load reread of code/vocabulary files on NFS stalled > 120 s."""
+    from pathlib import Path
+
+    from stpd.p1.export import adapter_identity
+    from stpd.p1.frame_compiler import FrameCompiler
+    from stpd.p1.vocabulary import public_vocabulary
+
+    first = FrameCompiler(public_vocabulary()).identity, adapter_identity()
+
+    def no_file(*_args, **_kwargs):
+        raise AssertionError("source file reread on a mu load")
+
+    monkeypatch.setattr(Path, "read_bytes", no_file)
+    monkeypatch.setattr(Path, "read_text", no_file)
+    again = FrameCompiler(public_vocabulary()).identity, adapter_identity()
+    assert again == first
+    again[1]["id"] = "mutated"  # callers get a copy, never the cached value
+    assert adapter_identity() == first[1]

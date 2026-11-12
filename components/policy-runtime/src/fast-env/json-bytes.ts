@@ -22,6 +22,121 @@ export function pyJsonText(value: unknown): string {
   return pyJson(value);
 }
 
+/** `JSON.stringify(value)` together with `pyJsonSha256(value)`, both exactly as the two separate calls give them. */
+export interface JsonWithPySha256 {
+  /** JSON.stringify(value), byte for byte. */
+  readonly json: string;
+  /** pyJsonSha256(value): the same hex, or the same error thrown when it is asked for. */
+  sha256(): string;
+}
+
+/**
+ * R5 (env35): one value written for the link (`JSON.stringify`) and hashed as Python
+ * `json_bytes` (sort_keys) without the separate pyJson walk. Where the value's own key
+ * order already is Python's, the two spellings are the same text, so every such subtree is
+ * written once by `JSON.stringify` and that text serves both; only the objects whose key
+ * order differs (and their ancestors) are assembled here, once in own key order (= the
+ * JSON.stringify text) and once in Python order.
+ *
+ * Anything else takes the two original calls, unchanged: a value pyJson refuses or spells
+ * differently (a non-finite number, a nonzero magnitude below 1e-4, undefined, a function,
+ * symbol or bigint, an array hole), an object whose prototype is not Object.prototype/null
+ * or an array whose prototype is not Array.prototype or that has a toJSON function
+ * (JSON.stringify could call a toJSON or unwrap a box), a toJSON on either plain prototype,
+ * a key holding a surrogate (pyJson then orders by code point), a cycle, and any `\ud` in
+ * the Python text (a lone surrogate, which pyJson refuses; a literal backslash-u-d in a
+ * string also takes the old path).
+ */
+export function jsonWithPySha256(value: unknown): JsonWithPySha256 {
+  const pair = pairedTexts(value);
+  if (pair !== null) return { json: pair.json, sha256: () => createHash("sha256").update(pair.python, "utf8").digest("hex") };
+  const json = JSON.stringify(value);
+  return { json, sha256: () => pyJsonSha256(value) };
+}
+
+/** Thrown inside the scan only: this value takes the original two calls. */
+const NOT_PAIRED = Symbol("not_paired");
+
+function pairedTexts(value: unknown): { json: string; python: string } | null {
+  if ((Object.prototype as { toJSON?: unknown }).toJSON !== undefined || (Array.prototype as { toJSON?: unknown }).toJSON !== undefined)
+    return null;
+  const reorder = new Set<object>();
+  try { scanPaired(value, reorder); }
+  catch (error) {
+    // RangeError: a cycle (or a tree deeper than the stack); JSON.stringify then decides, as before.
+    if (error === NOT_PAIRED || error instanceof RangeError) return null;
+    throw error;
+  }
+  const pair = assemblePaired(value, reorder);
+  return pair.python.includes("\\ud") ? null : pair;
+}
+
+/**
+ * True when the subtree's JSON.stringify text and its pyJson text differ, which after these
+ * checks can only be key order; such objects (and their ancestors) are added to `reorder`.
+ * Throws NOT_PAIRED for every value the two spell differently in any other way.
+ */
+function scanPaired(value: unknown, reorder: Set<object>): boolean {
+  switch (typeof value) {
+    case "string": case "boolean": return false;
+    case "number":
+      if (!Number.isFinite(value) || (value !== 0 && Math.abs(value) < 1e-4)) throw NOT_PAIRED;
+      return false;
+    case "object": break;
+    default: throw NOT_PAIRED;
+  }
+  if (value === null) return false;
+  let differs = false;
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype || typeof (value as { toJSON?: unknown }).toJSON === "function") throw NOT_PAIRED;
+    for (let index = 0; index < value.length; index += 1) {
+      // A hole or undefined item is NOT_PAIRED through its typeof.
+      if (scanPaired(value[index], reorder)) differs = true;
+    }
+  } else {
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw NOT_PAIRED;
+    const keys = Object.keys(value);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index]!;
+      if (SURROGATE.test(key)) throw NOT_PAIRED;
+      if (index > 0 && !(keys[index - 1]! < key)) differs = true;
+      if (scanPaired((value as Record<string, unknown>)[key], reorder)) differs = true;
+    }
+  }
+  if (differs) reorder.add(value);
+  return differs;
+}
+
+/** Both texts of a scanned subtree; a subtree outside `reorder` is one JSON.stringify text. */
+function assemblePaired(value: unknown, reorder: Set<object>): { json: string; python: string } {
+  if (!reorder.has(value as object)) {
+    const text = JSON.stringify(value);
+    return { json: text, python: text };
+  }
+  if (Array.isArray(value)) {
+    let json = "[", python = "[";
+    for (let index = 0; index < value.length; index += 1) {
+      const item = assemblePaired(value[index], reorder);
+      json += (index ? "," : "") + item.json; python += (index ? "," : "") + item.python;
+    }
+    return { json: `${json}]`, python: `${python}]` };
+  }
+  const object = value as Record<string, unknown>, keys = Object.keys(object);
+  const items = new Map<string, { json: string; python: string }>();
+  let json = "{";
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index]!, item = assemblePaired(object[key], reorder);
+    items.set(key, item);
+    json += `${index ? "," : ""}${JSON.stringify(key)}:${item.json}`;
+  }
+  let python = "{";
+  const sorted = keys.slice().sort();
+  for (let index = 0; index < sorted.length; index += 1)
+    python += `${index ? "," : ""}${JSON.stringify(sorted[index])}:${items.get(sorted[index]!)!.python}`;
+  return { json: `${json}}`, python: `${python}}` };
+}
+
 /** Any UTF-16 surrogate code unit (no `u` flag: halves of a pair match too). */
 const SURROGATE = /[\uD800-\uDFFF]/;
 /** With the `u` flag a class matches whole code points, so only a lone surrogate matches. */

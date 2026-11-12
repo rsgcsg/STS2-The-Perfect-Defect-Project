@@ -102,6 +102,16 @@ const memoDivergenceEnd = (kind: MemoDivergence, error: unknown) => new GameEnd(
   buildStop: kind, fatal: `${kind}:${errorText(error)}`, pendingOutcome: { status: "unknown", reason: "native_crash" } });
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
+/**
+ * `full.capture.total_bytes > max`, the same verdict without measuring the bytes when the
+ * text cannot reach the limit: total_bytes is the UTF-8 length of serializedObservation and
+ * UTF-8 spends at most 3 bytes per UTF-16 code unit (a surrogate pair: 4 bytes for 2 units).
+ * The fast-chain Host measures total_bytes only when it is read (R4).
+ */
+export function captureOverCapacity(full: Pick<FullPublicBasis, "capture" | "serializedObservation">, max: number): boolean {
+  return full.serializedObservation.length * 3 > max && full.capture.total_bytes > max;
+}
 /** One line of an original error for a close detail (never parsed, never retried on). */
 const errorText = (error: unknown) => (error instanceof Error ? `${error.name}:${error.message}` : String(error)).replace(/\s+/gu, " ").slice(0, 240);
 const isObj = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -289,7 +299,7 @@ class GameRun {
     const started = performance.now();
     try {
       const full = await this.native.capture();
-      if (full.capture.total_bytes > this.ctx.manifest.limits.max_capture_bytes) throw new GameEnd("not_started", "capture_capacity");
+      if (captureOverCapacity(full, this.ctx.manifest.limits.max_capture_bytes)) throw new GameEnd("not_started", "capture_capacity");
       return { full, frame: this.native.frame() };
     } catch (error) {
       if (error instanceof GameEnd) throw error;
