@@ -2583,14 +2583,19 @@ class SegmentLearner:
                and (self.selection_deadline is None
                     or time.monotonic() < self.selection_deadline)
                and len(self._pending_batches()) < self.prepared_batches):
-            active = self._select(take=False)
-            if active is None:
-                break
-            pending = active, self._submit_batch(active)
-            if self.pending_batch is None:
-                self.pending_batch = pending
-            else:
-                self.ahead_batches.append(pending)
+            # A read-ahead selection stays in the queue (take=False), so it must be
+            # retained and registered as pending under the same lock: otherwise a
+            # concurrent fast admission or exclusion sees it as unreferenced, drops
+            # it and releases its bytes before `_submit_batch` retains them.
+            with self.condition:
+                active = self._select(take=False)
+                if active is None:
+                    break
+                pending = active, self._submit_batch(active)
+                if self.pending_batch is None:
+                    self.pending_batch = pending
+                else:
+                    self.ahead_batches.append(pending)
         if self.sgd is not None and not self.newlease_stopped and not self.input_fenced:
             self._sgd_plan_ahead()
 

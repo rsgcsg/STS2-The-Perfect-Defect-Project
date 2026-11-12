@@ -292,6 +292,48 @@ def test_fast_sources_cross_ipc_as_offsets_into_a_derived_file(tmp_path, monkeyp
             owner.close()
 
 
+def test_a_full_queue_admission_never_drops_a_read_ahead_selection_in_flight(
+        tmp_path, monkeypatch):
+    """h100c 11-12: a read-ahead selection (take=False) stays queued; an admission
+    that overflowed the queue between the selection and its retain dropped it and
+    released its bytes, and the learner died with fast_source_already_released."""
+    import threading
+
+    owner = fast_learner(tmp_path, monkeypatch)
+    try:
+        capacity = owner.settings.capacity_rows
+        for index in range(1, capacity // 64 + 1):
+            name = f"g{index}"
+            admission(owner, name, index)
+            offer(owner, game(owner, name, terminal=False)[0])
+        assert owner.queue.occupied == capacity
+        name = f"g{capacity // 64 + 1}"
+        admission(owner, name, capacity // 64 + 1)
+        late = game(owner, name, terminal=False)[0]
+        submit = owner._submit_batch
+        racer = threading.Thread(target=offer, args=(owner, late))
+
+        def submit_after_a_racing_admission(active: dict[str, Any]) -> Any:
+            racer.start()
+            racer.join(0.5)  # it must wait for the selection to be registered
+            assert racer.is_alive()
+            return submit(active)
+
+        monkeypatch.setattr(owner, "settings",
+                            dataclasses.replace(owner.settings, prepare_ahead=True))
+        monkeypatch.setattr(owner, "prepared_batches", 1)
+        monkeypatch.setattr(owner, "_submit_batch", submit_after_a_racing_admission)
+        owner._prepare_ahead()
+        racer.join(10)
+        assert not racer.is_alive() and owner.pending_batch is not None
+        selected = owner.pending_batch[0]["segments"][0]["segment_id"]
+        assert selected in queued(owner) and late.segment_id in queued(owner)
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        assert counters["capacity_dropped"] == 1 and counters["capacity_dropped_rows"] == 64
+    finally:
+        owner.close()
+
+
 def exclude(owner: SegmentLearner, name: str) -> dict[str, Any]:
     return owner.control({"operation": "fast_instance_excluded", "actor": "actor-1",
                           "game_instance_id": name, "reason": "evidence_failed",
