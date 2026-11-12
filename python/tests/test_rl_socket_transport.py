@@ -1665,3 +1665,29 @@ def test_a_get_mu_peer_that_accepts_but_never_authenticates_times_out(tmp_path, 
     assert time.monotonic() - began < 10
     assert stages[-1] == "read.auth"
     listener.close()
+
+
+@pytest.mark.parametrize("bad", [True, "5", float("inf"), 0, -1])
+def test_handshake_timeout_is_typed_and_finite(tmp_path, bad):
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    with pytest.raises(ValueError, match="invalid_node_mu_cache_bounds"):
+        NodeMuCache({}, tmp_path / "node", handshake_timeout=bad)
+
+
+def test_a_get_mu_peer_that_drops_during_auth_fails_without_a_timeout(tmp_path, monkeypatch):
+    import socket
+
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    monkeypatch.setenv(AUTH_ENV, (b"m" * 32).hex())
+    listener = socket.create_server(("127.0.0.1", 0))
+    threading.Thread(target=lambda: listener.accept()[0].close(), daemon=True).start()
+    attachment = {"address": list(listener.getsockname()), "schema": "s", "pool_id": "p",
+                  "adapter": "x", "run": "r", "training_generation": "g"}
+    node = NodeMuCache(attachment, tmp_path / "node", interval=0, handshake_timeout=5)
+    began = time.monotonic()
+    with pytest.raises((EOFError, OSError)), node.latest():
+        pass
+    assert time.monotonic() - began < 4  # the peer's EOF, not the 5 s limit
+    listener.close()

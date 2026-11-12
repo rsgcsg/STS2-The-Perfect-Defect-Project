@@ -752,7 +752,13 @@ class NodeMuCache:
             or max_bytes < 1
             or keep < 2
             or not transfer_timeout > 0
-            or (handshake_timeout is not None and not handshake_timeout > 0)
+            or (
+                handshake_timeout is not None
+                and not (
+                    type(handshake_timeout) in (float, int)
+                    and 0 < handshake_timeout < float("inf")
+                )
+            )
         ):
             raise ValueError("invalid_node_mu_cache_bounds")
         self.attachment = copy.deepcopy(attachment)
@@ -816,23 +822,28 @@ class NodeMuCache:
         timer = threading.Timer(self.handshake_timeout, expire)
         timer.daemon = True
         timer.start()
+        def finish(close: bool) -> None:
+            # done before close, under the guard: `expire` never shuts down a
+            # descriptor number that this close has already handed back.
+            with guard:
+                state["done"] = True
+                if close or state["expired"]:
+                    connection.close()
+            timer.cancel()
+
         try:
             answer_challenge(connection, authkey)
             deliver_challenge(connection, authkey)
         except (OSError, EOFError):
-            connection.close()
+            finish(close=True)
             if state["expired"]:
                 raise DataplaneError("MU_HANDSHAKE_TIMEOUT") from None
             raise
         except BaseException:
-            connection.close()
+            finish(close=True)
             raise
-        finally:
-            with guard:
-                state["done"] = True
-            timer.cancel()
+        finish(close=False)  # closes only if the limit expired meanwhile
         if state["expired"]:
-            connection.close()
             raise DataplaneError("MU_HANDSHAKE_TIMEOUT")
         self._stage("read.request")
         return connection

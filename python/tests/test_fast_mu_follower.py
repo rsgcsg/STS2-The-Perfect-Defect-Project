@@ -496,3 +496,36 @@ def test_stage_limits_are_checked():
     follower = FastMuFollower(Source(identity(NEW)), Service(), interval=0.01,
                               stall_seconds=0.3)
     assert follower.stage_seconds == {"read": 0.3, "load": 0.3, "publish": 0.3}
+
+
+def test_slow_reads_stay_below_the_read_limit_and_settings_are_typed():
+    class Timed(Source):
+        transfer_timeout, handshake_timeout = 60.0, 30.0
+        on_stage: Any = None
+
+    follower = FastMuFollower(Timed(identity(NEW)), Service())
+    assert follower.stage_seconds == {"read": 120.0, "load": 120.0, "publish": 300.0}
+    for bad in ({"read": 60}, {"read": True}, {"read": "5"}, {"read": float("inf")}):
+        with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+            FastMuFollower(Timed(identity(NEW)), Service(), stage_seconds=bad)
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), interval=True)
+
+
+def test_after_the_give_up_a_late_read_changes_no_mark_and_the_hook_is_unbound():
+    source, service = StagedHangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=30,
+                              stage_seconds={"read": 0.3, "load": 5, "publish": 5}).start()
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert follower.status()["stage_max_seconds"]["read.total"] >= 0
+    hook = source.on_stage
+    source.hang.set()
+    follower.watchdog.join(10)
+    assert source.on_stage is None and follower.status()["stage"] == "read.auth"
+    hook("read.pin")  # the hung read's cache still holds the old hook
+    source.release.set()
+    follower.thread.join(10)
+    assert follower.status()["stage"] == "read.auth"
