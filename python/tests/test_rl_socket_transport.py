@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from dataclasses import asdict
@@ -479,6 +480,140 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
         assert len(calls) == 2 and calls[1][1] == [identity["snapshot_sha256"]]
     finally:
         server.close()
+
+
+def _mu_server(tmp_path, monkeypatch, *, wrap=None):
+    from types import SimpleNamespace
+
+    from test_rl41_w2_actor import publish_mu
+
+    from spireagent.rl_exchange import Exchange
+    from stpd.p1.local_inference import SEGMENT_SCHEMA
+    from stpd.rl.segment_learner import SegmentLearner
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "store")}, "r")
+    identity, _package = publish_mu(exchange, tmp_path, 1)
+    pool = SimpleNamespace(snapshots={identity["snapshot_sha256"]: identity},
+                           latest=identity["snapshot_sha256"], node_caches={})
+    owner = SimpleNamespace(pool=pool, generation="initial", live_work=tmp_path / "learner",
+                            exchange=exchange, condition=threading.Condition())
+
+    def model_files(key, node, cached):
+        answer = SegmentLearner._model_files(owner, key, node, cached)
+        return answer if wrap is None else wrap(answer)
+
+    auth = b"m" * 32
+    monkeypatch.setenv(AUTH_ENV, auth.hex())
+    server = SocketDataplane(
+        attachment={"schema": SEGMENT_SCHEMA, "pool_id": "pool", "adapter": identity["adapter"]},
+        auth=auth, control=lambda _: {},
+        sources=BinarySources(tmp_path / "sources", run="r", generation="initial"),
+        model_files=model_files, address=("127.0.0.1", 0))
+    return server, identity, {**server.attachment(), "run": "r", "training_generation": "initial"}
+
+
+def test_concurrent_first_get_mu_from_many_nodes_is_consistent(tmp_path, monkeypatch):
+    """s1d: K services ask for a new mu at once; none may see a half-rewritten manifest."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    for attempt in range(4):
+        server, identity, attachment = _mu_server(tmp_path / str(attempt), monkeypatch)
+        nodes = [NodeMuCache(attachment, tmp_path / str(attempt) / f"node-{k}", interval=0,
+                             transfer_timeout=20) for k in range(8)]
+        monkeypatch.setattr("socket.gethostname", lambda: f"node-{threading.get_ident()}")
+
+        def fetch(node):
+            with node.latest() as current:
+                return current
+
+        try:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                assert list(pool.map(fetch, nodes)) == [identity] * 8
+        finally:
+            server.close()
+
+
+@pytest.mark.parametrize("truncated", [3, 4])
+def test_get_mu_announces_exactly_the_bytes_it_sends(tmp_path, monkeypatch, truncated):
+    """A body rewritten between announcing and sending never desynchronizes the stream.
+
+    Truncating the last file (4, heads-manifest.json) is the s1d deadlock: the old
+    server announced more bytes than it sent and the client waited forever.
+    """
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    class Shrinking:
+        """A manifest that a concurrent writer truncates after its first full read."""
+
+        def __init__(self, path):
+            self.path, self.reads = path, 0
+
+        def _body(self):
+            self.reads += 1
+            body = self.path.read_bytes()
+            return body if self.reads == 1 else body[: len(body) // 2]
+
+        def stat(self):
+            return self.path.stat()
+
+        def read_bytes(self):
+            return self._body()
+
+        def open(self, *_args, **_kwargs):
+            import io
+
+            return io.BytesIO(self._body())
+
+    def wrap(answer):
+        identity, files, publication = answer
+        name, path = files[truncated]
+        files = [*files[:truncated], (name, Shrinking(path)), *files[truncated + 1 :]]
+        return identity, files, publication
+
+    server, identity, attachment = _mu_server(tmp_path, monkeypatch, wrap=wrap)
+    node = NodeMuCache(attachment, tmp_path / "node", interval=0, transfer_timeout=20)
+    try:
+        with node.latest() as current:
+            assert current == identity
+    finally:
+        server.close()
+
+
+def test_a_get_mu_peer_that_stops_sending_is_an_error_not_an_endless_wait(tmp_path, monkeypatch):
+    from multiprocessing.connection import Listener
+
+    from spireagent.rl_socket_transport import NodeMuCache
+
+    auth = b"m" * 32
+    monkeypatch.setenv(AUTH_ENV, auth.hex())
+    listener = Listener(("127.0.0.1", 0), authkey=auth)
+    held = []
+
+    def serve():
+        connection = listener.accept()
+        connection.recv_bytes()
+        identity = {"snapshot_sha256": "a" * 64, "run": "r", "training_generation": "g",
+                    "adapter": "x"}
+        connection.send_bytes(json_bytes({"request_id": 1, "result": {
+            "identity": identity,
+            "files": [{"name": name, "size": 10, "sha256": "0" * 64} for name in (
+                "model.tensor-tree", "model.json", "heads.tensor-tree",
+                "model-manifest.json", "heads-manifest.json")],
+            "publication": {**identity, "published_at": 1}}}))
+        connection.send_bytes(b"12345")  # half a body, then silence
+        held.append(connection)
+
+    threading.Thread(target=serve, daemon=True).start()
+    attachment = {"address": list(listener.address), "schema": "s", "pool_id": "p",
+                  "adapter": "x", "run": "r", "training_generation": "g"}
+    node = NodeMuCache(attachment, tmp_path / "node", interval=0, transfer_timeout=0.5)
+    began = time.monotonic()
+    with pytest.raises(DataplaneError, match="MU_TRANSFER_TIMEOUT"), node.latest():
+        pass
+    assert time.monotonic() - began < 10
+    listener.close()
 
 
 @pytest.mark.parametrize("failure_errno", [24, 23, 9])
@@ -1482,3 +1617,12 @@ def test_durable_begin_releases_control_lock_and_serializes_duplicate_and_STOP(t
             owner._notify_capacity(force=True)
         workers.shutdown(wait=True)
         owner.wal.close()
+
+
+def test_node_mu_source_passes_its_transfer_timeout_to_the_cache(tmp_path):
+    from stpd.p1.inference_service import NodeMuSource
+
+    attachment = tmp_path / "learner.json"
+    attachment.write_text(json.dumps({"run": "r", "training_generation": "g"}))
+    source = NodeMuSource(attachment, tmp_path / "mu", transfer_timeout=7.5)
+    assert source._cache().transfer_timeout == 7.5

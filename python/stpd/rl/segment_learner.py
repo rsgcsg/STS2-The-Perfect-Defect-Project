@@ -1186,9 +1186,14 @@ class SegmentLearner:
                                   ("model.json", model.payload("package_manifest")),
                                   ("heads.tensor-tree", heads.payload("checkpoint"))):
                 self.exchange.store.materialize(payload, root / name)
-            (root / "model-manifest.json").write_bytes(model.to_bytes())
-            (root / "heads-manifest.json").write_bytes(heads.to_bytes())
-            (root / "COMPLETE").write_text(identity["snapshot_sha256"])
+            # Several services can ask for a new mu at once: each writer replaces
+            # whole files, so a concurrent get_mu never reads a truncated manifest.
+            for name, body in (("model-manifest.json", model.to_bytes()),
+                               ("heads-manifest.json", heads.to_bytes()),
+                               ("COMPLETE", identity["snapshot_sha256"].encode())):
+                pending = root / f".{name}.{threading.get_ident()}.pending"
+                pending.write_bytes(body)
+                pending.replace(root / name)
         publication = self.exchange.model(identity["version"],
                                            training_generation=self.generation)
         return identity, [(name, root / name) for name in (

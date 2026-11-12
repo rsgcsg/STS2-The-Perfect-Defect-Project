@@ -592,13 +592,17 @@ class SocketDataplane:
                         )
                         if identity["snapshot_sha256"] in value.get("cached_snapshots", []):
                             files = []
+                        # Each body is read once: the size and digest announced are
+                        # those of the bytes sent, so a file rewritten meanwhile can
+                        # never leave the client waiting for bytes that never come.
+                        bodies = [(name, path.read_bytes()) for name, path in files]
                         metadata = [
                             {
                                 "name": name,
-                                "size": path.stat().st_size,
-                                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                                "size": len(body),
+                                "sha256": hashlib.sha256(body).hexdigest(),
                             }
-                            for name, path in files
+                            for name, body in bodies
                         ]
                         connection.send_bytes(
                             json_bytes(
@@ -612,10 +616,9 @@ class SocketDataplane:
                                 }
                             )
                         )
-                        for _name, path in files:
-                            with path.open("rb") as stream:
-                                while raw := stream.read(MAX_CHUNK_BYTES):
-                                    connection.send_bytes(raw)
+                        for _name, body in bodies:
+                            for offset in range(0, len(body), MAX_CHUNK_BYTES):
+                                connection.send_bytes(body[offset : offset + MAX_CHUNK_BYTES])
                         continue
                     else:
                         if operation in {"episode_open", "begin", "commit", "episode_end"}:
@@ -739,13 +742,27 @@ class NodeMuCache:
         interval: float = 15,
         max_bytes: int = 512 * 1024**2,
         keep: int = 3,
+        transfer_timeout: float = 60.0,
     ) -> None:
-        if type(interval) not in (float, int) or interval < 0 or max_bytes < 1 or keep < 2:
+        if (
+            type(interval) not in (float, int)
+            or interval < 0
+            or max_bytes < 1
+            or keep < 2
+            or not transfer_timeout > 0
+        ):
             raise ValueError("invalid_node_mu_cache_bounds")
         self.attachment = copy.deepcopy(attachment)
         self.root, self.interval, self.max_bytes, self.keep = root, interval, max_bytes, keep
+        self.transfer_timeout = transfer_timeout
         self.last_transfer: dict[str, Any] = {}
         root.mkdir(parents=True, exist_ok=True)
+
+    def _recv(self, connection: Any, maximum: int) -> bytes:
+        """get_mu is a read: a peer that stops sending is an error, never an endless wait."""
+        if not connection.poll(self.transfer_timeout):
+            raise DataplaneError("MU_TRANSFER_TIMEOUT")
+        return bytes(connection.recv_bytes(maximum))
 
     def _download(self) -> dict[str, Any]:
         attachment = self.attachment
@@ -764,7 +781,7 @@ class NodeMuCache:
                     }
                 )
             )
-            reply = _json(connection.recv_bytes(MAX_CONTROL_BYTES))
+            reply = _json(self._recv(connection, MAX_CONTROL_BYTES))
             if reply.get("request_id") != 1 or "error" in reply:
                 raise DataplaneError(reply.get("error_code") or "IDENTITY_MISMATCH")
             identity: dict[str, Any] = reply["result"]["identity"]
@@ -828,7 +845,7 @@ class NodeMuCache:
                     remaining, digest = item["size"], hashlib.sha256()
                     with (staged / item["name"]).open("wb") as stream:
                         while remaining:
-                            raw = connection.recv_bytes(min(remaining, MAX_CHUNK_BYTES))
+                            raw = self._recv(connection, min(remaining, MAX_CHUNK_BYTES))
                             if not raw:
                                 raise DataplaneError("INVALID_PACKET")
                             stream.write(raw)

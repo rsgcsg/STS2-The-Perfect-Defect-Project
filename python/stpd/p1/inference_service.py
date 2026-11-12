@@ -62,10 +62,11 @@ class NodeMuSource:
     """
 
     def __init__(self, learner_attachment: Path, root: Path, *, interval: float = 0,
-                 keep: int = 18) -> None:
+                 keep: int = 18, transfer_timeout: float = 60.0) -> None:
         # keep >= the service's resident limit, so any mu it can still hold in
         # memory can also be reloaded from this node after an eviction.
         self.path, self.root, self.interval, self.keep = learner_attachment, root, interval, keep
+        self.transfer_timeout = transfer_timeout  # per message of a get_mu transfer
         self.cache: Any = None
         self.generation: str | None = None
 
@@ -77,7 +78,8 @@ class NodeMuSource:
         if self.cache is None or generation != self.generation:
             self.cache = NodeMuCache(attachment, self.root / attachment["run"] / generation,
                                      interval=self.interval, keep=self.keep,
-                                     max_bytes=self.keep * 64 * 1024**2)
+                                     max_bytes=self.keep * 64 * 1024**2,
+                                     transfer_timeout=self.transfer_timeout)
             self.generation = generation
         return self.cache
 
@@ -1203,6 +1205,9 @@ class FastInferenceService:
             exit_code_on_failure, exit_grace_seconds)
         self.exit_process: Callable[[int], Any] = os._exit  # replaced only by tests
         self.closed = threading.Event()
+        # close() runs once: the failure exit's closer and the launcher may both call it.
+        self.close_lock = threading.Lock()
+        self.close_outcome: tuple[dict[str, Any] | None, BaseException | None] | None = None
         if exit_code_on_failure is not None:
             threading.Thread(target=self._exit_on_failure, daemon=True,
                              name="rl-inference-3-exit-watch").start()
@@ -1781,6 +1786,20 @@ class FastInferenceService:
                     peak[stage] = round(ms, 3)
 
     def close(self) -> dict[str, Any]:
+        """Close once; a concurrent or later call waits for that close and gets its answer."""
+        with self.close_lock:
+            if self.close_outcome is None:
+                try:
+                    self.close_outcome = (self._close_once(), None)
+                except BaseException as failure:  # noqa: BLE001 - given to every caller
+                    self.close_outcome = (None, failure)
+            result, raised = self.close_outcome
+        if raised is not None:
+            raise raised
+        assert result is not None
+        return result
+
+    def _close_once(self) -> dict[str, Any]:
         self.stopping.set()
         try:
             with socket.create_connection(self.address, timeout=2):
