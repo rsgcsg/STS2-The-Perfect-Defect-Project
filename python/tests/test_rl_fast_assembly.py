@@ -1,6 +1,7 @@
 """WP5: inference-side 64-row segments, mu binding/tail/eviction, truncation, hand-off."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import multiprocessing
@@ -447,7 +448,10 @@ def test_handoff_failure_is_loud_and_sticky(tmp_path: Path):
     h.close("g1", "stop")
     [segment] = h.sealed
     handoff.submit(segment)
-    handoff.submit(segment)  # an original is never overwritten
+    # An original is never overwritten. With parallel writes the refusal can already
+    # reach this submit (the segment was queued first); close() raises it in any case.
+    with contextlib.suppress(HandoffError):
+        handoff.submit(segment)
     with pytest.raises(HandoffError) as raised:
         handoff.close()
     assert str(raised.value.__cause__) == "segment_original_already_exists"
