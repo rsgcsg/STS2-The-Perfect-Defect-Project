@@ -7,6 +7,7 @@ slow writer and check that parallel writes keep every hand-off rule.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import os
 import subprocess
@@ -286,3 +287,49 @@ def test_two_threads_writing_the_same_original_one_wins(tmp_path: Path, monkeypa
     with pytest.raises(HandoffError, match="segment_original_already_exists"):
         writer.write(segments[0])  # later: refused by the file on disk, same code
     assert not writer._claimed
+
+
+def test_submit_on_a_full_queue_raises_when_the_hand_off_thread_is_dead(tmp_path: Path):
+    # Re-review of #504: with the thread gone a full queue never drains, and the put
+    # sits under the assembler's emit_lock, so the service hung instead of stopping.
+    result = _run_child("""
+    import sys, threading
+    from pathlib import Path
+    from types import SimpleNamespace
+    from stpd.rl.fast_handoff import HandoffError, SegmentHandoff
+
+    class Writer:
+        def write(self, segment):
+            return Path(f"/originals/{segment.segment_id}.stfs")
+
+    class Sender:
+        def send(self, segment, path):
+            return 1
+
+    def dies(self, queued):
+        raise RuntimeError("hand-off thread gone")
+
+    SegmentHandoff._hand_off = dies
+    handoff = SegmentHandoff(Writer(), Sender(), max_queue=2)
+    outcomes = []
+    for index in range(4):
+        segment = SimpleNamespace(segment_id=f"s{index}", trainable=True, data=b"x",
+                                  header={"game_instance_id": "g1"})
+        try:
+            handoff.submit(segment)
+            outcomes.append("ok")
+        except HandoffError as error:
+            outcomes.append(str(error))
+        if index == 0:
+            handoff.thread.join(10)  # dies on segment 1
+    try:
+        handoff.close()
+        outcomes.append("close ok")
+    except HandoffError as error:
+        outcomes.append(f"close {error}")
+    print(outcomes)
+    """, timeout=30)
+    assert result.returncode == 0, result.stderr
+    outcomes = ast.literal_eval(result.stdout)
+    assert outcomes[3] == "segment_handoff_failed"  # the 4th submit raises, not hangs
+    assert outcomes[-1] == "close segment_handoff_failed"

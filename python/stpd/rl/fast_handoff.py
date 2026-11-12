@@ -623,7 +623,7 @@ class SegmentHandoff:
                                          queued.written)
             with self._prefetch_lock:
                 self._submitted.setdefault(instance, []).append(queued.read_back)
-        self.queue.put(queued)
+        self._put(queued)
         self.raise_if_failed()
 
     def _write(self, queued: _Queued) -> None:
@@ -657,8 +657,25 @@ class SegmentHandoff:
                     item.wanted = True
                     if item.passed:
                         self._start_read_locked(item)
-        self.queue.put(closed)
+        self._put(closed)
         self.raise_if_failed()
+
+    def _put(self, item: _Queued | InstanceClosed | None) -> None:
+        """Queue for the hand-off thread; never waits forever on a dead one.
+
+        A full queue only drains while the thread runs: once it is gone (its failure
+        recorded in `_run`), raise that failure instead of blocking, under the
+        assembler's emit_lock, for ever. The item's write, if any, was already
+        submitted, so its original is still written; it is just never handed off.
+        """
+        while True:
+            try:
+                self.queue.put(item, timeout=1.0)
+                return
+            except queue.Full:
+                if not self.thread.is_alive():
+                    self.raise_if_failed()
+                    raise HandoffError("segment_handoff_closed") from None
 
     def _start_read_locked(self, item: _ReadBack) -> None:
         futures = self._prefetch.get(item.game)
@@ -797,8 +814,8 @@ class SegmentHandoff:
     def close(self, *, orderly: bool = False) -> None:
         """Write/send what is queued and release; never says the orderly end unless
         called through `finish()` with no write or hand-off failure."""
-        if self.thread.is_alive():  # a dead hand-off thread would never drain a full queue
-            self.queue.put(None)
+        with contextlib.suppress(HandoffError):  # thread gone: its failure raised below
+            self._put(None)
         self.thread.join()
         self._writes.shutdown(wait=True)  # every queued write was awaited by the thread
         self._reads.shutdown(wait=True)  # a read-back waits for nothing but its own I/O
