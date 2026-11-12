@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlayerEnvironmentRestClient, checkPublicBasisLight, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
+import { ReduceStrictSampleFailure } from "@rsgcsg/sts2-connector-client/p1-global";
 import { ReferenceGlobalTransport } from "../src/global-transport.js";
 import { createGlobalProgramManifest } from "../src/global-program.js";
 import { CanonicalTextMemo, CanonicalTextMemoDivergence, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
@@ -927,6 +928,27 @@ describe("fast-env failure paths", () => {
     expect(status.counters.reduce_light).toMatchObject({ sampled: 1, sample_failures: 1, light: 0 });
     h.open(0);
     expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
+  });
+
+  it("C1 reduce_light: a strict-sample failure raised after delivery (e.g. a follow-rule reduce) is the same build stop", async () => {
+    // Any reduce outside the step's own capture (resolveFollowBasis) reaches the game's outer catch;
+    // inject the failure at a post-delivery site that rethrows (the E4 receipt digest).
+    const real = CanonicalTextMemo.prototype.digest;
+    let calls = 0;
+    const spy = vi.spyOn(CanonicalTextMemo.prototype, "digest").mockImplementation(function (this: CanonicalTextMemo, raw, decoded) {
+      if (++calls === 2) throw new ReduceStrictSampleFailure(new Error("follow_basis_shape"));
+      return real.call(this, raw, decoded);
+    });
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => {
+        config.memo = { receipt_canonical: { check_interval: 64 } }; config.checks = { ...config.checks, reduce_light: { strict_interval: 1024 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "env_crash", native: "replaced" });
+      expect(closed.native_steps).toBeGreaterThan(0);
+      expect(String(closed.detail)).toBe("reduce:reduce_strict_sample_failed:follow_basis_shape");
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "reduce_strict_sample_failed", slot: 0 });
+    } finally { spy.mockRestore(); }
   });
 
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {

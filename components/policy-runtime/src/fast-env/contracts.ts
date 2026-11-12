@@ -48,7 +48,7 @@ export interface FastEnvConfig {
    *  process skips the SDK reduce's repeated strict zod decode of its snapshot and Reads (and the
    *  repeated finite-number walk); the first one and then each with probability 1/`strict_interval`
    *  still decode strictly, and a failing sample stops this build's output (`reduce_strict_sample_failed`).
-   *  A basis whose persistent numeric fields fail the cheap type/range check always decodes strictly.
+   *  A basis whose persistent part fails the strict persistent schema always decodes strictly.
    *  The sampled Host full checks (`sample_rate`) are unchanged. */
   checks: { sample_rate: number; reduce_light: { strict_interval: number } | null };
   decision_link: { kind: "unix"; path: string };

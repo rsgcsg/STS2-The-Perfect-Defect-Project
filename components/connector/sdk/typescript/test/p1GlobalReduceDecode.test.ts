@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkPublicBasisLight, passedPublicBasisLightCheck, PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE } from "../src/index.js";
-import { canonicalJson, configureReduceDecode, createSession, persistentScalarsValid, reduce, reduceDecodeStats, ReduceStrictSampleFailure } from "../src/p1Global/index.js";
+import { canonicalJson, configureReduceDecode, createSession, persistentContentValid, reduce, reduceDecodeStats, ReduceStrictSampleFailure } from "../src/p1Global/index.js";
 
 const NAMES = ["synthetic-complete-combat", "managed-combat_turn", "managed-deck_enchant_selection", "managed-deck_upgrade_selection",
   "managed-game_over", "managed-map_navigation", "managed-reward_claim", "managed-shop_inventory",
@@ -55,7 +55,7 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
       configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
       reduce(createSession("e", "managed"), value); // the first light-checked reduce is always a strict sample
       const light = canonicalJson(reduce(createSession("e", "managed"), value));
-      expect(reduceDecodeStats(), name).toEqual({ light: 1, strict: 1, sampled: 1, persistent_rejects: 0, sample_failures: 0 });
+      expect(reduceDecodeStats(), name).toMatchObject({ light: 1, strict: 1, sampled: 1, persistent_rejects: 0, sample_failures: 0 });
       expect(light, name).toBe(strict);
     }
   });
@@ -99,7 +99,7 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
     expect(reduceDecodeStats()).toMatchObject({ sample_failures: 1 });
   });
 
-  it("persistent numeric fields that feed the observation are type/range checked on the light path", () => {
+  it("the persistent part that feeds the observation is checked against the strict persistent schema on the light path", () => {
     const withPersistent = lightBases().filter(item => item.value.snapshot.persistent !== null);
     expect(withPersistent.length).toBeGreaterThan(0);
     const mutations: [string, (content: any) => void][] = [
@@ -107,12 +107,23 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
       ["floor negative", content => { content.run.floor = -1; }], ["act zero", content => { content.run.act = 0; }],
       ["gold fraction", content => { content.player.gold = 1.5; }], ["max_hp NaN", content => { content.player.max_hp = Number.NaN; }],
       ["potion slot", content => { if (content.player.potions[0]) content.player.potions[0].slot = "0"; else content.player.potions = "none"; }],
-      ["relic counter", content => { if (content.player.relics[0]) content.player.relics[0].counter = "3"; else content.player.relics = {}; }]];
+      ["relic counter", content => { if (content.player.relics[0]) content.player.relics[0].counter = "3"; else content.player.relics = {}; }],
+      ["relic definition_id", content => { if (content.player.relics[0]) content.player.relics[0].definition_id = 7; else content.player.relics = 0; }],
+      ["relic name", content => { if (content.player.relics[0]) content.player.relics[0].name = 7; else content.player.relics = 0; }],
+      ["relic keywords", content => { if (content.player.relics[0]) content.player.relics[0].keywords = [{ name: 3 }]; else content.player.relics = 0; }],
+      ["relic card preview", content => { if (content.player.relics[0]) content.player.relics[0].card_previews = [{ entity_id: "c" }]; else content.player.relics = 0; }],
+      ["preview enchantment amount", content => { content.player.relics = [{ entity_id: "r", definition_id: "R", keywords: [], card_previews: [{
+        entity_id: "c", definition_id: "C", type: "Attack", cost: "1", rarity: "Basic", is_upgraded: false, is_selected: false,
+        existing_enchantment: { definition_id: "E", amount: "2" } }] }]; }],
+      ["player entity_id", content => { content.player.entity_id = ""; }], ["character_name", content => { content.player.character_name = 1; }],
+      ["act_name", content => { content.run.act_name = 1; }], ["boss name", content => { content.run.bosses = [{ definition_id: "B", name: 1, order: 0 }]; }],
+      ["modifier", content => { content.run.modifiers = [{ definition_id: "M", keywords: "none", card_previews: [] }]; }],
+      ["scope", content => { content.scope = "other"; }], ["completeness", content => { content.completeness = null; }]];
     for (const { name, value } of withPersistent) {
-      expect(persistentScalarsValid(value.snapshot), name).toBe(true);
+      expect(persistentContentValid(value.snapshot), name).toBe(true);
       for (const [label, mutate] of mutations) {
         const bad = structuredClone(value); mutate(bad.snapshot.persistent.content);
-        expect(persistentScalarsValid(bad.snapshot), `${name} ${label}`).toBe(false);
+        expect(persistentContentValid(bad.snapshot), `${name} ${label}`).toBe(false);
         try { checkPublicBasisLight(bad); } catch { continue; } // the light check already refuses it
         configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
         reduce(createSession("e", "managed"), value); // spend the sample
@@ -121,6 +132,20 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
         expect(reduceDecodeStats(), `${name} ${label}`).toMatchObject({ light: 0, persistent_rejects: 1, sample_failures: 0 });
       }
     }
+  });
+
+  it("remembers a deep-frozen persistent part by identity (parsed once), never an unfrozen one", () => {
+    const { value } = lightBases().find(item => item.value.snapshot.persistent !== null)!;
+    configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
+    persistentContentValid(value.snapshot); persistentContentValid(value.snapshot);
+    expect(reduceDecodeStats()).toMatchObject({ persistent_parses: 2, persistent_cache_hits: 0 });
+    const frozen = structuredClone(value.snapshot);
+    const freeze = (item: any): any => { if (item && typeof item === "object") { Object.values(item).forEach(freeze); Object.freeze(item); } return item; };
+    freeze(frozen.persistent.content);
+    configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
+    expect(persistentContentValid(frozen)).toBe(true); expect(persistentContentValid(frozen)).toBe(true);
+    expect(reduceDecodeStats()).toMatchObject({ persistent_parses: 1, persistent_cache_hits: 1 });
+    expect(persistentContentValid({ ...frozen, persistent: { ...frozen.persistent, extra: 1 } })).toBe(false);
   });
 
   it("never vouches for a navigation-profile snapshot (its range gate lives in the strict decode)", () => {

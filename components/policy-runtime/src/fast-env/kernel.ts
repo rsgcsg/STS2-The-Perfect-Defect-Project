@@ -91,6 +91,12 @@ class GameEnd extends Error {
   }
 }
 
+/** A strict sample of the C1 light reduce path disagreed, wherever reduce ran (the step's own reduce or
+ * a follow-rule check): light reduces may already have put the same kind of bad data into other rows, so
+ * this build stops producing output (like the Host's SampledCheckFailure), with its own reason and counter. */
+const reduceSampleEnd = (error: ReduceStrictSampleFailure) => new GameEnd("env_crash", `reduce:${error.message}`, { replaceNative: true,
+  buildStop: "reduce_strict_sample_failed", pendingOutcome: { status: "unknown", reason: "native_crash" } });
+
 /** Memo divergences of this Node process (E4 receipt text memo): the game ends (unknown once an action was
  * delivered), never retried, this build's output stops and the whole process exits fatal. */
 type MemoDivergence = "receipt_canonical_memo_divergence";
@@ -317,14 +323,7 @@ class GameRun {
       const reduceStarted = performance.now();
       let reduction: Reduction;
       try { reduction = reduce(this.state, source.full.basis); }
-      catch (error) {
-        // A strict sample of the light reduce path disagreed: light reduces may already have put the
-        // same kind of bad data into other rows, so this build stops producing output (like the Host's
-        // SampledCheckFailure), with its own reason and counter.
-        if (error instanceof ReduceStrictSampleFailure) throw new GameEnd("env_crash", `reduce:${error.message}`, { replaceNative: true,
-          buildStop: "reduce_strict_sample_failed", pendingOutcome: { status: "unknown", reason: "native_crash" } });
-        throw error;
-      } finally { this.ctx.stats.reduce_ms += performance.now() - reduceStarted; }
+      finally { this.ctx.stats.reduce_ms += performance.now() - reduceStarted; }
       const snapshot = source.full.basis.snapshot;
       if (snapshot.status === "settling" || snapshot.status === "observed" && reduction.observation.status !== "terminal") {
         if (performance.now() - since >= this.ctx.config.settling_timeout_ms) throw new GameEnd("not_started", "managed_settling_stalled");
@@ -670,6 +669,7 @@ export class SlotKernel {
     } catch (error) {
       const memo = error instanceof GameEnd ? null : memoDivergence(error);
       const end = error instanceof GameEnd ? error : memo !== null ? memoDivergenceEnd(memo, error)
+        : error instanceof ReduceStrictSampleFailure ? reduceSampleEnd(error)
         : new GameEnd("env_crash", `kernel:${error instanceof Error ? error.message : String(error)}`, { replaceNative: true });
       game.failPending(end);
       ({ reason, detail } = end);

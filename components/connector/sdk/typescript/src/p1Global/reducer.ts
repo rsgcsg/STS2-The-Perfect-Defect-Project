@@ -5,6 +5,8 @@ import { decodePublicSourceSnapshot as decodePlayerSnapshot, passedPublicBasisLi
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, canonicalJsonExceedsBytes, isObject } from "./canonical.js";
+import { deepFrozen } from "./deepFrozen.js";
+import { persistentVisibleStateSchema } from "../visibleState.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy } from "./publicIdentity.js";
 import { publicPath, type PublicPath } from "./publicPath.js";
@@ -376,20 +378,23 @@ function publicDetailContent(kind: string, content: unknown): unknown {
  * (random per call, so the sample cannot alias with slot rotation), still decodes strictly as a
  * sample; a sample the strict decode rejects throws ReduceStrictSampleFailure, which the caller
  * must treat as a build stop (bad data may already have reached other rows), never as a plain crash.
- * A basis not light-checked here, or whose persistent numeric fields (the ones copied into the
- * observation) fail the cheap type/range check, always decodes strictly, exactly as with the policy off.
+ * A basis not light-checked here, or whose persistent part (the run/player tree copied into the
+ * observation) fails the strict persistent schema, always decodes strictly, exactly as with the policy off.
  * Output is unchanged for valid input (the strict decode returns the same raw objects).
- * Known non-claim: on a non-sampled light reduce, other shape errors the zod schema would reject
- * (enum values, unknown keys, protocol version literals) are accepted; only the samples see them. */
+ * Known non-claim: on a non-sampled light reduce, shape errors outside the persistent part that the
+ * zod schema would reject (enum values, unknown keys, protocol version literals) are accepted; only the
+ * samples see them. */
 export interface ReduceDecodeConfig { readonly strictInterval: number; readonly random?: () => number }
-export interface ReduceDecodeStats { light: number; strict: number; sampled: number; persistent_rejects: number; sample_failures: number }
+export interface ReduceDecodeStats { light: number; strict: number; sampled: number; persistent_rejects: number; sample_failures: number;
+  persistent_parses: number; persistent_cache_hits: number }
 export class ReduceStrictSampleFailure extends Error {
   constructor(cause: unknown) {
     super(`reduce_strict_sample_failed:${cause instanceof Error ? cause.message : String(cause)}`, { cause });
     this.name = "ReduceStrictSampleFailure";
   }
 }
-const zeroStats = (): ReduceDecodeStats => ({ light: 0, strict: 0, sampled: 0, persistent_rejects: 0, sample_failures: 0 });
+const zeroStats = (): ReduceDecodeStats => ({ light: 0, strict: 0, sampled: 0, persistent_rejects: 0, sample_failures: 0,
+  persistent_parses: 0, persistent_cache_hits: 0 });
 let reduceDecode: ReduceDecodeConfig | null = null;
 let reduceDecodeCounts = zeroStats();
 let reduceDecodeFirst = true;
@@ -400,26 +405,22 @@ export function configureReduceDecode(config: ReduceDecodeConfig | null): void {
 }
 export function reduceDecodeStats(): ReduceDecodeStats { return { ...reduceDecodeCounts }; }
 
-const intAtLeast = (value: unknown, min: number) => typeof value === "number" && Number.isInteger(value) && value >= min;
-const finiteNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
-const nonEmptyString = (value: unknown) => typeof value === "string" && value.length > 0;
-/** The persistent run/player scalars the observation copies, at the strict schema's type and range
- * (finite is stricter than zod; the finite-number walk rejects non-finite values anyway). */
-export function persistentScalarsValid(snapshot: unknown): boolean {
+const persistentChecked = new WeakSet<object>();
+/** The persistent part (the whole run/player tree that the observation copies through aliasTree)
+ * against the same strict schema the strict decode uses: persistentVisibleStateSchema plus the
+ * strict wrapper. A deep-frozen content object (the fast chain's Host freezes every capture) that
+ * passed once is remembered by identity, so an unchanged persistent subtree is parsed only once. */
+export function persistentContentValid(snapshot: unknown): boolean {
   if (!isObject(snapshot)) return false;
   const persistent = snapshot.persistent;
   if (persistent === null) return true;
-  if (!isObject(persistent) || !isObject(persistent.content)) return false;
-  const { run, player } = persistent.content;
-  if (!isObject(run) || !isObject(player)) return false;
-  if (!intAtLeast(run.act, 1) || !intAtLeast(run.floor, 0) || !intAtLeast(run.ascension, 0) || !nonEmptyString(run.act_definition_id)) return false;
-  if (!finiteNumber(player.hp) || !finiteNumber(player.max_hp) || !intAtLeast(player.gold, 0) || !intAtLeast(player.max_potion_slots, 0)
-      || !nonEmptyString(player.entity_id) || !nonEmptyString(player.character_definition_id)) return false;
-  const { bosses } = run; const { relics, potions } = player;
-  if (!Array.isArray(bosses) || !Array.isArray(relics) || !Array.isArray(potions)) return false;
-  for (const boss of bosses) if (!isObject(boss) || !intAtLeast(boss.order, 0)) return false;
-  for (const relic of relics) if (!isObject(relic) || !(relic.counter == null || finiteNumber(relic.counter))) return false;
-  for (const potion of potions) if (!isObject(potion) || !intAtLeast(potion.slot, 0)) return false;
+  if (!isObject(persistent) || Object.keys(persistent).length !== 2
+      || persistent.content_schema !== "sts2.player-environment/persistent/run-player-1" || !isObject(persistent.content)) return false;
+  const content = persistent.content;
+  if (persistentChecked.has(content)) { reduceDecodeCounts.persistent_cache_hits += 1; return true; }
+  reduceDecodeCounts.persistent_parses += 1;
+  if (!persistentVisibleStateSchema.safeParse(content).success) return false;
+  if (deepFrozen(content)) persistentChecked.add(content);
   return true;
 }
 
@@ -427,7 +428,7 @@ type DecodeMode = "strict" | "sampled" | "light";
 function decodeMode(basis: P1Basis): DecodeMode {
   if (reduceDecode === null) return "strict";
   if (!passedPublicBasisLightCheck(basis)) { reduceDecodeCounts.strict += 1; return "strict"; }
-  if (!persistentScalarsValid(basis.snapshot)) { reduceDecodeCounts.persistent_rejects += 1; reduceDecodeCounts.strict += 1; return "strict"; }
+  if (!persistentContentValid(basis.snapshot)) { reduceDecodeCounts.persistent_rejects += 1; reduceDecodeCounts.strict += 1; return "strict"; }
   const first = reduceDecodeFirst; reduceDecodeFirst = false;
   if (first || (reduceDecode.random ?? Math.random)() * reduceDecode.strictInterval < 1) {
     reduceDecodeCounts.strict += 1; reduceDecodeCounts.sampled += 1; return "sampled";
