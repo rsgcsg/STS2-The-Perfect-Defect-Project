@@ -637,6 +637,20 @@ class _Collector:
         return parts, group
 
 
+# The device process stages joined groups as inference tensors, like the groups the
+# forward stages itself: the compiled rows block then sees one dispatch key set
+# (a normal tensor in the same argument is a guard failure and a recompile).
+def _stage_inference(stage: Callable[..., Any], *args: Any) -> Any:
+    with torch.inference_mode():
+        return stage(*args)
+
+
+def _collect_inference(collector: _Collector, part: dict[str, Any]
+                       ) -> tuple[list[dict[str, Any]], Any] | None:
+    with torch.inference_mode():
+        return collector.add(part)
+
+
 def _receive(reader: Connection) -> dict[str, Any]:
     loading = time.perf_counter()
     message = cast(dict[str, Any], pickle.loads(reader.recv_bytes()))
@@ -813,8 +827,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                     ref, counts = group
                     staging = time.perf_counter()
                     try:
-                        group = (stage_joined(arena[ref.start:ref.end], ref.plan, target),
-                                 counts)
+                        group = (_stage_inference(stage_joined, arena[ref.start:ref.end],
+                                                  ref.plan, target), counts)
                     except Exception as failure:  # refused loudly by the service
                         group = RuntimeError(f"{type(failure).__name__}: {str(failure)[:200]}")
                     parts[0]["stage_seconds"] = time.perf_counter() - staging
@@ -822,7 +836,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                 continue
             if "trace" in part:  # no joiner: received = joined (same slot in the trace)
                 part["trace"] += [time.monotonic()] * 2
-            done = collector.add(part)
+            done = _collect_inference(collector, part)
             if done is not None:
                 joined.put(done)
 

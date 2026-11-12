@@ -302,7 +302,13 @@ def _kernel_dtype(reference: Tensor) -> torch.dtype:
     return _compute_dtype(reference)
 
 
-def _block(packed: bool, kernels: tuple[str, ...]) -> Any:
+# One code object per variant name for the whole process: a new model (each mu a
+# device process loads) reuses the graphs dynamo keeps on it instead of compiling
+# again. At most 2 x 4 x 2 entries.
+_BLOCK_CODES: dict[str, Any] = {}
+
+
+def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     function: Any = rows_block_packed if packed else rows_block
     if not kernels:
         return function
@@ -312,18 +318,46 @@ def _block(packed: bool, kernels: tuple[str, ...]) -> Any:
     def block(*args: Any) -> Any:
         return function(*args, kernels=kernels)
 
+    # One code object per (packed, levers, policy): dynamo keeps compiled graphs and
+    # the recompile budget per code object, so the fold/wide/value variants never
+    # guard-fail against each other (`len(kernels)`, None catalogs; Friday 1463865-
+    # 1463901 hit recompile_limit 8 and ran the block eager).
+    name = "_".join(("block", "packed" if packed else "masked", *kernels,
+                     "policy" if policy else "value"))
+    block.__code__ = _BLOCK_CODES.setdefault(
+        name, block.__code__.replace(co_name=name, co_qualname=name))
     return block
 
 
-def _compiled_block(model: Any, packed: bool, kernels: tuple[str, ...] = ()) -> Any:
+def _at_least_two_terms(role: tuple[Tensor, Tensor, Tensor, Tensor]
+                        ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """A role with 0 or 1 terms gets zero-weight terms up to two (candidate 0, slot 0).
+
+    Exact: each adds 0 * (a finite token) = +-0 to candidate 0's sum, and x + +-0 == x
+    (a sum that starts at +0 is never -0). Only finite tokens matter: a non-finite
+    token 0 already makes its row non-finite (its `current` and cross read it), and
+    `RowsScorer.rows` refuses that row either way. Dynamo specializes 0- and 1-sized
+    dimensions; two terms or more keep one graph for every term count."""
+    candidate, slot, weight, present = role
+    missing = 2 - int(candidate.shape[0])
+    if missing <= 0:
+        return role
+    return (torch.cat((candidate, candidate.new_zeros(missing))),
+            torch.cat((slot, slot.new_zeros(missing))),
+            torch.cat((weight, weight.new_zeros(missing))), present)
+
+
+def _compiled_block(model: Any, packed: bool, kernels: tuple[str, ...] = (),
+                    policy: bool = True) -> Any:
     name = "_rows_block_packed_compiled" if packed else "_rows_block_compiled"
     if kernels:
-        name += "_" + "_".join(kernels)
+        name += "_" + "_".join(kernels) + ("" if policy else "_value")
     block = getattr(model, name, None)
     if block is None:
         # Levered blocks start shape-generic: rows, tokens, widths and catalogs vary per
         # group, and each first change would otherwise cost a recompile (V3 T6 probe).
-        block = torch.compile(_block(packed, kernels), dynamic=True if kernels else None)
+        block = torch.compile(_block(packed, kernels, policy),
+                              dynamic=True if kernels else None)
         setattr(model, name, block)  # learner-process runtime only, not state
     return block
 
@@ -393,8 +427,8 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     block_levers = tuple(lever for lever in levers if lever == "heads" or (
         lever == "cross" and group.policy
         and int(group.tensors["action_types"].shape[1]) <= FOLD_CATALOG_LIMIT))
-    block = (_compiled_block(model, packed, block_levers) if compile
-             else _block(packed, block_levers))
+    block = (_compiled_block(model, packed, block_levers, bool(group.policy)) if compile
+             else _block(packed, block_levers, bool(group.policy)))
     buckets = layout.scene_buckets
     row_sizes = [bucket[0] for bucket in buckets]
     slot_sizes = [bucket[3] for bucket in buckets]
@@ -418,6 +452,10 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
                                   move(layout.role_present[key]).split(
                                       [size * catalog for size in row_sizes]), strict=True))
         role_parts = [(split["source"][i], split["target"][i]) for i in range(len(buckets))]
+        if compile and torch.is_inference_mode_enabled():
+            # inference only: the learner keeps its own warm-up and limit (sgd_compile)
+            role_parts = [tuple(_at_least_two_terms(role) for role in roles)
+                          for roles in role_parts]
     scores, logits, hp = [], [], []
     for index, (count, width, longest, _slots) in enumerate(buckets):
         member = members[index]

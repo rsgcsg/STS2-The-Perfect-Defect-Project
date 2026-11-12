@@ -52,6 +52,7 @@ import multiprocessing as mp
 import os
 import random
 import signal
+import sys
 import threading
 import time
 from typing import Any
@@ -625,7 +626,7 @@ def service_host(conn: Any, index: int, config: dict[str, Any], device: str, spe
         elif command == "close":
             report = service.close()
             summary = {k: report.get(k) for k in ("rows", "jobs", "batches", "audit_failures",
-                                                  "refused")}
+                                                  "refused", "device_dynamo")}
             if threads is not None:
                 time.sleep(0.5)  # the link threads end once their clients are gone
                 summary["threads"] = thread_report(int(report.get("rows") or 0),
@@ -654,6 +655,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bind", default="node", choices=("node", "game"),
                         help="node: node n -> service n %% K; game: service_for_game per game")
     parser.add_argument("--prof", action="store_true")
+    parser.add_argument("--client-cpus", type=int, default=0,
+                        help="first N cores of this process's affinity run the clients only; "
+                             "services (all their processes) get the rest; 0 = shared")
     parser.add_argument("--stub-forward", action="store_true",
                         help="random device outputs of the real shapes: host side alone")
     parser.add_argument("--threads", default=None,
@@ -691,8 +695,21 @@ def main(argv: list[str] | None = None) -> None:
                               "row_sha256": e.row_sha256}, e.row))
     catalog = [m["catalog_len"] for m, _ in rows]
     cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    client_cpus = everything = cpus
+    if a.client_cpus:
+        if not cpus or a.client_cpus >= len(cpus):
+            raise SystemExit("client_cpus_needs_a_larger_affinity")
+        client_cpus, cpus = cpus[:a.client_cpus], cpus[a.client_cpus:]
+
+    def side(mine: list[int] | None) -> None:
+        """Spawned children inherit this process's affinity: switch it before each start."""
+        if mine and sys.platform == "linux":
+            os.sched_setaffinity(0, mine)
     batch = tuple(int(x) for x in a.batch.split(",")) if a.batch else None
-    emit({"setup": True, "rows": len(rows), "cpus": len(cpus) if cpus else os.cpu_count(),
+    emit({"setup": True, "rows": len(rows),
+          "cpus": len(everything) if everything else os.cpu_count(),
+          "service_cpus": len(cpus) if cpus else None,
+          "client_cpus": len(client_cpus) if a.client_cpus and client_cpus else "shared",
           "gpu": torch.cuda.get_device_name(0) if a.device == "cuda" else a.device,
           "torch": torch.__version__, "catalog_mean": round(sum(catalog) / len(catalog), 1),
           "mean_row_bytes": sum(len(r) for _, r in rows) // len(rows), "mps": a.mps,
@@ -728,6 +745,7 @@ def main(argv: list[str] | None = None) -> None:
         hosts: list[tuple[Any, Any]] = []
         try:
             started = time.perf_counter()
+            side(cpus)
             for k in range(services):
                 mine = (cpus[len(cpus) - workers * (k + 1):len(cpus) - workers * k]
                         if cpus and len(cpus) >= workers * services else None)
@@ -750,6 +768,7 @@ def main(argv: list[str] | None = None) -> None:
                 address, auth = addresses[k % services]  # noqa: B023 - this config's services
                 return (address, auth, encoder.identity, compiler.identity, rows)
 
+            side(client_cpus)
             warm = time.perf_counter()
             worst: dict[str, Any] | None = None
             for k in range(0 if a.stub_forward else services):

@@ -839,3 +839,216 @@ def test_prepared_update_with_kernel_levers_steps_like_the_original_on_cpu(model
     for name, value in reference.state_dict().items():
         torch.testing.assert_close(model.state_dict()[name], value, rtol=1e-4, atol=1e-5,
                                    msg=name)
+
+
+def _inference_groups(model):
+    """Real policy and value groups re-laid out so buckets hold 1, 2, 3 or all rows:
+    single-row buckets and role term counts of 0, 1 and more (dynamo's 0/1 classes)."""
+    batch = prepared(model)
+    groups = [g for mb in batch.minibatches for g in mb.groups]
+    out = []
+    for group, bucket_rows in itertools.product(groups[:2], (1, 2, 3, 256)):
+        for policy in (True, False):
+            base = group if policy else dc.replace(group, policy=False)
+            out.append(dc.replace(base, layout=row_layout(base, bucket_rows=bucket_rows,
+                                                          width_multiple=8)))
+    # one-term roles (rare in these fixtures, common enough online): first term kept
+    one = out[6]  # policy, one bucket of all rows
+    assert one.policy and len(one.layout.scene_buckets) == 1
+    roles = {key: (c[:1], s[:1], w[:1], (min(1, len(c)),))
+             for key, (c, s, w, _terms) in one.layout.roles.items()}
+    out.append(dc.replace(one, layout=dc.replace(one.layout, roles=roles)))
+    return out
+
+
+def _as_inference(value):
+    """The group as the service's device process stages it: inference tensors."""
+    if isinstance(value, torch.Tensor):
+        with torch.inference_mode():
+            return value.clone()
+    if dc.is_dataclass(value) and not isinstance(value, type):
+        return dc.replace(value, **{f.name: _as_inference(getattr(value, f.name))
+                                    for f in dc.fields(value) if f.init})
+    if isinstance(value, dict):
+        return {key: _as_inference(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return type(value)(_as_inference(item) for item in value)
+    return value
+
+
+def _term_classes(groups):
+    seen = set()
+    for group in groups:
+        if not group.policy:
+            continue
+        for key in ("source", "target"):
+            seen.update(min(int(n), 2) for n in group.layout.roles[key][3])
+    return seen
+
+
+def test_compiled_inference_block_never_falls_back_to_eager(model, varied, monkeypatch):
+    """Friday 1463865-1463901: the levered block hit dynamo's recompile_limit (8) and
+    ran eager. With one code object per (levers, policy), role terms of at least two
+    and inference-tensor groups, every shape class the service sends (single-row buckets,
+    0/1/n role terms, fold and wide catalogs, value groups) needs at most two graphs
+    per variant (one-row buckets and the rest), so a limit of 2 holds; dynamo is told
+    to fail instead of falling back, so any new specialization turns this red."""
+    from torch._dynamo import config as dynamo_config
+
+    from stpd.p1 import rows_kernels
+    from stpd.p1.rows_forward import compile_counters, forward_rows
+
+    compile_ = torch.compile
+    monkeypatch.setattr(torch, "compile",
+                        lambda function, **keywords: compile_(
+                            function, **{**keywords, "backend": "eager"}))
+    monkeypatch.setattr(dynamo_config, "recompile_limit", 2)
+    monkeypatch.setattr(dynamo_config, "fail_on_recompile_limit_hit", True)
+    for name in [n for n in vars(model) if n.startswith("_rows_") and "compiled" in n]:
+        monkeypatch.delitem(model.__dict__, name)
+    torch._dynamo.reset()
+    groups = [_as_inference(group) for group in _inference_groups(model)]
+    assert {0, 1, 2} <= _term_classes(groups)  # the 0/1 classes are really exercised
+    assert any(bucket[0] == 1 for g in groups for bucket in g.layout.scene_buckets)
+    before = compile_counters()
+    try:
+        for fold in (64, 0, 64):  # fold (cross lever) and wide catalogs, then fold again
+            monkeypatch.setattr(rows_kernels, "FOLD_CATALOG_LIMIT", fold)
+            for group in groups:
+                with torch.inference_mode():
+                    compiled = forward_rows(model, group, compile=True, packed=False,
+                                            kernels="cross+heads+nodes")
+                    eager = forward_rows(model, group, packed=False,
+                                         kernels="cross+heads+nodes")
+                for left, right in zip(eager, compiled, strict=True):
+                    assert torch.equal(left, right)  # role padding adds exact zeros
+    finally:
+        for name in [n for n in vars(model) if n.startswith("_rows_") and "compiled" in n]:
+            del model.__dict__[name]
+        torch._dynamo.reset()
+    after = compile_counters()
+    assert (after["dynamo_frames_total"] - before["dynamo_frames_total"]
+            == after["dynamo_frames_ok"] - before["dynamo_frames_ok"])
+
+
+def _fresh_compiled(model):
+    for name in [n for n in vars(model) if n.startswith("_rows_") and "compiled" in n]:
+        del model.__dict__[name]
+
+
+def test_a_new_mu_reuses_the_compiled_block_graphs(model, varied, monkeypatch):
+    """Each published mu is a new model in the device process. Its compiled blocks
+    share the variant code objects of the first, so dynamo's graphs on them are
+    reused: no compile frame for the second model on the same groups."""
+    import copy
+
+    from torch._dynamo import config as dynamo_config
+
+    from stpd.p1.rows_forward import compile_counters, forward_rows
+
+    compile_ = torch.compile
+    monkeypatch.setattr(torch, "compile",
+                        lambda function, **keywords: compile_(
+                            function, **{**keywords, "backend": "eager"}))
+    monkeypatch.setattr(dynamo_config, "fail_on_recompile_limit_hit", True)
+    _fresh_compiled(model)
+    torch._dynamo.reset()
+    groups = [_as_inference(group) for group in _inference_groups(model)[:8]]
+    second = copy.deepcopy(model)
+    try:
+        frames = []
+        for mu in (model, second):
+            before = compile_counters()["dynamo_frames_ok"]
+            for group in groups:
+                with torch.inference_mode():
+                    forward_rows(mu, group, compile=True, packed=False,
+                                 kernels="cross+heads+nodes")
+            frames.append(compile_counters()["dynamo_frames_ok"] - before)
+    finally:
+        _fresh_compiled(model)
+        _fresh_compiled(second)
+        torch._dynamo.reset()
+    assert frames[0] > 0 and frames[1] == 0, frames
+
+
+def test_device_process_stages_inference_tensors(model, varied):
+    """The device process's arena staging and part join yield inference tensors, the
+    dispatch key set of the groups the forward stages itself (one compiled graph)."""
+    from stpd.p1.inference_service import _collect_inference, _Collector, _stage_inference
+    from stpd.rl.batch_preparation import (
+        allocate_forward_arena,
+        forward_arena_bytes,
+        plan_forward_join,
+        prepare_group,
+        stage_joined,
+        write_forward_inputs,
+    )
+
+    def tensors(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif dc.is_dataclass(value) and not isinstance(value, type):
+            for field in dc.fields(value):
+                yield from tensors(getattr(value, field.name))
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from tensors(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                yield from tensors(item)
+
+    frames, floors = _frames(model)
+    cuts = [(0, 3), (3, len(frames))]
+    parts = [prepare_group(frames[a:b], tuple(range(b - a)), True, torch.tensor(floors[a:b]),
+                           deduplicate_text=True, layout="rows-v2") for a, b in cuts]
+    arena = allocate_forward_arena(sum(map(forward_arena_bytes, parts)) + (1 << 22),
+                                   shared=True)
+    written, cursor = [], 0
+    for part in parts:
+        written.append(write_forward_inputs(arena, cursor, part))
+        cursor = written[-1].end
+    rows = tuple(range(len(frames)))
+    plan = plan_forward_join(arena, written, cursor, rows=rows)
+    staged = _stage_inference(stage_joined, arena, plan, torch.device("cpu"))
+    collector = _Collector()
+    assert _collect_inference(collector, {"job": 1, "part": 0, "parts": 2, "group": parts[0],
+                                          "load_seconds": 0.0}) is None
+    _, joined = _collect_inference(collector, {"job": 1, "part": 1, "parts": 2,
+                                               "group": parts[1], "load_seconds": 0.0})
+    for group in (staged, joined):
+        found = list(tensors(group))
+        assert found and all(t.is_inference() for t in found)
+
+
+def test_role_padding_is_exact_in_the_block(model, varied):
+    """`_at_least_two_terms` adds zero-weight terms only: the block's outputs are
+    bitwise those of the unpadded roles (CPU FP32, masked and packed blocks)."""
+    from stpd.p1.rows_forward import _at_least_two_terms, forward_rows
+
+    for group in _inference_groups(model):
+        if not group.policy:
+            continue
+        with torch.inference_mode():
+            plain = forward_rows(model, group, packed=False)
+        layout = group.layout
+        padded_roles = {}
+        for key in ("source", "target"):
+            candidate, slot, weight, terms = layout.roles[key]
+            parts = [_at_least_two_terms((c, s, w, torch.ones(1, dtype=torch.bool)))
+                     for c, s, w in zip(candidate.split(list(terms)), slot.split(list(terms)),
+                                        weight.split(list(terms)), strict=True)]
+            for n, part in zip(terms, parts, strict=True):  # the added terms: +0, at 0
+                assert len(part[0]) == max(2, n)
+                added = part[2][n:]
+                assert torch.equal(added, torch.zeros_like(added))
+                assert not torch.signbit(added).any()  # +0, not -0 nor a tiny weight
+                assert not part[0][n:].any() and not part[1][n:].any()
+            padded_roles[key] = (torch.cat([p[0] for p in parts]),
+                                 torch.cat([p[1] for p in parts]),
+                                 torch.cat([p[2] for p in parts]),
+                                 tuple(len(p[0]) for p in parts))
+        padded = dc.replace(group, layout=dc.replace(layout, roles=padded_roles))
+        with torch.inference_mode():
+            again = forward_rows(model, padded, packed=False)
+        for left, right in zip(plain, again, strict=True):
+            assert torch.equal(left, right)
