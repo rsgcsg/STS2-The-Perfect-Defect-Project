@@ -45,13 +45,14 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
     torch.manual_seed(20261107)  # the fixture's start package draws from global torch RNG
     config, io = configuration(tmp_path, monkeypatch, generation=generation)
     config = dc.replace(config, device=device, segments=dc.replace(
-        config.segments, minibatches=2, episode_rows=8, archive_min_free_bytes=0,
-        archive_min_free_inodes=0, **(segments or {})))
+        config.segments, **{"minibatches": 2, "episode_rows": 8, "archive_min_free_bytes": 0,
+                            "archive_min_free_inodes": 0, **(segments or {})}))
     io = dc.replace(io, dataplane={
         "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
         "prepare_slots": 6, "source_bytes": 64 * 1024**2, "preparation_workers": 2,
         "assembly_workers": 2, "prepared_batches": 3,
-        **(SGD_PROCESS if sgd else {}), **(dataplane or {})})
+        # Helpers here step the lockstep protocol; prestart is tested explicitly.
+        **({**SGD_PROCESS, "sgd_prestart": False} if sgd else {}), **(dataplane or {})})
     owner = SegmentLearner(config, tmp_path / "owner", io)
     for key, value in owner.pool.environment().items():
         monkeypatch.setenv(key, value)
@@ -210,7 +211,7 @@ def test_CP_restores_across_implementations_both_directions(tmp_path, monkeypatc
     states = []
     for index, sgd in enumerate((False, True)):
         dataplane = {key: value for key, value in io.dataplane.items()
-                     if sgd or key not in SGD_PROCESS}
+                     if sgd or (key not in SGD_PROCESS and key != "sgd_prestart")}
         request = dc.replace(
             config, start_package=None, resume_checkpoint=record["checkpoint_artifact_id"],
             segments=dc.replace(config.segments, training_generation=f"g-restore-{index}"))

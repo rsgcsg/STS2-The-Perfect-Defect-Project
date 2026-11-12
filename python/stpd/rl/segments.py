@@ -267,6 +267,10 @@ class AuxiliaryPool:
     def __init__(self, groups: int, uses: int) -> None:
         self.limit, self.max_uses = groups, uses
         self.groups: collections.OrderedDict[str, list[dict[str, Any]]] = collections.OrderedDict()
+        # Row object -> its group, for `retire_exhausted(rows)`. Entries may go
+        # stale (a group popped or replaced elsewhere); every use re-checks that
+        # the row is still in that group, so a stale entry never retires anything.
+        self._where: dict[int, tuple[dict[str, Any], str]] = {}
 
     def validate_add(self, identity: str, rows: list[dict[str, Any]]) -> None:
         if identity in self.groups:
@@ -278,8 +282,18 @@ class AuxiliaryPool:
     def add(self, identity: str, rows: list[dict[str, Any]]) -> None:
         self.validate_add(identity, rows)
         self.groups[identity] = [copy.deepcopy(r) | {"uses": 0, "datasets": []} for r in rows]
+        for row in self.groups[identity]:
+            self._where[id(row)] = row, identity
         while len(self.groups) > self.limit:
-            self.groups.popitem(last=False)
+            _, evicted = self.groups.popitem(last=False)
+            for row in evicted:
+                self._where.pop(id(row), None)
+        if len(self._where) > 2 * len(self.groups) * max(1, len(rows)) + 4096:
+            self._reindex()  # groups popped elsewhere leave stale entries; bound them
+
+    def _reindex(self) -> None:
+        self._where = {id(row): (row, identity)
+                       for identity, rows in self.groups.items() for row in rows}
 
     def sample(self, count: int, rng: random.Random, *, epochs: int = 1,
                exclude: set[str] | None = None) -> list[dict[str, Any]]:
@@ -302,12 +316,34 @@ class AuxiliaryPool:
             if dataset not in row["datasets"]:
                 row["datasets"].append(dataset)
 
-    def retire_exhausted(self) -> dict[str, list[dict[str, Any]]]:
+    def retire_exhausted(self, rows: list[dict[str, Any]] | None = None
+                         ) -> dict[str, list[dict[str, Any]]]:
+        """Retire exhausted rows. `rows` (the rows just charged by `used`) checks
+        only their groups: the same result as the full scan whenever the full
+        scan ran after every earlier `used` (only charged rows can newly reach
+        the limit); None is the full scan."""
+        if rows is not None:
+            touched = set()
+            for row in rows:
+                if row["uses"] < self.max_uses:
+                    continue
+                entry = self._where.get(id(row))
+                if (entry is not None and entry[0] is row and entry[1] in self.groups
+                        and any(kept is row for kept in self.groups[entry[1]])):
+                    touched.add(entry[1])
+            if not touched:
+                return {}
+            candidates = [(identity, self.groups[identity]) for identity in self.groups
+                          if identity in touched]  # pool order, as the full scan
+        else:
+            candidates = list(self.groups.items())
         retired = {}
-        for identity, rows in list(self.groups.items()):
+        for identity, rows in candidates:
             kept = [row for row in rows if row["uses"] < self.max_uses]
             if len(kept) != len(rows):
                 retired[identity] = [row for row in rows if row["uses"] >= self.max_uses]
+                for row in retired[identity]:
+                    self._where.pop(id(row), None)
                 if kept:
                     self.groups[identity] = kept
                 else:
@@ -323,6 +359,7 @@ class AuxiliaryPool:
                 or len(value["groups"]) > self.limit):
             raise ValueError("auxiliary_pool_configuration_changed")
         self.groups = collections.OrderedDict(copy.deepcopy(value["groups"]))
+        self._reindex()
 
 
 def uniform_depth_indices(count: int, limit: int = 64) -> list[int]:

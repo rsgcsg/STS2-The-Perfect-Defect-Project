@@ -103,3 +103,32 @@ def test_archival_pool_reader_preserves_recorded_uses_and_labels():
     assert restored.groups["old-game"][0]["uses"] == 1
     assert restored.groups["old-game"][0]["datasets"] == [1]
     assert restored.groups["old-game"][0]["outcome"] == 18
+
+
+@pytest.mark.parametrize("uses", [1, 2])
+def test_incremental_retire_equals_the_full_scan(uses):
+    """`retire_exhausted(rows)` (the rows just charged) retires exactly what the full
+    scan retires, in pool order, through evictions, restores and external pops."""
+    rng = random.Random(20261113 + uses)
+    fast, full = AuxiliaryPool(groups=24, uses=uses), AuxiliaryPool(groups=24, uses=uses)
+    added = 0
+    for dataset in range(200):
+        for _ in range(rng.randrange(4)):
+            rows = [{"key": f"g{added}:{i}"} for i in range(rng.randrange(1, 6))]
+            fast.add(f"g{added}", rows)
+            full.add(f"g{added}", rows)
+            added += 1
+        if dataset % 37 == 36:  # restore rebuilds the index from a CP state
+            fast.restore(fast.state())
+        if dataset % 53 == 52 and fast.groups:  # an owner pops a group directly
+            identity = next(iter(fast.groups))
+            fast.groups.pop(identity)
+            full.groups.pop(identity)
+        fast_rows = fast.sample(rng.randrange(1, 12), random.Random(dataset))
+        full_rows = full.sample(len(fast_rows), random.Random(dataset))
+        assert [r["key"] for r in fast_rows] == [r["key"] for r in full_rows]
+        fast.used(fast_rows, dataset)
+        full.used(full_rows, dataset)
+        assert fast.retire_exhausted(fast_rows) == full.retire_exhausted()
+        assert fast.state() == full.state()
+        assert all(r["uses"] < uses for rows in fast.groups.values() for r in rows)
