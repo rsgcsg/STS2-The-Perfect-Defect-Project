@@ -3273,14 +3273,15 @@ class SegmentLearner:
         continues; its errors surface where the encode's do (`_collect_checkpoint`).
         """
         file: dict[str, Any] | None = None
-        sgd = self.sgd
+        sgd: Any = None
         weights: Any = None
         optimizer: Any = None
         ema: Any = None
         torch_rng: Any = None
         cuda: Any = None
         if self.sgd_owns_theta:
-            file = self._sgd_state_message()["file"]
+            # Only this path has an SGD process (`self.sgd` is not always set otherwise).
+            sgd, file = self.sgd, self._sgd_state_message()["file"]
             names = self.optimizer_names
         else:
             with self.gpu_lock:
