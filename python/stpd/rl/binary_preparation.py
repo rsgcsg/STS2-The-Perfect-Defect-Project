@@ -531,6 +531,13 @@ def _labels(
     return _opened(ready, work)
 
 
+@dc.dataclass(frozen=True)
+class _RemoteSource:
+    """Remote mode's ready source on the learner: the hosts hold the decode."""
+
+    descriptor: _Descriptor
+
+
 @dc.dataclass
 class _Arena:
     name: str
@@ -692,6 +699,7 @@ class BinaryBatchPreparer:
         source_wait_seconds: float = 60,
         handoff: bool = False,
         persistent_pools: bool = False,
+        remote_prepare: dict[str, Any] | None = None,
         **existing_assembly_options: Any,
     ) -> None:
         if (
@@ -781,10 +789,26 @@ class BinaryBatchPreparer:
         # Callbacks only enqueue here; this one thread takes the lock.
         self.callbacks = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-binary-callbacks")
+        # Opt-in: `_assemble` runs on remote preparation hosts (same functions,
+        # same bytes; the SGD process checks the transferred file's sha256).
+        # Hand-off mode only. A remote failure fails that batch: no local fallback.
+        self.remote: Any = None
+        if remote_prepare is not None:
+            if not handoff or not isinstance(remote_prepare, dict):
+                raise ValueError("binary_remote_prepare_requires_handoff")
+            from .remote_prepare import AUTH_ENV, RemoteAssembly
+
+            self.remote = RemoteAssembly(
+                endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
+                threads=threads, connections=remote_prepare.get("connections", 2),
+                auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
+                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0))
+            self._failed_tasks["remote_assembly"] = self._failed_tasks["remote_labels"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
-        if persistent_pools:
+        # Remote mode never submits to the local pools: no workers.
+        if persistent_pools and self.remote is None:
             self._warm({"source": self.pool, "assembly": self.assembly_pool,
                         "labels": self.label_pool})
 
@@ -1009,6 +1033,14 @@ class BinaryBatchPreparer:
             raise
         descriptor = _Descriptor(arena.name, offset, ref.size, arena.epoch, dict(copied))
         self.sources[ref] = arena_index, descriptor
+        if self.remote is not None:
+            # Remote mode: the hosts decode; the learner's tasks need only the
+            # descriptor (to send the bytes and rebuild aux snapshots).
+            job: Future = Future()
+            job.set_result(_WorkerResult(_RemoteSource(descriptor), os.getpid(), 0.0, 0.0))
+            self.source_jobs[ref] = job
+            self.callbacks.submit(self._release, (descriptor,))
+            return
         try:
             job = self.pool.submit(_timed, _decode_source, descriptor)
         except BaseException:
@@ -1134,7 +1166,17 @@ class BinaryBatchPreparer:
                     worker_args = (*args, str(output), self.handoff)
                 role = "assembly" if function is _assemble else "labels"
                 pool = self.assembly_pool if function is _assemble else self.label_pool
-                future = pool.submit(_timed, function, ready, *worker_args)
+                future: Future
+                if self.remote is not None:
+                    role, future = "remote_" + role, Future()
+                    try:
+                        future.set_result(self.remote.run(ready, args, str(output))
+                                          if function is _assemble else
+                                          self.remote.labels(ready, args))
+                    except BaseException as error:
+                        future.set_exception(error)
+                else:
+                    future = pool.submit(_timed, function, ready, *worker_args)
                 future.add_done_callback(
                     lambda done: self.callbacks.submit(self._record_worker, role, done))
                 result = future.result().value
@@ -1393,6 +1435,8 @@ class BinaryBatchPreparer:
                 if "labels" in replace:
                     self.label_pool = fresh["labels"] = self._pool(workers=self.label_workers)
                 self.fenced = False
+        if self.remote is not None:
+            fresh.clear()
         if self.persistent_pools and not self.closed and fresh:
             self._warm(fresh)
         self.last_barrier_failures = tuple(str(error) for error in errors)
@@ -1416,6 +1460,8 @@ class BinaryBatchPreparer:
                 self.coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
                 self.label_coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
                 self.callbacks.shutdown(wait=True)
+                if self.remote is not None:
+                    self.remote.close()
 
         if wait:
             close()
