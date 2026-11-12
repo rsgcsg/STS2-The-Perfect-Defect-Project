@@ -18,6 +18,25 @@ duplicate follows, recovery is CP-only): segments sealed and queued but not
 yet written (at most `max_queue`; keep it small), rows of segments not yet
 sealed, and the bytes of a row in flight when its game closes.
 
+Originals are written by `write_workers` threads at once (default 4; c3b 11-12:
+one writer on NFS scratch managed ~3.3 segments/s, the queue sat at `max_queue`
+and `submit` blocked the service's scoring thread for 66% of its time). Only the
+writes overlap: the hand-off thread still takes the queue in seal order, waits
+for that segment's own write, and only then hands it off, so "disk first" and
+hand-off order = seal order are unchanged; a write error is still recorded and
+counted for that segment in order (`write_failed`). The sticky `write_error` (raised
+to the next `submit`) is the first write to fail in time, not necessarily the first
+in seal order.
+
+A game that may get labels has its originals read back early, on two read-back
+threads: `submit_closed` asks for them, and each read is started only once the
+hand-off thread has passed that segment (handed off, `on_written` run), so a
+read-back never waits on anything but its own I/O. Every trainable segment of the
+game is read (labels may need only some; an unused read's error is never raised).
+Read bytes are held from the read until the hand-off thread reaches the game's
+close: at most the games whose close is still queued (<= `max_queue`, usually one
+or two).
+
 `DurableSegmentWriter` serves one assembler instance and refuses to start when
 originals of that instance already exist (a restart must be a new instance).
 
@@ -75,12 +94,14 @@ message's instance, generation and mu against the segment header.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
 import secrets
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from multiprocessing import resource_tracker, shared_memory
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -157,6 +178,12 @@ class DurableSegmentWriter:
         if not isinstance(instance_id, str) or not instance_id:
             raise HandoffError("assembler_instance_required")
         self.root, self.instance_id = Path(root), instance_id
+        # Targets of writes in flight (SegmentHandoff writes on several threads): the
+        # exists-then-rename check in `_durable_write` is not atomic between two
+        # threads, so a concurrent second write of the same original is refused here.
+        # A target leaves the set when its write ends, so the set stays bounded.
+        self._claimed: set[Path] = set()
+        self._claim_lock = threading.Lock()
         prefix = instance_id + "."
         for kind in KINDS:
             directory = self.root / kind
@@ -173,7 +200,16 @@ class DurableSegmentWriter:
         if not segment.segment_id.startswith(self.instance_id + "."):
             raise HandoffError("segment_from_another_assembler_instance")
         target = self.path(segment)
-        _durable_write(target, segment.data, "segment_original_already_exists")
+        with self._claim_lock:
+            if target in self._claimed:
+                raise HandoffError("segment_original_already_exists")
+            self._claimed.add(target)
+        try:
+            _durable_write(target, segment.data, "segment_original_already_exists")
+        finally:
+            with self._claim_lock:
+                # Written: a later write of it fails on `target.exists()` (same code).
+                self._claimed.discard(target)
         return target
 
 
@@ -466,35 +502,85 @@ class _Original:
         self.sha256 = segment.sha256
         self.path = path
         self._data: bytes | None = None
+        # The same read-back, started early on a read-back thread (SegmentHandoff).
+        self.prefetched: Future[bytes] | None = None
 
     @property
     def data(self) -> bytes:
         if self._data is None:
-            try:
-                data = self.path.read_bytes()
-            except OSError as error:
-                raise HandoffError("labels_original_unreadable") from error
-            if sha256(data) != self.sha256:
-                raise HandoffError("labels_original_changed")
-            self._data = data
+            prefetched, self.prefetched = self.prefetched, None
+            self._data = (prefetched.result() if prefetched is not None
+                          else read_original(self.path, self.sha256))
         return self._data
+
+
+def read_original(path: Path, expected_sha256: str) -> bytes:
+    """An original re-read from disk and checked against its sha256 (labels carry these)."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise HandoffError("labels_original_unreadable") from error
+    if sha256(data) != expected_sha256:
+        raise HandoffError("labels_original_changed")
+    return data
+
+
+class _Queued:
+    """A sealed segment in the hand-off queue and the future of its durable write."""
+
+    __slots__ = ("segment", "written", "read_back")
+
+    def __init__(self, segment: SealedSegment | RejectedSegment, written: Future[Path]) -> None:
+        self.segment, self.written = segment, written
+        self.read_back: _ReadBack | None = None
+
+
+class _ReadBack:
+    """A labels read-back of one submitted original (ids and state, never its bytes).
+
+    `passed` and `wanted` change only under `SegmentHandoff._prefetch_lock`; the read
+    starts when both hold, so it never reads earlier than the hand-off thread did
+    before and never waits for anything but its own I/O.
+    """
+
+    __slots__ = ("game", "segment_id", "sha256", "written", "passed", "wanted")
+
+    def __init__(self, game: str, segment_id: str, sha256: str, written: Future[Path]) -> None:
+        self.game, self.segment_id, self.sha256, self.written = game, segment_id, sha256, written
+        self.passed = self.wanted = False
+
+    def read(self) -> bytes:
+        # Passed, so its write finished; a failed write means the game gets no labels.
+        return read_original(self.written.result(), self.sha256)
 
 
 class SegmentHandoff:
     """Background writer + sender so the assembler never blocks under its lock."""
 
     def __init__(self, writer: DurableSegmentWriter, sender: ShmSegmentSender | None = None,
-                 *, max_queue: int = 64,
+                 *, max_queue: int = 64, write_workers: int = 4,
                  on_written: Callable[[SealedSegment | RejectedSegment, Path], None] | None = None,
                  labeler: Callable[[list[Any]], tuple[dict[str, Any], bytes]] | None = None
                  ) -> None:
+        if type(write_workers) is not int or write_workers < 1:
+            raise HandoffError("positive_write_workers_required")
         self.writer, self.sender, self.on_written = writer, sender, on_written
         self.labeler = labeler
         # Per open game: its handed-off segments, or None once one segment of it was not
         # (truncated, rejected, write or hand-off failure): that game gets no labels.
         self._games: dict[str, list[_Original] | None] = {}
-        self.queue: queue.Queue[SealedSegment | RejectedSegment | InstanceClosed | None] = (
-            queue.Queue(max_queue))
+        # Seal order; a segment travels with the future of its own durable write.
+        self.queue: queue.Queue[_Queued | InstanceClosed | None] = queue.Queue(max_queue)
+        self._writes = ThreadPoolExecutor(write_workers,
+                                          thread_name_prefix="fast-segment-write")
+        # Labels read-back started at submit_closed (c3b: done in order on the hand-off
+        # thread it took a median 1.35 s per labelled game, 57% of that thread):
+        # trainable segments submitted per open game (ids and state only, never the
+        # bytes), and the started read-backs per game by segment id.
+        self._submitted: dict[str, list[_ReadBack]] = {}
+        self._reads = ThreadPoolExecutor(2, thread_name_prefix="fast-segment-read-back")
+        self._prefetch: dict[str, dict[str, Future[bytes]]] = {}  # game -> segment id
+        self._prefetch_lock = threading.Lock()
         self.write_error: BaseException | None = None
         self.send_error: BaseException | None = None
         self.counters = {"written": 0, "handed_off": 0, "truncated_written": 0,
@@ -517,18 +603,78 @@ class SegmentHandoff:
             raise HandoffError("segment_handoff_failed") from self.send_error
 
     def submit(self, segment: SealedSegment | RejectedSegment) -> None:
-        """Always queue the segment first (it will be written), then report failures."""
-        self.queue.put(segment)
+        """Always queue the segment first (it will be written), then report failures.
+
+        Blocks only while `max_queue` segments wait to be written or handed off.
+        """
+        queued = _Queued(segment, Future())
+        # The write is submitted before the put, so every queued segment has its write
+        # (the hand-off thread waits for it); callers are serialised by the assembler's
+        # emit_lock, so at most one write runs ahead of the bound.
+        try:
+            self._writes.submit(self._write, queued)
+        except RuntimeError as error:  # submit after close(): never written, loud
+            self.raise_if_failed()
+            raise HandoffError("segment_handoff_closed") from error
+        instance = segment.header.get("game_instance_id")
+        if (self.labeler is not None and isinstance(segment, SealedSegment)
+                and segment.trainable and isinstance(instance, str)):
+            queued.read_back = _ReadBack(instance, segment.segment_id, segment.sha256,
+                                         queued.written)
+            with self._prefetch_lock:
+                self._submitted.setdefault(instance, []).append(queued.read_back)
+        self.queue.put(queued)
         self.raise_if_failed()
+
+    def _write(self, queued: _Queued) -> None:
+        """One durable write on a write thread; the hand-off thread waits for the result."""
+        try:
+            queued.written.set_result(self.writer.write(queued.segment))
+        except BaseException as error:  # noqa: BLE001 - counted in order, re-raised
+            # The first write to fail in time (not seal order); loud on the next submit.
+            self.write_error = self.write_error or error
+            queued.written.set_exception(error)
 
     def submit_closed(self, closed: InstanceClosed) -> None:
         """Queue the instance-closed message behind the instance's segments.
 
         Without a sender, or after a hand-off failure, it is counted as not sent
         (the chain has already stopped loudly); it is never resent.
+        A game that may get labels has its originals read back early, on the read-back
+        threads (each once the hand-off thread passed it), so the hand-off thread finds
+        them verified when it reaches this close (same bytes, same checks and errors,
+        same message order).
         """
+        labelable = (self.labeler is not None and closed.failure is None
+                     and closed.close_reason not in UNLABELLED_CLOSE_REASONS
+                     and closed.segments.get("truncated") == 0
+                     and closed.segments.get("rejected") == 0)
+        with self._prefetch_lock:
+            submitted = self._submitted.pop(closed.game_instance_id, [])
+            if submitted and labelable:
+                self._prefetch[closed.game_instance_id] = {}
+                for item in submitted:
+                    item.wanted = True
+                    if item.passed:
+                        self._start_read_locked(item)
         self.queue.put(closed)
         self.raise_if_failed()
+
+    def _start_read_locked(self, item: _ReadBack) -> None:
+        futures = self._prefetch.get(item.game)
+        if futures is None:
+            return
+        with contextlib.suppress(RuntimeError):  # after close(): labels read in order
+            futures[item.segment_id] = self._reads.submit(item.read)
+
+    def _passed(self, queued: _Queued) -> None:
+        """The hand-off thread is done with a segment: its read-back may start now."""
+        item = queued.read_back
+        if item is not None:
+            with self._prefetch_lock:
+                item.passed = True
+                if item.wanted:
+                    self._start_read_locked(item)
 
     def _labelable(self, closed: InstanceClosed, kept: list[_Original] | None) -> bool:
         return (kept is not None and len(kept) > 0 and closed.failure is None
@@ -543,6 +689,8 @@ class SegmentHandoff:
     def _send_labels(self, closed: InstanceClosed) -> None:
         """Labels for a game, before its instance-closed message; never in part."""
         kept = self._games.pop(closed.game_instance_id, None)
+        with self._prefetch_lock:
+            prefetched = self._prefetch.pop(closed.game_instance_id, {})
         if self.labeler is None:
             return
         if self.sender is None or self.send_error is not None:
@@ -553,6 +701,8 @@ class SegmentHandoff:
             self.counters["labels_ineligible"] += 1
             return
         assert kept is not None
+        for original in kept:
+            original.prefetched = prefetched.get(original.segment_id)
         try:
             fields, data = self.labeler(kept)
             self.sender.send_message(fields, data)
@@ -589,44 +739,52 @@ class SegmentHandoff:
             self.counters["instances_closed_not_sent"] += 1
 
     def _run(self) -> None:
-        while True:
-            segment = self.queue.get()
-            if segment is None:
-                return
-            if isinstance(segment, InstanceClosed):
-                self._send_closed(segment)
-                continue
-            try:
-                path = self.writer.write(segment)
-            except BaseException as error:  # noqa: BLE001 - recorded and re-raised
-                self.counters["write_failed"] += 1
-                self.write_error = self.write_error or error
-                self._keep(segment, None, handed_off=False)
-                continue
-            handed_off = False
-            self.counters["written"] += 1
-            self.counters["bytes"] += len(segment.data)
-            if isinstance(segment, RejectedSegment):
-                self.counters["rejected_written"] += 1
-            elif not segment.trainable:
-                self.counters["truncated_written"] += 1
-            elif self.sender is not None:
-                if self.send_error is not None:
-                    self.counters["not_handed_off"] += 1
-                else:
-                    try:
-                        self.sender.send(segment, path)
-                        self.counters["handed_off"] += 1
-                        handed_off = True
-                    except BaseException as error:  # noqa: BLE001 - recorded, re-raised
-                        self.send_error = error
-                        self.counters["not_handed_off"] += 1
-            self._keep(segment, path, handed_off)
-            if self.on_written is not None:
+        try:
+            while True:
+                queued = self.queue.get()
+                if queued is None:
+                    return
+                if isinstance(queued, InstanceClosed):
+                    self._send_closed(queued)
+                    continue
+                self._hand_off(queued)
+                self._passed(queued)
+        except BaseException as error:  # noqa: BLE001 - a dead hand-off thread is loud
+            self.send_error = self.send_error or error  # close() raises it, no end message
+
+    def _hand_off(self, queued: _Queued) -> None:
+        segment = queued.segment
+        try:
+            path = queued.written.result()  # this segment is on disk before anything else
+        except BaseException as error:  # noqa: BLE001 - recorded and re-raised
+            self.counters["write_failed"] += 1
+            self.write_error = self.write_error or error
+            self._keep(segment, None, handed_off=False)
+            return
+        handed_off = False
+        self.counters["written"] += 1
+        self.counters["bytes"] += len(segment.data)
+        if isinstance(segment, RejectedSegment):
+            self.counters["rejected_written"] += 1
+        elif not segment.trainable:
+            self.counters["truncated_written"] += 1
+        elif self.sender is not None:
+            if self.send_error is not None:
+                self.counters["not_handed_off"] += 1
+            else:
                 try:
-                    self.on_written(segment, path)
-                except BaseException as error:  # noqa: BLE001 - recorded and re-raised
-                    self.write_error = self.write_error or error
+                    self.sender.send(segment, path)
+                    self.counters["handed_off"] += 1
+                    handed_off = True
+                except BaseException as error:  # noqa: BLE001 - recorded, re-raised
+                    self.send_error = error
+                    self.counters["not_handed_off"] += 1
+        self._keep(segment, path, handed_off)
+        if self.on_written is not None:
+            try:
+                self.on_written(segment, path)
+            except BaseException as error:  # noqa: BLE001 - recorded and re-raised
+                self.write_error = self.write_error or error
 
     def finish(self) -> None:
         """Orderly end: write/send what is queued, then the sender's end message.
@@ -639,8 +797,11 @@ class SegmentHandoff:
     def close(self, *, orderly: bool = False) -> None:
         """Write/send what is queued and release; never says the orderly end unless
         called through `finish()` with no write or hand-off failure."""
-        self.queue.put(None)
+        if self.thread.is_alive():  # a dead hand-off thread would never drain a full queue
+            self.queue.put(None)
         self.thread.join()
+        self._writes.shutdown(wait=True)  # every queued write was awaited by the thread
+        self._reads.shutdown(wait=True)  # a read-back waits for nothing but its own I/O
         try:
             if self.sender is not None and self.send_error is None:
                 if orderly and self.write_error is None:
