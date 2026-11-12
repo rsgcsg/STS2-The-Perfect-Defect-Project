@@ -69,7 +69,10 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
 
     encoder = RowsEncoder(vocabulary, cache_bytes=cache_bytes, verify_every=verify_every)
     handler = _handler(handler_path)
-    release = None if release_path is None else _handler(release_path)
+    release = None if release_path is None else cast(
+        Callable[[Any, str], None],
+        getattr(importlib.import_module(release_path.partition(":")[0]),
+                release_path.partition(":")[2]))
     connection.send_bytes(json.dumps(encoder.identity).encode())
     while True:
         try:

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import torch
+from link2_writer import FrameWriter
 from test_p1_fast_inference import (  # noqa: F401 - fixtures
     AGENT_SPEC,
     MU,
@@ -398,7 +399,8 @@ def test_rows_after_the_swap_carry_the_new_mu(vocabulary, model):  # noqa: F811
         env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         observations = _observations(2)
-        env.socket.sendall(_decision_line(1, "g1", 0, observations[0]))
+        writer = FrameWriter()  # one game: its second line is a delta frame
+        env.socket.sendall(_decision_line(1, "g1", 0, observations[0], writer=writer))
         assert env.reply()["mu_snapshot_sha256"] == MU
         follower = FastMuFollower(
             Source(identity(NEW, compiler=service.compiler_identity), newer), service)
@@ -407,7 +409,7 @@ def test_rows_after_the_swap_carry_the_new_mu(vocabulary, model):  # noqa: F811
                   "step_index": 0, "status": "completed", "receipt_sha256": "b" * 64,
                   "public_facts": {"act": 1, "floor": 3, "hp": 50, "max_hp": 70},
                   "terminal": None})
-        env.socket.sendall(_decision_line(2, "g1", 1, observations[1]))
+        env.socket.sendall(_decision_line(2, "g1", 1, observations[1], writer=writer))
         assert env.reply()["mu_snapshot_sha256"] == NEW
         assert assembler.mu == MuHandoff(NEW, "gen-1", 2, 8)
     finally:

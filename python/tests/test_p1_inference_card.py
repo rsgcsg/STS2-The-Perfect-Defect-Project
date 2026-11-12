@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 import torch
+from link2_writer import FrameWriter
 from test_p1_fast_inference import (
     AGENT_SPEC,
     ENV,
@@ -139,11 +140,13 @@ def test_card_scores_each_game_on_its_bound_service(vocabulary, model):
                       "sampling": SAMPLING, "single_choice": "score",
                       "start": {"kind": "new_run"}})
         row_id = 0
+        writers = {game: FrameWriter() for game in games}
         for step, observation in enumerate(_observations(2)):
             sent = {}
             for game in games:
                 row_id += 1
-                env.socket.sendall(_decision_line(row_id, game, step, observation))
+                env.socket.sendall(_decision_line(row_id, game, step, observation,
+                                                  writer=writers[game]))
                 sent[row_id] = game
             replies = [env.reply() for _ in sent]
             assert {r["row_id"] for r in replies} == set(sent)
