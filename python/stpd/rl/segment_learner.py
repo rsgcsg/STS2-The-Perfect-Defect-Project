@@ -3274,8 +3274,12 @@ class SegmentLearner:
 
         self.telemetry_futures.append(self.telemetry.submit(publish))
 
-    def _sgd_state(self) -> dict[str, Any]:
-        """Dataset-boundary state from the SGD process; counters must match exactly."""
+    def _sgd_state_message(self) -> dict[str, Any]:
+        """Dataset-boundary handshake with the SGD process; counters must match exactly.
+
+        Only the handshake: the state file it names is read (and unlinked) later by
+        `_read_sgd_state`, possibly on the checkpoint encoder thread.
+        """
         assert self.sgd is not None
         self.sgd.send("checkpoint", updates=self.updates, datasets=self.datasets)
         message = self.sgd.expect("state", timeout=self.sgd.options.stall_seconds)
@@ -3284,68 +3288,109 @@ class SegmentLearner:
             raise self.sgd.violation("sgd_state_counters_changed", updates=message["updates"],
                                      datasets=message["datasets"], expected_updates=self.updates,
                                      expected_datasets=self.datasets)
-        value = read_tree(message["file"], STATE_SCHEMA)
-        Path(message["file"]["path"]).unlink()
-        if (value["updates"] != self.updates or value["datasets"] != self.datasets
-                or tuple(tuple(group) for group in value["optimizer_parameter_names"])
-                != self.optimizer_names):
-            raise self.sgd.violation("sgd_state_file_binding_changed")
         self.sgd_groups = message["optimizer_param_groups"]
         self.sgd_memory = message["memory"]
+        return message
+
+    @staticmethod
+    def _read_sgd_state(sgd: Any, file: dict[str, Any], updates: int, datasets: int,
+                        names: tuple[tuple[str, ...], ...]) -> dict[str, Any]:
+        """The state file of one handshake, bound to the counters captured with it."""
+        value = read_tree(file, STATE_SCHEMA)
+        Path(file["path"]).unlink()
+        if (value["updates"] != updates or value["datasets"] != datasets
+                or tuple(tuple(group) for group in value["optimizer_parameter_names"])
+                != names):
+            raise sgd.violation("sgd_state_file_binding_changed")
         return value
 
-    def _learning_state(self) -> SelfContainedCheckpoint:
+    def _capture_learning_state(self) -> Callable[[], SelfContainedCheckpoint]:
+        """Capture everything that belongs to this instant on the calling thread.
+
+        The returned function does the rest and touches no live learner state: it
+        reads and checks the SGD state file (when the SGD process owns theta),
+        validates the optimizer order, digests the weights and builds the
+        checkpoint. It can run on the checkpoint encoder thread while training
+        continues; its errors surface where the encode's do (`_collect_checkpoint`).
+        """
+        file: dict[str, Any] | None = None
+        sgd: Any = None
+        weights: Any = None
+        optimizer: Any = None
+        ema: Any = None
+        torch_rng: Any = None
+        cuda: Any = None
         if self.sgd_owns_theta:
-            remote = self._sgd_state()
-            weights, optimizer, ema = remote["weights"], remote["optimizer"], remote["ema"]
-            names, torch_rng, cuda = self.optimizer_names, remote["torch_rng"], remote["cuda_rng"]
+            # Only this path has an SGD process (`self.sgd` is not always set otherwise).
+            sgd, file = self.sgd, self._sgd_state_message()["file"]
+            names = self.optimizer_names
         else:
             with self.gpu_lock:
                 weights = snapshot_weights(self.model.state_dict())
                 optimizer, ema = cpu_copy(self.optimizer.state_dict()), snapshot_weights(self.ema)
             names = self._optimizer_names()
             torch_rng = torch.get_rng_state().clone()
-            cuda = (tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda"
-                    else self.cuda_rng)
-        validate_optimizer_order(optimizer, names, weights)
+            cuda = tuple(value.cpu().clone() for value in (
+                tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda"
+                else self.cuda_rng))
         configuration = asdict(self.config)
         if configuration["operating_budget"] is not None:
             active = (time.monotonic() - self.active_training_began
                       if self.active_training_began is not None else self.active_training_seconds)
             configuration["operating_budget"]["consumed_seconds"] += active
-        return SelfContainedCheckpoint(
-            RunSequence(self.config.run, self.generation, self.checkpoint_sequence),
-            replace(self.construction_template, text_digest=text_digest(weights)),
-            configuration,
-            self.producer.to_dict(),
-            weights,
-            optimizer,
-            names,
-            ema,
-            LearningCounters(
-                self.updates,
-                self.datasets,
-                self.first_use,
-                self.first_use_multi,
-                self.version,
-                self.published_updates,
-            ),
-            RngState(
-                random.getstate(),
-                self.committed_selection_rng if self.wal is not None else self.rng.getstate(),
-                torch_rng,
-                tuple(value.cpu().clone() for value in cuda),
-            ),
-            self.conversion,
-            ({"generation": self.generation,
-              "committed_selection_rng": self.committed_selection_rng,
-              "speculative_selection_rng": self.rng.getstate(),
-              "pending_requests": [_pending_receipt(active["request"])
-                                   for active, _ in self._pending_batches()],
-              "pending_labels": copy.deepcopy(self.pending_label_requests),
-              "restore_disposition": "discard_hot_inputs_resume_committed_rng"}
-             if self.wal is not None else None),
+        updates, datasets = self.updates, self.datasets
+        identity = RunSequence(self.config.run, self.generation, self.checkpoint_sequence)
+        template = self.construction_template
+        producer = self.producer.to_dict()
+        counters = LearningCounters(
+            self.updates,
+            self.datasets,
+            self.first_use,
+            self.first_use_multi,
+            self.version,
+            self.published_updates,
         )
+        python_rng = random.getstate()
+        selection_rng = (self.committed_selection_rng if self.wal is not None
+                         else self.rng.getstate())
+        conversion = self.conversion
+        recovery = ({"generation": self.generation,
+                     "committed_selection_rng": self.committed_selection_rng,
+                     "speculative_selection_rng": self.rng.getstate(),
+                     "pending_requests": [_pending_receipt(active["request"])
+                                          for active, _ in self._pending_batches()],
+                     "pending_labels": copy.deepcopy(self.pending_label_requests),
+                     "restore_disposition": "discard_hot_inputs_resume_committed_rng"}
+                    if self.wal is not None else None)
+
+        def finish() -> SelfContainedCheckpoint:
+            nonlocal weights, optimizer, ema, torch_rng, cuda
+            if file is not None:
+                remote = SegmentLearner._read_sgd_state(sgd, file, updates, datasets, names)
+                weights, optimizer, ema = remote["weights"], remote["optimizer"], remote["ema"]
+                torch_rng = remote["torch_rng"]
+                cuda = tuple(value.cpu().clone() for value in remote["cuda_rng"])
+            validate_optimizer_order(optimizer, names, weights)
+            return SelfContainedCheckpoint(
+                identity,
+                replace(template, text_digest=text_digest(weights)),
+                configuration,
+                producer,
+                weights,
+                optimizer,
+                names,
+                ema,
+                counters,
+                RngState(python_rng, selection_rng, torch_rng, cuda),
+                conversion,
+                recovery,
+            )
+
+        return finish
+
+    def _learning_state(self) -> SelfContainedCheckpoint:
+        """The full checkpoint object, synchronously (restore checks and tests)."""
+        return self._capture_learning_state()()
 
     def _state(self) -> tuple[bytes, tuple[Parent, ...]]:
         return encode_state(self._learning_state()), ()
@@ -3383,10 +3428,13 @@ class SegmentLearner:
         # the CP records both states explicitly and never drains CPU workers.
         self.checkpoint_sequence += 1
         began = time.perf_counter()
-        state = self._learning_state()
+        # Only the boundary capture runs here; the state-file read, its checks and
+        # the checkpoint build run on the encoder thread before the encode.
+        finish = self._capture_learning_state()
         self._event("checkpoint_captured", sequence=self.checkpoint_sequence,
                     capture_seconds=time.perf_counter() - began, memory=self._memory())
-        self.checkpoint_encoding = self.checkpoint_encoder.submit(_encode_snapshot, state)
+        self.checkpoint_encoding = self.checkpoint_encoder.submit(
+            lambda: _encode_snapshot(finish()))
         self.checkpoint_requested = False
         if final:
             self._collect_checkpoint(wait=True)
