@@ -24,10 +24,10 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
-from contextlib import ExitStack, nullcontext, suppress
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -176,6 +176,41 @@ class SegmentLearnerIO:
     publish_model: Callable[..., Any]
     read_hot_segment: Callable[..., dict[str, Any]] | None = None
     dataplane: dict[str, Any] | None = None
+
+
+class SnapshotFlights:
+    """At most one mu materialization per snapshot at a time (single flight).
+
+    Callers of the same snapshot queue on one lock; whoever holds it re-checks
+    COMPLETE first, so only the first caller materializes. If that caller
+    fails, it raises to its own requester and releases the lock; the next
+    waiter then makes its own attempt (and raises its own error if the cause
+    persists). Nobody waits forever, every failure is reported where it
+    happens, and no failure state has to be shared. The entry is dropped once
+    no caller uses it, so the map holds only snapshots being materialized.
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._entries: dict[str, list[Any]] = {}
+
+    @contextmanager
+    def hold(self, key: str) -> Iterator[None]:
+        with self._guard:
+            entry = self._entries.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._guard:
+                entry[1] -= 1
+                if not entry[1]:
+                    del self._entries[key]
+
+    def __len__(self) -> int:
+        with self._guard:
+            return len(self._entries)
 
 
 @dataclass
@@ -587,6 +622,7 @@ class SegmentLearner:
                              else threading.RLock())
         self.condition = self.queue.condition = threading.Condition(cast(Any, self.control_lock))
         self.capacity_waiters: dict[str, _BeginWait] = {}
+        self.mu_flights = SnapshotFlights()
         self.capacity_tickets = 0
         self.episode_load: dict[tuple[str, str], dict[str, int]] = {}
         self.gpu_lock = threading.RLock()
@@ -1311,20 +1347,25 @@ class SegmentLearner:
         root = self.live_work / "mu-network" / identity["snapshot_sha256"]
         root.mkdir(parents=True, exist_ok=True)
         if not (root / "COMPLETE").exists():
-            model = self.exchange.store.get_manifest(identity["model_artifact_id"])
-            heads = self.exchange.store.get_manifest(identity["heads_artifact_id"])
-            for name, payload in (("model.tensor-tree", model.payload("weights")),
-                                  ("model.json", model.payload("package_manifest")),
-                                  ("heads.tensor-tree", heads.payload("checkpoint"))):
-                self.exchange.store.materialize(payload, root / name)
-            # Several services can ask for a new mu at once: each writer replaces
-            # whole files, so a concurrent get_mu never reads a truncated manifest.
-            for name, body in (("model-manifest.json", model.to_bytes()),
-                               ("heads-manifest.json", heads.to_bytes()),
-                               ("COMPLETE", identity["snapshot_sha256"].encode())):
-                pending = root / f".{name}.{threading.get_ident()}.pending"
-                pending.write_bytes(body)
-                pending.replace(root / name)
+            # Every inference service asks for a new mu at once: only the first
+            # materializes (and hashes); the others wait, then find COMPLETE.
+            # self.condition is not held here.
+            with self.mu_flights.hold(identity["snapshot_sha256"]):
+                if not (root / "COMPLETE").exists():
+                    model = self.exchange.store.get_manifest(identity["model_artifact_id"])
+                    heads = self.exchange.store.get_manifest(identity["heads_artifact_id"])
+                    for name, payload in (("model.tensor-tree", model.payload("weights")),
+                                          ("model.json", model.payload("package_manifest")),
+                                          ("heads.tensor-tree", heads.payload("checkpoint"))):
+                        self.exchange.store.materialize(payload, root / name)
+                    # Whole-file replace, as before: a retry after a failed attempt (or
+                    # another process) never leaves a truncated manifest.
+                    for name, body in (("model-manifest.json", model.to_bytes()),
+                                       ("heads-manifest.json", heads.to_bytes()),
+                                       ("COMPLETE", identity["snapshot_sha256"].encode())):
+                        pending = root / f".{name}.{threading.get_ident()}.pending"
+                        pending.write_bytes(body)
+                        pending.replace(root / name)
         publication = self.exchange.model(identity["version"],
                                            training_generation=self.generation)
         return identity, [(name, root / name) for name in (

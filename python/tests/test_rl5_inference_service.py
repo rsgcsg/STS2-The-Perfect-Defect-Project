@@ -278,7 +278,7 @@ def test_node_mu_source_over_real_get_mu(tmp_path, monkeypatch):
     from spireagent.rl_socket_transport import BinarySources, SocketDataplane
     from stpd.p1.inference_service import NodeMuSource
     from stpd.p1.local_inference import AUTH_ENV, SEGMENT_SCHEMA
-    from stpd.rl.segment_learner import SegmentLearner
+    from stpd.rl.segment_learner import SegmentLearner, SnapshotFlights
 
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "store")}, "r")
     first, _ = publish_mu(exchange, tmp_path, 1)
@@ -287,7 +287,8 @@ def test_node_mu_source_over_real_get_mu(tmp_path, monkeypatch):
     pool = SimpleNamespace(snapshots={first["snapshot_sha256"]: first},
                            latest=first["snapshot_sha256"], node_caches={})
     owner = SimpleNamespace(pool=pool, generation="initial", live_work=tmp_path / "learner",
-                            exchange=exchange, condition=threading.Condition())
+                            exchange=exchange, condition=threading.Condition(),
+                            mu_flights=SnapshotFlights())
 
     def model_files(key, node, cached):
         return SegmentLearner._model_files(owner, key, node, cached)
