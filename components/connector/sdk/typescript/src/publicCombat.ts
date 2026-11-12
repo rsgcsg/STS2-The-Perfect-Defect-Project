@@ -40,14 +40,18 @@ export function combatContextSchemaFor<T extends z.ZodTypeAny>(cardContentSchema
   return combatContextSchema;
 }
 
+/** False when any number reachable through own enumerable values is not finite (each object visited once). */
 export function hasFinitePublicNumbers(value: unknown): boolean {
-  const pending: unknown[] = [value];
-  const seen = new Set<object>();
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || value === null) return true;
+  const pending: object[] = [value];
+  const seen = new Set<object>(pending);
   while (pending.length > 0) {
-    const item = pending.pop();
-    if (typeof item === "number" && !Number.isFinite(item)) return false;
-    if (typeof item === "object" && item !== null && !seen.has(item)) {
-      seen.add(item); pending.push(...Object.values(item));
+    const values = Object.values(pending.pop()!);
+    for (let index = 0; index < values.length; index++) {
+      const item = values[index];
+      if (typeof item === "number") { if (!Number.isFinite(item)) return false; }
+      else if (typeof item === "object" && item !== null && !seen.has(item)) { seen.add(item); pending.push(item); }
     }
   }
   return true;

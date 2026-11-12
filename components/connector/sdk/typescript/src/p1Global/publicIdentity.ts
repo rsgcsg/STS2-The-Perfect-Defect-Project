@@ -1,5 +1,5 @@
 import { P1G_NONCOMBAT_POTION_SCENES, P1G_REVISION, type P1Revision } from "./contracts.js";
-import { visibleCard } from "./admission.js";
+import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
 import type { PublicPath } from "./publicPath.js";
 
@@ -16,6 +16,10 @@ const RELATION_LIMIT = 1 << 14;
 interface RelationMemo {
   byPath: Map<string, PublicEntityRelation | null>;
   byNode: WeakMap<PublicPath, PublicEntityRelation | null>; nodes: number;
+  /** Per node: whether the node or any path below it can have a relation (see subtreeAt). */
+  subtree: WeakMap<PublicPath, boolean>; subtreeNodes: number;
+  /** Every path set member in index-free form; `rooted` members also match paths below them. */
+  exact: readonly string[]; rooted: readonly string[];
 }
 const POLICY_RELATIONS = new Map<string, RelationMemo>();
 export const publicFieldPath = (path: string, key: string): string => {
@@ -28,22 +32,6 @@ export const publicFieldPath = (path: string, key: string): string => {
   return plain ? (path ? `${path}.${key}` : key) : `${path}[${JSON.stringify(key)}]`;
 };
 export type PublicEntityRelation = "declared" | "reference";
-/**
- * @internal A key such that, under one policy, two paths with equal keys give equal
- * relations for themselves and for every descendant path. Outside `scene.` and
- * `extra_reads` every path set is matched on the index-free form, so the key drops
- * list indices there; under those two roots event and detail roots name literal
- * indices, so the key is the literal path.
- */
-export function relationMemoKey(node: PublicPath): string {
-  let key = node.relationKey;
-  if (key === undefined) {
-    const literal = node.path.replace(/^\$\.observation\./u, "").replace(/^\./u, "");
-    key = node.relationKey = literal.startsWith("scene.") || literal.startsWith("extra_reads")
-      ? `L${literal}` : `N${normalizePublicPath(node.path)}`;
-  }
-  return key;
-}
 const BASE_PATHS = [
   "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
   "commitments.reward_dispositions[].group", "map.content.nodes[].entity_id", "combat.content.player.player_entity_id",
@@ -117,13 +105,13 @@ export function createPublicIdentityPolicy(nativeKind: string,
     eventSurface.options.forEach((option, optionIndex) => {
       if (!isObject(option) || !Array.isArray(option.tooltips)) return;
       option.tooltips.forEach((tip, tipIndex) => {
-        if (isObject(tip) && tip.kind === "card" && visibleCard(tip.card))
+        if (isObject(tip) && tip.kind === "card" && visibleCardSchema.safeParse(tip.card).success)
           eventCards.add(`scene.content.surface.options[${optionIndex}].tooltips[${tipIndex}].card`);
       });
     });
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
-    && visibleCard(read.content) ? [`extra_reads[${index}].content`] : []));
+    && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));
   const shopDeclarations = new Set<string>();
   const shopCards = new Set<string>();
   extraReads.forEach((read, index) => {
@@ -147,7 +135,10 @@ export function createPublicIdentityPolicy(nativeKind: string,
   let memo = POLICY_RELATIONS.get(signature);
   if (memo === undefined) {
     if (POLICY_RELATIONS.size >= POLICY_LIMIT) POLICY_RELATIONS.clear();
-    POLICY_RELATIONS.set(signature, memo = { byPath: new Map(), byNode: new WeakMap(), nodes: 0 });
+    const exact = [...declared, ...references, ...shopDeclarations].map(normalizePublicPath);
+    const rooted = [...cards, ...eventRoots, ...detailRoots].map(normalizePublicPath);
+    POLICY_RELATIONS.set(signature, memo = { byPath: new Map(), byNode: new WeakMap(), nodes: 0,
+      subtree: new WeakMap(), subtreeNodes: 0, exact, rooted });
   }
   const relations = memo; const byPath = relations.byPath;
   const relation = (path: string): PublicEntityRelation | null => {
@@ -173,16 +164,34 @@ export function createPublicIdentityPolicy(nativeKind: string,
   };
   return {
     relation,
-    /** @internal Stable for every policy with these path sets: equal tokens give equal relations. */
-    memoToken: relations as object,
     /** @internal The same answer as relation(node.path), for the reducer's interned paths. */
     relationAt(node: PublicPath): PublicEntityRelation | null {
+      if (node.relationOwner === relations) return node.relation;
       let found = relations.byNode.get(node);
       if (found === undefined) {
         found = relation(node.path);
         if (relations.nodes >= RELATION_LIMIT) { relations.byNode = new WeakMap(); relations.nodes = 0; }
         relations.byNode.set(node, found); relations.nodes++;
       }
+      node.relationOwner = relations; node.relation = found;
+      return found;
+    },
+    /** @internal False only when relation() is null for node.path and for every path below it, so a
+     * walk may skip the subtree. A relation at path P needs one path set member M (in index-free form)
+     * with normalize(P) === M, or for a card / event / detail root, normalize(P) starting with M. Every
+     * P below the node has normalize(P) starting with normalize(node.path), so such an M either starts
+     * with normalize(node.path) or (a root) is a prefix of it. Both tests are kept loose on purpose. */
+    subtreeAt(node: PublicPath): boolean {
+      if (node.subtreeOwner === relations) return node.subtree;
+      let found = relations.subtree.get(node);
+      if (found === undefined) {
+        const prefix = normalizePublicPath(node.path);
+        found = prefix === "" || relations.exact.some(member => member.startsWith(prefix))
+          || relations.rooted.some(root => root.startsWith(prefix) || prefix.startsWith(root));
+        if (relations.subtreeNodes >= RELATION_LIMIT) { relations.subtree = new WeakMap(); relations.subtreeNodes = 0; }
+        relations.subtree.set(node, found); relations.subtreeNodes++;
+      }
+      node.subtreeOwner = relations; node.subtree = found;
       return found;
     }
   };

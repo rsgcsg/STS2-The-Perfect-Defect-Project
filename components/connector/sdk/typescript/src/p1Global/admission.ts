@@ -1,17 +1,12 @@
 import { publicCombatContextProblems } from "../publicCombat.js";
 import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
-import { memoCheck } from "./reduceMemo.js";
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const coordinate = (value: unknown): value is Record<string, unknown> => isObject(value)
   && Number.isSafeInteger(value.col) && Number.isSafeInteger(value.row);
-const VISIBLE_CARDS = new WeakMap<object, boolean>();
-const visibleCardCheck = (card: unknown): boolean => visibleCardSchema.safeParse(card).success;
-/** visibleCardSchema.safeParse(card).success; reused for a deeply frozen card only under the E6 memo. */
-export const visibleCard = (card: unknown): boolean => memoCheck(VISIBLE_CARDS, card, visibleCardCheck);
 export const completeCards = (cards: unknown): cards is Record<string, unknown>[] => Array.isArray(cards)
-  && cards.every(visibleCard)
+  && cards.every(card => visibleCardSchema.safeParse(card).success)
   && new Set(cards.map(card => card.entity_id)).size === cards.length;
 /** A display-only native upgrade preview, never an action-bearing card instance. */
 export function completePublicUpgradePreview(value: unknown): boolean {
