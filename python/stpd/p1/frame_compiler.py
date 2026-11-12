@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import functools
 import gzip
 import io
 import json
@@ -48,8 +49,11 @@ def _reject(code: str) -> NoReturn:
     raise BoundaryError("p1_frame_compiler", code)
 
 
-def compiler_digest() -> str:
-    """Bind actual encoding/codec sources and dependency versions, never theta."""
+@functools.cache
+def _compiler_source_digests() -> tuple[tuple[str, str], ...]:
+    # Read once per process: the source files of the running process. s1g/h100b: a
+    # per-mu-load reread of these files on NFS sat > 120 s in an open (D state) and the
+    # follower watchdog stopped the run.
     root = Path(__file__).parent
     sources = {name: digest((root / name).read_bytes()) for name in CODE_FILES}
     sources["checkpoint_codec.py"] = digest(
@@ -58,7 +62,16 @@ def compiler_digest() -> str:
     for name in ("json_boundary.py", "encoding.py"):
         sources["spireagent/" + name] = digest((platform / name).read_bytes())
     sources["uv.lock"] = digest((root.parents[1] / "uv.lock").read_bytes())
-    return digest(json_bytes({"sources": sources, "tokenizers": tokenizers.__version__,
+    return tuple(sources.items())
+
+
+def compiler_digest() -> str:
+    """Bind actual encoding/codec sources and dependency versions, never theta.
+
+    The source files are read once per process; the dependency versions are read
+    on every call (no file access)."""
+    return digest(json_bytes({"sources": dict(_compiler_source_digests()),
+                              "tokenizers": tokenizers.__version__,
                               "torch": torch.__version__, "safetensors": safetensors.__version__}))
 
 

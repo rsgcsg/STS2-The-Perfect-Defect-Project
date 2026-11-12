@@ -6,6 +6,7 @@ version; old packages retain their original bytes and exact resume identity.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, cast
@@ -16,12 +17,19 @@ if TYPE_CHECKING:
     from .model import MStd
 
 
+@functools.cache
+def _public_vocabulary_text() -> str:
+    # Read once per process: the code identity of the running process. s1g/h100b: a
+    # per-mu-load reread of these files on NFS sat > 120 s in an open (D state) and the
+    # follower watchdog stopped the run.
+    return files("stpd.p1").joinpath("public_vocabulary_v1.json").read_text()
+
+
 def public_vocabulary(input_projection: dict[str, Any] | None = None) -> dict[str, Any]:
     spec = V2_INPUT_SPEC if input_projection is None else validate_input_spec(input_projection)
     if not is_v2_encoding(spec):
         raise ValueError("fixed public vocabulary requires v2 encoding")
-    vocabulary = cast(dict[str, Any], json.loads(
-        files("stpd.p1").joinpath("public_vocabulary_v1.json").read_text()))
+    vocabulary = cast(dict[str, Any], json.loads(_public_vocabulary_text()))
     vocabulary["input_spec"] = copy.deepcopy(spec)
     return vocabulary
 

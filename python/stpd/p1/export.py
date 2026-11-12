@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import shutil
 from pathlib import Path
@@ -31,6 +32,14 @@ PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 
 
 def adapter_identity() -> dict[str, str]:
+    return dict(_adapter_identity())
+
+
+@functools.cache
+def _adapter_identity() -> dict[str, str]:
+    # Read once per process: the code identity of the running process. s1g/h100b: a
+    # per-mu-load reread of these files on NFS sat > 120 s in an open (D state) and the
+    # follower watchdog stopped the run.
     root = Path(__file__).parent
     closure = {
         name: digest((root / name).read_bytes())
