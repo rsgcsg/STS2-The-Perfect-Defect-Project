@@ -1628,6 +1628,30 @@ def test_node_mu_source_passes_its_transfer_timeout_to_the_cache(tmp_path):
     assert source._cache().transfer_timeout == 7.5
 
 
+def test_node_mu_source_rereads_the_attachment_only_when_it_changes(tmp_path):
+    """s1g: rereading the attachment (on NFS) on every poll stalled a follower > 120 s."""
+    import os
+
+    from stpd.p1.inference_service import NodeMuSource
+
+    attachment = tmp_path / "learner.json"
+    attachment.write_text(json.dumps({"run": "r", "training_generation": "g"}))
+    source = NodeMuSource(attachment, tmp_path / "mu")
+    first = source._cache()
+    for _ in range(5):
+        assert source._cache() is first  # unchanged file: stat only, no reopen
+        assert source._cache(refresh=False) is first  # load(): never touches the file
+    assert source.attachment_reads == 1
+    # A learner restore replaces the file atomically with a new generation: followed.
+    pending = tmp_path / "learner.pending"
+    pending.write_text(json.dumps({"run": "r", "training_generation": "g2", "pad": 1}))
+    os.replace(pending, attachment)
+    assert source._cache(refresh=False) is first  # load() keeps the generation it follows
+    renewed = source._cache()
+    assert renewed is not first and source.generation == "g2"
+    assert source.attachment_reads == 2
+
+
 def test_a_bounded_get_mu_names_its_steps_and_still_reads_the_snapshot(tmp_path, monkeypatch):
     from spireagent.rl_socket_transport import NodeMuCache
 

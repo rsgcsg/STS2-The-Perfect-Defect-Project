@@ -57,8 +57,13 @@ class MuSource(Protocol):
 class NodeMuSource:
     """Learner `get_mu` through NodeMuCache, following learner generations.
 
-    The learner attachment file is reread on every refresh, so a learner
-    restart (new port, pool and generation) is followed without a restart here.
+    The learner attachment file is reread on a refresh only when its stat
+    (inode, mtime, size) changed, so a learner restart (the file atomically
+    replaced: new port, pool and generation) is followed without a restart here,
+    while a steady run does not reopen it on every poll. s1g: with the attachment
+    on NFS, that per-poll open sat > 120 s in the kernel (NFSv4 open state) and
+    stalled the follower. `load()` uses the cache of the generation already
+    followed and never rereads the file.
     """
 
     def __init__(self, learner_attachment: Path, root: Path, *, interval: float = 0,
@@ -73,11 +78,23 @@ class NodeMuSource:
         self.on_stage: Any = None
         self.cache: Any = None
         self.generation: str | None = None
+        self.attachment_stat: tuple[int, int, int] | None = None
+        self.attachment_reads = 0
 
-    def _cache(self) -> Any:
+    def _cache(self, *, refresh: bool = True) -> Any:
         from spireagent.rl_socket_transport import NodeMuCache
 
+        if self.cache is not None and not refresh:
+            self.cache.on_stage = self.on_stage
+            return self.cache
+        stat = self.path.stat()
+        key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        if self.cache is not None and key == self.attachment_stat:
+            self.cache.on_stage = self.on_stage
+            return self.cache
         attachment = json.loads(self.path.read_bytes())
+        self.attachment_reads += 1
+        self.attachment_stat = key
         generation = attachment["training_generation"]
         if self.cache is None or generation != self.generation:
             self.cache = NodeMuCache(attachment, self.root / attachment["run"] / generation,
@@ -96,7 +113,7 @@ class NodeMuSource:
     def load(self, identity: dict[str, Any]) -> Any:
         from .local_mu import load_behavior_mu
 
-        cache = self._cache()
+        cache = self._cache(refresh=False)
         if not (cache.root / identity["snapshot_sha256"] / "COMPLETE").is_file():
             # get_mu serves only the learner's latest; an older grant that this
             # node never pulled (or already trimmed) is not fetched elsewhere.
