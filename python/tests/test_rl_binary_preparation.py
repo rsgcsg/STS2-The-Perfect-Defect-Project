@@ -759,3 +759,25 @@ def test_worker_initializer_freezes_import_time_objects(model):
     with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
                              initializer=_initialize, initargs=(model.vocabulary, 1)) as pool:
         assert pool.submit(gc.get_freeze_count).result(timeout=120) > 10_000
+
+
+def test_prepared_digest_binds_every_byte_and_the_length_on_any_thread_count():
+    import hashlib
+    import os
+
+    from stpd.rl.binary_preparation import (PREPARED_DIGEST, PREPARED_DIGEST_CHUNK,
+                                            prepared_digest)
+
+    data = bytearray(os.urandom(2 * PREPARED_DIGEST_CHUNK + 12345))
+    chunks = [bytes(data[i:i + PREPARED_DIGEST_CHUNK])
+              for i in range(0, len(data), PREPARED_DIGEST_CHUNK)]
+    expected = hashlib.sha256(PREPARED_DIGEST.encode() + len(data).to_bytes(8, "big")
+                              + b"".join(hashlib.sha256(c).digest() for c in chunks))
+    assert prepared_digest(memoryview(data)) == expected.hexdigest()
+    assert prepared_digest(memoryview(data), threads=4) == expected.hexdigest()
+    for position in (0, PREPARED_DIGEST_CHUNK - 1, PREPARED_DIGEST_CHUNK, len(data) - 1):
+        changed = bytearray(data)
+        changed[position] ^= 1
+        assert prepared_digest(memoryview(changed), threads=4) != expected.hexdigest()
+    assert prepared_digest(memoryview(data + b"\0")) != expected.hexdigest()
+    assert prepared_digest(memoryview(b"")) != prepared_digest(memoryview(b"\0"))

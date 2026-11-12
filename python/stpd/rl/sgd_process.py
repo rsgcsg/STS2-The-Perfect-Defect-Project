@@ -56,6 +56,8 @@ OPTION_KEYS = frozenset((
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread",
 ))
+# Threads that hash one prepared file's chunks (see `prepared_digest`).
+VERIFY_THREADS = 4
 DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
 COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup"))
 # Per-process bases from measurement where one exists (margin ~15-25%); override
@@ -363,11 +365,15 @@ def _file_identity(stat: os.stat_result) -> tuple[int, ...]:
 
 
 class _Digest(threading.Thread):
-    """sha256 of one mapped prepared file on its own thread (hashlib drops the GIL)."""
+    """`prepared_digest` of one mapped prepared file, off the staging thread.
 
-    def __init__(self, view: memoryview) -> None:
+    Chunk hashes run on `threads` threads (hashlib drops the GIL), alongside the
+    pin/H2D of the same file.
+    """
+
+    def __init__(self, view: memoryview, threads: int) -> None:
         super().__init__(name="rl-sgd-verify", daemon=True)
-        self.view = view
+        self.view, self.threads = view, threads
         self.value: str | None = None
         self.error: BaseException | None = None
         self.seconds = 0.0
@@ -376,7 +382,9 @@ class _Digest(threading.Thread):
     def run(self) -> None:
         began = time.perf_counter()
         try:
-            self.value = hashlib.sha256(self.view).hexdigest()
+            from .binary_preparation import prepared_digest
+
+            self.value = prepared_digest(self.view, self.threads)
         except BaseException as error:  # re-raised by the staging caller
             self.error = error
         finally:
@@ -1232,7 +1240,7 @@ class _SgdWorker:
             if len(mapping) < plan["used_bytes"]:
                 raise _ChildViolation("sgd_prepared_file_integrity_changed")
             if self.rank == 0:
-                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]])
+                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]], VERIFY_THREADS)
             tree = pickle.loads(plan["tree"])
             arrays = mapped_arrays(mapping, plan["arrays"])
             if self.shard is not None:
