@@ -302,6 +302,8 @@ def _role_metadata(
         size = np.zeros(count_all, dtype=np.int64)
         start = 0
         for width, count, indices in reduction.buckets:
+            if not count:
+                continue  # an empty bucket adds no rows (and may be wider than `widest`)
             block = (indices.reshape(count, width) + batch * scene_width).cpu().numpy()
             table[start : start + count, :width] = block
             size[start : start + count] = width

@@ -137,6 +137,17 @@ def test_role_metadata_equals_the_row_by_row_reference(index):
     assert_same(batch_preparation._role_metadata(*args), reference_role_metadata(*args))
 
 
+def test_role_metadata_skips_an_empty_bucket_wider_than_the_rest():
+    frame = fixture_frames()[0][0]
+    reduction = frame.reductions["source"]
+    widest = max(width for width, count, _ in reduction.buckets if count)
+    empty = (widest + 8, 0, torch.zeros(0, dtype=torch.long))
+    padded = TensorFrame(frame.tensors, {**frame.reductions, "source": Reduction(
+        (*reduction.buckets, empty), reduction.inverse)}, frame.choices, frame.entity_count)
+    args = ([padded, frame], "source", 1 + frame.entity_count, len(frame.choices) + 1, 3)
+    assert_same(batch_preparation._role_metadata(*args), reference_role_metadata(*args))
+
+
 def with_text(frame: TensorFrame, ids: torch.Tensor, numbers: torch.Tensor,
               lengths: torch.Tensor) -> TensorFrame:
     tensors = dict(frame.tensors, text_ids=ids, text_numbers=numbers, text_lengths=lengths)
