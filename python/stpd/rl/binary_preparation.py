@@ -793,14 +793,17 @@ class BinaryBatchPreparer:
 
             self.remote = RemoteAssembly(
                 endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
-                connections=remote_prepare.get("connections", 2),
-                auth_env=remote_prepare.get("authkey_env", AUTH_ENV))
+                threads=threads, connections=remote_prepare.get("connections", 2),
+                auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
+                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0))
             self._failed_tasks["remote_assembly"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
         if persistent_pools:
-            self._warm({"source": self.pool, "assembly": self.assembly_pool,
+            # Remote mode never submits to the local assembly pool: no workers.
+            self._warm({"source": self.pool, "labels": self.label_pool} if self.remote else
+                       {"source": self.pool, "assembly": self.assembly_pool,
                         "labels": self.label_pool})
 
     def _warm(self, pools: dict[str, ProcessPoolExecutor]) -> None:
@@ -1416,6 +1419,8 @@ class BinaryBatchPreparer:
                 if "labels" in replace:
                     self.label_pool = fresh["labels"] = self._pool(workers=self.label_workers)
                 self.fenced = False
+        if self.remote is not None:
+            fresh.pop("assembly", None)
         if self.persistent_pools and not self.closed and fresh:
             self._warm(fresh)
         self.last_barrier_failures = tuple(str(error) for error in errors)

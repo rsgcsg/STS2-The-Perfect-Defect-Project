@@ -6,7 +6,9 @@ import dataclasses as dc
 import hashlib
 import mmap
 import threading
-from multiprocessing.connection import Listener
+import time
+from multiprocessing import AuthenticationError
+from multiprocessing.connection import Client, Listener
 
 import pytest
 from test_rl41_w1 import model as model
@@ -23,7 +25,8 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setenv(remote_prepare.AUTH_ENV, "ab" * 16)
     state = remote_prepare._Host(tmp_path / "host", 1, 1, 1024**3)
     (tmp_path / "host").mkdir()
-    listener = Listener(("127.0.0.1", 0), authkey=remote_prepare.authkey())
+    listener = Listener(("127.0.0.1", 0))
+    key = remote_prepare.authkey()
 
     def accept():
         while True:
@@ -31,7 +34,7 @@ def host(tmp_path, monkeypatch):
                 connection = listener.accept()
             except OSError:
                 return
-            threading.Thread(target=remote_prepare._serve, args=(state, connection),
+            threading.Thread(target=remote_prepare._serve, args=(state, connection, key),
                              daemon=True).start()
 
     threading.Thread(target=accept, daemon=True).start()
@@ -126,3 +129,71 @@ def test_remote_prepare_requires_handoff_and_an_authkey(model, tmp_path, monkeyp
     with pytest.raises(ValueError, match="authkey_required"):
         prepare(model, tmp_path / "b", BytesProvider(), handoff=True,
                 remote_prepare={"endpoints": ["127.0.0.1:1"]})
+
+
+def test_a_host_that_never_replies_fails_the_batch_within_the_timeout(model, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setenv(remote_prepare.AUTH_ENV, "cd" * 16)
+    listener = Listener(("127.0.0.1", 0), authkey=remote_prepare.authkey())
+    held = []
+
+    def silent():  # handshake and hello, then never answers a task
+        connection = listener.accept()
+        held.append(connection)
+        connection.recv()
+        connection.send({"protocol": remote_prepare.PROTOCOL})
+        connection.recv()
+
+    threading.Thread(target=silent, daemon=True).start()
+    provider = BytesProvider()
+    preparer = prepare(model, tmp_path / "p", provider, handoff=True, remote_prepare={
+        "endpoints": [f"127.0.0.1:{listener.address[1]}"], "connections": 1,
+        "timeout_seconds": 2})
+    enc = encoder(model, tmp_path / "spool")
+    value = segment(model)
+    try:
+        member, _ = admit(enc, preparer, provider, value, "current")
+        began = time.monotonic()
+        with pytest.raises(TimeoutError, match="remote_prepare_timeout"):
+            preparer.submit(dc.replace(request([value]), members=(member,))).result(timeout=60)
+        assert time.monotonic() - began < 30
+        assert preparer.summary()["failed_tasks_without_timing"]["remote_assembly"] == 1
+    finally:
+        preparer.shutdown(wait=True, cancel_futures=True)
+        listener.close()
+
+
+def test_cache_key_binds_the_envelope_and_hello_binds_code_and_threads(model, host):
+    state, endpoint = host
+    envelope = {"packet_sha256": "a" * 64, "gae_lambda": 0.99, "training_split": "TRAIN"}
+    assert remote_prepare.source_key(envelope) != remote_prepare.source_key(
+        dict(envelope, gae_lambda=0.95))
+    assert remote_prepare.source_key(envelope) == remote_prepare.source_key(dict(envelope))
+    first = remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
+                                          threads=1)
+    first._connect(endpoint).close()
+    other = remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
+                                          threads=2)
+    with pytest.raises(RuntimeError, match="worker_settings_changed"):
+        other._connect(endpoint)
+    with pytest.raises(ValueError, match="code_changed"):
+        state.start(model.vocabulary, 1, "0" * 64)
+
+
+def test_serve_survives_a_wrong_key_and_a_silent_client(tmp_path, monkeypatch, model):
+    monkeypatch.setenv(remote_prepare.AUTH_ENV, "ef" * 16)
+    ready = tmp_path / "ready"
+    threading.Thread(target=remote_prepare.serve, daemon=True, args=([
+        "--listen", "127.0.0.1:0", "--scratch", str(tmp_path / "h"), "--decode-workers", "1",
+        "--assembly-workers", "1", "--ready-file", str(ready)],)).start()
+    deadline = time.monotonic() + 30
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    endpoint = "127.0.0.1:" + ready.read_text().strip().rpartition(":")[2]
+    silent = Client(remote_prepare._address(endpoint))  # connects, never answers the challenge
+    with pytest.raises(AuthenticationError):
+        Client(remote_prepare._address(endpoint), authkey=b"x" * 16)
+    learner = remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
+                                            threads=1)
+    learner._connect(endpoint).close()
+    silent.close()

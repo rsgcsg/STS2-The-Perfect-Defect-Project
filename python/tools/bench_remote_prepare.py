@@ -115,6 +115,9 @@ def learner(argv: list[str]) -> None:
     parser.add_argument("--batches", type=int, default=12)
     parser.add_argument("--inflight", type=int, default=6)
     parser.add_argument("--decode-workers", type=int, default=12)
+    parser.add_argument("--total", type=int, default=0,
+                        help="batches to submit, cycling the loaded ones (0 = each once); "
+                        "run hosts with a small --cache-bytes so cycled sources are re-sent")
     parser.add_argument("--warmup", type=int, default=2, help="batches excluded from the rate")
     parser.add_argument("--work", default=None)
     parser.add_argument("--local-check", action="store_true")
@@ -177,7 +180,10 @@ def learner(argv: list[str]) -> None:
                          "at": at - began, "latency": at - submitted,
                          "bytes": handoff.used_bytes,
                          "host_s": handoff.timings.get("binary_remote_host_seconds"),
-                         "sent": handoff.timings.get("binary_remote_sources_sent")})
+                         "sent": handoff.timings.get("binary_remote_sources_sent"),
+                         "asm_cpu": handoff.timings.get("binary_remote_assembly_cpu_seconds"),
+                         "dec_s": handoff.timings.get("binary_remote_decode_seconds"),
+                         "members": len(handoff.request.members)})
 
         def drain() -> None:
             # The SGD process's check, then its release: a hand-off holds credit.
@@ -186,7 +192,8 @@ def learner(argv: list[str]) -> None:
                 raise SystemExit(f"hand-off digest mismatch at batch {i}")
             preparer.release_handoff(h)
 
-        for index, (request, sources) in enumerate(plans):
+        for index in range(args.total or len(plans)):
+            request, sources = plans[index % len(plans)]
             for ref, env in sources:
                 preparer.prefetch(ref, env)
             while checks and checks[0][2].done():
@@ -211,6 +218,10 @@ def learner(argv: list[str]) -> None:
             "wire_GB_per_s": round(sum(d["bytes"] for d in steady) / span / 1e9, 3),
             "mean_latency_s": round(sum(d["latency"] for d in steady) / len(steady), 2),
             "mean_host_s": round(sum(d["host_s"] or 0 for d in steady) / len(steady), 2),
+            "host_assemble_ms_core_per_row": round(1000 * sum(d["asm_cpu"] for d in done)
+                                                   / sum(d["rows"] for d in done), 2),
+            "host_decode_ms_core_per_row": round(1000 * sum(d["dec_s"] for d in done) / max(
+                1e-9, sum(d["sent"] * d["rows"] / d["members"] for d in done)), 2),
             "bytes_per_row": round(sum(d["bytes"] for d in done) / sum(d["rows"] for d in done)),
             "remote": preparer.remote.stats, "all_handoff_digests_equal_worker_digest": True,
             "local_check_batch0_equal": None if local is None else local == first[0],

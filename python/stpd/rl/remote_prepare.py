@@ -11,13 +11,23 @@ local batch, so a corrupted transfer fails there and is never trained on.
 Transport is `multiprocessing.connection` with an HMAC authkey (hex in an
 environment variable on both ends). Messages are pickles between two processes
 of the same release and the same trusted job owner, as on the local spawn pools.
-A failed task raises on the learner (no local fallback, no retry); the broken
-connection is dropped and a new one is opened for a later task.
+HMAC covers the connection handshake only, so hosts belong on a trusted cluster
+network. A failed or timed-out task raises on the learner (no local fallback, no
+retry); the broken connection is dropped and a new one is opened for a later task.
+
+Bytes equal a local batch only for the same code and worker settings, which the
+SGD sha256 check cannot see (it covers the transfer). The hello therefore
+carries a digest of the preparation source (`stpd/rl`, `stpd/p1`) and the
+learner's worker thread count; a host started for other values refuses it. The
+host cache is keyed by packet sha256 and the exact envelope (it carries
+learner-side fields such as `gae_lambda` and the training split).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import mmap
 import os
 import queue
@@ -28,7 +38,8 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import Future, ProcessPoolExecutor
 from multiprocessing import get_context
-from multiprocessing.connection import Client, Connection, Listener
+from multiprocessing.connection import (Client, Connection, Listener, answer_challenge,
+                                        deliver_challenge)
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +47,33 @@ from . import binary_preparation as binary
 
 AUTH_ENV = "STPD_REMOTE_PREPARE_AUTH"
 CHUNK_BYTES = 64 * 1024**2
-PROTOCOL = "stpd/rl-remote-prepare-1"
+PROTOCOL = "stpd/rl-remote-prepare-2"
+HANDSHAKE_SECONDS = 60.0
+_code_digest: str | None = None
+
+
+def code_digest() -> str:
+    """Path-scoped digest of the preparation source both ends run (cached)."""
+    global _code_digest
+    if _code_digest is None:
+        root = Path(__file__).resolve().parents[1]  # python/stpd
+        digest = hashlib.sha256()
+        for path in sorted([*(root / "rl").rglob("*.py"), *(root / "p1").rglob("*.py")]):
+            digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        _code_digest = digest.hexdigest()
+    return _code_digest
+
+
+def source_key(envelope: dict[str, Any]) -> str:
+    """Cache key: the packet bytes and the exact envelope they are decoded under."""
+    canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"), default=repr)
+    return f"{envelope['packet_sha256']}:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
+def _wait(connection: Connection, timeout: float) -> None:
+    if not connection.poll(timeout):
+        raise TimeoutError("remote_prepare_timeout")
 
 
 def authkey(name: str = AUTH_ENV) -> bytes:
@@ -68,7 +105,7 @@ class _Host:
         self.scratch, self.cache_bytes = scratch, cache_bytes
         self.decode_workers, self.assembly_workers = decode_workers, assembly_workers
         self.lock = threading.Lock()
-        self.vocabulary: dict[str, Any] | None = None
+        self.settings: tuple[Any, ...] | None = None
         self.decode: ProcessPoolExecutor | None = None
         self.assembly: ProcessPoolExecutor | None = None
         # packet sha256 -> (decode future, files, bytes); LRU order.
@@ -77,20 +114,25 @@ class _Host:
         self.held = 0
         self.tasks = 0
 
-    def start(self, vocabulary: dict[str, Any]) -> None:
+    def start(self, vocabulary: dict[str, Any], threads: int, code: str) -> None:
+        """Pools are made once, for the first learner's settings; others must match."""
         with self.lock:
-            if self.vocabulary is not None:
-                if vocabulary != self.vocabulary:
-                    raise ValueError("remote_prepare_vocabulary_changed")
+            if code != code_digest():
+                raise ValueError("remote_prepare_code_changed")
+            if type(threads) is not int or threads < 1:
+                raise ValueError("remote_prepare_threads_required")
+            if self.settings is not None:
+                if (vocabulary, threads) != self.settings:
+                    raise ValueError("remote_prepare_worker_settings_changed")
                 return
             context = get_context("spawn")
             self.decode = ProcessPoolExecutor(self.decode_workers, mp_context=context,
                                               initializer=binary._initialize,
-                                              initargs=(vocabulary, 1))
+                                              initargs=(vocabulary, threads))
             self.assembly = ProcessPoolExecutor(self.assembly_workers, mp_context=context,
                                                 initializer=binary._initialize,
-                                                initargs=(vocabulary, 1))
-            self.vocabulary = vocabulary
+                                                initargs=(vocabulary, threads))
+            self.settings = vocabulary, threads
 
     def reserve(self, digests: list[str]) -> list[str]:
         """Pin every source of a task; return the digests this connection must send.
@@ -136,11 +178,19 @@ class _Host:
         job = self.decode.submit(binary._decode_source, descriptor)
 
         def settle(done: Future) -> None:
-            error = done.exception()
-            if error is None:
+            error = None if done.cancelled() else done.exception()
+            if done.cancelled() or error is not None:
+                # A failed decode is never cached: the next task sends it again.
+                with self.lock:
+                    if self.sources.get(digest, (None,))[0] is placeholder:
+                        del self.sources[digest]
+                        self.held -= len(raw)
+                for name in files:
+                    Path(name).unlink(missing_ok=True)
+                if not placeholder.done():
+                    placeholder.set_exception(error or RuntimeError("remote_prepare_cancelled"))
+            elif not placeholder.done():  # an evicted entry was already failed
                 placeholder.set_result(done.result())
-            else:
-                placeholder.set_exception(error)
 
         job.add_done_callback(settle)
 
@@ -163,7 +213,8 @@ class _Host:
                     continue
                 job, files, size = self.sources.pop(digest)
                 self.held -= size
-                job.cancel()
+                if not job.done():
+                    job.set_exception(RuntimeError("remote_prepare_evicted"))
                 for name in files:
                     Path(name).unlink(missing_ok=True)
 
@@ -184,33 +235,50 @@ class _Host:
             raise
 
 
-def _serve(host: _Host, connection: Connection) -> None:
+def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> None:
     try:
+        if key is not None:  # HMAC handshake here, off the accept loop
+            deliver_challenge(connection, key)
+            answer_challenge(connection, key)
+        _wait(connection, HANDSHAKE_SECONDS)
         hello = connection.recv()
         if hello.get("protocol") != PROTOCOL:
             raise ValueError("remote_prepare_protocol_changed")
-        host.start(hello["vocabulary"])
+        timeout = float(hello["timeout"])
+        try:
+            host.start(hello["vocabulary"], hello["threads"], hello["code"])
+        except ValueError as error:
+            connection.send({"protocol": PROTOCOL, "error": str(error)})
+            return
         connection.send({"protocol": PROTOCOL, "host": socket.gethostname(), "pid": os.getpid()})
         while True:
+            # Between tasks this connection holds no pins or files, so the wait
+            # for the learner's next task has no deadline; within a task it does.
             try:
                 task = connection.recv()
             except EOFError:
                 return
-            digests = [digest for digest, _ in task["sources"]]
-            envelopes = dict(task["sources"])
+            envelopes = {source_key(envelope): envelope for envelope in task["sources"]}
+            digests = [source_key(envelope) for envelope in task["sources"]]
             missing = host.reserve(digests)
             try:
                 connection.send({"need": missing})
                 delivered = 0
                 try:
                     for digest in missing:
+                        _wait(connection, timeout)
                         host.add(digest, envelopes[digest], connection.recv_bytes())
                         delivered += 1
                 finally:
                     host.abandon(missing[delivered:])
                 began = time.perf_counter()
                 try:
-                    result, output = host.run(host.ready(digests), task["args"])
+                    ready = host.ready(digests)
+                    # Worker seconds of the decodes this task delivered (diagnostic).
+                    fresh = set(missing[:delivered])
+                    decoded = sum(item.seconds for key, item in
+                                  dict(zip(digests, ready, strict=True)).items() if key in fresh)
+                    result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
                     connection.send({"error": f"{type(error).__name__}: {error}"})
                     return
@@ -221,7 +289,8 @@ def _serve(host: _Host, connection: Connection) -> None:
                         "tree": packed.tree, "summary": packed.summary,
                         "arrays": [(a.offset, a.count, a.dtype) for a in packed.arrays],
                         "pid": result.pid, "wall": result.wall_seconds, "cpu": result.cpu_seconds,
-                        "host_seconds": time.perf_counter() - began, "missing": len(missing)})
+                        "host_seconds": time.perf_counter() - began, "missing": len(missing),
+                        "decode_seconds": decoded})
                     with open(output, "rb") as stream:
                         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
                     try:
@@ -236,8 +305,8 @@ def _serve(host: _Host, connection: Connection) -> None:
                 host.tasks += 1
             finally:
                 host.release(digests)
-    except (EOFError, OSError):
-        return
+    except Exception as error:  # one client's failure never stops the host
+        print(f"remote_prepare connection ended: {type(error).__name__}", flush=True)
     finally:
         connection.close()
 
@@ -254,7 +323,8 @@ def serve(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     args.scratch.mkdir(parents=True, exist_ok=True)
     host = _Host(args.scratch, args.decode_workers, args.assembly_workers, args.cache_bytes)
-    listener = Listener(_address(args.listen), authkey=authkey())
+    key = authkey()
+    listener = Listener(_address(args.listen))  # handshake runs per connection thread
     bound = listener.address
     endpoint = f"{socket.gethostname()}:{bound[1]}"
     if args.ready_file is not None:
@@ -265,10 +335,10 @@ def serve(argv: list[str] | None = None) -> None:
     while True:
         try:
             connection = listener.accept()
-        except (OSError, EOFError) as error:  # failed handshake: keep serving
-            print(f"remote_prepare refused: {type(error).__name__}", flush=True)
+        except Exception as error:  # keep serving
+            print(f"remote_prepare accept failed: {type(error).__name__}", flush=True)
             continue
-        threading.Thread(target=_serve, args=(host, connection), daemon=True).start()
+        threading.Thread(target=_serve, args=(host, connection, key), daemon=True).start()
 
 
 # --------------------------------------------------------------------------- learner
@@ -277,11 +347,15 @@ def serve(argv: list[str] | None = None) -> None:
 class RemoteAssembly:
     """Learner side: one task per connection at a time, `connections` per endpoint."""
 
-    def __init__(self, *, endpoints: list[str], vocabulary: dict[str, Any],
-                 connections: int = 2, auth_env: str = AUTH_ENV) -> None:
+    def __init__(self, *, endpoints: list[str], vocabulary: dict[str, Any], threads: int,
+                 connections: int = 2, auth_env: str = AUTH_ENV,
+                 timeout_seconds: float = 600.0) -> None:
         if not endpoints or type(connections) is not int or connections < 1:
             raise ValueError("remote_prepare_endpoints_required")
+        if not 0 < timeout_seconds <= 3600:
+            raise ValueError("remote_prepare_timeout_bound")
         self.vocabulary, self.key = vocabulary, authkey(auth_env)
+        self.threads, self.timeout = threads, float(timeout_seconds)
         self.idle: queue.Queue[tuple[str, Connection | None]] = queue.Queue()
         self.closed = False
         for endpoint in endpoints:
@@ -293,11 +367,19 @@ class RemoteAssembly:
 
     def _connect(self, endpoint: str) -> Connection:
         connection = Client(_address(endpoint), authkey=self.key)
-        connection.send({"protocol": PROTOCOL, "vocabulary": self.vocabulary})
-        reply = connection.recv()
-        if reply.get("protocol") != PROTOCOL:
+        try:
+            connection.send({"protocol": PROTOCOL, "vocabulary": self.vocabulary,
+                             "threads": self.threads, "code": code_digest(),
+                             "timeout": self.timeout})
+            _wait(connection, HANDSHAKE_SECONDS)
+            reply = connection.recv()
+            if reply.get("protocol") != PROTOCOL:
+                raise RuntimeError("remote_prepare_protocol_changed")
+            if "error" in reply:
+                raise RuntimeError(f"remote_prepare_refused: {reply['error']}")
+        except BaseException:
             connection.close()
-            raise RuntimeError("remote_prepare_protocol_changed")
+            raise
         return connection
 
     def run(self, ready: tuple[Any, ...], args: tuple[Any, ...], output: str) -> Any:
@@ -309,11 +391,12 @@ class RemoteAssembly:
         try:
             if connection is None:
                 connection = self._connect(endpoint)
-            sources = [(item.descriptor.envelope["packet_sha256"], item.descriptor.envelope)
-                       for item in ready]
-            connection.send({"sources": sources, "args": args[:5]})
+            connection.send({"sources": [item.descriptor.envelope for item in ready],
+                             "args": args[:5]})
+            _wait(connection, self.timeout)
             need = set(connection.recv()["need"])
             sent = self._send_sources(connection, ready, set(need))
+            _wait(connection, self.timeout)  # covers the host's decode + assembly
             reply = connection.recv()
             if "error" in reply:
                 raise RuntimeError(f"binary_remote_assembly_failed: {reply['error']}")
@@ -325,6 +408,7 @@ class RemoteAssembly:
                     raise ValueError("binary_prepared_output_byte_limit")
                 cursor = 0
                 while cursor < used:
+                    _wait(connection, self.timeout)
                     cursor += connection.recv_bytes_into(mapping, cursor)
                 if cursor != used:
                     raise RuntimeError("binary_remote_assembly_short_transfer")
@@ -341,13 +425,15 @@ class RemoteAssembly:
             summary = dict(reply["summary"])
             summary["timings"] = {**summary["timings"],
                                   "binary_remote_host_seconds": reply["host_seconds"],
-                                  "binary_remote_sources_sent": float(len(need))}
+                                  "binary_remote_sources_sent": float(len(need)),
+                                  "binary_remote_assembly_cpu_seconds": float(reply["cpu"]),
+                                  "binary_remote_decode_seconds": float(reply["decode_seconds"])}
             return binary._WorkerResult(binary._PackedBatch(reply["tree"], arrays, summary),
                                         reply["pid"], reply["wall"], reply["cpu"])
         finally:
-            if not healthy and connection is not None:
+            if (not healthy or self.closed) and connection is not None:
                 connection.close()
-            self.idle.put((endpoint, connection if healthy else None))
+            self.idle.put((endpoint, connection if healthy and not self.closed else None))
 
     @staticmethod
     def _send_sources(connection: Connection, ready: tuple[Any, ...], need: set[str]) -> int:
@@ -356,7 +442,7 @@ class RemoteAssembly:
         try:
             for item in ready:
                 d = item.descriptor
-                digest = d.envelope["packet_sha256"]
+                digest = source_key(d.envelope)
                 if digest not in need:
                     continue
                 need.discard(digest)  # one copy per digest
