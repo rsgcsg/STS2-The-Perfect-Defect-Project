@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 import torch
+from link2_writer import FrameWriter, link2_line
 from test_p1_input_v2 import public_state
 
 from spireagent.json_boundary import BoundaryError
@@ -163,17 +164,20 @@ def _observations(count: int) -> list[dict[str, Any]]:
 
 
 def _decision_line(row_id: int, game: str, step: int, observation: dict[str, Any], *,
-                   catalog_len: int | None = None) -> bytes:
-    """The WP2 kernel's field order: the routing head first, then the input."""
+                   catalog_len: int | None = None, writer: FrameWriter | None = None) -> bytes:
+    """The kernel's link-2 field order: the routing head, then the input frame, then the parts.
+
+    `writer` is the game's frame writer (its first line is a full frame); none = a full frame.
+    """
     catalog = observation["catalog"]
     head = (f'{{"schema":"{LINK_SCHEMA}","type":"decision","row_id":{row_id},'
             f'"game_instance_id":"{game}","step_index":{step},"consumption_id":"c-{game}-{step}",'
             f'"catalog_len":{len(catalog) if catalog_len is None else catalog_len},'
-            f'"catalog_sha256":"{digest(json_bytes(catalog))}","observation_sha256":"{"0" * 64}",'
+            f'"catalog_sha256":"{digest(json_bytes(catalog))}",'
+            f'"observation_sha256":"{digest(json_bytes(observation))}",'
             f'"in_combat":false,"floor":3,')
-    body = json.dumps({"input_spec": AGENT_SPEC, "observation": observation,
-                       "catalog": catalog})
-    return (head + '"input":' + body + "}\n").encode()
+    frame, parts = (writer or FrameWriter()).frame(observation, row_id)
+    return link2_line(head, AGENT_SPEC, frame, parts) + b"\n"
 
 
 class FakeEnv:
@@ -223,11 +227,13 @@ def test_node_aggregator_scores_rows_end_to_end(vocabulary, model):
                       "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         replies = {}
         row_id = 0
+        writers = {"g1": FrameWriter(), "g2": FrameWriter()}
         for step, observation in enumerate(observations):
             sent = {}
             for game in ("g1", "g2"):
                 row_id += 1
-                env.socket.sendall(_decision_line(row_id, game, step, observation))
+                env.socket.sendall(_decision_line(row_id, game, step, observation,
+                                                  writer=writers[game]))
                 sent[row_id] = game
             for _ in sent:
                 reply = env.reply()

@@ -17,6 +17,11 @@ export function pyJsonSha256(value: unknown): string {
   return createHash("sha256").update(pyJson(value), "utf8").digest("hex");
 }
 
+/** The text `pyJsonBytes` encodes (E7 keeps it per observation part). */
+export function pyJsonText(value: unknown): string {
+  return pyJson(value);
+}
+
 /** Any UTF-16 surrogate code unit (no `u` flag: halves of a pair match too). */
 const SURROGATE = /[\uD800-\uDFFF]/;
 /** With the `u` flag a class matches whole code points, so only a lone surrogate matches. */

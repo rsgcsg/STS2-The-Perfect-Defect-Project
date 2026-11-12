@@ -7,7 +7,8 @@
 export const FAST_ENV_CONFIG_SCHEMA = "sts2.policy-runtime/fast-env-config-1" as const;
 export const FAST_ENV_COMMAND_SCHEMA = "sts2.policy-runtime/fast-env-command-1" as const;
 export const FAST_ENV_EVENT_SCHEMA = "sts2.policy-runtime/fast-env-event-1" as const;
-export const FAST_ENV_LINK_SCHEMA = "sts2.policy-runtime/fast-env-link-1" as const;
+/** link-2 (E7): decision lines carry frames (first full, then changed parts; `frame-delta.ts`). */
+export const FAST_ENV_LINK_SCHEMA = "sts2.policy-runtime/fast-env-link-2" as const;
 export const MAX_SLOTS = 16;
 
 export interface ClassPolicy { temperature: number; uniform_mix: number }

@@ -89,3 +89,19 @@ def test_a_send_racing_the_break_never_leaves_a_pending_future():
         assert not worker.pending
     finally:
         pool.close()
+
+
+def test_release_handler_drops_a_link2_lane_after_its_submitted_rows():
+    from test_p1_link_frames import _game, _views
+
+    vocabulary = public_vocabulary(V2_INPUT_SPEC)
+    lines, full = _game(vocabulary, "g1", _views(4))
+    with EncoderPool(vocabulary, workers=1, handler="stpd.p1.fast_aggregator:encode_link_decision",
+                     release_handler="stpd.p1.fast_aggregator:release_link_lane") as pool:
+        first = [pool.submit("g1", line) for line in lines[:2]]
+        pool.release("g1")  # sent after both rows: they still see the lane
+        for future, expected in zip(first, full[:2], strict=True):
+            meta, row = future.result(30)
+            assert meta["frame"] is None and row == expected.row
+        meta, row = pool.submit("g1", lines[2]).result(30)
+        assert meta["frame"] == "frame_base" and row == b""

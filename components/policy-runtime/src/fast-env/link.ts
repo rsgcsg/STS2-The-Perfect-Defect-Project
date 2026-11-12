@@ -11,7 +11,7 @@ export type LinkResult =
   | { kind: "cancelled" }
   | { kind: "disconnected" };
 
-/** Environment side of fast-env-link-1. One instance per environment process. */
+/** Environment side of fast-env-link-2. One instance per environment process. */
 export interface DecisionLinkPort {
   /** Sends one message that expects no reply (hello, episode_open, step_outcome, episode_close). */
   send(message: Record<string, unknown>): void;

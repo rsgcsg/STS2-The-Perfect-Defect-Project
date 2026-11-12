@@ -13,6 +13,7 @@ import { CanonicalTextMemo, CanonicalTextMemoDivergence, pyJsonSha256 } from "..
 import { globalDigest } from "../src/global-transport.js";
 import { canonicalJson } from "../src/evidence.js";
 import { GlobalHttpFixture } from "./global-runtime-fixtures.js";
+import { FrameReader } from "./frame-delta-reader.js";
 import { FastEnvProcess, defaultFastEvidenceSink, requireFastEnvManifest } from "../src/fast-env/process.js";
 import { FastActionEvidenceSink, readFastGameEvidence } from "../src/global-fast-storage.js";
 import { StreamDecisionLink } from "../src/fast-env/link.js";
@@ -221,11 +222,17 @@ async function harness(options: { slots?: number; hooks?: (index: number) => Nat
     async start() { options.onStart?.(); const index = created++; const native = await new FakeNative(index, options.hooks?.(index) ?? {}).init(); natives.push(native); return native; } };
   const fromEnv = new PassThrough(), toEnv = new PassThrough();
   const linkMessages: any[] = [];
+  const frameReaders = new Map<string, FrameReader>();
   const policy = options.policy ?? (decision => scored(decision));
   createInterface({ input: fromEnv }).on("line", line => {
     const message = JSON.parse(line);
     linkMessages.push(message);
     if (message.type !== "decision") return;
+    // link-2: rebuild each decision's observation from its frame, strictly, as the encoder does.
+    let reader = frameReaders.get(message.game_instance_id);
+    if (reader === undefined) { reader = new FrameReader(); frameReaders.set(message.game_instance_id, reader); }
+    // Not enumerable: JSON.stringify(message) stays the line as sent.
+    Object.defineProperty(message.input, "observation", { value: reader.read(line).observation, enumerable: false });
     const reply = policy(message);
     if (reply === "disconnect") { toEnv.end(); return; }
     if (reply !== "silent") toEnv.write(`${JSON.stringify({ schema: FAST_ENV_LINK_SCHEMA, ...reply })}\n`);

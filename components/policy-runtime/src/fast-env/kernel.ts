@@ -11,6 +11,7 @@ import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicF
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
 import { CanonicalTextMemoDivergence, globalDigestFast, pyJsonSha256, type CanonicalTextMemo } from "./json-bytes.js";
 import type { ColdStartGate } from "./cold-start.js";
+import { ObservationFrameDivergence, ObservationFrames } from "./frame-delta.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
 import { SampledCheckFailure, type SampledCheckMismatch, type SlotNative, type SlotNativeFactory } from "./host.js";
@@ -91,11 +92,12 @@ class GameEnd extends Error {
   }
 }
 
-/** Memo divergences of this Node process (E4 receipt text memo): the game ends (unknown once an action was
+/** Memo divergences of this Node process (E4 receipt text memo, E7 decision-line frames): the game ends (unknown once an action was
  * delivered), never retried, this build's output stops and the whole process exits fatal. */
-type MemoDivergence = "receipt_canonical_memo_divergence";
+type MemoDivergence = "receipt_canonical_memo_divergence" | "observation_frame_divergence";
 const memoDivergence = (error: unknown): MemoDivergence | null =>
-  error instanceof CanonicalTextMemoDivergence ? "receipt_canonical_memo_divergence" : null;
+  error instanceof CanonicalTextMemoDivergence ? "receipt_canonical_memo_divergence"
+    : error instanceof ObservationFrameDivergence ? "observation_frame_divergence" : null;
 const memoDivergenceEnd = (kind: MemoDivergence, error: unknown) => new GameEnd("not_started", kind, { replaceNative: true,
   buildStop: kind, fatal: `${kind}:${errorText(error)}`, pendingOutcome: { status: "unknown", reason: "native_crash" } });
 
@@ -132,6 +134,8 @@ interface PendingOutcome {
   combat_end: Record<string, unknown>[];
   resolved: PublicFacts | null;
 }
+/** E7: one decision-line frame per gap drawn from ceil(N/2)..N is compared against the full computation. */
+const FRAME_CHECK_INTERVAL = 64;
 /** rl-inference-3 step_outcome.combat_end maxItems. */
 const COMBAT_END_PER_OUTCOME = 4;
 
@@ -155,6 +159,8 @@ class GameRun {
   /** L1 omit: one-option steps executed since the last model row (S1 bound). */
   #forcedInARow = 0;
   readonly #started = performance.now();
+  /** E7 (fast-env-link-2): this game's decision-line frames; the first line is full, the others carry changes. */
+  readonly #frames = new ObservationFrames({ checkInterval: FRAME_CHECK_INTERVAL });
 
   constructor(private readonly ctx: KernelContext, private readonly slot: SlotKernel, private readonly native: SlotNative,
               readonly gameInstanceId: string, private readonly evidence: FastGameEvidence) {
@@ -376,11 +382,11 @@ class GameRun {
       const inputStarted = performance.now();
       const rowId = this.ctx.nextRowId(), stepIndex = this.decisions;
       const view = modelView(observation) as unknown as Record<string, any>;
-      const observationJson = JSON.stringify(view), catalogJson = JSON.stringify(catalog);
       // The repo-wide definitions: digest(json_bytes(observation)) / digest(json_bytes(catalog)),
-      // the values the encoder and segment validation compute from this line.
+      // the values the encoder and segment validation compute from this line (the encoder checks both).
       const catalogSha = pyJsonSha256(catalog), inCombat = view.combat?.availability === "available";
-      const observationSha = pyJsonSha256(view);
+      const frame = this.#frames.encode(view, rowId);
+      const observationSha = frame.observationSha256;
       const row = { row_id: rowId, game_instance_id: this.gameInstanceId, catalog_sha256: catalogSha, catalog_len: catalog.length, in_combat: inCombat };
       const consumptionId = `consumption-${randomUUID().replaceAll("-", "")}`;
       // combat_end facts read before this row with no earlier row to carry them are not this row's.
@@ -389,7 +395,7 @@ class GameRun {
         + `"game_instance_id":${JSON.stringify(this.gameInstanceId)},"step_index":${stepIndex},"consumption_id":"${consumptionId}",`
         + `"catalog_len":${catalog.length},"catalog_sha256":"${catalogSha}","observation_sha256":"${observationSha}",`
         + `"in_combat":${inCombat},"floor":${facts.floor},"input":{"input_spec":${JSON.stringify(this.ctx.manifest.input.input_spec)},`
-        + `"observation":${observationJson},"catalog":${catalogJson}}}`;
+        + `"frame":${frame.frame}},"parts":${frame.parts}}`;
       stats.input_ms += performance.now() - inputStarted;
       this.decisions += 1; stats.decisions += 1; this.lastStepIndex = stepIndex;
 

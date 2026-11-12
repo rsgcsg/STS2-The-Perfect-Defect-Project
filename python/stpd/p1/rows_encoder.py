@@ -42,6 +42,7 @@ import json
 import marshal
 import math
 import re
+import struct
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -71,6 +72,9 @@ _READ_INDEX = re.compile(r"^\$\.extra_reads\[(\d+)\]")
 _CONSTANT = frozenset({"schema", "profile", "revision"})
 _I64 = np.int64
 _UNSET = object()
+# Paths of top-level values and of top-level list elements (E7 reuses exactly these objects).
+_TOP_PATH = re.compile(r"\$\.[A-Za-z0-9_]+(?:\[\])?\Z")
+_LIST_LENGTH = struct.Struct("<i")
 
 
 def encoder_digest() -> str:
@@ -338,18 +342,28 @@ class RowsEncoder:
         """Encode one observation given as its JSON bytes."""
         return self.encode_parsed(parse_public_json(raw))
 
-    def encode_parsed(self, observation: Any) -> EncodedRow:
-        """Encode one observation parsed by `parse_public_json` (alone or inside a message)."""
+    def encode_parsed(self, observation: Any, *,
+                      marshal: dict[int, tuple[Any, bytes]] | None = None,
+                      marshal_out: dict[int, tuple[Any, bytes]] | None = None) -> EncodedRow:
+        """Encode one observation parsed by `parse_public_json` (alone or inside a message).
+
+        E7 frames (`link_frames`) reuse the previous frame's objects: `marshal` holds the
+        marshal bytes of that frame's top-level values and top-level list elements, each with
+        its object (taken only when the very object comes again), and `marshal_out` receives
+        this observation's. Neither changes the result.
+        """
         # FrameCompiler.encode checks the catalog binding (observation_hashes) first.
         if not isinstance(observation, dict) or not isinstance(observation.get("catalog"), list):
             raise BoundaryError("p1_frame_compiler", "public_observation_and_catalog_required")
         if any(not isinstance(choice, dict) or not isinstance(choice.get("choice_id"), str)
                for choice in observation["catalog"]):
             raise BoundaryError("p1_frame_compiler", "invalid_public_catalog")
-        encoder = _Encoder(self, observation)
+        encoder = _Encoder(self, observation, marshal)
         frame = encoder.run()
         self._check(observation, frame)
         bindings = encoder.hashes()
+        if marshal_out is not None:
+            marshal_out.update(encoder.marshals)
         row = encode_row(frame)
         run = observation.get("run")
         floor = ((run or {}).get("content") or {}).get("floor") if isinstance(run, dict) else None
@@ -402,9 +416,14 @@ class RowsEncoder:
 class _Encoder:
     """One observation: the reference visit with subtree replay, then assembly."""
 
-    def __init__(self, owner: RowsEncoder, observation: dict[str, Any]) -> None:
+    def __init__(self, owner: RowsEncoder, observation: dict[str, Any],
+                 previous: dict[int, tuple[Any, bytes]] | None = None) -> None:
         self.owner = owner
         self.observation = observation
+        # marshal bytes of top-level values and top-level list elements: this observation's,
+        # and (E7) the previous frame's, each kept with its object and taken only for it.
+        self.marshals: dict[int, tuple[Any, bytes]] = {}
+        self.previous = previous
         self.relation: Callable[[str], Any] | None = None
         self.top: dict[str, _Unit] = {}
         self.elements: dict[int, _Unit] = {}  # id(list element) -> its unit
@@ -487,11 +506,30 @@ class _Encoder:
             self._scene = (observation.get("revision"), native, tuple(tips))
         return self._scene
 
+    def _marshal(self, item: Any) -> bytes:
+        """marshal.dumps(item, 2) of a top-level value or top-level list element, kept."""
+        key = id(item)
+        kept = self.marshals.get(key)
+        if kept is None and self.previous is not None:
+            kept = self.previous.get(key)
+        if kept is not None and kept[0] is item:
+            data = kept[1]
+        elif isinstance(item, list):
+            # marshal v2 writes a list as b"[", its length as <i4, then each element on its
+            # own (no references below version 3): the same bytes from the elements' bytes.
+            data = b"".join([b"[", _LIST_LENGTH.pack(len(item)),
+                             *[self._marshal(element) for element in item]])
+        else:
+            data = marshal.dumps(item, 2)
+        self.marshals[key] = (item, data)
+        return data
+
     def _unit(self, b: _Builder, item: Any, path: str, position: int, parent: int,
               source_path: str) -> _Unit:
         # marshal v2 has no back-references, so its bytes are a pure function of
         # the typed value in insertion order and decode back to it exactly.
-        key = (path, self._scope(source_path), marshal.dumps(item, 2))
+        data = self._marshal(item) if _TOP_PATH.match(path) else marshal.dumps(item, 2)
+        key = (path, self._scope(source_path), data)
         cache = self.owner._cache
         unit = cache.get(key)
         if unit is None:

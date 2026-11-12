@@ -11,6 +11,7 @@ worker with the fewest live lanes. Workers are started with `spawn` (or
 Failure is loud and final:
 * a per-observation encode error (`BoundaryError`, `ValueError`, R7 reference
   mismatch) fails that row's future with the same type and code;
+* tag 0 is never a request: it releases a lane on its worker (no reply);
 * a worker that dies or answers out of order breaks the whole pool: every
   pending future fails with `encoder_worker_died` and later submits raise.
   Nothing is retried or re-encoded elsewhere, and there is no in-process
@@ -54,7 +55,8 @@ def _handler(path: str) -> Callable[[Any, memoryview], tuple[dict[str, Any], byt
 
 
 def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int,
-            verify_every: int, cpu: int | None, handler_path: str) -> None:
+            verify_every: int, cpu: int | None, handler_path: str,
+            release_path: str | None = None) -> None:
     if cpu is not None:
         if not hasattr(os, "sched_setaffinity"):  # Linux only; never silently unpinned
             raise BoundaryError("p1_rows_encoder", "cpu_affinity_unsupported_on_this_platform")
@@ -67,6 +69,7 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
 
     encoder = RowsEncoder(vocabulary, cache_bytes=cache_bytes, verify_every=verify_every)
     handler = _handler(handler_path)
+    release = None if release_path is None else _handler(release_path)
     connection.send_bytes(json.dumps(encoder.identity).encode())
     while True:
         try:
@@ -76,6 +79,10 @@ def _worker(connection: Connection, vocabulary: dict[str, Any], cache_bytes: int
         if not message:  # shutdown
             return
         (tag,) = _TAG.unpack_from(message)
+        if tag == 0:  # release a lane (no reply): the payload is its UTF-8 name
+            if release is not None:
+                release(encoder, bytes(message[_TAG.size:]).decode())
+            continue
         if len(message) == _TAG.size:  # stats request
             body = json.dumps({"stats": encoder.cache_stats}).encode()
             connection.send_bytes(_REPLY.pack(tag, len(body)) + body)
@@ -110,7 +117,8 @@ class EncoderPool:
     def __init__(self, vocabulary: dict[str, Any], *, workers: int,
                  cache_bytes: int = DEFAULT_CACHE_BYTES, verify_every: int = 0,
                  cpus: Sequence[int] | None = None, start_method: str = "spawn",
-                 handler: str = "stpd.p1.rows_encoder_pool:encode_observation") -> None:
+                 handler: str = "stpd.p1.rows_encoder_pool:encode_observation",
+                 release_handler: str | None = None) -> None:
         if workers < 1:
             raise ValueError("encoder_pool_requires_workers")
         if start_method not in {"spawn", "forkserver"}:
@@ -119,6 +127,7 @@ class EncoderPool:
             raise ValueError("encoder_pool_cpus_per_worker")
         context: Any = multiprocessing.get_context(start_method)
         self._default = handler == "stpd.p1.rows_encoder_pool:encode_observation"
+        self._release = release_handler is not None
         self._workers: list[_Worker] = []
         self._lanes: dict[Any, _Worker] = {}
         self._lock = threading.Lock()
@@ -131,7 +140,7 @@ class EncoderPool:
             process = context.Process(
                 target=_worker, name=f"rows-encoder-{index}", daemon=True,
                 args=(child, vocabulary, cache_bytes, verify_every,
-                      None if cpus is None else cpus[index], handler))
+                      None if cpus is None else cpus[index], handler, release_handler))
             process.start()
             child.close()
             worker = _Worker(process, parent)
@@ -160,11 +169,19 @@ class EncoderPool:
         return worker
 
     def release(self, lane: Any) -> None:
-        """Forget a finished lane; its cache content stays until evicted."""
+        """Forget a finished lane; its cache content stays until evicted.
+
+        With a `release_handler` the lane's worker also runs it (handler(encoder, lane)),
+        after every row already submitted for the lane (one pipe, send order).
+        """
         with self._lock:
             worker = self._lanes.pop(lane, None)
             if worker is not None:
                 worker.lanes -= 1
+        if worker is not None and self._release and isinstance(lane, str):
+            with worker.send_lock, contextlib.suppress(OSError, ValueError):
+                # A dead worker breaks the pool anyway (its reader fails every pending row).
+                worker.connection.send_bytes(_TAG.pack(0) + lane.encode())
 
     # -- requests ----------------------------------------------------------
     def submit(self, lane: Any, raw: bytes) -> Future[Any]:

@@ -1,13 +1,16 @@
 """Node aggregator: environment decision links -> one rl-inference-3 connection (WP4).
 
 fast_chain only. One aggregator runs per environment node. Environment processes
-connect to its Unix socket and speak `sts2.policy-runtime/fast-env-link-1`
+connect to its Unix socket and speak `sts2.policy-runtime/fast-env-link-2`
 (NDJSON, one message per line). The aggregator
 
-* sends every `decision` line, unparsed, to the node encoder pool; a worker
-  parses it once, encodes `input.observation` to a `stpd/rows-v2-row-1` row and
-  checks the line's own bindings (catalog digest, catalog length, combat,
-  floor, input_spec) against what it encoded;
+* sends every `decision` line, unparsed, to the node encoder pool; the game's
+  worker rebuilds its observation frame (link-2: the first line of a game is a
+  full frame, later lines carry the changed parts; `link_frames`), encodes it to
+  a `stpd/rows-v2-row-1` row and checks the line's own bindings (observation text
+  digest, observation and catalog digests, catalog length, combat, floor,
+  input_spec) against what it encoded; a frame that does not rebuild exactly is
+  refused OBSERVATION_DELTA_MISMATCH;
 * forwards `episode_open` / `step_outcome` / `episode_close` unchanged in
   meaning (rl-inference-3 field names), in each connection's order;
 * packs rows from every connection into `score_request` packets, flushed after
@@ -41,6 +44,7 @@ import socket
 import sys
 import threading
 import time
+import weakref
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -51,10 +55,10 @@ from spireagent.json_boundary import BoundaryError
 
 from .data import digest, json_bytes
 from .inference_service import V3_MAX_MESSAGE, V3_SCHEMA, pack_message, unpack_message
+from .link_frames import LINK_SCHEMA, FrameRefused, Lanes, rebuild, split_line
 from .local_inference import tcp_nodelay
 from .rows_encoder_pool import EncoderPool
 
-LINK_SCHEMA = "sts2.policy-runtime/fast-env-link-1"
 _DECISION_PREFIX = f'{{"schema":"{LINK_SCHEMA}","type":"decision","row_id":'.encode()
 # The environment writes these fields first, in this order (WP2 kernel.ts); the
 # reader takes routing from them without parsing the observation.
@@ -90,26 +94,75 @@ def agent_input_spec(identity: dict[str, Any]) -> dict[str, str]:
                                          "vocabulary_sha256": identity["vocabulary_sha256"]}))}
 
 
-def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
-    """Encoder-pool handler: one decision line -> (meta, row); parsed once, here."""
-    from .rows_encoder import parse_public_json
+_LANES: weakref.WeakKeyDictionary[Any, Lanes] = weakref.WeakKeyDictionary()
 
-    message = parse_public_json(bytes(payload))
-    if not isinstance(message, dict) or message.get("type") != "decision":
+
+def _lanes(encoder: Any) -> Lanes:
+    """The link-2 frames of this encoder's process (one RowsEncoder per pool worker)."""
+    lanes = _LANES.get(encoder)
+    if lanes is None:
+        lanes = _LANES[encoder] = Lanes()
+    return lanes
+
+
+def release_link_lane(encoder: Any, lane: str) -> None:
+    """Encoder-pool release handler: a game closed; its last frame is dropped."""
+    _lanes(encoder).drop(lane)
+
+
+def link_lane_stats(encoder: Any) -> dict[str, int]:
+    lanes = _lanes(encoder)
+    return {**lanes.stats, "lanes": len(lanes.frames)}
+
+
+def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
+    """Encoder-pool handler: one link-2 decision line -> (meta, row); each byte parsed once.
+
+    The frame is rebuilt against this game's last frame (`link_frames`): its part digests
+    must give the line's `frame_sha256` and the encoded `observation_sha256` must equal
+    the line's. Either failure (or a missing / wrong base) sets `meta["frame"]`, the
+    row is refused OBSERVATION_DELTA_MISMATCH and the game's frame is dropped; nothing is
+    re-sent in full, repaired or guessed.
+    """
+    message, parts = split_line(bytes(payload))
+    if message.get("type") != "decision":
         raise BoundaryError("p1_fast_aggregator", "decision_line_required")
     source = message.get("input")
-    if not isinstance(source, dict) or not isinstance(source.get("observation"), dict):
+    if not isinstance(source, dict) or set(source) != {"input_spec", "frame"}:
         raise BoundaryError("p1_fast_aggregator", "decision_input_required")
-    encoded = encoder.encode_parsed(source["observation"])
-    meta = {"row_sha256": encoded.row_sha256, "observation_sha256": encoded.observation_sha256,
-            "catalog_sha256": encoded.catalog_sha256, "catalog_len": encoded.catalog_len,
-            "in_combat": encoded.in_combat, "floor": message.get("floor"),
-            "step_index": message.get("step_index"),
-            "consumption_id": message.get("consumption_id"), "binding": None}
+    lane, lanes = message.get("game_instance_id"), _lanes(encoder)
+    if not isinstance(lane, str):
+        raise BoundaryError("p1_fast_aggregator", "game_instance_id_required")
+    meta: dict[str, Any] = {"floor": message.get("floor"), "step_index": message.get("step_index"),
+                            "consumption_id": message.get("consumption_id"), "binding": None,
+                            "frame": None}
+    base = lanes.get(lane)
+    lanes.drop(lane)  # stored again only once this frame is fully accepted
+    try:
+        observation, frame = rebuild(base, message.get("row_id"), source["frame"], parts)
+    except FrameRefused as error:
+        lanes.stats["refused"] += 1
+        meta["frame"] = error.code
+        return meta, b""
+    marshal_out: dict[int, tuple[Any, bytes]] = {}
+    encoded = encoder.encode_parsed(observation, marshal=None if base is None else base.marshal,
+                                    marshal_out=marshal_out)
+    meta.update({"row_sha256": encoded.row_sha256,
+                 "observation_sha256": encoded.observation_sha256,
+                 "catalog_sha256": encoded.catalog_sha256, "catalog_len": encoded.catalog_len,
+                 "in_combat": encoded.in_combat})
+    if message.get("observation_sha256") != encoded.observation_sha256:
+        lanes.stats["refused"] += 1
+        meta["frame"] = "frame_observation_sha256"
+        return meta, b""
+    frame.marshal = marshal_out
+    lanes.store(lane, frame)
+    lanes.stats["frames"] += 1
+    lanes.stats["full_frames"] += base is None
+    lanes.stats["parts"] += len(parts)
     # The line's own claims must equal what was encoded (no repair, no fallback).
     differs = [name for name, ok in (
         ("input_spec", source.get("input_spec") == agent_input_spec(encoder.identity)),
-        ("catalog", source.get("catalog") == source["observation"]["catalog"]),
         ("catalog_sha256", message.get("catalog_sha256") == encoded.catalog_sha256),
         ("catalog_len", message.get("catalog_len") == encoded.catalog_len
                         and encoded.catalog_len >= 1),
@@ -198,7 +251,8 @@ class NodeAggregator:
             raise ValueError("fast_aggregator_services_or_service_address")
         options: dict[str, Any] = {"workers": encoder_workers, "cpus": encoder_cpus,
                                    "verify_every": verify_every,
-                                   "handler": "stpd.p1.fast_aggregator:encode_link_decision"}
+                                   "handler": "stpd.p1.fast_aggregator:encode_link_decision",
+                                   "release_handler": "stpd.p1.fast_aggregator:release_link_lane"}
         if cache_bytes is not None:
             options["cache_bytes"] = cache_bytes
         self.pool = EncoderPool(vocabulary, **options)
@@ -492,6 +546,12 @@ class NodeAggregator:
                 self._fail("encoder_pool_broken")
                 return
             self._refuse_here(decision, "ROW_DECODE_FAILED")
+            return
+        if meta["frame"] is not None:
+            print(json.dumps({"fast_aggregator_frame_refused": meta["frame"],
+                              "game_instance_id": decision.game_instance_id}),
+                  file=sys.stderr, flush=True)
+            self._refuse_here(decision, "OBSERVATION_DELTA_MISMATCH")
             return
         if meta["binding"] is not None:
             print(json.dumps({"fast_aggregator_binding_differs": meta["binding"],
