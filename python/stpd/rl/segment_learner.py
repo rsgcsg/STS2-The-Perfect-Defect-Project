@@ -8,6 +8,7 @@ restore discards hot input state, never replays accepted actions or input logs.
 
 from __future__ import annotations
 
+import bisect
 import copy
 import hashlib
 import io as byte_io
@@ -28,6 +29,7 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -126,6 +128,12 @@ from .sgd_process import (
 
 # The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
 WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
+# Events wait in the telemetry thread's queue, not on the controller. A full
+# queue (telemetry behind by 1024 events) waits for the oldest event; no progress
+# for TELEMETRY_STALL_SECONDS is a real stall and fails loudly. Nothing is dropped.
+TELEMETRY_QUEUE_LIMIT = 1024
+TELEMETRY_STALL_SECONDS = 600.0
+MEMORY_SAMPLE_SECONDS = 5.0
 # fast_chain actor control (learner owns the receiving side; see `fast_source`).
 FAST_INSTANCE_ADMISSION = "fast_instance_admission"
 FAST_INSTANCE_EXCLUDED = "fast_instance_excluded"
@@ -196,9 +204,14 @@ def _process_memory() -> dict[str, int]:
 
 def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
                           samples: list[dict[str, Any]], *, now: float,
-                          version: int, updates: int) -> dict[str, Any]:
-    """Mergeable observations of successful first-use multi-choice rows only."""
-    policy_mask = batch.policy_mask.tolist()
+                          version: int, updates: int,
+                          policy_mask: list[bool] | None = None) -> dict[str, Any]:
+    """Mergeable observations of successful first-use multi-choice rows only.
+
+    `policy_mask`: `batch.policy_mask.tolist()` computed once per dataset; only
+    `batch.metadata` is read then."""
+    if policy_mask is None:
+        policy_mask = batch.policy_mask.tolist()
     selected = {row for row in newly_used if policy_mask[row]}
     rows = []
     for sample in samples:
@@ -218,9 +231,8 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
         values = [float(row[key]) for row in items if row[key] is not None
                   and math.isfinite(row[key])]
         counts = [0] * (len(edges) + 1)
-        for value in values:
-            index = next((i for i, edge in enumerate(edges) if value < edge), len(edges))
-            counts[index] += 1
+        for value in values:  # the first edge above the value; equality goes right
+            counts[bisect.bisect_right(edges, value)] += 1
         return {"finite_n": len(values), "nonfinite_n": len(items) - len(values),
                 "sum": sum(values), "histogram": counts}
 
@@ -232,12 +244,16 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
                for key in ("outside_clip", "ppo_objective_clipped", "ratio_above_one")}}
 
     def bins(key: str, edges: tuple[float, ...]) -> list[dict[str, Any]]:
+        # One pass: each row joins the one bin [lower, upper) holding it, in row
+        # order (same sums as filtering per bin); None and NaN join none.
+        members: list[list[dict[str, Any]]] = [[] for _ in range(len(edges) + 1)]
+        for row in rows:
+            value = row[key]
+            if value is not None and value == value:
+                members[bisect.bisect_right(edges, value)].append(row)
         bounds = (None, *edges, None)
-        return [{"lower_inclusive": lower, "upper_exclusive": upper,
-                 **summary([row for row in rows if row[key] is not None
-                    and (lower is None or row[key] >= lower)
-                    and (upper is None or row[key] < upper)])}
-                for lower, upper in zip(bounds[:-1], bounds[1:], strict=True)]
+        return [{"lower_inclusive": lower, "upper_exclusive": upper, **summary(items)}
+                for lower, upper, items in zip(bounds[:-1], bounds[1:], members, strict=True)]
 
     return {"scope": "successful_first_use_multi", "observed_at": now,
         "age_reference": "optimizer_attempt_start", "pre_update_SGD": updates,
@@ -251,6 +267,38 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
         "all": summary(rows), "age_seconds": bins("age", (0., 5., 15., 30., 60., 120.)),
         "version_lag": bins("versions", (0., 1., 2., 4., 8., 16.)),
         "pre_update_SGD_lag": bins("SGD_updates", (0., 1., 2., 4., 8., 16.))}
+
+
+def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
+                      newly_used: list[int], samples: list[dict[str, Any]], *, now: float,
+                      version: int, updates: int, policy_observed_at: float,
+                      policy_version: int, policy_updates: int) -> dict[str, Any]:
+    """Progress-event first-use summaries from values captured at accounting time.
+
+    Pure: the same inputs give the same event wherever it runs (the controller
+    in process, the telemetry thread on the SGD-process path)."""
+    rows = [metadata[i] for i in newly_used]
+    ages = sorted(now - row["generated_timestamp"] for row in rows
+                  if row["generated_timestamp"] is not None)
+    return {
+        "first_use_age_samples_seconds": ages,
+        "first_use_age_seconds": {
+            "n": len(ages),
+            "median": ages[len(ages) // 2] if ages else None,
+            "p95": ages[min(len(ages) - 1, int(len(ages) * 0.95))] if ages else None,
+        },
+        "first_use_floors": [row["floor"] for row in rows],
+        "first_use_version_lag": [version - row["mu_version"] for row in rows],
+        "first_use_pre_update_SGD_lag": [updates - 1 - row["mu_updates"] for row in rows],
+        "first_use_policy_bias": _first_use_policy_bias(
+            cast(Any, _BiasRows(metadata)), newly_used, samples, now=policy_observed_at,
+            version=policy_version, updates=policy_updates, policy_mask=policy_mask),
+    }
+
+
+@dataclass(frozen=True)
+class _BiasRows:
+    metadata: list[dict[str, Any]]
 
 
 def _publish_snapshot(
@@ -425,6 +473,8 @@ def bind_dataplane_capacity(config: LearnerConfig, lanes: int) -> LearnerConfig:
 
 
 class SegmentLearner:
+    memory_sample: tuple[float, dict[str, Any]] | None
+    policy_mask_cache: tuple[Any, list[bool]] | None  # (batch, mask list): per dataset
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
@@ -562,6 +612,9 @@ class SegmentLearner:
         self.published_updates = self.first_use = self.first_use_multi = 0
         self.active: dict[str, Any] | None = None
         self.active_batch: PreparedBatch | None = None
+        # SGD process + `sgd_prestart`: the next dataset, taken and started while
+        # the current one's answers are still accounted (at most one).
+        self.next_active: tuple[dict[str, Any], Any] | None = None
         self.device_batch: PreparedBatch | None = None
         self.pending_batch: tuple[dict[str, Any], Future[PreparedBatch]] | None = None
         self.ahead_batches: deque[tuple[dict[str, Any], Future[PreparedBatch]]] = deque()
@@ -584,6 +637,7 @@ class SegmentLearner:
             text_attention_area=67108864,
         )
         self.timing = {
+            "telemetry_full_wait_seconds": 0.0,
             "preparation_wait_seconds": 0.0,
             "preparation_seconds": 0.0,
             "prepared_batches": 0.0,
@@ -838,6 +892,7 @@ class SegmentLearner:
             max_workers=4, mp_context=multiprocessing.get_context("spawn"))
         self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
         self.telemetry_futures: deque[Future[Any]] = deque()
+        self._init_progress_telemetry()
         self.checkpoint_encoder = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-cp-encode"
         )
@@ -1000,7 +1055,8 @@ class SegmentLearner:
         self.sgd_callback_error: BaseException | None = None
         # Main-thread time blocked on `staged` when a dataset is taken, and how
         # many datasets were already staged ahead at that point (SGD process only).
-        self.timing.update(sgd_stage_wait_seconds=0.0, sgd_staged_ahead_batches=0.0)
+        self.timing.update(sgd_stage_wait_seconds=0.0, sgd_staged_ahead_batches=0.0,
+                           sgd_prestarted_batches=0.0)
         self.sgd_rates = (self.optimizer.param_groups[0]["lr"],
                           self.optimizer.param_groups[1]["lr"])
         self.sgd_memory: dict[str, Any] | None = None
@@ -1109,7 +1165,9 @@ class SegmentLearner:
         if self.sgd_callback_error is not None:
             raise self.sgd_callback_error
         with self.sgd_lock:
-            if self.sgd.planned or self.pending_batch is None:
+            # A prestarted next dataset counts as the one staged ahead: the child
+            # holds at most the current and the next dataset on its device.
+            if self.sgd.planned or self.pending_batch is None or self.next_active is not None:
                 return
             future = self.pending_batch[1]
             if future.done() and not future.cancelled() and future.exception() is None:
@@ -1129,7 +1187,7 @@ class SegmentLearner:
                 pending, active = self.pending_batch, self.active_batch
                 if (self.newlease_stopped or self.input_fenced or self.sgd.failure is not None
                         or self.sgd.planned or pending is None or pending[1] is not future
-                        or active is None
+                        or self.next_active is not None or active is None
                         or active.request.identity.sequence != self.sgd.started):
                     return
                 self._sgd_plan(future.result())
@@ -2574,12 +2632,13 @@ class SegmentLearner:
                 tuple(order[i] for i in group)
                 for group in minibatch_members(n, self.settings.minibatches)
             )
-            reserved = {
-                row["key"]
-                for name in ("terminal", "hp")
-                for active in ((self.active,) if self.active else ()) + tuple(a for a, _ in pending)
-                for row in active[name]
-            }
+            # Aux rows of every dataset not yet fully charged: the current one, the
+            # prestarted next one and every prepared one.
+            upcoming = (((self.active,) if self.active else ())
+                        + ((self.next_active[0],) if self.next_active is not None else ())
+                        + tuple(a for a, _ in pending))
+            reserved = {row["key"] for name in ("terminal", "hp")
+                        for active in upcoming for row in active[name]}
             selected = {}
             for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
                 selected[kind] = pool.sample(
@@ -2600,7 +2659,8 @@ class SegmentLearner:
                         )
                     )
                     owners.append(i % self.settings.minibatches)
-            number = self.datasets + int(self.active is not None) + len(pending) + 1
+            number = (self.datasets + int(self.active is not None)
+                      + int(self.next_active is not None) + len(pending) + 1)
             request = PrepareRequest(
                 RunSequence(self.config.run, self.generation, number),
                 tuple(self._member(record) for record in records),
@@ -2723,7 +2783,8 @@ class SegmentLearner:
                and not self.newlease_stopped and not self.input_fenced
                and (self.selection_deadline is None
                     or time.monotonic() < self.selection_deadline)
-               and len(self._pending_batches()) < self.prepared_batches):
+               and len(self._pending_batches()) + int(self.next_active is not None)
+               < self.prepared_batches):
             # A read-ahead selection stays in the queue (take=False), so it must be
             # retained and registered as pending under the same lock: otherwise a
             # concurrent fast admission or exclusion sees it as unreferenced, drops
@@ -2737,9 +2798,11 @@ class SegmentLearner:
                     self.pending_batch = pending
                 else:
                     self.ahead_batches.append(pending)
-                if self.sgd is not None and self.sgd.options.stage_thread:
-                    # Registered after it is queued: an already-done Future plans now.
-                    pending[1].add_done_callback(self._sgd_prepared)
+            if self.sgd is not None and self.sgd.options.stage_thread:
+                # Registered after it is queued and outside `condition`: an
+                # already-done Future plans inline here, and a failing send must
+                # not hold `condition` while the failure path joins the child.
+                pending[1].add_done_callback(self._sgd_prepared)
         if self.sgd is not None and not self.newlease_stopped and not self.input_fenced:
             self._sgd_plan_ahead()
 
@@ -2774,6 +2837,11 @@ class SegmentLearner:
         if self.wal is not None and self.newlease_stopped:
             return False
         self.timing["preparation_wait_seconds"] += time.perf_counter() - began
+        return self._take(active, batch, ahead=False)
+
+    def _take(self, active: dict[str, Any], batch: Any, *, ahead: bool) -> bool:
+        """Take the prepared head dataset: the current one, or (`ahead`, SGD
+        process only) the next one, authorized while the current still trains."""
         timing_key = "binary_ipc_wall_seconds" if self.wal is not None else "request_wall_seconds"
         self.timing["preparation_seconds"] += batch.timings[timing_key]
         self.timing["prepared_batches"] += 1
@@ -2785,9 +2853,18 @@ class SegmentLearner:
                     raise ValueError("prepared_dataset_membership_changed")
                 self._dataset_released(active["segments"])
             active["taken"] = True
-        self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
-        self.active, self.active_batch = active, batch
-        active["start_updates"] = self.updates
+        # One step under `sgd_lock`: the prepared-callback must never see the head
+        # popped while the taken dataset is not yet current or next (it would plan
+        # a third dataset onto the device).
+        with self.sgd_lock if self.sgd is not None else nullcontext():
+            self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
+            if ahead:
+                # Counted from this dataset's own first answer (see `_promote`).
+                self.next_active = active, batch
+                self.timing["sgd_prestarted_batches"] += 1
+            else:
+                self.active, self.active_batch = active, batch
+                active["start_updates"] = self.updates
         if self.sgd is not None:
             # Same point as the in-process stage: the SGD process owns its pinned
             # and device copies before preparation and PPO references are released.
@@ -2827,6 +2904,46 @@ class SegmentLearner:
                 self._sgd_plan_ahead()
         return True
 
+    def _sgd_prestart(self) -> None:
+        """Authorize the next dataset before the current one's answers are all
+        accounted, so the SGD child starts it right after the current one instead
+        of after a controller round trip. Only an already-prepared and already
+        staged dataset (never a wait), at most one beyond the current, and never
+        when the controller would not take another dataset at this boundary: a
+        CP request (CP needs the child quiescent), STOP, deadline, stop or fence.
+
+        Theta, KL stop, clip and PPO are unchanged. Not strictly lockstep: N+1's
+        take (aux selection timing for later datasets, `_ready_labels`,
+        `_dataset_released`) runs before N's answers are all accounted. A remote
+        stop request or max_versions arriving after a prestart still trains the
+        authorized N+1 fully (one extra dataset)."""
+        if (self.sgd is None or not self.sgd.options.prestart or self.active_batch is None
+                # The SGD process always runs with the binary dataplane's WAL, whose
+                # exit path finishes the in-flight dataset before the final CP.
+                or self.wal is None
+                or self.next_active is not None or self.pending_batch is None
+                or self.checkpoint_requested or self.newlease_stopped or self.input_fenced
+                or self.stop_fact is not None or self.version >= self.config.max_versions
+                or (self.selection_deadline is not None
+                    and time.monotonic() >= self.selection_deadline)
+                or (self.deadline_at is not None and time.time() >= self.deadline_at - 600)):
+            return
+        active, future = self.pending_batch
+        if not future.done() or future.cancelled() or future.exception() is not None:
+            return  # `_prepare` owns waiting and preparation failures
+        batch = future.result()
+        if batch.request.identity.sequence not in self.sgd.staged:
+            return
+        if (self.work / "STOP").exists():
+            return
+        self._take(active, batch, ahead=True)
+
+    def _promote(self) -> None:
+        """The current dataset finished: the authorized next one becomes current."""
+        if self.next_active is not None:
+            (self.active, self.active_batch), self.next_active = self.next_active, None
+            self.active["start_updates"] = self.updates
+
     def _step(self) -> dict[str, Any]:
         active, batch = self.active, self.active_batch
         assert active is not None and batch is not None
@@ -2863,6 +2980,9 @@ class SegmentLearner:
     def _remote_step(self, active: dict[str, Any], batch: Any) -> dict[str, Any]:
         """Charge one SGD-process attempt; `update` and position are the fence."""
         assert self.sgd is not None
+        if self.sgd_callback_error is not None:  # also after stop, when no plan-ahead runs
+            raise self.sgd_callback_error
+        self._sgd_prestart()  # before waiting: the start then precedes this answer
         index = active["minibatch"]
         message = self.sgd.expect("step", timeout=self.sgd.step_timeout())
         result = message["result"]
@@ -2895,10 +3015,14 @@ class SegmentLearner:
                       policy_observed_at: float, policy_version: int,
                       policy_updates: int) -> dict[str, Any]:
         """The single successful-use owner: first use, aux uses, counters, events."""
+        build: Callable[[], dict[str, Any]] | None = None
         if result["stepped"]:
-            newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
+            used = set(active["used"])  # was a list scan per row: O(rows x used) per step
+            newly_used = [i for i in batch.request.minibatch_rows[index] if i not in used]
             self.first_use += len(newly_used)
-            policy_mask = batch.policy_mask.tolist()
+            if self.policy_mask_cache is None or self.policy_mask_cache[0] is not batch:
+                self.policy_mask_cache = batch, batch.policy_mask.tolist()  # once per dataset
+            policy_mask = self.policy_mask_cache[1]
             self.first_use_multi += sum(policy_mask[i] for i in newly_used)
             active["used"].extend(newly_used)
             with self.condition:
@@ -2911,7 +3035,8 @@ class SegmentLearner:
                         and row["uses"] < pool.max_uses
                     ]
                     pool.used(rows, batch.request.identity.sequence, epochs=1)
-                    for identity, retired in pool.retire_exhausted().items():
+                    # Only rows just charged can newly reach the limit.
+                    for identity, retired in pool.retire_exhausted(rows).items():
                         remaining = {
                             row["member"].segment_id for row in pool.groups.get(identity, [])
                         }
@@ -2924,27 +3049,19 @@ class SegmentLearner:
             if self.sgd is None:
                 self._update_ema()
             self.updates += 1
-            rows = [batch.metadata[i] for i in newly_used]
-            now = time.time()
-            ages = sorted(
-                now - row["generated_timestamp"]
-                for row in rows
-                if row["generated_timestamp"] is not None
-            )
-            result.update(
-                first_use_age_samples_seconds=ages,
-                first_use_age_seconds={
-                    "n": len(ages),
-                    "median": ages[len(ages) // 2] if ages else None,
-                    "p95": ages[min(len(ages) - 1, int(len(ages) * 0.95))] if ages else None,
-                },
-                first_use_floors=[row["floor"] for row in rows],
-                first_use_version_lag=[self.version - row["mu_version"] for row in rows],
-                first_use_pre_update_SGD_lag=[self.updates - 1 - row["mu_updates"] for row in rows],
-                first_use_policy_bias=_first_use_policy_bias(
-                    batch, newly_used, policy_samples, now=policy_observed_at,
-                    version=policy_version, updates=policy_updates),
-            )
+            captured: dict[str, Any] = dict(
+                now=time.time(), version=self.version, updates=self.updates,
+                policy_observed_at=policy_observed_at, policy_version=policy_version,
+                policy_updates=policy_updates)
+            metadata = batch.metadata
+            if self.sgd is None:
+                result.update(_first_use_fields(metadata, policy_mask, newly_used,
+                                                policy_samples, **captured))
+            else:
+                # SGD-process path: summaries are built in the telemetry thread from
+                # these captured values; nothing here feeds a learning decision.
+                build = partial(_first_use_fields, metadata, policy_mask, newly_used,
+                                policy_samples, **captured)
         lr, head_lr = self._learning_rates()
         result.update(
             update=self.updates,
@@ -2970,12 +3087,14 @@ class SegmentLearner:
             self.datasets += 1
             self.active = self.active_batch = None
             self.device_batch = None
+            self.policy_mask_cache = None  # never retain a finished batch
+            self._promote()  # before forgetting: its sources stay retained
             self._forget_unreferenced()
             if self.updates > active["start_updates"]:
                 self._schedule_publication()
         # Fallible IO follows the complete learning transition; CP never pairs
         # new Adam/theta with old successful-use counters.
-        self._event("progress", **result, version=self.version)
+        self._event("progress", _build=build, **result, version=self.version)
         if self.metrics is not None and self.updates % self.config.tensorboard_steps == 0:
             self.metrics.scalars(
                 {
@@ -3041,7 +3160,8 @@ class SegmentLearner:
                 if (payload.slot, owner) in self.hot_references:
                     self._release(payload, owner)
         retained = {record["segment_id"] for record in self.queue.pending}
-        for active in (self.active, *(a for a, _ in self._pending_batches())):
+        upcoming = (self.next_active[0],) if self.next_active is not None else ()
+        for active in (self.active, *upcoming, *(a for a, _ in self._pending_batches())):
             if active:
                 retained.update(record["segment_id"] for record in active["segments"])
                 retained.update(
@@ -3065,26 +3185,51 @@ class SegmentLearner:
             ):
                 self.sources.pop(identity)
 
+    def _init_progress_telemetry(self) -> None:
+        self.memory_sample = None
+        self.policy_mask_cache = None
+
     def _memory(self) -> dict[str, Any]:
-        values: dict[str, Any] = dict(_process_memory())
-        if self.device.type == "cuda":
-            values.update(cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
-                          cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device))
+        """Peak memory, sampled at most every MEMORY_SAMPLE_SECONDS (peaks only grow)."""
+        now = time.monotonic()
+        if self.memory_sample is None or now - self.memory_sample[0] >= MEMORY_SAMPLE_SECONDS:
+            sample: dict[str, Any] = dict(_process_memory())
+            if self.device.type == "cuda":
+                sample.update(
+                    cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
+                    cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device))
+            self.memory_sample = now, sample
+        values = dict(self.memory_sample[1])
         if self.sgd is not None:
             values["sgd_process"] = self.sgd_memory  # latest child-reported peaks
         return values
 
-    def _event(self, kind: str, **fields: Any) -> None:
+    def _event(self, kind: str, *, _build: Any = None, **fields: Any) -> None:
+        """Queue one event for the telemetry thread; the controller never waits on it.
+
+        `_build` adds fields computed in that thread. A telemetry error surfaces on
+        the next event. A full queue waits (bounded memory) for the oldest event;
+        no progress within TELEMETRY_STALL_SECONDS fails loudly, never drops."""
         while self.telemetry_futures and self.telemetry_futures[0].done():
             self.telemetry_futures.popleft().result()
-        if len(self.telemetry_futures) >= 8:
-            self.telemetry_futures.popleft().result()
-        self.telemetry_futures.append(
-            self.telemetry.submit(
-                self.exchange.publish_event, kind, training_generation=self.generation,
-                budget_id=(self.config.operating_budget or {}).get("id"), **fields
-            )
-        )
+        if len(self.telemetry_futures) >= TELEMETRY_QUEUE_LIMIT:
+            began = time.monotonic()
+            try:
+                self.telemetry_futures[0].result(timeout=TELEMETRY_STALL_SECONDS)
+            except TimeoutError:
+                raise RuntimeError(
+                    f"telemetry_queue_stalled: {len(self.telemetry_futures)} events pending, "
+                    f"no progress for {TELEMETRY_STALL_SECONDS:.0f} s; kind={kind}") from None
+            self.telemetry_futures.popleft()
+            self.timing["telemetry_full_wait_seconds"] += time.monotonic() - began
+        common = {"training_generation": self.generation,
+                  "budget_id": (self.config.operating_budget or {}).get("id")}
+
+        def publish() -> None:
+            built = _build() if _build is not None else {}
+            self.exchange.publish_event(kind, **common, **fields, **built)
+
+        self.telemetry_futures.append(self.telemetry.submit(publish))
 
     def _sgd_state(self) -> dict[str, Any]:
         """Dataset-boundary state from the SGD process; counters must match exactly."""
