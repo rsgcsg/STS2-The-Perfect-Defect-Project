@@ -31,11 +31,34 @@ export function captureManagedPublicBasis(session, { generationId, gameContinuit
   // Hashing the string hashes its UTF-8 bytes: same digest and length without a Buffer copy.
   const serializedObservation = JSON.stringify(basis);
   const now = Date.now();
-  return { capture: { schema: 'sts2.player-environment/public-basis-handle-1', read_profile: PUBLIC_BASIS_READ_PROFILE,
+  const handle = { schema: 'sts2.player-environment/public-basis-handle-1', read_profile: PUBLIC_BASIS_READ_PROFILE,
     input_profile: PUBLIC_BASIS_PROFILE, capture_id: `capture-${randomUUID()}`, source_snapshot_id: snapshot.snapshot_id,
     session: snapshot.session, generation_id: generationId, game_continuity_id: gameContinuityId,
     captured_at: new Date(now).toISOString(), expires_at: new Date(now + 30_000).toISOString(),
-    total_bytes: Buffer.byteLength(serializedObservation), sha256: createHash('sha256').update(serializedObservation).digest('hex'),
-    first_cursor: 'inline', capture_ordinal: ordinal },
+    total_bytes: 0, sha256: '', first_cursor: 'inline', capture_ordinal: ordinal };
+  return { capture: fullCheck ? measuredHandle(handle, serializedObservation) : lazilyMeasuredHandle(handle, serializedObservation),
     basis, serializedObservation };
+}
+
+const byteCount = (serialized) => Buffer.byteLength(serialized);
+const digest = (serialized) => createHash('sha256').update(serialized).digest('hex');
+
+function measuredHandle(handle, serialized) {
+  handle.total_bytes = byteCount(serialized);
+  handle.sha256 = digest(serialized);
+  return handle;
+}
+
+/** R4 (env35), fast chain only (fullCheck=false): total_bytes and sha256 of the same
+ * immutable string, computed the first time each is read (the fast chain reads them on its
+ * sampled full checks, and total_bytes only past a length bound) and kept. Same keys, same
+ * order, same values: both are enumerable accessors, so JSON, structuredClone, spread and
+ * zod see the plain values. */
+function lazilyMeasuredHandle(handle, serialized) {
+  let totalBytes = null, sha256 = null;
+  Object.defineProperty(handle, 'total_bytes', { enumerable: true, configurable: false,
+    get: () => totalBytes ??= byteCount(serialized) });
+  Object.defineProperty(handle, 'sha256', { enumerable: true, configurable: false,
+    get: () => sha256 ??= digest(serialized) });
+  return handle;
 }
