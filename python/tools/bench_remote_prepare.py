@@ -30,6 +30,7 @@ import hashlib
 import json
 import mmap
 import os
+import resource
 import shutil
 import sys
 import tempfile
@@ -95,6 +96,12 @@ class FileProvider:
         raise AssertionError("not used")
 
     release = retain
+
+
+def _cpu() -> float:
+    own, children = (resource.getrusage(w) for w in (resource.RUSAGE_SELF,
+                                                     resource.RUSAGE_CHILDREN))
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
 
 
 def _file_digest(path: str, used: int) -> str:
@@ -169,6 +176,7 @@ def learner(argv: list[str]) -> None:
             binary._worker_compiler = compiler
             local, local_batch = _local_digest(plans[0][0], batches[0], work)
             began = time.perf_counter()
+        cpu_began = _cpu()
         first: dict[int, str] = {}
 
         def finish() -> None:
@@ -213,6 +221,7 @@ def learner(argv: list[str]) -> None:
             finish()
         while checks:
             drain()
+        learner_cpu = _cpu() - cpu_began
         warm = args.warmup if 0 < args.warmup < len(done) - 1 else 0
         steady = done[warm:]
         span = steady[-1]["at"] - (done[warm - 1]["at"] if warm else 0.0)
@@ -227,6 +236,10 @@ def learner(argv: list[str]) -> None:
                                                    / sum(d["rows"] for d in done), 2),
             "host_decode_ms_core_per_row": round(1000 * sum(d["dec_s"] for d in done) / max(
                 1e-9, sum(d["sent"] * d["rows"] / d["members"] for d in done)), 2),
+            # Whole learner process incl. its hand-off sha256 check (the SGD
+            # process's work in production) and any local worker children.
+            "learner_ms_core_per_row": round(1000 * learner_cpu / sum(d["rows"] for d in done),
+                                             2),
             "bytes_per_row": round(sum(d["bytes"] for d in done) / sum(d["rows"] for d in done)),
             "remote": preparer.remote.stats, "all_handoff_digests_equal_worker_digest": True,
             "local_check": None if local is None else _check(

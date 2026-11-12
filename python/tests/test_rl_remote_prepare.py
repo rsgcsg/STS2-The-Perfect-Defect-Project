@@ -197,3 +197,28 @@ def test_serve_survives_a_wrong_key_and_a_silent_client(tmp_path, monkeypatch, m
                                             threads=1)
     learner._connect(endpoint).close()
     silent.close()
+
+
+def test_remote_labels_equal_local_labels_and_the_learner_never_decodes(model, tmp_path, host):
+    _state, endpoint = host
+    late = segment(model, name="late/0", run_id="late-episode", terminal=True)
+    out = {}
+    for name, options in (("local", {}), ("remote", {"remote_prepare": {
+            "endpoints": [endpoint], "connections": 1}})):
+        provider = BytesProvider()
+        preparer = prepare(model, tmp_path / name, provider, handoff=True, **options)
+        enc = encoder(model, tmp_path / f"{name}-spool")
+        try:
+            member, encoded = admit(enc, preparer, provider, late, "late")
+            labels = labels_for(late, encoded)
+            labels["segments"] = [
+                {"segment_id": member.segment_id, "payload": dc.asdict(member.payload)}]
+            groups = preparer.verify_labels(labels, (member,)).result(timeout=60)
+            items = [row["prepared_input"] for _, _, rows in groups for row in rows]
+            assert items and all(i.body and i.envelope for i in items)
+            out[name] = groups, [i.envelope for i in items], preparer.summary()
+        finally:
+            preparer.shutdown(wait=True, cancel_futures=True)
+    assert out["remote"][:2] == out["local"][:2]  # AuxiliaryInput equality includes body
+    pools = {row["pool"] for row in out["remote"][2]["workers"]}
+    assert "remote_labels" in pools and not pools & {"source", "labels", "assembly"}

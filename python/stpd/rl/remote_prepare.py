@@ -27,24 +27,32 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import mmap
 import os
+import pickle
 import queue
 import socket
 import threading
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import suppress
 from concurrent.futures import Future, ProcessPoolExecutor
+from contextlib import suppress
 from multiprocessing import get_context
-from multiprocessing.connection import (Client, Connection, Listener, answer_challenge,
-                                        deliver_challenge)
+from multiprocessing.connection import (
+    Client,
+    Connection,
+    Listener,
+    answer_challenge,
+    deliver_challenge,
+)
 from pathlib import Path
 from typing import Any
 
 from . import binary_preparation as binary
+from .prepared_batch import AuxiliaryInput
 
 AUTH_ENV = "STPD_REMOTE_PREPARE_AUTH"
 CHUNK_BYTES = 64 * 1024**2
@@ -246,6 +254,10 @@ class _Host:
                 for name in files:
                     Path(name).unlink(missing_ok=True)
 
+    def labels(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> Any:
+        assert self.assembly is not None
+        return self.assembly.submit(binary._timed, binary._labels, ready, *args).result()
+
     def run(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> tuple[Any, str]:
         assert self.assembly is not None
         request = args[0]
@@ -261,6 +273,42 @@ class _Host:
         except BaseException:
             output.unlink(missing_ok=True)
             raise
+
+
+def _pack_labels(value: Any, members: tuple[Any, ...], indices: tuple[int, ...]) -> bytes:
+    """`_labels` row snapshots carry whole packet bodies the learner already holds:
+    pickle each AuxiliaryInput as (ready index, row ref, member) instead."""
+    by_segment = {m.segment_id: i for m, i in zip(members, indices, strict=True)}
+    stream = io.BytesIO()
+
+    class Pickler(pickle.Pickler):
+        def persistent_id(self, item: Any) -> Any:
+            if type(item) is AuxiliaryInput:
+                return (by_segment[item.member.segment_id], item.source, item.member)
+            return None
+
+    Pickler(stream, protocol=5).dump(value)
+    return stream.getvalue()
+
+
+def _unpack_labels(data: bytes, ready: tuple[Any, ...]) -> Any:
+    """Rebuild each AuxiliaryInput with the body read from the learner's own arena."""
+    bodies: dict[int, bytes] = {}
+
+    def body(index: int) -> bytes:
+        if index not in bodies:
+            d = ready[index].descriptor
+            with open(d.name, "rb") as stream:
+                stream.seek(d.offset)
+                bodies[index] = stream.read(d.length)
+        return bodies[index]
+
+    class Unpickler(pickle.Unpickler):
+        def persistent_load(self, token: Any) -> Any:
+            index, source, member = token
+            return AuxiliaryInput(source, member, body(index), ready[index].descriptor.envelope)
+
+    return Unpickler(io.BytesIO(data)).load()
 
 
 def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> None:
@@ -307,10 +355,22 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     fresh = set(missing[:delivered])
                     decoded = sum(item.seconds for key, item in
                                   dict(zip(digests, ready, strict=True)).items() if key in fresh)
-                    result, output = host.run(ready, task["args"])
+                    if task.get("kind") == "labels":
+                        labelled = host.labels(ready, task["args"])
+                        value = _pack_labels(labelled.value, task["args"][1], task["args"][2])
+                    else:
+                        result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
                     connection.send({"error": f"{type(error).__name__}: {error}"})
                     return
+                if task.get("kind") == "labels":
+                    connection.send({
+                        "value": value,
+                        "pid": labelled.pid, "wall": labelled.wall_seconds,
+                        "cpu": labelled.cpu_seconds, "decode_seconds": decoded,
+                        "host_seconds": time.perf_counter() - began})
+                    host.tasks += 1
+                    continue
                 try:
                     packed = result.value
                     used = packed.summary["used_bytes"]
@@ -391,7 +451,8 @@ class RemoteAssembly:
             _address(endpoint)
             for _ in range(connections):
                 self.idle.put((endpoint, None))
-        self.stats = {"tasks": 0, "sent_bytes": 0, "received_bytes": 0, "sources_sent": 0}
+        self.stats = {"tasks": 0, "label_tasks": 0, "sent_bytes": 0, "received_bytes": 0,
+                      "sources_sent": 0}
         self.cpu = cpu_fingerprint()
         self.host_cpus: dict[str, dict[str, str]] = {}  # endpoint -> host fingerprint
         self.served: OrderedDict[str, str] = OrderedDict()  # output path -> endpoint (last 256)
@@ -423,17 +484,8 @@ class RemoteAssembly:
         endpoint, connection = self.idle.get()
         healthy = False
         try:
-            if connection is None:
-                connection = self._connect(endpoint)
-            connection.send({"sources": [item.descriptor.envelope for item in ready],
-                             "args": args[:5]})
-            _wait(connection, self.timeout)
-            need = set(connection.recv()["need"])
-            sent = self._send_sources(connection, ready, set(need))
-            _wait(connection, self.timeout)  # covers the host's decode + assembly
-            reply = connection.recv()
-            if "error" in reply:
-                raise RuntimeError(f"binary_remote_assembly_failed: {reply['error']}")
+            connection, reply, need, sent = self._exchange(
+                endpoint, connection, ready, {"args": args[:5]}, "binary_remote_assembly_failed")
             used = reply["summary"]["used_bytes"]
             with open(output, "r+b") as stream:
                 mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
@@ -467,6 +519,45 @@ class RemoteAssembly:
                                   "binary_remote_decode_seconds": float(reply["decode_seconds"])}
             return binary._WorkerResult(binary._PackedBatch(reply["tree"], arrays, summary),
                                         reply["pid"], reply["wall"], reply["cpu"])
+        finally:
+            if (not healthy or self.closed) and connection is not None:
+                connection.close()
+            self.idle.put((endpoint, connection if healthy and not self.closed else None))
+
+    def _exchange(self, endpoint: str, connection: Connection | None, ready: tuple[Any, ...],
+                  task: dict[str, Any], failure: str) -> tuple[Connection, Any, set[str], int]:
+        """Send the task, the sources the host lacks, and wait for its reply."""
+        if connection is None:
+            connection = self._connect(endpoint)
+        connection.send({**task, "sources": [item.descriptor.envelope for item in ready]})
+        _wait(connection, self.timeout)
+        need = set(connection.recv()["need"])
+        sent = self._send_sources(connection, ready, set(need))
+        _wait(connection, self.timeout)  # covers the host's decode + work
+        reply = connection.recv()
+        if "error" in reply:
+            raise RuntimeError(f"{failure}: {reply['error']}")
+        return connection, reply, need, sent
+
+    def labels(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> Any:
+        """Same value as `_timed(_labels, ready, *args)` on a local pool. Row
+        snapshots get their packet bodies from this process's own arena."""
+        if self.closed:
+            raise RuntimeError("remote_prepare_closed")
+        endpoint, connection = self.idle.get()
+        healthy = False
+        try:
+            connection, reply, need, sent = self._exchange(
+                endpoint, connection, ready, {"kind": "labels", "args": args},
+                "binary_remote_labels_failed")
+            value = _unpack_labels(reply["value"], ready)
+            healthy = True
+            with self.lock:
+                self.stats["label_tasks"] += 1
+                self.stats["sent_bytes"] += sent
+                self.stats["sources_sent"] += len(need)
+                self.stats["received_bytes"] += len(reply["value"])
+            return binary._WorkerResult(value, reply["pid"], reply["wall"], reply["cpu"])
         finally:
             if (not healthy or self.closed) and connection is not None:
                 connection.close()

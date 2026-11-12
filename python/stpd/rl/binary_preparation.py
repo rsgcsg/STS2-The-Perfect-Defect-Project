@@ -531,6 +531,13 @@ def _labels(
     return _opened(ready, work)
 
 
+@dc.dataclass(frozen=True)
+class _RemoteSource:
+    """Remote mode's ready source on the learner: the hosts hold the decode."""
+
+    descriptor: _Descriptor
+
+
 @dc.dataclass
 class _Arena:
     name: str
@@ -796,14 +803,13 @@ class BinaryBatchPreparer:
                 threads=threads, connections=remote_prepare.get("connections", 2),
                 auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
                 timeout_seconds=remote_prepare.get("timeout_seconds", 600.0))
-            self._failed_tasks["remote_assembly"] = 0
+            self._failed_tasks["remote_assembly"] = self._failed_tasks["remote_labels"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
-        if persistent_pools:
-            # Remote mode never submits to the local assembly pool: no workers.
-            self._warm({"source": self.pool, "labels": self.label_pool} if self.remote else
-                       {"source": self.pool, "assembly": self.assembly_pool,
+        # Remote mode never submits to the local pools: no workers.
+        if persistent_pools and self.remote is None:
+            self._warm({"source": self.pool, "assembly": self.assembly_pool,
                         "labels": self.label_pool})
 
     def _warm(self, pools: dict[str, ProcessPoolExecutor]) -> None:
@@ -1027,6 +1033,14 @@ class BinaryBatchPreparer:
             raise
         descriptor = _Descriptor(arena.name, offset, ref.size, arena.epoch, dict(copied))
         self.sources[ref] = arena_index, descriptor
+        if self.remote is not None:
+            # Remote mode: the hosts decode; the learner's tasks need only the
+            # descriptor (to send the bytes and rebuild aux snapshots).
+            job: Future = Future()
+            job.set_result(_WorkerResult(_RemoteSource(descriptor), os.getpid(), 0.0, 0.0))
+            self.source_jobs[ref] = job
+            self.callbacks.submit(self._release, (descriptor,))
+            return
         try:
             job = self.pool.submit(_timed, _decode_source, descriptor)
         except BaseException:
@@ -1153,10 +1167,12 @@ class BinaryBatchPreparer:
                 role = "assembly" if function is _assemble else "labels"
                 pool = self.assembly_pool if function is _assemble else self.label_pool
                 future: Future
-                if function is _assemble and self.remote is not None:
-                    role, future = "remote_assembly", Future()
+                if self.remote is not None:
+                    role, future = "remote_" + role, Future()
                     try:
-                        future.set_result(self.remote.run(ready, args, str(output)))
+                        future.set_result(self.remote.run(ready, args, str(output))
+                                          if function is _assemble else
+                                          self.remote.labels(ready, args))
                     except BaseException as error:
                         future.set_exception(error)
                 else:
@@ -1420,7 +1436,7 @@ class BinaryBatchPreparer:
                     self.label_pool = fresh["labels"] = self._pool(workers=self.label_workers)
                 self.fenced = False
         if self.remote is not None:
-            fresh.pop("assembly", None)
+            fresh.clear()
         if self.persistent_pools and not self.closed and fresh:
             self._warm(fresh)
         self.last_barrier_failures = tuple(str(error) for error in errors)
