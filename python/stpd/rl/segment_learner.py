@@ -128,9 +128,11 @@ from .sgd_process import (
 
 # The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
 WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
-# Events wait in the telemetry thread's queue, never on the controller. A full
-# queue means telemetry cannot keep up: fail loudly, never drop or block.
+# Events wait in the telemetry thread's queue, not on the controller. A full
+# queue (telemetry behind by 1024 events) waits for the oldest event; no progress
+# for TELEMETRY_STALL_SECONDS is a real stall and fails loudly. Nothing is dropped.
 TELEMETRY_QUEUE_LIMIT = 1024
+TELEMETRY_STALL_SECONDS = 600.0
 MEMORY_SAMPLE_SECONDS = 5.0
 # fast_chain actor control (learner owns the receiving side; see `fast_source`).
 FAST_INSTANCE_ADMISSION = "fast_instance_admission"
@@ -627,6 +629,7 @@ class SegmentLearner:
             text_attention_area=67108864,
         )
         self.timing = {
+            "telemetry_full_wait_seconds": 0.0,
             "preparation_wait_seconds": 0.0,
             "preparation_seconds": 0.0,
             "prepared_batches": 0.0,
@@ -2606,12 +2609,13 @@ class SegmentLearner:
                 tuple(order[i] for i in group)
                 for group in minibatch_members(n, self.settings.minibatches)
             )
-            reserved = {
-                row["key"]
-                for name in ("terminal", "hp")
-                for active in ((self.active,) if self.active else ()) + tuple(a for a, _ in pending)
-                for row in active[name]
-            }
+            # Aux rows of every dataset not yet fully charged: the current one, the
+            # prestarted next one and every prepared one.
+            upcoming = (((self.active,) if self.active else ())
+                        + ((self.next_active[0],) if self.next_active is not None else ())
+                        + tuple(a for a, _ in pending))
+            reserved = {row["key"] for name in ("terminal", "hp")
+                        for active in upcoming for row in active[name]}
             selected = {}
             for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
                 selected[kind] = pool.sample(
@@ -2753,7 +2757,8 @@ class SegmentLearner:
                and not self.newlease_stopped and not self.input_fenced
                and (self.selection_deadline is None
                     or time.monotonic() < self.selection_deadline)
-               and len(self._pending_batches()) < self.prepared_batches):
+               and len(self._pending_batches()) + int(self.next_active is not None)
+               < self.prepared_batches):
             # A read-ahead selection stays in the queue (take=False), so it must be
             # retained and registered as pending under the same lock: otherwise a
             # concurrent fast admission or exclusion sees it as unreferenced, drops
@@ -2822,14 +2827,18 @@ class SegmentLearner:
                     raise ValueError("prepared_dataset_membership_changed")
                 self._dataset_released(active["segments"])
             active["taken"] = True
-        self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
-        if ahead:
-            # Counted from this dataset's own first answer (see `_promote`).
-            self.next_active = active, batch
-            self.timing["sgd_prestarted_batches"] += 1
-        else:
-            self.active, self.active_batch = active, batch
-            active["start_updates"] = self.updates
+        # One step under `sgd_lock`: the prepared-callback must never see the head
+        # popped while the taken dataset is not yet current or next (it would plan
+        # a third dataset onto the device).
+        with self.sgd_lock if self.sgd is not None else nullcontext():
+            self.pending_batch = self.ahead_batches.popleft() if self.ahead_batches else None
+            if ahead:
+                # Counted from this dataset's own first answer (see `_promote`).
+                self.next_active = active, batch
+                self.timing["sgd_prestarted_batches"] += 1
+            else:
+                self.active, self.active_batch = active, batch
+                active["start_updates"] = self.updates
         if self.sgd is not None:
             # Same point as the in-process stage: the SGD process owns its pinned
             # and device copies before preparation and PPO references are released.
@@ -2876,8 +2885,16 @@ class SegmentLearner:
         staged dataset (never a wait), at most one beyond the current, and never
         when the controller would not take another dataset at this boundary: a
         CP request (CP needs the child quiescent), STOP, deadline, stop or fence.
-        Learning decisions (KL stop, clip, uses) stay in the child, unchanged."""
+
+        Theta, KL stop, clip and PPO are unchanged. Not strictly lockstep: N+1's
+        take (aux selection timing for later datasets, `_ready_labels`,
+        `_dataset_released`) runs before N's answers are all accounted. A remote
+        stop request or max_versions arriving after a prestart still trains the
+        authorized N+1 fully (one extra dataset)."""
         if (self.sgd is None or not self.sgd.options.prestart or self.active_batch is None
+                # The SGD process always runs with the binary dataplane's WAL, whose
+                # exit path finishes the in-flight dataset before the final CP.
+                or self.wal is None
                 or self.next_active is not None or self.pending_batch is None
                 or self.checkpoint_requested or self.newlease_stopped or self.input_fenced
                 or self.stop_fact is not None or self.version >= self.config.max_versions
@@ -3165,12 +3182,20 @@ class SegmentLearner:
         """Queue one event for the telemetry thread; the controller never waits on it.
 
         `_build` adds fields computed in that thread. A telemetry error surfaces on
-        the next event; a full queue fails loudly (no drop, no silent block)."""
+        the next event. A full queue waits (bounded memory) for the oldest event;
+        no progress within TELEMETRY_STALL_SECONDS fails loudly, never drops."""
         while self.telemetry_futures and self.telemetry_futures[0].done():
             self.telemetry_futures.popleft().result()
         if len(self.telemetry_futures) >= TELEMETRY_QUEUE_LIMIT:
-            raise RuntimeError(f"telemetry_queue_full: {len(self.telemetry_futures)} "
-                               f"events pending; kind={kind}")
+            began = time.monotonic()
+            try:
+                self.telemetry_futures[0].result(timeout=TELEMETRY_STALL_SECONDS)
+            except TimeoutError:
+                raise RuntimeError(
+                    f"telemetry_queue_stalled: {len(self.telemetry_futures)} events pending, "
+                    f"no progress for {TELEMETRY_STALL_SECONDS:.0f} s; kind={kind}") from None
+            self.telemetry_futures.popleft()
+            self.timing["telemetry_full_wait_seconds"] += time.monotonic() - began
         common = {"training_generation": self.generation,
                   "budget_id": (self.config.operating_budget or {}).get("id")}
 

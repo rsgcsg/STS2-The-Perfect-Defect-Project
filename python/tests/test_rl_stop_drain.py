@@ -55,7 +55,7 @@ def test_original_empty_end_after_stop_and_real_auxiliary_worker_failure(
     owner.wal = None
     owner.actor_episodes, owner.retired_actors, owner.sources = {}, set(), {}
     owner.queue, owner.lease_owners, owner.hot_references = SegmentQueue(SegmentConfig()), {}, {}
-    owner.active, owner.pending_batch = None, None
+    owner.active, owner.next_active, owner.pending_batch = None, None, None
     owner.terminal, owner.hp = SimpleNamespace(groups={}), SimpleNamespace(groups={})
     preparer = BatchPreparer(vocab, workers=1, threads=1, peer=None, run=request["run"],
                              scratch=tmp_path)

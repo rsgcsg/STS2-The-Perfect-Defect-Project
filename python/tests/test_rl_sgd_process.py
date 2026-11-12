@@ -45,8 +45,8 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
     torch.manual_seed(20261107)  # the fixture's start package draws from global torch RNG
     config, io = configuration(tmp_path, monkeypatch, generation=generation)
     config = dc.replace(config, device=device, segments=dc.replace(
-        config.segments, minibatches=2, episode_rows=8, archive_min_free_bytes=0,
-        archive_min_free_inodes=0, **(segments or {})))
+        config.segments, **{"minibatches": 2, "episode_rows": 8, "archive_min_free_bytes": 0,
+                            "archive_min_free_inodes": 0, **(segments or {})}))
     io = dc.replace(io, dataplane={
         "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
         "prepare_slots": 6, "source_bytes": 64 * 1024**2, "preparation_workers": 2,

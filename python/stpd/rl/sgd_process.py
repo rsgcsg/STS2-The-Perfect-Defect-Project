@@ -103,8 +103,9 @@ class SgdOptions:
     # V3: the controller authorizes the next staged dataset while it still
     # accounts the current one's answers, so the child starts it back to back.
     # At most one dataset beyond the current one; never across a CP request,
-    # STOP, deadline or fence. Default on; False is the rollback to the
-    # lockstep start.
+    # STOP, deadline or fence (a stop arriving later still finishes the
+    # authorized one). Theta/KL/PPO match lockstep; aux selection timing may
+    # differ. Default on; False is the rollback to the lockstep start.
     prestart: bool = True
 
 

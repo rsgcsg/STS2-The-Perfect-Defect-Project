@@ -72,15 +72,42 @@ def train_to(owner, datasets, *, checkpoint_at=None):
 
 
 def progress(events):
+    """Deterministic first-use content. Version lag is left out: `self.version`
+    advances when the previous async publication has finished (`_kick_publication`),
+    so it depends on machine load in either mode, not on prestart."""
     return [(event["first_use_floors"], {key: event["first_use_policy_bias"][key]
              for key in ("expected_n", "coverage_complete", "all")},
-             event["first_use_version_lag"], event["first_use_pre_update_SGD_lag"],
-             event["first_use_age_seconds"]["n"])
+             event["first_use_pre_update_SGD_lag"], event["first_use_age_seconds"]["n"])
             for kind, event in events if kind == "progress" and event["stepped"]]
 
 
-def run(tmp_path, monkeypatch, *, prestart, dataplane=None, checkpoint_at=None, datasets=3):
-    owner, config, io = terminal_owner(tmp_path, monkeypatch, episodes=EPISODES, dataplane={
+def aux_keys(active):
+    return {row["key"] for name in ("terminal", "hp") for row in active[name]}
+
+
+def guard_aux_disjoint(owner, selections):
+    """Every new selection's aux rows are disjoint from every dataset not yet fully
+    charged: the current one, the prestarted next one and the prepared ones."""
+    original = owner._select
+
+    def select(**kwargs):
+        upcoming = ([owner.active] if owner.active else []) + (
+            [owner.next_active[0]] if owner.next_active is not None else []) + [
+            a for a, _ in owner._pending_batches()]
+        held = set().union(*(aux_keys(a) for a in upcoming)) if upcoming else set()
+        chosen = original(**kwargs)
+        if chosen is not None:
+            selections.append((owner.next_active is not None, len(aux_keys(chosen))))
+            assert not aux_keys(chosen) & held
+        return chosen
+
+    owner._select = select
+
+
+def run(tmp_path, monkeypatch, *, prestart, dataplane=None, checkpoint_at=None, datasets=3,
+        segments=None):
+    owner, config, io = terminal_owner(tmp_path, monkeypatch, episodes=EPISODES,
+                                       segments=segments, dataplane={
         "sgd_stage_thread": True, "sgd_prestart": prestart, **(dataplane or {})})
     published, original = [], owner.exchange.publish_event
 
@@ -89,6 +116,8 @@ def run(tmp_path, monkeypatch, *, prestart, dataplane=None, checkpoint_at=None, 
         return original(kind, **fields)
 
     owner.exchange.publish_event = record
+    selections = []
+    guard_aux_disjoint(owner, selections)
     try:
         events, captured = train_to(owner, datasets, checkpoint_at=checkpoint_at)
         record, middle = read_cp(owner) if checkpoint_at is not None else (None, None)
@@ -97,7 +126,7 @@ def run(tmp_path, monkeypatch, *, prestart, dataplane=None, checkpoint_at=None, 
         return {"events": events, "middle": middle, "final": final, "captured": captured,
                 "aux": aux_uses(owner), "prestarted": owner.timing["sgd_prestarted_batches"],
                 "exit": None, "owner": owner, "published": published,
-                "record": record, "config": config, "io": io}
+                "record": record, "config": config, "io": io, "selections": selections}
     finally:
         owner.close()
 
@@ -250,11 +279,13 @@ def telemetry_owner(publish):
     owner.telemetry_futures = deque()
     owner.generation, owner.config = "g", SimpleNamespace(operating_budget=None)
     owner.exchange = SimpleNamespace(publish_event=publish)
+    owner.timing = {"telemetry_full_wait_seconds": 0.0}
     return owner
 
 
-def test_a_full_telemetry_queue_fails_loudly_and_drops_nothing(monkeypatch):
+def test_a_full_telemetry_queue_waits_then_fails_loudly_on_a_stall(monkeypatch):
     monkeypatch.setattr(segment_learner, "TELEMETRY_QUEUE_LIMIT", 3)
+    monkeypatch.setattr(segment_learner, "TELEMETRY_STALL_SECONDS", 0.3)
     release, published = threading.Event(), []
 
     def publish(kind, **fields):
@@ -265,12 +296,16 @@ def test_a_full_telemetry_queue_fails_loudly_and_drops_nothing(monkeypatch):
     try:
         for n in range(3):
             owner._event("progress", n=n)  # never waits on the blocked thread
-        with pytest.raises(RuntimeError, match="telemetry_queue_full"):
-            owner._event("progress", n=3)
+        with pytest.raises(RuntimeError, match="telemetry_queue_stalled"):
+            owner._event("progress", n=3)  # no progress at all: loud, not dropped
+        # A hiccup shorter than the stall bound only waits.
+        threading.Timer(0.1, release.set).start()
+        owner._event("progress", n=4)
+        assert owner.timing["telemetry_full_wait_seconds"] > 0
     finally:
         release.set()
         owner.telemetry.shutdown(wait=True)
-    assert published == [0, 1, 2]
+    assert published == [0, 1, 2, 4]
 
 
 def test_a_telemetry_error_surfaces_on_the_next_event():
@@ -301,3 +336,40 @@ def test_memory_is_sampled_at_most_every_few_seconds(monkeypatch):
     clock[0] += 0.2
     owner._memory()
     assert len(calls) == 2
+
+
+def test_a_selection_during_a_prestart_never_shares_aux_rows_with_it(tmp_path, monkeypatch):
+    """A dataset selected while N+1 is authorized (prestarted) but not yet charged
+    must not draw N+1's aux rows. The small pool makes a collision certain if
+    N+1's rows were not reserved: the sample takes every row not excluded."""
+    # 4 episodes give 8 terminal rows; 4 per dataset: dataset 1 holds 4, the
+    # prestarted dataset 2 the other 4, so an unreserved N+1 would be drawn whole.
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=EPISODES,
+                                 segments={"auxiliary_rows": 4}, dataplane={
+        "sgd_stage_thread": True, "sgd_prestart": True, "prepared_batches": 1})
+    original, checked = owner._sgd_prestart, []
+
+    def prestart_then_select():
+        original()
+        if owner.next_active is not None and not checked and aux_keys(owner.next_active[0]):
+            authorized = aux_keys(owner.next_active[0])
+            chosen = owner._select(take=False)  # read-only: leaves the queue as is
+            assert chosen is not None
+            assert not aux_keys(chosen) & authorized
+            checked.append(len(aux_keys(chosen)))
+
+    owner._sgd_prestart = prestart_then_select
+    try:
+        for _ in range(50):
+            if checked:
+                break
+            if owner.active is None:
+                owner._prepare_ahead()
+                for _, future in owner._pending_batches():
+                    future.result(timeout=60)
+                assert owner._prepare()
+            owner._prepare_ahead()
+            owner._step()
+        assert checked
+    finally:
+        owner.close()

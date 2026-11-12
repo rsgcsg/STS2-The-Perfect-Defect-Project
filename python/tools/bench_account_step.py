@@ -23,6 +23,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 
@@ -46,8 +47,8 @@ class Exchange:
         pass
 
 
-def owner(rng: random.Random) -> SegmentLearner:
-    self = SegmentLearner.__new__(SegmentLearner)
+def owner(rng: random.Random) -> Any:
+    self: Any = SegmentLearner.__new__(SegmentLearner)  # stub owner: only accounting state
     self.first_use = self.first_use_multi = self.updates = self.datasets = 0
     self.version = 40
     self.condition = threading.Condition(threading.RLock())
@@ -83,7 +84,7 @@ def add_group(pool: AuxiliaryPool, identity: str, rows: int) -> None:
                         for i in range(rows)])
 
 
-def dataset(self: SegmentLearner, sequence: int, rng: random.Random):
+def dataset(self: Any, sequence: int, rng: random.Random) -> tuple[dict, Any]:
     order = list(range(ROWS))
     rng.shuffle(order)
     size = -(-ROWS // MINIBATCHES)
@@ -106,7 +107,7 @@ def dataset(self: SegmentLearner, sequence: int, rng: random.Random):
     return active, batch
 
 
-def answer(batch, index: int, rng: random.Random) -> tuple[dict, list]:
+def answer(batch: Any, index: int, rng: random.Random) -> tuple[dict, list]:
     mask = batch.policy_mask.tolist()
     samples = [{"row": row, "kl_mu_theta": rng.random() * 0.05, "ratio": 0.8 + rng.random() * 0.4,
                 "outside_clip": rng.random() < 0.1, "ppo_objective_clipped": rng.random() < 0.1,
