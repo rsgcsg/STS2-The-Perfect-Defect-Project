@@ -6,17 +6,25 @@ counters, first use, KL decisions and auxiliary uses are the same ledger.
 """
 from __future__ import annotations
 
+import copy
+import mmap
 import os
+import pickle
+import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
 from test_rl_segment_learner import read_cp
-from test_rl_sgd_process import aux_uses, terminal_owner, train
+from test_rl_sgd_process import _first_handoff, aux_uses, terminal_owner, train
 
-from stpd.rl.data_parallel import shard_groups
-from stpd.rl.sgd_process import sgd_options
+from stpd.rl import batch_preparation as bp
+from stpd.rl.checkpoint_state import construct_model
+from stpd.rl.data_parallel import RemoteGroup, shard_groups, shard_transport
+from stpd.rl.loss import prepared_update
+from stpd.rl.sgd_process import SgdProcessFailed, _DataParallel, mapped_arrays, sgd_options
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="real spawned SGD ranks")
 PARALLEL = {"sgd_data_parallel": {"world": 2, "backend": "gloo", "timeout_seconds": 120}}
@@ -164,3 +172,140 @@ def test_replica_check_fences_a_diverged_follower(tmp_path, perturb):
     outcome = dict(results.get(timeout=5) for _ in ranks)
     expected = "data_parallel_replicas_diverged" if perturb else "ok"
     assert outcome == {0: expected, 1: expected}
+
+
+def equal_tree(left, right):
+    if isinstance(left, torch.Tensor):
+        assert left.dtype == right.dtype and left.shape == right.shape
+        assert torch.equal(left, right)
+    elif isinstance(left, dict):
+        assert left.keys() == right.keys()
+        for key in left:
+            equal_tree(left[key], right[key])
+    elif isinstance(left, (tuple, list)):
+        assert len(left) == len(right)
+        for one, two in zip(left, right, strict=True):
+            equal_tree(one, two)
+    elif hasattr(left, "__dataclass_fields__"):
+        assert type(left) is type(right)
+        for name in left.__dataclass_fields__:
+            equal_tree(getattr(left, name), getattr(right, name))
+    else:
+        assert left == right
+
+
+class _Capture:
+    """`gradient_sync` stand-in: records this rank's partial gradient and totals."""
+
+    def __call__(self, model, totals, valid):
+        self.grads = {name: p.grad.clone() for name, p in model.named_parameters()
+                      if p.grad is not None}
+        self.totals = totals.clone()
+        return totals, valid
+
+
+def test_each_rank_stages_only_its_groups_and_trains_on_the_same_values(tmp_path,
+                                                                         monkeypatch):
+    """Host path: a rank pins/copies only its own groups of each minibatch. What it
+    trains on (its groups, the row tensors, denominators, order) is the same as
+    from the whole file, so its partial gradient and loss totals are bitwise equal."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=3, dataplane=PARALLEL)
+    try:
+        handoff = _first_handoff(owner)
+        with open(handoff.path, "rb") as stream:
+            mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        specs = [(a.offset, a.count, a.dtype) for a in handoff.arrays]
+        arrays = mapped_arrays(mapping, specs)
+        tree = pickle.loads(handoff.tree)
+        full = bp.unpack_transport((tree, tuple(a.copy() for a in arrays)))
+        total = sum(a.nbytes for a in arrays)
+        torch.manual_seed(11)
+        base = construct_model(owner.construction_template).eval()
+        staged = []
+        for rank in range(2):
+            part_tree, part_arrays = shard_transport(tree, arrays, rank, 2)
+            staged.append(sum(a.nbytes for a in part_arrays))
+            part = bp.unpack_transport((part_tree, tuple(a.copy() for a in part_arrays)))
+            assert len(part.minibatches) == len(full.minibatches) >= 1
+            for whole, mine in zip(full.minibatches, part.minibatches, strict=True):
+                local = shard_groups([len(g.rows) for g in whole.groups], rank, 2)
+                assert len(whole.groups) >= 2 and local
+                for index, (group, kept) in enumerate(zip(whole.groups, mine.groups,
+                                                          strict=True)):
+                    if index in local:
+                        equal_tree(group, kept)
+                    else:
+                        assert kept == RemoteGroup(tuple(group.rows), group.policy)
+                for name in ("tensors", "epoch_auxiliary", "epoch_auxiliary_counts",
+                             "policy_rows", "td_rows", "terminal_rows", "hp_rows"):
+                    equal_tree(getattr(whole, name), getattr(mine, name))
+                # Same partial gradient and totals as this rank's share of the
+                # whole minibatch (the all-reduce input), bit for bit.
+                captured = []
+                for minibatch in (whole, mine):
+                    model = copy.deepcopy(base)
+                    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+                    capture = _Capture()
+                    torch.manual_seed(7)
+                    prepared_update(model, optimizer, minibatch, config=owner.config.loss,
+                                    performance=owner.performance, target_kl=1e9,
+                                    gradient_sync=capture, shard=(rank, 2))
+                    captured.append(capture)
+                assert captured[0].grads and torch.equal(captured[0].totals,
+                                                          captured[1].totals)
+                assert captured[0].grads.keys() == captured[1].grads.keys()
+                for name, grad in captured[0].grads.items():
+                    assert torch.equal(grad, captured[1].grads[name]), name
+            for whole_field in ("request", "metadata", "policy_mask"):
+                equal_tree(getattr(full, whole_field), getattr(part, whole_field))
+        # Each rank copies about its share, not the whole file; together about once.
+        assert all(size < total for size in staged), (staged, total)
+        del arrays, full, part, part_arrays
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("threaded", [False, True])
+def test_two_ranks_never_start_on_bytes_rank0_did_not_verify(tmp_path, monkeypatch, threaded):
+    """Only rank 0 hashes the prepared file (once per batch); a changed byte still
+    fails the child loudly before any `staged`, so no rank trains on it."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1,
+                                 dataplane={**PARALLEL, "sgd_stage_thread": threaded})
+    try:
+        handoff = _first_handoff(owner)
+        path = Path(handoff.path)
+        with path.open("r+b") as stream:
+            first = stream.read(1)
+            stream.seek(0)
+            stream.write(bytes([first[0] ^ 1]))
+        with pytest.raises(SgdProcessFailed) as caught:
+            owner._prepare()
+        child = caught.value.facts["child"]
+        assert child["error_code"] == "sgd_prepared_file_integrity_changed"
+        assert owner.updates == 0
+    finally:
+        owner.close()
+
+
+def test_rank0_refuses_staged_when_a_follower_mapped_another_file(monkeypatch):
+    parallel = _DataParallel.__new__(_DataParallel)
+    parallel.world, parallel.staged_lock = 2, threading.Lock()
+    parallel.deferred, parallel.follower_ready = {}, {}
+    sent = []
+    parallel.send = lambda kind, **fields: sent.append((kind, fields))
+
+    def exit_(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(os, "_exit", exit_)
+    verified = (1, 2, 3, 4)
+    parallel.staged(1, {"file_identity": verified, "sha256": "x"})
+    assert sent == []  # waits for the follower
+    parallel.follower_staged(1, 1, verified)
+    assert [kind for kind, _ in sent] == ["staged"]
+    parallel.follower_staged(1, 2, (1, 9, 3, 4))  # follower first, then rank 0
+    with pytest.raises(SystemExit):
+        parallel.staged(2, {"file_identity": verified, "sha256": "y"})
+    kind, fields = sent[-1]
+    assert kind == "failed"
+    assert fields["error_code"] == "sgd_data_parallel_file_identity_changed"

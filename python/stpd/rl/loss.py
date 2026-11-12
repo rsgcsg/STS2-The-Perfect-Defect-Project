@@ -206,12 +206,14 @@ def prepared_update(
                 # report never mixes the two paths under one name.
                 rows_path = "packed" if varlen_supported(device) else "masked"
             for group_index, group in enumerate(minibatch.groups):
+                if local_groups is not None and group_index not in local_groups:
+                    # Another rank's rows of this minibatch; that rank checks its
+                    # layout and may have staged only `data_parallel.RemoteGroup`.
+                    offset += len(group.rows)
+                    continue
                 if (getattr(group, "layout", None) is not None) != rows_forward:
                     raise BoundaryError("rl_performance",
                                         "prepared_layout_does_not_match_selected_forward")
-                if local_groups is not None and group_index not in local_groups:
-                    offset += len(group.rows)  # another rank's rows of this minibatch
-                    continue
                 executed.append(group)
                 phase = time.perf_counter()
                 scores, logits, hp = (
