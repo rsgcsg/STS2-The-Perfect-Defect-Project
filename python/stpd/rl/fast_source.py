@@ -439,7 +439,13 @@ class FastSegmentIntake:
 
     # -- generation -------------------------------------------------------------------
     def set_generation(self, generation: str) -> None:
-        """A new training generation: nothing attested or buffered under the old one stays."""
+        """A new training generation: nothing attested or buffered under the old one stays.
+
+        Called on every hand-off/control message with the learner's (fixed)
+        generation: an unchanged one returns without the lock (a str compare is
+        atomic under the GIL; a real change is re-checked under the lock)."""
+        if generation == self.generation:
+            return
         with self.lock:
             if generation == self.generation:
                 return
@@ -536,6 +542,10 @@ class FastSegmentIntake:
                 or header["mu"]["snapshot_sha256"] != message["mu_snapshot_sha256"]):
             raise HandoffError("handoff_segment_binding")
         segment = FastSegment(dict(message), header, data)
+        # Pure functions of this header: built before the lock (readers stay parallel).
+        facts = row_facts(header)
+        terminal = (copy.deepcopy(header["seal"]["terminal"])
+                    if header["seal"]["kind"] == "terminal" else None)
         with self.lock:
             self.counters["received"] += 1
             self.counters["received_rows"] += segment.rows
@@ -569,9 +579,9 @@ class FastSegmentIntake:
                 else:
                     instance.segments[segment.segment_id] = (
                         header["segment_index"], message["sha256"], len(data))
-                    instance.facts.extend(row_facts(header))
+                    instance.facts.extend(facts)
                     if header["seal"]["kind"] == "terminal":
-                        instance.terminal = copy.deepcopy(header["seal"]["terminal"])
+                        instance.terminal = terminal
             if instance.excluded is not None:
                 self._count_excluded(instance.excluded, segment.rows, used=False)
                 return IntakeDecision()
@@ -587,6 +597,13 @@ class FastSegmentIntake:
         Every label is recomputed here from the headers this intake received; the
         carried original segments must be exactly the ones received. Any
         difference fences (raises); nothing is repaired or partly used.
+
+        Three phases so the intake lock never covers hashing or decoding: (1)
+        under the lock, claim the instance (`labelled`) and snapshot its label
+        inputs; (2) unlocked, recompute the rule, bind every carried body to the
+        digest received with its segment and decode its header; (3) under the
+        lock, use the result only if the same instance object is still current
+        in the same generation (else counted as an old-generation drop).
         """
         if set(message) != LABELS_KEYS or message["schema"] != LABELS_SCHEMA:
             raise HandoffError("handoff_schema")
@@ -609,34 +626,56 @@ class FastSegmentIntake:
             if instance.facts is None:
                 self.counters["labels_incomplete_instance"] += 1
                 return IntakeDecision()
-            expected = instance_labels(instance_id, instance.facts, instance.terminal)
-            if any(message[key] != expected[key]
-                   for key in ("terminal", "outcome_rows", "hp_battles")):
-                raise FastIntakeError("fast_labels_rule_changed")
-            wanted = {r["segment_id"] for r in expected["outcome_rows"]} | {
-                r["segment_id"] for battle in expected["hp_battles"] for r in battle["states"]}
-            order = sorted(wanted, key=lambda sid: instance.segments[sid][0])
-            entries = message["segments"]
-            if (not isinstance(entries, list) or len(data) != message["size"]
-                    or [entry.get("segment_id") for entry in entries] != order):
+            # Segments of this instance arrive in order on this same Connection
+            # (this thread), so nothing appends to these while we work unlocked;
+            # shallow copies keep the snapshot exact regardless.
+            generation = self.generation
+            facts = list(instance.facts)
+            terminal = instance.terminal
+            received = dict(instance.segments)
+        expected = instance_labels(instance_id, facts, terminal)
+        if any(message[key] != expected[key]
+               for key in ("terminal", "outcome_rows", "hp_battles")):
+            raise FastIntakeError("fast_labels_rule_changed")
+        wanted = {r["segment_id"] for r in expected["outcome_rows"]} | {
+            r["segment_id"] for battle in expected["hp_battles"] for r in battle["states"]}
+        order = sorted(wanted, key=lambda sid: received[sid][0])
+        entries = message["segments"]
+        if (not isinstance(entries, list) or len(data) != message["size"]
+                or [entry.get("segment_id") for entry in entries] != order):
+            raise FastIntakeError("fast_labels_segments_changed")
+        bodies: dict[str, tuple[str, bytes]] = {}
+        cursor = 0
+        for entry in entries:
+            _index, digest, size = received[entry["segment_id"]]
+            pad = -size % 8
+            if (set(entry) != {"segment_id", "sha256", "offset", "size"}
+                    or entry["sha256"] != digest or entry["size"] != size
+                    or entry["offset"] != cursor or cursor + size + pad > len(data)
+                    or any(data[cursor + size:cursor + size + pad])):
                 raise FastIntakeError("fast_labels_segments_changed")
-            bodies: dict[str, tuple[str, bytes]] = {}
-            cursor = 0
-            for entry in entries:
-                _index, digest, size = instance.segments[entry["segment_id"]]
-                pad = -size % 8
-                if (set(entry) != {"segment_id", "sha256", "offset", "size"}
-                        or entry["sha256"] != digest or entry["size"] != size
-                        or entry["offset"] != cursor or cursor + size + pad > len(data)
-                        or any(data[cursor + size:cursor + size + pad])):
-                    raise FastIntakeError("fast_labels_segments_changed")
-                body = data[cursor:cursor + size]
-                if sha256(body) != digest:
-                    raise FastIntakeError("fast_labels_segment_bytes_changed")
-                bodies[entry["segment_id"]] = digest, body
-                cursor += size + pad
-            if cursor != len(data):
-                raise FastIntakeError("fast_labels_segments_changed")
+            body = data[cursor:cursor + size]
+            if sha256(body) != digest:
+                raise FastIntakeError("fast_labels_segment_bytes_changed")
+            bodies[entry["segment_id"]] = digest, body
+            cursor += size + pad
+        if cursor != len(data):
+            raise FastIntakeError("fast_labels_segments_changed")
+        headers: dict[str, dict[str, Any]] = {}
+        if self.aux_labels:
+            for sid, (_digest, body) in bodies.items():
+                # Full row verification, as before, only now outside the lock:
+                # every row is copied and bound to its own sha256 here, whether
+                # or not the row is ever used. The whole body was bound to
+                # `digest` (the digest offer() received) just above, so it is
+                # not hashed a second time.
+                header, _rows = decode_segment(body)
+                headers[sid] = header
+        with self.lock:
+            if self.generation != generation or self.instances.get(instance_id) is not instance:
+                # The generation changed while this ran unlocked: never used here.
+                self.counters["labels_old_generation_dropped"] += 1
+                return IntakeDecision()
             if instance.excluded is not None or instance.attestation is None:
                 self.counters["labels_untrained_instance"] += 1
                 return IntakeDecision()
@@ -645,26 +684,28 @@ class FastSegmentIntake:
                 return IntakeDecision()
             segments = {}
             for sid, (digest, body) in bodies.items():
-                header, _rows = decode_segment(body, expected_sha256=digest)
-                segment = FastSegment({"segment_id": sid, "sha256": digest}, header, body)
+                segment = FastSegment({"segment_id": sid, "sha256": digest}, headers[sid], body)
                 segments[sid] = segment, self._envelope(segment, instance.attestation)
-
-            def rows(refs: list[dict[str, Any]], label: float) -> list[dict[str, Any]]:
-                return [{"segment": segments[r["segment_id"]][0],
-                         "envelope": segments[r["segment_id"]][1], "row": r["row"],
-                         "step_index": r["step_index"], "label": label} for r in refs]
-
             groups = []
             if "terminal" in self.aux_labels and expected["terminal"] is not None:
-                groups.append(("terminal", instance_id,
-                               rows(expected["outcome_rows"], expected["terminal"]["class"])))
                 self.counters["labels_terminal_rows"] += len(expected["outcome_rows"])
             if "hp" in self.aux_labels:
                 for battle in expected["hp_battles"]:
-                    groups.append(("hp", battle["battle_id"],
-                                   rows(battle["states"], battle["post_hp"] / 100)))
                     self.counters["labels_hp_rows"] += len(battle["states"])
-            return IntakeDecision(auxiliary=groups)
+
+        def rows(refs: list[dict[str, Any]], label: float) -> list[dict[str, Any]]:
+            return [{"segment": segments[r["segment_id"]][0],
+                     "envelope": segments[r["segment_id"]][1], "row": r["row"],
+                     "step_index": r["step_index"], "label": label} for r in refs]
+
+        if "terminal" in self.aux_labels and expected["terminal"] is not None:
+            groups.append(("terminal", instance_id,
+                           rows(expected["outcome_rows"], expected["terminal"]["class"])))
+        if "hp" in self.aux_labels:
+            for battle in expected["hp_battles"]:
+                groups.append(("hp", battle["battle_id"],
+                               rows(battle["states"], battle["post_hp"] / 100)))
+        return IntakeDecision(auxiliary=groups)
 
     def closed(self, message: dict[str, Any]) -> IntakeDecision:
         check_instance_closed(message)

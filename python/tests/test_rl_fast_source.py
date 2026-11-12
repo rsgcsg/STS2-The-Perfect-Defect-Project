@@ -602,6 +602,145 @@ def test_header_only_parse_skips_row_digests_but_the_decode_worker_still_binds_t
 
 
 
+# ------------------------------------------------ intake lock: no heavy work under it
+def test_label_body_corrupted_after_offer_fails_loudly():
+    """Labels still bind every carried body to its offer() digest and every row of
+    it to its own row sha256 (now outside the intake lock), used or not."""
+    from stpd.rl.fast_segment import decode_segment, sha256
+    from stpd.rl.fast_source import build_instance_labels
+
+    # (a) Bytes changed after offer: the body no longer matches the offered digest.
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal", "hp"}))
+    fields, data = build_instance_labels(sealed)
+    entry = fields["segments"][1]
+    bad = bytearray(data)
+    bad[entry["offset"] + entry["size"] - 1] ^= 0xFF  # last row byte of segment 2
+    with pytest.raises(FastIntakeError, match="fast_labels_segment_bytes_changed"):
+        i.labels(labels_message(fields), bytes(bad))
+
+    # (b) A row whose bytes do not match its row sha256 under a consistent whole
+    # digest: offer() parses the header only and admits it; labels must refuse it
+    # through the full per-row check (it never waits for a later decode).
+    i = intake(aux_labels=frozenset({"terminal", "hp"}))
+    i.attest(attest("g1"))
+    sealed = combat_game()
+    raw = bytearray(sealed[0].data)
+    length = int.from_bytes(raw[8:16], "little")
+    raw[16 + length + (-length % 8)] ^= 0xFF  # first byte of row 0
+    raw = bytes(raw)
+    assert decode_segment(raw, header_only=True)[0] == sealed[0].header
+    first = {**message(sealed[0], 1), "sha256": sha256(raw)}
+    assert i.offer(first, raw).admit
+    assert i.offer(message(sealed[1], 2), sealed[1].data).admit
+    fields, data = build_instance_labels(sealed)
+    entry = fields["segments"][0]
+    data = data[:entry["offset"]] + raw + data[entry["offset"] + entry["size"]:]
+    fields["segments"][0] = {**entry, "sha256": sha256(raw)}
+    with pytest.raises(SegmentFormatError, match="row_digest"):
+        i.labels(labels_message(fields), data)
+
+
+def _blocking_decode(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    """Make labels()'s full decode wait until released (offer's header parse never waits)."""
+    import threading
+
+    import stpd.rl.fast_source as fs
+
+    entered, release = threading.Event(), threading.Event()
+    real = fs.decode_segment
+
+    def decode(data: Any, **kwargs: Any) -> Any:
+        if not kwargs.get("header_only"):
+            entered.set()
+            assert release.wait(10)
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(fs, "decode_segment", decode)
+    return entered, release
+
+
+def test_labels_decode_runs_outside_the_intake_lock(monkeypatch):
+    """While one reader decodes a labels body, other readers offer, attest and
+    report without waiting for it (the six hand-off readers stay parallel)."""
+    import threading
+
+    from stpd.rl.fast_source import build_instance_labels
+
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal", "hp"}))
+    fields, data = build_instance_labels(sealed)
+    entered, release = _blocking_decode(monkeypatch)
+    result: dict[str, Any] = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault("d", i.labels(labels_message(fields), data)))
+    worker.start()
+    try:
+        assert entered.wait(10)
+        done = threading.Event()
+
+        def other() -> None:
+            i.set_generation("gen-1")
+            i.attest(attest("g2"))
+            for n, segment in enumerate(bootstrap_and_terminal("g2"), 1):
+                assert i.offer(message(segment, n), segment.data).admit
+            i.report()
+            done.set()
+
+        threading.Thread(target=other, daemon=True).start()
+        assert done.wait(10), "another reader waited for a labels decode"
+    finally:
+        release.set()
+        worker.join(10)
+    assert [kind for kind, _, _ in result["d"].auxiliary] == ["terminal", "hp", "hp"]
+
+
+def test_generation_change_during_unlocked_labels_work_drops_the_labels(monkeypatch):
+    import threading
+
+    from stpd.rl.fast_source import build_instance_labels
+
+    i, sealed = labelled_intake(aux_labels=frozenset({"terminal", "hp"}))
+    fields, data = build_instance_labels(sealed)
+    entered, release = _blocking_decode(monkeypatch)
+    result: dict[str, Any] = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault("d", i.labels(labels_message(fields), data)))
+    worker.start()
+    assert entered.wait(10)
+    i.set_generation("gen-2")  # not blocked by the decode in flight
+    release.set()
+    worker.join(10)
+    decision = result["d"]
+    assert not decision.auxiliary and not decision.admit and decision.reply is None
+    assert i.report()["labels_old_generation_dropped"] == 1
+    assert i.report()["open_instances"] == 0
+    # Nothing of gen-1 is attested or trained under gen-2.
+    i.publish_mu(published(mu(1, "gen-2")))
+    old = combat_game()
+    assert not i.offer(message(old[0], 1), old[0].data).admit
+
+
+def test_unchanged_generation_never_waits_for_the_intake_lock():
+    import threading
+
+    i = intake()
+    held, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with i.lock:
+            held.set()
+            release.wait(10)
+
+    threading.Thread(target=holder, daemon=True).start()
+    assert held.wait(10)
+    done = threading.Event()
+    threading.Thread(target=lambda: (i.set_generation("gen-1"), done.set()),
+                     daemon=True).start()
+    try:
+        assert done.wait(5)
+    finally:
+        release.set()
+
+
 def _short_game(node: str, game: str) -> list[SealedSegment]:
     g = Game("gen-1", assembler_id=node)
     g.open(game)
