@@ -24,7 +24,15 @@ Rules (RL4.1 long-run lessons, lead 11-12):
 
 Managed games need a GAME-SLOT line (working rule 5): `run` refuses to submit
 without `--slot-registered`; `--dry-run` writes everything and submits nothing.
-State and logs stay under `--output`; no CP, model or R2 object is deleted here.
+One loop per `--output` (an OS lock); state and logs stay there; no CP, model
+or R2 object is deleted here. Storage without R2 (lead 11-12): the learner peer
+is a local shared-disk directory and the execution file names
+`"storage_mode": "shared_local"` (`evaluate.validate_execution`).
+
+CP pruning contract: `<output>/protected-checkpoints.json` lists the CPs whose
+preparation may still read them (`{"checkpoints": [...]}`, rewritten each tick).
+The run's CP pruning must keep those; after preparation the evaluation reads the
+published detached model, not the CP.
 """
 from __future__ import annotations
 
@@ -48,6 +56,8 @@ EPISODE_SECONDS = 1800
 SEEDS = 100
 MAX_LIVE = 2  # 3 h evaluations every 2 h overlap by at most one
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
+LIVE_STATES = "PD,R,CG,CF,S,RQ,RS"  # queued or running; a purged id is simply absent
+SPLIT = 'exec "$actor_root/env/bin/python"'
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 
 
@@ -75,9 +85,11 @@ def check_manifest(path: Path) -> None:
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
     """The watcher's preparation command, for one CP."""
-    prefix = evaluate.launcher(root / "not-offered-plan.json",
-                               {"source_root": settings["runtime_source"]}).split(
-        'exec "$actor_root/env/bin/python"', 1)[0]
+    launcher = evaluate.launcher(root / "not-offered-plan.json",
+                                 {"source_root": settings["runtime_source"]})
+    if launcher.count(SPLIT) != 1:
+        raise ValueError("evaluation_launcher_layout_changed")
+    prefix = launcher.split(SPLIT, 1)[0]
     command = ['"$actor_root/env/bin/python"', '"$source_root/tools/friday/evaluate.py"',
                "prepare-checkpoint", "--learner-config",
                shlex.quote(settings["learner_config"]), "--checkpoint", shlex.quote(checkpoint),
@@ -105,11 +117,20 @@ def sbatch_prepare(script: Path, root: Path, settings: dict[str, Any]) -> list[s
 
 
 def live_jobs(job_ids: list[str]) -> set[str]:
+    """The recorded ids still queued or running: this user's live jobs, intersected.
+
+    `squeue -j <id>` fails once an id is purged and lists finished jobs within
+    MinJobAge; the user's live list has neither problem. A failing squeue raises
+    (the caller skips the tick, never guesses).
+    """
     if not job_ids:
         return set()
-    out = subprocess.check_output(["squeue", "-h", "-j", ",".join(job_ids), "-o", "%i"],
-                                  text=True)
-    return {line.strip() for line in out.splitlines() if line.strip()}
+    import submit as scheduler
+
+    out = scheduler.output(["squeue", "-h", "-u", scheduler.username(), "-t", LIVE_STATES,
+                            "-o", "%i"])
+    live = {line.strip().split("_")[0] for line in out.splitlines() if line.strip()}
+    return live & set(job_ids)
 
 
 class Loop:
@@ -130,13 +151,39 @@ class Loop:
             self.state = json.loads(self.state_path.read_bytes())
             if self.state["schema"] != SCHEMA or self.state["settings"] != settings:
                 raise ValueError("fast_evaluation_settings_changed_use_new_output")
+            self.reconcile()
         else:
             self.state = {"schema": SCHEMA, "settings": settings, "next_due": clock(),
                           "evaluations": [], "log": []}
 
+    def reconcile(self) -> None:
+        """After a crash between sbatch and persist: the receipt names the job, if any."""
+        for item in self.state["evaluations"]:
+            if item["stage"] != "preparing" or "prepare_job" in item:
+                continue
+            receipt = Path(item["root"]) / "submission.json"
+            if receipt.is_file():
+                item["prepare_job"] = json.loads(receipt.read_bytes())["job_id"]
+            else:  # sbatch may or may not have run: never submitted again
+                item["stage"] = "prepare_submit_unknown"
+                self.note("evaluation_prepare_submit_unknown", checkpoint=item["checkpoint"],
+                          reason="restart_without_receipt")
+
+    def protected(self) -> list[str]:
+        return [e["checkpoint"] for e in self.state["evaluations"] if e["stage"] == "preparing"]
+
     def persist(self) -> None:
         if not self.dry_run:
             save(self.state_path, self.state)
+            save(self.output / "protected-checkpoints.json",
+                 {"schema": SCHEMA + "/protected", "checkpoints": self.protected()})
+
+    def live(self, ids: list[str]) -> set[str] | None:
+        try:
+            return self.jobs(ids)
+        except (OSError, subprocess.SubprocessError) as error:
+            self.note("scheduler_unreachable", reason=type(error).__name__)
+            return None
 
     def note(self, kind: str, **fields: Any) -> None:
         entry = {"at": self.clock(), "kind": kind, **fields}
@@ -144,16 +191,20 @@ class Loop:
         print(json.dumps(entry, sort_keys=True), flush=True)
 
     def tick(self) -> None:
-        self.advance()
+        if self.advance() is False:  # liveness unknown: nothing decided this tick
+            self.persist()
+            return
         if self.clock() >= self.state["next_due"]:
             self.state["next_due"] = self.clock() + self.settings["interval"]
             self.start()
         self.persist()
 
-    def advance(self) -> None:
+    def advance(self) -> bool:
         """Preparation finished: submit its plan once; a dead job without a plan fails."""
         preparing = [e for e in self.state["evaluations"] if e["stage"] == "preparing"]
-        live = self.jobs([e["prepare_job"] for e in preparing])
+        live = self.live([e["prepare_job"] for e in preparing])
+        if live is None:
+            return False
         for item in preparing:
             plan = Path(item["root"]) / "round/evaluation/plan.json"
             if item["prepare_job"] in live:
@@ -175,10 +226,17 @@ class Loop:
                 self.note("evaluation_submit_failed", checkpoint=item["checkpoint"],
                           reason=str(error))
                 continue
+            except (OSError, subprocess.SubprocessError) as error:
+                # Delivery unknown (the owner's intent may exist): recorded, never retried.
+                item.update(stage="submit_unknown", reason=type(error).__name__)
+                self.note("evaluation_submit_unknown", checkpoint=item["checkpoint"],
+                          reason=type(error).__name__)
+                continue
             item.update(stage="submitted", evaluation_job=result.get("job_id"),
                         submitted_at=self.clock())
             self.note("evaluation_submitted", checkpoint=item["checkpoint"],
                       job=result.get("job_id"))
+        return True
 
     def start(self) -> None:
         deadline = self.settings.get("deadline_at")
@@ -189,7 +247,10 @@ class Loop:
             return self.note("evaluation_skipped", reason="preparation_still_running")
         submitted = [e["evaluation_job"] for e in evaluations
                      if e["stage"] == "submitted" and e.get("evaluation_job")]
-        if len(self.jobs(submitted)) >= self.settings["max_live"]:
+        running = self.live(submitted)
+        if running is None:
+            return self.note("evaluation_skipped", reason="scheduler_unreachable")
+        if len(running) >= self.settings["max_live"]:
             return self.note("evaluation_skipped", reason="evaluations_still_running")
         record = self.newest()
         if record is None:
@@ -204,6 +265,12 @@ class Loop:
             root.mkdir(parents=True, exist_ok=True)
         else:
             root = private_root(root)
+        intent = root / "submission-intent.json"
+        if intent.exists():  # crash after the intent, before the state: never resubmitted
+            evaluations.append({"number": number, "checkpoint": None, "root": str(root),
+                                "stage": "orphan_intent"})
+            return self.note("evaluation_skipped", reason="orphan_submission_intent",
+                             root=str(root))
         script = root / "prepare.sh"
         script.write_text(prepare_script(self.settings, checkpoint, root))
         script.chmod(0o700)
@@ -214,7 +281,6 @@ class Loop:
             item["stage"] = "dry_run"
             evaluations.append(item)
             return self.note("evaluation_dry_run", checkpoint=checkpoint, command=command)
-        intent = root / "submission-intent.json"
         save(intent, {"at": self.clock(), "command": command, "script_sha256": hashed(script)})
         evaluations.append(item)
         self.persist()  # the intent exists before the job does; never resubmitted
@@ -225,6 +291,7 @@ class Loop:
             self.note("evaluation_prepare_submit_unknown", checkpoint=checkpoint)
             return None
         save(root / "submission.json", {"at": self.clock(), "job_id": item["prepare_job"]})
+        self.persist()  # the job id is durable before anything else can fail
         self.note("evaluation_preparing", checkpoint=checkpoint, job=item["prepare_job"],
                   sequence=record.get("checkpoint_sequence"))
         return None
@@ -278,13 +345,23 @@ def main() -> None:
     check_manifest(args.manifest.resolve())
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    loop = Loop(settings_from(args), output, dry_run=args.dry_run)
-    while True:
-        loop.tick()
-        stages = [e["stage"] for e in loop.state["evaluations"]]
-        if args.dry_run or args.once and stages and stages[-1] != "preparing":
-            break
-        time.sleep(args.poll_seconds)
+    import contextlib
+
+    from spireagent.instance_lock import instance_lock
+    from spireagent.json_boundary import BoundaryError
+
+    with contextlib.ExitStack() as stack:
+        try:  # one loop per output, OS-held (released on process death)
+            stack.enter_context(instance_lock(output / "loop.lock"))
+        except BoundaryError:
+            parser.error("another fast_eval loop owns this --output")
+        loop = Loop(settings_from(args), output, dry_run=args.dry_run)
+        while True:
+            loop.tick()
+            stages = [e["stage"] for e in loop.state["evaluations"]]
+            if args.dry_run or args.once and stages and stages[-1] != "preparing":
+                break
+            time.sleep(args.poll_seconds)
     print(json.dumps({"evaluations": loop.state["evaluations"]}, sort_keys=True), flush=True)
     sys.exit(0)
 

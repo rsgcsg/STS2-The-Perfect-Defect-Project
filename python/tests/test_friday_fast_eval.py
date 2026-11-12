@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -188,3 +189,137 @@ def test_dry_run_writes_the_script_and_submits_nothing(fast_eval, tmp_path):
     item = runner.state['evaluations'][0]
     assert item['stage'] == 'dry_run' and item['command'][0] == 'sbatch'
     assert (tmp_path / 'evaluation-0001/prepare.sh').is_file()
+
+
+def test_restart_after_crash_between_sbatch_and_state(fast_eval, tmp_path):
+    """Review A: `preparing` without its job id never crashes a restart."""
+    world = World()
+    world.record('cp-a', 10)
+    world.record('cp-b', 20)
+    runner = loop(fast_eval, world, tmp_path)
+    runner.tick()
+    state = json.loads((tmp_path / 'state.json').read_text())
+    assert state['evaluations'][0]['prepare_job'] == '101'  # persisted at once
+    # The crash left no job id in the state: the receipt names it.
+    del state['evaluations'][0]['prepare_job']
+    (tmp_path / 'state.json').write_text(json.dumps(state))
+    again = loop(fast_eval, world, tmp_path)
+    assert again.state['evaluations'][0]['prepare_job'] == '101'
+    again.tick()
+    # No receipt either: sbatch may have run, so it is never submitted again.
+    (tmp_path / 'evaluation-0001/submission.json').unlink()
+    (tmp_path / 'state.json').write_text(json.dumps(state))
+    third = loop(fast_eval, world, tmp_path)
+    assert third.state['evaluations'][0]['stage'] == 'prepare_submit_unknown'
+    third.tick()
+    assert len(world.commands) == 1
+
+
+def test_an_intent_without_state_is_never_resubmitted(fast_eval, tmp_path):
+    """Review D: a crash after the intent, before the state, leaves the directory alone."""
+    world = World()
+    world.record('cp-a', 10)
+    root = tmp_path / 'evaluation-0001'
+    root.mkdir(mode=0o700)
+    (root / 'submission-intent.json').write_text('{}')
+    runner = loop(fast_eval, world, tmp_path)
+    runner.tick()
+    assert world.commands == [] and runner.state['evaluations'][0]['stage'] == 'orphan_intent'
+    world.now += 7200
+    runner.tick()  # the next number, the same CP
+    assert runner.state['evaluations'][1]['root'].endswith('evaluation-0002')
+    assert len(world.commands) == 1
+
+
+def test_liveness_uses_the_user_live_list_and_a_failing_squeue_skips(fast_eval, tmp_path):
+    """Review B: purged ids are absent, never an error; squeue failure decides nothing."""
+    calls = []
+
+    class Scheduler:
+        @staticmethod
+        def username():
+            return 'someone'
+
+        @staticmethod
+        def output(command):
+            calls.append(command)
+            return '101\n555_3\n'
+
+    with patch.dict(sys.modules, {'submit': Scheduler}):
+        assert fast_eval.live_jobs(['101', '555', '999']) == {'101', '555'}
+        assert fast_eval.live_jobs([]) == set() and len(calls) == 1
+    assert calls[0][:4] == ['squeue', '-h', '-u', 'someone'] and '-j' not in calls[0]
+    world = World()
+    world.record('cp-a', 10)
+    runner = loop(fast_eval, world, tmp_path)
+    runner.tick()
+    item = runner.state['evaluations'][0]
+    finish_prepare(world, item)
+
+    def down(ids):
+        raise subprocess.CalledProcessError(1, ['squeue'])
+
+    runner.jobs = down
+    runner.tick()
+    assert item['stage'] == 'preparing' and runner.state['log'][-1]['kind'] == (
+        'scheduler_unreachable')
+    runner.jobs = lambda ids: {i for i in ids if i in world.live}
+    runner.tick()
+    assert item['stage'] == 'submitted'
+
+
+def test_an_unknown_evaluation_submit_is_recorded_and_the_loop_lives(fast_eval, tmp_path):
+    """Review C: OSError / CalledProcessError from the owner's submit."""
+    world = World()
+    world.record('cp-a', 10)
+    runner = loop(fast_eval, world, tmp_path)
+    runner.tick()
+    item = runner.state['evaluations'][0]
+    finish_prepare(world, item)
+
+    def broken(plan, **options):
+        raise subprocess.CalledProcessError(1, ['sbatch'])
+
+    runner.submit = broken
+    runner.tick()
+    assert item['stage'] == 'submit_unknown'
+    runner.submit = world.submit
+    runner.tick()
+    assert world.submits == []  # never retried
+    world.record('cp-b', 20)
+    world.now += 7200
+    runner.tick()
+    assert runner.state['evaluations'][-1]['checkpoint'] == 'cp-b'
+
+
+def test_cp_under_preparation_is_published_as_protected(fast_eval, tmp_path):
+    world = World()
+    world.record('cp-a', 10)
+    runner = loop(fast_eval, world, tmp_path)
+    runner.tick()
+    protected = tmp_path / 'protected-checkpoints.json'
+    assert json.loads(protected.read_text())['checkpoints'] == ['cp-a']
+    finish_prepare(world, runner.state['evaluations'][0])
+    runner.tick()
+    assert json.loads(protected.read_text())['checkpoints'] == []
+
+
+def test_one_loop_per_output(tmp_path):
+    from spireagent.instance_lock import instance_lock
+    from spireagent.json_boundary import BoundaryError
+
+    code = ('import sys,time; sys.path[:0]=sys.argv[2:]; '
+            'from spireagent.instance_lock import instance_lock; from pathlib import Path\n'
+            'with instance_lock(Path(sys.argv[1])):\n print("held", flush=True); time.sleep(30)')
+    lock = tmp_path / 'loop.lock'
+    other = subprocess.Popen([sys.executable, '-c', code, str(lock), *sys.path],
+                             stdout=subprocess.PIPE, text=True)
+    try:
+        assert other.stdout.readline().strip() == 'held'
+        with pytest.raises(BoundaryError, match='already_running'), instance_lock(lock):
+            pass
+    finally:
+        other.kill()
+        other.wait()
+    with instance_lock(lock):  # released on process death
+        pass

@@ -36,6 +36,9 @@ if TYPE_CHECKING:
 
 SCHEMA = "spireagent/friday-evaluation-v1"
 RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
+# execution["storage_mode"]: "remote" (default: S3, or a local peer with an S3
+# archive) or SHARED_LOCAL (a local shared-disk peer, no archive, no R2).
+SHARED_LOCAL = "shared_local"
 
 
 def validate_execution(execution: dict[str, Any], selections: dict[str, str]) -> None:
@@ -47,12 +50,24 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
     )
 
     peer = execution.get("peer", {})
-    shared = (peer.get("kind") == "local" and "archive" in peer
-              and peer["archive"].get("kind") == "s3"
-              and execution.get("store") == peer.get("directory"))
+    mode = execution.get("storage_mode", "remote")
+    if mode == SHARED_LOCAL:
+        # Named mode (lead 11-12): a fast-chain CP evaluated without R2. The
+        # learner peer is one local directory on shared disk, no archive; the
+        # evaluation jobs read and write it there. Never chosen implicitly.
+        directory = peer.get("directory")
+        valid = (set(peer) == {"kind", "directory"} and peer["kind"] == "local"
+                 and isinstance(directory, str) and Path(directory).is_absolute()
+                 and execution.get("store") == directory)
+    elif mode == "remote":
+        shared = (peer.get("kind") == "local" and "archive" in peer
+                  and peer["archive"].get("kind") == "s3"
+                  and execution.get("store") == peer.get("directory"))
+        valid = shared or execution.get("store") == "s3" and peer.get("kind") == "s3"
+    else:
+        valid = False
     if (execution.get("schema") != "spireagent/managed-evaluation-execution-v1"
-            or execution.get("retention") != RETENTION
-            or not shared and (execution.get("store") != "s3" or peer.get("kind") != "s3")):
+            or execution.get("retention") != RETENTION or not valid):
         raise ValueError("fixed_remote_evaluation_configuration_required")
     validate_peer(peer)
     if (not selections or len(set(selections.values())) != len(selections)
