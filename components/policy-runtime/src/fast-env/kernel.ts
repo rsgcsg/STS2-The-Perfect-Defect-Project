@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
+import { createSession, reduce, ReduceStrictSampleFailure, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
   type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import { canonicalJson } from "../evidence.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
@@ -315,8 +315,16 @@ class GameRun {
       const source = this.#pendingSource ?? await this.#capture();
       this.#pendingSource = null;
       const reduceStarted = performance.now();
-      const reduction = reduce(this.state, source.full.basis);
-      this.ctx.stats.reduce_ms += performance.now() - reduceStarted;
+      let reduction: Reduction;
+      try { reduction = reduce(this.state, source.full.basis); }
+      catch (error) {
+        // A strict sample of the light reduce path disagreed: light reduces may already have put the
+        // same kind of bad data into other rows, so this build stops producing output (like the Host's
+        // SampledCheckFailure), with its own reason and counter.
+        if (error instanceof ReduceStrictSampleFailure) throw new GameEnd("env_crash", `reduce:${error.message}`, { replaceNative: true,
+          buildStop: "reduce_strict_sample_failed", pendingOutcome: { status: "unknown", reason: "native_crash" } });
+        throw error;
+      } finally { this.ctx.stats.reduce_ms += performance.now() - reduceStarted; }
       const snapshot = source.full.basis.snapshot;
       if (snapshot.status === "settling" || snapshot.status === "observed" && reduction.observation.status !== "terminal") {
         if (performance.now() - since >= this.ctx.config.settling_timeout_ms) throw new GameEnd("not_started", "managed_settling_stalled");

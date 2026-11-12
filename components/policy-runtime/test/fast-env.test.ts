@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PlayerEnvironmentRestClient, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
+import { PlayerEnvironmentRestClient, checkPublicBasisLight, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
 import { ReferenceGlobalTransport } from "../src/global-transport.js";
 import { createGlobalProgramManifest } from "../src/global-program.js";
 import { CanonicalTextMemo, CanonicalTextMemoDivergence, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
@@ -46,6 +46,8 @@ interface NativeHooks {
   captureThrows?: (capture: number) => boolean;
   /** This capture's sampled full check disagrees with the light check. */
   sampledCheckFails?: (capture: number) => boolean;
+  /** This capture's basis passes the SDK light check (and is vouched for) but its shape is zod-invalid. */
+  lightCheckedBadShape?: (capture: number) => boolean;
   stepGate?: () => Promise<void>;
   resetThrows?: boolean;
   /** Emit a fake compact line on every mount and step (evidence tap). */
@@ -135,6 +137,14 @@ class FakeNative implements SlotNative {
     const full = await this.transport.capture({ timeoutMs: 2000 });
     this.checked += 1;
     if (this.hooks.sampledCheckFails?.(this.captures)) throw new SampledCheckFailure(new Error("basis_differs_from_bytes"), full, this.captures - 1);
+    if (this.hooks.lightCheckedBadShape?.(this.captures)) {
+      // A revision-1 basis (the fast chain's) whose snapshot zod rejects; the light check does not look at the field.
+      const { settled_relic_counters: _witness, ...rest } = full.basis as unknown as Record<string, any>;
+      const { input_profile: _profile, ...snapshot } = rest.snapshot; // the Managed fast chain carries no navigation profile
+      const basis = { ...rest, revision: "1", snapshot: { ...snapshot, observed_at: 42 } };
+      checkPublicBasisLight(basis);
+      (full as { basis: unknown }).basis = basis;
+    }
     if (this.hooks.settlingAfterStep !== undefined && this.source.steps >= this.hooks.settlingAfterStep)
       (full.basis.snapshot as { status: string }).status = "settling";
     return full;
@@ -900,6 +910,23 @@ describe("fast-env failure paths", () => {
     // The fake Host never runs the SDK light check, so every reduce here decodes strictly.
     expect(light).toMatchObject({ light: 0, strict_interval: 8 });
     expect(light.strict).toBeGreaterThan(0);
+  });
+
+  it("C1 reduce_light: a failing strict sample stops this build's output with its own reason and counter", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 3, lightCheckedBadShape: () => true }),
+      edit: config => { config.checks = { ...config.checks, reduce_light: { strict_interval: 1024 } }; } });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    // The first light-checked reduce of the process is always a strict sample.
+    expect(closed).toMatchObject({ reason: "env_crash", native: "replaced" });
+    expect(String(closed.detail)).toMatch(/^reduce:reduce_strict_sample_failed:/u);
+    expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "reduce_strict_sample_failed", slot: 0 });
+    h.send({ cmd: "status" });
+    const status = await h.next(event => event.event === "status");
+    expect(status.counters.build_output_stopped).toBe("reduce_strict_sample_failed");
+    expect(status.counters.reduce_light).toMatchObject({ sampled: 1, sample_failures: 1, light: 0 });
+    h.open(0);
+    expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
   });
 
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {

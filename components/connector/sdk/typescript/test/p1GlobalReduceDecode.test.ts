@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkPublicBasisLight, passedPublicBasisLightCheck, PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE } from "../src/index.js";
-import { canonicalJson, configureReduceDecode, createSession, reduce, reduceDecodeStats } from "../src/p1Global/index.js";
+import { canonicalJson, configureReduceDecode, createSession, persistentScalarsValid, reduce, reduceDecodeStats, ReduceStrictSampleFailure } from "../src/p1Global/index.js";
 
 const NAMES = ["synthetic-complete-combat", "managed-combat_turn", "managed-deck_enchant_selection", "managed-deck_upgrade_selection",
   "managed-game_over", "managed-map_navigation", "managed-reward_claim", "managed-shop_inventory",
@@ -52,25 +52,82 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
     for (const { name, value } of lightBases()) {
       configureReduceDecode(null);
       const strict = canonicalJson(reduce(createSession("e", "managed"), value));
-      configureReduceDecode({ strictInterval: 1024 });
-      reduce(createSession("e", "managed"), value); // ordinal 0 always decodes strictly
+      configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
+      reduce(createSession("e", "managed"), value); // the first light-checked reduce is always a strict sample
       const light = canonicalJson(reduce(createSession("e", "managed"), value));
-      expect(reduceDecodeStats(), name).toEqual({ light: 1, strict: 1 });
+      expect(reduceDecodeStats(), name).toEqual({ light: 1, strict: 1, sampled: 1, persistent_rejects: 0, sample_failures: 0 });
       expect(light, name).toBe(strict);
     }
   });
 
-  it("decodes strictly on every strict_interval-th reduce and for any basis not light-checked here", () => {
+  it("samples the first reduce and then each with probability 1/strict_interval; any basis not light-checked here is strict", () => {
     const { value } = lightBases()[0]!;
-    configureReduceDecode({ strictInterval: 4 });
+    const draws = [0.9, 0.2, 0.9, 0.24, 0.26, 0.9, 0.9];
+    configureReduceDecode({ strictInterval: 4, random: () => draws.shift()! });
     for (let index = 0; index < 8; index++) reduce(createSession("e", "managed"), value);
-    expect(reduceDecodeStats()).toEqual({ light: 6, strict: 2 });
+    // First call sampled without a draw; then draws below 1/4 (0.2, 0.24) sample.
+    expect(reduceDecodeStats()).toMatchObject({ light: 5, strict: 3, sampled: 3 });
     reduce(createSession("e", "managed"), structuredClone(value));
-    expect(reduceDecodeStats()).toEqual({ light: 6, strict: 3 });
+    expect(reduceDecodeStats()).toMatchObject({ light: 5, strict: 4, sampled: 3 });
     configureReduceDecode({ strictInterval: 1 });
-    reduce(createSession("e", "managed"), value);
-    expect(reduceDecodeStats()).toEqual({ light: 0, strict: 1 });
+    reduce(createSession("e", "managed"), value); reduce(createSession("e", "managed"), value);
+    expect(reduceDecodeStats()).toMatchObject({ light: 0, strict: 2, sampled: 2 });
     expect(() => configureReduceDecode({ strictInterval: 0 })).toThrow(/positive integer/u);
+  });
+
+  it("non-claim pinned: a light-checked, zod-invalid basis is accepted on a non-sampled reduce", () => {
+    const { value } = lightBases().find(item => item.value.snapshot.status === "interactive")!;
+    const bad = structuredClone(value); bad.snapshot.observed_at = 42; // wrong type, not a light-check gate
+    checkPublicBasisLight(bad);
+    configureReduceDecode({ strictInterval: 64, random: () => 0.5 });
+    reduce(createSession("e", "managed"), value); // spend the first (sampled) reduce on a valid basis
+    expect(() => reduce(createSession("e", "managed"), bad)).not.toThrow();
+    expect(reduceDecodeStats()).toMatchObject({ light: 1, sampled: 1, sample_failures: 0 });
+  });
+
+  it("a failing strict sample throws ReduceStrictSampleFailure and is counted apart", () => {
+    const { value } = lightBases().find(item => item.value.snapshot.status === "interactive")!;
+    const bad = structuredClone(value); bad.snapshot.observed_at = 42;
+    checkPublicBasisLight(bad);
+    configureReduceDecode({ strictInterval: 64, random: () => 0.5 });
+    expect(() => reduce(createSession("e", "managed"), bad)).toThrow(ReduceStrictSampleFailure);
+    expect(reduceDecodeStats()).toMatchObject({ sampled: 1, sample_failures: 1 });
+    // A basis that is not vouched for fails the ordinary way (as with the policy off), not as a sample.
+    const unvouched = structuredClone(bad);
+    let error: unknown; try { reduce(createSession("e", "managed"), unvouched); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error); expect(error).not.toBeInstanceOf(ReduceStrictSampleFailure);
+    expect(reduceDecodeStats()).toMatchObject({ sample_failures: 1 });
+  });
+
+  it("persistent numeric fields that feed the observation are type/range checked on the light path", () => {
+    const withPersistent = lightBases().filter(item => item.value.snapshot.persistent !== null);
+    expect(withPersistent.length).toBeGreaterThan(0);
+    const mutations: [string, (content: any) => void][] = [
+      ["gold string", content => { content.player.gold = "12"; }], ["hp string", content => { content.player.hp = "x"; }],
+      ["floor negative", content => { content.run.floor = -1; }], ["act zero", content => { content.run.act = 0; }],
+      ["gold fraction", content => { content.player.gold = 1.5; }], ["max_hp NaN", content => { content.player.max_hp = Number.NaN; }],
+      ["potion slot", content => { if (content.player.potions[0]) content.player.potions[0].slot = "0"; else content.player.potions = "none"; }],
+      ["relic counter", content => { if (content.player.relics[0]) content.player.relics[0].counter = "3"; else content.player.relics = {}; }]];
+    for (const { name, value } of withPersistent) {
+      expect(persistentScalarsValid(value.snapshot), name).toBe(true);
+      for (const [label, mutate] of mutations) {
+        const bad = structuredClone(value); mutate(bad.snapshot.persistent.content);
+        expect(persistentScalarsValid(bad.snapshot), `${name} ${label}`).toBe(false);
+        try { checkPublicBasisLight(bad); } catch { continue; } // the light check already refuses it
+        configureReduceDecode({ strictInterval: 1024, random: () => 0.5 });
+        reduce(createSession("e", "managed"), value); // spend the sample
+        // Not light: decoded strictly, so it fails exactly as with the policy off (never into the observation).
+        expect(() => reduce(createSession("e", "managed"), bad), `${name} ${label}`).toThrow();
+        expect(reduceDecodeStats(), `${name} ${label}`).toMatchObject({ light: 0, persistent_rejects: 1, sample_failures: 0 });
+      }
+    }
+  });
+
+  it("never vouches for a navigation-profile snapshot (its range gate lives in the strict decode)", () => {
+    const { value } = lightBases()[0]!;
+    const profiled = structuredClone(value); profiled.snapshot.input_profile = "x";
+    try { checkPublicBasisLight(profiled); } catch { return; }
+    expect(passedPublicBasisLightCheck(profiled)).toBe(false);
   });
 
   it("keeps the strict decode loud: a shape the zod schema rejects still throws on a strict reduce", () => {
@@ -80,6 +137,6 @@ describe("C1 reduce decode policy (fast chain, off by default)", () => {
     configureReduceDecode(null);
     expect(() => reduce(createSession("e", "managed"), bad)).toThrow();
     configureReduceDecode({ strictInterval: 64 });
-    expect(() => reduce(createSession("e", "managed"), bad)).toThrow(); // ordinal 0 is strict
+    expect(() => reduce(createSession("e", "managed"), bad)).toThrow(); // the first reduce is a strict sample
   });
 });

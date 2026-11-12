@@ -371,25 +371,72 @@ function publicDetailContent(kind: string, content: unknown): unknown {
 
 /** Fast-chain reduce decode policy (C1, off by default = today's strict decode on every call).
  * When on, a basis that passed checkPublicBasisLight in this process (same objects) skips the
- * repeated strict zod decode of its snapshot and Reads and the repeated finite-number walk;
- * every `strictInterval`-th such reduce still decodes strictly, and any other basis always does.
- * Output is unchanged for valid input (the strict decode returns the same raw objects). */
-export interface ReduceDecodeConfig { readonly strictInterval: number }
+ * repeated strict zod decode of its snapshot and Reads and the repeated finite-number walk.
+ * The first such reduce of a configuration, and then each one with probability 1/strictInterval
+ * (random per call, so the sample cannot alias with slot rotation), still decodes strictly as a
+ * sample; a sample the strict decode rejects throws ReduceStrictSampleFailure, which the caller
+ * must treat as a build stop (bad data may already have reached other rows), never as a plain crash.
+ * A basis not light-checked here, or whose persistent numeric fields (the ones copied into the
+ * observation) fail the cheap type/range check, always decodes strictly, exactly as with the policy off.
+ * Output is unchanged for valid input (the strict decode returns the same raw objects).
+ * Known non-claim: on a non-sampled light reduce, other shape errors the zod schema would reject
+ * (enum values, unknown keys, protocol version literals) are accepted; only the samples see them. */
+export interface ReduceDecodeConfig { readonly strictInterval: number; readonly random?: () => number }
+export interface ReduceDecodeStats { light: number; strict: number; sampled: number; persistent_rejects: number; sample_failures: number }
+export class ReduceStrictSampleFailure extends Error {
+  constructor(cause: unknown) {
+    super(`reduce_strict_sample_failed:${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "ReduceStrictSampleFailure";
+  }
+}
+const zeroStats = (): ReduceDecodeStats => ({ light: 0, strict: 0, sampled: 0, persistent_rejects: 0, sample_failures: 0 });
 let reduceDecode: ReduceDecodeConfig | null = null;
-let reduceDecodeCounts = { light: 0, strict: 0 };
-let reduceDecodeOrdinal = 0;
+let reduceDecodeCounts = zeroStats();
+let reduceDecodeFirst = true;
 export function configureReduceDecode(config: ReduceDecodeConfig | null): void {
   if (config !== null && (!Number.isInteger(config.strictInterval) || config.strictInterval < 1))
     throw new Error("reduce decode strictInterval must be a positive integer");
-  reduceDecode = config; reduceDecodeCounts = { light: 0, strict: 0 }; reduceDecodeOrdinal = 0;
+  reduceDecode = config; reduceDecodeCounts = zeroStats(); reduceDecodeFirst = true;
 }
-export function reduceDecodeStats(): { light: number; strict: number } { return { ...reduceDecodeCounts }; }
-function lightDecode(basis: P1Basis): boolean {
-  if (reduceDecode === null) return false;
-  if (!passedPublicBasisLightCheck(basis) || reduceDecodeOrdinal++ % reduceDecode.strictInterval === 0) {
-    reduceDecodeCounts.strict += 1; return false;
+export function reduceDecodeStats(): ReduceDecodeStats { return { ...reduceDecodeCounts }; }
+
+const intAtLeast = (value: unknown, min: number) => typeof value === "number" && Number.isInteger(value) && value >= min;
+const finiteNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+const nonEmptyString = (value: unknown) => typeof value === "string" && value.length > 0;
+/** The persistent run/player scalars the observation copies, at the strict schema's type and range
+ * (finite is stricter than zod; the finite-number walk rejects non-finite values anyway). */
+export function persistentScalarsValid(snapshot: unknown): boolean {
+  if (!isObject(snapshot)) return false;
+  const persistent = snapshot.persistent;
+  if (persistent === null) return true;
+  if (!isObject(persistent) || !isObject(persistent.content)) return false;
+  const { run, player } = persistent.content;
+  if (!isObject(run) || !isObject(player)) return false;
+  if (!intAtLeast(run.act, 1) || !intAtLeast(run.floor, 0) || !intAtLeast(run.ascension, 0) || !nonEmptyString(run.act_definition_id)) return false;
+  if (!finiteNumber(player.hp) || !finiteNumber(player.max_hp) || !intAtLeast(player.gold, 0) || !intAtLeast(player.max_potion_slots, 0)
+      || !nonEmptyString(player.entity_id) || !nonEmptyString(player.character_definition_id)) return false;
+  const { bosses } = run; const { relics, potions } = player;
+  if (!Array.isArray(bosses) || !Array.isArray(relics) || !Array.isArray(potions)) return false;
+  for (const boss of bosses) if (!isObject(boss) || !intAtLeast(boss.order, 0)) return false;
+  for (const relic of relics) if (!isObject(relic) || !(relic.counter == null || finiteNumber(relic.counter))) return false;
+  for (const potion of potions) if (!isObject(potion) || !intAtLeast(potion.slot, 0)) return false;
+  return true;
+}
+
+type DecodeMode = "strict" | "sampled" | "light";
+function decodeMode(basis: P1Basis): DecodeMode {
+  if (reduceDecode === null) return "strict";
+  if (!passedPublicBasisLightCheck(basis)) { reduceDecodeCounts.strict += 1; return "strict"; }
+  if (!persistentScalarsValid(basis.snapshot)) { reduceDecodeCounts.persistent_rejects += 1; reduceDecodeCounts.strict += 1; return "strict"; }
+  const first = reduceDecodeFirst; reduceDecodeFirst = false;
+  if (first || (reduceDecode.random ?? Math.random)() * reduceDecode.strictInterval < 1) {
+    reduceDecodeCounts.strict += 1; reduceDecodeCounts.sampled += 1; return "sampled";
   }
-  reduceDecodeCounts.light += 1; return true;
+  reduceDecodeCounts.light += 1; return "light";
+}
+function strictDecode<T>(mode: DecodeMode, decode: () => T): T {
+  if (mode !== "sampled") return decode();
+  try { return decode(); } catch (error) { reduceDecodeCounts.sample_failures += 1; throw new ReduceStrictSampleFailure(error); }
 }
 
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
@@ -406,9 +453,10 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   // Validate the original navigation capsule before counter projection. Its
   // unfurled PB remains literal capture provenance, not another model carrier.
-  const light = lightDecode(basis);
+  const mode = decodeMode(basis);
+  const light = mode === "light";
   const checkedBasis = basis;
-  const originalSnapshot = (light ? basis.snapshot : decodePlayerSnapshot(basis.snapshot).raw) as Record<string, any>;
+  const originalSnapshot = (light ? basis.snapshot : strictDecode(mode, () => decodePlayerSnapshot(basis.snapshot).raw)) as Record<string, any>;
   const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
   if (settled) basis = settled.basis;
   const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
@@ -539,7 +587,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     let read: Record<string, any> | null = null;
     if (captures.length !== 1 || captures[0]!.response == null || captures[0]!.error !== null || captures[0]!.kind !== listed.kind) missing.push(`read:${listed.kind}:${listed.read_id}:missing_or_ambiguous`);
     else {
-      const decoded = (light ? captures[0]!.response : decodePlayerRead(captures[0]!.response).raw) as Record<string, any>;
+      const decoded = (light ? captures[0]!.response : strictDecode(mode, () => decodePlayerRead(captures[0]!.response).raw)) as Record<string, any>;
       if (decoded.read_id !== listed.read_id || decoded.expected_snapshot_id !== snapshot.snapshot_id
           || decoded.observed_snapshot_id !== snapshot.snapshot_id || decoded.kind !== listed.kind
           || decoded.content_schema !== listed.content_schema || decoded.completeness?.status !== "complete"

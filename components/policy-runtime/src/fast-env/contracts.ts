@@ -46,8 +46,10 @@ export interface FastEnvConfig {
     receipt_canonical: { check_interval: number } | null };
   /** `reduce_light` (C1, off when absent or null): a basis that passed the Host light check in this
    *  process skips the SDK reduce's repeated strict zod decode of its snapshot and Reads (and the
-   *  repeated finite-number walk); every `strict_interval`-th such reduce still decodes strictly and
-   *  the sampled Host full checks (`sample_rate`) are unchanged. A strict decode failure stays loud. */
+   *  repeated finite-number walk); the first one and then each with probability 1/`strict_interval`
+   *  still decode strictly, and a failing sample stops this build's output (`reduce_strict_sample_failed`).
+   *  A basis whose persistent numeric fields fail the cheap type/range check always decodes strictly.
+   *  The sampled Host full checks (`sample_rate`) are unchanged. */
   checks: { sample_rate: number; reduce_light: { strict_interval: number } | null };
   decision_link: { kind: "unix"; path: string };
   inference: { timeout_ms: number; actor_id: string; sampling: Sampling; single_choice: "score" | "omit" };

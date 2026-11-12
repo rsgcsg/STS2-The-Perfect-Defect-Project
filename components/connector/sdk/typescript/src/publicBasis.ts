@@ -222,6 +222,8 @@ export function passedPublicBasisLightCheck(basis: unknown): boolean {
   if (!seen) return false;
   const value = basis as { snapshot?: unknown; reads?: unknown };
   if (value.snapshot !== seen.snapshot || !Array.isArray(value.reads) || value.reads.length !== seen.responses.length) return false;
+  // A navigation-profile snapshot keeps its raw_native_navigation_basis range gate in the strict decode.
+  if ((seen.snapshot as { input_profile?: unknown } | null)?.input_profile !== undefined) return false;
   return value.reads.every((read, index) => read?.response === seen.responses[index]);
 }
 
