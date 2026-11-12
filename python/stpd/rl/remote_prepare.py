@@ -23,12 +23,18 @@ carries a digest of the preparation source (`stpd/rl`, `stpd/p1`) and the
 learner's worker thread count; a host started for other values refuses it. The
 host cache is keyed by packet sha256 and the exact envelope (it carries
 learner-side fields such as `gae_lambda` and the training split).
+
+Wire codec (`codec`, both ends must agree, checked in the hello): `none` sends
+the prepared bytes as they are; `lz4` (optional dependency `lz4`) sends them as
+length-prefixed lz4 frames of at most 4 MiB each. The hand-off file always holds
+the decompressed bytes, so the SGD sha256 check is unchanged.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import io
 import json
 import mmap
@@ -61,7 +67,72 @@ from .prepared_batch import AuxiliaryInput
 
 AUTH_ENV = "STPD_REMOTE_PREPARE_AUTH"
 CHUNK_BYTES = 64 * 1024**2
-PROTOCOL = "stpd/rl-remote-prepare-3"
+PROTOCOL = "stpd/rl-remote-prepare-4"
+CODECS = ("none", "lz4")
+LZ4_CHUNK_BYTES = 4 * 1024**2
+
+
+def _lz4() -> Any:
+    try:  # optional dependency, only for codec "lz4"
+        return importlib.import_module("lz4.frame")
+    except ImportError as error:
+        raise ValueError("remote_prepare_lz4_unavailable") from error
+
+
+def _codec(name: Any) -> str:
+    if name not in CODECS:
+        raise ValueError("remote_prepare_codec_unknown")
+    if name == "lz4":
+        _lz4()
+    return str(name)
+
+
+def _recv_exact(raw: socket.socket, view: memoryview) -> None:
+    """`raw` carries the task deadline (`_deadline_socket`)."""
+    cursor = 0
+    while cursor < len(view):
+        count = raw.recv_into(view[cursor:], min(len(view) - cursor, CHUNK_BYTES))
+        if count == 0:
+            raise RuntimeError("binary_remote_assembly_short_transfer")
+        cursor += count
+
+
+def _send_output(raw: socket.socket, view: memoryview, codec: str) -> None:
+    """Unframed for `none`; for `lz4`, 8-byte length + one lz4 frame per chunk."""
+    if codec == "none":
+        raw.sendall(view)
+        return
+    frame = _lz4()
+    for start in range(0, len(view), LZ4_CHUNK_BYTES):
+        block = frame.compress(view[start : start + LZ4_CHUNK_BYTES])
+        raw.sendall(len(block).to_bytes(8, "little"))
+        raw.sendall(block)
+
+
+def _receive_output(raw: socket.socket, view: memoryview, codec: str) -> int:
+    """Fill `view` with the decompressed bytes; return the bytes read off the wire."""
+    if codec == "none":
+        _recv_exact(raw, view)
+        return len(view)
+    frame = _lz4()
+    header = bytearray(8)
+    buffer = bytearray()
+    wire = 0
+    for start in range(0, len(view), LZ4_CHUNK_BYTES):
+        _recv_exact(raw, memoryview(header))
+        size = int.from_bytes(header, "little")
+        if not 0 < size <= 2 * LZ4_CHUNK_BYTES:
+            raise RuntimeError("binary_remote_lz4_frame_size")
+        if len(buffer) < size:
+            buffer = bytearray(size)
+        _recv_exact(raw, memoryview(buffer)[:size])
+        block = frame.decompress(memoryview(buffer)[:size])
+        end = min(len(view), start + LZ4_CHUNK_BYTES)
+        if len(block) != end - start:
+            raise RuntimeError("binary_remote_lz4_chunk_length")
+        view[start:end] = block
+        wire += 8 + size
+    return wire
 HANDSHAKE_SECONDS = 60.0
 _code_digest: str | None = None
 
@@ -175,8 +246,8 @@ class _Host:
     """One node's decode cache and worker pools, shared by all learner connections."""
 
     def __init__(self, scratch: Path, decode_workers: int, assembly_workers: int,
-                 cache_bytes: int) -> None:
-        self.scratch, self.cache_bytes = scratch, cache_bytes
+                 cache_bytes: int, codec: str = "none") -> None:
+        self.scratch, self.cache_bytes, self.codec = scratch, cache_bytes, _codec(codec)
         self.decode_workers, self.assembly_workers = decode_workers, assembly_workers
         self.lock = threading.Lock()
         self.settings: tuple[Any, ...] | None = None
@@ -376,12 +447,14 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
             raise ValueError("remote_prepare_protocol_changed")
         timeout = float(hello["timeout"])
         try:
+            if hello.get("codec", "none") != host.codec:
+                raise ValueError("remote_prepare_codec_changed")
             host.start(hello["vocabulary"], hello["threads"], hello["code"])
         except ValueError as error:
             connection.send({"protocol": PROTOCOL, "error": str(error)})
             return
         connection.send({"protocol": PROTOCOL, "host": socket.gethostname(), "pid": os.getpid(),
-                         "cpu": cpu_fingerprint()})
+                         "cpu": cpu_fingerprint(), "codec": host.codec})
         while True:
             # Between tasks this connection holds no pins or files, so the wait
             # for the learner's next task has no deadline; within a task it does.
@@ -437,10 +510,14 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     with open(output, "rb") as stream:
                         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
                     try:
-                        # Unframed: the learner reads exactly `used` bytes.
+                        # After the framed reply: exactly `used` bytes, encoded by the codec.
                         with memoryview(mapping) as view, \
                                 _deadline_socket(connection, timeout) as raw:
-                            raw.sendall(view[:used])
+                            body = view[:used]
+                            try:
+                                _send_output(raw, body, host.codec)
+                            finally:  # a traceback must not keep an export of the mmap
+                                body.release()
                     finally:
                         mapping.close()
                 finally:
@@ -461,11 +538,13 @@ def serve(argv: list[str] | None = None) -> None:
     parser.add_argument("--decode-workers", type=int, required=True)
     parser.add_argument("--assembly-workers", type=int, required=True)
     parser.add_argument("--cache-bytes", type=int, default=8 * 1024**3)
+    parser.add_argument("--codec", choices=CODECS, default="none")
     parser.add_argument("--ready-file", type=Path,
                         help="written atomically with host:port once listening")
     args = parser.parse_args(argv)
     args.scratch.mkdir(parents=True, exist_ok=True)
-    host = _Host(args.scratch, args.decode_workers, args.assembly_workers, args.cache_bytes)
+    host = _Host(args.scratch, args.decode_workers, args.assembly_workers, args.cache_bytes,
+                 args.codec)
     key = authkey()
     listener = Listener(_address(args.listen))  # handshake runs per connection thread
     bound = listener.address
@@ -492,13 +571,14 @@ class RemoteAssembly:
 
     def __init__(self, *, endpoints: list[str], vocabulary: dict[str, Any], threads: int,
                  connections: int = 2, auth_env: str = AUTH_ENV,
-                 timeout_seconds: float = 600.0) -> None:
+                 timeout_seconds: float = 600.0, codec: str = "none") -> None:
         if not endpoints or type(connections) is not int or connections < 1:
             raise ValueError("remote_prepare_endpoints_required")
         if not 0 < timeout_seconds <= 3600:
             raise ValueError("remote_prepare_timeout_bound")
         self.vocabulary, self.key = vocabulary, authkey(auth_env)
         self.threads, self.timeout = threads, float(timeout_seconds)
+        self.codec = _codec(codec)
         self.idle: queue.Queue[tuple[str, Connection | None]] = queue.Queue()
         self.closed = False
         for endpoint in endpoints:
@@ -507,7 +587,7 @@ class RemoteAssembly:
             for endpoint in endpoints:
                 self.idle.put((endpoint, None))
         self.stats = {"tasks": 0, "label_tasks": 0, "sent_bytes": 0, "received_bytes": 0,
-                      "sources_sent": 0}
+                      "wire_received_bytes": 0, "sources_sent": 0}
         self.cpu = cpu_fingerprint()
         self.host_cpus: dict[str, dict[str, str]] = {}  # endpoint -> host fingerprint
         self.served: OrderedDict[str, str] = OrderedDict()  # output path -> endpoint (last 256)
@@ -518,13 +598,15 @@ class RemoteAssembly:
         try:
             connection.send({"protocol": PROTOCOL, "vocabulary": self.vocabulary,
                              "threads": self.threads, "code": code_digest(),
-                             "timeout": self.timeout, "cpu": self.cpu})
+                             "timeout": self.timeout, "cpu": self.cpu, "codec": self.codec})
             _wait(connection, HANDSHAKE_SECONDS)
             reply = connection.recv()
             if reply.get("protocol") != PROTOCOL:
                 raise RuntimeError("remote_prepare_protocol_changed")
             if "error" in reply:
                 raise RuntimeError(f"remote_prepare_refused: {reply['error']}")
+            if reply.get("codec") != self.codec:
+                raise RuntimeError("remote_prepare_codec_changed")
             with self.lock:
                 self.host_cpus[endpoint] = dict(reply.get("cpu") or {})
         except BaseException:
@@ -552,14 +634,13 @@ class RemoteAssembly:
                     raise ValueError("binary_prepared_output_byte_limit")
                 # Raw bytes after the framed reply, straight into the hand-off
                 # file: no intermediate buffers, and recv_into releases the GIL.
-                cursor = 0
                 with memoryview(mapping) as view, \
                         _deadline_socket(connection, self.timeout) as raw:
-                    while cursor < used:
-                        count = raw.recv_into(view[cursor:used], min(used - cursor, CHUNK_BYTES))
-                        if count == 0:
-                            raise RuntimeError("binary_remote_assembly_short_transfer")
-                        cursor += count
+                    target = view[:used]
+                    try:
+                        wire = _receive_output(raw, target, self.codec)
+                    finally:  # a traceback must not keep an export of the mmap
+                        target.release()
             finally:
                 mapping.close()
             healthy = True
@@ -571,6 +652,7 @@ class RemoteAssembly:
                 self.stats["sent_bytes"] += sent
                 self.stats["sources_sent"] += len(need)
                 self.stats["received_bytes"] += used
+                self.stats["wire_received_bytes"] += wire
             arrays = tuple(binary._SharedArray(output, offset, count, dtype)
                            for offset, count, dtype in reply["arrays"])
             summary = dict(reply["summary"])

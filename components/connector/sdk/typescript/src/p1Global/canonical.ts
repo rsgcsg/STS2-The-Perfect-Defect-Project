@@ -120,6 +120,44 @@ function sortKeys(value: unknown): unknown {
   return value;
 }
 
+/** Exactly `Buffer.byteLength(canonicalJson(value), "utf8") > limit`, without building the text when a
+ * cheap upper bound already fits: each UTF-16 unit of a string or key is at most 6 UTF-8 bytes in JSON
+ * (a \u00XX escape), a finite number at most 25 characters, null/true/false at most 5. Any value that
+ * is not plain JSON data, or a bound above the limit, takes the exact path (same result, same errors). */
+export function canonicalJsonExceedsBytes(value: unknown, limit: number): boolean {
+  if (value !== null && typeof value === "object" && !("toJSON" in OBJECT_PROTO) && !("toJSON" in ARRAY_PROTO)) {
+    try { return boundBytes(value, limit) > limit && Buffer.byteLength(canonicalJson(value), "utf8") > limit; }
+    catch (error) { if (error !== NOT_PLAIN) throw error; }
+  }
+  return Buffer.byteLength(canonicalJson(value), "utf8") > limit;
+}
+/** An upper bound of the canonical UTF-8 length; stops early once it passes `limit`. */
+function boundBytes(value: unknown, limit: number): number {
+  switch (typeof value) {
+    case "string": return 2 + 6 * value.length;
+    case "number": case "boolean": case "undefined": return 25;
+    case "object": break;
+    default: throw NOT_PLAIN;
+  }
+  if (value === null) return 4;
+  let total = 2;
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== ARRAY_PROTO || hasOwn.call(value, "toJSON")) throw NOT_PLAIN;
+    for (let index = 0; index < value.length && total <= limit; index++) total += 1 + boundBytes(value[index], limit);
+    return total;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== OBJECT_PROTO && proto !== null) throw NOT_PLAIN;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  for (let index = 0; index < keys.length && total <= limit; index++) {
+    const key = keys[index]!;
+    if (key === "toJSON" || key === "__proto__") throw NOT_PLAIN;
+    total += 4 + 6 * key.length + boundBytes(record[key], limit);
+  }
+  return total;
+}
+
 export function sha256Hex(text: string | Uint8Array): string {
   return createHash("sha256").update(text).digest("hex");
 }

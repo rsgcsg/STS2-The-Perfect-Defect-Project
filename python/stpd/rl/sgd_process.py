@@ -56,6 +56,8 @@ OPTION_KEYS = frozenset((
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread",
 ))
+# Threads that hash one prepared file's chunks (see `prepared_digest`).
+VERIFY_THREADS = 4
 DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
 COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup"))
 # Per-process bases from measurement where one exists (margin ~15-25%); override
@@ -355,6 +357,39 @@ def mapped_arrays(mapping: Any, specs: Any) -> tuple[Any, ...]:
     return tuple(np.frombuffer(mapping, dtype=np.dtype(dtype), count=count, offset=offset)
                  if count else np.empty(0, dtype=np.dtype(dtype))
                  for offset, count, dtype in specs)
+
+
+def _file_identity(stat: os.stat_result) -> tuple[int, ...]:
+    """Which file a rank mapped: rank 0 verifies it, followers must map the same."""
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+class _Digest(threading.Thread):
+    """`prepared_digest` of one mapped prepared file, off the staging thread.
+
+    Chunk hashes run on `threads` threads (hashlib drops the GIL), alongside the
+    pin/H2D of the same file.
+    """
+
+    def __init__(self, view: memoryview, threads: int) -> None:
+        super().__init__(name="rl-sgd-verify", daemon=True)
+        self.view, self.threads = view, threads
+        self.value: str | None = None
+        self.error: BaseException | None = None
+        self.seconds = 0.0
+        self.start()
+
+    def run(self) -> None:
+        began = time.perf_counter()
+        try:
+            from .binary_preparation import prepared_digest
+
+            self.value = prepared_digest(self.view, self.threads)
+        except BaseException as error:  # re-raised by the staging caller
+            self.error = error
+        finally:
+            self.view.release()
+            self.seconds = time.perf_counter() - began
 
 
 # --- controller handle -----------------------------------------------------
@@ -740,8 +775,8 @@ class _Follower:
                 report = self.connection.recv()
             except (EOFError, OSError):
                 report = None
-            if isinstance(report, dict) and set(report) == {"staged"}:
-                self.on_staged(self.rank, report["staged"])
+            if isinstance(report, dict) and set(report) == {"staged", "file"}:
+                self.on_staged(self.rank, report["staged"], tuple(report["file"]))
                 continue
             break
         if self.state.get("closing"):
@@ -780,7 +815,7 @@ class _DataParallel:
         self.send: Any = None
         self.staged_lock = threading.Lock()
         self.deferred: dict[int, dict[str, Any]] = {}
-        self.follower_ready: dict[int, set[int]] = {}
+        self.follower_ready: dict[int, dict[int, tuple[int, ...]]] = {}
         device = init["device"]
         if device.startswith("cuda"):
             base = int(device.split(":", 1)[1]) if ":" in device else 0
@@ -810,7 +845,7 @@ class _DataParallel:
         holder: list[_DataParallel] = []
         for rank in range(1, config["world"]):
             followers.append(_Follower(context, init, rank, send, state,
-                                       lambda r, d: holder[0].follower_staged(r, d)))
+                                       lambda r, d, f: holder[0].follower_staged(r, d, f)))
         leader = cls(init, 0)
         leader.send = send
         holder.append(leader)
@@ -821,16 +856,26 @@ class _DataParallel:
             self.deferred[dataset] = fields
             self._flush(dataset)
 
-    def follower_staged(self, rank: int, dataset: int) -> None:
+    def follower_staged(self, rank: int, dataset: int, identity: tuple[int, ...]) -> None:
         with self.staged_lock:
-            self.follower_ready.setdefault(dataset, set()).add(rank)
+            self.follower_ready.setdefault(dataset, {})[rank] = identity
             self._flush(dataset)
 
     def _flush(self, dataset: int) -> None:
         if (dataset in self.deferred
                 and len(self.follower_ready.get(dataset, ())) == self.world - 1):
             fields = self.deferred.pop(dataset)
-            self.follower_ready.pop(dataset)
+            identities = self.follower_ready.pop(dataset)
+            verified = tuple(fields["file_identity"])
+            if any(identity != verified for identity in identities.values()):
+                # Only rank 0 hashed: a rank that mapped another file never trains.
+                with suppress(BaseException):
+                    self.send("failed", stage="data_parallel_stage",
+                              error_type="_ChildViolation",
+                              error_code="sgd_data_parallel_file_identity_changed",
+                              dataset=dataset, verified=list(verified),
+                              ranks={str(r): list(i) for r, i in identities.items()})
+                os._exit(1)
             self.send("staged", dataset=dataset, **fields)
 
     def gather(self, value: Any) -> list[Any] | None:
@@ -882,7 +927,7 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
         def answer(kind: str, **fields: Any) -> None:
             # Followers answer nothing to the controller; rank 0 waits for these.
             if kind == "staged":
-                connection.send({"staged": fields["dataset"]})
+                connection.send({"staged": fields["dataset"], "file": fields["file_identity"]})
 
         worker = _SgdWorker(init, answer, state, parallel=parallel)
         worker.loop(next_message)
@@ -1004,6 +1049,12 @@ class _SgdWorker:
         self.offline_dumps = 0
         self.next_dump = (self.updates + self.offline_dump["every"]
                           if self.offline_dump is not None and self.rank == 0 else None)
+        # Data parallel: stage only this rank's groups of each minibatch (plus the
+        # shared row tensors). An offline-dump rank keeps the whole batch: the dump
+        # writes every group of the minibatch it captures.
+        self.shard = ((self.rank, parallel.world)
+                      if parallel is not None and parallel.world > 1
+                      and self.next_dump is None else None)
         loaded = weights_digest(self.model.state_dict())
         properties = (torch.cuda.get_device_properties(self.device)
                       if self.device.type == "cuda" else None)
@@ -1167,65 +1218,88 @@ class _SgdWorker:
             self._staged_done(plan, *result)
 
     def _stage_work(self, plan: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+        """Map the prepared file, pin/H2D this rank's part, verify the whole file once.
+
+        Rank 0 (and a single SGD process) hashes the whole file on a helper thread
+        while the pin/H2D runs; the digest must match before `staged` is sent, so
+        no step ever starts on unverified bytes. A follower rank does not hash: it
+        reports the fstat identity of the file it mapped, and rank 0 answers
+        `staged` only when every rank mapped the file rank 0 verified.
+        """
         from . import batch_preparation as bp
 
         began = time.perf_counter()
         dataset = plan["dataset"]
         direct = self.stage_executor is not None and self.device.type == "cuda"
         with open(plan["path"], "rb") as stream:
+            identity = _file_identity(os.fstat(stream.fileno()))
             mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        digest: _Digest | None = None
+        arrays: Any = None
         try:
-            if (len(mapping) < plan["used_bytes"] or hashlib.sha256(
-                    memoryview(mapping)[:plan["used_bytes"]]).hexdigest() != plan["sha256"]):
+            if len(mapping) < plan["used_bytes"]:
                 raise _ChildViolation("sgd_prepared_file_integrity_changed")
-            verified = time.perf_counter()
+            if self.rank == 0:
+                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]], VERIFY_THREADS)
+            tree = pickle.loads(plan["tree"])
+            arrays = mapped_arrays(mapping, plan["arrays"])
+            if self.shard is not None:
+                from .data_parallel import shard_transport
 
+                tree, arrays = shard_transport(tree, arrays, *self.shard)
             if direct:
                 # Stage thread: one tree walk (pin the file's slabs, H2D, map the
                 # tree once); the walks hold the GIL the stepping thread needs.
-                # The slab views are acyclic temporaries, so no gc pass is needed
-                # to release the mapping.
-                slabs, lease = self.pinned.pin_slabs(
-                    mapped_arrays(mapping, plan["arrays"]), self.pinned.epoch)
+                slabs, lease = self.pinned.pin_slabs(arrays, self.pinned.epoch)
+                arrays = None
                 pinned = time.perf_counter()
-                device_batch, copies = bp.stage_pinned_slabs(
-                    pickle.loads(plan["tree"]), slabs, lease, self.device)
+                device_batch, copies = bp.stage_pinned_slabs(tree, slabs, lease, self.device)
                 del slabs, lease
-                return self._staged_fields(plan, device_batch, copies, began, verified,
-                                           pinned)
-
-            def load() -> Any:
-                arrays = mapped_arrays(mapping, plan["arrays"])
+            else:
                 if self.device.type == "cuda":
-                    batch = bp.unpack_transport((pickle.loads(plan["tree"]), arrays))
-                    return self.pinned.pin(batch, self.pinned.epoch)
-                return bp.unpack_transport((pickle.loads(plan["tree"]),
-                                            tuple(array.copy() for array in arrays)))
-
-            batch = load()
+                    batch = self.pinned.pin(bp.unpack_transport((tree, arrays)),
+                                            self.pinned.epoch)
+                else:
+                    batch = bp.unpack_transport((tree, tuple(a.copy() for a in arrays)))
+                arrays = None
+                if (batch.request.identity.sequence != dataset
+                        or len(batch.minibatches) != plan["minibatch_count"]):
+                    raise _ChildViolation("sgd_prepared_batch_binding_changed")
+                pinned = time.perf_counter()
+                device_batch, copies = bp.stage_batch(batch, self.device)
+                del batch  # pinned slot returns once its H2D event completes
+            staged_at = time.perf_counter()
+            if digest is not None:
+                digest.join()
+                if digest.error is not None:
+                    raise digest.error
+                if digest.value != plan["sha256"]:
+                    raise _ChildViolation("sgd_prepared_file_integrity_changed")
         finally:
+            if digest is not None:
+                digest.join()  # the mapping outlives every read of it
+            arrays = None
             if not direct:
                 gc.collect()
             with suppress(BufferError):
                 mapping.close()
-        if batch.request.identity.sequence != dataset or len(batch.minibatches) != plan[
-                "minibatch_count"]:
-            raise _ChildViolation("sgd_prepared_batch_binding_changed")
-        pinned = time.perf_counter()
-        device_batch, copies = bp.stage_batch(batch, self.device)
-        del batch  # pinned slot returns once its H2D event completes
-        return self._staged_fields(plan, device_batch, copies, began, verified, pinned)
+        return self._staged_fields(plan, device_batch, copies, began, pinned, staged_at,
+                                   digest, identity)
 
     def _staged_fields(self, plan: dict[str, Any], device_batch: Any, copies: int,
-                       began: float, verified: float,
-                       pinned: float) -> tuple[Any, dict[str, Any]]:
+                       began: float, pinned: float, staged_at: float,
+                       digest: _Digest | None,
+                       identity: tuple[int, ...]) -> tuple[Any, dict[str, Any]]:
         if (device_batch.request.identity.sequence != plan["dataset"]
                 or len(device_batch.minibatches) != plan["minibatch_count"]):
             raise _ChildViolation("sgd_prepared_batch_binding_changed")
         done = time.perf_counter()
         fields = dict(sha256=plan["sha256"], copies=copies,
-                      verify_seconds=verified - began, pin_seconds=pinned - verified,
-                      stage_seconds=done - pinned, host_seconds=done - began,
+                      verify_seconds=digest.seconds if digest is not None else 0.0,
+                      verify_wait_seconds=done - staged_at,
+                      pin_seconds=pinned - began, stage_seconds=staged_at - pinned,
+                      host_seconds=done - began, file_identity=identity,
+                      shard=list(self.shard) if self.shard is not None else None,
                       stage_thread=threading.current_thread().name)
         return device_batch, fields
 

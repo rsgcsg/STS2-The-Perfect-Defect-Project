@@ -14,6 +14,8 @@ FOUR_AGENT_SUITE_ID = "ref-first-four-10-20261023"
 CHARACTERS = ("Defect", "Ironclad", "Silent", "Regent", "Necrobinder")
 CHECKPOINT_SUITE_ID = "ref-checkpoints-20261024"
 RL3_LEARNING_CURVE_SUITE_ID = "managed-rl3-learning-curve-100-20261030-Defect-a0"
+RL5_INT_SEALED_PREFIX = "managed-rl5-int-sealed-20261112-Defect"
+RL5_INT_SEALED_COUNTS = {0: 300, 10: 100}
 
 
 def checkpoint_reference_manifest(game_version: str, character: str = "Defect",
@@ -56,6 +58,25 @@ def rl3_learning_curve_manifest(game_version: str) -> dict[str, Any]:
             "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
             "seeds": [derive_game_seed(RL3_LEARNING_CURVE_SUITE_ID, i)
                       for i in range(1, 101)], "collection_training_RL": "forbidden"}
+
+
+def rl5_int_sealed_manifest(game_version: str, ascension: int = 0) -> dict[str, Any]:
+    """RL5 INT acceptance seeds, sealed before the first fast-chain long run.
+
+    Used only when the RL5 INT card closes; never collected, trained, tuned or
+    used as a diagnostic set before that.
+    """
+    four_agent_reference_manifest(game_version)
+    if type(ascension) is not int or ascension not in RL5_INT_SEALED_COUNTS:
+        raise ValueError("unsupported RL5 INT sealed scenario")
+    name = f"{RL5_INT_SEALED_PREFIX}-a{ascension}"
+    count = RL5_INT_SEALED_COUNTS[ascension]
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": name, "version": "1.0.0",
+            "game_version": game_version, "character": "Defect", "ascension": ascension,
+            "host": "Managed", "purpose": "sealed_int_acceptance", "episode_count": count,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
+            "seeds": [derive_game_seed(name, i) for i in range(1, count + 1)],
+            "collection_training_RL": "forbidden"}
 
 
 def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
@@ -157,7 +178,8 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
     # The reserved sets are frozen, versioned package facts. Build the seed ->
     # suites index once per process instead of rereading and revalidating every
     # manifest for each queried seed. Order per seed is the original order:
-    # legacy suites, the four-agent reservation, checkpoint, T2, learning curve.
+    # legacy suites, the four-agent reservation, checkpoint, T2, learning curve,
+    # RL5 INT sealed.
     rl3 = rl3_learning_curve_manifest("v0.111.0")
     sets: list[tuple[str, list[str]]] = [
         *((name, load_suite(name)["seeds"]) for name in suite_names()),
@@ -169,6 +191,8 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
         *((m["suite_id"], m["seeds"]) for m in (t2_managed_manifest("v0.111.0", a)
                                                 for a in (0, 10))),
         (rl3["suite_id"], rl3["seeds"]),
+        *((m["suite_id"], m["seeds"]) for m in (rl5_int_sealed_manifest("v0.111.0", a)
+                                                for a in RL5_INT_SEALED_COUNTS)),
     ]
     index: dict[str, list[str]] = {}
     for suite_id, seeds in sets:

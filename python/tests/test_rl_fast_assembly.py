@@ -520,6 +520,59 @@ def test_every_close_emits_instance_closed_after_its_segments():
     assert len(stream) == 5
 
 
+def test_close_on_another_thread_never_overtakes_a_sealed_segment():
+    """h100i 11-12 (`fast_segment_after_instance_closed`): the scoring thread's
+    finish_row seals the full segment (its successor row is scored) and hands it on
+    outside the state lock; the link thread's episode_close (not_started) truncates
+    the successor segment and queues the closed signal. The closed signal must not
+    reach the hand-off queue before the segment sealed first."""
+    import threading
+
+    stream: list[Any] = []
+    in_emit, release = threading.Event(), threading.Event()
+
+    def emit(item: Any) -> None:
+        if getattr(item, "kind", None) == "bootstrap":
+            in_emit.set()
+            assert release.wait(10)  # the scoring thread is slow to queue it
+        stream.append(item)
+
+    h = Harness()
+    h.assembler.emit, h.assembler.on_closed = emit, stream.append
+    h.assembler.offer_mu(mu(1))
+    h.open("g1")
+    for _ in range(64):
+        h.step("g1")
+    row, data = h.row("g1")
+    plan = h.assembler.begin_row(row, data)
+    errors: list[BaseException] = []
+
+    def run(target: Any) -> threading.Thread:
+        def body() -> None:
+            try:
+                target()
+            except BaseException as error:  # noqa: BLE001 - asserted below
+                errors.append(error)
+        thread = threading.Thread(target=body, daemon=True)
+        thread.start()
+        return thread
+
+    scorer = run(lambda: h.assembler.finish_row(plan, h.scored(plan, row), values(),
+                                                values()))
+    assert in_emit.wait(10)
+    link = run(lambda: h.close("g1", "not_started", row["step_index"]))
+    link.join(0.3)  # without the emit order lock the close completes here
+    release.set()
+    scorer.join(10)
+    link.join(10)
+    assert not errors and not scorer.is_alive() and not link.is_alive()
+    kinds = [item.kind if not isinstance(item, InstanceClosed) else "closed"
+             for item in stream]
+    assert kinds == ["bootstrap", "truncated", "closed"]
+    assert stream[2].segments == {"bootstrap": 1, "terminal": 0, "truncated": 1,
+                                  "rejected": 0}
+
+
 def test_instance_closed_follows_even_when_the_labeler_breaks():
     def broken(summary: Any) -> dict:
         raise RuntimeError("labeler bug")

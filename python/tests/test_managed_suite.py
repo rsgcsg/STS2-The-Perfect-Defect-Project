@@ -323,8 +323,10 @@ def _uncached_membership(seed):
                if canonical in m["seeds"])
     rl3 = suites.rl3_learning_curve_manifest("v0.111.0")
     curve = (rl3["suite_id"],) if canonical in rl3["seeds"] else ()
+    sealed = tuple(m["suite_id"] for m in (suites.rl5_int_sealed_manifest("v0.111.0", a)
+                                           for a in (0, 10)) if canonical in m["seeds"])
     return (legacy + ((suites.FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
-            + checkpoint + t2 + curve)
+            + checkpoint + t2 + curve + sealed)
 
 
 def test_cached_membership_index_equals_the_uncached_query():

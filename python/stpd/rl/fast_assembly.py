@@ -34,7 +34,9 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
 - a game closed other than by a labelled natural terminal seals its unsealed
   segments `truncated`: kept as original, counted, never given to SGD;
 - every close (normal or not) then emits one `InstanceClosed` (close reason,
-  first failure, segment counts) to `on_closed`, after the instance's segments:
+  first failure, segment counts) to `on_closed`, after the instance's segments
+  (`emit_lock`: emit order is seal order across the service's threads, so a
+  segment another thread sealed before the close is never emitted after it):
   the learner's game-ended / exclusion signal (WP8; the learner decides what an
   exclusion drops, `fast_handoff` documents the wire);
 - the environment's outcome fields are copied unchanged, including `combat_end`,
@@ -75,6 +77,7 @@ the identity) and the assembler archives them for R7 games.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
 import secrets
 import threading
@@ -232,8 +235,7 @@ class MuLedger:
         self.check(handoff)
         if handoff.snapshot_sha256 in self.resident:
             if self.resident[handoff.snapshot_sha256] != handoff:  # new generation
-                self.resident[handoff.snapshot_sha256] = handoff
-                self.latest = handoff
+                self._set_latest(handoff)
                 return MuOffer(True, self.collect(), True)
             return MuOffer(True, ())
         changed = (self.latest is not None
@@ -242,9 +244,23 @@ class MuLedger:
         if len(self.resident) >= self.max_resident:
             self.declined += 1
             return MuOffer(False, evicted, changed)
+        self._set_latest(handoff)
+        return MuOffer(True, evicted + self.collect(), changed)
+
+    def _set_latest(self, handoff: MuHandoff) -> None:
+        """Register `handoff` as latest; only latest keeps its R7 weights in memory.
+
+        The assembler archives a mu from `latest` (an R7 game opening) or from the
+        offer itself, never from an older resident entry, so older entries drop
+        their pack (equality ignores `weights`).
+        """
+        previous = self.latest
+        if (previous is not None and previous.weights is not None
+                and self.resident.get(previous.snapshot_sha256) is previous):
+            self.resident[previous.snapshot_sha256] = dataclasses.replace(previous,
+                                                                          weights=None)
         self.resident[handoff.snapshot_sha256] = handoff
         self.latest = handoff
-        return MuOffer(True, evicted + self.collect(), changed)
 
     def _held(self, snapshot: str) -> bool:
         return (self.references.get(snapshot, 0) > 0 or self.pins.get(snapshot, 0) > 0
@@ -391,6 +407,12 @@ class FastSegmentAssembler:
         self.archive_lock = threading.Lock()
         self.ledger = ledger or MuLedger()
         self.lock = threading.Lock()
+        # Hand-off order = seal order (WP8 fence `fast_segment_after_instance_closed`,
+        # h100i 11-12): every call that can seal holds `emit_lock` from before it takes
+        # `self.lock` until its sealed segments and `InstanceClosed` are handed on, so
+        # no other thread's close can be queued between a seal and its emit. Order:
+        # emit_lock, then lock; `begin_row` / `open_episode` seal nothing and skip it.
+        self.emit_lock = threading.Lock()
         self.games: dict[str, _Game] = {}
         self.closed: OrderedDict[str, None] = OrderedDict()
         self.closed_memory = closed_memory
@@ -418,11 +440,12 @@ class FastSegmentAssembler:
         if audit_open:
             self._archive(handoff)
         sealed: list[SealedSegment | RejectedSegment] = []
-        try:
-            with self.lock:
-                return self._offer_mu(handoff, sealed)
-        finally:
-            self._emit(sealed)
+        with self.emit_lock:
+            try:
+                with self.lock:
+                    return self._offer_mu(handoff, sealed)
+            finally:
+                self._emit(sealed)
 
     def _offer_mu(self, handoff: MuHandoff,
                   sealed: list[SealedSegment | RejectedSegment]) -> MuOffer:
@@ -534,6 +557,8 @@ class FastSegmentAssembler:
                     floor = max([row["floor"], *(r["floor"] for r in current.rows)])
                     tail = TailPlan(current.segment_id, current.mu.snapshot_sha256, floor)
                 self.ledger.retain(mu.snapshot_sha256)
+                if mu.weights is not None:  # a segment never holds the R7 pack
+                    mu = dataclasses.replace(mu, weights=None)
                 self.segment_counter += 1
                 current = _Segment(f"{self.instance_id}.{self.segment_counter}",
                                    game.next_index, mu)
@@ -551,12 +576,13 @@ class FastSegmentAssembler:
                    outcome_probabilities: list[float],
                    tail_outcome_probabilities: list[float] | None = None) -> None:
         sealed: list[SealedSegment | RejectedSegment] = []
-        try:
-            with self.lock:
-                self._finish_row(plan, scored, outcome_probabilities,
-                                 tail_outcome_probabilities, sealed)
-        finally:
-            self._emit(sealed)
+        with self.emit_lock:
+            try:
+                with self.lock:
+                    self._finish_row(plan, scored, outcome_probabilities,
+                                     tail_outcome_probabilities, sealed)
+            finally:
+                self._emit(sealed)
 
     def _finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
                     outcome_probabilities: list[float],
@@ -611,11 +637,12 @@ class FastSegmentAssembler:
     def abort_row(self, plan: RowPlan, error_code: str) -> None:
         """The service refused this row; nothing enters a segment, the game will close."""
         sealed: list[SealedSegment | RejectedSegment] = []
-        try:
-            with self.lock:
-                self._abort_row(plan, error_code, sealed)
-        finally:
-            self._emit(sealed)
+        with self.emit_lock:
+            try:
+                with self.lock:
+                    self._abort_row(plan, error_code, sealed)
+            finally:
+                self._emit(sealed)
 
     def _abort_row(self, plan: RowPlan, error_code: str,
                    sealed: list[SealedSegment | RejectedSegment]) -> None:
@@ -637,11 +664,12 @@ class FastSegmentAssembler:
 
     def step_outcome(self, message: Mapping[str, Any]) -> None:
         sealed: list[SealedSegment | RejectedSegment] = []
-        try:
-            with self.lock:
-                self._step_outcome(message, sealed)
-        finally:
-            self._emit(sealed)
+        with self.emit_lock:
+            try:
+                with self.lock:
+                    self._step_outcome(message, sealed)
+            finally:
+                self._emit(sealed)
 
     def _step_outcome(self, message: Mapping[str, Any],
                       sealed: list[SealedSegment | RejectedSegment]) -> None:
@@ -708,20 +736,21 @@ class FastSegmentAssembler:
         sealed: list[SealedSegment | RejectedSegment] = []
         closed: list[InstanceClosed] = []
         errors: list[BaseException] = []
-        try:
-            with self.lock:
-                self._close_episode(message, sealed, closed)
-        except BaseException as error:  # noqa: BLE001 - re-raised below, first one wins
-            errors.append(error)
-        try:
-            self._emit(sealed)
-        except BaseException as error:  # noqa: BLE001
-            errors.append(error)
-        if closed and self.on_closed is not None:
+        with self.emit_lock:  # nothing sealed earlier can be emitted after this close
             try:
-                self.on_closed(closed[0])
+                with self.lock:
+                    self._close_episode(message, sealed, closed)
+            except BaseException as error:  # noqa: BLE001 - re-raised below, first one wins
+                errors.append(error)
+            try:
+                self._emit(sealed)
             except BaseException as error:  # noqa: BLE001
                 errors.append(error)
+            if closed and self.on_closed is not None:
+                try:
+                    self.on_closed(closed[0])
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
         if errors:
             raise errors[0]  # a later failure never hides the first one
 

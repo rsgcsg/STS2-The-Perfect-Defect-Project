@@ -183,7 +183,8 @@ class PreparedHandoff:
     Explicit `sgd_process` profile only. The controller never pins, stages or
     unpickles the tensor tree; it keeps the metadata that selection and
     successful-use accounting already read. The spawned SGD process maps the
-    same `_write_batch` file, checks `sha256` over `used_bytes`, then pins it.
+    same `_write_batch` file, checks `sha256` (`prepared_digest`) over `used_bytes`,
+    then pins it.
     """
 
     request: PrepareRequest
@@ -219,6 +220,41 @@ def _warm_probe() -> int:
     return os.getpid()
 
 
+PREPARED_DIGEST_CHUNK = 16 * 1024 * 1024
+PREPARED_DIGEST = f"stpd/rl-prepared-chunks-1/{PREPARED_DIGEST_CHUNK // 1024**2}MiB"
+
+
+def prepared_digest(view: memoryview, threads: int = 1) -> str:
+    """The hand-off file digest: sha256 over every byte, in fixed 16 MiB chunks.
+
+    `sha256(label || length || sha256(chunk_0) || ... || sha256(chunk_n))`: every
+    byte, its position and the total length are bound exactly as by one sha256,
+    but the chunk hashes are independent, so the SGD process verifies a ~0.6 GB
+    batch on several threads (hashlib releases the GIL) instead of one ~0.4 s
+    serial pass. The writer and the verifier both call this function.
+    """
+    if view.ndim != 1 or view.itemsize != 1:
+        raise ValueError("prepared_digest_requires_a_flat_byte_view")
+    chunks = [view[start:start + PREPARED_DIGEST_CHUNK]
+              for start in range(0, len(view), PREPARED_DIGEST_CHUNK)]
+    try:
+        if threads > 1 and len(chunks) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(min(threads, len(chunks)),
+                                    thread_name_prefix="rl-prepared-digest") as pool:
+                parts = list(pool.map(lambda chunk: hashlib.sha256(chunk).digest(), chunks))
+        else:
+            parts = [hashlib.sha256(chunk).digest() for chunk in chunks]
+    finally:
+        for chunk in chunks:
+            chunk.release()
+    outer = hashlib.sha256(PREPARED_DIGEST.encode() + len(view).to_bytes(8, "big"))
+    for part in parts:
+        outer.update(part)
+    return outer.hexdigest()
+
+
 def _write_batch(batch: PreparedBatch, path: str, *, handoff: bool = False) -> _PackedBatch:
     tree, arrays = bp.pack_transport(batch)
     with open(path, "r+b") as stream:
@@ -245,11 +281,16 @@ def _write_batch(batch: PreparedBatch, path: str, *, handoff: bool = False) -> _
             "payload_bytes": batch.payload_bytes,
             "minibatch_count": len(batch.minibatches),
             "used_bytes": cursor,
-            "sha256": hashlib.sha256(memoryview(mapping)[:cursor]).hexdigest(),
+            "sha256": _mapped_digest(mapping, cursor),
         }
         return _PackedBatch(pickle.dumps(tree, protocol=5), tuple(views), summary)
     finally:
         mapping.close()
+
+
+def _mapped_digest(mapping: mmap.mmap, used: int) -> str:
+    with memoryview(mapping) as whole, whole[:used] as view:
+        return prepared_digest(view)
 
 
 def _decode_source(descriptor: _Descriptor) -> _ReadySource:
@@ -802,7 +843,8 @@ class BinaryBatchPreparer:
                 endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
                 threads=threads, connections=remote_prepare.get("connections", 2),
                 auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
-                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0))
+                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0),
+                codec=remote_prepare.get("codec", "none"))
             self._failed_tasks["remote_assembly"] = self._failed_tasks["remote_labels"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
