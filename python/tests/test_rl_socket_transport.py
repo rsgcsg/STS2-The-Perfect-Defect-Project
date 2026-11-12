@@ -1004,15 +1004,15 @@ def test_actual_binary_producer_socket_wal_prepared_batch_matches_old_source(tmp
     values, deliveries = {}, []
     tensor_init = TensorFrame.__init__
     prefetch_entered, prefetch_release = threading.Event(), threading.Event()
-    original_prefetch = owner.input_preparer.prefetch
+    original_prefetch = owner.input_preparer.prefetch_many
 
-    def delayed_prefetch(ref, envelope, **options):
+    def delayed_prefetch(items, **options):
         if not prefetch_entered.is_set():
             prefetch_entered.set()
             assert prefetch_release.wait(5)
-        return original_prefetch(ref, envelope, **options)
+        return original_prefetch(items, **options)
 
-    monkeypatch.setattr(owner.input_preparer, "prefetch", delayed_prefetch)
+    monkeypatch.setattr(owner.input_preparer, "prefetch_many", delayed_prefetch)
 
     def no_control_tensor(self, *args, **kwargs):
         if threading.current_thread().name == "rl-channel":
@@ -1376,16 +1376,17 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(
     owner.newlease_stopped = owner.input_fenced = False
     calls = []
 
-    def prefetch(ref, _envelope, *, wait=True):
+    def prefetch_many(items, *, wait=True):
         assert wait is False  # speculative background hints never block consumers
-        with owner.condition:
-            assert (ref.slot, "source-prefetch") in owner.hot_references
-        with owner.binary_sources.borrow(ref) as raw:
-            calls.append((ref, bytes(raw)))
-        return 0.0, 0.0  # (credit wait, copy) seconds
+        for ref, _envelope in items:
+            with owner.condition:
+                assert (ref.slot, "source-prefetch") in owner.hot_references
+            with owner.binary_sources.borrow(ref) as raw:
+                calls.append((ref, bytes(raw)))
+        return {}
 
     refs = []
-    owner.input_preparer = SimpleNamespace(prefetch=prefetch,
+    owner.input_preparer = SimpleNamespace(prefetch_many=prefetch_many,
         cached_sources=lambda: frozenset(refs[:1]) if cached_first else frozenset())
     for index in range(4):
         value = encoded(
@@ -1493,12 +1494,12 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     preparer.pending.add(pending)
     copied = threading.Event()
 
-    def prefetch(_ref, _envelope, *, wait=True):
+    def prefetch_many(_items, *, wait=True):
         assert not preparer.fenced
         copied.set()
-        return 0.0, 0.0
+        return {}
 
-    monkeypatch.setattr(preparer, "prefetch", prefetch)
+    monkeypatch.setattr(preparer, "prefetch_many", prefetch_many)
     with ThreadPoolExecutor(max_workers=1) as executor:
         checkpoint = executor.submit(owner.checkpoint)
         checkpoint.result(2)

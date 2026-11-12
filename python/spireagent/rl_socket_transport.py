@@ -376,6 +376,11 @@ class BinarySources:
         with self.condition:
             return copy.deepcopy(self._entry(ref)["envelope"])
 
+    def envelopes(self, refs: Any) -> list[dict[str, Any]]:
+        """`envelope` for many refs under one lock hold."""
+        with self.condition:
+            return [copy.deepcopy(self._entry(ref)["envelope"]) for ref in refs]
+
     @contextmanager
     def borrow(self, ref: BinaryRef) -> Iterator[memoryview]:
         with self.condition:

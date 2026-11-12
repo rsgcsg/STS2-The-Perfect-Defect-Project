@@ -485,6 +485,16 @@ class SegmentLearner:
                                  if self.dataplane is not None else 1)
         if type(self.dispatch_workers) is not int or self.dispatch_workers < 1:
             raise ValueError("invalid_prepare_dispatch_workers")
+        # Opt-in, process-wide: a thread that gives up the GIL (lock wait, I/O)
+        # waits up to one switch interval to get it back while hundreds of
+        # learner threads are busy. None keeps the interpreter default (5 ms).
+        # Process-global, set here before later constructor validation and
+        # never restored: a failed construction can leave it changed.
+        switch = (self.dataplane or {}).get("gil_switch_interval_seconds")
+        if switch is not None:
+            if type(switch) is not float or not 0.0001 <= switch <= 0.005:
+                raise ValueError("invalid_gil_switch_interval_seconds")
+            sys.setswitchinterval(switch)
         # Explicit S3 alternative only; None keeps the default in-process E4.
         self.sgd_options = sgd_options(self.dataplane)
         self.sgd: SgdProcess | None = None
@@ -2327,18 +2337,31 @@ class SegmentLearner:
         return tuple(result)
 
     def _prefetch_members(self, members: tuple[BatchMember, ...], *,
-                          wait: bool = True) -> tuple[float, float]:
-        """Copy members into preparer arenas; returns (credit wait, copy) seconds."""
-        waited = copied = 0.0
-        if self.wal is not None:
-            for member in members:
-                assert isinstance(member.payload, BinaryRef)
-                wait_seconds, copy_seconds = cast(
-                    "BinaryBatchPreparer", self.input_preparer).prefetch(member.payload,
-                    self._binary_owner(member.payload).envelope(member.payload), wait=wait)
-                waited += wait_seconds
-                copied += copy_seconds
-        return waited, copied
+                          wait: bool = True) -> dict[str, float]:
+        """Copy members into preparer arenas; returns seconds per phase.
+
+        Envelopes come from each owner in one lock hold, and the preparer
+        reserves/publishes the whole list in one hold per round, instead of
+        several contended lock hand-offs per member.
+        """
+        if self.wal is None or not members:
+            return {}
+        began = time.perf_counter()
+        refs = [member.payload for member in members]
+        assert all(isinstance(ref, BinaryRef) for ref in refs)
+        envelopes: dict[int, dict[str, Any]] = {}
+        groups: dict[int, tuple[Any, list[int]]] = {}
+        for index, ref in enumerate(refs):
+            owner = self._binary_owner(cast(BinaryRef, ref))
+            groups.setdefault(id(owner), (owner, []))[1].append(index)
+        for owner, indices in groups.values():
+            for index, envelope in zip(
+                    indices, owner.envelopes([refs[i] for i in indices]), strict=True):
+                envelopes[index] = envelope
+        enveloped = time.perf_counter()
+        timing = cast("BinaryBatchPreparer", self.input_preparer).prefetch_many(
+            [(cast(BinaryRef, ref), envelopes[i]) for i, ref in enumerate(refs)], wait=wait)
+        return {"envelope": enveloped - began, **timing}
 
     def _source_prefetch_loop(self) -> None:
         """Coalesce commit hints; copy/decode sources before numerical selection.
@@ -2373,7 +2396,9 @@ class SegmentLearner:
                             break
                 # Provider borrow, hashing, arena copy and worker submission
                 # hold neither the learner condition nor a socket handler.
-                for member in held:
+                # Short chunks: two preparer lock holds per chunk, not per
+                # member, while the gate is never held for a whole dataset.
+                for start in range(0, len(held), 16):
                     if self.source_prefetch_stopping.is_set():
                         break
                     try:
@@ -2381,7 +2406,7 @@ class SegmentLearner:
                         # Serialize only this source copy against that window;
                         # never acquire this gate under the learner condition.
                         with self.source_prefetch_gate:
-                            self._prefetch_members((member,), wait=False)
+                            self._prefetch_members(tuple(held[start:start + 16]), wait=False)
                     except ValueError as error:
                         if str(error) != "binary_source_slots_busy":
                             raise
@@ -2724,10 +2749,11 @@ class SegmentLearner:
         inputs = tuple(row["prepared_input"] for kind in ("terminal", "hp") for row in active[kind])
         scheduled = time.perf_counter()
         marks: dict[str, float] = {}
+        phases: dict[str, float] = {}
 
         def prefetch() -> None:
             marks["started"] = time.perf_counter()
-            marks["credit_wait"], marks["copy"] = self._prefetch_members(request.members)
+            phases.update(self._prefetch_members(request.members))
             marks["prefetched"] = time.perf_counter()
 
         def submit() -> Future[PreparedBatch]:
@@ -2742,8 +2768,10 @@ class SegmentLearner:
                         frontend_retain_seconds=scheduled - began,
                         frontend_dispatch_queue_seconds=started - scheduled,
                         frontend_prefetch_seconds=prefetched - started,
-                        frontend_prefetch_credit_wait_seconds=marks["credit_wait"],
-                        frontend_prefetch_copy_seconds=marks["copy"],
+                        **{f"frontend_prefetch_{name}_seconds": seconds
+                           for name, seconds in phases.items()},
+                        frontend_prefetch_other_seconds=max(
+                            0.0, prefetched - started - sum(phases.values())),
                         frontend_order_wait_seconds=turn - prefetched,
                         frontend_submit_seconds=submitted - turn,
                         frontend_wall_seconds=submitted - started)
