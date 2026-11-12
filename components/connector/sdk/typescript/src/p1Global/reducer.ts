@@ -6,13 +6,12 @@ import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
-import { createPublicIdentityPolicy, relationMemoKey } from "./publicIdentity.js";
-import { deepFrozen, memoActive, memoCounters, memoVerifying, P1ReduceMemoDivergence, reduceMemoStatus, withReduceMemo } from "./reduceMemo.js";
+import { createPublicIdentityPolicy } from "./publicIdentity.js";
 import { publicPath, type PublicPath } from "./publicPath.js";
 import { completeSelectorFacts, selectorOperation, selectorIntention, matchesSelectorIntention,
   type SelectorIntention } from "./selectorForward.js";
-import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
-  matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
+import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardGroupIntentions,
+  rewardWorldFacts, matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
 import { shopWorldFacts } from "./shopForward.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_NONCOMBAT_POTION_SCENES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
@@ -229,18 +228,18 @@ const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "rewar
 
 // Singleton choices remain Agent choices; automatic mandatory input is not inferred from count.
 
+/* The session alias table, copied on write. `base` is the previous state's table (or, for a table
+ * this reducer did not build, an own-key copy of it as before); new aliases go to `added`. A lookup
+ * answers exactly what the old per-reduction copy with every anonymous id deleted answered. */
 interface AliasWork {
-  aliases: Record<string, string>; counts: Record<string, number>;
+  base: Readonly<Record<string, string>>; baseOwn: boolean; added: Map<string, string>; counts: Record<string, number>;
   policy: ReturnType<typeof createPublicIdentityPolicy>; anonymous: Set<string>;
   anonymousViews: { root: string; label: string; aliases: Map<string, string> }[];
 }
 
-const viewFor = (work: AliasWork, path: string) =>
-  work.anonymousViews.find(view => path === view.root || path.startsWith(view.root + ".") || path.startsWith(view.root + "["));
-
 function aliasFor(work: AliasWork, id: string, path = ""): string {
   if (work.anonymous.has(id)) {
-    const view = viewFor(work, path);
+    const view = work.anonymousViews.find(view => path === view.root || path.startsWith(view.root + ".") || path.startsWith(view.root + "["));
     if (view) {
       const existing = view.aliases.get(id);
       if (existing) return existing;
@@ -249,15 +248,36 @@ function aliasFor(work: AliasWork, id: string, path = ""): string {
       return alias;
     }
   }
-  const existing = work.aliases[id];
+  const existing = aliasOf(work, id);
   if (existing) return existing;
   // Source token spelling/counters never select a model-visible alias.
   const prefix = "e";
   const next = (work.counts[prefix] ?? 0) + 1;
   work.counts[prefix] = next;
   const alias = `${prefix}${next}`;
-  work.aliases[id] = alias;
+  work.added.set(id, alias);
   return alias;
+}
+
+const hasOwnId = Object.prototype.hasOwnProperty;
+/** Alias tables built by this reducer: frozen plain objects of own enumerable string entries. */
+const OWN_ALIAS_TABLES = new WeakSet<object>();
+function aliasOf(work: AliasWork, id: string): string | undefined {
+  const added = work.added.get(id);
+  if (added !== undefined) return added;
+  return !work.anonymous.has(id) && hasOwnId.call(work.base, id) ? work.base[id] : undefined;
+}
+/** The next state's table: the previous table minus anonymous ids, then the new aliases in order. */
+function nextAliases(work: AliasWork): Readonly<Record<string, string>> {
+  let unchanged = work.baseOwn && work.added.size === 0;
+  if (unchanged) for (const id of work.anonymous) if (hasOwnId.call(work.base, id)) { unchanged = false; break; }
+  if (unchanged) return work.base;
+  const entries = Object.entries(work.base).filter(([id]) => !work.anonymous.has(id));
+  for (const entry of work.added) if (!work.anonymous.has(entry[0])) entries.push(entry);
+  // Frozen, so reusing the same table in the next state is exactly a fresh copy of it.
+  const table = Object.freeze(Object.fromEntries(entries));
+  OWN_ALIAS_TABLES.add(table);
+  return table;
 }
 
 function collectIds(value: unknown, ids: Set<string>, policy: AliasWork["policy"], path: PublicPath, declarationsOnly = false): void {
@@ -266,15 +286,28 @@ function collectIds(value: unknown, ids: Set<string>, policy: AliasWork["policy"
     if (relation && (!declarationsOnly || relation === "declared")) ids.add(value);
     return;
   }
+  if (value === null || typeof value !== "object" || !policy.subtreeAt(path)) return;
   if (Array.isArray(value)) { value.forEach((item, index) => collectIds(item, ids, policy, path.item(index), declarationsOnly)); return; }
   if (isObject(value)) for (const key of Object.keys(value).sort())
     collectIds(value[key], ids, policy, path.field(key), declarationsOnly);
+}
+
+/** What aliasTree and stripIds give for a subtree where no path has a relation (subtreeAt false). */
+function sortedCopy(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedCopy);
+  if (isObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) out[key] = sortedCopy(value[key]);
+    return out;
+  }
+  return value;
 }
 
 /** Alias only paths owned by the public schema; all other facts remain literal. */
 function aliasTree(value: unknown, work: AliasWork, path: string | PublicPath): unknown {
   const node = typeof path === "string" ? publicPath(path) : path;
   if (typeof value === "string") return work.policy.relationAt(node) ? aliasFor(work, value, node.path) : value;
+  if (value !== null && typeof value === "object" && !work.policy.subtreeAt(node)) return sortedCopy(value);
   if (Array.isArray(value)) return value.map((item, index) => aliasTree(item, work, node.item(index)));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
@@ -287,6 +320,7 @@ function aliasTree(value: unknown, work: AliasWork, path: string | PublicPath): 
 function stripIds(value: unknown, policy: AliasWork["policy"], path: string | PublicPath): unknown {
   const node = typeof path === "string" ? publicPath(path) : path;
   if (typeof value === "string") return policy.relationAt(node) ? "" : value;
+  if (value !== null && typeof value === "object" && !policy.subtreeAt(node)) return sortedCopy(value);
   if (Array.isArray(value)) return value.map((item, index) => stripIds(item, policy, node.item(index)));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
@@ -296,210 +330,6 @@ function stripIds(value: unknown, policy: AliasWork["policy"], path: string | Pu
   return value;
 }
 
-// E6 memoized walks (fast_chain only, see reduceMemo.ts). Each memo entry belongs to one
-// frozen input object and is valid only for the same policy token and relation key.
-// The walks below give exactly what collectIds / aliasTree / canonicalJson(stripIds())
-// give; reduceMemo compares whole Reductions against the unmemoized walk.
-interface CollectEntry { readonly token: object; readonly key: string; readonly ids: readonly string[] }
-interface AliasEntry { readonly token: object; readonly key: string; readonly out: unknown;
-  readonly ids: readonly string[]; readonly aliases: readonly string[] }
-interface StripEntry { readonly token: object; readonly key: string; readonly text: string }
-const COLLECT_MEMO = { all: new WeakMap<object, CollectEntry>(), declared: new WeakMap<object, CollectEntry>() };
-const ALIAS_MEMO = new WeakMap<object, AliasEntry>();
-const STRIP_MEMO = new WeakMap<object, StripEntry>();
-/** Frozen aliasTree outputs built here: plain containers whose own-key order is already canonical. */
-const MEMO_OUTPUTS = new WeakSet<object>();
-const CANONICAL_MEMO = new WeakMap<object, string>();
-const pushAll = (target: string[], items: readonly string[]) => { for (const item of items) target.push(item); };
-
-/** Ids in collectIds' visiting order (repeats kept; adding them in order to a Set is collectIds). */
-function collectMemo(value: unknown, out: string[], policy: AliasWork["policy"], path: PublicPath, declarationsOnly: boolean): void {
-  if (typeof value === "string") {
-    const relation = policy.relationAt(path);
-    if (relation && (!declarationsOnly || relation === "declared")) out.push(value);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
-  const memo = declarationsOnly ? COLLECT_MEMO.declared : COLLECT_MEMO.all;
-  const frozen = deepFrozen(value);
-  const token = policy.memoToken; const key = frozen ? relationMemoKey(path) : "";
-  if (frozen) {
-    const entry = memo.get(value);
-    if (entry !== undefined && entry.token === token && entry.key === key) { memoCounters.hits++; pushAll(out, entry.ids); return; }
-    memoCounters.misses++;
-  }
-  const mine: string[] = [];
-  if (Array.isArray(value)) value.forEach((item, index) => collectMemo(item, mine, policy, path.item(index), declarationsOnly));
-  else if (isObject(value)) for (const key of Object.keys(value).sort())
-    collectMemo(value[key], mine, policy, path.field(key), declarationsOnly);
-  if (frozen) memo.set(value, { token, key, ids: mine });
-  pushAll(out, mine);
-}
-
-function collectIdsWalk(value: unknown, ids: Set<string>, policy: AliasWork["policy"], path: PublicPath, declarationsOnly = false): void {
-  if (!memoActive()) { collectIds(value, ids, policy, path, declarationsOnly); return; }
-  const found: string[] = [];
-  collectMemo(value, found, policy, path, declarationsOnly);
-  for (const id of found) ids.add(id);
-}
-
-/** aliasTree for one child; reuses an entry only when no alias it used changed. */
-function aliasMemo(value: unknown, work: AliasWork, node: PublicPath, ids: string[]): unknown {
-  if (typeof value === "string") {
-    if (!work.policy.relationAt(node)) return value;
-    ids.push(value);
-    return aliasFor(work, value, node.path);
-  }
-  if (value === null || typeof value !== "object") return value;
-  const frozen = deepFrozen(value);
-  const token = work.policy.memoToken; const key = frozen ? relationMemoKey(node) : "";
-  if (frozen) {
-    const entry = ALIAS_MEMO.get(value);
-    if (entry !== undefined && entry.token === token && entry.key === key && replayAliases(entry, work, node)) {
-      memoCounters.hits++; pushAll(ids, entry.ids); return entry.out;
-    }
-    memoCounters.misses++;
-  }
-  const mine: string[] = [];
-  const out = aliasChildren(value, work, node, mine);
-  // An anonymous (view-local) id is kept only when this whole subtree lies inside one view.
-  const view = frozen && mine.some(id => work.anonymous.has(id)) ? viewFor(work, node.path) ?? null : undefined;
-  if (frozen && view !== null) {
-    Object.freeze(out); MEMO_OUTPUTS.add(out as object);
-    ALIAS_MEMO.set(value, { token, key, out, ids: mine,
-      aliases: mine.map(id => work.anonymous.has(id) ? view!.aliases.get(id)! : work.aliases[id]!) });
-  }
-  pushAll(ids, mine);
-  return out;
-}
-
-/* True when aliasFor, called for the entry's ids in order at this node, would return
- * exactly the recorded aliases; then the view-local allocations it would make are made.
- * An ordinary id must already have its recorded alias (no allocation). An anonymous id
- * takes its view alias, or the next `a_<label>_<n>` exactly as aliasFor numbers them. */
-function replayAliases(entry: AliasEntry, work: AliasWork, node: PublicPath): boolean {
-  const { ids, aliases } = entry;
-  let view: AliasWork["anonymousViews"][number] | null | undefined;
-  let fresh: Map<string, string> | undefined;
-  for (let index = 0; index < ids.length; index++) {
-    const id = ids[index]!;
-    if (!work.anonymous.has(id)) { if (work.aliases[id] !== aliases[index]) return false; continue; }
-    if (view === undefined) view = viewFor(work, node.path) ?? null;
-    if (view === null) return false;
-    let alias = view.aliases.get(id) ?? fresh?.get(id);
-    if (alias === undefined) (fresh ??= new Map()).set(id, alias = `a_${view.label}_${view.aliases.size + fresh.size + 1}`);
-    if (alias !== aliases[index]) return false;
-  }
-  if (fresh !== undefined) for (const [id, alias] of fresh) view!.aliases.set(id, alias);
-  return true;
-}
-
-function aliasChildren(value: object, work: AliasWork, node: PublicPath, ids: string[]): unknown {
-  if (Array.isArray(value)) return value.map((item, index) => aliasMemo(item, work, node.item(index), ids));
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) out[key] = aliasMemo(record[key], work, node.field(key), ids);
-  return out;
-}
-
-/** aliasTree entry point: the returned top-level container is always a fresh, unfrozen copy. */
-function aliasTreeWalk(value: unknown, work: AliasWork, path: string): unknown {
-  if (!memoActive()) return aliasTree(value, work, path);
-  const node = publicPath(path);
-  if (typeof value === "string") return work.policy.relationAt(node) ? aliasFor(work, value, node.path) : value;
-  if (value === null || typeof value !== "object") return value;
-  return aliasChildren(value, work, node, []);
-}
-
-/* canonicalJson(observation) with the text of each frozen memo output kept. Only
- * plain JSON-shaped trees are written here; anything else (a toJSON or __proto__ key,
- * an array-index key outside a memo output, a function, symbol or bigint, a non-plain
- * prototype) makes the whole value go through canonicalJson. Each property is read
- * once, as canonicalJson reads it once (an accessor's value is copied there). */
-const NOT_PLAIN = Symbol("not_plain");
-const hasOwnKey = Object.prototype.hasOwnProperty;
-const INDEX_KEY = /^(?:0|[1-9]\d*)$/u;
-function leafText(value: unknown): string | undefined {
-  switch (typeof value) {
-    case "string": case "number": case "boolean": return JSON.stringify(value);
-    case "undefined": return undefined;
-    case "object": return value === null ? "null" : undefined;
-    default: throw NOT_PLAIN;
-  }
-}
-function plainText(value: unknown): string | undefined {
-  if (value === null || typeof value !== "object") return leafText(value);
-  const cached = CANONICAL_MEMO.get(value);
-  if (cached !== undefined) return cached;
-  const memoOutput = MEMO_OUTPUTS.has(value);
-  let text: string;
-  if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype || hasOwnKey.call(value, "toJSON")) throw NOT_PLAIN;
-    const parts: string[] = new Array(value.length);
-    for (let index = 0; index < value.length; index++) {
-      parts[index] = plainText(value[index]) ?? "null";
-    }
-    text = `[${parts.join(",")}]`;
-  } else {
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) throw NOT_PLAIN;
-    const record = value as Record<string, unknown>;
-    // A memo output was built by inserting sorted keys, so its own order is canonicalJson's order.
-    const keys = memoOutput ? Object.keys(record) : Object.keys(record).sort();
-    const parts: string[] = [];
-    for (const key of keys) {
-      if (key === "toJSON" || key === "__proto__" || !memoOutput && INDEX_KEY.test(key)) throw NOT_PLAIN;
-      const child = plainText(record[key]);
-      if (child !== undefined) parts.push(`${JSON.stringify(key)}:${child}`);
-    }
-    text = `{${parts.join(",")}}`;
-  }
-  if (memoOutput) CANONICAL_MEMO.set(value, text);
-  return text;
-}
-function observationText(observation: unknown): string {
-  if (!memoActive()) return canonicalJson(observation);
-  let text: string | undefined;
-  try { text = plainText(observation); } catch (error) { if (error !== NOT_PLAIN) throw error; text = undefined; }
-  if (text === undefined) return canonicalJson(observation);
-  if (memoVerifying() && text !== canonicalJson(observation)) throw new P1ReduceMemoDivergence(reduceMemoStatus().reductions, -1);
-  return text;
-}
-
-/* The strict decoders are pure: under the memo, a deeply frozen source already
- * decoded once is the same raw value again. A failure is never kept; it throws. */
-const DECODED_SNAPSHOTS = new WeakSet<object>();
-const DECODED_READS = new WeakSet<object>();
-function decodedSnapshot(value: unknown): Record<string, any> {
-  if (memoActive() && value !== null && typeof value === "object" && DECODED_SNAPSHOTS.has(value)) {
-    memoCounters.hits++; return value as Record<string, any>;
-  }
-  const raw = decodePlayerSnapshot(value).raw as Record<string, any>;
-  if (memoActive() && deepFrozen(raw)) { memoCounters.misses++; DECODED_SNAPSHOTS.add(raw); }
-  return raw;
-}
-function decodedRead(value: unknown): Record<string, any> {
-  if (memoActive() && value !== null && typeof value === "object" && DECODED_READS.has(value)) {
-    memoCounters.hits++; return value as Record<string, any>;
-  }
-  const raw = decodePlayerRead(value).raw as Record<string, any>;
-  if (memoActive() && deepFrozen(raw)) { memoCounters.misses++; DECODED_READS.add(raw); }
-  return raw;
-}
-
-/** canonicalJson(stripIds(card, policy, path)). */
-function strippedKey(card: unknown, policy: AliasWork["policy"], path: string): string {
-  if (!memoActive() || card === null || typeof card !== "object" || !deepFrozen(card))
-    return canonicalJson(stripIds(card, policy, path));
-  const node = publicPath(path); const token = policy.memoToken; const key = relationMemoKey(node);
-  const entry = STRIP_MEMO.get(card);
-  if (entry !== undefined && entry.token === token && entry.key === key) { memoCounters.hits++; return entry.text; }
-  memoCounters.misses++;
-  const text = canonicalJson(stripIds(card, policy, node));
-  STRIP_MEMO.set(card, { token, key, text });
-  return text;
-}
-
 /**
  * Unordered multisets are presented canonically so no hidden order survives: by public
  * content, then by an already assigned public alias (never by the Host's list position).
@@ -507,8 +337,8 @@ function strippedKey(card: unknown, policy: AliasWork["policy"], path: string): 
 function canonicalMultiset(cards: readonly unknown[], work: AliasWork, path: string): unknown[] {
   const key = (card: unknown) => {
     const entity = isObject(card) && typeof card.entity_id === "string" ? card.entity_id : "";
-    const alias = work.anonymous.has(entity) ? "" : work.aliases[entity] ?? "";
-    return `${strippedKey(card, work.policy, `${path}[0]`)}\u0000${alias.padStart(12, "0")}`;
+    const alias = work.anonymous.has(entity) ? "" : aliasOf(work, entity) ?? "";
+    return `${canonicalJson(stripIds(card, work.policy, `${path}[0]`))}\u0000${alias.padStart(12, "0")}`;
   };
   // Each card's key is computed once; aliases do not change while sorting.
   const keys = new Map<unknown, string>();
@@ -540,20 +370,20 @@ function publicDetailContent(kind: string, content: unknown): unknown {
 }
 
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
-  return withReduceMemo(() => reduceCatalog(state, basis));
+  return reduceCatalog(state, basis);
 }
 
 /** Same P1 projection over a separately retained native execution catalog.
  * The original public snapshot/catalog stays unchanged; no BoundAction is invented. */
 export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
   actions: readonly NativeExecutionAction[], scope?: string): Reduction {
-  return withReduceMemo(() => reduceCatalog(state, basis, actions, scope));
+  return reduceCatalog(state, basis, actions, scope);
 }
 
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   // Validate the original navigation capsule before counter projection. Its
   // unfurled PB remains literal capture provenance, not another model carrier.
-  const originalSnapshot = decodedSnapshot(basis.snapshot);
+  const originalSnapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
   if (settled) basis = settled.basis;
   const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
@@ -684,7 +514,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     let read: Record<string, any> | null = null;
     if (captures.length !== 1 || captures[0]!.response == null || captures[0]!.error !== null || captures[0]!.kind !== listed.kind) missing.push(`read:${listed.kind}:${listed.read_id}:missing_or_ambiguous`);
     else {
-      const decoded = decodedRead(captures[0]!.response);
+      const decoded = decodePlayerRead(captures[0]!.response).raw as Record<string, any>;
       if (decoded.read_id !== listed.read_id || decoded.expected_snapshot_id !== snapshot.snapshot_id
           || decoded.observed_snapshot_id !== snapshot.snapshot_id || decoded.kind !== listed.kind
           || decoded.content_schema !== listed.content_schema || decoded.completeness?.status !== "complete"
@@ -739,9 +569,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // choose their aliases. Reference-only lists and unknown extensions are not witnesses.
   const distinguished = new Set<string>();
   const { extra_reads: detailWitnesses, ...orderedWitnesses } = rawFacts;
-  collectIdsWalk(orderedWitnesses, distinguished, policy, publicPath(""), true);
+  collectIds(orderedWitnesses, distinguished, policy, publicPath(""), true);
   // Detail inventory order must not preempt the card's ordered owner presentation.
-  collectIdsWalk(detailWitnesses, distinguished, policy, publicPath("extra_reads"), true);
+  collectIds(detailWitnesses, distinguished, policy, publicPath("extra_reads"), true);
   const anonymous = new Set<string>();
   const unorderedViews = [
     { root: "deck.content", path: "deck.content.cards", label: "deck", cards: deckRead?.content?.cards },
@@ -753,7 +583,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       const cards: unknown[] = view.cards;
       const equal = new Map<string, string[]>();
       for (const card of cards) if (isObject(card) && typeof card.entity_id === "string") {
-        const key = strippedKey(card, policy, `${view.path}[0]`);
+        const key = canonicalJson(stripIds(card, policy, `${view.path}[0]`));
         const members = equal.get(key) ?? []; members.push(card.entity_id); equal.set(key, members);
       }
       for (const members of equal.values()) if (members.length > 1)
@@ -762,22 +592,22 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // Child preview identities of an anonymous occurrence are view-local as well.
   for (const view of unorderedViews) if (Array.isArray(view.cards))
     for (const card of view.cards) if (isObject(card) && anonymous.has(String(card.entity_id))) {
-      const children = new Set<string>(); collectIdsWalk(card, children, policy, publicPath(`${view.path}[0]`));
+      const children = new Set<string>(); collectIds(card, children, policy, publicPath(`${view.path}[0]`));
       for (const id of children) if (!distinguished.has(id)) anonymous.add(id);
     }
-  const work: AliasWork = { aliases: Object.assign(Object.create(null) as Record<string, string>, state.aliases),
-    counts: { ...state.alias_counts, a: 0 }, policy, anonymous,
+  const baseOwn = OWN_ALIAS_TABLES.has(state.aliases);
+  const work: AliasWork = { base: baseOwn ? state.aliases : Object.assign(Object.create(null) as Record<string, string>, state.aliases),
+    baseOwn, added: new Map(), counts: { ...state.alias_counts, a: 0 }, policy, anonymous,
     anonymousViews: unorderedViews.map(view => ({ root: view.root, label: view.label, aliases: new Map() })) };
-  for (const id of anonymous) delete work.aliases[id];
   for (const id of distinguished) aliasFor(work, id);
 
   const terminalScene = family === "terminal";
   const playerPart = persistent?.player
-    ? part("available", aliasTreeWalk(persistent.player, work, "player.content"), "persistent.player")
+    ? part("available", aliasTree(persistent.player, work, "player.content"), "persistent.player")
     : part(terminalScene ? "terminal" : "unknown", null, null);
   if (!persistent?.player && !terminalScene) missing.push("persistent.player");
   const runPart = persistent?.run
-    ? part("available", aliasTreeWalk(persistent.run, work, "run.content"), "persistent.run")
+    ? part("available", aliasTree(persistent.run, work, "run.content"), "persistent.run")
     : part(terminalScene ? "terminal" : "unknown", null, null);
   if (!persistent?.run && !terminalScene) missing.push("persistent.run");
 
@@ -788,7 +618,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     const content = deckRead.content as Record<string, any>;
     if (!completeDeck(content)) missing.push("required:deck:invalid_content");
     const cards = Array.isArray(content?.cards) ? canonicalMultiset(content.cards, work, "deck.content.cards") : [];
-    deckPart = part("available", aliasTreeWalk({ ...content, cards, ordering: "unordered_multiset" }, work, "deck.content"), "read:run_deck");
+    deckPart = part("available", aliasTree({ ...content, cards, ordering: "unordered_multiset" }, work, "deck.content"), "read:run_deck");
   }
 
   let pilesPart: P1Part<unknown>;
@@ -805,18 +635,18 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       return { ...zone, cards: draw ? canonicalMultiset(cards, work, `piles.content.zones[${index}].cards`) : cards,
         ordering: draw ? "unordered_multiset" : zone.ordering_semantics === "native_visible_order" ? "native_visible_order" : "unsupported" };
     });
-    pilesPart = part("available", aliasTreeWalk({ ...content, zones }, work, "piles.content"), "read:combat_piles");
+    pilesPart = part("available", aliasTree({ ...content, zones }, work, "piles.content"), "read:combat_piles");
   }
 
   if (!isObject(interaction.content.context)) missing.push("required:context:invalid_content");
   const combatPart = family === "combat" || context.kind === "combat"
-    ? part("available", aliasTreeWalk(publicCombat!.content, work, "combat.content"), "interaction.context")
-    : nestedCombat ? part("available", aliasTreeWalk(publicCombat!.content, work, "combat.content"), "interaction.context.combat")
+    ? part("available", aliasTree(publicCombat!.content, work, "combat.content"), "interaction.context")
+    : nestedCombat ? part("available", aliasTree(publicCombat!.content, work, "combat.content"), "interaction.context.combat")
     : part(terminalScene ? "terminal" : "not_applicable", null, null);
   const mapPart = context.kind === "map"
-    ? part("available", aliasTreeWalk(context, work, "map.content"), "interaction.context")
+    ? part("available", aliasTree(context, work, "map.content"), "interaction.context")
     : mapRead?.content?.kind === "map"
-      ? part("available", aliasTreeWalk(mapRead.content, work, "map.content"), "read:map")
+      ? part("available", aliasTree(mapRead.content, work, "map.content"), "read:map")
       : part(terminalScene ? "terminal" : mapRead === null ? "unknown" : "unsupported", null, null);
   const combatRequired = family === "combat" || context.kind === "combat" || nestedCombat !== null
     || ["combat_hand_card_selection", "native_combat_pile_selection"].includes(nativeKind);
@@ -862,11 +692,11 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // passive RelicObtained refresh. P1 does not offer that "freeze these candidates" input;
   // the subscription state stays public on the group (native_relic_refresh_subscription)
   // and taking/declining the aggregated group remains available.
-  const sceneContent: Record<string, unknown> = { surface: aliasTreeWalk(surface, work, "scene.content.surface") };
-  if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTreeWalk(sceneContext, work, "scene.content.context");
+  const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work, "scene.content.surface") };
+  if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work, "scene.content.context");
 
   const extraReads = extraReadSources.map((read, index) => ({ ...read,
-    content: read.content === null ? null : aliasTreeWalk(read.content, work, `extra_reads[${index}].content`) }));
+    content: read.content === null ? null : aliasTree(read.content, work, `extra_reads[${index}].content`) }));
 
   // Reward groups: identity must come from the Host (stable group_id); never from labels or positions.
   const rewardItems: Record<string, any>[] = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards.filter(isObject) : [];
@@ -909,6 +739,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     missing.push("required:selector:public_facts_incomplete");
   const push = (choice: Omit<P1Choice, "choice_id">, low: Lowering) => candidates.push({ choice, lowering: low,
     sort: `${choice.kind}\u0000${choice.subject ?? ""}\u0000${choice.target ?? ""}\u0000${choice.option ?? ""}\u0000${low.group_key ?? ""}\u0000${low.option_index ?? ""}` });
+  // rewardWorldFacts(basis), computed at most once for this basis.
+  let rewardWorld: string | undefined;
   for (const action of catalogActions) {
     const subjectId = action.subject_referent_id ?? null;
     const role = execution ? action.verb === "play" ? "playable_card" : action.verb === "use" ? "usable_potion" : action.verb === "discard" ? "discardable_potion" : ""
@@ -1009,20 +841,21 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       if (group?.kind === "card" && groupKey && owner && completeRewardGroup(group)) {
         const follow: FollowRule[] = [{ rule_id: "reward_intention", expect_native_kind: "card_reward_selection", expect_verb: "select", optional: false }];
         const subject = aliasFor(work, groupKey);
+        const intention = rewardGroupIntentions(owner, group, basis, rewardWorld ??= rewardWorldFacts(basis));
         for (const card of group.card_options) {
           push({ kind: "reward.take_card", subject, target: aliasFor(work, card.entity_id), label: String(card.name), mapped: true },
             { ...base, first, follow, group_key: groupKey, option_entity: card.entity_id,
-              reward_intention: rewardIntention(owner, group, basis, "card", card.entity_id) });
+              reward_intention: intention("card", card.entity_id) });
         }
         for (const option of group.card_alternatives) {
           if (option.is_native_skip) {
             if (group.can_skip_selection && surface.can_leave_with_unclaimed_rewards)
               push({ kind: "reward.decline_group", subject, target: null, label: option.title, mapped: true },
                 { ...base, first, follow, group_key: groupKey, commitment: "decline_group",
-                  reward_intention: rewardIntention(owner, group, basis, "decline", option.option_id) });
+                  reward_intention: intention("decline", option.option_id) });
           } else push({ kind: "reward.alternative", subject, target: null, option: option.option_id, label: option.title, mapped: true },
             { ...base, first, follow, group_key: groupKey,
-              reward_intention: rewardIntention(owner, group, basis, "alternative", option.option_id) });
+              reward_intention: intention("alternative", option.option_id) });
         }
         continue;
       }
@@ -1110,14 +943,14 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       ...readInstances.flatMap(({ read }) => read?.completeness?.hidden_by_policy ?? [])])].sort(),
     catalog, terminal
   };
-  if (Buffer.byteLength(observationText(observation), "utf8") > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
+  if (Buffer.byteLength(canonicalJson(observation), "utf8") > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
 
   // No current producer has a typed, mechanism-qualified mandatory proof.
   const forced: string | null = null;
 
   const nextState: P1SessionState = {
     ...state, occurrence, last_snapshot_id: String(snapshot.snapshot_id), last_commitments: canonicalJson(reward ?? null),
-    aliases: Object.fromEntries(Object.entries(work.aliases).filter(([id]) => !anonymous.has(id))),
+    aliases: nextAliases(work),
     alias_counts: { ...work.counts, a: 0 }, reward_pages: rewardPages, reward
   };
   if (["r1.7", "r1.8", "r1.9"].includes(state.revision)) for (const item of Object.values(lowering))

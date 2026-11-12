@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS, P1ReduceMemoDivergence,
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
   type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import { canonicalJson } from "../evidence.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
@@ -34,7 +34,7 @@ export interface KernelStats {
   capture_ms: number; reduce_ms: number; input_ms: number; link_wait_ms: number; step_ms: number; receipt_ms: number;
   /** Native cold starts and their wait for the node-wide gate. */
   cold_starts: number; cold_start_wait_ms: number;
-  /** E6 / E4: memo divergences of this process (each one is fatal for the whole process). */
+  /** E4: memo divergences of this process (each one is fatal for the whole process). */
   memo_divergences: number;
   /** E5: the Host projection memo counters of every finished game (summed per native session). */
   projection_memo: { hits: number; misses: number; checks: number };
@@ -65,7 +65,7 @@ export interface KernelContext {
   coldStart: ColdStartGate;
   /** E4 (null = off): the receipt digest's canonical-text memo. */
   receiptCanonical: CanonicalTextMemo | null;
-  /** A memo of this process (E6 reduce, E4 receipt text) differed from its full walk: the whole process stops. */
+  /** A memo of this process (E4 receipt text) differed from its full walk: the whole process stops. */
   memoFatal(reason: string): void;
 }
 
@@ -91,12 +91,11 @@ class GameEnd extends Error {
   }
 }
 
-/** Memo divergences of this Node process (E6 reduce memo, E4 receipt text memo): the game ends (unknown once an
- * action was delivered), never retried, this build's output stops and the whole process exits fatal. */
-type MemoDivergence = "p1_reduce_memo_divergence" | "receipt_canonical_memo_divergence";
+/** Memo divergences of this Node process (E4 receipt text memo): the game ends (unknown once an action was
+ * delivered), never retried, this build's output stops and the whole process exits fatal. */
+type MemoDivergence = "receipt_canonical_memo_divergence";
 const memoDivergence = (error: unknown): MemoDivergence | null =>
-  error instanceof P1ReduceMemoDivergence ? "p1_reduce_memo_divergence"
-    : error instanceof CanonicalTextMemoDivergence ? "receipt_canonical_memo_divergence" : null;
+  error instanceof CanonicalTextMemoDivergence ? "receipt_canonical_memo_divergence" : null;
 const memoDivergenceEnd = (kind: MemoDivergence, error: unknown) => new GameEnd("not_started", kind, { replaceNative: true,
   buildStop: kind, fatal: `${kind}:${errorText(error)}`, pendingOutcome: { status: "unknown", reason: "native_crash" } });
 

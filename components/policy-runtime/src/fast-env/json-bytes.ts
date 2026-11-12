@@ -153,7 +153,7 @@ export interface CanonicalTextMemoStatus { check_interval: number; digests: numb
  * copy have the same canonical text. Only the original keeps the identities.
  *
  * Safety: digest 0 and then one digest per gap, the gap drawn uniformly from ceil(N/2)..N
- * (N = `checkInterval`; the scheme of the E5 projection memo and the E6 reduce memo), are
+ * (N = `checkInterval`; the scheme of the E5 projection memo), are
  * computed again as the old path does, `canonicalJsonFast(decoded)` without the memo, and
  * compared byte for byte. A difference throws CanonicalTextMemoDivergence. N = 1 compares
  * every digest. The comparison is part of the measured cost.
