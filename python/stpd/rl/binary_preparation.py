@@ -1061,7 +1061,14 @@ class BinaryBatchPreparer:
                     packet_header(raw)["envelope"], packet_size=ref.size, packet_sha256=ref.sha256
                 )
             )
-            arena.mapping[offset : offset + ref.size] = raw
+            # numpy releases the GIL for this raw copy (mmap slice assignment
+            # holds it through every page fault), so several dispatch copies
+            # overlap and the learner's other threads keep running meanwhile.
+            target = np.frombuffer(arena.mapping, np.uint8, ref.size, offset)
+            try:
+                np.copyto(target, np.frombuffer(raw, np.uint8))
+            finally:
+                del target  # never keep an export of the arena mapping
         return copy.deepcopy(bound_envelope)
 
     def _finish_copy(
@@ -1120,8 +1127,11 @@ class BinaryBatchPreparer:
             self.main_source_wait_seconds += waited
 
     def prefetch(self, ref: BinaryRef, envelope: dict[str, Any], *,
-                 body: bytes | None = None, wait: bool = True) -> None:
+                 body: bytes | None = None, wait: bool = True) -> tuple[float, float]:
+        """Copy one source into an arena; returns (credit wait, copy) seconds."""
         deadline = time.monotonic() + self.source_wait_seconds
+        began = time.perf_counter()
+        waited = 0.0
         # A caller already inside the condition (submit) keeps the locked copy.
         nested = self.condition._is_owned()  # type: ignore[attr-defined]
         try:
@@ -1130,20 +1140,25 @@ class BinaryBatchPreparer:
                     try:
                         if nested:
                             self._prefetch(ref, envelope, body)
-                            return
+                            return 0.0, time.perf_counter() - began
                         reserved = self._reserve_copy(ref, envelope)
                         break
                     except ValueError as error:
                         if not wait or str(error) != "binary_source_slots_busy":
                             raise
+                        wait_began = time.perf_counter()
                         self._wait_for_source(deadline)
+                        waited += time.perf_counter() - wait_began
             if reserved is None:
-                return
+                return waited, 0.0
             # SHA-256 and the arena copy of a 10-30 MB packet run without the
             # preparer condition, so sources copy in parallel with submit/labels.
+            copy_began = time.perf_counter()
             copied = self._copy_source(ref, *reserved, envelope, body)
+            copy_seconds = time.perf_counter() - copy_began
             with self.condition:
                 self._finish_copy(ref, *reserved, copied)
+            return waited, copy_seconds
         finally:
             if not nested:
                 self._unlink_stale()

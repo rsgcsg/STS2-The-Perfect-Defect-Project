@@ -1382,6 +1382,7 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(
             assert (ref.slot, "source-prefetch") in owner.hot_references
         with owner.binary_sources.borrow(ref) as raw:
             calls.append((ref, bytes(raw)))
+        return 0.0, 0.0  # (credit wait, copy) seconds
 
     refs = []
     owner.input_preparer = SimpleNamespace(prefetch=prefetch,
@@ -1495,6 +1496,7 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     def prefetch(_ref, _envelope, *, wait=True):
         assert not preparer.fenced
         copied.set()
+        return 0.0, 0.0
 
     monkeypatch.setattr(preparer, "prefetch", prefetch)
     with ThreadPoolExecutor(max_workers=1) as executor:

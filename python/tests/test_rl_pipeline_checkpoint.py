@@ -302,3 +302,127 @@ def test_source_frontend_wait_overlaps_real_optimizer_step(tmp_path, monkeypatch
     finally:
         resume.set()
         owner.close()
+
+
+def _dispatcher(workers):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        preparation_dispatch=ThreadPoolExecutor(max_workers=workers),
+        dispatch_order=threading.Condition(), dispatch_issued=0, dispatch_turn=0)
+
+
+def test_parallel_dispatch_submits_in_issue_order_and_isolates_failures():
+    import threading
+    from concurrent.futures import Future
+
+    fake = _dispatcher(4)
+    submitted, gates = [], [threading.Event() for _ in range(6)]
+
+    def prefetch(i):
+        def run():
+            assert gates[i].wait(10)
+            if i == 2:
+                raise ValueError("prefetch_failed_2")
+        return run
+
+    def submit(i):
+        def run():
+            submitted.append(i)
+            if i == 4:
+                raise RuntimeError("submit_failed_4")
+            done = Future()
+            done.set_result(i)
+            return done
+        return run
+
+    try:
+        results = [SegmentLearner._dispatch_preparation(fake, prefetch(i), submit(i))
+                   for i in range(6)]
+        # Later copies finish first; their submissions still wait for earlier turns.
+        for i in (3, 1, 5, 2, 0, 4):
+            gates[i].set()
+        assert [r.result(timeout=10) if i not in (2, 4) else None
+                for i, r in enumerate(results)] == [0, 1, None, 3, None, 5]
+        with pytest.raises(ValueError, match="prefetch_failed_2"):
+            results[2].result()
+        with pytest.raises(RuntimeError, match="submit_failed_4"):
+            results[4].result()
+        assert submitted == [0, 1, 3, 4, 5] and fake.dispatch_turn == 6
+    finally:
+        for gate in gates:
+            gate.set()
+        fake.preparation_dispatch.shutdown(wait=True)
+
+
+def test_parallel_dispatch_overlaps_prefetches():
+    import threading
+    from concurrent.futures import Future
+
+    fake = _dispatcher(3)
+    barrier = threading.Barrier(3, timeout=10)  # breaks unless 3 copies run at once
+
+    def submit():
+        done = Future()
+        done.set_result(None)
+        return done
+
+    try:
+        results = [SegmentLearner._dispatch_preparation(fake, barrier.wait, submit)
+                   for _ in range(3)]
+        assert [r.result(timeout=15) for r in results] == [None] * 3
+    finally:
+        fake.preparation_dispatch.shutdown(wait=True)
+
+
+def test_parallel_dispatch_keeps_real_batch_order_and_timings(tmp_path, monkeypatch):
+    import threading
+
+    owner, _, _ = binary_owner(tmp_path, monkeypatch, datasets=3,
+                               dataplane={"prepare_dispatch_workers": 3})
+    assert owner.preparation_dispatch._max_workers == 3
+    release_first = threading.Event()
+    order: list[int] = []
+    try:
+        original_prefetch = owner._prefetch_members
+        first = []
+
+        def delayed(members, **kwargs):
+            if not first:
+                first.append(True)
+                assert release_first.wait(15)
+            return original_prefetch(members, **kwargs)
+
+        original_submit = owner.input_preparer.submit
+
+        def recorded(request, *args, **kwargs):
+            order.append(request.identity.sequence)
+            return original_submit(request, *args, **kwargs)
+
+        monkeypatch.setattr(owner, "_prefetch_members", delayed)
+        monkeypatch.setattr(owner.input_preparer, "submit", recorded)
+        owner._prepare_ahead()
+        pending = owner._pending_batches()
+        assert len(pending) >= 2
+        time.sleep(.5)
+        assert order == []  # later copies done; their submissions wait for the first
+        release_first.set()
+        batches = [future.result(timeout=60) for _, future in pending]
+        assert order == sorted(order) and len(order) == len(pending)
+        for (active, _), batch in zip(pending, batches, strict=True):
+            assert batch.request == active["request"]
+            for key in ("frontend_prefetch_credit_wait_seconds",
+                        "frontend_prefetch_copy_seconds", "frontend_order_wait_seconds"):
+                assert batch.timings[key] >= 0
+        assert batches[1].timings["frontend_order_wait_seconds"] > .3
+    finally:
+        release_first.set()
+        owner.close()
+
+
+def test_invalid_prepare_dispatch_workers_fail_loudly(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="invalid_prepare_dispatch_workers"):
+        binary_owner(tmp_path, monkeypatch, datasets=1,
+                     dataplane={"prepare_dispatch_workers": 0})

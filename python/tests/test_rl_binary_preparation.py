@@ -783,3 +783,76 @@ def test_prepared_digest_binds_every_byte_and_the_length_on_any_thread_count():
     assert PREPARED_DIGEST.endswith("/16MiB")
     with pytest.raises(ValueError, match="flat_byte_view"):
         prepared_digest(memoryview(bytearray(8)).cast("I"))
+
+
+def test_parallel_prefetches_under_one_arena_credit_finish_without_deadlock(model, tmp_path):
+    # Several dispatch threads copy at once. A held request reservation plus
+    # concurrent partial copies must only wait, then all finish exactly.
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    values = [segment(model, name=f"actor/{i}", run_id=f"episode-{i}") for i in range(5)]
+    packets = [enc.encode(v) for v in values]
+    preparer = BinaryBatchPreparer(provider=provider, vocabulary=model.vocabulary,
+        workers=1, threads=1, scratch=tmp_path / "prepare", source_slots=1,
+        max_source_bytes=max(len(p.packet) for p in packets) + 8, source_wait_seconds=30)
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    held = ()
+    try:
+        preparer.prefetch(refs[0], packets[0].envelope)
+        preparer.source_jobs[refs[0]].result(timeout=30)
+        with preparer.condition:
+            held, _ = preparer._reserve((refs[0],))
+        waiting = threading.Semaphore(0)
+        real_wait = preparer._wait_for_source
+
+        def observed(deadline):
+            waiting.release()
+            return real_wait(deadline)
+
+        preparer._wait_for_source = observed
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(preparer.prefetch, ref, packet.envelope)
+                       for ref, packet in zip(refs[1:], packets[1:], strict=True)]
+            assert waiting.acquire(timeout=5) and not any(f.done() for f in futures)
+            preparer._release(held)
+            held = ()
+            timings = [f.result(timeout=60) for f in futures]
+        assert all(wait >= 0 and copy >= 0 for wait, copy in timings)
+        assert sum(wait for wait, _ in timings) > 0
+        # Exactly one source fits; the last copied one is byte-identical.
+        (ref, (index, descriptor)), = preparer.sources.items()
+        arena = preparer.arenas[index]
+        assert bytes(arena.mapping[descriptor.offset:descriptor.offset + ref.size]) \
+            == provider.packets[ref]
+        preparer.source_jobs[ref].result(timeout=30)
+        preparer.callbacks.submit(lambda: None).result(timeout=20)
+        assert all(a.users == 0 for a in preparer.arenas) and not preparer.copying
+    finally:
+        if held:
+            preparer._release(held)
+        preparer.shutdown()
+
+
+def test_arena_copy_failure_releases_its_credit_and_fails_loudly(model, tmp_path):
+    class ChangedProvider(BytesProvider):
+        @contextmanager
+        def borrow(self, ref):
+            changed = bytearray(self.packets[ref])
+            changed[-1] ^= 1
+            yield memoryview(bytes(changed))
+
+    provider = ChangedProvider()
+    enc = encoder(model, tmp_path / "spool")
+    packet = enc.encode(segment(model, name="actor/0", run_id="episode-0"))
+    ref = provider.add(packet, "opaque-0")
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    try:
+        with pytest.raises(ValueError, match="binary_provider_integrity_changed"):
+            preparer.prefetch(ref, packet.envelope)
+        assert ref not in preparer.sources and not preparer.copying
+        assert all(a.users == 0 for a in preparer.arenas)
+    finally:
+        preparer.shutdown()
