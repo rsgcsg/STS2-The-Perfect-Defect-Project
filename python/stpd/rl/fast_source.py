@@ -66,17 +66,22 @@ from __future__ import annotations
 
 import collections
 import copy
+import mmap
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from multiprocessing import resource_tracker, shared_memory
+from multiprocessing import shared_memory
 from multiprocessing.connection import Connection
 from typing import Any
 
 import torch
+
+if sys.platform != "win32":
+    import _posixshmem  # type: ignore[import-not-found]  # CPython-internal, no stub
 
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.rows_encoder_wire import decode_row
@@ -314,6 +319,51 @@ def check_instance_closed(message: Any) -> dict[str, Any]:
     return message
 
 
+def _read_shm(name: str, size: int) -> bytes:
+    """Exactly `size` bytes of the sender's named block; the sender owns and unlinks it.
+
+    POSIX opens the block read-only by its shm name (the name CPython 3.11
+    `multiprocessing.shared_memory` builds: a leading slash) and never touches the
+    resource tracker: attaching with `SharedMemory(name=...)` registers the block and
+    the needed `unregister` restarts the tracker check on every segment. A missing
+    block raises (FileNotFoundError); a block smaller than `size`, or a read that
+    ends early, is `handoff_size`. Linux reads with `pread`; macOS shm objects only
+    support mmap (`pread` is ESPIPE there), so darwin copies from a read-only map.
+    Windows keeps the `SharedMemory` attach (no POSIX shm, no resource tracker use).
+    """
+    if sys.platform == "win32":
+        block = shared_memory.SharedMemory(name=name)
+        try:
+            if block.size < size:
+                raise HandoffError("handoff_size")
+            buffer = block.buf
+            assert buffer is not None
+            return bytes(buffer[:size])
+        finally:
+            block.close()
+    fd = _posixshmem.shm_open("/" + name, os.O_RDONLY)
+    try:
+        # macOS rounds st_size up to the page size; Linux is exact.
+        if os.fstat(fd).st_size < size:
+            raise HandoffError("handoff_size")
+        if size == 0:
+            return b""
+        if sys.platform == "darwin":
+            with mmap.mmap(fd, size, prot=mmap.PROT_READ) as mapping:
+                return mapping[:size]
+        chunks = []
+        done = 0
+        while done < size:
+            chunk = os.pread(fd, size - done, done)
+            if not chunk:
+                raise HandoffError("handoff_size")
+            chunks.append(chunk)
+            done += len(chunk)
+        return chunks[0] if len(chunks) == 1 else b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | None]:
     """One hand-off message: ("segment" | "labels", message, verified bytes),
     ("closed", message, None) or ("end", message, None) (the sender's orderly end).
@@ -332,17 +382,10 @@ def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | N
         kind = "labels"
     elif schema != HANDOFF_SCHEMA or set(message) != HANDOFF_KEYS:
         raise HandoffError("handoff_schema")
-    block = shared_memory.SharedMemory(name=message["shm_name"])
-    try:
-        # The sender owns and unlinks the block; this process must not track it.
-        resource_tracker.unregister(block._name, "shared_memory")  # type: ignore[attr-defined]
-        if type(message["size"]) is not int or block.size < message["size"]:
-            raise HandoffError("handoff_size")
-        buffer = block.buf
-        assert buffer is not None
-        data = bytes(buffer[:message["size"]])
-    finally:
-        block.close()
+    size = message["size"]
+    if type(size) is not int or size < 0:
+        raise HandoffError("handoff_size")
+    data = _read_shm(message["shm_name"], size)
     if sha256(data) != message["sha256"]:
         raise HandoffError("handoff_digest")
     return kind, message, data

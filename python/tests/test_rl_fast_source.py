@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -440,6 +441,85 @@ def test_read_handoff_verifies_acks_and_reads_the_close_in_order():
     process.join(30)
     assert process.exitcode == 0
     assert admitted == [s.segment_id for s in segments]
+
+
+def _handoff_block(data: bytes, extra: int = 0) -> tuple[Any, dict[str, Any], Any, Any]:
+    """A sender-owned block holding `data`, and a message claiming `size + extra` bytes."""
+    from multiprocessing import shared_memory
+
+    segment = bootstrap_and_terminal()[0]
+    block = shared_memory.SharedMemory(create=True, size=max(len(data), 1))
+    assert block.buf is not None
+    block.buf[:len(data)] = data
+    ours, theirs = multiprocessing.Pipe()
+    theirs.send({**message(segment), "shm_name": block.name, "size": len(data) + extra,
+                 "sha256": hashlib.sha256(data).hexdigest()})
+    return block, message(segment), ours, theirs
+
+
+def test_read_handoff_refuses_a_short_block_a_bad_digest_and_a_missing_block(monkeypatch):
+    from multiprocessing import resource_tracker
+
+    # The reader never registers with or unregisters from the resource tracker.
+    def forbidden(*_: Any) -> None:
+        raise AssertionError("resource tracker touched by the reader")
+
+    data = bytes(range(256)) * 4
+    block, _, ours, _ = _handoff_block(data)
+    try:
+        # Patched only around the reads: creating and unlinking (sender side) track.
+        monkeypatch.setattr(resource_tracker, "register", forbidden)
+        monkeypatch.setattr(resource_tracker, "unregister", forbidden)
+        kind, _, copied = read_handoff(ours)
+        assert (kind, copied) == ("segment", data)
+        # Claim more bytes than the block holds (block.size is page-rounded on macOS).
+        ours, theirs = multiprocessing.Pipe()
+        theirs.send({**message(bootstrap_and_terminal()[0]), "shm_name": block.name,
+                     "size": block.size + 1, "sha256": hashlib.sha256(data).hexdigest()})
+        with pytest.raises(HandoffError, match="handoff_size"):
+            read_handoff(ours)
+        for bad in (-1, True, 1.0):
+            theirs.send({**message(bootstrap_and_terminal()[0]), "shm_name": block.name,
+                         "size": bad, "sha256": hashlib.sha256(data).hexdigest()})
+            with pytest.raises(HandoffError, match="handoff_size"):
+                read_handoff(ours)
+        theirs.send({**message(bootstrap_and_terminal()[0]), "shm_name": block.name,
+                     "size": len(data), "sha256": hashlib.sha256(b"other").hexdigest()})
+        with pytest.raises(HandoffError, match="handoff_digest"):
+            read_handoff(ours)
+    finally:
+        monkeypatch.undo()
+        block.close()
+        block.unlink()
+    # The sender already unlinked it: fail loudly, no fallback.
+    theirs.send({**message(bootstrap_and_terminal()[0]), "shm_name": block.name,
+                 "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    with pytest.raises(FileNotFoundError):
+        read_handoff(ours)
+
+
+@pytest.mark.skipif(sys.platform in ("win32", "darwin"), reason="the pread path (Linux)")
+def test_read_handoff_short_pread_is_handoff_size(monkeypatch):
+    import os
+
+    data = b"x" * 5000
+    block, _, ours, _ = _handoff_block(data)
+    real = os.pread
+    reads: list[int] = []
+
+    def short(fd: int, length: int, offset: int) -> bytes:
+        reads.append(offset)
+        # The first read returns part, the second ends early.
+        return real(fd, min(length, 1000), offset) if len(reads) == 1 else b""
+
+    monkeypatch.setattr(os, "pread", short)
+    try:
+        with pytest.raises(HandoffError, match="handoff_size"):
+            read_handoff(ours)
+        assert reads == [0, 1000]
+    finally:
+        block.close()
+        block.unlink()
 
 
 def test_segment_under_a_mu_the_learner_never_published_is_refused_loudly():
