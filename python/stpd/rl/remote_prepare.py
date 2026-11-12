@@ -36,6 +36,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
 from concurrent.futures import Future, ProcessPoolExecutor
 from multiprocessing import get_context
 from multiprocessing.connection import (Client, Connection, Listener, answer_challenge,
@@ -63,6 +64,33 @@ def code_digest() -> str:
             digest.update(hashlib.sha256(path.read_bytes()).digest())
         _code_digest = digest.hexdigest()
     return _code_digest
+
+
+def cpu_fingerprint() -> dict[str, str]:
+    """CPU vendor/model and torch's CPU kernel level, exchanged in the hello.
+
+    Assembly is bitwise reproducible on one CPU class but not across classes:
+    the advantage normalization's float32 reductions differ at ulp level with
+    the math library's dispatch (measured on fc430, c8220, r640 and both GPU
+    nodes: every integer, mask, label, index and structure field stays equal).
+    Verification compares bytes when fingerprints match, else per array within
+    float tolerance. This value never gates a task.
+    """
+    import platform
+
+    import torch
+
+    info = {"vendor": "", "model": platform.processor() or platform.machine()}
+    with suppress(OSError):
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "vendor_id" and not info["vendor"]:
+                info["vendor"] = value.strip()
+            elif key.strip() == "model name":
+                info["model"] = value.strip()
+                break
+    info["torch_capability"] = str(torch.backends.cpu.get_cpu_capability())
+    return info
 
 
 def source_key(envelope: dict[str, Any]) -> str:
@@ -250,7 +278,8 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
         except ValueError as error:
             connection.send({"protocol": PROTOCOL, "error": str(error)})
             return
-        connection.send({"protocol": PROTOCOL, "host": socket.gethostname(), "pid": os.getpid()})
+        connection.send({"protocol": PROTOCOL, "host": socket.gethostname(), "pid": os.getpid(),
+                         "cpu": cpu_fingerprint()})
         while True:
             # Between tasks this connection holds no pins or files, so the wait
             # for the learner's next task has no deadline; within a task it does.
@@ -363,6 +392,9 @@ class RemoteAssembly:
             for _ in range(connections):
                 self.idle.put((endpoint, None))
         self.stats = {"tasks": 0, "sent_bytes": 0, "received_bytes": 0, "sources_sent": 0}
+        self.cpu = cpu_fingerprint()
+        self.host_cpus: dict[str, dict[str, str]] = {}  # endpoint -> host fingerprint
+        self.served: OrderedDict[str, str] = OrderedDict()  # output path -> endpoint (last 256)
         self.lock = threading.Lock()
 
     def _connect(self, endpoint: str) -> Connection:
@@ -370,13 +402,15 @@ class RemoteAssembly:
         try:
             connection.send({"protocol": PROTOCOL, "vocabulary": self.vocabulary,
                              "threads": self.threads, "code": code_digest(),
-                             "timeout": self.timeout})
+                             "timeout": self.timeout, "cpu": self.cpu})
             _wait(connection, HANDSHAKE_SECONDS)
             reply = connection.recv()
             if reply.get("protocol") != PROTOCOL:
                 raise RuntimeError("remote_prepare_protocol_changed")
             if "error" in reply:
                 raise RuntimeError(f"remote_prepare_refused: {reply['error']}")
+            with self.lock:
+                self.host_cpus[endpoint] = dict(reply.get("cpu") or {})
         except BaseException:
             connection.close()
             raise
@@ -416,6 +450,9 @@ class RemoteAssembly:
                 mapping.close()
             healthy = True
             with self.lock:
+                self.served[output] = endpoint
+                while len(self.served) > 256:
+                    self.served.popitem(last=False)
                 self.stats["tasks"] += 1
                 self.stats["sent_bytes"] += sent
                 self.stats["sources_sent"] += len(need)
@@ -464,6 +501,11 @@ class RemoteAssembly:
             for handle in handles.values():
                 handle.close()
         return sent
+
+    def served_by(self, output: str) -> dict[str, str]:
+        """CPU fingerprint of the host that wrote a recent output (verification)."""
+        with self.lock:
+            return dict(self.host_cpus.get(self.served.get(output, ""), {}))
 
     def close(self) -> None:
         self.closed = True

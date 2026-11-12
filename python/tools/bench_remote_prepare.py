@@ -162,10 +162,12 @@ def learner(argv: list[str]) -> None:
         pending: list[tuple[int, Any, float]] = []
         done: list[dict[str, Any]] = []
         checks = []
-        local = None
+        local: str | None = None
+        local_batch: Any = None
+        remote_first: dict[str, Any] = {}
         if args.local_check:  # before the timed loop: it holds this process's GIL
             binary._worker_compiler = compiler
-            local = _local_digest(plans[0][0], batches[0], work)
+            local, local_batch = _local_digest(plans[0][0], batches[0], work)
             began = time.perf_counter()
         first: dict[int, str] = {}
 
@@ -174,6 +176,9 @@ def learner(argv: list[str]) -> None:
             handoff = future.result()
             at = time.perf_counter()
             first.setdefault(index, handoff.sha256)
+            if index == 0 and local is not None:
+                remote_first["batch"] = _unpack(handoff.path, handoff.tree, handoff.arrays)
+                remote_first["cpu"] = preparer.remote.served_by(handoff.path)
             checks.append((index, handoff, hasher.submit(_file_digest, handoff.path,
                                                          handoff.used_bytes)))
             done.append({"batch": index, "rows": sum(m.rows for m in handoff.request.members),
@@ -224,7 +229,8 @@ def learner(argv: list[str]) -> None:
                 1e-9, sum(d["sent"] * d["rows"] / d["members"] for d in done)), 2),
             "bytes_per_row": round(sum(d["bytes"] for d in done) / sum(d["rows"] for d in done)),
             "remote": preparer.remote.stats, "all_handoff_digests_equal_worker_digest": True,
-            "local_check_batch0_equal": None if local is None else local == first[0],
+            "local_check": None if local is None else _check(
+                local, first[0], local_batch, remote_first, preparer.remote.cpu),
         }), flush=True)
         for row in done:
             print(json.dumps(row), flush=True)
@@ -234,7 +240,86 @@ def learner(argv: list[str]) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _local_digest(request: Any, chunk: list[tuple[bytes, dict[str, Any]]], work: str) -> str:
+def _check(local: str, remote: str, local_batch: Any, remote_first: dict[str, Any],
+           cpu: dict[str, str]) -> dict[str, Any]:
+    """Bytes when host and learner CPU fingerprints match, else per-array tolerance."""
+    same_cpu = remote_first["cpu"] == cpu
+    out: dict[str, Any] = {"same_cpu": same_cpu, "bytes_equal": local == remote,
+                           "learner_cpu": cpu, "host_cpu": remote_first["cpu"]}
+    out.update(compare(local_batch, remote_first["batch"]))
+    out["pass"] = out["bytes_equal"] if same_cpu else out["within_tolerance"]
+    return out
+
+
+IGNORED = ("timings", "prepared_at", "worker_pids")
+
+
+def _unpack(path: str, tree: bytes, arrays: Any) -> Any:
+    """A PreparedBatch read back from a `_write_batch` file (owns its bytes)."""
+    import pickle
+
+    import numpy as np
+
+    from stpd.rl import batch_preparation as bp
+
+    data = Path(path).read_bytes()
+    views = tuple(np.frombuffer(data, dtype=np.dtype(a.dtype), count=a.count, offset=a.offset)
+                  for a in arrays)
+    return bp.unpack_transport((pickle.loads(tree), views))
+
+
+def compare(a: Any, b: Any, *, rtol: float = 1e-5, atol: float = 1e-5) -> dict[str, Any]:
+    """Cross-CPU verification: integers/structure exact, floats within tolerance."""
+    import numpy as np
+    import torch
+
+    exact: list[str] = []
+    floats: list[dict[str, Any]] = []
+
+    def walk(x: Any, y: Any, path: str) -> None:
+        if any(name in path for name in IGNORED):
+            return
+        if dc.is_dataclass(x) and not isinstance(x, type):
+            for field in dc.fields(x):
+                walk(getattr(x, field.name), getattr(y, field.name), f"{path}.{field.name}")
+        elif isinstance(x, dict):
+            if set(x) != set(y):
+                exact.append(path)
+                return
+            for key in x:
+                walk(x[key], y[key], f"{path}[{key!r}]")
+        elif isinstance(x, (list, tuple)):
+            if len(x) != len(y):
+                exact.append(path)
+                return
+            for i, (u, v) in enumerate(zip(x, y, strict=True)):
+                walk(u, v, f"{path}[{i}]")
+        elif isinstance(x, (torch.Tensor, np.ndarray)):
+            u = torch.as_tensor(np.array(x)) if isinstance(x, np.ndarray) else x.detach().cpu()
+            v = torch.as_tensor(np.array(y)) if isinstance(y, np.ndarray) else y.detach().cpu()
+            if u.shape != v.shape or u.dtype != v.dtype:
+                exact.append(path)
+            elif u.is_floating_point():
+                if not torch.equal(torch.isnan(u), torch.isnan(v)):
+                    exact.append(path)
+                    return
+                d = (u.double() - v.double()).abs().nan_to_num(0)
+                if d.max() > 0:
+                    floats.append({"path": path, "max_abs": float(d.max()),
+                                   "ok": bool(torch.allclose(u.double(), v.double(), rtol=rtol,
+                                                             atol=atol, equal_nan=True))})
+            elif not torch.equal(u, v):
+                exact.append(path)
+        elif x != y:
+            exact.append(path)
+
+    walk(a, b, "batch")
+    return {"exact_mismatch": exact, "float_diffs": floats,
+            "within_tolerance": not exact and all(f["ok"] for f in floats)}
+
+
+def _local_digest(request: Any, chunk: list[tuple[bytes, dict[str, Any]]],
+                  work: str) -> tuple[str, Any]:
     """The same batch assembled in this process by the production functions."""
     arena = os.path.join(work, "local-arena")
     places = []
@@ -252,7 +337,7 @@ def _local_digest(request: Any, chunk: list[tuple[bytes, dict[str, Any]]], work:
         result = binary._assemble(ready, request, tuple(range(len(ready))), (),
                                   dict(bench.OPTIONS), frozenset(), time.perf_counter(),
                                   output, True)
-        return str(result.summary["sha256"])
+        return str(result.summary["sha256"]), _unpack(output, result.tree, result.arrays)
     finally:
         for path in glob.glob(arena + "*") + [output]:
             os.unlink(path)
