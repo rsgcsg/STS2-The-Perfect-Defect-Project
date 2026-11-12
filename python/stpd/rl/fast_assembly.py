@@ -77,6 +77,7 @@ the identity) and the assembler archives them for R7 games.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
 import secrets
 import threading
@@ -234,8 +235,7 @@ class MuLedger:
         self.check(handoff)
         if handoff.snapshot_sha256 in self.resident:
             if self.resident[handoff.snapshot_sha256] != handoff:  # new generation
-                self.resident[handoff.snapshot_sha256] = handoff
-                self.latest = handoff
+                self._set_latest(handoff)
                 return MuOffer(True, self.collect(), True)
             return MuOffer(True, ())
         changed = (self.latest is not None
@@ -244,9 +244,23 @@ class MuLedger:
         if len(self.resident) >= self.max_resident:
             self.declined += 1
             return MuOffer(False, evicted, changed)
+        self._set_latest(handoff)
+        return MuOffer(True, evicted + self.collect(), changed)
+
+    def _set_latest(self, handoff: MuHandoff) -> None:
+        """Register `handoff` as latest; only latest keeps its R7 weights in memory.
+
+        The assembler archives a mu from `latest` (an R7 game opening) or from the
+        offer itself, never from an older resident entry, so older entries drop
+        their pack (equality ignores `weights`).
+        """
+        previous = self.latest
+        if (previous is not None and previous.weights is not None
+                and self.resident.get(previous.snapshot_sha256) is previous):
+            self.resident[previous.snapshot_sha256] = dataclasses.replace(previous,
+                                                                          weights=None)
         self.resident[handoff.snapshot_sha256] = handoff
         self.latest = handoff
-        return MuOffer(True, evicted + self.collect(), changed)
 
     def _held(self, snapshot: str) -> bool:
         return (self.references.get(snapshot, 0) > 0 or self.pins.get(snapshot, 0) > 0
@@ -543,6 +557,8 @@ class FastSegmentAssembler:
                     floor = max([row["floor"], *(r["floor"] for r in current.rows)])
                     tail = TailPlan(current.segment_id, current.mu.snapshot_sha256, floor)
                 self.ledger.retain(mu.snapshot_sha256)
+                if mu.weights is not None:  # a segment never holds the R7 pack
+                    mu = dataclasses.replace(mu, weights=None)
                 self.segment_counter += 1
                 current = _Segment(f"{self.instance_id}.{self.segment_counter}",
                                    game.next_index, mu)
