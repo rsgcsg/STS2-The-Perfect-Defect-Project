@@ -445,3 +445,87 @@ def test_a_failed_offer_drops_the_model_it_just_loaded(vocabulary, model):  # no
         assert controls == [("model", MU)]
     finally:
         service.close()
+
+
+class StagedHangingSource(HangingSource):
+    """s1f: the read hung inside one of its sub-steps; the source names them."""
+
+    def __init__(self, latest: dict[str, Any]) -> None:
+        super().__init__(latest)
+        self.on_stage: Any = None
+
+    def latest(self) -> dict[str, Any]:
+        self.on_stage("read.lock")
+        if self.hang.is_set():
+            self.on_stage("read.auth")
+            self.release.wait(30)
+        return dict(self.current)
+
+
+def test_a_stage_over_its_own_limit_gives_up_and_names_the_stage():
+    source, service = StagedHangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=30,
+                              stage_seconds={"read": 0.3, "load": 5, "publish": 5}).start()
+    assert source.on_stage == follower._enter
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert len(service.published) == 1
+    source.hang.set()
+    source.current = identity("d" * 64, version=3)
+    follower.watchdog.join(10)
+    assert not follower.watchdog.is_alive()  # well before the 30 s poll limit
+    with pytest.raises(BoundaryError, match="MU_FOLLOWER_STALLED.*stalled_stage=read.auth"):
+        follower.check()
+    status = follower.status()
+    assert status["stalled"]["stage"] == "read.auth" and status["stalled"]["limit"] == 0.3
+    assert status["stage"] == "read.auth" and service.stop_reason == "mu_follower_stopped"
+    assert {"read.lock", "load", "publish"} <= set(status["stage_max_seconds"])
+    source.release.set()
+    follower.thread.join(10)
+    assert follower.stopped() and len(service.published) == 1
+
+
+def test_stage_limits_are_checked():
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), stall_seconds=10,
+                       stage_seconds={"read": 20})
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), stage_seconds={"connect": 5})
+    follower = FastMuFollower(Source(identity(NEW)), Service(), interval=0.01,
+                              stall_seconds=0.3)
+    assert follower.stage_seconds == {"read": 0.3, "load": 0.3, "publish": 0.3}
+
+
+def test_slow_reads_stay_below_the_read_limit_and_settings_are_typed():
+    class Timed(Source):
+        transfer_timeout, handshake_timeout = 60.0, 30.0
+        on_stage: Any = None
+
+    follower = FastMuFollower(Timed(identity(NEW)), Service())
+    assert follower.stage_seconds == {"read": 120.0, "load": 120.0, "publish": 300.0}
+    for bad in ({"read": 60}, {"read": True}, {"read": "5"}, {"read": float("inf")}):
+        with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+            FastMuFollower(Timed(identity(NEW)), Service(), stage_seconds=bad)
+    with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
+        FastMuFollower(Source(identity(NEW)), Service(), interval=True)
+
+
+def test_after_the_give_up_a_late_read_changes_no_mark_and_the_hook_is_unbound():
+    source, service = StagedHangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=30,
+                              stage_seconds={"read": 0.3, "load": 5, "publish": 5}).start()
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert follower.status()["stage_max_seconds"]["read.total"] >= 0
+    hook = source.on_stage
+    source.hang.set()
+    follower.watchdog.join(10)
+    assert source.on_stage is None and follower.status()["stage"] == "read.auth"
+    hook("read.pin")  # the hung read's cache still holds the old hook
+    source.release.set()
+    follower.thread.join(10)
+    assert follower.status()["stage"] == "read.auth"

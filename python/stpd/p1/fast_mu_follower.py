@@ -50,6 +50,19 @@ Rules:
   that hangs) is fatal: a watchdog gives up with `MU_FOLLOWER_STALLED`
   (`on_fatal`, by default the service stops loudly), so the service never keeps
   scoring with an old mu behind a follower that silently stopped following;
+- each stage of a poll has its own limit too (`stage_seconds`: `read`, `load`,
+  `publish`, each at most `stall_seconds`). The poll marks the stage it is in
+  with a timestamp; a source with an `on_stage` attribute (`NodeMuSource`)
+  names its sub-steps (`read.lock`, `read.connect`, `read.auth`, ...). A stage
+  over its limit gives up the same way, and the error and `status()["stalled"]`
+  name the stage, how long it ran and its limit. Timing is per sub-stage: each
+  mark restarts the clock, so every sub-step of a read is held to the `read`
+  limit and the whole poll to `stall_seconds`. `status()["stage_max_seconds"]`
+  keeps the longest time seen per (sub-)stage, and `read.total` the longest
+  whole read. The read limit must exceed the source's `transfer_timeout` (per
+  message) and `handshake_timeout`, so a slow read that is still moving fails
+  through those (counted, read again) instead of as a fatal stall. Once the
+  follower gives up it unbinds `on_stage`, so a late read changes no mark;
 - shutdown order: `close()` stops this follower before it closes the service;
   once the service is stopping the follower publishes nothing and exits;
 - weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
@@ -59,6 +72,7 @@ Rules:
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 import time
@@ -70,6 +84,17 @@ from stpd.rl.fast_assembly import MuHandoff
 
 from .inference_service import MuSource
 
+# Per-stage limits (seconds), each capped at `stall_seconds`. A read moves one
+# snapshot of ~20 MB over the learner socket (normally well under a second) and
+# its sub-steps must stay above the 60 s per-message transfer timeout; a load is
+# a CPU deserialize; a publish may wait on the device (a cold compile), so it
+# keeps the whole poll limit.
+STAGE_SECONDS = {"read": 120.0, "load": 120.0, "publish": 300.0}
+
+
+def _seconds(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
 
 class FastMuFollower:
     """Poll the learner's latest mu and hot-swap it into a FastInferenceService."""
@@ -77,10 +102,27 @@ class FastMuFollower:
     def __init__(self, source: MuSource, service: Any, *, interval: float = 2.0,
                  max_failures: int = 3, clock: Callable[[], float] = time.monotonic,
                  on_fatal: Callable[[BaseException], None] | None = None,
-                 stall_seconds: float = 300.0) -> None:
-        if (not interval > 0 or type(max_failures) is not int or max_failures < 1
-                or not stall_seconds > interval):
+                 stall_seconds: float = 300.0,
+                 stage_seconds: dict[str, float] | None = None) -> None:
+        if not _seconds(interval) or not _seconds(stall_seconds):
             raise ValueError("invalid_fast_mu_follower_settings")
+        limits = {stage: min(default, stall_seconds) for stage, default in STAGE_SECONDS.items()}
+        limits.update(stage_seconds or {})
+        source_timeouts = [getattr(source, name, None)
+                           for name in ("transfer_timeout", "handshake_timeout")]
+        if (type(max_failures) is not int or max_failures < 1
+                or not stall_seconds > interval or set(limits) != set(STAGE_SECONDS)
+                or any(not _seconds(limit) or not interval < limit <= stall_seconds
+                       for limit in limits.values())
+                or any(timeout is not None and not timeout < limits["read"]
+                       for timeout in source_timeouts)):
+            raise ValueError("invalid_fast_mu_follower_settings")
+        self.stage_seconds = limits
+        # (stage, began) of the running poll, swapped as one tuple so the watchdog
+        # never pairs a new stage with the previous stage's start.
+        self.mark: tuple[str | None, float | None] = (None, None)
+        self.stage_max: dict[str, float] = {}
+        self.stalled: dict[str, Any] | None = None
         self.source, self.service = source, service
         self.interval, self.max_failures, self.clock = interval, max_failures, clock
         self.stall_seconds = stall_seconds
@@ -104,6 +146,21 @@ class FastMuFollower:
         self.stopping = threading.Event()
         self.thread: threading.Thread | None = None
         self.watchdog: threading.Thread | None = None
+        if hasattr(source, "on_stage"):
+            source.on_stage = self._enter  # sub-steps of a read (`read.connect`, ...)
+
+    def _enter(self, stage: str | None) -> None:
+        """Mark the stage the poll is in now; the watchdog holds it to its limit."""
+        if self.fatal is not None:
+            return  # a read that returns after the give-up changes no mark
+        now = self.clock()
+        previous, began = self.mark
+        if previous is not None and began is not None:
+            self.stage_max[previous] = max(self.stage_max.get(previous, 0.0), now - began)
+        self.mark = (stage, None if stage is None else now)
+
+    def _limit(self, stage: str) -> float:
+        return self.stage_seconds[stage.split(".", 1)[0]]
 
     @staticmethod
     def handoff(identity: dict[str, Any]) -> MuHandoff:
@@ -124,7 +181,13 @@ class FastMuFollower:
             if self._service_stopping():
                 self.counters["service_stopping"] += 1
                 return False
+            self._enter("read")
+            read_began = self.clock()
             identity = dict(self.source.latest())
+            self._enter(None)
+            read_seconds = self.clock() - read_began
+            self.stage_max["read.total"] = max(self.stage_max.get("read.total", 0.0),
+                                               read_seconds)
             if self.fatal is not None or self._service_stopping():
                 return False  # a read that returned after the watchdog gave up feeds nothing
             handoff = self.handoff(identity)
@@ -135,9 +198,11 @@ class FastMuFollower:
                 return self._offer(self.model, handoff, list(self.behind), 0.0)
             if identity.get("compiler_identity") != self.service.compiler_identity:
                 raise BoundaryError("rl_mu", "MU_COMPILER_IDENTITY_DIFFERS")
+            self._enter("load")
             began = self.clock()
             model = self.source.load(identity)
             load_seconds = self.clock() - began
+            self._enter(None)
             self.counters["load_seconds"] += load_seconds
             if self.fatal is not None or self._service_stopping():
                 return False
@@ -149,12 +214,14 @@ class FastMuFollower:
         # This delivery happens once: from here on only an explicit refusal is
         # answered again; a raise or an invalid answer leaves nobody behind.
         self.offered, self.behind, self.model = handoff.identity(), [], None
+        self._enter("publish")
         began = self.clock()
         if targets is not None and self.per_service:
             answer = self.service.publish(model, handoff, services=targets)
         else:
             answer = self.service.publish(model, handoff)
         done = self.clock()
+        self._enter(None)
         self.counters["publish_seconds"] += done - began
         record = {**handoff.identity(), "load_seconds": load_seconds,
                   "publish_seconds": done - began, "at": done}
@@ -239,6 +306,8 @@ class FastMuFollower:
                     return
             finally:
                 self.step_began = None
+                if self.fatal is None:
+                    self._enter(None)
             if self.fatal is not None:
                 return  # the watchdog gave up while this poll was running
             self.stopping.wait(self.interval)
@@ -248,22 +317,40 @@ class FastMuFollower:
         while not self.stopping.wait(min(self.interval, self.stall_seconds / 4)):
             if self.fatal is not None or (self.thread is not None and not self.thread.is_alive()):
                 return
-            began = self.step_began
-            if began is not None and self.clock() - began > self.stall_seconds:
-                self.failures += 1
-                self.counters["failures"] += 1
-                error = BoundaryError("rl_mu", "MU_FOLLOWER_STALLED")
-                self.error = error
-                self._give_up(error)
-                return
+            began, (stage, stage_began) = self.step_began, self.mark
+            if began is None:
+                continue
+            now = self.clock()
+            if (stage is not None and stage_began is not None
+                    and now - stage_began > self._limit(stage)):
+                stalled = {"stage": stage, "seconds": round(now - stage_began, 3),
+                           "limit": self._limit(stage)}
+            elif now - began > self.stall_seconds:
+                stalled = {"stage": stage or "poll", "seconds": round(now - began, 3),
+                           "limit": self.stall_seconds}
+            else:
+                continue
+            self.stalled = stalled
+            self.failures += 1
+            self.counters["failures"] += 1
+            error = BoundaryError(
+                "rl_mu", "MU_FOLLOWER_STALLED",
+                f"stalled_stage={stalled['stage']} seconds={stalled['seconds']} "
+                f"limit={stalled['limit']}; repair the producing input")
+            self.error = error
+            self._give_up(error)
+            return
 
     def _give_up(self, error: BaseException) -> None:
         with self.give_up_lock:
             if self.fatal is not None:
                 return  # once: the poll thread and the watchdog may both get here
             self.fatal = error
+        if getattr(self.source, "on_stage", None) == self._enter:
+            setattr(self.source, "on_stage", None)  # noqa: B010 - MuSource has no hook
         print(json.dumps({"fast_mu_follower_stopped": repr(error),
-                          "failures": self.failures, "offered": self.offered}),
+                          "failures": self.failures, "offered": self.offered,
+                          "stalled": self.stalled}),
               file=sys.stderr, flush=True)
         self.on_fatal(error)
 
@@ -307,4 +394,7 @@ class FastMuFollower:
                 "total_failures": self.counters["failures"],
                 "error": None if self.error is None else repr(self.error),
                 "fatal": None if self.fatal is None else repr(self.fatal),
-                "stopped": self.stopped(), **counters}
+                "stopped": self.stopped(), "stage": self.mark[0], "stalled": self.stalled,
+                "stage_max_seconds": {key: round(value, 3)
+                                      for key, value in dict(self.stage_max).items()},
+                **counters}
