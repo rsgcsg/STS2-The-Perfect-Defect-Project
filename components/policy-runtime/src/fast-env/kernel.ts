@@ -9,7 +9,7 @@ import { supportsProfileValue, type AgentManifest } from "../agent-session-contr
 import { ResponseBinding } from "./binding.js";
 import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
-import { CanonicalTextMemoDivergence, globalDigestFast, pyJsonSha256, type CanonicalTextMemo } from "./json-bytes.js";
+import { CanonicalTextMemoDivergence, globalDigestFast, jsonWithPySha256, pyJsonSha256, type CanonicalTextMemo } from "./json-bytes.js";
 import type { ColdStartGate } from "./cold-start.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
@@ -100,6 +100,16 @@ const memoDivergenceEnd = (kind: MemoDivergence, error: unknown) => new GameEnd(
   buildStop: kind, fatal: `${kind}:${errorText(error)}`, pendingOutcome: { status: "unknown", reason: "native_crash" } });
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
+/**
+ * `full.capture.total_bytes > max`, the same verdict without measuring the bytes when the
+ * text cannot reach the limit: total_bytes is the UTF-8 length of serializedObservation and
+ * UTF-8 spends at most 3 bytes per UTF-16 code unit (a surrogate pair: 4 bytes for 2 units).
+ * The fast-chain Host measures total_bytes only when it is read (R4).
+ */
+export function captureOverCapacity(full: Pick<FullPublicBasis, "capture" | "serializedObservation">, max: number): boolean {
+  return full.serializedObservation.length * 3 > max && full.capture.total_bytes > max;
+}
 /** One line of an original error for a close detail (never parsed, never retried on). */
 const errorText = (error: unknown) => (error instanceof Error ? `${error.name}:${error.message}` : String(error)).replace(/\s+/gu, " ").slice(0, 240);
 const isObj = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -283,7 +293,7 @@ class GameRun {
     const started = performance.now();
     try {
       const full = await this.native.capture();
-      if (full.capture.total_bytes > this.ctx.manifest.limits.max_capture_bytes) throw new GameEnd("not_started", "capture_capacity");
+      if (captureOverCapacity(full, this.ctx.manifest.limits.max_capture_bytes)) throw new GameEnd("not_started", "capture_capacity");
       return { full, frame: this.native.frame() };
     } catch (error) {
       if (error instanceof GameEnd) throw error;
@@ -376,11 +386,14 @@ class GameRun {
       const inputStarted = performance.now();
       const rowId = this.ctx.nextRowId(), stepIndex = this.decisions;
       const view = modelView(observation) as unknown as Record<string, any>;
-      const observationJson = JSON.stringify(view), catalogJson = JSON.stringify(catalog);
+      // R5: the link text and the json_bytes digest of the observation from one write
+      // (= JSON.stringify(view) and pyJsonSha256(view), in the same order of evaluation).
+      const observationText = jsonWithPySha256(view);
+      const observationJson = observationText.json, catalogJson = JSON.stringify(catalog);
       // The repo-wide definitions: digest(json_bytes(observation)) / digest(json_bytes(catalog)),
       // the values the encoder and segment validation compute from this line.
       const catalogSha = pyJsonSha256(catalog), inCombat = view.combat?.availability === "available";
-      const observationSha = pyJsonSha256(view);
+      const observationSha = observationText.sha256();
       const row = { row_id: rowId, game_instance_id: this.gameInstanceId, catalog_sha256: catalogSha, catalog_len: catalog.length, in_combat: inCombat };
       const consumptionId = `consumption-${randomUUID().replaceAll("-", "")}`;
       // combat_end facts read before this row with no earlier row to carry them are not this row's.

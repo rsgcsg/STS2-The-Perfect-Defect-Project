@@ -589,3 +589,50 @@ test("E5 projection memo: the lazy raw-state digest has the eager value", async 
   const on = await run({ checkInterval: 1024 }), off = await run(null);
   assert.equal(JSON.stringify(stable(on)), JSON.stringify(stable(off)));
 });
+
+test("R4 lazy capture handle: the fast capture's total_bytes and sha256 are the full capture's, measured on first read", async () => {
+  const target = session(fakeNative(), { sampleRate: 0, shareUnchanged: true });
+  const snapshot = await target.mount({ seed: "SEED" });
+  const fast = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 1, fullCheck: false });
+  const full = captureManagedPublicBasis(target, { generationId: "g", gameContinuityId: "c", ordinal: 2, fullCheck: true });
+  // Same keys in the same order on both paths; only the fast path defers the two measurements.
+  assert.deepEqual(Object.keys(fast.capture), Object.keys(full.capture));
+  for (const key of ["total_bytes", "sha256"]) {
+    assert.equal(typeof Object.getOwnPropertyDescriptor(fast.capture, key).get, "function", key);
+    assert.equal(Object.getOwnPropertyDescriptor(fast.capture, key).enumerable, true, key);
+    assert.equal(typeof Object.getOwnPropertyDescriptor(full.capture, key).value, key === "sha256" ? "string" : "number", key);
+  }
+  // The values are the old definitions over the handle's own bytes, every read the same.
+  for (const capture of [fast, full]) {
+    assert.equal(capture.capture.total_bytes, Buffer.byteLength(capture.serializedObservation, "utf8"));
+    assert.equal(capture.capture.sha256, sha(capture.serializedObservation));
+    assert.equal(capture.capture.serializedObservation, undefined);
+    assert.equal(capture.serializedObservation, JSON.stringify(capture.basis));
+  }
+  assert.equal(fast.capture.sha256, fast.capture.sha256);
+  // Every copy a consumer makes carries the plain values in the plain order.
+  const plain = JSON.parse(JSON.stringify(fast.capture));
+  assert.deepEqual(Object.keys(plain), Object.keys(full.capture));
+  assert.deepEqual(structuredClone(fast.capture), plain);
+  assert.deepEqual({ ...fast.capture }, plain);
+  assert.equal(plain.sha256, sha(fast.serializedObservation));
+  // Read-only, like a value nobody may change (ESM is strict: assignment throws).
+  assert.throws(() => { fast.capture.sha256 = "0".repeat(64); }, TypeError);
+  assert.throws(() => { fast.capture.total_bytes = 1; }, TypeError);
+  // The sampled full check accepts the lazy handle with these bytes, and refuses changed bytes.
+  const { verifyPublicBasis } = await import("@rsgcsg/sts2-connector-client");
+  const verified = await verifyPublicBasis(fast.capture, fast.serializedObservation);
+  assert.equal(JSON.stringify(verified.basis), fast.serializedObservation);
+  const changed = fast.serializedObservation.replace("\"complete\"", "\"completx\"");
+  assert.notEqual(changed, fast.serializedObservation);
+  await assert.rejects(verifyPublicBasis(fast.capture, changed), /sha|digest|byte|integrity/iu);
+  // Non-ASCII text: total_bytes counts UTF-8 bytes, not UTF-16 units.
+  const accented = { observe: () => JSON.parse(JSON.stringify(target.observe()).replaceAll("Neow", "Néow 中😀")),
+    read: (request) => target.read(request), settledRelicCounters: (id) => target.settledRelicCounters(id) };
+  const wide = captureManagedPublicBasis(accented, { generationId: "g", gameContinuityId: "c", ordinal: 3, fullCheck: false });
+  assert.match(wide.serializedObservation, /Néow 中😀/u);
+  assert.notEqual(wide.capture.total_bytes, wide.serializedObservation.length);
+  assert.equal(wide.capture.total_bytes, Buffer.byteLength(wide.serializedObservation, "utf8"));
+  assert.equal(wide.capture.sha256, sha(wide.serializedObservation));
+  await act(target, snapshot);
+});

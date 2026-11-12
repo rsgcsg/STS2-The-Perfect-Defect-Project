@@ -4,8 +4,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJson } from "../src/evidence.js";
 import { globalDigest } from "../src/global-transport.js";
-import { CanonicalTextMemo, CanonicalTextMemoDivergence, canonicalJsonFast, globalDigestFast, pyJsonBytes, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
-import { isDeepFrozen } from "@rsgcsg/sts2-connector-client/p1-global";
+import { CanonicalTextMemo, CanonicalTextMemoDivergence, canonicalJsonFast, globalDigestFast, jsonWithPySha256, pyJsonBytes, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
+import { captureOverCapacity } from "../src/fast-env/kernel.js";
+import { createSession, isDeepFrozen, modelView, reduce } from "@rsgcsg/sts2-connector-client/p1-global";
 
 // Golden bytes and digests from Python `stpd.p1.data.json_bytes(json.loads(JSON.stringify(value)))`:
 // the encoder hashes what it parses from the decision line.
@@ -219,5 +220,93 @@ describe("fast-env E4 canonical text memo", () => {
     expect(() => memo.digest({ a: 1 }, { a: 2 })).toThrow(CanonicalTextMemoDivergence);
     memo.digest({ b: 1 }, { b: 1 }); memo.digest({ b: 2 }, { b: 2 });
     expect(memo.status()).toMatchObject({ digests: 5, verified: 3 });
+  });
+});
+
+/** The kernel's two calls before R5, in their order: the link text, then the digest (or the first error). */
+const separately = (value: unknown): string => {
+  let json: string;
+  try { json = JSON.stringify(value); } catch (error) { return `json-throw:${(error as Error).message}`; }
+  return `${json}|${outcome(() => pyJsonSha256(value))}`;
+};
+const paired = (value: unknown): string => {
+  let pair;
+  try { pair = jsonWithPySha256(value); } catch (error) { return `json-throw:${(error as Error).message}`; }
+  return `${pair.json}|${outcome(() => pair.sha256())}`;
+};
+
+describe("fast-env R5 jsonWithPySha256", () => {
+  it("is JSON.stringify and pyJsonSha256 byte for byte on reduced P1 model views and fixtures", () => {
+    let views = 0;
+    for (const fixture of fixtures) {
+      expect(paired(fixture)).toBe(separately(fixture));
+      let reduction;
+      try { reduction = reduce(createSession("r5", "managed", "r1.9"), fixture as never); } catch { continue; }
+      const view = modelView(reduction.observation);
+      // The model view's own key order is not Python's in some objects (catalog items,
+      // extra_reads entries): the paired writer must reorder those and nothing else.
+      expect(paired(view)).toBe(separately(view));
+      expect(jsonWithPySha256(view).sha256()).toBe(createHashHex(pyJsonOracle(view)));
+      expect(paired(reduction.observation.catalog)).toBe(separately(reduction.observation.catalog));
+      views += 1;
+    }
+    expect(views).toBeGreaterThan(5);
+    expect(paired(value)).toBe(separately(value));
+    expect(jsonWithPySha256(value).sha256()).toBe("01a92855d0add2665d1b9715ccdf9a65d3409d2c6f9c1f16d44542f5c5120c4c");
+  });
+
+  it("agrees with the two calls on generated values, refusals and their order included", () => {
+    const value = generator(20261112);
+    for (let i = 0; i < 6000; i += 1) {
+      const sample = value(0, i % 3 === 0);
+      expect(paired(sample)).toBe(separately(sample));
+      if (sample !== null && typeof sample === "object") {
+        const shared = { b: sample, a: [sample, { z: 1, y: sample }] };
+        expect(paired(shared)).toBe(separately(shared));
+      }
+    }
+  });
+
+  it("takes the old calls for every value the two spellings could treat differently", () => {
+    const sparse: unknown[] = [1]; sparse[2] = 3;
+    const nullProto = Object.assign(Object.create(null) as object, { b: 1, a: { d: 2, c: 3 } });
+    const ownToJson = [1, 2]; (ownToJson as unknown as { toJSON: () => string }).toJSON = () => "x";
+    class Box { b = 1; a = 2; }
+    const odd: unknown[] = [
+      { b: new Date(0), a: 1 }, { a: new Map([["k", 1]]) }, { a: new Uint8Array([3, 1]) }, { a: new Number(1) }, { a: new String("s") },
+      { a: new Box() }, nullProto, { a: ownToJson }, { toJSON: () => 1 }, { b: { toJSON: "data" }, a: 1 },
+      { a: undefined }, { b: [undefined], a: 1 }, { a: () => 1 }, { a: Symbol("s") }, sparse,
+      { a: 1n }, { b: Number.NaN, a: 1 }, { a: -Infinity }, { a: 0.00001 }, { a: 1e-7 }, { a: -0.00009 }, { a: [0.0001, -0, 1e21] },
+      { a: "\ud800" }, { b: "x\udfffy", a: 1 }, { a: "😀" }, { a: "\\ud800 is text" }, { "\ud800": 1, a: 2 }, { "😀": 1, "": 2, "é": 3 },
+      { 10: "a", 9: "b", x: 1 }, { 2: 1, 1: 2 }, ["b", { b: 1, a: 2 }], { z: { y: { x: { w: 1, v: 2 } } } },
+    ];
+    for (const sample of odd) expect(paired(sample)).toBe(separately(sample));
+    const cycle: Record<string, unknown> = { b: 1, a: 2 }; cycle.self = cycle;
+    expect(paired(cycle)).toBe(separately(cycle));
+    expect(paired(cycle)).toMatch(/^json-throw:Converting circular structure/u);
+    // A toJSON on a plain prototype changes JSON.stringify for every object: the old path, both texts.
+    const proto = Object.prototype as { toJSON?: () => unknown };
+    try {
+      Object.defineProperty(proto, "toJSON", { value: function toJSON() { return "polluted"; }, configurable: true, writable: true });
+      expect(JSON.stringify({ b: 1, a: 2 })).toBe("\"polluted\"");
+      expect(paired({ b: 1, a: 2 })).toBe(separately({ b: 1, a: 2 }));
+    } finally { delete proto.toJSON; }
+  });
+});
+
+describe("fast-env R4 capacity bound", () => {
+  const handle = (text: string, counted: { reads: number }) => ({
+    serializedObservation: text,
+    capture: { get total_bytes() { counted.reads += 1; return Buffer.byteLength(text, "utf8"); } } as never,
+  });
+  it("gives the verdict of total_bytes > max and reads total_bytes only past the 3-bytes-per-unit bound", () => {
+    for (const text of ["", "abc", "é", "中中", "😀😀", "a😀中é", "x".repeat(1000), "中".repeat(1000)]) {
+      const bytes = Buffer.byteLength(text, "utf8");
+      for (const max of [0, 1, bytes - 1, bytes, bytes + 1, text.length * 3 - 1, text.length * 3, 8 * 1024 * 1024, Number.NaN, Infinity]) {
+        const counted = { reads: 0 };
+        expect(captureOverCapacity(handle(text, counted), max), `${JSON.stringify(text)} ${max}`).toBe(bytes > max);
+        expect(counted.reads).toBe(text.length * 3 > max ? 1 : 0);
+      }
+    }
   });
 });
