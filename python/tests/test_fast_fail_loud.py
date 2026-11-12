@@ -125,6 +125,21 @@ def test_an_orderly_close_never_ends_the_process(vocabulary, model):  # noqa: F8
     assert exits == [] and service.stop_reason is None
 
 
+def test_the_failure_closer_and_the_launcher_close_together_once(vocabulary, model):  # noqa: F811
+    """s1d: the exit watch's close and the launcher's close ran at once: EBADF on the second."""
+    service = _service(vocabulary, model, FakeAssembler(), exit_code_on_failure=3)
+    exits: list[int] = []
+    service.exit_process = exits.append
+    service._stop("mu_follower_stopped", "test")  # the failure closer starts closing
+    answers: list[Any] = []
+    launcher = threading.Thread(target=lambda: answers.append(service.close()))
+    launcher.start()
+    launcher.join(60)
+    assert _wait(lambda: exits == [3])
+    assert len(answers) == 1 and answers[0]["schema"] == service.close()["schema"]
+    assert service.close() is answers[0]  # every later call gets the one close's answer
+
+
 def test_exit_code_zero_is_refused(vocabulary, model):  # noqa: F811
     with pytest.raises(ValueError, match="exit_code_on_failure_must_be_non_zero"):
         _service(vocabulary, model, FakeAssembler(), exit_code_on_failure=0)

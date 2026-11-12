@@ -46,6 +46,10 @@ Rules:
   at once (`MU_PUBLISH_ANSWER_INVALID`: `on_fatal`, by default the card stops
   all K): whether the service took that mu is unknown. The card's `_stop`
   stops all K;
+- a poll that does not return within `stall_seconds` (a read, load or publish
+  that hangs) is fatal: a watchdog gives up with `MU_FOLLOWER_STALLED`
+  (`on_fatal`, by default the service stops loudly), so the service never keeps
+  scoring with an old mu behind a follower that silently stopped following;
 - shutdown order: `close()` stops this follower before it closes the service;
   once the service is stopping the follower publishes nothing and exits;
 - weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
@@ -72,11 +76,16 @@ class FastMuFollower:
 
     def __init__(self, source: MuSource, service: Any, *, interval: float = 2.0,
                  max_failures: int = 3, clock: Callable[[], float] = time.monotonic,
-                 on_fatal: Callable[[BaseException], None] | None = None) -> None:
-        if not interval > 0 or type(max_failures) is not int or max_failures < 1:
+                 on_fatal: Callable[[BaseException], None] | None = None,
+                 stall_seconds: float = 300.0) -> None:
+        if (not interval > 0 or type(max_failures) is not int or max_failures < 1
+                or not stall_seconds > interval):
             raise ValueError("invalid_fast_mu_follower_settings")
         self.source, self.service = source, service
         self.interval, self.max_failures, self.clock = interval, max_failures, clock
+        self.stall_seconds = stall_seconds
+        self.step_began: float | None = None  # set while a poll runs (watchdog)
+        self.give_up_lock = threading.Lock()
         self.offered: dict[str, Any] | None = None
         self.behind: list[int] = []  # services that refused `offered` (re-offered next poll)
         self.model: Any = None  # `offered`'s model, kept only while a service is behind
@@ -94,6 +103,7 @@ class FastMuFollower:
         self.lock = threading.Lock()
         self.stopping = threading.Event()
         self.thread: threading.Thread | None = None
+        self.watchdog: threading.Thread | None = None
 
     @staticmethod
     def handoff(identity: dict[str, Any]) -> MuHandoff:
@@ -115,6 +125,8 @@ class FastMuFollower:
                 self.counters["service_stopping"] += 1
                 return False
             identity = dict(self.source.latest())
+            if self.fatal is not None or self._service_stopping():
+                return False  # a read that returned after the watchdog gave up feeds nothing
             handoff = self.handoff(identity)
             if self.offered is not None and self.offered == handoff.identity():
                 if not self.behind:
@@ -127,6 +139,8 @@ class FastMuFollower:
             model = self.source.load(identity)
             load_seconds = self.clock() - began
             self.counters["load_seconds"] += load_seconds
+            if self.fatal is not None or self._service_stopping():
+                return False
             return self._offer(model, handoff, None, load_seconds)
 
     def _offer(self, model: Any, handoff: MuHandoff, targets: list[int] | None,
@@ -197,6 +211,7 @@ class FastMuFollower:
         while not self.stopping.is_set():
             if self._service_stopping():
                 return  # the service already stopped (or is closing): nothing to feed
+            self.step_began = self.clock()
             try:
                 self.step()
                 self.failures = 0
@@ -214,10 +229,30 @@ class FastMuFollower:
                 if self.failures >= self.max_failures:
                     self._give_up(error)
                     return
+            finally:
+                self.step_began = None
+            if self.fatal is not None:
+                return  # the watchdog gave up while this poll was running
             self.stopping.wait(self.interval)
 
+    def _watch(self) -> None:
+        """A poll that hangs is a failure too: stop loudly instead of following nothing."""
+        while not self.stopping.wait(min(self.interval, self.stall_seconds / 4)):
+            if self.fatal is not None or (self.thread is not None and not self.thread.is_alive()):
+                return
+            began = self.step_began
+            if began is not None and self.clock() - began > self.stall_seconds:
+                self.counters["failures"] += 1
+                error = BoundaryError("rl_mu", "MU_FOLLOWER_STALLED")
+                self.error = error
+                self._give_up(error)
+                return
+
     def _give_up(self, error: BaseException) -> None:
-        self.fatal = error
+        with self.give_up_lock:
+            if self.fatal is not None:
+                return  # once: the poll thread and the watchdog may both get here
+            self.fatal = error
         print(json.dumps({"fast_mu_follower_stopped": repr(error),
                           "failures": self.failures, "offered": self.offered}),
               file=sys.stderr, flush=True)
@@ -228,6 +263,9 @@ class FastMuFollower:
             raise RuntimeError("fast_mu_follower_already_started")
         self.thread = threading.Thread(target=self._run, name="fast-mu-follower", daemon=True)
         self.thread.start()
+        self.watchdog = threading.Thread(target=self._watch, name="fast-mu-follower-watchdog",
+                                         daemon=True)
+        self.watchdog.start()
         return self
 
     def stopped(self) -> bool:
@@ -242,6 +280,8 @@ class FastMuFollower:
         self.stopping.set()
         if self.thread is not None:
             self.thread.join(timeout)
+        if self.watchdog is not None:
+            self.watchdog.join(timeout)
 
     def close(self, timeout: float = 30.0) -> Any:
         """Stop following first, then close the service (never publish into a closed one)."""

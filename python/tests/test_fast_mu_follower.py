@@ -288,8 +288,56 @@ def test_close_stops_following_before_the_service_and_a_stopping_service_is_not_
     assert len(service.published) == 1
 
 
+class HangingSource(Source):
+    """s1d: a get_mu read that never returns (the follower froze, no error, old mu)."""
+
+    def __init__(self, latest: dict[str, Any]) -> None:
+        super().__init__(latest)
+        self.hang, self.release = threading.Event(), threading.Event()
+
+    def latest(self) -> dict[str, Any]:
+        if self.hang.is_set():
+            self.release.wait(30)
+        return super().latest()
+
+
+def test_a_poll_that_hangs_stops_the_service_loudly_instead_of_following_nothing():
+    source, service = HangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=0.3).start()
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    assert len(service.published) == 1
+    source.hang.set()
+    source.current = identity("d" * 64, version=3)  # the learner moves on; the read hangs
+    follower.watchdog.join(10)
+    # Detected and loud: the service stops (rows refused) instead of scoring with v2 forever.
+    assert service.stop_reason == "mu_follower_stopped" and service.stopping.is_set()
+    with pytest.raises(BoundaryError, match="MU_FOLLOWER_STALLED"):
+        follower.check()
+    assert follower.status()["fatal"] and follower.counters["failures"] == 1
+    source.release.set()  # the hung read returns late: nothing more is offered
+    follower.thread.join(10)
+    assert follower.stopped() and len(service.published) == 1
+
+
+def test_a_slow_but_returning_poll_is_not_a_stall():
+    source, service = HangingSource(identity(NEW)), Service()
+    follower = FastMuFollower(source, service, interval=0.01, stall_seconds=5).start()
+    source.hang.set()
+    threading.Timer(0.2, source.release.set).start()
+    for _ in range(500):
+        if service.published:
+            break
+        follower.stopping.wait(0.01)
+    follower.check()
+    assert service.published and service.stop_reason is None
+    follower.stop()
+
+
 def test_invalid_settings_are_refused():
-    for options in ({"interval": 0}, {"max_failures": 0}):
+    for options in ({"interval": 0}, {"max_failures": 0}, {"interval": 2, "stall_seconds": 1}):
         with pytest.raises(ValueError, match="invalid_fast_mu_follower_settings"):
             FastMuFollower(Source(identity(NEW)), Service(), **options)
 
