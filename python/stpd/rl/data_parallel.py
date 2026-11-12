@@ -27,8 +27,12 @@ Wired into the SGD process by `dataplane.sgd_data_parallel` (WP8).
 
 from __future__ import annotations
 
+import bisect
+import dataclasses
+import math
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -101,6 +105,75 @@ def shard_groups(rows: list[int], rank: int, world: int) -> tuple[int, ...]:
             chosen.append(index)
         before += size
     return tuple(chosen)
+
+
+@dataclasses.dataclass(frozen=True)
+class RemoteGroup:
+    """Another rank's group of a split minibatch: its rows only, never its tensors.
+
+    `prepared_update(shard=...)` reads `len(rows)` of a group it does not run
+    (balance and row offsets); everything else stays with the owning rank.
+    """
+
+    rows: tuple[int, ...]
+    policy: bool
+
+
+def shard_transport(tree: Any, arrays: tuple[Any, ...], rank: int,
+                    world: int) -> tuple[Any, tuple[Any, ...]]:
+    """This rank's part of one packed PreparedBatch (`pack_transport` form).
+
+    Every group `shard_groups` gives another rank becomes a `RemoteGroup`; every
+    other leaf (batch fields, minibatch row tensors, epoch auxiliary) is kept.
+    The result references only the slab ranges still used: each slab's used
+    element ranges are merged and returned as views of the input arrays, so the
+    caller pins/copies about this rank's share instead of the whole file. Values,
+    shapes, groups, order and denominators are the input's.
+    """
+    from .batch_preparation import _map_structure, _TensorView
+
+    minibatches = []
+    for minibatch in tree.minibatches:
+        local = set(shard_groups([len(group.rows) for group in minibatch.groups], rank, world))
+        minibatches.append(dataclasses.replace(minibatch, groups=tuple(
+            group if index in local else RemoteGroup(tuple(group.rows), group.policy)
+            for index, group in enumerate(minibatch.groups))))
+    tree = dataclasses.replace(tree, minibatches=tuple(minibatches))
+    used: dict[int, list[tuple[int, int]]] = {}
+
+    def collect(node: Any) -> Any:
+        if not isinstance(node, _TensorView):
+            return node
+        used.setdefault(node.slab, []).append(
+            (node.offset, node.offset + math.prod(node.shape)))
+        return _TensorView(node.slab, node.offset, node.shape)  # stop descending
+
+    _map_structure(tree, collect)
+    parts: list[Any] = []
+    starts: dict[int, list[int]] = {}
+    indices: dict[int, list[int]] = {}
+    for slab in sorted(used):
+        merged: list[list[int]] = []
+        for start, end in sorted(used[slab]):
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        source = arrays[slab]
+        for start, end in merged:
+            starts.setdefault(slab, []).append(start)
+            indices.setdefault(slab, []).append(len(parts))
+            # An empty range gets its own buffer (see `sgd_process.mapped_arrays`).
+            parts.append(source[start:end] if end > start else np.empty(0, source.dtype))
+
+    def remap(node: Any) -> Any:
+        if not isinstance(node, _TensorView):
+            return node
+        position = bisect.bisect_right(starts[node.slab], node.offset) - 1
+        return _TensorView(indices[node.slab][position],
+                           node.offset - starts[node.slab][position], node.shape)
+
+    return _map_structure(tree, remap), tuple(parts)
 
 
 def replica_check(model: torch.nn.Module, group: Any = None) -> None:

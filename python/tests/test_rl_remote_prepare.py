@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses as dc
-import hashlib
 import mmap
 import threading
 import time
@@ -17,6 +16,7 @@ from test_rl_binary_preparation import BytesProvider, admit, labels_for, prepare
 from test_rl_tensor_segment import encoder
 
 from stpd.rl import remote_prepare
+from stpd.rl.binary_preparation import prepared_digest
 from stpd.rl.prepared_batch import AuxiliarySelection
 
 
@@ -49,7 +49,8 @@ def _digest(handoff):
     with open(handoff.path, "rb") as stream:
         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
     try:
-        return hashlib.sha256(memoryview(mapping)[: handoff.used_bytes]).hexdigest()
+        with memoryview(mapping) as whole, whole[: handoff.used_bytes] as view:
+            return prepared_digest(view)
     finally:
         mapping.close()
 
