@@ -302,6 +302,12 @@ def _kernel_dtype(reference: Tensor) -> torch.dtype:
     return _compute_dtype(reference)
 
 
+# One code object per variant name for the whole process: a new model (each mu a
+# device process loads) reuses the graphs dynamo keeps on it instead of compiling
+# again. At most 2 x 4 x 2 entries.
+_BLOCK_CODES: dict[str, Any] = {}
+
+
 def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     function: Any = rows_block_packed if packed else rows_block
     if not kernels:
@@ -318,7 +324,8 @@ def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     # 1463901 hit recompile_limit 8 and ran the block eager).
     name = "_".join(("block", "packed" if packed else "masked", *kernels,
                      "policy" if policy else "value"))
-    block.__code__ = block.__code__.replace(co_name=name, co_qualname=name)
+    block.__code__ = _BLOCK_CODES.setdefault(
+        name, block.__code__.replace(co_name=name, co_qualname=name))
     return block
 
 
@@ -327,7 +334,9 @@ def _at_least_two_terms(role: tuple[Tensor, Tensor, Tensor, Tensor]
     """A role with 0 or 1 terms gets zero-weight terms up to two (candidate 0, slot 0).
 
     Exact: each adds 0 * (a finite token) = +-0 to candidate 0's sum, and x + +-0 == x
-    (a sum that starts at +0 is never -0). Dynamo specializes 0- and 1-sized
+    (a sum that starts at +0 is never -0). Only finite tokens matter: a non-finite
+    token 0 already makes its row non-finite (its `current` and cross read it), and
+    `RowsScorer.rows` refuses that row either way. Dynamo specializes 0- and 1-sized
     dimensions; two terms or more keep one graph for every term count."""
     candidate, slot, weight, present = role
     missing = 2 - int(candidate.shape[0])
