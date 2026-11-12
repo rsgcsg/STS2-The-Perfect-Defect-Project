@@ -51,7 +51,8 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
         "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
         "prepare_slots": 6, "source_bytes": 64 * 1024**2, "preparation_workers": 2,
         "assembly_workers": 2, "prepared_batches": 3,
-        **(SGD_PROCESS if sgd else {}), **(dataplane or {})})
+        # Helpers here step the lockstep protocol; prestart is tested explicitly.
+        **({**SGD_PROCESS, "sgd_prestart": False} if sgd else {}), **(dataplane or {})})
     owner = SegmentLearner(config, tmp_path / "owner", io)
     for key, value in owner.pool.environment().items():
         monkeypatch.setenv(key, value)

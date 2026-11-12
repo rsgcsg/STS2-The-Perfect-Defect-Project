@@ -54,7 +54,7 @@ OPTION_KEYS = frozenset((
     "sgd_cpus", "sgd_offline_step_seconds", "memory_limit_bytes",
     "memory_headroom_fraction", "memory_budget",
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
-    "sgd_data_parallel", "sgd_compile", "sgd_stage_thread",
+    "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
 ))
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
@@ -100,6 +100,12 @@ class SgdOptions:
     # WP8: stage the next prepared batch (verify, pin, H2D) on one side thread
     # while the current dataset steps; False keeps staging inline (default).
     stage_thread: bool = False
+    # V3: the controller authorizes the next staged dataset while it still
+    # accounts the current one's answers, so the child starts it back to back.
+    # At most one dataset beyond the current one; never across a CP request,
+    # STOP, deadline or fence. Default on; False is the rollback to the
+    # lockstep start.
+    prestart: bool = True
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -182,6 +188,9 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
     stage_thread = dataplane.get("sgd_stage_thread", False)
     if type(stage_thread) is not bool:
         raise ValueError("invalid_sgd_stage_thread")
+    prestart = dataplane.get("sgd_prestart", True)
+    if type(prestart) is not bool:
+        raise ValueError("invalid_sgd_prestart")
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -195,6 +204,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         data_parallel=parallel,
         compile=compiled,
         stage_thread=stage_thread,
+        prestart=prestart,
     )
 
 
@@ -1089,6 +1099,7 @@ class _SgdWorker:
         self.staging: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
         self.staged_lock = threading.Lock()
         self.wake = state.get("wake")
+        self.next_start: dict[str, Any] | None = None
         self.stage_executor = None
         if init.get("stage_thread"):
             from concurrent.futures import ThreadPoolExecutor
@@ -1245,7 +1256,11 @@ class _SgdWorker:
             # wakes the inbox, so idling never waits on a staging to finish.
             self.drain_staging(block=False)
             self.state["stage"] = "idle"
-            message = next_message(True)
+            # A start the controller authorized during the previous dataset
+            # (`sgd_prestart`) runs now, back to back, in message order.
+            message, self.next_start = (
+                (self.next_start, None) if self.next_start is not None
+                else (next_message(True), None))
             kind = message["kind"]
             if kind == "plan":
                 self.stage(message)
@@ -1409,6 +1424,12 @@ class _SgdWorker:
         while True:
             inbox_began = time.perf_counter()
             while (message := next_message(False)) is not None:
+                if message["kind"] == "start" and self.next_start is None:
+                    # Prestart: at most one dataset beyond this one; it is run
+                    # right after this one ends. Nothing else may follow it
+                    # before then except plans.
+                    self.next_start = message
+                    continue
                 if message["kind"] != "plan":
                     raise _ChildViolation("sgd_message_during_dataset_" + str(message["kind"]))
                 self.stage(message)
