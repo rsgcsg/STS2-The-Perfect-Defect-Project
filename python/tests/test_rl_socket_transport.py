@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import asdict
 from multiprocessing.connection import Client
+from typing import Any
 
 import pytest
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
@@ -396,7 +397,7 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
     from spireagent.rl_socket_transport import NodeMuCache
     from stpd.p1.local_inference import SEGMENT_SCHEMA
     from stpd.p1.local_mu import LocalMuScorer
-    from stpd.rl.segment_learner import SegmentLearner
+    from stpd.rl.segment_learner import SegmentLearner, SnapshotFlights
 
     peer = {"kind": "local", "directory": str(tmp_path / "store")}
     exchange = Exchange(peer, "r")
@@ -412,6 +413,7 @@ def test_node_mu_cache_is_single_flight_and_actor_load_never_reads_shared_store(
         live_work=tmp_path / "learner",
         exchange=exchange,
         condition=threading.Condition(),
+        mu_flights=SnapshotFlights(),
     )
     calls = []
 
@@ -489,14 +491,15 @@ def _mu_server(tmp_path, monkeypatch, *, wrap=None):
 
     from spireagent.rl_exchange import Exchange
     from stpd.p1.local_inference import SEGMENT_SCHEMA
-    from stpd.rl.segment_learner import SegmentLearner
+    from stpd.rl.segment_learner import SegmentLearner, SnapshotFlights
 
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "store")}, "r")
     identity, _package = publish_mu(exchange, tmp_path, 1)
     pool = SimpleNamespace(snapshots={identity["snapshot_sha256"]: identity},
                            latest=identity["snapshot_sha256"], node_caches={})
     owner = SimpleNamespace(pool=pool, generation="initial", live_work=tmp_path / "learner",
-                            exchange=exchange, condition=threading.Condition())
+                            exchange=exchange, condition=threading.Condition(),
+                            mu_flights=SnapshotFlights())
 
     def model_files(key, node, cached):
         answer = SegmentLearner._model_files(owner, key, node, cached)
@@ -510,6 +513,92 @@ def _mu_server(tmp_path, monkeypatch, *, wrap=None):
         sources=BinarySources(tmp_path / "sources", run="r", generation="initial"),
         model_files=model_files, address=("127.0.0.1", 0))
     return server, identity, {**server.attachment(), "run": "r", "training_generation": "initial"}
+
+
+def _mu_owner(tmp_path, materialize_hook):
+    """A learner stand-in for `_model_files` whose Store counts (and can stall/fail)
+    every payload materialization."""
+    from types import SimpleNamespace
+
+    from test_rl41_w2_actor import publish_mu
+
+    from spireagent.rl_exchange import Exchange
+    from stpd.rl.segment_learner import SnapshotFlights
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "store")}, "r")
+    identity, _package = publish_mu(exchange, tmp_path, 1)
+    real = exchange.store.materialize
+    calls: list[str] = []
+
+    def materialize(payload, destination):
+        calls.append(destination.name)
+        materialize_hook(len(calls))
+        return real(payload, destination)
+
+    exchange.store.materialize = materialize  # type: ignore[method-assign]
+    pool = SimpleNamespace(snapshots={identity["snapshot_sha256"]: identity},
+                           latest=identity["snapshot_sha256"], node_caches={})
+    owner = SimpleNamespace(pool=pool, generation="initial", live_work=tmp_path / "learner",
+                            exchange=exchange, condition=threading.Condition(),
+                            mu_flights=SnapshotFlights())
+    return owner, identity, calls
+
+
+def _ask_at_once(owner, threads):
+    from stpd.rl.segment_learner import SegmentLearner
+
+    barrier = threading.Barrier(threads)
+    results: list[Any] = [None] * threads
+
+    def ask(index):
+        barrier.wait()
+        try:
+            results[index] = SegmentLearner._model_files(owner, None, f"node-{index}", [])
+        except Exception as error:  # noqa: BLE001 - the test inspects each outcome
+            results[index] = error
+
+    workers = [threading.Thread(target=ask, args=(k,)) for k in range(threads)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(30)
+    assert not any(worker.is_alive() for worker in workers)
+    return results
+
+
+def test_concurrent_model_files_materialize_a_new_snapshot_once(tmp_path):
+    # The first materialization is slow, so every other caller arrives during it.
+    owner, identity, calls = _mu_owner(
+        tmp_path, lambda count: time.sleep(0.3) if count == 1 else None)
+    results = _ask_at_once(owner, 6)
+    assert calls == ["model.tensor-tree", "model.json", "heads.tensor-tree"]
+    assert all(not isinstance(result, Exception) for result in results)
+    assert {result[0]["snapshot_sha256"] for result in results} == {identity["snapshot_sha256"]}
+    assert len({tuple(result[1]) for result in results}) == 1
+    assert all(path.is_file() for _, path in results[0][1])
+    assert len(owner.mu_flights) == 0
+    # Later callers find COMPLETE and never materialize again.
+    _ask_at_once(owner, 2)
+    assert len(calls) == 3
+
+
+def test_failed_first_materialization_never_strands_the_waiters(tmp_path):
+    def fail_first(count):
+        if count == 1:
+            time.sleep(0.3)
+            raise RuntimeError("store_read_failed")
+
+    owner, identity, calls = _mu_owner(tmp_path, fail_first)
+    results = _ask_at_once(owner, 4)
+    failures = [result for result in results if isinstance(result, Exception)]
+    # The failing caller raises its own error; the next waiter makes its own attempt
+    # (no shared failure state, nobody hangs) and the rest then find COMPLETE.
+    assert [str(error) for error in failures] == ["store_read_failed"]
+    assert calls == ["model.tensor-tree"] + ["model.tensor-tree", "model.json",
+                                             "heads.tensor-tree"]
+    root = tmp_path / "learner" / "mu-network" / identity["snapshot_sha256"]
+    assert (root / "COMPLETE").read_text() == identity["snapshot_sha256"]
+    assert len(owner.mu_flights) == 0
 
 
 def test_concurrent_first_get_mu_from_many_nodes_is_consistent(tmp_path, monkeypatch):
