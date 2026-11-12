@@ -32,19 +32,17 @@ export interface FastEnvConfig {
    *  A difference is `projection_memo_divergence`: the game ends unknown (never retried), is counted
    *  in `projection_memo_divergences` and stops this build's output. */
   compact: { enabled: boolean; reconcile_interval: number; projection_memo: { check_interval: number } | null };
-  /** The other memo layers (WP8 v3 enablement; all off when `memo` is absent). This process is fast_chain only.
+  /** The other memo layers (WP8 v3 enablement; all off when `memo` is absent; a `reduce` key, the removed
+   *  E6 SDK reduce memo, is refused). This process is fast_chain only.
    *  - `native_card` (#460): the native's deck / HUD card projection memo (STS2_HEADLESS_DECK_MEMO / _HUD_MEMO);
    *    the native compares every 64th render frame of a lane itself; a difference is compact_state_divergence.
-   *  - `reduce` (E6): the SDK reduce memo; the first comparison falls on reduction ceil(N/2)..N (not on
-   *    reduction 0), then one after each random gap in ceil(N/2)..N, N = `check_interval` (1 = every
-   *    reduction). A difference (P1ReduceMemoDivergence) is fatal for this whole process.
    *  - `receipt_canonical` (E4): the receipt digest keeps the canonical text of deep-frozen subtrees;
    *    compared against the full walk on digest 0 and then after random gaps in ceil(N/2)..N; a
    *    difference is fatal for this whole process.
-   *  E4 and E6 only hit when E5 (`compact.projection_memo`) is on: they key on object identity, and only
-   *  E5 hands out unchanged subtrees as the same deep-frozen objects. Without E5 they stay correct but
-   *  are pure overhead (hits ≈ 0); allowed on their own so each layer can still be measured. */
-  memo: { native_card: { deck: boolean; hud: boolean } | null; reduce: { check_interval: number } | null;
+   *  E4 only hits when E5 (`compact.projection_memo`) is on: it keys on object identity, and only
+   *  E5 hands out unchanged subtrees as the same deep-frozen objects. Without E5 it stays correct but
+   *  is pure overhead (hits ≈ 0); allowed on their own so each layer can still be measured. */
+  memo: { native_card: { deck: boolean; hud: boolean } | null;
     receipt_canonical: { check_interval: number } | null };
   checks: { sample_rate: number };
   decision_link: { kind: "unix"; path: string };
@@ -150,7 +148,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     projectionMemo = { check_interval: int(m.check_interval, "compact.projection_memo.check_interval", 1, 1024) };
     if (compact.enabled !== true) throw new FastEnvContractError("compact.projection_memo");
   }
-  const memo = obj(v.memo ?? {}, "memo", ["native_card", "reduce", "receipt_canonical"]);
+  const memo = obj(v.memo ?? {}, "memo", ["native_card", "receipt_canonical"]);
   const interval = (value: unknown, field: string) => value === null || value === undefined ? null
     : { check_interval: int(obj(value, field, ["check_interval"]).check_interval, `${field}.check_interval`, 1, 1024) };
   let nativeCard: FastEnvConfig["memo"]["native_card"] = null;
@@ -186,7 +184,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     agent_manifest: str(v.agent_manifest, "agent_manifest"),
     compact: { enabled: bool(compact.enabled, "compact.enabled"), reconcile_interval: int(compact.reconcile_interval, "compact.reconcile_interval", 1, 1024),
       projection_memo: projectionMemo },
-    memo: { native_card: nativeCard, reduce: interval(memo.reduce, "memo.reduce"),
+    memo: { native_card: nativeCard,
       receipt_canonical: interval(memo.receipt_canonical, "memo.receipt_canonical") },
     checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1) },
     decision_link: { kind: "unix", path: str(link.path, "decision_link.path") },

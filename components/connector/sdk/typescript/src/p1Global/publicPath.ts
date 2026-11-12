@@ -6,8 +6,11 @@ import { publicFieldPath } from "./publicIdentity.js";
 export class PublicPath {
   private fields: Map<string, PublicPath> | undefined;
   private items: PublicPath[] | undefined;
-  /** @internal Lazily set by publicIdentity's relationMemoKey. */
-  relationKey: string | undefined;
+  /** @internal The policy relation memo whose relationAt / subtreeAt answer is kept here (publicIdentity). */
+  relationOwner: object | undefined;
+  relation: "declared" | "reference" | null = null;
+  subtreeOwner: object | undefined;
+  subtree = true;
   constructor(readonly path: string) {}
 
   field(key: string): PublicPath {

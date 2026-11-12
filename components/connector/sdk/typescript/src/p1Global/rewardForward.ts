@@ -139,11 +139,21 @@ function rewardDetailFacts(basis: P1Basis, cards: readonly Record<string, any>[]
 
 export function rewardIntention(owner: string, group: Record<string, any>, basis: P1Basis,
   kind: RewardIntention["kind"], option: string): RewardIntention {
-  return { owner, group: String(group.group_id), kind, option,
-    cards: canonicalJson(group.card_options.map(rewardCardFacts)),
-    alternatives: canonicalJson(group.card_alternatives.map(rewardAlternativeFacts)),
-    completes: group.selection_completes_reward, world: rewardWorldFacts(basis), details: rewardDetailFacts(basis, group.card_options),
-    refresh_subscription: group.native_relic_refresh_subscription };
+  return rewardGroupIntentions(owner, group, basis, rewardWorldFacts(basis))(kind, option);
+}
+
+/** rewardIntention for every option of one group of one basis: the group's texts, and the
+ * world text (`rewardWorldFacts(basis)`, passed in once per basis), are computed once. */
+export function rewardGroupIntentions(owner: string, group: Record<string, any>, basis: P1Basis, world: string):
+    (kind: RewardIntention["kind"], option: string) => RewardIntention {
+  const groupId = String(group.group_id);
+  const cards = canonicalJson(group.card_options.map(rewardCardFacts));
+  const alternatives = canonicalJson(group.card_alternatives.map(rewardAlternativeFacts));
+  const completes = group.selection_completes_reward;
+  const details = rewardDetailFacts(basis, group.card_options);
+  const refresh = group.native_relic_refresh_subscription;
+  return (kind, option) => ({ owner, group: groupId, kind, option, cards, alternatives, completes, world, details,
+    refresh_subscription: refresh });
 }
 
 export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): boolean {
