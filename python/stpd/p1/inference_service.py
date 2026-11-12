@@ -813,8 +813,11 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                     ref, counts = group
                     staging = time.perf_counter()
                     try:
-                        group = (stage_joined(arena[ref.start:ref.end], ref.plan, target),
-                                 counts)
+                        # staged as inference tensors, like the groups the forward
+                        # stages itself: one dispatch key set for the compiled block
+                        with torch.inference_mode():
+                            group = (stage_joined(arena[ref.start:ref.end], ref.plan,
+                                                  target), counts)
                     except Exception as failure:  # refused loudly by the service
                         group = RuntimeError(f"{type(failure).__name__}: {str(failure)[:200]}")
                     parts[0]["stage_seconds"] = time.perf_counter() - staging
@@ -822,7 +825,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                 continue
             if "trace" in part:  # no joiner: received = joined (same slot in the trace)
                 part["trace"] += [time.monotonic()] * 2
-            done = collector.add(part)
+            with torch.inference_mode():  # staged as inference tensors (see above)
+                done = collector.add(part)
             if done is not None:
                 joined.put(done)
 
