@@ -163,6 +163,83 @@ def test_CP_keeps_real_pending_requests_workers_and_selection_rng(tmp_path, monk
         owner.close()
 
 
+def test_CP_with_64_production_sized_prepares_in_flight_encodes_and_restores(tmp_path,
+                                                                            monkeypatch):
+    """c3c died at its first CP with ~40 prepared batches in flight: each full
+    request (members, every row index, the selection RNG) cost ~10k codec nodes.
+    The CP now keeps a bounded receipt per request; restore never read them."""
+    import hashlib
+    from concurrent.futures import Future
+
+    from spireagent.json_boundary import BoundaryError, json_bytes
+    from stpd.rl import checkpoint_codec
+    from stpd.rl.prepared_batch import AuxiliarySelection
+
+    owner, config, io = binary_owner(tmp_path, monkeypatch, datasets=1)
+    restored = None
+    try:
+        assert owner._prepare()
+        template = owner.active_batch.request
+        rows, members, aux = 4113, 120, 270  # c3a/c3b production dataset shape
+        cut = [round(rows * i / 4) for i in range(5)]
+        member = template.members[0]
+        done: Future = Future()
+        done.set_result(None)
+        requests = [dc.replace(
+            template,
+            identity=dc.replace(template.identity, sequence=100 + n),
+            members=tuple(dc.replace(member, segment_id=f"s{n}-{m}", rows=rows // members)
+                          for m in range(members)),
+            minibatch_rows=tuple(tuple(range(cut[i], cut[i + 1])) for i in range(4)),
+            auxiliary=tuple(AuxiliarySelection(
+                {"run_id": member.run_id, "segment_id": f"s{n}-{a}",
+                 "training_generation": owner.generation, "row": a, "key": f"k{a}"},
+                "terminal", 1.0, 0, 4) for a in range(aux)),
+            auxiliary_minibatches=tuple(a % 4 for a in range(aux)))
+            for n in range(64)]
+        while owner.active is not None:
+            owner._step()
+        with pytest.raises(BoundaryError, match="structure_limit"):  # the c3c failure
+            checkpoint_codec.encode_checkpoint(
+                {"pending_requests": [dc.asdict(r) for r in requests]})
+        for depth in (32, 64):
+            monkeypatch.setattr(owner, "_pending_batches", lambda depth=depth: tuple(
+                ({"request": r}, done) for r in requests[:depth]))
+            started = time.perf_counter()
+            raw = encode_state(owner._learning_state())
+            seconds = time.perf_counter() - started
+            cp = decode_state(raw)
+            receipts = cp.input_pipeline["pending_requests"]
+            assert [r["identity"]["sequence"] for r in receipts] == list(range(100, 100 + depth))
+            for receipt, request in zip(receipts, requests, strict=False):
+                assert receipt["sha256"] == hashlib.sha256(
+                    json_bytes(dc.asdict(request))).hexdigest()
+                assert (receipt["members"], receipt["rows"], receipt["auxiliary"],
+                        receipt["minibatches"]) == (members, members * (rows // members), aux, 4)
+            print(json.dumps({"prepared_in_flight": depth, "cp_bytes": len(raw),
+                              "encode_seconds": round(seconds, 3)}))
+        # Restore is unchanged: committed state and RNG only, no hot input replayed.
+        owner.checkpoint()
+        owner._collect_checkpoint(wait=True)
+        record, cp = read_cp(owner)
+        assert len(cp.input_pipeline["pending_requests"]) == 64
+        cold = open_peer({"kind": "local", "directory": str(tmp_path / "new-live/store")})
+        copy_artifact(owner.exchange.store, cold, record["checkpoint_artifact_id"],
+                      scratch=tmp_path)
+        restored = SegmentLearner(dc.replace(config, peer=owner.config.peer,
+            start_package=None, resume_checkpoint=record["checkpoint_artifact_id"],
+            segments=dc.replace(config.segments, training_generation="g-new")),
+            tmp_path / "restored", dc.replace(io, dataplane={**io.dataplane,
+                "root": str(tmp_path / "new-live")}))
+        assert restored.rng.getstate() == cp.rng.learner_random
+        assert restored._pending_batches() == () and restored.updates == cp.counters.updates
+    finally:
+        monkeypatch.undo()
+        if restored is not None:
+            restored.close()
+        owner.close()
+
+
 @pytest.mark.parametrize("sgd", [False, True], ids=["in_process", "sgd_process"])
 @pytest.mark.parametrize("cutoff", ["soft", "absolute"])
 def test_cutoff_finishes_frozen_two_minibatch_dataset_and_final_CP(tmp_path, monkeypatch, cutoff,

@@ -144,6 +144,22 @@ def window_end_drop(window_end: str | None, leases: dict[str, Any], episodes: di
             "episode_keys": keys[:1000], "retried": False}
 
 
+def _pending_receipt(request: PrepareRequest) -> dict[str, Any]:
+    """Bounded CP receipt of one in-flight prepare request.
+
+    Restore never reads it (fresh generations discard hot inputs and re-select
+    from the committed RNG), so the CP keeps the identity, sizes and the sha256
+    of the whole canonical request instead of every member, row index and RNG
+    word: its size no longer grows with each request, only with their count.
+    """
+    body = asdict(request)
+    return {"identity": body["identity"], "members": len(request.members),
+            "rows": sum(member.rows for member in request.members),
+            "auxiliary": len(request.auxiliary),
+            "minibatches": len(request.minibatch_rows), "epochs": request.epochs,
+            "sha256": hashlib.sha256(json_bytes(body)).hexdigest()}
+
+
 @dataclass(frozen=True)
 class SegmentLearnerIO:
     # read_segment remains an explicit historical-reader dependency for application
@@ -3001,7 +3017,7 @@ class SegmentLearner:
             ({"generation": self.generation,
               "committed_selection_rng": self.committed_selection_rng,
               "speculative_selection_rng": self.rng.getstate(),
-              "pending_requests": [asdict(active["request"])
+              "pending_requests": [_pending_receipt(active["request"])
                                    for active, _ in self._pending_batches()],
               "pending_labels": copy.deepcopy(self.pending_label_requests),
               "restore_disposition": "discard_hot_inputs_resume_committed_rng"}

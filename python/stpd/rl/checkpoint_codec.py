@@ -19,7 +19,8 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, obj
 MAGIC = b"STPDCKP1"
 MAX_BYTES = 512 * 1024 * 1024
 MAX_HEADER = 32 * 1024 * 1024
-# Covers the pending-batch requests of up to 4 prepared batches in learner CPs.
+# Learner CPs keep one bounded receipt (~15 nodes) per in-flight prepared batch,
+# not the full request, so this covers far more than 64 batches in flight.
 MAX_NODES = 400_000
 
 
