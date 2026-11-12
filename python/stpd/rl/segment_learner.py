@@ -2636,10 +2636,7 @@ class SegmentLearner:
 
             future.add_done_callback(observe)
             return future
-        prepared = self._dispatch_preparation(submit)
-        if self.sgd is not None and self.sgd.options.stage_thread:
-            prepared.add_done_callback(self._sgd_prepared)
-        return prepared
+        return self._dispatch_preparation(submit)
 
     def _prepare_ahead(self) -> None:
         while (self.settings.prepare_ahead
@@ -2660,6 +2657,9 @@ class SegmentLearner:
                     self.pending_batch = pending
                 else:
                     self.ahead_batches.append(pending)
+                if self.sgd is not None and self.sgd.options.stage_thread:
+                    # Registered after it is queued: an already-done Future plans now.
+                    pending[1].add_done_callback(self._sgd_prepared)
         if self.sgd is not None and not self.newlease_stopped and not self.input_fenced:
             self._sgd_plan_ahead()
 
