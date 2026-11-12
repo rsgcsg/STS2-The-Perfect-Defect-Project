@@ -159,6 +159,29 @@ def test_wrong_preservation_or_peer_is_rejected_before_ledger(
         prepared(evaluate, execution, tmp_path)
 
 
+def test_shared_local_mode_is_named_and_exact(evaluate, execution, tmp_path):
+    """Lead 11-12: fast-chain eval without R2 = a named mode, never a fallback."""
+    shared = str((tmp_path / 'shared-peer').resolve())
+    value = json.loads(execution.read_bytes())
+    value.update(peer={'kind': 'local', 'directory': shared}, store=shared)
+    selections = {'model-1': 'model-1', 'model-2': 'model-2', 'model-3': 'model-3'}
+    with pytest.raises(ValueError, match='fixed_remote_evaluation'):  # not named: refused
+        evaluate.validate_execution(value, selections)
+    value['storage_mode'] = 'shared_local'
+    evaluate.validate_execution(value, selections)
+    for changed in ({'store': str(tmp_path / 'elsewhere')},
+                    {'peer': {'kind': 'local', 'directory': 'relative'}, 'store': 'relative'},
+                    {'peer': {'kind': 'local', 'directory': shared,
+                              'archive': {'kind': 'local', 'directory': '/a'}}},
+                    {'peer': json.loads(execution.read_bytes())['peer'], 'store': 's3'},
+                    {'storage_mode': 'local'}):
+        with pytest.raises(ValueError, match='fixed_remote_evaluation'):
+            evaluate.validate_execution({**value, **changed}, selections)
+    # The remote mode is unchanged, spelled or not.
+    original = json.loads(execution.read_bytes())
+    evaluate.validate_execution({**original, 'storage_mode': 'remote'}, selections)
+
+
 def test_fixed20_seed_tampering_stays_rejected_by_original_reader(evaluate, execution, tmp_path):
     from spireagent.json_boundary import BoundaryError
     from stpd.evaluation.suites import load_suite
