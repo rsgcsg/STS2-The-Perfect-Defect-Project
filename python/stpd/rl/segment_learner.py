@@ -1884,7 +1884,7 @@ class SegmentLearner:
             self.input_fenced = self.newlease_stopped = True
             self.input_failure = {"operation": operation, "code": "INVALID_PACKET",
                                   "error_type": type(error).__name__,
-                                  "error": str(error)[:200]}
+                                  "error": str(error)[:400]}
             self.condition.notify_all()
             self._notify_capacity(force=True)
 
