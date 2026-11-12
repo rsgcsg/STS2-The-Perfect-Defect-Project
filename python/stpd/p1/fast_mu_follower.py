@@ -98,8 +98,9 @@ class FastMuFollower:
                 or any(not interval < limit <= stall_seconds for limit in limits.values())):
             raise ValueError("invalid_fast_mu_follower_settings")
         self.stage_seconds = limits
-        self.stage: str | None = None  # the stage the running poll is in
-        self.stage_began: float | None = None
+        # (stage, began) of the running poll, swapped as one tuple so the watchdog
+        # never pairs a new stage with the previous stage's start.
+        self.mark: tuple[str | None, float | None] = (None, None)
         self.stage_max: dict[str, float] = {}
         self.stalled: dict[str, Any] | None = None
         self.source, self.service = source, service
@@ -131,10 +132,10 @@ class FastMuFollower:
     def _enter(self, stage: str | None) -> None:
         """Mark the stage the poll is in now; the watchdog holds it to its limit."""
         now = self.clock()
-        previous, began = self.stage, self.stage_began
+        previous, began = self.mark
         if previous is not None and began is not None:
             self.stage_max[previous] = max(self.stage_max.get(previous, 0.0), now - began)
-        self.stage, self.stage_began = stage, (None if stage is None else now)
+        self.mark = (stage, None if stage is None else now)
 
     def _limit(self, stage: str) -> float:
         return self.stage_seconds[stage.split(".", 1)[0]]
@@ -290,12 +291,12 @@ class FastMuFollower:
         while not self.stopping.wait(min(self.interval, self.stall_seconds / 4)):
             if self.fatal is not None or (self.thread is not None and not self.thread.is_alive()):
                 return
-            began, stage, stage_began = self.step_began, self.stage, self.stage_began
+            began, (stage, stage_began) = self.step_began, self.mark
             if began is None:
                 continue
             now = self.clock()
-            if stage is not None and stage_began is not None and \
-                    now - stage_began > self._limit(stage):
+            if (stage is not None and stage_began is not None
+                    and now - stage_began > self._limit(stage)):
                 stalled = {"stage": stage, "seconds": round(now - stage_began, 3),
                            "limit": self._limit(stage)}
             elif now - began > self.stall_seconds:
@@ -365,7 +366,7 @@ class FastMuFollower:
                 "total_failures": self.counters["failures"],
                 "error": None if self.error is None else repr(self.error),
                 "fatal": None if self.fatal is None else repr(self.fatal),
-                "stopped": self.stopped(), "stage": self.stage, "stalled": self.stalled,
+                "stopped": self.stopped(), "stage": self.mark[0], "stalled": self.stalled,
                 "stage_max_seconds": {key: round(value, 3)
                                       for key, value in self.stage_max.items()},
                 **counters}
