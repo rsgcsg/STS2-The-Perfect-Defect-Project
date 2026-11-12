@@ -19,10 +19,10 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import CancelledError, Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -308,14 +308,50 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
                 os.getpid(),
             )
 
-        return decode()
+        with _collector_paused():
+            return decode()
     finally:
         gc.collect()
         with suppress(BufferError):
             mapping.close()
 
 
-def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
+@contextmanager
+def _collector_paused() -> Iterator[None]:
+    """Run one bounded worker task without the cyclic collector.
+
+    Unpacking builds about a million short-lived acyclic objects per batch, and
+    the generational collector rescans every live one of them many times while
+    they accumulate. Reference counting still frees them; the caller runs
+    one `gc.collect()` when the task ends, so cycles are reclaimed per task.
+    """
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _only_rows(tree: Any, rows: frozenset[int] | None) -> Any:
+    """Auxiliary-only source: keep just the selected frames before unpacking.
+
+    Every other field is still mapped in full, so membership, compiler and
+    row-binding checks see the same values; an unselected frame is `None`
+    and is never read (auxiliary_frame binds only its own row).
+    """
+    if rows is None:
+        return tree
+    return dc.replace(
+        tree, frames=tuple(f if i in rows else None for i, f in enumerate(tree.frames)))
+
+
+def _opened(
+    ready: tuple[_ReadySource, ...],
+    operation: Any,
+    partial: dict[int, frozenset[int] | None] | None = None,
+) -> Any:
     handles = {}
     for name in {name for item in ready for name in item.arrays.names} | {
             item.descriptor.name for item in ready}:
@@ -325,19 +361,23 @@ def _opened(ready: tuple[_ReadySource, ...], operation: Any) -> Any:
 
         def run() -> Any:
             packets = []
-            for item in ready:
+            for index, item in enumerate(ready):
                 d = item.descriptor
                 if int.from_bytes(handles[d.name][:8], "little") != d.epoch:
                     raise ValueError("binary_shared_slot_epoch_changed")
                 arrays = item.arrays.views(handles)
-                source = bp.unpack_transport((pickle.loads(item.tree), arrays))
+                tree = pickle.loads(item.tree)
+                if partial is not None and index in partial:
+                    tree = _only_rows(tree, partial[index])
+                source = bp.unpack_transport((tree, arrays))
                 source = dc.replace(
                     source, pid=item.pid, seconds={"binary_source_decode_seconds": item.seconds}
                 )
                 packets.append((source, item.header))
             return operation(packets)
 
-        return run()
+        with _collector_paused():
+            return run()
     finally:
         gc.collect()
         for handle in handles.values():
@@ -396,7 +436,17 @@ def _assemble(
             handoff=handoff,
         )
 
-    return _opened(ready, work)
+    # A source used only for auxiliary rows is unpacked for those rows alone;
+    # a PPO member is always unpacked whole.
+    partial: dict[int, frozenset[int] | None] = {}
+    for index, ref, _member_ref in auxiliary:
+        if index in member_indices:
+            continue
+        row = ref.get("row") if isinstance(ref, dict) else None
+        rows = partial.get(index, frozenset())
+        # An unexpected row shape maps the whole source, so the same checks fire.
+        partial[index] = rows | {row} if type(row) is int and rows is not None else None
+    return _opened(ready, work, partial)
 
 
 def _member(source: Any, header: dict[str, Any], member: Any, generation: str) -> None:

@@ -1,4 +1,4 @@
-"""Vectorized joint reductions and text deduplication equal the per-bucket originals.
+"""Vectorized joint reductions, text deduplication and role metadata equal the originals.
 
 The joint reference is the live `tensor_input.joint_nodes` (unchanged; it is a
 rows-encoder reference source); the text reference is the pre-change per-text
@@ -95,6 +95,46 @@ def test_joint_reductions_and_prepared_groups_equal_the_reference(index, monkeyp
             old = batch_preparation.prepare_group(frames, tuple(range(len(frames))), True,
                                                   floors, deduplicate_text=True, layout=layout)
         assert_same(new.tensors, old.tensors)
+
+
+def reference_role_metadata(frames, key, scene_width, catalog_width, physical_rows):  # noqa: ANN001
+    """The pre-change row-by-row `_role_metadata`."""
+    rows: list[list[int]] = []
+    for batch, frame in enumerate(frames):
+        reduction = frame.reductions[key]
+        unpacked: list[list[int]] = []
+        for width, count, indices in reduction.buckets:
+            unpacked.extend((indices.reshape(count, width) + batch * scene_width).tolist())
+        inverse = reduction.inverse.tolist()
+        rows.extend([unpacked[index] for index in inverse]
+                    + [[] for _ in range(catalog_width - len(frame.choices))])
+    rows.extend([[] for _ in range((physical_rows - len(frames)) * catalog_width)])
+    width = batch_preparation._bucket(max(map(len, rows), default=0), (1, 2, 4, 8, 16, 32, 64))
+    indices = torch.zeros((len(rows), width), dtype=torch.long)
+    weights = torch.zeros((len(rows), width), dtype=torch.float32)
+    for row, values in enumerate(rows):
+        if values:
+            indices[row, : len(values)] = torch.tensor(values)
+            weights[row, : len(values)] = 1.0 / len(values)
+    return indices, weights
+
+
+@pytest.mark.parametrize("index", range(13))
+def test_role_metadata_equals_the_row_by_row_reference(index):
+    frames = fixture_frames()[index]
+    catalog = max(len(frame.choices) for frame in frames)
+    scene = 1 + max(frame.entity_count for frame in frames)
+    used = False
+    for key in ("source", "target"):
+        for width, rows in ((catalog, len(frames)), (catalog + 3, len(frames) + 2)):
+            args = (frames, key, scene, width, rows)
+            expected = reference_role_metadata(*args)
+            assert_same(batch_preparation._role_metadata(*args), expected)
+            used |= bool(expected[1].any())
+    assert used  # the fixture binds real scene indices, not only empty rows
+    # No frames at all: only empty physical rows.
+    args = ([], "source", scene, catalog, 2)
+    assert_same(batch_preparation._role_metadata(*args), reference_role_metadata(*args))
 
 
 def with_text(frame: TensorFrame, ids: torch.Tensor, numbers: torch.Tensor,
