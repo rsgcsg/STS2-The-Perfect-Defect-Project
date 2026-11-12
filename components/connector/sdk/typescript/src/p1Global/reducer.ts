@@ -1,7 +1,7 @@
 import { abandonIntention, boundAbandonIntention, completeAbandonConfirmation, completeAbandonIntention, matchesAbandonIntention, type AbandonIntention } from "./abandonForward.js";
 import { reprojectSettledRelicCounters, type SettledRelicCounterProjection } from "../settledRelicCounters.js";
 import { decodePlayerRead } from "../protocol.js";
-import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
+import { decodePublicSourceSnapshot as decodePlayerSnapshot, passedPublicBasisLightCheck } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
@@ -369,6 +369,29 @@ function publicDetailContent(kind: string, content: unknown): unknown {
   return rest;
 }
 
+/** Fast-chain reduce decode policy (C1, off by default = today's strict decode on every call).
+ * When on, a basis that passed checkPublicBasisLight in this process (same objects) skips the
+ * repeated strict zod decode of its snapshot and Reads and the repeated finite-number walk;
+ * every `strictInterval`-th such reduce still decodes strictly, and any other basis always does.
+ * Output is unchanged for valid input (the strict decode returns the same raw objects). */
+export interface ReduceDecodeConfig { readonly strictInterval: number }
+let reduceDecode: ReduceDecodeConfig | null = null;
+let reduceDecodeCounts = { light: 0, strict: 0 };
+let reduceDecodeOrdinal = 0;
+export function configureReduceDecode(config: ReduceDecodeConfig | null): void {
+  if (config !== null && (!Number.isInteger(config.strictInterval) || config.strictInterval < 1))
+    throw new Error("reduce decode strictInterval must be a positive integer");
+  reduceDecode = config; reduceDecodeCounts = { light: 0, strict: 0 }; reduceDecodeOrdinal = 0;
+}
+export function reduceDecodeStats(): { light: number; strict: number } { return { ...reduceDecodeCounts }; }
+function lightDecode(basis: P1Basis): boolean {
+  if (reduceDecode === null) return false;
+  if (!passedPublicBasisLightCheck(basis) || reduceDecodeOrdinal++ % reduceDecode.strictInterval === 0) {
+    reduceDecodeCounts.strict += 1; return false;
+  }
+  reduceDecodeCounts.light += 1; return true;
+}
+
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   return reduceCatalog(state, basis);
 }
@@ -383,7 +406,9 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   // Validate the original navigation capsule before counter projection. Its
   // unfurled PB remains literal capture provenance, not another model carrier.
-  const originalSnapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const light = lightDecode(basis);
+  const checkedBasis = basis;
+  const originalSnapshot = (light ? basis.snapshot : decodePlayerSnapshot(basis.snapshot).raw) as Record<string, any>;
   const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
   if (settled) basis = settled.basis;
   const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
@@ -469,7 +494,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   if (hasAbandonIntention && (nativeKind !== "event_option" || !completeAbandonIntention(expansion.abandon_confirmation)
       || !boundAbandonIntention(expansion, snapshot.bound_actions.actions)))
     missing.push("required:abandon_intention_public_facts_or_binding");
-  if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
+  if (!(light && basis === checkedBasis) && !hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
   // An accepted combat input can execute while a different potion popup is
   // visible. Its same-capture combat context and A(S) still own the input;
   // preserve the actual popup as public information rather than invent a UI.
@@ -514,7 +539,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     let read: Record<string, any> | null = null;
     if (captures.length !== 1 || captures[0]!.response == null || captures[0]!.error !== null || captures[0]!.kind !== listed.kind) missing.push(`read:${listed.kind}:${listed.read_id}:missing_or_ambiguous`);
     else {
-      const decoded = decodePlayerRead(captures[0]!.response).raw as Record<string, any>;
+      const decoded = (light ? captures[0]!.response : decodePlayerRead(captures[0]!.response).raw) as Record<string, any>;
       if (decoded.read_id !== listed.read_id || decoded.expected_snapshot_id !== snapshot.snapshot_id
           || decoded.observed_snapshot_id !== snapshot.snapshot_id || decoded.kind !== listed.kind
           || decoded.content_schema !== listed.content_schema || decoded.completeness?.status !== "complete"

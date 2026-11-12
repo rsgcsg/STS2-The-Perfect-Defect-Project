@@ -44,7 +44,11 @@ export interface FastEnvConfig {
    *  is pure overhead (hits ≈ 0); allowed on their own so each layer can still be measured. */
   memo: { native_card: { deck: boolean; hud: boolean } | null;
     receipt_canonical: { check_interval: number } | null };
-  checks: { sample_rate: number };
+  /** `reduce_light` (C1, off when absent or null): a basis that passed the Host light check in this
+   *  process skips the SDK reduce's repeated strict zod decode of its snapshot and Reads (and the
+   *  repeated finite-number walk); every `strict_interval`-th such reduce still decodes strictly and
+   *  the sampled Host full checks (`sample_rate`) are unchanged. A strict decode failure stays loud. */
+  checks: { sample_rate: number; reduce_light: { strict_interval: number } | null };
   decision_link: { kind: "unix"; path: string };
   inference: { timeout_ms: number; actor_id: string; sampling: Sampling; single_choice: "score" | "omit" };
   /** Under `single_choice: "omit"` `max_decisions_per_game` counts model rows only (multi-choice
@@ -156,7 +160,10 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     const n = obj(memo.native_card, "memo.native_card", ["deck", "hud"]);
     nativeCard = { deck: bool(n.deck, "memo.native_card.deck"), hud: bool(n.hud, "memo.native_card.hud") };
   }
-  const checks = obj(v.checks, "checks", ["sample_rate"]);
+  const checks = obj(v.checks, "checks", ["sample_rate", "reduce_light"]);
+  const reduceLight = checks.reduce_light === null || checks.reduce_light === undefined ? null
+    : { strict_interval: int(obj(checks.reduce_light, "checks.reduce_light", ["strict_interval"]).strict_interval,
+      "checks.reduce_light.strict_interval", 1, 1024) };
   const link = obj(v.decision_link, "decision_link", ["kind", "path"]);
   if (link.kind !== "unix") throw new FastEnvContractError("decision_link.kind");
   const inference = obj(v.inference, "inference", ["timeout_ms", "actor_id", "sampling", "single_choice"]);
@@ -186,7 +193,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
       projection_memo: projectionMemo },
     memo: { native_card: nativeCard,
       receipt_canonical: interval(memo.receipt_canonical, "memo.receipt_canonical") },
-    checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1) },
+    checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1), reduce_light: reduceLight },
     decision_link: { kind: "unix", path: str(link.path, "decision_link.path") },
     inference: { timeout_ms: int(inference.timeout_ms, "inference.timeout_ms", 1, 600_000),
       actor_id: str(inference.actor_id, "inference.actor_id", ID), sampling: parseSampling(inference.sampling, "inference.sampling"),

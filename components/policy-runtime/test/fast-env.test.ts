@@ -868,6 +868,40 @@ describe("fast-env failure paths", () => {
     expect(() => parseFastEnvConfig(raw({ projection: {} }))).toThrow(/memo.projection/u);
   });
 
+  it("C1 reduce_light config: off unless named, strict_interval 1..1024, unknown keys refused", () => {
+    const raw = (checks: unknown) => ({ schema: "sts2.policy-runtime/fast-env-config-1", env_process_id: "e", slots: 1,
+      host: { package: "p", candidate_directory: "c", game_directory: null, character: "Defect", language: "en", ascension: 0, request_timeout_ms: 30000 },
+      agent_manifest: "m", compact: { enabled: false, reconcile_interval: 64 }, checks, decision_link: { kind: "unix", path: "/l" },
+      inference: { timeout_ms: 1000, actor_id: "a", single_choice: "omit", sampling: SAMPLING },
+      budget: { max_decisions_per_game: 1, max_native_steps_per_game: 1, game_wall_ms: 1 }, no_progress: null, evidence: { directory: "/e" } });
+    expect(parseFastEnvConfig(raw({ sample_rate: 0 })).checks).toEqual({ sample_rate: 0, reduce_light: null });
+    expect(parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: null })).checks.reduce_light).toBeNull();
+    expect(parseFastEnvConfig(raw({ sample_rate: 0.01, reduce_light: { strict_interval: 64 } })).checks)
+      .toEqual({ sample_rate: 0.01, reduce_light: { strict_interval: 64 } });
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 0 } }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 1025 } }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: {} }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 8, every: 1 } }))).toThrow(/checks.reduce_light/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, light: true }))).toThrow(/checks.light/u);
+  });
+
+  it("C1 reduce_light: off = no counter (status exactly today's); on = light/strict counts reported", async () => {
+    const off = await harness({ hooks: () => ({ terminalAfter: 2 }) });
+    expect(off.config.checks.reduce_light).toBeNull();
+    off.open(0);
+    await off.next(event => event.event === "closed");
+    off.send({ cmd: "status" });
+    expect((await off.next(event => event.event === "status")).counters).not.toHaveProperty("reduce_light");
+    const on = await harness({ hooks: () => ({ terminalAfter: 3 }), edit: config => { config.checks = { ...config.checks, reduce_light: { strict_interval: 8 } }; } });
+    on.open(0);
+    expect(await on.next(event => event.event === "closed")).toMatchObject({ reason: "terminal" });
+    on.send({ cmd: "status" });
+    const { reduce_light: light } = (await on.next(event => event.event === "status")).counters;
+    // The fake Host never runs the SDK light check, so every reduce here decodes strictly.
+    expect(light).toMatchObject({ light: 0, strict_interval: 8 });
+    expect(light.strict).toBeGreaterThan(0);
+  });
+
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {
     const h = await harness({ sink: dir => defaultFastEvidenceSink(dir) });
     expect(defaultFastEvidenceSink("/unused")).toBeInstanceOf(FastActionEvidenceSink);

@@ -14,7 +14,7 @@ import { FastActionEvidenceSink } from "../global-fast-storage.js";
 import { hostSlotNativeFactory, type SlotNativeFactory } from "./host.js";
 import { coldStartGate, defaultColdStartDirectory, type ColdStartGate } from "./cold-start.js";
 import { SlotKernel, emptyStats, type KernelContext, type KernelStats } from "./kernel.js";
-import { isDeepFrozen } from "@rsgcsg/sts2-connector-client/p1-global";
+import { configureReduceDecode, isDeepFrozen, reduceDecodeStats } from "@rsgcsg/sts2-connector-client/p1-global";
 import { CanonicalTextMemo } from "./json-bytes.js";
 
 const COMPACT_FORMAT = "managed-native-compact-1";
@@ -62,6 +62,8 @@ export class FastEnvProcess {
   constructor(private readonly deps: FastEnvDependencies) {
     let rowId = 0;
     const memo = deps.config.memo;
+    // C1: process-wide SDK reduce decode policy (null = today's strict decode on every reduce).
+    configureReduceDecode(deps.config.checks.reduce_light ? { strictInterval: deps.config.checks.reduce_light.strict_interval } : null);
     const emit = (event: string, data: Record<string, unknown>) => {
       if (event === "closed") this.#gamesClosed += 1;
       deps.write(`${JSON.stringify({ schema: FAST_ENV_EVENT_SCHEMA, event, ...data })}\n`);
@@ -171,10 +173,12 @@ export class FastEnvProcess {
   /** Only when a memo layer is on (all off: the counters are exactly today's). */
   #memoCounters(): Record<string, unknown> {
     const { compact, memo } = this.deps.config;
-    if (!compact.projection_memo && !memo.native_card && !memo.receipt_canonical) return {};
+    const reduceLight = this.deps.config.checks.reduce_light;
+    const light = reduceLight ? { reduce_light: { ...reduceDecodeStats(), strict_interval: reduceLight.strict_interval } } : {};
+    if (!compact.projection_memo && !memo.native_card && !memo.receipt_canonical) return light;
     return { memo: { memo_divergences: this.stats.memo_divergences, native_card: memo.native_card,
       projection: compact.projection_memo ? { ...this.stats.projection_memo, check_interval: compact.projection_memo.check_interval } : null,
-      receipt_canonical: this.#ctx.receiptCanonical?.status() ?? null } };
+      receipt_canonical: this.#ctx.receiptCanonical?.status() ?? null }, ...light };
   }
 
   async #status(commandId: string): Promise<void> {
