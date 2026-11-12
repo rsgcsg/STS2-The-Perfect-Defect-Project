@@ -72,6 +72,9 @@ Rules:
   read counts and is retried next poll like a failed load. Without `weights`
   (the default) handoffs carry none, and an R7 game fails loud in the assembler
   (`audit_mu_archive_unconfigured` / `audit_mu_weights_missing`).
+  Memory: the ~20 MB pack is broadcast with every publish (R7 game open or
+  not); each service process keeps one in its ledger (N services x ~20 MB per
+  card) and this follower keeps one more while a service lags.
 """
 from __future__ import annotations
 

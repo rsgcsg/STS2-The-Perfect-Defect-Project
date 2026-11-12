@@ -225,3 +225,72 @@ def test_only_the_latest_mu_keeps_its_pack_in_memory_and_r7_still_archives(tmp_p
     assert h.sealed
     for item in (first, second):
         assert archive.read(item[0]["snapshot_sha256"], "gen-1")[1] == pack(*item)
+
+
+_HOLD = '''
+import sys, time
+sys.path[:0] = sys.argv[3:]
+from pathlib import Path
+from spireagent.instance_lock import instance_lock
+with instance_lock(Path(sys.argv[1]), blocking=True):
+    print("held", flush=True)
+    while not Path(sys.argv[2]).exists():
+        time.sleep(0.01)
+'''
+
+
+def test_prune_and_a_re_archive_in_another_process_are_serialized(tmp_path):
+    """Review E: a CP restore re-archives a snapshot under a new generation while
+    another process prunes the old generation; the weights must survive."""
+    import subprocess
+    import sys
+    import threading
+
+    archive = local_mu_archive(tmp_path / "r7-mu")
+    first = snapshot(1)
+    raw = pack(*first)
+    snap = first[0]["snapshot_sha256"]
+    archive(handoff(first[0], raw))  # gen-1, about to be pruned
+    release = tmp_path / "release"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD, str(archive.root / fast_mu_pack.LOCK), str(release),
+         *sys.path], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        done: list[list[str]] = []
+        pruner = threading.Thread(target=lambda: done.append(
+            prune(archive, lambda mu: mu["training_generation"] != "gen-1")))
+        pruner.start()
+        writer = threading.Thread(target=archive, args=(handoff(first[0], raw, "gen-2"),))
+        writer.start()
+        pruner.join(0.3)
+        writer.join(0.3)
+        assert pruner.is_alive() and writer.is_alive()  # both wait for the other process
+        assert len(list(archive.root.glob("*.json"))) == 1
+        release.touch()
+        holder.wait(10)
+        pruner.join(10)
+        writer.join(10)
+    finally:
+        release.touch()
+        holder.kill()
+        holder.wait()
+    assert not pruner.is_alive() and not writer.is_alive()
+    # Whichever ran first, gen-2 is complete and its weights are kept.
+    assert archive.read(snap, "gen-2")[1] == raw
+    assert archive._manifest_path(snap, "gen-1").name in done[0]
+    assert not archive._manifest_path(snap, "gen-1").exists()
+
+
+def test_node_cache_weights_fails_loud_when_the_snapshot_was_trimmed(tmp_path):
+    identity = write_snapshot(tmp_path, 1)
+    root = tmp_path / identity["snapshot_sha256"]
+    for path in root.iterdir():
+        path.unlink()
+    root.rmdir()
+    with pytest.raises(OSError):
+        node_cache_weights(Cache(tmp_path), identity)
+    follower = FastMuFollower(Source(identity), Service(),
+                              weights=lambda i: node_cache_weights(Cache(tmp_path), i))
+    with pytest.raises(OSError):
+        follower.step()

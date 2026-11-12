@@ -20,6 +20,18 @@ Production use (lead 11-12): the archive root is on the run's local disk
 (never R2), only mu bound by R7-sampled games are written (the assembler
 archives only while an `audit_retain_mu` game is open), and `prune` removes
 entries together with the checkpoints the run prunes.
+
+Concurrency: every inference service process archives into the same root and
+the run prunes from another process. One OS file lock (`<root>/mu/.archive.lock`,
+`flock`, released on process death) serializes each archive write and each
+whole prune, so a prune never sees half of a re-archive (a CP restore brings a
+snapshot back under a new generation while its weights file already exists).
+
+Memory: the pack (~20 MB, one snapshot) rides on every `MuHandoff` the follower
+publishes, whether or not an R7 game is open. An inference card broadcasts it to
+each service process, and each process's ledger keeps one (its latest): about
+N services x 20 MB per card, plus the follower's copy while a service lags, and
+roughly twice the bytes per publish broadcast.
 """
 from __future__ import annotations
 
@@ -30,6 +42,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from spireagent.instance_lock import instance_lock
+
 from .fast_handoff import DurableMuArchive, HandoffError
 
 PACK_SCHEMA = "stpd/rl-fast-mu-pack-1"
@@ -37,6 +51,7 @@ FILES = ("model.tensor-tree", "model.json", "heads.tensor-tree", "model-manifest
          "heads-manifest.json")
 NUMERICAL = ("precision", "tf32", "projection", "execution", "adapter", "deduplicate_text")
 MAX_HEADER = 1 << 20
+LOCK = ".archive.lock"  # inside DurableMuArchive.root; never matches *.json / *.weights
 
 
 def _sha(raw: bytes | memoryview) -> str:
@@ -157,9 +172,17 @@ def unpack(raw: bytes, cache_root: Path) -> Path:
     return target
 
 
-def local_mu_archive(root: Path | str) -> DurableMuArchive:
+class LocalMuArchive(DurableMuArchive):
+    """`DurableMuArchive` whose writes hold the archive's cross-process lock."""
+
+    def __call__(self, handoff: Any) -> None:
+        with instance_lock(self.root / LOCK, blocking=True):
+            super().__call__(handoff)
+
+
+def local_mu_archive(root: Path | str) -> LocalMuArchive:
     """The production R7 `mu_archive`: a local directory, checked by `snapshot_of`."""
-    return DurableMuArchive(root, snapshot_of=snapshot_of)
+    return LocalMuArchive(root, snapshot_of=snapshot_of)
 
 
 def prune(archive: DurableMuArchive, keep: Callable[[dict[str, Any]], bool]) -> list[str]:
@@ -168,9 +191,15 @@ def prune(archive: DurableMuArchive, keep: Callable[[dict[str, Any]], bool]) -> 
     The run decides the rule (lead 11-12: entries go with the checkpoints it
     prunes, after their R7 replays). A manifest goes first, then the weights of a
     snapshot whose last manifest it was. One unreadable manifest refuses the
-    whole call before anything is removed; nothing is deleted blindly. Call it
-    from the archive's owner, not concurrently with archiving a pruned snapshot.
+    whole call before anything is removed; nothing is deleted blindly. The whole
+    call holds the archive lock, so an archive write in any process happens
+    entirely before or entirely after it.
     """
+    with instance_lock(archive.root / LOCK, blocking=True):
+        return _prune(archive, keep)
+
+
+def _prune(archive: DurableMuArchive, keep: Callable[[dict[str, Any]], bool]) -> list[str]:
     entries: list[tuple[Path, dict[str, Any]]] = []
     for path in sorted(archive.root.glob("*.json")):  # all checked before any removal
         try:
@@ -191,8 +220,8 @@ def prune(archive: DurableMuArchive, keep: Callable[[dict[str, Any]], bool]) -> 
         os.unlink(path)
         removed.append(path.name)
         dropped.add(mu["snapshot_sha256"])
-    # Only weights whose last manifest was removed here: a weights file whose
-    # manifest is still being written (archiving in progress) is never touched.
+    # Only weights of a snapshot whose every manifest was removed here. Under the
+    # lock no archive write is in progress, so this scan saw every manifest.
     for snapshot in sorted(dropped - remaining):
         weights = archive.root / (snapshot + ".weights")
         if weights.exists():
