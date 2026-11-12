@@ -655,6 +655,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bind", default="node", choices=("node", "game"),
                         help="node: node n -> service n %% K; game: service_for_game per game")
     parser.add_argument("--prof", action="store_true")
+    parser.add_argument("--sat-warm-s", type=float, default=0.0,
+                        help="an unscored saturation window of this many seconds before "
+                             "the scored one (its compiles stay out of the score)")
     parser.add_argument("--client-cpus", type=int, default=0,
                         help="first N cores of this process's affinity run the clients only; "
                              "services (all their processes) get the rest; 0 = shared")
@@ -810,12 +813,17 @@ def main(argv: list[str] | None = None) -> None:
                                       "dispatch_seconds"), 0.0)
                 refused: dict[str, int] = {}
                 trace: dict[str, list[int]] = {}
+                dynamo: list[list[int]] = []  # per service: frames_ok, total - ok (eager)
                 for (s0, c0, p0), (s1, c1, p1) in zip(before[0], after, strict=True):
                     for stage, counts in (s1.get("trace") or {}).items():
                         old = (s0.get("trace") or {}).get(stage, [0] * len(counts))
                         mine = trace.setdefault(stage, [0] * len(counts))
                         for i, (x, y) in enumerate(zip(counts, old, strict=True)):
                             mine[i] += x - y
+                    d0, d1 = s0.get("device_dynamo") or {}, s1.get("device_dynamo") or {}
+                    ok = d1.get("dynamo_frames_ok", 0) - d0.get("dynamo_frames_ok", 0)
+                    dynamo.append([ok, d1.get("dynamo_frames_total", 0)
+                                   - d0.get("dynamo_frames_total", 0) - ok])
                     forwards += s1["batches"] - s0["batches"]
                     rows_done += s1["rows"] - s0["rows"]
                     device_s += s1["device_seconds"] - s0["device_seconds"]
@@ -837,7 +845,9 @@ def main(argv: list[str] | None = None) -> None:
                           "main_cores_max": round(main_max / wall, 2),
                           "cpu_us_per_row": {k: round(1e6 * v / per_row, 1)
                                              for k, v in cpu.items()},
-                          "refused": {k: v for k, v in refused.items() if v}}
+                          "refused": {k: v for k, v in refused.items() if v},
+                          "device_dynamo_window": dynamo,
+                          "device_dynamo_window_fields": ["frames_ok", "frames_eager"]}
                 if prof:
                     result["main_us_per_row"] = {k: round(1e6 * v / per_row, 1)
                                                  for k, v in sorted(prof.items())}
@@ -878,21 +888,27 @@ def main(argv: list[str] | None = None) -> None:
                       **deltas(before, wall)})
             if sat:
                 conns, games = (int(x) for x in sat.split("x"))
-                before = snapshot()
-                out = context.Queue()
-                procs = 4 * services
-                clients = [context.Process(target=closed_client, args=(
-                    *args_of(n), max(1, conns // procs), games, a.phase_s, 900 + n, out))
-                    for n in range(procs)]
-                for p in clients:
-                    p.start()
-                results = collect(out, clients)
-                wall = max(r[1] for r in results)
-                lat = sorted(x for r in results for x in r[2])
-                emit({"config": name, "saturation": sat, "in_flight_rows": conns * games,
-                      "rows_per_s": round(sum(r[0] for r in results) / wall),
-                      "p50_ms": pct(lat, 0.5), "p95_ms": pct(lat, 0.95),
-                      **deltas(before, time.perf_counter() - before[1])})
+                # An unscored saturation window first (--sat-warm-s): the services
+                # compile the shapes this load really forms (large buckets) before
+                # the scored window; each record carries its window's compile frames.
+                windows = ([("sat_warm", a.sat_warm_s, 700)] if a.sat_warm_s > 0 else [])
+                for label, seconds, base in [*windows, ("saturation", a.phase_s, 900)]:
+                    before = snapshot()
+                    out = context.Queue()
+                    procs = 4 * services
+                    clients = [context.Process(target=closed_client, args=(
+                        *args_of(n), max(1, conns // procs), games, seconds, base + n, out))
+                        for n in range(procs)]
+                    for p in clients:
+                        p.start()
+                    results = collect(out, clients)
+                    wall = max(r[1] for r in results)
+                    lat = sorted(x for r in results for x in r[2])
+                    emit({"config": name, label: sat, "window_s": seconds,
+                          "in_flight_rows": conns * games,
+                          "rows_per_s": round(sum(r[0] for r in results) / wall),
+                          "p50_ms": pct(lat, 0.5), "p95_ms": pct(lat, 0.95),
+                          **deltas(before, time.perf_counter() - before[1])})
             closed = []
             for _, conn in hosts:
                 conn.send("close")
