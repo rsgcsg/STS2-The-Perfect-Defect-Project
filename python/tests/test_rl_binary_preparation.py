@@ -856,3 +856,133 @@ def test_arena_copy_failure_releases_its_credit_and_fails_loudly(model, tmp_path
         assert all(a.users == 0 for a in preparer.arenas)
     finally:
         preparer.shutdown()
+
+
+def test_prefetch_many_copies_a_batch_in_order_with_two_lock_holds(model, tmp_path):
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    values = [segment(model, name=f"actor/{i}", run_id=f"episode-{i}") for i in range(4)]
+    packets = [enc.encode(v) for v in values]
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    holds = []
+    real = preparer._reserve_copy
+
+    def counted(ref, envelope):
+        holds.append(preparer.condition._is_owned())
+        return real(ref, envelope)
+
+    preparer._reserve_copy = counted
+    try:
+        timing = preparer.prefetch_many(
+            [(ref, p.envelope) for ref, p in zip(refs, packets, strict=True)])
+        assert set(timing) == {"reserve_lock_wait", "reserve", "credit_wait", "copy",
+                               "publish_lock_wait", "publish"}
+        assert timing["credit_wait"] == 0 and all(holds) and len(holds) == 4
+        offsets = [preparer.sources[ref][1].offset for ref in refs]
+        assert offsets == sorted(offsets)  # reserved in member order
+        for ref in refs:
+            index, descriptor = preparer.sources[ref]
+            assert bytes(preparer.arenas[index].mapping[
+                descriptor.offset:descriptor.offset + ref.size]) == provider.packets[ref]
+        # Cached refs are a no-op; changed envelopes still fail loudly.
+        assert preparer.prefetch_many([(refs[0], packets[0].envelope)])["copy"] == 0
+        with pytest.raises(ValueError, match="same_reference_changed_envelope"):
+            preparer.prefetch_many([(refs[1], dict(packets[1].envelope, actor="other"))])
+        for ref in refs:
+            preparer.source_jobs[ref].result(timeout=30)
+    finally:
+        preparer.shutdown()
+
+
+def test_prefetch_many_unwinds_partial_reservation_on_invalid_member(model, tmp_path):
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    packets = [enc.encode(segment(model, name=f"actor/{i}", run_id=f"episode-{i}"))
+               for i in range(2)]
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    try:
+        bad = dict(packets[1].envelope, packet_size=packets[1].envelope["packet_size"] + 1)
+        with pytest.raises(ValueError, match="binary_reference_or_slot_byte_limit"):
+            preparer.prefetch_many([(refs[0], packets[0].envelope), (refs[1], bad)])
+        assert not preparer.copying and not preparer.sources
+        assert all(a.users == 0 for a in preparer.arenas)
+    finally:
+        preparer.shutdown()
+
+
+def test_prefetch_many_publishes_the_rest_when_one_copy_fails(model, tmp_path):
+    class OneChanged(BytesProvider):
+        @contextmanager
+        def borrow(self, ref):
+            data = bytearray(self.packets[ref])
+            if ref.slot == "bad":
+                data[-1] ^= 1
+            yield memoryview(bytes(data))
+
+    provider = OneChanged()
+    enc = encoder(model, tmp_path / "spool")
+    packets = [enc.encode(segment(model, name=f"actor/{i}", run_id=f"episode-{i}"))
+               for i in range(3)]
+    refs = [provider.add(p, s) for p, s in zip(packets, ("a", "bad", "c"), strict=True)]
+    preparer = prepare(model, tmp_path / "prepare", provider)
+    try:
+        with pytest.raises(ValueError, match="binary_provider_integrity_changed"):
+            preparer.prefetch_many([(r, p.envelope) for r, p in zip(refs, packets, strict=True)])
+        assert refs[0] in preparer.sources and refs[2] in preparer.sources
+        assert refs[1] not in preparer.sources and not preparer.copying
+        for ref in (refs[0], refs[2]):
+            preparer.source_jobs[ref].result(timeout=30)
+        preparer.callbacks.submit(lambda: None).result(timeout=20)
+        assert all(a.users == 0 for a in preparer.arenas)
+    finally:
+        preparer.shutdown()
+
+
+def test_concurrent_prefetch_many_under_one_arena_credit_never_deadlocks(model, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    provider = BytesProvider()
+    enc = encoder(model, tmp_path / "spool")
+    packets = [enc.encode(segment(model, name=f"actor/{i}", run_id=f"episode-{i}"))
+               for i in range(9)]
+    preparer = BinaryBatchPreparer(provider=provider, vocabulary=model.vocabulary,
+        workers=1, threads=1, scratch=tmp_path / "prepare", source_slots=1,
+        max_source_bytes=2 * max(len(p.packet) for p in packets) + 8, source_wait_seconds=60)
+    refs = [provider.add(p, f"opaque-{i}") for i, p in enumerate(packets)]
+    held = ()
+    try:
+        preparer.prefetch(refs[0], packets[0].envelope)
+        preparer.source_jobs[refs[0]].result(timeout=30)
+        with preparer.condition:
+            held, _ = preparer._reserve((refs[0],))
+        waiting = threading.Semaphore(0)
+        real_wait = preparer._wait_for_source
+
+        def observed(deadline):
+            waiting.release()
+            return real_wait(deadline)
+
+        preparer._wait_for_source = observed
+        batches = [list(zip(refs[1 + 2 * i:3 + 2 * i], packets[1 + 2 * i:3 + 2 * i],
+                            strict=True)) for i in range(4)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(preparer.prefetch_many,
+                                   [(r, p.envelope) for r, p in batch]) for batch in batches]
+            assert waiting.acquire(timeout=10)
+            preparer._release(held)
+            held = ()
+            timings = [f.result(timeout=120) for f in futures]
+        assert sum(t["credit_wait"] for t in timings) > 0
+        for ref, (index, descriptor) in preparer.sources.items():
+            assert bytes(preparer.arenas[index].mapping[
+                descriptor.offset:descriptor.offset + ref.size]) == provider.packets[ref]
+            preparer.source_jobs[ref].result(timeout=30)
+        preparer.callbacks.submit(lambda: None).result(timeout=20)
+        assert all(a.users == 0 for a in preparer.arenas) and not preparer.copying
+    finally:
+        if held:
+            preparer._release(held)
+        preparer.shutdown()

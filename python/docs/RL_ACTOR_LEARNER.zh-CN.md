@@ -251,6 +251,10 @@ arena全忙时释放部分reservation，在condition上等完成/释放通知，
 但交给preparer的submit仍按派发顺序逐个执行，某批拷贝失败只让该批失败。
 batch_ready的`frontend_prefetch_credit_wait_seconds/frontend_prefetch_copy_seconds/frontend_order_wait_seconds`
 分别报告等arena额度、实际拷贝和等前序submit的时间。
+一批的成员在一次锁持有内预留、一次内发布（`prefetch_many`），信封一次取齐；
+`frontend_prefetch_{envelope,reserve_lock_wait,reserve,publish_lock_wait,publish,other}_seconds`为各阶段。
+`gil_switch_interval_seconds`（可选，0.0001–0.005，省略=解释器默认5 ms）设进程GIL切换间隔；
+数百忙线程下每次让出GIL要等约一个间隔才拿回。
 准备worker与拼批worker分别由
 `preparation_workers/assembly_workers`控制，health给配置数与实际PID/忙时。
 

@@ -1061,14 +1061,10 @@ class BinaryBatchPreparer:
                     packet_header(raw)["envelope"], packet_size=ref.size, packet_sha256=ref.sha256
                 )
             )
-            # numpy releases the GIL for this raw copy (mmap slice assignment
-            # holds it through every page fault), so several dispatch copies
-            # overlap and the learner's other threads keep running meanwhile.
-            target = np.frombuffer(arena.mapping, np.uint8, ref.size, offset)
-            try:
-                np.copyto(target, np.frombuffer(raw, np.uint8))
-            finally:
-                del target  # never keep an export of the arena mapping
+            # Hold the GIL for this ~MB copy. Releasing it (numpy copyto) cost a
+            # whole switch interval per member to get it back while hundreds of
+            # learner threads run: 267 members -> seconds per batch (11-13).
+            arena.mapping[offset : offset + ref.size] = raw
         return copy.deepcopy(bound_envelope)
 
     def _finish_copy(
@@ -1100,7 +1096,9 @@ class BinaryBatchPreparer:
             job: Future = Future()
             job.set_result(_WorkerResult(_RemoteSource(descriptor), os.getpid(), 0.0, 0.0))
             self.source_jobs[ref] = job
-            self.callbacks.submit(self._release, (descriptor,))
+            # Already under the condition: no per-source callback lock hand-off.
+            arena.users -= 1
+            self.condition.notify_all()
             return
         try:
             job = self.pool.submit(_timed, _decode_source, descriptor)
@@ -1162,6 +1160,85 @@ class BinaryBatchPreparer:
         finally:
             if not nested:
                 self._unlink_stale()
+
+    def prefetch_many(
+        self, items: Sequence[tuple[BinaryRef, dict[str, Any]]], *, wait: bool = True,
+    ) -> dict[str, float]:
+        """Copy many provider sources with one lock hold to reserve and one to publish.
+
+        Same validation, bytes and arena rules as `prefetch` per item, in item
+        order. Each round reserves the longest prefix that has arena credit,
+        copies it without the condition and publishes it in one hold; it never
+        waits for credit while holding a reservation, so concurrent callers
+        cannot deadlock on partial reservations. Per-member lock hand-offs (and
+        the GIL convoys they caused under hundreds of learner threads) become
+        two per round. Returns seconds per phase.
+        """
+        timing = dict.fromkeys(("reserve_lock_wait", "reserve", "credit_wait", "copy",
+                                "publish_lock_wait", "publish"), 0.0)
+        deadline = time.monotonic() + self.source_wait_seconds
+        pending = list(items)
+        try:
+            while pending:
+                asked = time.perf_counter()
+                reserved: list[tuple[BinaryRef, dict[str, Any], tuple[int, int]]] = []
+                with self.condition:
+                    held = time.perf_counter()
+                    timing["reserve_lock_wait"] += held - asked
+                    stop = len(pending)
+                    try:
+                        for index, (ref, envelope) in enumerate(pending):
+                            try:
+                                slot = self._reserve_copy(ref, envelope)
+                            except ValueError as error:
+                                if str(error) != "binary_source_slots_busy":
+                                    raise
+                                stop = index
+                                break
+                            if slot is not None:
+                                reserved.append((ref, envelope, slot))
+                    except BaseException:
+                        for ref, _, (arena_index, _) in reserved:
+                            self.copying.discard(ref)
+                            self.arenas[arena_index].users -= 1
+                        self.condition.notify_all()
+                        raise
+                    pending = pending[stop:]
+                    if stop == 0:
+                        # Nothing reserved; this caller holds no credit while it waits.
+                        if not wait:
+                            raise ValueError("binary_source_slots_busy")
+                        waiting = time.perf_counter()
+                        self._wait_for_source(deadline)
+                        timing["credit_wait"] += time.perf_counter() - waiting
+                        timing["reserve"] += waiting - held
+                        continue
+                    timing["reserve"] += time.perf_counter() - held
+                if not reserved:
+                    continue
+                copying = time.perf_counter()
+                copied = [self._copy_source(ref, *slot, envelope, None)
+                          for ref, envelope, slot in reserved]
+                asked = time.perf_counter()
+                timing["copy"] += asked - copying
+                failure: BaseException | None = None
+                with self.condition:
+                    held = time.perf_counter()
+                    timing["publish_lock_wait"] += held - asked
+                    # Every reserved range is published or released; the first
+                    # failure is raised after the rest of the round is settled.
+                    for (ref, _, slot), result in zip(reserved, copied, strict=True):
+                        try:
+                            self._finish_copy(ref, *slot, result)
+                        except BaseException as error:
+                            if failure is None:
+                                failure = error
+                    timing["publish"] += time.perf_counter() - held
+                if failure is not None:
+                    raise failure
+            return timing
+        finally:
+            self._unlink_stale()
 
     def _reserve(
         self, refs: tuple[BinaryRef, ...],

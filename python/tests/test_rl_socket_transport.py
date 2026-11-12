@@ -1376,16 +1376,17 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(
     owner.newlease_stopped = owner.input_fenced = False
     calls = []
 
-    def prefetch(ref, _envelope, *, wait=True):
+    def prefetch_many(items, *, wait=True):
         assert wait is False  # speculative background hints never block consumers
-        with owner.condition:
-            assert (ref.slot, "source-prefetch") in owner.hot_references
-        with owner.binary_sources.borrow(ref) as raw:
-            calls.append((ref, bytes(raw)))
-        return 0.0, 0.0  # (credit wait, copy) seconds
+        for ref, _envelope in items:
+            with owner.condition:
+                assert (ref.slot, "source-prefetch") in owner.hot_references
+            with owner.binary_sources.borrow(ref) as raw:
+                calls.append((ref, bytes(raw)))
+        return {}
 
     refs = []
-    owner.input_preparer = SimpleNamespace(prefetch=prefetch,
+    owner.input_preparer = SimpleNamespace(prefetch_many=prefetch_many,
         cached_sources=lambda: frozenset(refs[:1]) if cached_first else frozenset())
     for index in range(4):
         value = encoded(
@@ -1493,12 +1494,12 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     preparer.pending.add(pending)
     copied = threading.Event()
 
-    def prefetch(_ref, _envelope, *, wait=True):
+    def prefetch_many(_items, *, wait=True):
         assert not preparer.fenced
         copied.set()
-        return 0.0, 0.0
+        return {}
 
-    monkeypatch.setattr(preparer, "prefetch", prefetch)
+    monkeypatch.setattr(preparer, "prefetch_many", prefetch_many)
     with ThreadPoolExecutor(max_workers=1) as executor:
         checkpoint = executor.submit(owner.checkpoint)
         checkpoint.result(2)

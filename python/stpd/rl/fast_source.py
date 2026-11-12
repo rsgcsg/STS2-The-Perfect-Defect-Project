@@ -854,6 +854,11 @@ class FastSources:
         with self.lock:
             return dict(self.entries[ref]["envelope"])
 
+    def envelopes(self, refs: Any) -> list[dict[str, Any]]:
+        """`envelope` for many refs under one lock hold."""
+        with self.lock:
+            return [dict(self.entries[ref]["envelope"]) for ref in refs]
+
     def retain(self, ref: Any, owner: str) -> None:
         with self.lock:
             entry = self.entries.get(ref)

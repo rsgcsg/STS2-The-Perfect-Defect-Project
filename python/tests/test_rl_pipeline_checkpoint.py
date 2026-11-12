@@ -414,7 +414,13 @@ def test_parallel_dispatch_keeps_real_batch_order_and_timings(tmp_path, monkeypa
         for (active, _), batch in zip(pending, batches, strict=True):
             assert batch.request == active["request"]
             for key in ("frontend_prefetch_credit_wait_seconds",
-                        "frontend_prefetch_copy_seconds", "frontend_order_wait_seconds"):
+                        "frontend_prefetch_copy_seconds", "frontend_order_wait_seconds",
+                        "frontend_prefetch_envelope_seconds",
+                        "frontend_prefetch_reserve_lock_wait_seconds",
+                        "frontend_prefetch_reserve_seconds",
+                        "frontend_prefetch_publish_lock_wait_seconds",
+                        "frontend_prefetch_publish_seconds",
+                        "frontend_prefetch_other_seconds"):
                 assert batch.timings[key] >= 0
         assert batches[1].timings["frontend_order_wait_seconds"] > .3
     finally:
@@ -426,3 +432,14 @@ def test_invalid_prepare_dispatch_workers_fail_loudly(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="invalid_prepare_dispatch_workers"):
         binary_owner(tmp_path, monkeypatch, datasets=1,
                      dataplane={"prepare_dispatch_workers": 0})
+
+
+@pytest.mark.parametrize("value", [0.0, 0.01, 1, "0.001"])
+def test_invalid_gil_switch_interval_fails_loudly(tmp_path, monkeypatch, value):
+    import sys
+
+    before = sys.getswitchinterval()
+    with pytest.raises(ValueError, match="invalid_gil_switch_interval_seconds"):
+        binary_owner(tmp_path, monkeypatch, datasets=1,
+                     dataplane={"gil_switch_interval_seconds": value})
+    assert sys.getswitchinterval() == before
