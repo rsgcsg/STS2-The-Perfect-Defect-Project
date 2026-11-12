@@ -56,7 +56,7 @@ from .prepared_batch import AuxiliaryInput
 
 AUTH_ENV = "STPD_REMOTE_PREPARE_AUTH"
 CHUNK_BYTES = 64 * 1024**2
-PROTOCOL = "stpd/rl-remote-prepare-2"
+PROTOCOL = "stpd/rl-remote-prepare-3"
 HANDSHAKE_SECONDS = 60.0
 _code_digest: str | None = None
 
@@ -384,8 +384,9 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
                     try:
                         view = memoryview(mapping)
-                        for start in range(0, used, CHUNK_BYTES):
-                            connection.send_bytes(view[start : min(used, start + CHUNK_BYTES)])
+                        # Unframed: the learner reads exactly `used` bytes.
+                        with socket.socket(fileno=os.dup(connection.fileno())) as raw:
+                            raw.sendall(view[:used])
                         view.release()
                     finally:
                         mapping.close()
@@ -496,12 +497,18 @@ class RemoteAssembly:
             try:
                 if used > len(mapping):
                     raise ValueError("binary_prepared_output_byte_limit")
+                # Raw bytes after the framed reply, straight into the hand-off
+                # file: no intermediate buffers, and recv_into releases the GIL.
+                view = memoryview(mapping)
                 cursor = 0
-                while cursor < used:
-                    _wait(connection, self.timeout)
-                    cursor += connection.recv_bytes_into(mapping, cursor)
-                if cursor != used:
-                    raise RuntimeError("binary_remote_assembly_short_transfer")
+                with socket.socket(fileno=os.dup(connection.fileno())) as raw:
+                    while cursor < used:
+                        _wait(connection, self.timeout)
+                        count = raw.recv_into(view[cursor:used], min(used - cursor, CHUNK_BYTES))
+                        if count == 0:
+                            raise RuntimeError("binary_remote_assembly_short_transfer")
+                        cursor += count
+                view.release()
             finally:
                 mapping.close()
             healthy = True

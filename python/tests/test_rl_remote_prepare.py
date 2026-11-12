@@ -216,6 +216,9 @@ def test_remote_labels_equal_local_labels_and_the_learner_never_decodes(model, t
             groups = preparer.verify_labels(labels, (member,)).result(timeout=60)
             items = [row["prepared_input"] for _, _, rows in groups for row in rows]
             assert items and all(i.body and i.envelope for i in items)
+            deadline = time.monotonic() + 10  # worker records land via the callback thread
+            while not preparer.summary()["workers"] and time.monotonic() < deadline:
+                time.sleep(0.01)
             out[name] = groups, [i.envelope for i in items], preparer.summary()
         finally:
             preparer.shutdown(wait=True, cancel_futures=True)
