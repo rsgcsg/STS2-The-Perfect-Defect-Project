@@ -5,6 +5,7 @@ stayed alive, and the learner waited for data until its deadline (50 minutes).
 """
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import os
 import threading
@@ -182,8 +183,8 @@ def test_a_started_follower_stops_when_its_service_stops():
 def test_the_sender_says_an_orderly_end_after_every_ack():
     segments = bootstrap_and_terminal()
     ours, theirs = multiprocessing.Pipe()
-    process = multiprocessing.Process(target=_sender,
-                                      args=(theirs, segments, closed_for(segments)))
+    process = multiprocessing.get_context("spawn").Process(
+        target=_sender, args=(theirs, segments, closed_for(segments)))
     process.start()
     kinds = []
     while True:
@@ -214,22 +215,39 @@ def test_the_reference_reader_and_the_end_schema():
 
 def _lost_sender(connection: Any, segments: list[Any], stacks: str, how: str) -> None:
     """Hand one segment off, wait for its ack, then end without the orderly end:
-    `crash` dies (os._exit), `close` is a failure path's `finally: sender.close()`."""
+    `crash` dies (os._exit), `close` is a failure path's `finally: sender.close()`.
+
+    Stacks are dumped on SIGUSR1 (sent by the test only on a hang). Never
+    `faulthandler.dump_traceback_later` here: under the fork start method (Linux) the
+    child inherits the parent's armed watchdog (pytest's `faulthandler_timeout`) without
+    its thread, and re-arming it waits forever for that thread."""
     import faulthandler
+    import signal
 
     with open(stacks, "w") as handle:  # only read when the test fails
-        faulthandler.dump_traceback_later(15, file=handle)
+        faulthandler.register(signal.SIGUSR1, file=handle, all_threads=True)
         sender = ShmSegmentSender(connection,
                                   assembler_id=segments[0].header["assembler_instance"])
         sender.send(segments[0], Path(__file__))
         sender._drain(block=True)
         if how == "close":
             sender.close()  # release only: never the orderly end
-            faulthandler.cancel_dump_traceback_later()
+            faulthandler.unregister(signal.SIGUSR1)
             connection.close()
             return
-        faulthandler.cancel_dump_traceback_later()
+        faulthandler.unregister(signal.SIGUSR1)
     os._exit(1)  # the service process dies: no end, the channel just reaches EOF
+
+
+def _sender_stacks(process: Any, stacks: Path) -> str | None:
+    """On a hang only: ask a still-running sender for its stacks (SIGUSR1)."""
+    import signal
+
+    if process.is_alive():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(process.pid, signal.SIGUSR1)
+        time.sleep(1)
+    return stacks.read_text() if stacks.exists() else None
 
 
 @pytest.mark.parametrize("how,exitcode", [("crash", 1), ("close", 0)])
@@ -242,15 +260,16 @@ def test_a_channel_ending_without_the_end_fences_the_learner(tmp_path, monkeypat
         sealed = game(owner, "g1")
         admission(owner, "g1", 1)
         ours, theirs = multiprocessing.Pipe()
-        process = multiprocessing.Process(target=_lost_sender,
-                                          args=(theirs, sealed, str(stacks), how))
+        process = multiprocessing.get_context("spawn").Process(
+            target=_lost_sender, args=(theirs, sealed, str(stacks), how))
         process.start()
         theirs.close()
         reader = owner.attach_fast_handoff(ours)
-        reader.join(60)
+        reader.join(45)  # under CI's faulthandler_timeout (60 s)
         state = {"reader_alive": reader.is_alive(), "fenced": owner.input_fenced,
-                 "failure": owner.input_failure, "sender_exitcode": process.exitcode,
-                 "sender_stacks": stacks.read_text() if stacks.exists() else None}
+                 "failure": owner.input_failure, "sender_exitcode": process.exitcode}
+        if state["reader_alive"]:
+            state["sender_stacks"] = _sender_stacks(process, stacks)
         # The learner's verdict first, then the sender.
         assert not state["reader_alive"], state
         assert owner.input_fenced and owner.newlease_stopped, state
@@ -285,8 +304,8 @@ def test_an_orderly_end_leaves_the_learner_running(tmp_path, monkeypatch):
         sealed = game(owner, "g1")
         admission(owner, "g1", 1)
         ours, theirs = multiprocessing.Pipe()
-        process = multiprocessing.Process(target=_sender,
-                                          args=(theirs, sealed, closed_for(sealed)))
+        process = multiprocessing.get_context("spawn").Process(
+            target=_sender, args=(theirs, sealed, closed_for(sealed)))
         process.start()
         theirs.close()
         reader = owner.attach_fast_handoff(ours)
