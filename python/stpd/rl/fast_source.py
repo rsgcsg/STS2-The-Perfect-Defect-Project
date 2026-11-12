@@ -121,6 +121,15 @@ class FastIntakeError(ValueError):
     """A broken fast-chain contract on the learner side: loud, never repaired."""
 
 
+def _identity_fence(code: str, instance_id: str, assembler: Any,
+                    earlier: Any) -> FastIntakeError:
+    """An instance identity fence that names who collided: the instance, the
+    assembler of this message and the one the instance was first seen / finished
+    under. The code stays first (the learner keeps `str(error)[:400]`)."""
+    return FastIntakeError(f"{code} instance={instance_id} assembler={assembler} "
+                           f"earlier_assembler={earlier}")
+
+
 def fast_envelope(header: dict[str, Any], *, size: int, digest: str, run: str,
                   attestation: dict[str, Any], gae_lambda: float) -> dict[str, Any]:
     """The learner's own record of one admitted segment (never sent anywhere).
@@ -416,6 +425,8 @@ class FastSegmentIntake:
         self.instances: dict[str, _Instance] = {}
         # Finished instances: id -> excluded reason (None = clean). Bounded, FIFO.
         self.finished: collections.OrderedDict[str, str | None] = collections.OrderedDict()
+        # The assembler each finished instance closed under (fence diagnostics only).
+        self.finished_by: dict[str, str] = {}
         self.buffer: collections.deque[FastSegment] = collections.deque()
         self.counters: dict[str, Any] = collections.defaultdict(int)
         self.excluded_by_reason: dict[str, int] = collections.defaultdict(int)
@@ -436,6 +447,7 @@ class FastSegmentIntake:
             self.buffer.clear()
             self.instances.clear()
             self.finished.clear()
+            self.finished_by.clear()
             self.published.clear()
             self.generation = generation
 
@@ -538,10 +550,13 @@ class FastSegmentIntake:
                 raise FastIntakeError("fast_segment_mu_not_published")
             instance_id = segment.instance
             if instance_id in self.finished:
-                raise FastIntakeError("fast_segment_after_instance_closed")
+                raise _identity_fence("fast_segment_after_instance_closed", instance_id,
+                                      message["assembler_id"],
+                                      self.finished_by.get(instance_id))
             instance = self.instances.setdefault(instance_id, _Instance())
             if instance.assembler_id not in (None, message["assembler_id"]):
-                raise FastIntakeError("fast_instance_from_two_assemblers")
+                raise _identity_fence("fast_instance_from_two_assemblers", instance_id,
+                                      message["assembler_id"], instance.assembler_id)
             instance.assembler_id = message["assembler_id"]
             instance.received += 1
             if instance.facts is not None:
@@ -582,7 +597,9 @@ class FastSegmentIntake:
                 self.counters["labels_old_generation_dropped"] += 1
                 return IntakeDecision()
             if instance_id in self.finished:
-                raise FastIntakeError("fast_labels_after_instance_closed")
+                raise _identity_fence("fast_labels_after_instance_closed", instance_id,
+                                      message["assembler_id"],
+                                      self.finished_by.get(instance_id))
             instance = self.instances.get(instance_id)
             if instance is None or instance.assembler_id != message["assembler_id"]:
                 raise FastIntakeError("fast_labels_for_unknown_instance")
@@ -654,10 +671,13 @@ class FastSegmentIntake:
         instance_id = message["game_instance_id"]
         with self.lock:
             if instance_id in self.finished:
-                raise FastIntakeError("fast_instance_closed_twice")
+                raise _identity_fence("fast_instance_closed_twice", instance_id,
+                                      message["assembler_id"],
+                                      self.finished_by.get(instance_id))
             instance = self.instances.setdefault(instance_id, _Instance())
             if instance.assembler_id not in (None, message["assembler_id"]):
-                raise FastIntakeError("fast_instance_from_two_assemblers")
+                raise _identity_fence("fast_instance_from_two_assemblers", instance_id,
+                                      message["assembler_id"], instance.assembler_id)
             sealed = message["segments"]["bootstrap"] + message["segments"]["terminal"]
             if instance.received != sealed:
                 # Hand-off is in order on one Connection: fewer can only mean a
@@ -757,8 +777,9 @@ class FastSegmentIntake:
             return
         self.instances.pop(instance_id, None)
         self.finished[instance_id] = instance.excluded
+        self.finished_by[instance_id] = instance.closed["assembler_id"]
         while len(self.finished) > self.closed_memory:
-            self.finished.popitem(last=False)
+            self.finished_by.pop(self.finished.popitem(last=False)[0], None)
 
 
 class FastSources:

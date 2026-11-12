@@ -372,8 +372,20 @@ def test_broken_sender_order_is_loud():
     done.attest(attest("g1"))
     done.closed(closed_for(segments, segments={"bootstrap": 0, "terminal": 0, "truncated": 0,
                                                "rejected": 0}))
-    with pytest.raises(FastIntakeError, match="after_instance_closed"):
+    # The fence names the instance, this assembler and the one it closed under.
+    with pytest.raises(FastIntakeError,
+                       match=r"^fast_segment_after_instance_closed instance=g1 "
+                             rf"assembler={segments[1].header['assembler_instance']} "
+                             rf"earlier_assembler={segments[1].header['assembler_instance']}$"):
         done.offer(message(segments[1]), segments[1].data)
+    with pytest.raises(FastIntakeError, match=r"^fast_instance_closed_twice instance=g1 "):
+        done.closed(closed_for(segments))
+    two = intake()
+    two.offer(message(segments[0]), segments[0].data)
+    first = segments[0].header["assembler_instance"]
+    with pytest.raises(FastIntakeError, match=r"^fast_instance_from_two_assemblers instance=g1 "
+                                              rf"assembler=other earlier_assembler={first}$"):
+        two.closed(closed_for(segments, assembler_id="other"))
     with pytest.raises(HandoffError):
         i.offer({**message(segments[0]), "rows": 3}, segments[0].data)
 
