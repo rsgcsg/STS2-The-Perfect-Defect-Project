@@ -449,7 +449,8 @@ class RemoteAssembly:
         self.closed = False
         for endpoint in endpoints:
             _address(endpoint)
-            for _ in range(connections):
+        for _ in range(connections):  # interleaved: the first tasks spread over all hosts
+            for endpoint in endpoints:
                 self.idle.put((endpoint, None))
         self.stats = {"tasks": 0, "label_tasks": 0, "sent_bytes": 0, "received_bytes": 0,
                       "sources_sent": 0}
@@ -481,11 +482,14 @@ class RemoteAssembly:
         """Same value as `_timed(_assemble, ready, *args, output, True)` on a local pool."""
         if self.closed:
             raise RuntimeError("remote_prepare_closed")
+        queued = time.perf_counter()
         endpoint, connection = self.idle.get()
         healthy = False
         try:
+            began = time.perf_counter()
             connection, reply, need, sent = self._exchange(
                 endpoint, connection, ready, {"args": args[:5]}, "binary_remote_assembly_failed")
+            replied = time.perf_counter()
             used = reply["summary"]["used_bytes"]
             with open(output, "r+b") as stream:
                 mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
@@ -516,7 +520,11 @@ class RemoteAssembly:
                                   "binary_remote_host_seconds": reply["host_seconds"],
                                   "binary_remote_sources_sent": float(len(need)),
                                   "binary_remote_assembly_cpu_seconds": float(reply["cpu"]),
-                                  "binary_remote_decode_seconds": float(reply["decode_seconds"])}
+                                  "binary_remote_decode_seconds": float(reply["decode_seconds"]),
+                                  "binary_remote_wait_seconds": began - queued,
+                                  "binary_remote_exchange_seconds": replied - began,
+                                  "binary_remote_transfer_seconds":
+                                      time.perf_counter() - replied}
             return binary._WorkerResult(binary._PackedBatch(reply["tree"], arrays, summary),
                                         reply["pid"], reply["wall"], reply["cpu"])
         finally:
@@ -565,32 +573,28 @@ class RemoteAssembly:
 
     @staticmethod
     def _send_sources(connection: Connection, ready: tuple[Any, ...], need: set[str]) -> int:
-        handles: dict[str, mmap.mmap] = {}
+        # One file open at a time per task: concurrent tasks x arenas must not
+        # exhaust descriptors. The copy is small next to the network send.
         sent = 0
-        try:
-            for item in ready:
-                d = item.descriptor
-                digest = source_key(d.envelope)
-                if digest not in need:
-                    continue
-                need.discard(digest)  # one copy per digest
-                if d.name not in handles:
-                    with open(d.name, "rb") as stream:
-                        handles[d.name] = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
-                mapping = handles[d.name]
-                if int.from_bytes(mapping[:8], "little") != d.epoch:
+        for item in ready:
+            d = item.descriptor
+            digest = source_key(d.envelope)
+            if digest not in need:
+                continue
+            need.discard(digest)  # one copy per digest
+            fd = os.open(d.name, os.O_RDONLY)
+            try:
+                if int.from_bytes(os.pread(fd, 8, 0), "little") != d.epoch:
                     raise ValueError("binary_shared_slot_epoch_changed")
-                view = memoryview(mapping)[d.offset : d.offset + d.length]
-                try:
-                    connection.send_bytes(view)
-                finally:
-                    view.release()
-                sent += d.length
-            if need:
-                raise RuntimeError("remote_prepare_unknown_source_requested")
-        finally:
-            for handle in handles.values():
-                handle.close()
+                body = os.pread(fd, d.length, d.offset)
+            finally:
+                os.close(fd)
+            if len(body) != d.length:
+                raise ValueError("binary_shared_slot_short_read")
+            connection.send_bytes(body)
+            sent += d.length
+        if need:
+            raise RuntimeError("remote_prepare_unknown_source_requested")
         return sent
 
     def served_by(self, output: str) -> dict[str, str]:

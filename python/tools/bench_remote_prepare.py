@@ -196,6 +196,9 @@ def learner(argv: list[str]) -> None:
                          "sent": handoff.timings.get("binary_remote_sources_sent"),
                          "asm_cpu": handoff.timings.get("binary_remote_assembly_cpu_seconds"),
                          "dec_s": handoff.timings.get("binary_remote_decode_seconds"),
+                         "wait": handoff.timings.get("binary_remote_wait_seconds"),
+                         "exch": handoff.timings.get("binary_remote_exchange_seconds"),
+                         "xfer": handoff.timings.get("binary_remote_transfer_seconds"),
                          "members": len(handoff.request.members)})
 
         def drain() -> None:
@@ -232,6 +235,8 @@ def learner(argv: list[str]) -> None:
             "wire_GB_per_s": round(sum(d["bytes"] for d in steady) / span / 1e9, 3),
             "mean_latency_s": round(sum(d["latency"] for d in steady) / len(steady), 2),
             "mean_host_s": round(sum(d["host_s"] or 0 for d in steady) / len(steady), 2),
+            **{f"mean_{k}_s": round(sum(d[k] or 0 for d in steady) / len(steady), 2)
+               for k in ("wait", "exch", "xfer")},
             "host_assemble_ms_core_per_row": round(1000 * sum(d["asm_cpu"] for d in done)
                                                    / sum(d["rows"] for d in done), 2),
             "host_decode_ms_core_per_row": round(1000 * sum(d["dec_s"] for d in done) / max(
@@ -323,6 +328,10 @@ def compare(a: Any, b: Any, *, rtol: float = 1e-5, atol: float = 1e-5) -> dict[s
                                                              atol=atol, equal_nan=True))})
             elif not torch.equal(u, v):
                 exact.append(path)
+        elif type(x) is float and type(y) is float:  # e.g. normalization statistics
+            if x != y:
+                floats.append({"path": path, "max_abs": abs(x - y),
+                               "ok": abs(x - y) <= atol + rtol * abs(y)})
         elif x != y:
             exact.append(path)
 
