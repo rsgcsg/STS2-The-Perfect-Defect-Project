@@ -935,12 +935,12 @@ def test_checkpoint_with_a_staged_ahead_dataset_keeps_it_unreleased_and_learning
             owner._prepare_ahead()
             ahead = owner.pending_batch
             ahead_sequence = ahead[1].result(timeout=60).request.identity.sequence
-            if threaded:
-                owner.sgd.wait_staged(ahead_sequence)  # staged ahead, not started
             while owner.active is not None:
                 owner._step()
             owner._collect_publication(wait=True)
             if threaded:
+                # Between datasets only `staged` can still arrive (as in `_prepare`).
+                owner.sgd.wait_staged(ahead_sequence)  # staged ahead, not started
                 assert ahead_sequence in owner.sgd.staged
                 assert owner.pending_batch is ahead and not ahead[0]["taken"]
                 queued = {r["segment_id"] for r in owner.queue.pending}
