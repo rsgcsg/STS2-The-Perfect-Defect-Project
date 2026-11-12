@@ -50,9 +50,8 @@ def _reject(code: str) -> NoReturn:
 
 
 @functools.cache
-def compiler_digest() -> str:
-    """Bind actual encoding/codec sources and dependency versions, never theta."""
-    # Read once per process: the code identity of the running process. s1g/h100b: a
+def _compiler_source_digests() -> tuple[tuple[str, str], ...]:
+    # Read once per process: the source files of the running process. s1g/h100b: a
     # per-mu-load reread of these files on NFS sat > 120 s in an open (D state) and the
     # follower watchdog stopped the run.
     root = Path(__file__).parent
@@ -63,7 +62,16 @@ def compiler_digest() -> str:
     for name in ("json_boundary.py", "encoding.py"):
         sources["spireagent/" + name] = digest((platform / name).read_bytes())
     sources["uv.lock"] = digest((root.parents[1] / "uv.lock").read_bytes())
-    return digest(json_bytes({"sources": sources, "tokenizers": tokenizers.__version__,
+    return tuple(sources.items())
+
+
+def compiler_digest() -> str:
+    """Bind actual encoding/codec sources and dependency versions, never theta.
+
+    The source files are read once per process; the dependency versions are read
+    on every call (no file access)."""
+    return digest(json_bytes({"sources": dict(_compiler_source_digests()),
+                              "tokenizers": tokenizers.__version__,
                               "torch": torch.__version__, "safetensors": safetensors.__version__}))
 
 

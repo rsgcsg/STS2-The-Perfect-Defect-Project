@@ -228,7 +228,7 @@ def _clear_code_identity() -> None:
     files it binds recomputes them, and never leaves an edited digest cached."""
     from stpd.p1 import export, vocabulary
 
-    frame_compiler.compiler_digest.cache_clear()
+    frame_compiler._compiler_source_digests.cache_clear()
     export._adapter_identity.cache_clear()
     vocabulary._public_vocabulary_text.cache_clear()
 
