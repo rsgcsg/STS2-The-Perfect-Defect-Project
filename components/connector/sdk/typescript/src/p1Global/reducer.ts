@@ -4,7 +4,7 @@ import { decodePlayerRead } from "../protocol.js";
 import { decodePublicSourceSnapshot as decodePlayerSnapshot, passedPublicBasisLightCheck } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
-import { canonicalJson, isObject } from "./canonical.js";
+import { canonicalJson, canonicalJsonExceedsBytes, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy } from "./publicIdentity.js";
 import { publicPath, type PublicPath } from "./publicPath.js";
@@ -968,7 +968,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       ...readInstances.flatMap(({ read }) => read?.completeness?.hidden_by_policy ?? [])])].sort(),
     catalog, terminal
   };
-  if (Buffer.byteLength(canonicalJson(observation), "utf8") > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
+  if (canonicalJsonExceedsBytes(observation, P1G_LIMITS.observation_bytes)) missing.push("observation_over_limit");
 
   // No current producer has a typed, mechanism-qualified mandatory proof.
   const forced: string | null = null;
