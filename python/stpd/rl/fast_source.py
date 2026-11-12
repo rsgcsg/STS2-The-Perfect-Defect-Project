@@ -663,7 +663,7 @@ class FastSegmentIntake:
             raise FastIntakeError("fast_labels_segments_changed")
         headers: dict[str, dict[str, Any]] = {}
         if self.aux_labels:
-            for sid, (digest, body) in bodies.items():
+            for sid, (_digest, body) in bodies.items():
                 # Full row verification, as before, only now outside the lock:
                 # every row is copied and bound to its own sha256 here, whether
                 # or not the row is ever used. The whole body was bound to
