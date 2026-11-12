@@ -65,9 +65,13 @@ Rules:
   follower gives up it unbinds `on_stage`, so a late read changes no mark;
 - shutdown order: `close()` stops this follower before it closes the service;
   once the service is stopping the follower publishes nothing and exits;
-- weights for R7 mu archiving are not attached (`MuHandoff.weights=None`): no
-  production `mu_archive` exists yet (AUDIT F8), so an R7 game would fail loud
-  in the assembler (`audit_mu_archive_unconfigured` / `audit_mu_weights_missing`).
+- R7 mu archive (AUDIT F8): with `weights` set (production:
+  `stpd.rl.fast_mu_pack.node_cache_weights` on the source's node cache), every
+  offered `MuHandoff` carries the snapshot pack, read in the `load` stage, so
+  an assembler with a local `mu_archive` can archive it for R7 games. A failed
+  read counts and is retried next poll like a failed load. Without `weights`
+  (the default) handoffs carry none, and an R7 game fails loud in the assembler
+  (`audit_mu_archive_unconfigured` / `audit_mu_weights_missing`).
 """
 from __future__ import annotations
 
@@ -103,7 +107,8 @@ class FastMuFollower:
                  max_failures: int = 3, clock: Callable[[], float] = time.monotonic,
                  on_fatal: Callable[[BaseException], None] | None = None,
                  stall_seconds: float = 300.0,
-                 stage_seconds: dict[str, float] | None = None) -> None:
+                 stage_seconds: dict[str, float] | None = None,
+                 weights: Callable[[dict[str, Any]], bytes] | None = None) -> None:
         if not _seconds(interval) or not _seconds(stall_seconds):
             raise ValueError("invalid_fast_mu_follower_settings")
         limits = {stage: min(default, stall_seconds) for stage, default in STAGE_SECONDS.items()}
@@ -123,7 +128,10 @@ class FastMuFollower:
         self.mark: tuple[str | None, float | None] = (None, None)
         self.stage_max: dict[str, float] = {}
         self.stalled: dict[str, Any] | None = None
-        self.source, self.service = source, service
+        if weights is not None and not callable(weights):
+            raise ValueError("invalid_fast_mu_follower_settings")
+        self.source, self.service, self.weights = source, service, weights
+        self.weights_bytes: bytes | None = None  # `offered`'s pack, kept like `model`
         self.interval, self.max_failures, self.clock = interval, max_failures, clock
         self.stall_seconds = stall_seconds
         self.step_began: float | None = None  # set while a poll runs (watchdog)
@@ -195,18 +203,29 @@ class FastMuFollower:
                 if not self.behind:
                     self.counters["unchanged"] += 1
                     return False
-                return self._offer(self.model, handoff, list(self.behind), 0.0)
+                return self._offer(self.model, self._with_weights(handoff, self.weights_bytes),
+                                   list(self.behind), 0.0)
             if identity.get("compiler_identity") != self.service.compiler_identity:
                 raise BoundaryError("rl_mu", "MU_COMPILER_IDENTITY_DIFFERS")
             self._enter("load")
             began = self.clock()
             model = self.source.load(identity)
+            raw = None if self.weights is None else self.weights(identity)
+            if raw is not None and type(raw) is not bytes:
+                raise BoundaryError("rl_mu", "MU_WEIGHTS_NOT_BYTES")
             load_seconds = self.clock() - began
             self._enter(None)
             self.counters["load_seconds"] += load_seconds
             if self.fatal is not None or self._service_stopping():
                 return False
-            return self._offer(model, handoff, None, load_seconds)
+            return self._offer(model, self._with_weights(handoff, raw), None, load_seconds)
+
+    @staticmethod
+    def _with_weights(handoff: MuHandoff, raw: bytes | None) -> MuHandoff:
+        if raw is None:
+            return handoff
+        return MuHandoff(handoff.snapshot_sha256, handoff.training_generation,
+                         handoff.version, handoff.updates, weights=raw)
 
     def _offer(self, model: Any, handoff: MuHandoff, targets: list[int] | None,
                load_seconds: float) -> bool:
@@ -214,6 +233,7 @@ class FastMuFollower:
         # This delivery happens once: from here on only an explicit refusal is
         # answered again; a raise or an invalid answer leaves nobody behind.
         self.offered, self.behind, self.model = handoff.identity(), [], None
+        self.weights_bytes = None
         self._enter("publish")
         began = self.clock()
         if targets is not None and self.per_service:
@@ -252,6 +272,7 @@ class FastMuFollower:
                        if not accepted_here]
         if self.behind:
             self.model = model  # kept for the re-offer, dropped once nobody is behind
+            self.weights_bytes = handoff.weights
         accepted = any(per_service)
         if targets is None:
             self.counters["published" if all(per_service) else "refused" if not accepted
