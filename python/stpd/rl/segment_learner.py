@@ -1911,13 +1911,20 @@ class SegmentLearner:
 
     def _fast_apply(self, decision: IntakeDecision) -> None:
         assert self.fast_intake is not None and self.fast_sources is not None
+        if (decision.exclude_instance is None and not decision.admit
+                and not decision.auxiliary):
+            return  # buffered / counted-drop decisions change nothing here
+        # Aux row records are pure functions of the verified groups (the learner's
+        # generation is fixed for its lifetime): built before the condition.
+        auxiliary = (self._fast_auxiliary(decision.auxiliary) if decision.auxiliary
+                     else None)
         with self.condition:
             if decision.exclude_instance is not None:
                 self._fast_exclude(decision.exclude_instance)
             for segment, envelope in decision.admit:
                 self._fast_admit(segment, envelope)
-            if decision.auxiliary:
-                self._add_auxiliary(self._fast_auxiliary(decision.auxiliary))
+            if auxiliary:
+                self._add_auxiliary(auxiliary)
 
     def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
                         ) -> list[tuple[str, str, list[dict[str, Any]]]]:
@@ -1963,9 +1970,10 @@ class SegmentLearner:
             return
         # Full queue: drop the oldest queued, unprepared segments (whole segments,
         # no trace crosses them), counted; decision of 11-09.
-        referenced = self._fast_referenced()
         overflow = self.queue.occupied + segment.rows - self.settings.capacity_rows
         victims: set[str] = set()
+        # Only a full queue needs the (prepared-batch) referenced set.
+        referenced = self._fast_referenced() if overflow > 0 else frozenset()
         for record in self.queue.pending:
             if overflow <= 0:
                 break
