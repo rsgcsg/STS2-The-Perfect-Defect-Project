@@ -14,6 +14,7 @@ import signal
 import socket
 import time
 from concurrent.futures import Future
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 
@@ -421,6 +422,59 @@ def test_deferred_CP_check_failure_stops_loudly_and_publishes_nothing(tmp_path, 
         assert owner.exchange.latest_checkpoint(training_generation=owner.generation) is None
     finally:
         owner.close()
+
+
+def test_staged_handoff_releases_run_off_the_main_thread_in_order(tmp_path, monkeypatch):
+    """The release (preparer lock + unlink) runs on one FIFO releaser thread; a CP
+    waits for every queued release; the preparer's accounting ends exact."""
+    import threading
+
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=2)
+    try:
+        preparer = owner.input_preparer
+        real = preparer.release_handoff
+        released = []
+
+        def slow_release(handoff):
+            time.sleep(0.2)  # still queued when the main thread moves on
+            released.append((threading.current_thread().name,
+                             handoff.request.identity.sequence, Path(handoff.path).exists()))
+            real(handoff)
+
+        monkeypatch.setattr(preparer, "release_handoff", slow_release)
+        train(owner, 2)
+        owner.checkpoint(final=True)
+        # The CP waited: every release done, none left queued, files gone.
+        assert len(released) == 2 and not owner.handoff_releases
+        assert all(name.startswith("rl-handoff-release") for name, _, _ in released)
+        assert [sequence for _, sequence, _ in released] == sorted(
+            sequence for _, sequence, _ in released)
+        assert all(existed for _, _, existed in released)  # unlinked by the releaser
+        assert not preparer.handoffs and not preparer.handoff_owners
+        assert not list(owner.live_work.glob("rl-ready-*"))
+    finally:
+        owner.close()
+
+
+def test_failed_handoff_release_stops_the_run_loudly(tmp_path, monkeypatch):
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=2)
+    try:
+        def broken(_handoff):
+            raise OSError("release_unlink_failed")
+
+        monkeypatch.setattr(owner.input_preparer, "release_handoff", broken)
+        # The main loop raises the original error; a preparer submit waiting on the
+        # failed release refuses with a RuntimeError (never an invalid-packet fence).
+        with pytest.raises((OSError, RuntimeError),
+                           match="release_unlink_failed|binary_handoff_release_failed"):
+            train(owner, 2)
+            owner.checkpoint(final=True)
+        assert owner.exchange.latest_checkpoint(training_generation=owner.generation) is None
+        with pytest.raises(OSError, match="release_unlink_failed"):
+            owner._check_releases(wait=True)  # the failure is kept, never dropped
+    finally:
+        with suppress(OSError):
+            owner.close()
 
 
 def test_child_rejects_a_start_without_its_staged_plan(tmp_path, monkeypatch):

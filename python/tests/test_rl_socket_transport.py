@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+from collections import deque
 from dataclasses import asdict
 from multiprocessing.connection import Client
 from typing import Any
@@ -1535,6 +1536,7 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     from stpd.rl.segments import SegmentConfig, SegmentQueue
 
     owner = module.SegmentLearner.__new__(module.SegmentLearner)
+    owner.handoff_release_lock, owner.handoff_releases = threading.Lock(), deque()
     owner.settings = SegmentConfig(
         steps=1, dataset_rows=1, minibatches=1, episode_rows=1, capacity_rows=4
     )

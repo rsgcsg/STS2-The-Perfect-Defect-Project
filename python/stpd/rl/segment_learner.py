@@ -919,6 +919,14 @@ class SegmentLearner:
             max_workers=self.dispatch_workers, thread_name_prefix="rl-prepare-dispatch")
         self.dispatch_order = threading.Condition()
         self.dispatch_issued = self.dispatch_turn = 0
+        # SGD process only: a staged hand-off's release (preparer lock + unlink) runs
+        # here, FIFO, not on the main thread. Every user of released state waits for
+        # the queued releases first (`_await_releases`); failures surface at the next
+        # main-loop check (`_check_releases`).
+        self.handoff_releaser = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-handoff-release")
+        self.handoff_releases: deque[Future[None]] = deque()
+        self.handoff_release_lock = threading.Lock()
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
             mp_context=multiprocessing.get_context("spawn"),
@@ -1158,6 +1166,7 @@ class SegmentLearner:
         with ExitStack() as cleanup:
             cleanup.callback(self._close_journal)
             cleanup.callback(self.input_preparer.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.handoff_releaser.shutdown, wait=True)
             cleanup.callback(self.preparation_dispatch.shutdown, wait=True)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
             cleanup.callback(self.header_checks.shutdown, wait=True, cancel_futures=True)
@@ -1177,11 +1186,43 @@ class SegmentLearner:
                     diagnostic=exception_facts(error), sgd_failure=facts)
 
     def _sgd_staged(self, message: dict[str, Any]) -> None:
-        # The SGD process owns pinned/device copies; the derived file goes now.
+        # The SGD process owns pinned/device copies; the derived file goes now, on
+        # the releaser thread (the preparer lock is contended; the unlink is IO).
         handoff = self.sgd_planned.pop(message["dataset"])
-        cast("BinaryBatchPreparer", self.input_preparer).release_handoff(handoff)
+        release = cast("BinaryBatchPreparer", self.input_preparer).release_handoff
+        with self.handoff_release_lock:
+            self.handoff_releases.append(self.handoff_releaser.submit(release, handoff))
         self.timing["input_transfer_host_seconds"] += message["host_seconds"]
         self.timing["input_transfer_copies"] += message["copies"]
+
+    def _check_releases(self, *, wait: bool = False) -> None:
+        """Main thread: drop finished hand-off releases, raising the first failure
+        (the run stops loudly); `wait` first lets every queued release finish."""
+        while True:
+            with self.handoff_release_lock:
+                if not self.handoff_releases or not (
+                        wait or self.handoff_releases[0].done()):
+                    return
+                future = self.handoff_releases[0]
+            future.result()  # waits when `wait`; a failure stays queued and re-raises
+            with self.handoff_release_lock:
+                if self.handoff_releases and self.handoff_releases[0] is future:
+                    self.handoff_releases.popleft()
+
+    def _await_releases(self) -> None:
+        """Any thread: return once every release queued so far has finished.
+
+        Before a preparer submit, which counts not-yet-released hand-offs against
+        its current-plus-next limit (the main thread used to release inline before
+        that point). A failed release is not consumed here: the main thread raises
+        the original error at its next check; this caller gets a RuntimeError (not
+        ValueError, which the prepare path would classify as an invalid packet).
+        """
+        with self.handoff_release_lock:
+            queued = tuple(self.handoff_releases)
+        wait_futures(queued)
+        if any(future.exception() is not None for future in queued):
+            raise RuntimeError("binary_handoff_release_failed")
 
     def _sgd_plan(self, handoff: Any) -> None:
         assert self.sgd is not None
@@ -2799,6 +2840,7 @@ class SegmentLearner:
 
         def submit() -> Future[PreparedBatch]:
             turn = time.perf_counter()
+            self._await_releases()
             future = self.input_preparer.submit(request, inputs)
             submitted = time.perf_counter()
             started, prefetched = marks["started"], marks["prefetched"]
@@ -2925,12 +2967,15 @@ class SegmentLearner:
         self._ready_labels(batch)
         # Complete batch owns its tensors now. Release preparation and PPO bytes;
         # delayed-label/aux owners independently protect their own future reads.
-        for member in batch.request.members:
-            self._release(
-                member.payload, f"prepare:{self.generation}:{batch.request.identity.sequence}"
-            )
-        for member in batch.request.members:
-            self._release(member.payload, "ppo:" + member.segment_id)
+        # One `condition` hold for all of them (same releases, same order): each
+        # separate acquisition waited behind the receive/prefetch threads.
+        with self.condition:
+            for member in batch.request.members:
+                self._release(
+                    member.payload, f"prepare:{self.generation}:{batch.request.identity.sequence}"
+                )
+            for member in batch.request.members:
+                self._release(member.payload, "ppo:" + member.segment_id)
         self._event(
             "batch_ready",
             dataset=batch.request.identity.sequence,
@@ -3025,6 +3070,7 @@ class SegmentLearner:
         assert self.sgd is not None
         if self.sgd_callback_error is not None:  # also after stop, when no plan-ahead runs
             raise self.sgd_callback_error
+        self._check_releases()
         self._sgd_prestart()  # before waiting: the start then precedes this answer
         index = active["minibatch"]
         message = self.sgd.expect("step", timeout=self.sgd.step_timeout())
@@ -3415,6 +3461,7 @@ class SegmentLearner:
     def checkpoint(self, *, final: bool = False) -> None:
         if self.input_fenced:
             raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
+        self._check_releases(wait=True)  # a CP never precedes a staged release
         self._collect_checkpoint(wait=final)
         if self.active is not None and not final:
             self.checkpoint_requested = True
@@ -3473,6 +3520,8 @@ class SegmentLearner:
             self.source_prefetch_changed.set()
             self.source_prefetch_thread.join()
         with ExitStack() as cleanup:
+            # Runs last: a failed hand-off release is raised after the cleanup below.
+            cleanup.callback(self._check_releases, wait=True)
             if self.wal is not None and not keep_journal:
                 cleanup.callback(self._close_journal)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
@@ -3492,7 +3541,12 @@ class SegmentLearner:
                     try:
                         self.preparation_dispatch.shutdown(wait=True, cancel_futures=False)
                     finally:
-                        self.input_preparer.shutdown(wait=True, cancel_futures=False)
+                        try:
+                            # Queued releases finish before the preparer's barrier
+                            # forgets the hand-offs (a failed one is raised last).
+                            self.handoff_releaser.shutdown(wait=True)
+                        finally:
+                            self.input_preparer.shutdown(wait=True, cancel_futures=False)
             for future, _, _ in self.pending_labels:
                 future.result()
             for (_slot, owner), payload in list(self.hot_references.items()):
