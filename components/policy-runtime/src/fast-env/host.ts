@@ -51,6 +51,19 @@ export interface NativeEpisode {
   start: { kind: "new_run" } | { kind: "from_save"; save_sha256: string } | null;
 }
 
+/**
+ * The fast chain's game_instance_id: the native episode id namespaced by this Host
+ * launch's own runtime instance id (a fresh random id per Host start). The native id
+ * (`native-compact:{pid}:{counter}`) is only unique inside one machine, and PIDs repeat
+ * across env nodes; the Host owns exact identity, so it scopes the id here, once, where
+ * the id enters the fast chain. The native fact itself is unchanged (compact lines and
+ * frame refs keep `episode_instance` as the native wrote it; the capture sample draw
+ * stays keyed on it). Downstream treats the result as an opaque id.
+ */
+export function fastGameInstanceId(runtimeInstanceId: string, nativeEpisodeId: string): string {
+  return `${runtimeInstanceId}:${nativeEpisodeId}`;
+}
+
 export interface SlotNativeFactory {
   start(): Promise<SlotNative>;
   readonly hostVersion: string;
@@ -210,7 +223,8 @@ export class HostSlotNative implements SlotNative {
     // compact episode id when there is one, else what the open itself named (seed / save).
     const drawKey = episodeId === null ? this.#drawKey : `episode:${episodeId}`;
     this.#sampled = captureSampleSchedule(this.sampleRate, this.#r7, drawKey === null ? null : captureSampleOffset(drawKey));
-    return { gameInstanceId: episodeId, start: this.started.session.episodeStart ?? null };
+    return { gameInstanceId: episodeId === null ? null : fastGameInstanceId(this.runtimeInstanceId, episodeId),
+      start: this.started.session.episodeStart ?? null };
   }
 
   async capture(): Promise<FullPublicBasis> {

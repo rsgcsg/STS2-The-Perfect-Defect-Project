@@ -587,3 +587,40 @@ def test_header_only_parse_skips_row_digests_but_the_decode_worker_still_binds_t
     # Layout checks stay in the header parse: trailing bytes are still refused.
     with pytest.raises(SegmentFormatError, match="trailing|out_of_bounds|offsets"):
         decode_segment(data + b"\x00" * 8, header_only=True)
+
+
+
+def _short_game(node: str, game: str) -> list[SealedSegment]:
+    g = Game("gen-1", assembler_id=node)
+    g.open(game)
+    g.step(game, terminal=True)
+    g.close(game, "terminal")
+    return g.sealed
+
+
+def _deliver(i: FastSegmentIntake, game: str, sealed: list[SealedSegment]) -> Any:
+    reply = i.attest(attest(game)).reply
+    for seg in sealed:
+        i.offer(message(seg), seg.data)
+    counts = {"bootstrap": 0, "terminal": 0, "truncated": 0, "rejected": 0}
+    for seg in sealed:
+        counts[seg.kind] += 1
+    return reply, i.closed(closed_for(sealed, segments=counts))
+
+
+def test_two_env_nodes_with_the_same_native_id_stay_distinct_once_host_scoped():
+    # Native ids are `native-compact:{pid}:{counter}`; PIDs repeat across machines
+    # (h100d env-n6/n7 both on 565295). The fast-env Host scopes the id with its own
+    # launch id (`{runtime_instance_id}:{native}`, fast-env/host.ts fastGameInstanceId).
+    native = "native-compact:565295:1"
+    raw = intake()
+    _deliver(raw, native, _short_game("node-a", native))
+    with pytest.raises(FastIntakeError, match="after_instance_closed|closed_twice|two_assemblers"):
+        _deliver(raw, native, _short_game("node-b", native))
+    scoped = intake()
+    for node, runtime in (("node-a", "3f" * 16), ("node-b", "a1" * 16)):
+        game = f"{runtime}:{native}"
+        reply, closed = _deliver(scoped, game, _short_game(node, game))
+        assert reply == {"admitted": True, "game_instance_id": game}
+        assert closed.exclude_instance is None
+    assert scoped.report()["open_instances"] == 0
