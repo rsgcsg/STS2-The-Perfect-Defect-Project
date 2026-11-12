@@ -175,3 +175,34 @@ def test_rl3_learning_curve_reader_refuses_changed_plan(tmp_path, field, value):
     path.write_bytes(json_bytes(manifest))
     with pytest.raises(BoundaryError, match="manifest_configuration_changed"):
         load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def test_rl5_int_sealed_seeds_are_fresh_and_excluded_from_training():
+    from stpd.evaluation import suites
+
+    existing = {seed for name in suites.suite_names()
+                for seed in suites.load_suite(name)["seeds"]}
+    existing.update(suites.t2_managed_manifest("v0.111.0")["seeds"])
+    existing.update(suites.rl3_learning_curve_manifest("v0.111.0")["seeds"])
+    seen: set[str] = set()
+    for ascension, count in ((0, 300), (10, 100)):
+        manifest = suites.rl5_int_sealed_manifest("v0.111.0", ascension)
+        seeds = manifest["seeds"]
+        assert manifest["ascension"] == ascension and manifest["host"] == "Managed"
+        assert manifest["purpose"] == "sealed_int_acceptance"
+        assert manifest["collection_training_RL"] == "forbidden"
+        assert len(seeds) == len(set(seeds)) == manifest["episode_count"] == count
+        assert not set(seeds) & (existing | seen)
+        seen.update(seeds)
+        for seed in seeds:
+            assert seed_membership(seed) == (manifest["suite_id"],)
+            with pytest.raises(ValueError, match="reserved"):
+                suites.require_non_evaluation_seed(seed)
+
+
+@pytest.mark.parametrize("ascension", [1, 20, "0", None])
+def test_rl5_int_sealed_refuses_unsealed_scenario(ascension):
+    from stpd.evaluation.suites import rl5_int_sealed_manifest
+
+    with pytest.raises(ValueError, match="RL5 INT sealed"):
+        rl5_int_sealed_manifest("v0.111.0", ascension)
