@@ -20,7 +20,7 @@ import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
-import { HostSlotNative, SampledCheckFailure, captureSampleOffset, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
+import { HostSlotNative, SampledCheckFailure, captureSampleOffset, fastGameInstanceId, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
 /** Equal subtrees become one deep-frozen object, kept across steps (what the E5 Host hands over). */
 function internFrozen(value: unknown, table: Map<string, object>): unknown {
@@ -1083,7 +1083,7 @@ describe("HostSlotNative", () => {
     };
     const started: any = { session: { episodeInstance: "episode-1", episodeStart: { kind: "new_run" } }, runtime: { adapterRuntimeInstanceId: "runtime-1" } };
     const native = new HostSlotNative(started, driver);
-    expect(await native.reset({ seed: "s", initialProgress: null, r7: false })).toEqual({ gameInstanceId: "episode-1", start: { kind: "new_run" } });
+    expect(await native.reset({ seed: "s", initialProgress: null, r7: false })).toEqual({ gameInstanceId: "runtime-1:episode-1", start: { kind: "new_run" } });
     expect(await native.step({ requestId: "r", expectedSnapshotId: "snap", boundActionId: "b" })).toEqual({ ok: true });
     await native.release();
     const step = requests.find(request => request.command === "step"), released = requests.find(request => request.command === "release_control");
@@ -1095,6 +1095,28 @@ describe("HostSlotNative", () => {
     expect(requests.filter(request => request.command === "step").at(-1).control_epoch).toBe(7);
     epoch = null;
     await expect(native.reset({ seed: "s", initialProgress: null, r7: false })).rejects.toThrow(/fast_env_claim_result_drift/u);
+  });
+
+  it("scopes the native episode id by the Host launch, so two env nodes with the same native id stay distinct", async () => {
+    // h100d env-n6/n7 both ran PID 565295: the native ids were equal, the fenced learner said closed_twice.
+    const nativeId = "native-compact:565295:1";
+    const driver = (): any => ({
+      async handle(request: any) {
+        if (request.command === "claim_control") return { type: "claim_control_result", control_token: "t", control_epoch: 1 };
+        return { type: `${request.command}_result` };
+      },
+      status: () => ({ game_continuity_id: "c" }), async shutdown() {}
+    });
+    const open = async (runtime: string) => {
+      const started: any = { session: { episodeInstance: nativeId, episodeStart: { kind: "new_run" } }, runtime: { adapterRuntimeInstanceId: runtime } };
+      return (await new HostSlotNative(started, driver()).reset({ seed: "s", initialProgress: null, r7: false })).gameInstanceId;
+    };
+    const runtimeA = randomUUID().replaceAll("-", ""), runtimeB = randomUUID().replaceAll("-", "");
+    const a = await open(runtimeA), b = await open(runtimeB);
+    expect(a).toBe(fastGameInstanceId(runtimeA, nativeId));
+    expect(a).not.toBe(b);
+    // The native fact is kept whole inside the id; the id is a valid wire id (contracts ID pattern).
+    for (const id of [a, b]) { expect(id!.endsWith(`:${nativeId}`)).toBe(true); expect(id).toMatch(/^[A-Za-z0-9._:-]{1,128}$/u); }
   });
 
   it("light-checks every capture, fully verifies the first and the sampled ones, and every capture of an R7 game", async () => {
