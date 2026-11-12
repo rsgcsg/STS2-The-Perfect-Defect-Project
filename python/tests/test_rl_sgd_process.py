@@ -322,6 +322,107 @@ def test_state_with_other_counters_cannot_pair_into_a_CP(tmp_path, monkeypatch):
         owner.close()
 
 
+def _old_inline_learning_state(owner):
+    """The pre-deferral capture, verbatim in effect: handshake, read, checks, build."""
+    import copy
+    import random
+    from dataclasses import replace
+
+    from spireagent.rl_contracts import RunSequence
+    from stpd.rl.checkpoint_state import (
+        LearningCounters,
+        RngState,
+        SelfContainedCheckpoint,
+        text_digest,
+        validate_optimizer_order,
+    )
+    from stpd.rl.segment_learner import _pending_receipt
+    from stpd.rl.sgd_process import STATE_SCHEMA, read_tree
+
+    owner.sgd.send("checkpoint", updates=owner.updates, datasets=owner.datasets)
+    message = owner.sgd.expect("state", timeout=owner.sgd.options.stall_seconds)
+    assert (message["updates"], message["datasets"]) == (owner.updates, owner.datasets)
+    remote = read_tree(message["file"], STATE_SCHEMA)
+    Path(message["file"]["path"]).unlink()
+    assert tuple(tuple(g) for g in remote["optimizer_parameter_names"]) == owner.optimizer_names
+    weights, optimizer, ema = remote["weights"], remote["optimizer"], remote["ema"]
+    names = owner.optimizer_names
+    validate_optimizer_order(optimizer, names, weights)
+    configuration = asdict(owner.config)
+    assert configuration["operating_budget"] is None
+    return SelfContainedCheckpoint(
+        RunSequence(owner.config.run, owner.generation, owner.checkpoint_sequence),
+        replace(owner.construction_template, text_digest=text_digest(weights)),
+        configuration, owner.producer.to_dict(), weights, optimizer, names, ema,
+        LearningCounters(owner.updates, owner.datasets, owner.first_use, owner.first_use_multi,
+                         owner.version, owner.published_updates),
+        RngState(random.getstate(),
+                 owner.committed_selection_rng if owner.wal is not None else owner.rng.getstate(),
+                 remote["torch_rng"], tuple(v.cpu().clone() for v in remote["cuda_rng"])),
+        owner.conversion,
+        ({"generation": owner.generation,
+          "committed_selection_rng": owner.committed_selection_rng,
+          "speculative_selection_rng": owner.rng.getstate(),
+          "pending_requests": [_pending_receipt(active["request"])
+                               for active, _ in owner._pending_batches()],
+          "pending_labels": copy.deepcopy(owner.pending_label_requests),
+          "restore_disposition": "discard_hot_inputs_resume_committed_rng"}
+         if owner.wal is not None else None))
+
+
+def test_deferred_CP_build_is_byte_identical_and_runs_on_the_encoder(tmp_path, monkeypatch):
+    """The state-file read/checks/build moved to the encoder thread; same CP bytes."""
+    import threading
+
+    import stpd.rl.segment_learner as learner_module
+    from stpd.rl.checkpoint_state import encode_state
+
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=2)
+    try:
+        train(owner, 2)
+        threads = []
+        real = learner_module.read_tree
+
+        def recorded(file, schema):
+            threads.append(threading.current_thread().name)
+            return real(file, schema)
+
+        monkeypatch.setattr(learner_module, "read_tree", recorded)
+        owner.checkpoint()
+        # The main thread only did the handshake; the state file is still there.
+        owner._collect_checkpoint(wait=True)
+        assert threads and all(name.startswith("rl-cp-encode") for name in threads)
+        record = owner.exchange.latest_checkpoint(training_generation=owner.generation)
+        payload = owner.exchange.store.get_manifest(
+            record["checkpoint_artifact_id"]).payload("checkpoint")
+        published = owner.exchange.store.bytes(payload, maximum=payload.size)
+        assert published == encode_state(_old_inline_learning_state(owner))
+        assert not list((owner.live_work / "sgd").glob("state-*.tree"))
+    finally:
+        owner.close()
+
+
+def test_deferred_CP_check_failure_stops_loudly_and_publishes_nothing(tmp_path, monkeypatch):
+    import stpd.rl.segment_learner as learner_module
+
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1)
+    try:
+        train(owner, 1)
+        real = learner_module.read_tree
+
+        def other_counters(file, schema):
+            return {**real(file, schema), "updates": owner.updates - 1}
+
+        monkeypatch.setattr(learner_module, "read_tree", other_counters)
+        owner.checkpoint()  # the handshake passes; the binding check is deferred
+        with pytest.raises(SgdProcessFailed) as caught:
+            owner._collect_checkpoint(wait=True)
+        assert caught.value.facts["code"] == "sgd_state_file_binding_changed"
+        assert owner.exchange.latest_checkpoint(training_generation=owner.generation) is None
+    finally:
+        owner.close()
+
+
 def test_child_rejects_a_start_without_its_staged_plan(tmp_path, monkeypatch):
     owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1)
     try:
