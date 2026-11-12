@@ -745,3 +745,17 @@ def test_worker_task_pauses_only_the_cyclic_collector():
     with pytest.raises(RuntimeError), _collector_paused():
         raise RuntimeError("task failed")
     assert gc.isenabled()
+
+
+
+def test_worker_initializer_freezes_import_time_objects(model):
+    """Per-task gc.collect must not rescan torch/stpd/compiler objects each time."""
+    import gc
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    from stpd.rl.binary_preparation import _initialize
+
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_initialize, initargs=(model.vocabulary, 1)) as pool:
+        assert pool.submit(gc.get_freeze_count).result(timeout=120) > 10_000
