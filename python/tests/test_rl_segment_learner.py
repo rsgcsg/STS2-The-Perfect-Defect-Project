@@ -639,12 +639,16 @@ def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails
         checkpoint_encoder=SimpleNamespace(shutdown=lambda **kw: called.append("encoder")),
         checkpoints=SimpleNamespace(__exit__=lambda *args: called.append("checkpoints")),
         input_preparer=SimpleNamespace(shutdown=lambda **kw: called.append("preparer")),
+        handoff_releaser=SimpleNamespace(shutdown=lambda **kw: called.append("releaser")),
+        _check_releases=lambda **kw: called.append("releases"),
     )
     with pytest.raises(RuntimeError, match="monitor still running"):
         SegmentLearner.close(owner)
     assert set(called) == {
         "pool",
         "preparer",
+        "releaser",
+        "releases",
         "archive",
         "checkpoints",
         "encoder",
