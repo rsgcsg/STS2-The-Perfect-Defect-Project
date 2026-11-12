@@ -190,12 +190,15 @@ def test_late_aux_packet_survives_PPO_retirement_and_verifies_original_public_hp
         with pytest.raises(ValueError, match="public_hp_scale"):
             preparer.verify_labels(bad, (member,)).result(timeout=30)
         member_current, _ = admit(enc, preparer, provider, current, "current")
-        selection = AuxiliarySelection(items[0].source, "terminal", 3, 0, 2)
+        # Two rows of the same aux-only source: the worker unpacks those rows alone.
+        rows = list({item.source["row"]: item for item in items}.values())[:2]
+        assert len(rows) == 2
+        selections = tuple(AuxiliarySelection(item.source, "terminal", 3, 0, 2) for item in rows)
         req = dc.replace(
             request([current]),
             members=(member_current,),
-            auxiliary=(selection,),
-            auxiliary_minibatches=(0,),
+            auxiliary=selections,
+            auxiliary_minibatches=(0, 0),
         )
         provider.packets.clear()  # only the verified AuxPool body remains after retirement
         preparer.barrier(generation=late["training_generation"])
@@ -684,3 +687,61 @@ def test_array_table_view_past_the_mapping_is_refused(tmp_path, place):
             table.views({str(path): handle})
     finally:
         handle.close()
+
+
+def _same(a, b):
+    if isinstance(a, torch.Tensor):
+        return isinstance(b, torch.Tensor) and a.dtype == b.dtype and torch.equal(a, b)
+    if dc.is_dataclass(a) and not isinstance(a, type):
+        return type(a) is type(b) and all(
+            _same(getattr(a, f.name), getattr(b, f.name)) for f in dc.fields(a))
+    if isinstance(a, (tuple, list)):
+        return type(a) is type(b) and len(a) == len(b) and all(map(_same, a, b))
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    return a == b
+
+
+def test_aux_only_unpack_keeps_selected_rows_and_every_other_field(model):
+    """The aux-only transport unpack is the full unpack minus unselected frames."""
+    import pickle
+
+    from stpd.rl.binary_preparation import _only_rows
+    from stpd.rl.tensor_segment import auxiliary_frame
+
+    full_source = source(model, segment(model, rows=4, terminal=True))
+    tree, slabs = bp.pack_transport(full_source)
+    full = bp.unpack_transport((pickle.loads(pickle.dumps(tree)), slabs))
+    assert _only_rows(tree, None) is tree
+    part = bp.unpack_transport((_only_rows(pickle.loads(pickle.dumps(tree)), frozenset({1, 3})),
+                                slabs))
+    assert [f is None for f in part.frames] == [True, False, True, False]
+    for field in dc.fields(full):
+        if field.name != "frames":
+            assert _same(getattr(part, field.name), getattr(full, field.name)), field.name
+    for row in (1, 3):
+        ref = full.row_refs[row]
+        assert _same(auxiliary_frame(part, ref), auxiliary_frame(full, ref))
+    with pytest.raises(ValueError, match="binary_auxiliary_row_binding_changed"):
+        auxiliary_frame(part, full.row_refs[0])  # an unselected row is never usable
+
+
+def test_worker_task_pauses_only_the_cyclic_collector():
+    import gc
+
+    from stpd.rl.binary_preparation import _collector_paused
+
+    assert gc.isenabled()
+    with _collector_paused():
+        assert not gc.isenabled()
+    assert gc.isenabled()
+    gc.disable()
+    try:
+        with _collector_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()  # a caller's own choice is kept
+    finally:
+        gc.enable()
+    with pytest.raises(RuntimeError), _collector_paused():
+        raise RuntimeError("task failed")
+    assert gc.isenabled()

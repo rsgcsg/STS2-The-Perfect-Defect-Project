@@ -285,26 +285,48 @@ def _bucket(size: int, buckets: tuple[int, ...]) -> int:
 def _role_metadata(
     frames: list[TensorFrame], key: str, scene_width: int, catalog_width: int, physical_rows: int
 ) -> tuple[Tensor, Tensor]:
-    rows: list[list[int]] = []
+    """Per catalog row: its scene indices (zero padded) and uniform weights.
+
+    Array form of the row-by-row construction: frame f's unique rows come from
+    its buckets in order (offset by f x scene_width in the reduction's own
+    dtype), are gathered by `inverse`, and are followed by empty rows up to
+    `catalog_width`; empty rows also fill the unused physical frames.
+    """
+    tables: list[np.ndarray] = []
+    sizes: list[np.ndarray] = []
     for batch, frame in enumerate(frames):
         reduction = frame.reductions[key]
-        unpacked: list[list[int]] = []
+        count_all = sum(count for _width, count, _indices in reduction.buckets)
+        widest = max((width for width, count, _ in reduction.buckets if count), default=0)
+        table = np.zeros((count_all, widest), dtype=np.int64)
+        size = np.zeros(count_all, dtype=np.int64)
+        start = 0
         for width, count, indices in reduction.buckets:
-            unpacked.extend((indices.reshape(count, width) + batch * scene_width).tolist())
-        inverse = reduction.inverse.tolist()
-        rows.extend(
-            [unpacked[index] for index in inverse]
-            + [[] for _ in range(catalog_width - len(frame.choices))]
-        )
-    rows.extend([[] for _ in range((physical_rows - len(frames)) * catalog_width)])
-    width = _bucket(max(map(len, rows), default=0), (1, 2, 4, 8, 16, 32, 64))
-    indices = torch.zeros((len(rows), width), dtype=torch.long)
-    weights = torch.zeros((len(rows), width), dtype=torch.float32)
-    for row, values in enumerate(rows):
-        if values:
-            indices[row, : len(values)] = torch.tensor(values)
-            weights[row, : len(values)] = 1.0 / len(values)
-    return indices, weights
+            if not count:
+                continue  # an empty bucket adds no rows (and may be wider than `widest`)
+            block = (indices.reshape(count, width) + batch * scene_width).cpu().numpy()
+            table[start : start + count, :width] = block
+            size[start : start + count] = width
+            start += count
+        inverse = np.asarray(reduction.inverse.cpu().numpy(), dtype=np.int64)
+        tables.append(table[inverse])
+        sizes.append(size[inverse])
+        empty = max(0, catalog_width - len(frame.choices))
+        tables.append(np.zeros((empty, 0), dtype=np.int64))
+        sizes.append(np.zeros(empty, dtype=np.int64))
+    empty = max(0, (physical_rows - len(frames)) * catalog_width)
+    tables.append(np.zeros((empty, 0), dtype=np.int64))
+    sizes.append(np.zeros(empty, dtype=np.int64))
+    size = np.concatenate(sizes)
+    width = _bucket(int(size.max()) if size.size else 0, (1, 2, 4, 8, 16, 32, 64))
+    gathered = np.zeros((len(size), width), dtype=np.int64)
+    row = 0
+    for table in tables:
+        gathered[row : row + len(table), : table.shape[1]] = table
+        row += len(table)
+    filled = np.arange(width)[None, :] < size[:, None]
+    weights = np.where(filled, 1.0 / np.maximum(size, 1)[:, None], 0.0).astype(np.float32)
+    return torch.from_numpy(gathered), torch.from_numpy(weights)
 
 
 PREPARED_LAYOUTS = ("padded-v1", "rows-v2")
