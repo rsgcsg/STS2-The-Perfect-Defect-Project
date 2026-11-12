@@ -692,6 +692,7 @@ class BinaryBatchPreparer:
         source_wait_seconds: float = 60,
         handoff: bool = False,
         persistent_pools: bool = False,
+        remote_prepare: dict[str, Any] | None = None,
         **existing_assembly_options: Any,
     ) -> None:
         if (
@@ -781,6 +782,20 @@ class BinaryBatchPreparer:
         # Callbacks only enqueue here; this one thread takes the lock.
         self.callbacks = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-binary-callbacks")
+        # Opt-in: `_assemble` runs on remote preparation hosts (same functions,
+        # same bytes; the SGD process checks the transferred file's sha256).
+        # Hand-off mode only. A remote failure fails that batch: no local fallback.
+        self.remote: Any = None
+        if remote_prepare is not None:
+            if not handoff or not isinstance(remote_prepare, dict):
+                raise ValueError("binary_remote_prepare_requires_handoff")
+            from .remote_prepare import AUTH_ENV, RemoteAssembly
+
+            self.remote = RemoteAssembly(
+                endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
+                connections=remote_prepare.get("connections", 2),
+                auth_env=remote_prepare.get("authkey_env", AUTH_ENV))
+            self._failed_tasks["remote_assembly"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
         self.label_pool = self._pool(workers=self.label_workers)
@@ -1134,7 +1149,15 @@ class BinaryBatchPreparer:
                     worker_args = (*args, str(output), self.handoff)
                 role = "assembly" if function is _assemble else "labels"
                 pool = self.assembly_pool if function is _assemble else self.label_pool
-                future = pool.submit(_timed, function, ready, *worker_args)
+                future: Future
+                if function is _assemble and self.remote is not None:
+                    role, future = "remote_assembly", Future()
+                    try:
+                        future.set_result(self.remote.run(ready, args, str(output)))
+                    except BaseException as error:
+                        future.set_exception(error)
+                else:
+                    future = pool.submit(_timed, function, ready, *worker_args)
                 future.add_done_callback(
                     lambda done: self.callbacks.submit(self._record_worker, role, done))
                 result = future.result().value
@@ -1416,6 +1439,8 @@ class BinaryBatchPreparer:
                 self.coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
                 self.label_coordinator.shutdown(wait=True, cancel_futures=cancel_futures)
                 self.callbacks.shutdown(wait=True)
+                if self.remote is not None:
+                    self.remote.close()
 
         if wait:
             close()
