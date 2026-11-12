@@ -32,7 +32,7 @@ F2_UV="$F2_ROOT/bootstrap/bin/uv"
 "$F2_UV" pip install --python "$F2_ROOT/env/bin/python" -r "$SCRIPT_DIR/requirements-cpu.txt"
 "$F2_UV" pip freeze --python "$F2_ROOT/env/bin/python" > "$F2_ROOT/evidence/environment-freeze.txt"
 "$F2_ROOT/env/bin/python" - <<'PY'
-import json,sys,torch,tokenizers,platform
+import json,sys,torch,tokenizers,platform,lz4.frame
 from importlib.metadata import version
 from sts2_platform_evidence.global_agent_session_run_evidence import LiveGlobalReplay, audit_global_session
 assert sys.version_info[:3]==(3,11,5)

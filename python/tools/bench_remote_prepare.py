@@ -118,6 +118,8 @@ def learner(argv: list[str]) -> None:
     parser.add_argument("segments")
     parser.add_argument("--endpoints", required=True)
     parser.add_argument("--connections", type=int, default=2)
+    parser.add_argument("--codec", choices=remote_prepare.CODECS, default="none",
+                        help="must match the hosts' --codec")
     parser.add_argument("--rows", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=12)
     parser.add_argument("--inflight", type=int, default=6)
@@ -161,7 +163,7 @@ def learner(argv: list[str]) -> None:
         persistent_pools=True, max_prepared_bytes=args.inflight * 1536 * 1024**2,
         max_pinned_bytes=64 * 1024**2,
         remote_prepare={"endpoints": args.endpoints.split(","),
-                        "connections": args.connections},
+                        "connections": args.connections, "codec": args.codec},
         **dict[str, Any](bench.OPTIONS))
     hasher = ThreadPoolExecutor(4)
     try:
@@ -233,6 +235,7 @@ def learner(argv: list[str]) -> None:
             "batches": len(done), "rows_per_s": round(rows / span, 1),
             "rows_per_h_million": round(rows / span * 3600 / 1e6, 2),
             "wire_GB_per_s": round(sum(d["bytes"] for d in steady) / span / 1e9, 3),
+            "codec": args.codec,
             "mean_latency_s": round(sum(d["latency"] for d in steady) / len(steady), 2),
             "mean_host_s": round(sum(d["host_s"] or 0 for d in steady) / len(steady), 2),
             **{f"mean_{k}_s": round(sum(d[k] or 0 for d in steady) / len(steady), 2)

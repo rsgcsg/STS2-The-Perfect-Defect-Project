@@ -802,7 +802,8 @@ class BinaryBatchPreparer:
                 endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
                 threads=threads, connections=remote_prepare.get("connections", 2),
                 auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
-                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0))
+                timeout_seconds=remote_prepare.get("timeout_seconds", 600.0),
+                codec=remote_prepare.get("codec", "none"))
             self._failed_tasks["remote_assembly"] = self._failed_tasks["remote_labels"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)
