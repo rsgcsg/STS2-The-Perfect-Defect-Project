@@ -211,7 +211,7 @@ def test_CP_restores_across_implementations_both_directions(tmp_path, monkeypatc
     states = []
     for index, sgd in enumerate((False, True)):
         dataplane = {key: value for key, value in io.dataplane.items()
-                     if sgd or key not in SGD_PROCESS}
+                     if sgd or (key not in SGD_PROCESS and key != "sgd_prestart")}
         request = dc.replace(
             config, start_package=None, resume_checkpoint=record["checkpoint_artifact_id"],
             segments=dc.replace(config.segments, training_generation=f"g-restore-{index}"))
