@@ -287,6 +287,40 @@ def test_two_ranks_never_start_on_bytes_rank0_did_not_verify(tmp_path, monkeypat
         owner.close()
 
 
+def test_a_raising_verify_thread_fails_the_stage_and_yields_no_staged(tmp_path, monkeypatch):
+    """The hash runs on a helper thread; if it raises, staging re-raises it (the child
+    then fails loudly, as for any stage error) and never returns a staged batch.
+    In-process: a spawned child would not see the monkeypatch."""
+    from types import SimpleNamespace
+
+    from stpd.rl import binary_preparation
+    from stpd.rl.sgd_process import _SgdWorker
+
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1, dataplane=PARALLEL)
+    try:
+        handoff = _first_handoff(owner)
+        plan = {"dataset": handoff.request.identity.sequence, "path": handoff.path,
+                "tree": handoff.tree,
+                "arrays": [(a.offset, a.count, a.dtype) for a in handoff.arrays],
+                "used_bytes": handoff.used_bytes, "sha256": handoff.sha256,
+                "minibatch_count": handoff.minibatch_count}
+        worker = SimpleNamespace(device=torch.device("cpu"), rank=0, shard=None,
+                                 stage_executor=None)
+        worker._staged_fields = _SgdWorker._staged_fields.__get__(worker)
+        _, fields = _SgdWorker._stage_work(worker, plan)  # control: verifies
+        assert fields["verify_seconds"] > 0
+
+        def broken(view, threads=1):
+            raise RuntimeError("verify thread broke")
+
+        monkeypatch.setattr(binary_preparation, "prepared_digest", broken)
+        with pytest.raises(RuntimeError, match="verify thread broke"):
+            _SgdWorker._stage_work(worker, plan)
+        assert owner.updates == 0
+    finally:
+        owner.close()
+
+
 def test_rank0_refuses_staged_when_a_follower_mapped_another_file(monkeypatch):
     parallel = _DataParallel.__new__(_DataParallel)
     parallel.world, parallel.staged_lock = 2, threading.Lock()

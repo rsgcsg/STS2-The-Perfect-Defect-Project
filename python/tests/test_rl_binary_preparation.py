@@ -765,8 +765,7 @@ def test_prepared_digest_binds_every_byte_and_the_length_on_any_thread_count():
     import hashlib
     import os
 
-    from stpd.rl.binary_preparation import (PREPARED_DIGEST, PREPARED_DIGEST_CHUNK,
-                                            prepared_digest)
+    from stpd.rl.binary_preparation import PREPARED_DIGEST, PREPARED_DIGEST_CHUNK, prepared_digest
 
     data = bytearray(os.urandom(2 * PREPARED_DIGEST_CHUNK + 12345))
     chunks = [bytes(data[i:i + PREPARED_DIGEST_CHUNK])
@@ -781,3 +780,6 @@ def test_prepared_digest_binds_every_byte_and_the_length_on_any_thread_count():
         assert prepared_digest(memoryview(changed), threads=4) != expected.hexdigest()
     assert prepared_digest(memoryview(data + b"\0")) != expected.hexdigest()
     assert prepared_digest(memoryview(b"")) != prepared_digest(memoryview(b"\0"))
+    assert PREPARED_DIGEST.endswith("/16MiB")
+    with pytest.raises(ValueError, match="flat_byte_view"):
+        prepared_digest(memoryview(bytearray(8)).cast("I"))

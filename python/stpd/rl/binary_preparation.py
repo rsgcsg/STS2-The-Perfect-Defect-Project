@@ -220,8 +220,8 @@ def _warm_probe() -> int:
     return os.getpid()
 
 
-PREPARED_DIGEST = "stpd/rl-prepared-chunks-1"
 PREPARED_DIGEST_CHUNK = 16 * 1024 * 1024
+PREPARED_DIGEST = f"stpd/rl-prepared-chunks-1/{PREPARED_DIGEST_CHUNK // 1024**2}MiB"
 
 
 def prepared_digest(view: memoryview, threads: int = 1) -> str:
@@ -233,6 +233,8 @@ def prepared_digest(view: memoryview, threads: int = 1) -> str:
     batch on several threads (hashlib releases the GIL) instead of one ~0.4 s
     serial pass. The writer and the verifier both call this function.
     """
+    if view.ndim != 1 or view.itemsize != 1:
+        raise ValueError("prepared_digest_requires_a_flat_byte_view")
     chunks = [view[start:start + PREPARED_DIGEST_CHUNK]
               for start in range(0, len(view), PREPARED_DIGEST_CHUNK)]
     try:
