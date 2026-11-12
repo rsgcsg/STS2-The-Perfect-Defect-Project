@@ -206,7 +206,25 @@ export function checkPublicBasisLight(value: unknown): PublicBasis {
   if (snapshot.completeness.status !== "complete" || snapshot.completeness.missing.length) missing.push("snapshot:partial");
   if (canonical(basis.missing) !== canonical(missing) || basis.capture_status !== (missing.length ? "partial" : "complete"))
     throw new Error("public capture status does not match original inventory");
+  lightChecked.set(basis, { snapshot: basis.snapshot, responses: basis.reads.map(read => read.response) });
   return basis;
+}
+
+/** Bases that passed checkPublicBasisLight in this process, with the exact snapshot and Read
+ * response objects it checked (a later swap of any of them is no longer covered). */
+const lightChecked = new WeakMap<object, { snapshot: unknown; responses: readonly unknown[] }>();
+/** True only when this exact basis object, with the same snapshot and Read response objects,
+ * passed checkPublicBasisLight here. Callers may then skip a repeated strict shape decode
+ * (the light check already ran every non-shape gate and the finite-number walk). */
+export function passedPublicBasisLightCheck(basis: unknown): boolean {
+  if (basis === null || typeof basis !== "object") return false;
+  const seen = lightChecked.get(basis);
+  if (!seen) return false;
+  const value = basis as { snapshot?: unknown; reads?: unknown };
+  if (value.snapshot !== seen.snapshot || !Array.isArray(value.reads) || value.reads.length !== seen.responses.length) return false;
+  // A navigation-profile snapshot keeps its raw_native_navigation_basis range gate in the strict decode.
+  if ((seen.snapshot as { input_profile?: unknown } | null)?.input_profile !== undefined) return false;
+  return value.reads.every((read, index) => read?.response === seen.responses[index]);
 }
 
 export async function verifyPublicBasis(capture: PublicBasisHandle, serializedObservation: string): Promise<FullPublicBasis> {

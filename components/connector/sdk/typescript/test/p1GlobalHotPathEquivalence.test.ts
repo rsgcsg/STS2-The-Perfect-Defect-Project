@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson, createPublicIdentityPolicy, publicFieldPath } from "../src/p1Global/index.js";
+import { canonicalJsonExceedsBytes } from "../src/p1Global/canonical.js";
 import { publicPath } from "../src/p1Global/publicPath.js";
 import { createPublicIdentityPolicy as referencePolicy } from "./p1GlobalReferenceIdentity.js";
 
@@ -166,4 +167,22 @@ describe("P1 hot-path optimizations keep exact bytes and answers", () => {
       expect(policy.relationAt(publicPath(path))).toBe(reference.relation(path));
     }
   }, 30000);
+});
+
+describe("observation size check without building the text", () => {
+  const outcome = (run: () => unknown) => { try { return { value: run() }; } catch (error) { return { error: String(error) }; } };
+  const exact = (value: unknown, limit: number) => Buffer.byteLength(canonicalJson(value), "utf8") > limit;
+  it("canonicalJsonExceedsBytes equals the byte length of canonicalJson against any limit", () => {
+    const next = random(20261112);
+    const values: unknown[] = [null, undefined, "", "é \u0001😀", 0, -0, NaN, 1e21, -2.2250738585072014e-308, [], {},
+      { a: undefined, b: () => 1 }, [undefined, () => 1], { toJSON: () => "own" }, new Date(0), 10n,
+      JSON.parse('{"__proto__":{"a":1}}'), { "\ud800": "\udfff" }];
+    for (let index = 0; index < 4000; index++) values.push(tree(next, 5));
+    for (const value of values) {
+      const size = outcome(() => Buffer.byteLength(canonicalJson(value), "utf8"));
+      const limits = typeof size.value === "number" ? [0, size.value - 1, size.value, size.value + 1, 8 * 1024 * 1024] : [0, 100];
+      for (const limit of limits)
+        expect(outcome(() => canonicalJsonExceedsBytes(value, limit))).toEqual(outcome(() => exact(value, limit)));
+    }
+  });
 });

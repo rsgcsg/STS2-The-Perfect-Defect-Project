@@ -1,10 +1,12 @@
 import { abandonIntention, boundAbandonIntention, completeAbandonConfirmation, completeAbandonIntention, matchesAbandonIntention, type AbandonIntention } from "./abandonForward.js";
 import { reprojectSettledRelicCounters, type SettledRelicCounterProjection } from "../settledRelicCounters.js";
 import { decodePlayerRead } from "../protocol.js";
-import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
+import { decodePublicSourceSnapshot as decodePlayerSnapshot, passedPublicBasisLightCheck } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
-import { canonicalJson, isObject } from "./canonical.js";
+import { canonicalJson, canonicalJsonExceedsBytes, isObject } from "./canonical.js";
+import { deepFrozen } from "./deepFrozen.js";
+import { persistentVisibleStateSchema } from "../visibleState.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy } from "./publicIdentity.js";
 import { publicPath, type PublicPath } from "./publicPath.js";
@@ -369,6 +371,75 @@ function publicDetailContent(kind: string, content: unknown): unknown {
   return rest;
 }
 
+/** Fast-chain reduce decode policy (C1, off by default = today's strict decode on every call).
+ * When on, a basis that passed checkPublicBasisLight in this process (same objects) skips the
+ * repeated strict zod decode of its snapshot and Reads and the repeated finite-number walk.
+ * The first such reduce of a configuration, and then each one with probability 1/strictInterval
+ * (random per call, so the sample cannot alias with slot rotation), still decodes strictly as a
+ * sample; a sample the strict decode rejects throws ReduceStrictSampleFailure, which the caller
+ * must treat as a build stop (bad data may already have reached other rows), never as a plain crash.
+ * A basis not light-checked here, or whose persistent part (the run/player tree copied into the
+ * observation) fails the strict persistent schema, always decodes strictly, exactly as with the policy off.
+ * Output is unchanged for valid input (the strict decode returns the same raw objects).
+ * Known non-claim: on a non-sampled light reduce, shape errors outside the persistent part that the
+ * zod schema would reject (enum values, unknown keys, protocol version literals) are accepted; only the
+ * samples see them. */
+export interface ReduceDecodeConfig { readonly strictInterval: number; readonly random?: () => number }
+export interface ReduceDecodeStats { light: number; strict: number; sampled: number; persistent_rejects: number; sample_failures: number;
+  persistent_parses: number; persistent_cache_hits: number }
+export class ReduceStrictSampleFailure extends Error {
+  constructor(cause: unknown) {
+    super(`reduce_strict_sample_failed:${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "ReduceStrictSampleFailure";
+  }
+}
+const zeroStats = (): ReduceDecodeStats => ({ light: 0, strict: 0, sampled: 0, persistent_rejects: 0, sample_failures: 0,
+  persistent_parses: 0, persistent_cache_hits: 0 });
+let reduceDecode: ReduceDecodeConfig | null = null;
+let reduceDecodeCounts = zeroStats();
+let reduceDecodeFirst = true;
+export function configureReduceDecode(config: ReduceDecodeConfig | null): void {
+  if (config !== null && (!Number.isInteger(config.strictInterval) || config.strictInterval < 1))
+    throw new Error("reduce decode strictInterval must be a positive integer");
+  reduceDecode = config; reduceDecodeCounts = zeroStats(); reduceDecodeFirst = true;
+}
+export function reduceDecodeStats(): ReduceDecodeStats { return { ...reduceDecodeCounts }; }
+
+const persistentChecked = new WeakSet<object>();
+/** The persistent part (the whole run/player tree that the observation copies through aliasTree)
+ * against the same strict schema the strict decode uses: persistentVisibleStateSchema plus the
+ * strict wrapper. A deep-frozen content object (the fast chain's Host freezes every capture) that
+ * passed once is remembered by identity, so an unchanged persistent subtree is parsed only once. */
+export function persistentContentValid(snapshot: unknown): boolean {
+  if (!isObject(snapshot)) return false;
+  const persistent = snapshot.persistent;
+  if (persistent === null) return true;
+  if (!isObject(persistent) || Object.keys(persistent).length !== 2
+      || persistent.content_schema !== "sts2.player-environment/persistent/run-player-1" || !isObject(persistent.content)) return false;
+  const content = persistent.content;
+  if (persistentChecked.has(content)) { reduceDecodeCounts.persistent_cache_hits += 1; return true; }
+  reduceDecodeCounts.persistent_parses += 1;
+  if (!persistentVisibleStateSchema.safeParse(content).success) return false;
+  if (deepFrozen(content)) persistentChecked.add(content);
+  return true;
+}
+
+type DecodeMode = "strict" | "sampled" | "light";
+function decodeMode(basis: P1Basis): DecodeMode {
+  if (reduceDecode === null) return "strict";
+  if (!passedPublicBasisLightCheck(basis)) { reduceDecodeCounts.strict += 1; return "strict"; }
+  if (!persistentContentValid(basis.snapshot)) { reduceDecodeCounts.persistent_rejects += 1; reduceDecodeCounts.strict += 1; return "strict"; }
+  const first = reduceDecodeFirst; reduceDecodeFirst = false;
+  if (first || (reduceDecode.random ?? Math.random)() * reduceDecode.strictInterval < 1) {
+    reduceDecodeCounts.strict += 1; reduceDecodeCounts.sampled += 1; return "sampled";
+  }
+  reduceDecodeCounts.light += 1; return "light";
+}
+function strictDecode<T>(mode: DecodeMode, decode: () => T): T {
+  if (mode !== "sampled") return decode();
+  try { return decode(); } catch (error) { reduceDecodeCounts.sample_failures += 1; throw new ReduceStrictSampleFailure(error); }
+}
+
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   return reduceCatalog(state, basis);
 }
@@ -383,7 +454,10 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   // Validate the original navigation capsule before counter projection. Its
   // unfurled PB remains literal capture provenance, not another model carrier.
-  const originalSnapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const mode = decodeMode(basis);
+  const light = mode === "light";
+  const checkedBasis = basis;
+  const originalSnapshot = (light ? basis.snapshot : strictDecode(mode, () => decodePlayerSnapshot(basis.snapshot).raw)) as Record<string, any>;
   const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
   if (settled) basis = settled.basis;
   const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
@@ -469,7 +543,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   if (hasAbandonIntention && (nativeKind !== "event_option" || !completeAbandonIntention(expansion.abandon_confirmation)
       || !boundAbandonIntention(expansion, snapshot.bound_actions.actions)))
     missing.push("required:abandon_intention_public_facts_or_binding");
-  if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
+  if (!(light && basis === checkedBasis) && !hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
   // An accepted combat input can execute while a different potion popup is
   // visible. Its same-capture combat context and A(S) still own the input;
   // preserve the actual popup as public information rather than invent a UI.
@@ -514,7 +588,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     let read: Record<string, any> | null = null;
     if (captures.length !== 1 || captures[0]!.response == null || captures[0]!.error !== null || captures[0]!.kind !== listed.kind) missing.push(`read:${listed.kind}:${listed.read_id}:missing_or_ambiguous`);
     else {
-      const decoded = decodePlayerRead(captures[0]!.response).raw as Record<string, any>;
+      const decoded = (light ? captures[0]!.response : strictDecode(mode, () => decodePlayerRead(captures[0]!.response).raw)) as Record<string, any>;
       if (decoded.read_id !== listed.read_id || decoded.expected_snapshot_id !== snapshot.snapshot_id
           || decoded.observed_snapshot_id !== snapshot.snapshot_id || decoded.kind !== listed.kind
           || decoded.content_schema !== listed.content_schema || decoded.completeness?.status !== "complete"
@@ -943,7 +1017,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       ...readInstances.flatMap(({ read }) => read?.completeness?.hidden_by_policy ?? [])])].sort(),
     catalog, terminal
   };
-  if (Buffer.byteLength(canonicalJson(observation), "utf8") > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
+  if (canonicalJsonExceedsBytes(observation, P1G_LIMITS.observation_bytes)) missing.push("observation_over_limit");
 
   // No current producer has a typed, mechanism-qualified mandatory proof.
   const forced: string | null = null;

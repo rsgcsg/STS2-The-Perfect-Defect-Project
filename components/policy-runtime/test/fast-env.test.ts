@@ -6,7 +6,8 @@ import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PlayerEnvironmentRestClient, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
+import { PlayerEnvironmentRestClient, checkPublicBasisLight, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
+import { ReduceStrictSampleFailure } from "@rsgcsg/sts2-connector-client/p1-global";
 import { ReferenceGlobalTransport } from "../src/global-transport.js";
 import { createGlobalProgramManifest } from "../src/global-program.js";
 import { CanonicalTextMemo, CanonicalTextMemoDivergence, pyJsonSha256 } from "../src/fast-env/json-bytes.js";
@@ -46,6 +47,8 @@ interface NativeHooks {
   captureThrows?: (capture: number) => boolean;
   /** This capture's sampled full check disagrees with the light check. */
   sampledCheckFails?: (capture: number) => boolean;
+  /** This capture's basis passes the SDK light check (and is vouched for) but its shape is zod-invalid. */
+  lightCheckedBadShape?: (capture: number) => boolean;
   stepGate?: () => Promise<void>;
   resetThrows?: boolean;
   /** Emit a fake compact line on every mount and step (evidence tap). */
@@ -135,6 +138,14 @@ class FakeNative implements SlotNative {
     const full = await this.transport.capture({ timeoutMs: 2000 });
     this.checked += 1;
     if (this.hooks.sampledCheckFails?.(this.captures)) throw new SampledCheckFailure(new Error("basis_differs_from_bytes"), full, this.captures - 1);
+    if (this.hooks.lightCheckedBadShape?.(this.captures)) {
+      // A revision-1 basis (the fast chain's) whose snapshot zod rejects; the light check does not look at the field.
+      const { settled_relic_counters: _witness, ...rest } = full.basis as unknown as Record<string, any>;
+      const { input_profile: _profile, ...snapshot } = rest.snapshot; // the Managed fast chain carries no navigation profile
+      const basis = { ...rest, revision: "1", snapshot: { ...snapshot, observed_at: 42 } };
+      checkPublicBasisLight(basis);
+      (full as { basis: unknown }).basis = basis;
+    }
     if (this.hooks.settlingAfterStep !== undefined && this.source.steps >= this.hooks.settlingAfterStep)
       (full.basis.snapshot as { status: string }).status = "settling";
     return full;
@@ -866,6 +877,78 @@ describe("fast-env failure paths", () => {
     expect(() => parseFastEnvConfig(raw({ receipt_canonical: { check_interval: 1025 } }))).toThrow(/memo.receipt_canonical.check_interval/u);
     expect(() => parseFastEnvConfig(raw({ native_card: { deck: true } }))).toThrow(/memo.native_card.hud/u);
     expect(() => parseFastEnvConfig(raw({ projection: {} }))).toThrow(/memo.projection/u);
+  });
+
+  it("C1 reduce_light config: off unless named, strict_interval 1..1024, unknown keys refused", () => {
+    const raw = (checks: unknown) => ({ schema: "sts2.policy-runtime/fast-env-config-1", env_process_id: "e", slots: 1,
+      host: { package: "p", candidate_directory: "c", game_directory: null, character: "Defect", language: "en", ascension: 0, request_timeout_ms: 30000 },
+      agent_manifest: "m", compact: { enabled: false, reconcile_interval: 64 }, checks, decision_link: { kind: "unix", path: "/l" },
+      inference: { timeout_ms: 1000, actor_id: "a", single_choice: "omit", sampling: SAMPLING },
+      budget: { max_decisions_per_game: 1, max_native_steps_per_game: 1, game_wall_ms: 1 }, no_progress: null, evidence: { directory: "/e" } });
+    expect(parseFastEnvConfig(raw({ sample_rate: 0 })).checks).toEqual({ sample_rate: 0, reduce_light: null });
+    expect(parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: null })).checks.reduce_light).toBeNull();
+    expect(parseFastEnvConfig(raw({ sample_rate: 0.01, reduce_light: { strict_interval: 64 } })).checks)
+      .toEqual({ sample_rate: 0.01, reduce_light: { strict_interval: 64 } });
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 0 } }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 1025 } }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: {} }))).toThrow(/checks.reduce_light.strict_interval/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, reduce_light: { strict_interval: 8, every: 1 } }))).toThrow(/checks.reduce_light/u);
+    expect(() => parseFastEnvConfig(raw({ sample_rate: 0, light: true }))).toThrow(/checks.light/u);
+  });
+
+  it("C1 reduce_light: off = no counter (status exactly today's); on = light/strict counts reported", async () => {
+    const off = await harness({ hooks: () => ({ terminalAfter: 2 }) });
+    expect(off.config.checks.reduce_light).toBeNull();
+    off.open(0);
+    await off.next(event => event.event === "closed");
+    off.send({ cmd: "status" });
+    expect((await off.next(event => event.event === "status")).counters).not.toHaveProperty("reduce_light");
+    const on = await harness({ hooks: () => ({ terminalAfter: 3 }), edit: config => { config.checks = { ...config.checks, reduce_light: { strict_interval: 8 } }; } });
+    on.open(0);
+    expect(await on.next(event => event.event === "closed")).toMatchObject({ reason: "terminal" });
+    on.send({ cmd: "status" });
+    const { reduce_light: light } = (await on.next(event => event.event === "status")).counters;
+    // The fake Host never runs the SDK light check, so every reduce here decodes strictly.
+    expect(light).toMatchObject({ light: 0, strict_interval: 8 });
+    expect(light.strict).toBeGreaterThan(0);
+  });
+
+  it("C1 reduce_light: a failing strict sample stops this build's output with its own reason and counter", async () => {
+    const h = await harness({ hooks: () => ({ terminalAfter: 3, lightCheckedBadShape: () => true }),
+      edit: config => { config.checks = { ...config.checks, reduce_light: { strict_interval: 1024 } }; } });
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    // The first light-checked reduce of the process is always a strict sample.
+    expect(closed).toMatchObject({ reason: "env_crash", native: "replaced" });
+    expect(String(closed.detail)).toMatch(/^reduce:reduce_strict_sample_failed:/u);
+    expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "reduce_strict_sample_failed", slot: 0 });
+    h.send({ cmd: "status" });
+    const status = await h.next(event => event.event === "status");
+    expect(status.counters.build_output_stopped).toBe("reduce_strict_sample_failed");
+    expect(status.counters.reduce_light).toMatchObject({ sampled: 1, sample_failures: 1, light: 0 });
+    h.open(0);
+    expect(await h.next(event => event.event === "open_refused" && event.reason === "build_output_stopped")).toMatchObject({ slot: 0 });
+  });
+
+  it("C1 reduce_light: a strict-sample failure raised after delivery (e.g. a follow-rule reduce) is the same build stop", async () => {
+    // Any reduce outside the step's own capture (resolveFollowBasis) reaches the game's outer catch;
+    // inject the failure at a post-delivery site that rethrows (the E4 receipt digest).
+    const real = CanonicalTextMemo.prototype.digest;
+    let calls = 0;
+    const spy = vi.spyOn(CanonicalTextMemo.prototype, "digest").mockImplementation(function (this: CanonicalTextMemo, raw, decoded) {
+      if (++calls === 2) throw new ReduceStrictSampleFailure(new Error("follow_basis_shape"));
+      return real.call(this, raw, decoded);
+    });
+    try {
+      const h = await harness({ hooks: () => ({ terminalAfter: 5 }), edit: config => {
+        config.memo = { receipt_canonical: { check_interval: 64 } }; config.checks = { ...config.checks, reduce_light: { strict_interval: 1024 } }; } });
+      h.open(0);
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "env_crash", native: "replaced" });
+      expect(closed.native_steps).toBeGreaterThan(0);
+      expect(String(closed.detail)).toBe("reduce:reduce_strict_sample_failed:follow_basis_shape");
+      expect(await h.next(event => event.event === "build_output_stopped")).toMatchObject({ reason: "reduce_strict_sample_failed", slot: 0 });
+    } finally { spy.mockRestore(); }
   });
 
   it("the default sink is WP6's: a real game reads back whole, its close carrying full_checks", async () => {
