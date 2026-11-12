@@ -976,6 +976,13 @@ class SegmentLearner:
         self.sgd = SgdProcess(run=self.config.run, generation=self.generation, root=root,
                               options=options, on_staged=self._sgd_staged)
         self.sgd_planned: dict[int, Any] = {}
+        # Plan decisions (and the start that ends one) are made under this lock:
+        # a plan can also be sent by the thread that completes a preparation.
+        self.sgd_lock = threading.RLock()
+        self.sgd_callback_error: BaseException | None = None
+        # Main-thread time blocked on `staged` when a dataset is taken, and how
+        # many datasets were already staged ahead at that point (SGD process only).
+        self.timing.update(sgd_stage_wait_seconds=0.0, sgd_staged_ahead_batches=0.0)
         self.sgd_rates = (self.optimizer.param_groups[0]["lr"],
                           self.optimizer.param_groups[1]["lr"])
         self.sgd_memory: dict[str, Any] | None = None
@@ -1067,22 +1074,51 @@ class SegmentLearner:
     def _sgd_plan(self, handoff: Any) -> None:
         assert self.sgd is not None
         sequence = handoff.request.identity.sequence
-        if sequence in self.sgd_planned or sequence in self.sgd.staged:
-            return
-        self.sgd_planned[sequence] = handoff
-        self.sgd.send("plan", dataset=sequence, path=handoff.path, tree=handoff.tree,
-                      arrays=[(a.offset, a.count, a.dtype) for a in handoff.arrays],
-                      used_bytes=handoff.used_bytes, sha256=handoff.sha256,
-                      minibatch_count=handoff.minibatch_count, epochs=handoff.request.epochs)
+        with self.sgd_lock:
+            if (sequence in self.sgd_planned or sequence in self.sgd.staged
+                    or (self.sgd.started is not None and sequence <= self.sgd.started)):
+                return
+            self.sgd_planned[sequence] = handoff
+            self.sgd.send("plan", dataset=sequence, path=handoff.path, tree=handoff.tree,
+                          arrays=[(a.offset, a.count, a.dtype) for a in handoff.arrays],
+                          used_bytes=handoff.used_bytes, sha256=handoff.sha256,
+                          minibatch_count=handoff.minibatch_count,
+                          epochs=handoff.request.epochs)
 
     def _sgd_plan_ahead(self) -> None:
         """At most one dataset beyond the started one is staged ahead in the SGD process."""
         assert self.sgd is not None
-        if self.sgd.planned or self.pending_batch is None:
-            return
-        future = self.pending_batch[1]
-        if future.done() and not future.cancelled() and future.exception() is None:
-            self._sgd_plan(future.result())
+        if self.sgd_callback_error is not None:
+            raise self.sgd_callback_error
+        with self.sgd_lock:
+            if self.sgd.planned or self.pending_batch is None:
+                return
+            future = self.pending_batch[1]
+            if future.done() and not future.cancelled() and future.exception() is None:
+                self._sgd_plan(future.result())
+
+    def _sgd_prepared(self, future: Future[PreparedBatch]) -> None:
+        """Preparation-completion thread: plan the next dataset the moment it is
+        prepared, instead of at the next minibatch answer, so its staging starts
+        while the current dataset still trains. Only the one dataset right after
+        the started, active one is planned here (same order, same bound as
+        `_sgd_plan_ahead`); anything else is left to the controller thread."""
+        if future.cancelled() or future.exception() is not None:
+            return  # the controller thread reads this failure when it takes it
+        try:
+            assert self.sgd is not None
+            with self.sgd_lock:
+                pending, active = self.pending_batch, self.active_batch
+                if (self.newlease_stopped or self.input_fenced or self.sgd.failure is not None
+                        or self.sgd.planned or pending is None or pending[1] is not future
+                        or active is None
+                        or active.request.identity.sequence != self.sgd.started):
+                    return
+                self._sgd_plan(future.result())
+        except SgdProcessFailed:
+            return  # kept on `self.sgd.failure`; the controller thread raises it
+        except BaseException as error:  # never lost in a callback: raised by the controller
+            self.sgd_callback_error = error
 
     def _sgd_fence(self, failure: SgdProcessFailed) -> None:
         with self.condition:
@@ -2600,7 +2636,10 @@ class SegmentLearner:
 
             future.add_done_callback(observe)
             return future
-        return self._dispatch_preparation(submit)
+        prepared = self._dispatch_preparation(submit)
+        if self.sgd is not None and self.sgd.options.stage_thread:
+            prepared.add_done_callback(self._sgd_prepared)
+        return prepared
 
     def _prepare_ahead(self) -> None:
         while (self.settings.prepare_ahead
@@ -2672,8 +2711,12 @@ class SegmentLearner:
         if self.sgd is not None:
             # Same point as the in-process stage: the SGD process owns its pinned
             # and device copies before preparation and PPO references are released.
+            sequence = batch.request.identity.sequence
+            self.timing["sgd_staged_ahead_batches"] += sequence in self.sgd.staged
             self._sgd_plan(batch)
-            self.sgd.wait_staged(batch.request.identity.sequence)
+            stage_wait = time.perf_counter()
+            self.sgd.wait_staged(sequence)
+            self.timing["sgd_stage_wait_seconds"] += time.perf_counter() - stage_wait
         else:
             transfer_started = time.perf_counter()
             self.device_batch, copies = stage_batch(batch, self.device)
@@ -2697,7 +2740,11 @@ class SegmentLearner:
         )
         if self.sgd is not None:
             # Boundary checks are done; the SGD process never starts a dataset itself.
-            self.sgd.send("start", dataset=batch.request.identity.sequence)
+            with self.sgd_lock:
+                self.sgd.send("start", dataset=batch.request.identity.sequence)
+            # The next dataset may already be prepared: stage it during this one.
+            if not self.newlease_stopped and not self.input_fenced:
+                self._sgd_plan_ahead()
         return True
 
     def _step(self) -> dict[str, Any]:
