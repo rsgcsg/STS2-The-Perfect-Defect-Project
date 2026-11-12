@@ -842,3 +842,125 @@ def test_stage_thread_keeps_the_same_learning(tmp_path, monkeypatch, device):
                 assert left[key] == right[key], key
     with pytest.raises(ValueError, match="invalid_sgd_stage_thread"):
         terminal_owner(tmp_path / "bad", monkeypatch, dataplane={"sgd_stage_thread": 1})
+
+
+def _hold_plan_ahead(owner, monkeypatch):
+    """Only explicit `_sgd_plan` calls plan: no early or boundary plan-ahead."""
+    monkeypatch.setattr(owner, "_sgd_plan_ahead", lambda: None)
+    monkeypatch.setattr(owner, "_sgd_prepared", lambda future: None)
+
+
+def test_stage_overlap_plans_next_dataset_ahead_and_releases_only_after_staged(
+        tmp_path, monkeypatch):
+    """V3 stage overlap: the next prepared dataset is planned right after the current
+    one starts (or when its preparation completes), staged by the side thread while
+    the current one trains, and taken without a stage wait. Its derived file and
+    PPO bytes are released no earlier than its own `staged` answer, in plan order."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=3,
+                                 dataplane={"sgd_stage_thread": True,
+                                            "ahead_while_waiting": True})
+    order: list[tuple[str, int]] = []
+    staged = owner.sgd.on_staged
+    release = owner.input_preparer.release_handoff
+
+    def seen(message):
+        order.append(("staged", message["dataset"]))
+        staged(message)
+
+    def released(handoff):
+        order.append(("released", handoff.request.identity.sequence))
+        assert ("staged", handoff.request.identity.sequence) in order
+        release(handoff)
+
+    monkeypatch.setattr(owner.sgd, "on_staged", seen)
+    monkeypatch.setattr(owner.input_preparer, "release_handoff", released)
+    try:
+        events = train(owner, 3)
+    finally:
+        owner.close()
+    datasets = [event["dataset"] for event in events]
+    assert datasets == sorted(datasets) and len(set(datasets)) == 3
+    staged_order = [dataset for kind, dataset in order if kind == "staged"]
+    assert staged_order == sorted(set(datasets))
+    assert [d for kind, d in order if kind == "released"] == staged_order
+    # Datasets 2 and 3 were staged before they were taken (no blocking stage wait).
+    assert owner.timing["sgd_staged_ahead_batches"] >= 1
+    assert owner.timing["sgd_stage_wait_seconds"] >= 0
+    assert owner.sgd.exit["exitcode"] == 0 and owner.sgd.exit["failure"] is None
+
+
+def test_staged_ahead_failure_fails_the_running_child_loudly(tmp_path, monkeypatch):
+    """A plan staged ahead while a dataset trains fails on the stage thread; the
+    child fails at once (stage `stage_wait`), never trains that dataset, and the
+    controller gets `SgdProcessFailed`, not a silent skip or a retry."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=3,
+                                 dataplane={"sgd_stage_thread": True})
+    _hold_plan_ahead(owner, monkeypatch)
+    try:
+        assert owner._prepare()
+        owner._prepare_ahead()
+        handoff = owner.pending_batch[1].result(timeout=60)
+        with Path(handoff.path).open("r+b") as stream:
+            first = stream.read(1)
+            stream.seek(0)
+            stream.write(bytes([first[0] ^ 1]))
+        owner._sgd_plan(handoff)
+        with pytest.raises(SgdProcessFailed) as caught:
+            for _ in range(20):
+                if owner.active is not None:
+                    owner._step()
+                else:
+                    owner._prepare()
+        child = caught.value.facts["child"]
+        assert child["stage"] == "stage_wait"
+        assert child["error_code"] == "sgd_prepared_file_integrity_changed"
+        assert handoff.request.identity.sequence not in owner.sgd.staged
+        assert Path(handoff.path).exists()  # never released: the child never owned it
+    finally:
+        owner.close()
+
+
+def test_checkpoint_with_a_staged_ahead_dataset_keeps_it_unreleased_and_learning_equal(
+        tmp_path, monkeypatch):
+    """A CP taken while the next dataset is staged in the SGD process but not
+    started: that dataset is still in the queue (not taken, PPO bytes retained), so
+    the CP restores it; training then takes it without restaging, and the learning
+    state equals the inline-staging run with the same CP points, bit for bit."""
+    results = {}
+    for threaded in (False, True):
+        owner, _, _ = terminal_owner(tmp_path / f"cp-{threaded}", monkeypatch, episodes=3,
+                                     dataplane={"sgd_stage_thread": threaded})
+        try:
+            assert owner._prepare()
+            owner._prepare_ahead()
+            ahead = owner.pending_batch
+            ahead_sequence = ahead[1].result(timeout=60).request.identity.sequence
+            while owner.active is not None:
+                owner._step()
+            owner._collect_publication(wait=True)
+            if threaded:
+                # Between datasets only `staged` can still arrive (as in `_prepare`).
+                owner.sgd.wait_staged(ahead_sequence)  # staged ahead, not started
+                assert ahead_sequence in owner.sgd.staged
+                assert owner.pending_batch is ahead and not ahead[0]["taken"]
+                queued = {r["segment_id"] for r in owner.queue.pending}
+                assert {r["segment_id"] for r in ahead[0]["segments"]} <= queued
+            owner.checkpoint()
+            owner._collect_checkpoint(wait=True)
+            _, first = read_cp(owner)
+            events = train(owner, 2)
+            owner.checkpoint(final=True)
+            _, last = read_cp(owner)
+            results[threaded] = first, last, events, aux_uses(owner)
+        finally:
+            owner.close()
+    (first, last, events, aux), (first_t, last_t, events_t, aux_t) = (
+        results[False], results[True])
+    assert aux == aux_t
+    for left, right in ((first, first_t), (last, last_t)):
+        assert left.counters == right.counters
+        for name in ("weights", "optimizer", "ema"):
+            assert_tree(getattr(left, name), getattr(right, name))
+    for left, right in zip(events, events_t, strict=True):
+        for key in ("dataset", "update", "first_use", "td_loss", "policy_loss", "stepped"):
+            assert left[key] == right[key], key

@@ -420,6 +420,7 @@ class SgdProcess:
         self.planned: OrderedDict[int, dict[str, Any]] = OrderedDict()
         self.started: int | None = None
         self.staged: dict[int, dict[str, Any]] = {}
+        self.send_lock = threading.RLock()
         self.step_walls: deque[float] = deque(maxlen=200)
         self.last_update: int | None = None
         self.last_kind: str | None = None
@@ -487,23 +488,28 @@ class SgdProcess:
                              timeout_seconds=self.step_timeout())
 
     def send(self, kind: str, **fields: Any) -> None:
-        if self.failure is not None:
-            raise self.failure
-        self._check_sender(kind)
-        self.sent += 1
-        self.outbox.put({"protocol": PROTOCOL, "kind": kind, "sequence": self.sent,
-                         "run": self.run, "training_generation": self.generation,
-                         "sent_at": time.time(), **fields})
-        if kind == "plan":
-            self.planned[fields["dataset"]] = fields
-        elif kind == "start":
-            # The controller waits for `staged` before it authorizes a start.
-            if (not self.planned or next(iter(self.planned)) != fields["dataset"]
-                    or fields["dataset"] not in self.staged):
-                raise self.violation("sgd_start_without_staged_plan", dataset=fields["dataset"])
-            self.planned.popitem(last=False)
-            del self.staged[fields["dataset"]]
-            self.started = fields["dataset"]
+        # A plan may be sent from a preparation-completion thread; sequence
+        # numbers and the planned/started ledger stay atomic per message.
+        with self.send_lock:
+            if self.failure is not None:
+                raise self.failure
+            self._check_sender(kind)
+            if kind == "start" and (not self.planned
+                                    or next(iter(self.planned)) != fields["dataset"]
+                                    or fields["dataset"] not in self.staged):
+                # The controller waits for `staged` before it authorizes a start.
+                raise self.violation("sgd_start_without_staged_plan",
+                                     dataset=fields["dataset"])
+            self.sent += 1
+            self.outbox.put({"protocol": PROTOCOL, "kind": kind, "sequence": self.sent,
+                             "run": self.run, "training_generation": self.generation,
+                             "sent_at": time.time(), **fields})
+            if kind == "plan":
+                self.planned[fields["dataset"]] = fields
+            elif kind == "start":
+                self.planned.popitem(last=False)
+                del self.staged[fields["dataset"]]
+                self.started = fields["dataset"]
 
     def step_timeout(self) -> float:
         if len(self.step_walls) < 5:
@@ -706,8 +712,16 @@ def _child_main(connection: Any, parent: int) -> None:
             # order; rank 0 alone validates and answers them.
             for follower in followers:
                 follower.forward(message)
-            inbox.put(message)
+            # This one thread reads the pipe in order, so the gapless-sequence
+            # check is the same here as on the stepping thread.
+            try:
+                _child_validate(message, state)
+            except BaseException as error:
+                inbox.put(_Raise(error, "receive"))
+                continue
+            _child_route(message, state, inbox)
 
+    state["wake"] = inbox.put
     worker = None
     parallel = None
     try:
@@ -715,6 +729,7 @@ def _child_main(connection: Any, parent: int) -> None:
         parallel_init = message.get("data_parallel") if isinstance(message, dict) else None
         if parallel_init is not None:
             parallel = _DataParallel.leader(message, send, state, followers)
+        _child_validate(message, state)
         inbox.put(message)
         threading.Thread(target=receive, name="rl-sgd-receiver", daemon=True).start()
         message = _child_next(inbox, state, block=True)
@@ -898,7 +913,9 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     _parent_death_signal(leader)
     inbox: queue.Queue[Any] = queue.Queue()
-    state: dict[str, Any] = {"stage": "init", "follower": True}
+    state: dict[str, Any] = {"stage": "init", "follower": True, "wake": inbox.put}
+    # The stage thread answers `staged`; a failure report comes from this thread.
+    answer_lock = threading.Lock()
 
     def receive() -> None:
         while True:
@@ -908,13 +925,15 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
                 if state.get("closing"):
                     return
                 os._exit(70)
-            inbox.put(message)
+            _child_route(message, state, inbox)
 
     def next_message(block: bool) -> Any:
         try:
             message = inbox.get(block=block)
         except queue.Empty:
             return None
+        if isinstance(message, _Raise):
+            message.throw(state)
         if message.get("kind") == "shutdown":
             raise _Shutdown
         return message
@@ -927,7 +946,9 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
         def answer(kind: str, **fields: Any) -> None:
             # Followers answer nothing to the controller; rank 0 waits for these.
             if kind == "staged":
-                connection.send({"staged": fields["dataset"], "file": fields["file_identity"]})
+                with answer_lock:
+                    connection.send({"staged": fields["dataset"],
+                                     "file": fields["file_identity"]})
 
         worker = _SgdWorker(init, answer, state, parallel=parallel)
         worker.loop(next_message)
@@ -936,7 +957,7 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
     except BaseException as error:
         from spireagent.local_diagnostics import exception_facts
 
-        with suppress(BaseException):
+        with suppress(BaseException), answer_lock:
             connection.send({"error_type": type(error).__name__,
                              "error_code": getattr(error, "code", None),
                              "diagnostic": exception_facts(error)})
@@ -950,18 +971,51 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
             parallel.dist.destroy_process_group()
 
 
-def _child_next(inbox: queue.Queue[Any], state: dict[str, Any], *, block: bool) -> Any:
-    try:
-        message = inbox.get(block=block)
-    except queue.Empty:
-        return None
+class _Raise:
+    """A failure raised off the stepping thread, re-raised on it with its stage."""
+
+    def __init__(self, error: BaseException, stage: str) -> None:
+        self.error, self.stage = error, stage
+
+    def throw(self, state: dict[str, Any]) -> None:
+        state["stage"] = self.stage
+        raise self.error
+
+
+def _child_validate(message: Any, state: dict[str, Any]) -> None:
+    """Gapless sequence and run binding; called by the one thread reading the pipe."""
     state["received"] += 1
-    if (message.get("protocol") != PROTOCOL or message.get("sequence") != state["received"]
+    if (not isinstance(message, dict) or message.get("protocol") != PROTOCOL
+            or message.get("sequence") != state["received"]
             or (state["run"] is not None and (message.get("run") != state["run"]
                 or message.get("training_generation") != state["generation"]))):
         raise _ChildViolation("sgd_message_identity_or_sequence_changed")
     if state["run"] is None:
         state["run"], state["generation"] = message["run"], message["training_generation"]
+
+
+def _child_route(message: Any, state: dict[str, Any], inbox: queue.Queue[Any]) -> None:
+    """A plan goes straight to the stage thread when there is one: it then stages
+    while the stepping thread is inside an update, instead of waiting for the next
+    minibatch boundary to read it. Everything else keeps the ordered inbox."""
+    worker = state.get("worker")
+    if (isinstance(message, dict) and message.get("kind") == "plan" and worker is not None
+            and worker.stage_executor is not None):
+        try:
+            worker.stage(message)
+        except BaseException as error:
+            inbox.put(_Raise(error, "plan"))
+        return
+    inbox.put(message)
+
+
+def _child_next(inbox: queue.Queue[Any], state: dict[str, Any], *, block: bool) -> Any:
+    try:
+        message = inbox.get(block=block)
+    except queue.Empty:
+        return None
+    if isinstance(message, _Raise):
+        message.throw(state)
     if message["kind"] == "shutdown":
         raise _Shutdown
     return message
@@ -1028,9 +1082,13 @@ class _SgdWorker:
         self.root = Path(init["root"])
         self.pinned = _PinnedBuffers(init["pinned_bytes"], slots=2)
         self.staged: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
-        # Opt-in: plans staged on one side thread, results delivered in plan order
-        # by this thread (every send and every `staged` entry stays on it).
+        # Opt-in: plans staged on one side thread (FIFO, one worker), each result
+        # delivered (`staged` entry + answer) by that thread as soon as it is done,
+        # so plan order holds and no delivery waits for a minibatch boundary. The
+        # receiver thread submits plans; the stepping thread pops starts. One lock.
         self.staging: OrderedDict[int, tuple[dict[str, Any], Any]] = OrderedDict()
+        self.staged_lock = threading.Lock()
+        self.wake = state.get("wake")
         self.stage_executor = None
         if init.get("stage_thread"):
             from concurrent.futures import ThreadPoolExecutor
@@ -1074,6 +1132,9 @@ class _SgdWorker:
             if ranks is not None and any(r["weights_sha256"] != loaded for r in ranks):
                 raise _ChildViolation("sgd_data_parallel_ranks_loaded_different_weights")
         self.state["stage"] = "ready"
+        # Before `ready`: the controller plans only after it, so every plan is
+        # routed the same way (straight to the stage thread when there is one).
+        self.state["worker"] = self
         self.send("ready", pid=os.getpid(), device=str(self.device),
                   **({"data_parallel": ranks} if ranks is not None else {}),
                   **({"compile": self.compile_facts} if self.compile_facts is not None else {}),
@@ -1180,7 +1241,9 @@ class _SgdWorker:
 
     def loop(self, next_message: Any) -> None:
         while True:
-            self.drain_staging(block=True)  # the controller waits for `staged`
+            # Stage-thread results deliver themselves; a staging failure also
+            # wakes the inbox, so idling never waits on a staging to finish.
+            self.drain_staging(block=False)
             self.state["stage"] = "idle"
             message = next_message(True)
             kind = message["kind"]
@@ -1197,25 +1260,40 @@ class _SgdWorker:
     def stage(self, plan: dict[str, Any]) -> None:
         """Map the original prepared-batch file, verify it, pin and H2D it."""
         dataset = plan["dataset"]
-        last = max([*self.staged, *self.staging], default=None)
-        if last is not None and dataset <= last:
-            raise _ChildViolation("sgd_plan_order_changed")
-        if self.stage_executor is None:
-            self.state["stage"] = "stage"
+        with self.staged_lock:
+            last = max([*self.staged, *self.staging], default=None)
+            if last is not None and dataset <= last:
+                raise _ChildViolation("sgd_plan_order_changed")
+            if self.stage_executor is not None:
+                self.staging[dataset] = (plan, self.stage_executor.submit(
+                    self._stage_and_deliver, plan))
+                return
+        self.state["stage"] = "stage"
+        self._staged_done(plan, *self._stage_work(plan))
+
+    def _stage_and_deliver(self, plan: dict[str, Any]) -> None:
+        """Stage thread: stage, then deliver at once; a failure fails the child."""
+        try:
             self._staged_done(plan, *self._stage_work(plan))
-        else:
-            self.staging[dataset] = (plan, self.stage_executor.submit(self._stage_work, plan))
+        except BaseException as error:
+            if self.wake is not None:
+                self.wake(_Raise(error, "stage_wait"))
+            raise
 
     def drain_staging(self, *, block: bool) -> None:
-        """Deliver finished side-thread stagings in plan order; block = all of them."""
-        while self.staging:
-            dataset, (plan, future) = next(iter(self.staging.items()))
+        """Reap finished side-thread stagings in plan order (re-raise a failure);
+        block = wait for all of them. Delivery already happened on that thread."""
+        while True:
+            with self.staged_lock:
+                if not self.staging:
+                    return
+                dataset, (_, future) = next(iter(self.staging.items()))
             if not block and not future.done():
                 return
             self.state["stage"] = "stage_wait"
-            result = future.result()  # a staging failure fails the child loudly
-            del self.staging[dataset]
-            self._staged_done(plan, *result)
+            future.result()  # a staging failure fails the child loudly
+            with self.staged_lock:
+                del self.staging[dataset]
 
     def _stage_work(self, plan: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         """Map the prepared file, pin/H2D this rank's part, verify the whole file once.
@@ -1306,7 +1384,8 @@ class _SgdWorker:
     def _staged_done(self, plan: dict[str, Any], device_batch: Any,
                      fields: dict[str, Any]) -> None:
         dataset = plan["dataset"]
-        self.staged[dataset] = (plan, device_batch)
+        with self.staged_lock:
+            self.staged[dataset] = (plan, device_batch)
         if self.parallel is not None and self.rank == 0:
             self.parallel.staged(dataset, fields)
         else:
@@ -1317,9 +1396,10 @@ class _SgdWorker:
 
         torch = self.torch
         dataset = start["dataset"]
-        if not self.staged or next(iter(self.staged)) != dataset:
-            raise _ChildViolation("sgd_start_without_staged_plan")
-        _, (plan, device_batch) = self.staged.popitem(last=False)
+        with self.staged_lock:
+            if not self.staged or next(iter(self.staged)) != dataset:
+                raise _ChildViolation("sgd_start_without_staged_plan")
+            _, (plan, device_batch) = self.staged.popitem(last=False)
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
         waited = time.perf_counter() - self.idle_since
@@ -1537,6 +1617,7 @@ class _SgdWorker:
 
     def close(self) -> None:
         self.state["stage"] = "shutdown"
+        self.state.pop("worker", None)  # later plans stay in the inbox, unread
         if self.stage_executor is not None:
             self.stage_executor.shutdown(wait=True, cancel_futures=True)
             self.staging.clear()
