@@ -221,19 +221,32 @@ class FastApplyClosed(RuntimeError):
 
 
 class _FastHandled(Exception):
-    """Raised to a reader for a failure the applier already fenced (or, for an ack
-    while stopping, recorded): the reader ends without fencing again."""
+    """Raised to a reader for a failure the applier / ack writer already fenced (or,
+    for an ack while stopping, recorded): the reader ends without fencing again."""
 
 
 class _FastStream:
-    """One hand-off connection as the batched applier sees it."""
+    """One hand-off connection as the batched applier sees it.
 
-    __slots__ = ("connection", "pending", "failure")
+    Its acks go out on its own writer thread, never on the shared applier: a peer
+    that stops reading acks fills only its own socket and stalls only its own
+    writer (as it stalled only its own reader before), never the whole chain.
+    Unsent acks are bounded by that sender's in-flight window: it cannot send
+    more than its window of unacked hand-offs, and it reads acks before each send.
+    """
+
+    __slots__ = ("connection", "pending", "failure", "quiet", "acks", "ack_lock",
+                 "ack_closed", "ack_thread")
 
     def __init__(self, connection: Any) -> None:
         self.connection = connection
         self.pending = 0  # submitted, not yet applied (or skipped) by the applier
         self.failure: BaseException | None = None  # first apply/ack error: no more acks
+        self.quiet = False  # that error was an ack while the learner stopped: no fence
+        self.acks: deque[dict[str, Any]] = deque()  # applied, not yet sent, in order
+        self.ack_lock = threading.Condition()  # never held with `condition`
+        self.ack_closed = False
+        self.ack_thread: threading.Thread | None = None
 
 
 @dataclass
@@ -2127,8 +2140,8 @@ class SegmentLearner:
         assert self.fast_intake is not None
         last_sequence, assembler = 0, None  # what this connection carried so far
         # Batched: this reader only reads, verifies and decides; the applier
-        # applies and acks. None: the reader applies and acks itself.
-        stream = _FastStream(connection) if self.fast_batched_apply else None
+        # applies, this stream's writer acks. None: the reader applies and acks.
+        stream = self._fast_open_stream(connection) if self.fast_batched_apply else None
         try:
             while True:
                 try:
@@ -2144,11 +2157,11 @@ class SegmentLearner:
                 except (EOFError, ConnectionResetError):
                     # A sender process that dies with our ack unread resets the socket
                     # instead of a clean EOF: the same lost assembler.
-                    self._fast_drain(stream)
+                    self._fast_finish(stream)
                     self._fast_lost()
                     return
                 if kind == "end":  # orderly: every hand-off of this assembler was acked
-                    self._fast_drain(stream)
+                    self._fast_finish(stream)
                     if (message["handed_off"] != last_sequence
                             or assembler not in (None, message["assembler_id"])):
                         raise HandoffError("handoff_end_mismatch")
@@ -2168,7 +2181,7 @@ class SegmentLearner:
                     decision = (intake(message, data) if checked is None
                                 else intake(message, data, checked))
                     if stream is not None:
-                        # Acked by the applier after the hold that applied it.
+                        # Acked (by this stream's writer) after the hold that applied it.
                         self._fast_submit(stream, decision, message)
                         continue
                     self._fast_apply(decision)
@@ -2180,13 +2193,19 @@ class SegmentLearner:
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
         except BaseException as error:
-            # This connection's earlier decisions are applied first, as when the
-            # reader applied each one itself before reading the next.
-            self._fast_drain(stream)
-            if isinstance(error, _FastHandled):
-                if self.input_fenced:
+            if stream is not None:
+                # This connection's earlier decisions are applied (and acked) first,
+                # as when the reader applied each one itself before reading the next.
+                self._fast_drain(stream)
+                self._fast_ack_close(stream)
+                # The applier / ack writer fenced its failure first (before this
+                # reader could see it): never re-fence, the first failure stays.
+                if stream.failure is not None:
+                    if stream.quiet:
+                        return  # an ack that failed while stopping: recorded, no fence
                     raise
-                return  # an ack that failed while stopping: recorded, not a fence
+                if self.fast_apply_failure is not None:
+                    raise
             if isinstance(error, (FastVerifyClosed, FastApplyClosed)):
                 # The learner closed the verify pool: a stopping learner just
                 # ends this reader (its telemetry may already be shut down);
@@ -2323,9 +2342,69 @@ class SegmentLearner:
                     return
                 self.fast_apply_lock.wait(1.0)
 
+    def _fast_open_stream(self, connection: Any) -> _FastStream:
+        stream = _FastStream(connection)
+        stream.ack_thread = threading.Thread(target=self._fast_ack_writer, args=(stream,),
+                                             name="rl-fast-ack", daemon=True)
+        stream.ack_thread.start()
+        return stream
+
+    def _fast_finish(self, stream: _FastStream | None) -> None:
+        """A reader's orderly end (sender end or EOF): apply and ack what it
+        submitted; a failure the applier / ack writer fenced is raised here."""
+        if stream is None:
+            return
+        self._fast_drain(stream)
+        self._fast_ack_close(stream)
+        if stream.failure is not None and not stream.quiet:
+            raise _FastHandled("fast_handoff_apply_failed") from stream.failure
+        if self.fast_apply_failure is not None:
+            raise _FastHandled("fast_applier_failed") from self.fast_apply_failure
+
+    def _fast_ack_push(self, stream: _FastStream, message: dict[str, Any]) -> None:
+        """Applier side: queue one ack (no socket I/O on the applier). A decision
+        applied before a later one of the same connection failed is still acked;
+        after a failed ack (writer closed) nothing more is."""
+        with stream.ack_lock:
+            if not stream.ack_closed:
+                stream.acks.append(message)
+                stream.ack_lock.notify()
+
+    def _fast_ack_writer(self, stream: _FastStream) -> None:
+        """Send this connection's acks in order; the first send error fences (or,
+        while the learner stops, is recorded) and ends the writer."""
+        while True:
+            with stream.ack_lock:
+                while not stream.acks and not stream.ack_closed:
+                    stream.ack_lock.wait()
+                if not stream.acks:
+                    return  # closed and flushed
+                batch = list(stream.acks)
+                stream.acks.clear()
+            for message in batch:
+                try:
+                    ack(stream.connection, message)
+                except BaseException as error:
+                    with stream.ack_lock:
+                        stream.ack_closed = True
+                        stream.acks.clear()
+                    self._fast_stream_failed(stream, error, acking=True)
+                    return
+
+    def _fast_ack_close(self, stream: _FastStream) -> None:
+        """Flush this connection's queued acks and end its writer."""
+        with stream.ack_lock:
+            stream.ack_closed = True
+            stream.ack_lock.notify()
+        thread = stream.ack_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(60)
+            if thread.is_alive():
+                self._event("fast_ack_writer_stop_timeout")
+
     def _fast_applier(self) -> None:
         """Drain every ready decision and apply them under one condition hold, then
-        ack. Any error outside one decision fences input loudly and stops."""
+        queue their acks. Any error outside one decision fences input loudly and stops."""
         try:
             while True:
                 with self.fast_apply_lock:
@@ -2348,31 +2427,44 @@ class SegmentLearner:
                             ticket.stream.pending -= 1
                         self.fast_apply_lock.notify_all()
         except BaseException as error:
-            with self.fast_apply_lock:
-                self.fast_apply_failure = error
-                for ticket in self.fast_apply_items:
-                    ticket.stream.pending -= 1
-                self.fast_apply_items.clear()
-                self.fast_apply_lock.notify_all()
-            self._event("fast_applier_failed", error_type=type(error).__name__,
-                        error=str(error)[:400])
-            self._fast_fence("fast_apply", error)
+            # Fence first: nothing after it (telemetry included) may skip it, and
+            # readers woken by `fast_apply_failure` then find input already fenced.
+            try:
+                self._fast_fence("fast_apply", error)
+            finally:
+                with self.fast_apply_lock:
+                    self.fast_apply_failure = error
+                    for ticket in self.fast_apply_items:
+                        ticket.stream.pending -= 1
+                    self.fast_apply_items.clear()
+                    self.fast_apply_lock.notify_all()
+                with suppress(Exception):  # the fence above already carries the error
+                    self._event("fast_applier_failed", error_type=type(error).__name__,
+                                error=str(error)[:400])
 
     def _fast_stream_failed(self, stream: _FastStream, error: BaseException, *,
                             acking: bool = False) -> None:
         """A decision (or its ack) of this connection failed: as when its reader
         raised, input is fenced and the connection gets no further ack. An ack
-        that fails while the learner is already stopping only records it."""
-        if stream.failure is None:
-            stream.failure = error
+        that fails while the learner is already stopping only records it. Only
+        the connection's first failure is fenced (a later one keeps that one)."""
+        if stream.failure is not None:
+            return
         if acking:
             with self.condition:
                 stopping = self.newlease_stopped
             if stopping:
-                self._event("fast_ack_failed_while_stopping",
-                            error_type=type(error).__name__)
+                stream.quiet = True  # before `failure`: a reader seeing it sees this
+                stream.failure = error
+                with suppress(Exception):
+                    self._event("fast_ack_failed_while_stopping",
+                                error_type=type(error).__name__)
                 return
-        self._fast_fence("fast_handoff", error)
+        try:
+            # Fenced before the reader can see `failure` and stop on it.
+            self._fast_fence("fast_handoff", error)
+        finally:
+            stream.failure = error
 
     def _fast_apply_tickets(self, batch: list[_FastTicket]) -> None:
         prepared: list[tuple[Any, list[Any]] | None] = []
@@ -2406,16 +2498,11 @@ class SegmentLearner:
                 self._fast_wake(changed)
         # Every decision applied above is acked, in order, even if a later one of
         # the same connection failed in this hold (its reader acked each one
-        # before reading the next); after a failed ack that connection gets none.
-        broken: set[int] = set()
+        # before reading the next). Its writer sends them; after a failed ack
+        # that connection gets none.
         for ticket in applied:
-            if ticket.ack is None or id(ticket.stream) in broken:
-                continue
-            try:
-                ack(ticket.stream.connection, ticket.ack)
-            except BaseException as error:
-                broken.add(id(ticket.stream))
-                self._fast_stream_failed(ticket.stream, error, acking=True)
+            if ticket.ack is not None:
+                self._fast_ack_push(ticket.stream, ticket.ack)
 
     def _fast_apply_stop(self) -> None:
         """Learner close: apply what is queued, then end the applier."""
@@ -3895,16 +3982,17 @@ class SegmentLearner:
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
             if self.archive is not None:
                 cleanup.callback(self.archive.stop_capacity_monitor)
-            if getattr(self, "fast_apply_thread", None) is not None:
-                # Runs after the verify pool closed (callbacks run last-first):
-                # readers stop submitting, then what is queued is applied.
-                cleanup.callback(self._fast_apply_stop)
             verifier = getattr(self, "fast_verifier", None)
             if verifier is not None:
                 # Refuses new reads and drains in-flight ones before the workers
                 # and arena go; hand-off threads then stop on
                 # `fast_verify_pool_closed` without fencing (newlease_stopped).
                 cleanup.callback(verifier.close)
+            if getattr(self, "fast_apply_thread", None) is not None:
+                # Before the pool / sgd / preparer / releaser shut down: queued
+                # exclusions and aux rows still find their owners. Readers then
+                # stop on `fast_apply_closed` without fencing (newlease_stopped).
+                self._fast_apply_stop()
             try:
                 self.pool.close()
             finally:
