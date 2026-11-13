@@ -771,10 +771,10 @@ def test_episode_open_without_a_supported_ascension_is_refused(vocabulary, model
     """The level is required (never a default A0) and must be one the table supports."""
     from stpd.p1.inference_service import check_episode_ascension
 
-    assert [check_episode_ascension(level) for level in range(10)] == [None] * 10
+    assert [check_episode_ascension(level) for level in range(11)] == [None] * 11
     assert check_episode_ascension(None) == "ascension_missing_or_not_an_integer"
     assert check_episode_ascension(True) == "ascension_missing_or_not_an_integer"
-    assert check_episode_ascension(10) == "ascension_unsupported"  # until S-2
+    assert check_episode_ascension(11) == "ascension_unsupported"
     encoder = RowsEncoder(vocabulary)
     encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
     service = _service(vocabulary, model, FakeAssembler())

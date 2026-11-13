@@ -65,6 +65,8 @@ export async function runManagedHostServiceTool(args, { root, installSignalHandl
     root, candidateDirectory,
     diskIdentity: readDiskIdentity(resolveInstallation(gameDirectory)),
     character: option(args, "--character", "Ironclad"),
+    // Validated by the session (integer 0..10); mount checks the native run's level.
+    ascension: Number(option(args, "--ascension", "0")),
     // Presentation language of native text (en|zh); Reference profiles may be Chinese.
     language: option(args, "--language", "en"),
     requestTimeoutMs,

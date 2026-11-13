@@ -14,6 +14,8 @@ FOUR_AGENT_SUITE_ID = "ref-first-four-10-20261023"
 CHARACTERS = ("Defect", "Ironclad", "Silent", "Regent", "Necrobinder")
 CHECKPOINT_SUITE_ID = "ref-checkpoints-20261024"
 RL3_LEARNING_CURVE_SUITE_ID = "managed-rl3-learning-curve-100-20261030-Defect-a0"
+# The fixed A10 learning-curve suite (owner D3, 2026-11-14): reported apart from the A0 100.
+RL5_A10_CURVE_SUITE_ID = "managed-rl5-learning-curve-50-20261114-Defect-a10"
 RL5_INT_SEALED_PREFIX = "managed-rl5-int-sealed-20261112-Defect"
 RL5_INT_SEALED_COUNTS = {0: 300, 10: 100}
 
@@ -58,6 +60,18 @@ def rl3_learning_curve_manifest(game_version: str) -> dict[str, Any]:
             "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
             "seeds": [derive_game_seed(RL3_LEARNING_CURVE_SUITE_ID, i)
                       for i in range(1, 101)], "collection_training_RL": "forbidden"}
+
+
+def rl5_a10_curve_manifest(game_version: str) -> dict[str, Any]:
+    """Fresh 50-seed Managed A10 set; never collect or train on these seeds."""
+    four_agent_reference_manifest(game_version)
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": RL5_A10_CURVE_SUITE_ID,
+            "version": "1.0.0", "game_version": game_version, "character": "Defect",
+            "ascension": 10, "host": "Managed", "purpose": "fixed_evaluation_only",
+            "episode_count": 50,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
+            "seeds": [derive_game_seed(RL5_A10_CURVE_SUITE_ID, i) for i in range(1, 51)],
+            "collection_training_RL": "forbidden"}
 
 
 def rl5_int_sealed_manifest(game_version: str, ascension: int = 0) -> dict[str, Any]:
@@ -181,6 +195,7 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
     # legacy suites, the four-agent reservation, checkpoint, T2, learning curve,
     # RL5 INT sealed.
     rl3 = rl3_learning_curve_manifest("v0.111.0")
+    a10 = rl5_a10_curve_manifest("v0.111.0")
     sets: list[tuple[str, list[str]]] = [
         *((name, load_suite(name)["seeds"]) for name in suite_names()),
         (FOUR_AGENT_SUITE_ID, [derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11)]),
@@ -191,6 +206,7 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
         *((m["suite_id"], m["seeds"]) for m in (t2_managed_manifest("v0.111.0", a)
                                                 for a in (0, 10))),
         (rl3["suite_id"], rl3["seeds"]),
+        (a10["suite_id"], a10["seeds"]),
         *((m["suite_id"], m["seeds"]) for m in (rl5_int_sealed_manifest("v0.111.0", a)
                                                 for a in RL5_INT_SEALED_COUNTS)),
     ]

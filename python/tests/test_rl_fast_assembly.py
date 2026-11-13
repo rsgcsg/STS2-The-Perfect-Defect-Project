@@ -53,7 +53,7 @@ def mu(index: int, generation: str = "gen-1") -> MuHandoff:
 
 def values(floor: int = 1) -> list[float]:
     out = [0.0] * OUTCOME_CLASSES
-    out[floor] = 0.5
+    out[min(floor, 48)] = 0.5  # the outcome mask caps floor support at 48
     out[49] = 0.5
     return out
 
@@ -1043,7 +1043,7 @@ def test_ascension_is_required_and_above_a0_needs_format_3():
     from stpd.rl.fast_segment import FORMAT_3, segment_ascension
     h = Harness(segment_format=FORMAT_2)
     h.assembler.offer_mu(mu(1))
-    for bad in ({"ascension": None}, {"ascension": "5"}, {"ascension": 11}):
+    for bad in ({"ascension": None}, {"ascension": "10"}, {"ascension": 11}):
         with pytest.raises(AssemblyError, match="invalid_episode_open"):
             h.open("g", **bad)
     with pytest.raises(AssemblyError, match="ascension_needs_segment_format_3"):

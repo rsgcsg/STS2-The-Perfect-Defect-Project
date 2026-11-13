@@ -568,7 +568,7 @@ class ManagedEpisodeExecutor:
         from spireagent.resource_slot import require_managed_slot
 
         require_managed_slot()
-        if manifest["ascension"] != 0 or manifest["host"] != "Managed":
+        if manifest["host"] != "Managed":
             reject("unsupported_scenario")
         if any(key not in os.environ for key in self.adapter_environment_keys):
             reject("adapter_environment_key_unavailable")
@@ -612,6 +612,8 @@ class ManagedEpisodeExecutor:
                         log_file=private / "host.log",
                         diagnostics_file=private / "native-diagnostics.json",
                         character=manifest["character"],
+                        # The Host checks the native run's level against it at mount.
+                        ascension=manifest["ascension"],
                         language=self.configuration.get("language", "en"),
                         timeout_ms=60000,
                         startup_timeout=min(120, self.episode_seconds),
