@@ -51,6 +51,14 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
 - `episode_open.audit_retain_mu` (R7 games): every temporary mu such a game's
   segments bind is archived (`mu_archive`, weights bound by sha256) before any
   of its rows is scored with it, so the complete-chain replay can rescore.
+  Only a mu an R7 segment actually binds is archived (owner option "d",
+  2026-11-13): the archive is written in `begin_row` when an R7 game opens a
+  segment on a mu not yet archived, outside `self.lock`, and the row is then
+  planned on that mu (if a newer mu arrived meanwhile, that one is archived and
+  bound instead). Mu published while an R7 game is open but never bound by one
+  is not archived (at ~1 mu / 4 s that was 25-90 versions per game instead of
+  its ~7 segments). A failed archive (e.g. the archive's byte bound,
+  `mu_archive_full`) refuses the row loudly (`audit_mu_archive_failed:<code>`).
 
 Instance identity: every start of an assembler is a new instance,
 `<assembler_id>.<random 12 hex>`. Segment ids (`<instance>.<n>`) and the SGD
@@ -80,6 +88,7 @@ import copy
 import dataclasses
 import math
 import secrets
+import sys
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -436,9 +445,6 @@ class FastSegmentAssembler:
         """
         with self.lock:
             self.ledger.check(handoff)  # an identity conflict is refused before anything
-            audit_open = any(game.audit_retain_mu for game in self.games.values())
-        if audit_open:
-            self._archive(handoff)
         sealed: list[SealedSegment | RejectedSegment] = []
         with self.emit_lock:
             try:
@@ -502,25 +508,32 @@ class FastSegmentAssembler:
                          str(message["single_choice"]), start, audit, acts=[first_act])
             game.max_floor = first_floor
             self.games[instance] = game
-        if not audit:
-            return
-        # A mu offered from now on is archived by offer_mu before it can be bound;
-        # one that arrived while this game was opening is archived here.
-        try:
-            while True:
-                with self.lock:
-                    current = self.ledger.latest
-                    if current is None or _archive_key(current) in self.archived:
-                        return
-                self._archive(current)
-        except BaseException:
-            with self.lock:  # a failed open leaves no game behind
-                if self.games.get(instance) is game and not game.segments:
-                    del self.games[instance]
-            raise
+        # An R7 game's mu are archived when its segments bind them (`begin_row`).
 
     def begin_row(self, row: Mapping[str, Any], row_bytes: bytes) -> RowPlan:
-        """Bind a request row to its segment and mu before the forward pass."""
+        """Bind a request row to its segment and mu before the forward pass.
+
+        An R7 game that opens a segment on a mu not yet archived archives that mu
+        first, outside the lock, then plans again (nothing changed before)."""
+        while True:
+            plan_or_mu = self._begin_row(row, row_bytes)
+            if isinstance(plan_or_mu, RowPlan):
+                return plan_or_mu
+            try:
+                self._archive(plan_or_mu)
+            except AssemblyError:
+                raise
+            except Exception as error:  # noqa: BLE001 - refused loudly, typed
+                code = getattr(error, "code", None) or (error.args[0] if error.args
+                                                        else type(error).__name__)
+                with self.lock:
+                    self.counters["mu_archive_failed"] = (
+                        self.counters.get("mu_archive_failed", 0) + 1)
+                print(f"fast_assembly R7 mu archive failed: {code}", file=sys.stderr,
+                      flush=True)
+                raise AssemblyError(f"audit_mu_archive_failed:{code}") from error
+
+    def _begin_row(self, row: Mapping[str, Any], row_bytes: bytes) -> RowPlan | MuHandoff:
         with self.lock:
             game = self.games.get(str(row.get("game_instance_id")))
             if game is None:
@@ -546,8 +559,9 @@ class FastSegmentAssembler:
             if (game.audit_retain_mu and (current is None or current.doomed is not None
                                           or len(current.rows) >= self.steps)
                     and _archive_key(self.ledger.current()) not in self.archived):
-                # Loud: an R7 game is never scored with a mu whose weights are not kept.
-                raise AssemblyError("audit_mu_not_archived")
+                # An R7 game is never scored with a mu whose weights are not kept:
+                # archive this one (outside the lock) and plan again.
+                return self.ledger.current()
             tail: TailPlan | None = None
             if (current is None or current.doomed is not None
                     or len(current.rows) >= self.steps):
