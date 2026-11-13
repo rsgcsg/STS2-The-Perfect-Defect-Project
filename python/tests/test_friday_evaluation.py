@@ -182,6 +182,20 @@ def test_shared_local_mode_is_named_and_exact(evaluate, execution, tmp_path):
     evaluate.validate_execution({**original, 'storage_mode': 'remote'}, selections)
 
 
+def test_shared_local_launcher_reads_no_R2_environment(evaluate, tmp_path):
+    """A7: the fast chain never opens R2; every other mode keeps the R2 environment."""
+    plan = {'source_root': str(tmp_path / 'actor/source')}
+    remote = evaluate.launcher(tmp_path / 'plan.json', plan)
+    assert remote == evaluate.launcher(tmp_path / 'plan.json', plan, credentials=True)
+    assert 'friday-r2.env' in remote and 'source "$credentials"' in remote
+    local = evaluate.launcher(tmp_path / 'plan.json', plan, credentials=False)
+    assert 'friday-r2.env' not in local and '$credentials' not in local
+    assert local.replace('# shared_local storage: no R2 environment is read\n', '') == \
+        remote.replace(evaluate.R2_ENVIRONMENT, '')
+    assert evaluate.needs_r2({}) and evaluate.needs_r2({'storage_mode': 'remote'})
+    assert not evaluate.needs_r2({'storage_mode': 'shared_local'})
+
+
 def test_fixed20_seed_tampering_stays_rejected_by_original_reader(evaluate, execution, tmp_path):
     from spireagent.json_boundary import BoundaryError
     from stpd.evaluation.suites import load_suite

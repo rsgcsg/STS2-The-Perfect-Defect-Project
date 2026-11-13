@@ -18,7 +18,7 @@ from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runti
 from test_p1_input_v2 import public_state
 from test_rl_loop import PRODUCER
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_exchange import Exchange
@@ -483,10 +483,15 @@ def test_explicit_cp16_conversion_is_zero_SGD_and_preserves_each_state(model, mo
     assert not {"queue", "active", "leases", "input_head"} & dataclasses.asdict(restored).keys()
 
 
-def configuration(tmp_path, monkeypatch, *, generation="g-source"):
+# A source-checkout-shaped producer: evaluation export refuses scratch producers.
+SOURCE_PRODUCER = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "0123456789abcdef" * 2
+                           + "01234567", "c" * 64)
+
+
+def configuration(tmp_path, monkeypatch, *, generation="g-source", producer=None):
     import stpd.rl.segment_learner as module
 
-    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    monkeypatch.setattr(module, "source_identity", lambda _root: producer or PRODUCER)
     torch.set_num_threads(1)
     start = MStd(public_vocabulary()).eval()
     checkpoint = tmp_path / "fixture-source"

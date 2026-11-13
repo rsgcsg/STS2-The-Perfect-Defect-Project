@@ -19,8 +19,18 @@ Rules (RL4.1 long-run lessons, lead 11-12):
   (busy, deadline, capacity) is skipped and logged, it never stops anything;
 - a refused pre-submission check (fair share) is tried again next tick; a failure
   after a submission intent is written is never retried (unknown delivery);
-- RL3 registered 100-seed suite, 3 h job wall (OPS-2), 1800 s per game, unknowns
-  continue cleaned (as `prepare_checkpoint` fixes).
+- RL3 registered 100-seed suite (the RL4.2 final-evaluation seeds, PLAN v11), argmax,
+  16 workers (100 games in about 1.5 h of play plus the snapshot; 4 workers could not
+  finish 100 games inside the wall), 3 h job wall (OPS-2), 1800 s per game, unknowns
+  continue cleaned and are excluded per pair, never voiding the round;
+- after the evaluation job ends, the owner's report (`stpd.evaluation.rl_observation`:
+  per-floor distribution, max floor, Boss counts, wins, mean reward, paired deltas)
+  is written next to it against `--baseline-plan` (and the previous evaluation) when
+  their observed protocol and seed manifest match; a different protocol is skipped
+  and named, never compared.
+
+`--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
+on the baseline CP gives the comparable reference); `--once` then waits for its report.
 
 Managed games need a GAME-SLOT line (working rule 5): `run` refuses to submit
 without `--slot-registered`; `--dry-run` writes everything and submits nothing.
@@ -55,9 +65,13 @@ WALL_SECONDS = 10800  # OPS-2: Act-3-deep games outgrow 2 h
 EPISODE_SECONDS = 1800
 SEEDS = 100
 MAX_LIVE = 2  # 3 h evaluations every 2 h overlap by at most one
+WORKERS = 16  # RL4.2 final eval: 25 games on 8 workers took 1,700-2,450 s of play
+PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
+RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
 LIVE_STATES = "PD,R,CG,CF,S,RQ,RS"  # queued or running; a purged id is simply absent
 SPLIT = 'exec "$actor_root/env/bin/python"'
+WAITING = ("preparing", "submitted")
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 
 
@@ -84,9 +98,10 @@ def check_manifest(path: Path) -> None:
 
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
-    """The watcher's preparation command, for one CP."""
+    """The watcher's preparation command, for one CP (no R2 environment when shared_local)."""
     launcher = evaluate.launcher(root / "not-offered-plan.json",
-                                 {"source_root": settings["runtime_source"]})
+                                 {"source_root": settings["runtime_source"]},
+                                 credentials=settings.get("r2", True))
     if launcher.count(SPLIT) != 1:
         raise ValueError("evaluation_launcher_layout_changed")
     prefix = launcher.split(SPLIT, 1)[0]
@@ -141,8 +156,10 @@ class Loop:
                  jobs: Callable[[list[str]], set[str]] = live_jobs,
                  submit: Callable[..., dict[str, Any]] = evaluate.submit) -> None:
         self.settings, self.output, self.dry_run, self.clock = settings, output, dry_run, clock
-        self.newest = newest or (lambda: newest_checkpoint(
-            settings["peer"], settings["run"], settings.get("training_generation")))
+        fixed = settings.get("checkpoint")
+        self.newest = newest or ((lambda: {"checkpoint_artifact_id": fixed, "published_at": None})
+                                 if fixed else (lambda: newest_checkpoint(
+            settings["peer"], settings["run"], settings.get("training_generation"))))
         self.run_command = run_command or (lambda c: subprocess.check_output(c, text=True)
                                            .strip())
         self.jobs, self.submit = jobs, submit
@@ -200,16 +217,37 @@ class Loop:
         self.persist()
 
     def advance(self) -> bool:
-        """Preparation finished: submit its plan once; a dead job without a plan fails."""
+        """Preparation finished: submit its plan once; a dead job without a plan fails.
+
+        A finished evaluation job gets its report; one that ended without a result
+        (after the shared-disk grace) is recorded, never resubmitted.
+        """
         preparing = [e for e in self.state["evaluations"] if e["stage"] == "preparing"]
-        live = self.live([e["prepare_job"] for e in preparing])
+        submitted = [e for e in self.state["evaluations"]
+                     if e["stage"] == "submitted" and e.get("evaluation_job")]
+        live = self.live([e["prepare_job"] for e in preparing]
+                         + [e["evaluation_job"] for e in submitted])
         if live is None:
             return False
+        for item in submitted:
+            if item["evaluation_job"] in live:
+                continue
+            if not (Path(item["root"]) / "round/evaluation/result.json").is_file():
+                ended = item.setdefault("ended_seen_at", self.clock())
+                if self.clock() - ended >= RESULT_GRACE_SECONDS:
+                    item["stage"] = "evaluation_ended_without_result"
+                    self.note("evaluation_ended_without_result", checkpoint=item["checkpoint"],
+                              job=item["evaluation_job"])
+                continue
+            self.report(item)
         for item in preparing:
             plan = Path(item["root"]) / "round/evaluation/plan.json"
             if item["prepare_job"] in live:
                 continue
             if not plan.is_file():
+                ended = item.setdefault("ended_seen_at", self.clock())
+                if self.clock() - ended < PLAN_GRACE_SECONDS:
+                    continue
                 item["stage"] = "prepare_failed"
                 self.note("evaluation_prepare_failed", checkpoint=item["checkpoint"],
                           job=item["prepare_job"])
@@ -237,6 +275,26 @@ class Loop:
             self.note("evaluation_submitted", checkpoint=item["checkpoint"],
                       job=result.get("job_id"))
         return True
+
+    def report(self, item: dict[str, Any]) -> None:
+        previous = [e for e in self.state["evaluations"]
+                    if e["stage"] == "reported" and e["number"] < item["number"]]
+        try:
+            summary = write_evaluation_report(
+                Path(item["root"]), self.settings.get("baseline_plan"),
+                str(Path(previous[-1]["root"]) / "round/evaluation/plan.json")
+                if previous else None)
+        except Exception as error:  # noqa: BLE001 -- originals stay; the report is a projection
+            item.update(stage="report_failed", reason=f"{type(error).__name__}: {error}")
+            self.note("evaluation_report_failed", checkpoint=item["checkpoint"],
+                      reason=item["reason"])
+            return
+        item.update(stage="reported", summary=summary)
+        current = summary["cohorts"]["current"]
+        self.note("evaluation_reported", checkpoint=item["checkpoint"],
+                  report=summary["report_directory"], scored=current["scored"],
+                  wins=current["wins"], mean_floor=current["mean_floor"],
+                  reward=current["reward_mean"], conservative=current["conservative"])
 
     def start(self) -> None:
         deadline = self.settings.get("deadline_at")
@@ -297,8 +355,89 @@ class Loop:
         return None
 
 
+def write_evaluation_report(root: Path, baseline_plan: str | None,
+                            previous_plan: str | None) -> dict[str, Any]:
+    """The owner's report for one finished evaluation round (`<root>/report`).
+
+    Reads only the saved, hash-bound observation files of each round
+    (`evaluate.read_observation_report`). A reference with another observed protocol
+    (Host/Runtime/input/progress pins, policy) or another seed manifest is skipped
+    and named, never compared. Unknown/failed games stay unscored rows (excluded per
+    pair, listed with the floor they reached); the round is never voided.
+    """
+    from stpd.evaluation.rl_observation import write_report
+
+    def cohort(plan: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        frozen, _, files = evaluate.read_observation_report(plan.parent / "result.json", plan)
+        return files["cohort"], frozen
+
+    current, plan = cohort(root / "round/evaluation/plan.json")
+    cohorts: dict[str, dict[str, Any]] = {}
+    skipped: dict[str, Any] = {}
+    for name, reference in (("baseline", baseline_plan), ("previous", previous_plan)):
+        if reference is None:
+            continue
+        group, frozen = cohort(Path(reference))
+        old, new = group["protocol_observed"], current["protocol_observed"]
+        keys = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
+        keys += [k for k in ("host_kind", "character", "ascension") if group[k] != current[k]]
+        if frozen["manifest"]["sha256"] != plan["manifest"]["sha256"]:
+            keys.append("seed_manifest")
+        if keys:
+            skipped[name] = {"plan": reference, "differing": keys}
+            continue
+        cohorts[name] = group
+    cohorts["current"] = current
+    output = root / "report"
+    report = write_report(cohorts, output, scope_note=(
+        "Managed fixed pool, argmax; unknown/failed games are excluded per pair and listed, "
+        "never retried; the round is never voided."
+        + (" Skipped references (different protocol or seeds): "
+           + json.dumps(skipped, sort_keys=True) if skipped else "")))
+    summary: dict[str, Any] = {"schema": SCHEMA + "/report", "report_directory": str(output),
+                               "skipped_references": skipped, "cohorts": {}, "paired": {}}
+    for name, group in cohorts.items():
+        bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
+        reward = report["rewards"][name]
+        summary["cohorts"][name] = {
+            "planned": group["planned"], "scored": group["floor_n"], "wins": group["wins"],
+            "mean_floor": group["mean_floor"], "median_floor": group["median_floor"],
+            "max_floor": group["max_floor"],
+            "act1_boss_cleared": bosses[1]["cleared_witnessed"],
+            "act2_boss_cleared": bosses[2]["cleared_witnessed"],
+            "act3_boss_reached": bosses[3]["reached_witnessed"],
+            "loss_floor_counts": group["loss_floor_counts"],
+            "reward_mean": reward.get("mean"),
+            "conservative": (reward.get("conservative") or {}).get("score"),
+            "excluded": reward.get("excluded_rows", [])}
+    for name in cohorts:
+        if name == "current":
+            continue
+        floor, reward = report["comparisons"][name], report["reward_comparisons"][name]
+        summary["paired"][name] = {
+            "floor_pairs": floor["paired_n"], "counts": floor["counts"],
+            "floor_delta": floor["mean_delta"],
+            "floor_bootstrap95": floor["bootstrap95_fixed_seed_sensitivity"],
+            "reward": {k: reward["official"].get(k) for k in (
+                "paired_n", "better", "same", "worse", "mean_delta",
+                "bootstrap95_fixed_seed_sensitivity")},
+            "conservative_reward_delta": (reward.get("conservative_paired") or {}).get(
+                "mean_delta")}
+    save(output / "summary.json", summary)
+    return summary
+
+
+def check_storage(execution: dict[str, Any], peer: dict[str, Any]) -> bool:
+    """True when the evaluation jobs need the R2 environment (not shared_local)."""
+    if not evaluate.needs_r2(execution) and (
+            set(peer) != {"kind", "directory"} or peer.get("kind") != "local"):
+        raise ValueError("shared_local_evaluation_requires_a_local_peer_without_archive")
+    return evaluate.needs_r2(execution)
+
+
 def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     config = json.loads(args.learner_config.read_bytes())
+    execution = json.loads(args.execution.read_bytes())
     return {"learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation,
@@ -308,7 +447,9 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
             "episode_seconds": args.episode_seconds, "interval": args.interval,
             "max_live": args.max_live, "partition": args.partition,
             "prepare_partition": args.prepare_partition,
-            "exclude_nodes": args.exclude_node or [], "deadline_at": args.deadline_at}
+            "exclude_nodes": args.exclude_node or [], "deadline_at": args.deadline_at,
+            "checkpoint": args.checkpoint, "r2": check_storage(execution, config["peer"]),
+            "baseline_plan": str(args.baseline_plan.resolve()) if args.baseline_plan else None}
 
 
 def main() -> None:
@@ -321,7 +462,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--training-generation")
     parser.add_argument("--interval", type=int, default=INTERVAL_SECONDS)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=WORKERS)
     parser.add_argument("--seeds", type=int, default=SEEDS)
     parser.add_argument("--wall-seconds", type=int, default=WALL_SECONDS)
     parser.add_argument("--episode-seconds", type=int, default=EPISODE_SECONDS)
@@ -331,8 +472,14 @@ def main() -> None:
                         default="debug")
     parser.add_argument("--exclude-node", action="append")
     parser.add_argument("--deadline-at", type=float)
+    parser.add_argument("--checkpoint",
+                        help="evaluate exactly this CP artifact id (else the newest CP)")
+    parser.add_argument("--baseline-plan", type=Path,
+                        help="plan.json of the reference round (e.g. the baseline CP's own "
+                             "fast_eval round) for the paired report")
     parser.add_argument("--once", action="store_true",
-                        help="one evaluation of the newest CP, then exit once submitted")
+                        help="one evaluation, then exit once its report is written "
+                             "(or it ended without one)")
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--slot-registered", action="store_true",
@@ -359,7 +506,7 @@ def main() -> None:
         while True:
             loop.tick()
             stages = [e["stage"] for e in loop.state["evaluations"]]
-            if args.dry_run or args.once and stages and stages[-1] != "preparing":
+            if args.dry_run or args.once and stages and stages[-1] not in WAITING:
                 break
             time.sleep(args.poll_seconds)
     print(json.dumps({"evaluations": loop.state["evaluations"]}, sort_keys=True), flush=True)

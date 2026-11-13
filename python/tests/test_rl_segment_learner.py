@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
-from test_rl41_w1 import assert_tree, configuration, deliver
+from test_rl41_w1 import SOURCE_PRODUCER, assert_tree, configuration, deliver
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.rl_exchange import Exchange
@@ -542,7 +542,7 @@ def test_zero_auxiliary_rows_disables_selection_from_nonempty_pool(tmp_path, mon
 def test_CP_export_uses_exact_raw_theta_without_learning_or_auxiliary_heads(tmp_path, monkeypatch):
     from stpd.evaluation.rl_checkpoint import export_checkpoint
     from stpd.p1.export import action_weights, load_model
-    config, io = configuration(tmp_path, monkeypatch)
+    config, io = configuration(tmp_path, monkeypatch, producer=SOURCE_PRODUCER)
     owner = SegmentLearner(config, tmp_path / "owner", io)
     deliver(owner, actor="a")
     deliver(owner, actor="b")
@@ -561,6 +561,46 @@ def test_CP_export_uses_exact_raw_theta_without_learning_or_auxiliary_heads(tmp_
     assert binding["updates"] == 1 and binding["weights"] == "raw"
     assert binding["checkpoint_artifact_id"] == record["checkpoint_artifact_id"]
     assert owner.exchange.latest_checkpoint(training_generation=owner.generation) == record
+
+
+def test_CP_evaluation_refuses_only_a_placeholder_producer(tmp_path, monkeypatch):
+    """Fast-chain launcher `producer_identity = "placeholder"` CPs are void by design."""
+    from spireagent.artifact_contracts import Manifest, Producer
+    from spireagent.json_boundary import FrozenObject
+    from stpd.evaluation.rl_checkpoint import export_checkpoint, inspect_checkpoint
+    from stpd.rl.checkpoint_state import encode_state
+    config, io = configuration(tmp_path, monkeypatch, producer=SOURCE_PRODUCER)
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    owner.run(initialize_only=True)
+    record, cp = read_cp(owner)
+    store = owner.exchange.store
+    real = inspect_checkpoint(store, record["checkpoint_artifact_id"], run=config.run)
+    assert real["evaluable"] and real["refusals"] == []
+    assert {c["check"] for c in real["checks"]} >= {
+        "producer_real_source_identity", "producer_state_matches_manifest",
+        "model_structure_and_input_spec", "strict_weight_load", "run_and_generation_match"}
+    # The launcher's scratch producer, recorded both in the manifest and the state.
+    scratch = Producer("fastchain-scratch", "a" * 40, "b" * 64)
+    void = Manifest("checkpoint", scratch, payloads=(store.put_bytes(
+        "checkpoint", encode_state(dataclasses.replace(cp, producer=scratch.to_dict()))),),
+        parameters=FrozenObject.of({"schema": "stpd/rl-segment-checkpoint-3"}))
+    store.publish(void)
+    report = inspect_checkpoint(store, void.artifact_id, run=config.run)
+    assert not report["evaluable"]
+    assert [(c["check"], c["refusal"]) for c in report["refusals"]] == [
+        ("producer_real_source_identity", "checkpoint_producer_not_a_source_checkout")]
+    with pytest.raises(ValueError, match="producer_not_a_source_checkout"):
+        export_checkpoint(store, void.artifact_id, tmp_path / "void")
+    assert not (tmp_path / "void").exists()
+    # A real manifest over a state recorded by another producer is refused too.
+    mixed = Manifest("checkpoint", owner.producer, payloads=(store.put_bytes(
+        "checkpoint", encode_state(dataclasses.replace(cp, producer=scratch.to_dict()))),),
+        parameters=FrozenObject.of({"schema": "stpd/rl-segment-checkpoint-3"}))
+    store.publish(mixed)
+    with pytest.raises(ValueError, match="producer_binding_changed"):
+        export_checkpoint(store, mixed.artifact_id, tmp_path / "mixed")
+    other = inspect_checkpoint(store, record["checkpoint_artifact_id"], run="another-run")
+    assert [c["refusal"] for c in other["refusals"]] == ["checkpoint_evaluation_run_changed"]
 
 
 def test_cold_restore_inherits_frozen_deadline_and_rejects_extension(tmp_path,monkeypatch):
