@@ -1,0 +1,48 @@
+# Site profile for the fast-chain launcher: every cluster-specific value. Copy this file
+# OUT of the repository (e.g. next to the run directories), fill the real values there and
+# pass it with `--site`. Never commit the filled copy: it names private paths and nodes.
+# Secrets are never written here; only the paths of the 0600 files that hold them.
+schema = "spireagent/friday-fastchain-site-1"
+
+[site]
+work_root = "/scratch/USER/fastchain"            # runs are written to work_root/run-<tag>
+src_dir = "/scratch/USER/fastchain/src"          # git-archive copy of the build; REV inside names it
+python = "/scratch/USER/releases/RELEASE/env-gpu/bin/python"
+module_load = "python/3.11.5-gcccore-13.2.0"     # gives libbz2 for inductor (F6)
+lib_path = "/scratch/USER/lib"
+lz4_path = "/scratch/USER/lz4pkg"                # same distributions on every node
+node_release = "/scratch/USER/releases/ENV-RELEASE"  # holds game/, node and dotnet
+node_bin = "node22.23.4/bin"                     # relative to node_release
+dotnet_dir = "dotnet-sdk9.0.117"                 # relative to node_release
+inference_auth_file = "/scratch/USER/fastchain/auth.hex"       # 0600, never printed
+prepare_auth_file = "/scratch/USER/fastchain/prep-auth.hex"    # 0600, never printed
+gate_dir = "/scratch/USER/gate"                  # learner-base.json + dataplane.json
+warmup_file = "/scratch/USER/fastchain/warmup.id"
+start_package = "/scratch/USER/fastchain/start-package"
+peer_dir = "/scratch/USER/fastchain/peer"        # local peer only; never an R2 archive
+inductor_cache = "/scratch/USER/fastchain/inductor-cache"
+seeds_file = "/scratch/USER/fastchain/seeds.txt"
+input_spec_file = "/scratch/USER/fastchain/input-spec-r19.json"
+initial_progress_file = "/scratch/USER/fastchain/initial-progress.json"
+env_pkg = "/scratch/USER/fastchain/pkg-int-COMMIT"     # SOURCE_REVISION inside (first token = commit)
+env_candidate = "/scratch/USER/fastchain/candidate-int-COMMIT"  # src/Sts2Headless/bin/Release/net9.0/
+gpu_local_tmp = "/tmp"                           # node-local; hot path lives here
+env_tmp_root = "/scratch/USER/fastchain/tmp"
+shared_fs_prefixes = ["/scratch", "/home", "/data"]
+env_partition = "CPU-PARTITION"
+prep_partition = "PREP-PARTITION"
+excluded_prep_hosts = []                         # e.g. a host whose scratch is too small
+prep_scratch = { r640 = "/tmp", fc430 = "/dev/shm" }   # scratch per prep host type
+run_name = "fastchain-run"
+# Max job minutes per partition (sinfo -o "%P %l"); omit a partition that has no limit.
+partition_max_minutes = { "PREP-PARTITION" = 60 }
+
+[site.gpu_types."A100-40"]
+gres = "a100"
+partition = "GPU-PARTITION"
+nodes = ["GPU-NODE-1"]
+
+[site.gpu_types."A100-80"]
+gres = "a100"
+partition = "GPU-PARTITION"
+nodes = ["GPU-NODE-2"]

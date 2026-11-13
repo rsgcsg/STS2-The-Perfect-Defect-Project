@@ -18,6 +18,28 @@ CPU不能代存成无CUDA RNG的新CP。先seed原Exchange，再按需取CP及�
 不为恢复递归复制全部warmup祖先。所有GPU初始化/收尾仍计本卡总预算。
 第一小时外是否继续以当前用户预算为准，本SOP不授权。
 
+## RL5 快链启动器（`tools/friday/fastchain`）
+
+RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → 发布）从登录节点用一个命令起：
+`launch.py plan|preflight|submit <runtag> --site <站点文件> --cards N --card-type T [--layout L]`。
+- 布局是数据：`shared`（1卡共用）、`1i+1t`、`1i+2t` 或逐卡写 `inference,train,train`；
+  不写时用运行配置里该卡数的默认布局。名字统一为 `N卡 · 布局 · 卡型`，目标跟卡数走
+  （1卡 ≥1,400万；3卡 >3,000万，≥3,500万 = ready；2卡无目标，读损失表）。
+- 运行配置 `rl5-fastchain.toml`：每个旋钮一行（值、原默认、为什么、哪次实测）；一次性改用
+  `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
+- 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
+  照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
+- 预检任何一项不过就拒绝启动并逐项说明：卡位、单 rank 设备、备料机型与 scratch（每台开工时
+  再查空闲 ≥ 2×在途）、备料能否按时排上（`sbatch --test-only`）、分区时限、python_env_sha256
+  与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
+  同一 int 且 memo 开、candidate dll 前缀、分片均衡、只计实际运行部分的内存预算、跨节点身份、
+  热路径不在共享盘、核数上限。
+- `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
+  `plan.json`；先交备料、等全部就绪才交 GPU，再交 env 数组。
+- 读数：`readout.py <run>`（老 run 用 `--plan`）给每个角色的行/s、忙碌%、队列、等待、丢弃，
+  对照该卡数目标；多卡附损失表骨架（完美装箱理想值、实测、按原因一行）。
+- 尚未包含：自动续跑、5% 段保留与磁盘水位、每小时读数排程、每 2 h 评估排程（`fast_eval.py`）。
+
 ## 以下为旧部署操作史
 
 一页说清 RL 正式长跑在哪个节点跑什么、怎么起、怎么停、怎么续、出错看哪里。细节不在这里重写，只链接原手册：

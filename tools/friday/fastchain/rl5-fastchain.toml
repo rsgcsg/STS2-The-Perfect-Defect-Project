@@ -1,0 +1,98 @@
+# RL5 fast-chain run profile. One knob per line: value, default (the code/gate default
+# before this profile), why, and the run that measured it. Run tags (c2j, c3s2, ...) are
+# the Friday whole-chain runs of 2026-11-12/13 (V3-c3c / V3-geng results, PLAN-TABLE §9).
+# Change a value here (or `--set name=value` for one run); never in a job script.
+schema = "spireagent/friday-fastchain-profile-1"
+
+[knobs]
+# --- learner data plane ---
+source_gb = { value = 36, default = 10, why = "prepare source budget must hold in-flight batches: ~0.85 GB x ~20 s remote x batch rate (Little); 10 GB fills at 0.6 batch/s", measured = "c3c31 (collapse at 10), c3c27/32 (30 stable), c2d-c3s2 (36)" }
+source_slots = { value = 4096, default = 4096, why = "fast segments live in FastSources, not slots; slot count is not the cap", measured = "c3c31 + wu review (12288 slots did not prevent the collapse)" }
+prepared_batches = { value = 40, default = 8, why = "remote prepare keeps ~40 batches in flight; fewer starves the learner", measured = "c2j (40, prepwait 0)" }
+prepared_gib = { value = 38.4, default = 10, why = "prepared-output budget sized with prepared_batches", measured = "c2j (41231686041 bytes)" }
+preparation_workers = { value = 2, default = 12, why = "local pools are unused under remote prepare but the learner memory budget counts them per shard", measured = "c3s1 refused at 12/8 (73 counted workers = 110 GB); c3s2 2/2, prepwait 0" }
+assembly_workers = { value = 2, default = 8, why = "same as preparation_workers", measured = "c3s1/c3s2" }
+dispatch_workers = { value = 4, default = 4, why = "prepare dispatch threads (#509)", measured = "c3c10 onward" }
+prepare_slots = { value = 896, default = 896, why = "gate value", measured = "c3c series" }
+capacity_rows = { value = 212992, default = 212992, why = "learner queue capacity", measured = "c3c series" }
+wal_max_gib = { value = 20, default = 4, why = "node-local WAL cap for a 1 h run", measured = "s1 series" }
+lanes = { value = 4, default = 4, why = "dataplane lanes", measured = "s1 series" }
+sgd_start_seconds = { value = 1500, default = 300, why = "a cold inductor cache must not eat the start budget", measured = "s1d" }
+checkpoint_seconds = { value = 0, default = 0, why = "0 = gate default 300 s; each CP capture costs 3.5-7.6 s after #515", measured = "c3c15/c3c18" }
+shards = { value = 3, default = 0, why = "data plane split into processes (#523); needs a build that accepts dataplane.shards", measured = "c2d-c3s2 (510-600 -> 1,017-1,066 wan/h on 2 cards)" }
+sgd_threads_single = { value = 4, default = 1, why = "single-rank learner threads", measured = "c2i/c2j (small steady-state gain)" }
+sgd_threads_per_rank = { value = 4, default = 4, why = "threads per data-parallel rank", measured = "V3-yin §3, c3s2" }
+sgd_cpus = { value = 8, default = 8, why = "CPUs pinned for data-parallel SGD children", measured = "c3c series" }
+data_parallel_timeout_seconds = { value = 600, default = 600, why = "NCCL init/step timeout", measured = "c3c series" }
+levers = { value = true, default = false, why = "prepared_compile + kernels + bucket rows: the offline 1,866-1,934 wan/h step ran with them; the gate base had them off", measured = "h100h (off by mistake), h100i onward" }
+prepared_kernels = { value = "cross+embed+heads+nodes", default = "cross+embed+heads+nodes", why = "kernel set of the offline best step", measured = "V3-yin 1466869/1466810" }
+prepared_bucket_rows = { value = 1048576, default = 1048576, why = "one bucket per group", measured = "V3-yin 1466869" }
+learner_alloc_conf = { value = "expandable_segments:True", default = "", why = "learner reserved memory crowded the services under MPS", measured = "smoke2, s1d" }
+prefetch_referenced_only = { value = false, default = false, why = "#520 did not fix the full-queue collapse", measured = "c3c30" }
+fast_batched_apply = { value = false, default = false, why = "#522 batched apply was slower in the single learner process (not merged)", measured = "c3c33 (585), c2c (510)" }
+fast_verify_workers = { value = 0, default = 0, why = "#518 verify subprocesses: +22% admission but same ceiling; off", measured = "c3c23" }
+lock_timing = { value = false, default = false, why = "control_lock holder timing; diagnostics only", measured = "c3c29-c3c33" }
+# --- remote prepare ---
+remote_prepare = { value = true, default = false, why = "prepare on CPU hosts (#491/#496); lead default on", measured = "h100g onward, PLAN-TABLE §9" }
+remote_prepare_connections = { value = 36, default = 6, why = "connections over all prep hosts; must divide evenly over shards", measured = "c2j" }
+remote_prepare_codec = { value = "lz4", default = "none", why = "wire codec for prepared bytes; lead default", measured = "h100g onward" }
+remote_prepare_client_processes = { value = 2, default = 0, why = "client processes (#519)", measured = "c2j" }
+remote_prepare_timeout_seconds = { value = 600, default = 600, why = "per-request timeout", measured = "h100g onward" }
+remote_prepare_wait_seconds = { value = 900, default = 900, why = "the learner waits this long for every prep host, never fewer", measured = "h100g onward" }
+prep_groups = { value = [{ type = "r640", nodes = 5, cpus = 32, mem_g = 150, workers = 14 }, { type = "fc430", nodes = 3, cpus = 24, mem_g = 100, workers = 10 }], default = [], why = "8 prep hosts; srun must pass --cpus-per-task (c3c25: hosts ran on 1 CPU)", measured = "c2h-c3s2 (8 hosts, prepwait 0); c3c26 cpus fix" }
+prep_host_inflight_gb = { value = 15, default = 0, why = "in-flight prepared output per host; scratch must have >= 2x free or the worker is killed (BrokenProcessPool)", measured = "c2f (8.7 GB free host failed), c2i (~14 GB per host)" }
+prep_start_timeout_seconds = { value = 600, default = 0, why = "the prep job must be running and every host ready before the GPU job is submitted", measured = "c2g void (prep pended 16 min, GPU gave up)" }
+# --- inference services ---
+services = { value = 6, default = 1, why = "K services on the inference card under MPS", measured = "s1d onward, c3c series" }
+service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, segment_format = "stpd/rl-fast-segment-2", device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
+service_window_ms = { value = 3, default = 3, why = "batching window", measured = "s1d onward" }
+service_compile = { value = true, default = true, why = "compiled inference", measured = "s1d onward" }
+service_prepare_workers = { value = 8, default = 8, why = "prepare workers per service", measured = "c3c series" }
+mu_poll_seconds = { value = 2, default = 2, why = "mu follower poll", measured = "s1 series" }
+handoff_write_workers = { value = 4, default = 4, why = "durable segment writers; 12 had no effect", measured = "c3c28" }
+drain_seconds = { value = 45, default = 45, why = "services drain before the learner wall closes the mu source", measured = "smoke2" }
+env_drain_seconds = { value = 120, default = 120, why = "env nodes stop drivers this long before the services drain", measured = "s1f" }
+stall_dump_seconds = { value = 20, default = 20, why = "dump thread stacks when a mu stage is held this long (diagnostics)", measured = "s1g" }
+# --- GPU job resources and guards ---
+service_cores = { value = 30, default = 30, why = "cores for the K services on the inference card", measured = "s1g, PLAN-TABLE §4" }
+rank_cores = { value = 16, default = 16, why = "learner cores per training card", measured = "s1g, PLAN-TABLE §4" }
+job_mem_g = { value = { "1" = 160, "2" = 200, "3" = 240 }, default = { "1" = 160, "2" = 200, "3" = 240 }, why = "GPU job memory by card count", measured = "c2j peak 214.75 GB of 200+cache; c3s2 232.5 GB" }
+mem_guard_gb = { value = 220, default = 220, why = "non-reclaimable memory (anon+shmem+dirty+writeback) above this writes STOP once", measured = "c3c5 (page cache made a total-memory guard fire falsely)" }
+mem_hard_gb = { value = 224, default = 224, why = "above this the job scancels itself", measured = "c3c5" }
+core_cap = { value = { "1" = 300, "2" = 300, "3" = 450 }, default = { "1" = 300, "2" = 300, "3" = 450 }, why = "total cores (GPU job + env); 3 cards within the user's <=500 approval", measured = "coordinator 2026-11-12" }
+wall_seconds = { value = 3000, default = 3300, why = "GPU wall per test run (long runs set their own)", measured = "c2j" }
+smoke_wall_seconds = { value = 300, default = 300, why = "5 min smoke first (playbook §11.4 item 5)", measured = "s2c-smoke" }
+# --- environment nodes ---
+env_node_cores = { value = 16, default = 20, why = "a size every fast type holds", measured = "c2j" }
+env_node_mem_g = { value = 96, default = 96, why = "16 drivers peaked at 50 GB RSS", measured = "s1g" }
+env_machine_types = { value = ["fc430", "r640"], default = ["fc430", "r640"], why = "54-62 core-ms/decision; c8220 costs 105-113", measured = "h100i" }
+env_slow_types = { value = ["c8220", "c6220"], default = ["c8220", "c6220"], why = "types that need an explicit opt-in (c6220: user opt-in only)", measured = "h100i, PLAN-TABLE §4" }
+env_slow_type_nodes = { value = 0, default = 0, why = "c8220 opt-in node count, each counted 0.5 node toward the core cap", measured = "h100i" }
+env_core_budget = { value = { "1" = 215, "2" = 290, "3" = 304 }, default = { "1" = 215, "2" = 290, "3" = 380 }, why = "env cores per card count at ~50-58 core-ms/decision", measured = "fc-launch tiers; c3s1/c3s2 304" }
+env_wait_seconds = { value = 1800, default = 1800, why = "an env element may wait this long for the services", measured = "s1f" }
+env_min_join_seconds = { value = 300, default = 300, why = "a node arriving later than this before the env drain does not start", measured = "s2c-smoke" }
+env_procs_fraction = { value = 0.625, default = 0.75, why = "drivers per node = cores x 5/8 (16 -> 10, 20 -> 12); 8x15 was not cheaper", measured = "V3-wu, V3-shen 17:35 rerun" }
+env_slots = { value = 12, default = 8, why = "slots per driver (product cap 16)", measured = "V3-shen" }
+env_aggregators = { value = 3, default = 3, why = "aggregators per node, each to its own service", measured = "s1d onward" }
+env_encoders = { value = 3, default = 3, why = "encoder processes per aggregator", measured = "s1d onward" }
+aggregator_window_ms = { value = 5, default = 1.5, why = "aggregator batching window", measured = "E8" }
+env_pkg_build = { value = "d2b237fb", default = "", why = "the env package must be built from the int commit the GPU side runs (pkg-h100i with memo off cost +2.2 core-ms)", measured = "V3-shen (15.41 vs 13.17 core-ms)" }
+env_candidate_artifact_sha256 = { value = "b77f5139d98d200e", default = "", why = "PKG and CAND change together: the package manifest names this Sts2Headless.dll (prefix)", measured = "V3-shen 17:35" }
+env_memo = { value = { projection = 64, receipt = 64, deck = true, hud = true }, default = {}, why = "memo layers on; memo off cost ~1.65-2.2 core-ms/decision", measured = "V3-shen 1469889/1469890" }
+driver_inference_timeout_ms = { value = 10000, default = 2000, why = "a 2 s timeout caused close/reopen avalanches (86% void games)", measured = "h100i -> c3b" }
+driver_reopen_backoff_start_ms = { value = 1000, default = 0, why = "exponential backoff with jitter after a not_started close", measured = "c3b" }
+driver_reopen_backoff_cap_ms = { value = 10000, default = 0, why = "backoff cap", measured = "c3b" }
+driver_reopen_backoff_jitter = { value = 0.5, default = 0, why = "backoff jitter", measured = "c3b" }
+driver_cold_start = { value = 10, default = 0, why = "max concurrent native cold starts", measured = "E8" }
+driver_warm_seconds = { value = 180, default = 90, why = "warm-up before the first status", measured = "s1 series" }
+driver_steady_seconds = { value = 4800, default = 240, why = "longer than any GPU wall; DRAIN ends it", measured = "s1f" }
+driver_status_seconds = { value = 300, default = 300, why = "driver status period", measured = "s1 series" }
+driver_single_threaded_gc = { value = false, default = false, why = "V8 --single-threaded-gc: -0.3..-1 core-ms in benches, not yet on a whole chain", measured = "V3-shen 1469903" }
+driver_reduce_light_interval = { value = 0, default = 0, why = "C1 checks.reduce_light strict_interval (0 = off): -1.3 once, not reproduced", measured = "V3-wu, V3-shen" }
+native_nice = { value = 5, default = 0, why = "native processes at nice +5 (E8)", measured = "E8; cancelling nice showed no gain (V3-shen)" }
+# --- layout, targets, readout ---
+default_layouts = { value = { "1" = "shared", "2" = "1i+1t", "3" = "1i+2t" }, default = { "1" = "shared", "2" = "1i+1t", "3" = "1i+2t" }, why = "default layout per card count", measured = "PLAN-TABLE §9" }
+targets_rows_h = { value = { "1" = 14000000, "3" = 30000000 }, default = { "1" = 14000000, "3" = 30000000 }, why = "1 card >= 1,400 wan; 3 cards > 3,000 wan; 2 cards report the loss table", measured = "user 11-12/11-13, CHAIN-CONFIG-MODEL" }
+ready_rows_h = { value = { "3" = 35000000 }, default = { "3" = 35000000 }, why = "3 cards >= 3,500 wan = ready", measured = "user 11-12" }
+card_capacity_rows_h = { value = { "A100-40" = { inference = 42500000, training = 18500000 }, "A100-80" = { inference = 42500000, training = 19770000 } }, default = {}, why = "per-card capacities for the perfect-packing ideal N / (1/inference + 1/training)", measured = "PLAN-TABLE §9 (1464315 inference, V3-yin training)" }
+allow_switch_off = { value = [], default = [], why = "speed switches a run may turn off (names from REQUIRED_ON); empty = all on", measured = "playbook §11.4 item 2" }
