@@ -84,6 +84,16 @@ mem_hard_gb = { value = 224, default = 224, why = "above this the job scancels i
 core_cap = { value = { "1" = 300, "2" = 300, "3" = 450 }, default = { "1" = 300, "2" = 300, "3" = 450 }, why = "total cores (GPU job + env); 3 cards within the user's <=500 approval", measured = "coordinator 2026-11-12" }
 wall_seconds = { value = 3000, default = 3300, why = "GPU wall per test run (long runs set their own)", measured = "c2j" }
 long_wall_seconds = { value = 72000, default = 72000, why = "first RL5 long run: 20 h in one GPU job, no successor (user 11-13 C4); 72000 s is the product operating-budget cap", measured = "LONG-RUN-CHECK §五 C4" }
+resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain (user 11-13 C5: automatic); bounded, then a loud final stop with the first cause", measured = "LONG-RUN-CHECK §五 C5; RL4.1 long-run log (2 continuations in 36 h)" }
+resume_max_per_hour = { value = 1, default = 1, why = "a second fence within the hour is not transient: stop loudly instead of looping", measured = "RL4.1 long-run log" }
+min_generation_seconds = { value = 1800, default = 1800, why = "a generation shorter than this cannot reach its first CP after warm-up: the chain ends instead", measured = "c2k (warm-up + first CP ~20 min)" }
+supervise_poll_seconds = { value = 60, default = 60, why = "supervisor checks the GPU job and the schedules once per poll", measured = "watcher cadence" }
+readout_every_seconds = { value = 3600, default = 3600, why = "hourly readout of the current generation (lead 11-13 item 5)", measured = "RL4.2 hourly check" }
+eval_interval_seconds = { value = 7200, default = 7200, why = "a 100-game evaluation of the newest CP every 2 h (fast_eval.py)", measured = "lead 11-12; user C3" }
+eval_seeds = { value = 100, default = 100, why = "100 games per evaluation (user 11-13 C3; RL3 registered suite)", measured = "LONG-RUN-CHECK §五 C3" }
+disk_sample_seconds = { value = 60, default = 60, why = "disk watermark sampling period (run dir and GPU local tmp)", measured = "A2" }
+disk_warn_free_pct = { value = 20, default = 20, why = "free space below this: loud warning (disk-watermark.txt, readout)", measured = "LONG-RUN-CHECK A2" }
+disk_stop_free_pct = { value = 10, default = 10, why = "free space below this: DRAIN (env nodes stop admitting new games), loud", measured = "LONG-RUN-CHECK A2" }
 smoke_wall_seconds = { value = 300, default = 300, why = "5 min smoke first (playbook §11.4 item 5)", measured = "s2c-smoke" }
 # --- environment nodes ---
 env_node_cores = { value = 16, default = 20, why = "a size every fast type holds", measured = "c2j" }

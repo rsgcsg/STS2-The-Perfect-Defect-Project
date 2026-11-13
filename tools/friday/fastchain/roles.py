@@ -104,6 +104,29 @@ def learner() -> None:
                                          "checkpoints_void": K["producer_identity"]
                                          == "placeholder"})
     gate = Path(site("gate_dir"))
+    resume = os.environ.get("FC_RESUME_CHECKPOINT") or None
+    window = None
+    if os.environ.get("FC_CHAIN_ID"):  # a generation of a resume chain (supervise.py)
+        cp_config = None
+        if resume:
+            # The CP's own deadline/budget decide which window the learner accepts; they
+            # live only inside the CP payload, read with the learner's own reader.
+            from types import SimpleNamespace
+
+            from spireagent.rl_exchange import Exchange
+            exchange = Exchange({"kind": "local", "directory": site("peer_dir")},
+                                site("run_name"))
+            restored = SegmentLearner._read_checkpoint(SimpleNamespace(exchange=exchange),
+                                                       resume)
+            cp_config = {k: restored.config.get(k) for k in ("deadline_at", "operating_budget")}
+            del restored
+        window = learner_config.window(
+            os.environ["FC_CHAIN_ID"], int(os.environ["FC_CHAIN_TOTAL_SECONDS"]),
+            float(os.environ["FC_CHAIN_DEADLINE"]), resume, cp_config)
+        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_window",
+                                             "chain": os.environ["FC_CHAIN_ID"],
+                                             "resume_checkpoint": resume,
+                                             "checkpoint_window": cp_config, **window})
     base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
         "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
@@ -111,7 +134,7 @@ def learner() -> None:
         "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
-        "resume_checkpoint": os.environ.get("FC_RESUME_CHECKPOINT") or None})
+        "resume_checkpoint": resume, "window": window})
     ranks = int(os.environ["FC_RANKS"])
     work = RUN / "learner"
     work.mkdir(parents=True)

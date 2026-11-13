@@ -255,6 +255,19 @@ def verdict(rows_h: float | None, target: dict[str, Any]) -> str | None:
     return "meets target" if met else "below target"
 
 
+def disk_edge(run: Path) -> dict[str, Any]:
+    """A2 watermarks: the last free % per sampled directory and every WARN/STOP line."""
+    last: dict[str, float] = {}
+    path = run / "disk.txt"
+    for line in (path.read_text().splitlines() if path.exists() else []):
+        parts = line.split()
+        if len(parts) >= 3 and parts[2].startswith("free_pct="):
+            last[parts[1]] = float(parts[2].split("=", 1)[1])
+    marks = run / "disk-watermark.txt"
+    return {"free_pct": last,
+            "events": marks.read_text().splitlines() if marks.exists() else []}
+
+
 def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, Any]:
     plan = json.loads((plan_path or run / "plan.json").read_text())
     events = jsonl(run / "learner-events.jsonl")
@@ -264,6 +277,7 @@ def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, 
     return {"name": plan["name"], "target": target, "training": train,
             "services": service_edges(run, span), "gpu": gpu_cards(run, span),
             "env": env_edge(run, span), "compile": compile_edge(events),
+            "disk": disk_edge(run),
             "verdict": verdict(train.get("rows_h"), target),
             "loss_table": loss_table(plan, train)}
 
@@ -312,6 +326,12 @@ def render(r: dict[str, Any]) -> str:
                + (", gc frozen" if c.get("gc_freeze") else ""))
     if c.get("alarm"):
         out.append("ALARM " + c["alarm"])
+    d = r.get("disk") or {}
+    if d.get("free_pct"):
+        out.append("disk free: " + ", ".join(f"{name} {pct:.0f}%"
+                                             for name, pct in sorted(d["free_pct"].items())))
+    out += [("ALARM " if line.startswith("DISK STOP") else "") + line
+            for line in d.get("events", [])]
     if r["loss_table"]:
         out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:

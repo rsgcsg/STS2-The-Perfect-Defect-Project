@@ -412,6 +412,33 @@ def check_cores(plan: dict[str, Any]) -> Result:
                   f"{plan['env_cores_max']} = {total} cores (cap {cap})")
 
 
+CHECKPOINT_ID = re.compile(r"^[0-9a-z:_-]{8,80}$")
+
+
+def check_resume(plan: dict[str, Any]) -> Result:
+    """A resume or chain generation: a well-formed CP id, a real producer, enough window
+    left, and the disk watermarks in order."""
+    k, chain, cp = plan["knobs"], plan.get("chain"), plan.get("resume_checkpoint")
+    bad = []
+    if cp is not None and not CHECKPOINT_ID.match(cp):
+        bad.append(f"resume checkpoint id {cp!r} malformed")
+    if k["disk_stop_free_pct"] >= k["disk_warn_free_pct"]:
+        bad.append(f"disk_stop_free_pct {k['disk_stop_free_pct']} must be below "
+                   f"disk_warn_free_pct {k['disk_warn_free_pct']}")
+    if chain is None:
+        return Result("resume", not bad, "; ".join(bad) or
+                      (f"start from CP {cp}" if cp else "fresh start from the start package"))
+    if plan["checkpoints_void"]:
+        bad.append("a chain needs real CPs (producer_identity = checkout)")
+    if plan["wall_seconds"] < k["min_generation_seconds"]:
+        bad.append(f"window left {plan['wall_seconds']} s < min_generation_seconds "
+                   f"{k['min_generation_seconds']}")
+    return Result("resume", not bad, "; ".join(bad) or
+                  f"chain {chain['id']} generation {chain['generation']}, "
+                  f"{plan['wall_seconds']} s of the window left, from "
+                  f"{cp or 'the start package'}")
+
+
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_node(plan), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
@@ -419,7 +446,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_frozen_recipe(plan, facts), check_compile_warmup(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
-            check_secrets(facts), check_time_limits(plan), check_cores(plan)]
+            check_secrets(facts), check_time_limits(plan), check_cores(plan),
+            check_resume(plan)]
 
 
 def report(results: list[Result]) -> str:

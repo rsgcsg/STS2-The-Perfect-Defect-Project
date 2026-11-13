@@ -230,6 +230,17 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "wall_seconds": _int(60),
     "smoke_wall_seconds": _int(60),
     "long_wall_seconds": _int(60, 72000),
+    # resume chain (supervise.py) and its schedules
+    "resume_max_total": _int(0, 20),
+    "resume_max_per_hour": _int(0, 10),
+    "min_generation_seconds": _int(300),
+    "supervise_poll_seconds": _int(10, 600),
+    "readout_every_seconds": _int(600),
+    "eval_interval_seconds": _int(600, 86400),
+    "eval_seeds": _int(1, 100),
+    "disk_sample_seconds": _int(5, 3600),
+    "disk_warn_free_pct": _int(1, 99),
+    "disk_stop_free_pct": _int(1, 99),
     # environment nodes
     "env_node_cores": _int(1, 512),
     "env_node_mem_g": _int(1),

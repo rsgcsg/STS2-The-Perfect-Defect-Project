@@ -18,8 +18,9 @@ What this replaces: the private fc-launch.py tiers (1/2/3/h100) and the hand-edi
 fc_gpu.py / fc-gpu3.sh / fc-env2.sh / fc-prep3w.sh. A layout is data; every knob comes
 from the run profile; the effective profile, the plan and a frozen copy of the harness
 (with sha256) are written into a NEW run directory, and jobs run only that copy.
-Not here yet (next): automatic resume after a fence, 5% segment retention + disk
-watermark, hourly readout schedule, 2 h evaluation scheduling (fast_eval.py).
+--resume-checkpoint CP starts from a CP. A long run with automatic resume, the hourly
+readout and the 2 h evaluations goes through supervise.py, which calls this launcher once
+per generation (--chain-json). Not here yet: the segment-deletion knob (product side).
 """
 from __future__ import annotations
 
@@ -99,7 +100,11 @@ def split_slow(env_nodes: int, slow_opt_in: int) -> tuple[int, int]:
 def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, cards: int,
                card_type: str, layout_spec: str | None, env_cores: int | None, smoke: bool,
                probe_rows: list[dict[str, Any]], fallback: bool = False,
-               probe_only: bool = False, long_run: bool = False) -> dict[str, Any]:
+               probe_only: bool = False, long_run: bool = False,
+               resume_checkpoint: str | None = None,
+               chain: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`chain` (supervise.py): {"id", "deadline_at", "total_seconds", "generation"}; the
+    wall is then what is left of the chain's window."""
     if card_type not in site["gpu_types"]:
         raise SystemExit(f"card type {card_type} not in the site profile")
     gpu = site["gpu_types"][card_type]
@@ -143,6 +148,10 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         raise SystemExit("--smoke and --long-run exclude each other")
     wall = (knobs["smoke_wall_seconds"] if smoke else
             knobs["long_wall_seconds"] if long_run else knobs["wall_seconds"])
+    if chain is not None:
+        if smoke:
+            raise SystemExit("--smoke is never a chain generation")
+        wall = max(0, min(wall, int(chain["deadline_at"] - time.time())))
     limit = mem * preflight.GIB
     target = layouts.target(count, knobs["targets_rows_h"], knobs["ready_rows_h"])
     cap_rows = knobs["card_capacity_rows_h"].get(card_type)
@@ -159,6 +168,7 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
                       "env_cores": env_cores, "fallback": fallback},
         "why": tried, "smoke": smoke, "long_run": long_run, "wall_seconds": wall,
         "producer_identity": knobs["producer_identity"], "probe_only": probe_only,
+        "resume_checkpoint": resume_checkpoint, "chain": chain,
         "checkpoints_void": knobs["producer_identity"] == "placeholder",
         "placement": place.as_dict(), "layout_spec": spec, "name": place.name,
         "target": target, "gpu_node": node, "gpu_node_why": "; ".join(tried),
@@ -261,6 +271,11 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_PREP_GROUPS_JSON": json.dumps(groups, separators=(",", ":")),
         "FC_MEM_GUARD_BYTES": plan["mem_guard_bytes"], "FC_MEM_HARD_BYTES": plan["mem_hard_bytes"],
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
+        "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
+        **({"FC_CHAIN_ID": plan["chain"]["id"],
+            "FC_CHAIN_DEADLINE": repr(float(plan["chain"]["deadline_at"])),
+            "FC_CHAIN_TOTAL_SECONDS": plan["chain"]["total_seconds"]}
+           if plan.get("chain") else {}),
         # remote_prepare --scratch-min-free-bytes (#523 a437612d) = the in-flight budget.
         "FC_PREP_MIN_FREE_BYTES": int(k["prep_host_inflight_gb"] * 1e9)
         if k["prep_scratch_min_free"] else 0,
@@ -449,6 +464,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--probe-only", action="store_true",
                         help="allow producer_identity=placeholder outside --smoke (CPs void)")
     parser.add_argument("--probe-json", type=Path)
+    parser.add_argument("--resume-checkpoint", help="start from this CP (first start from a "
+                        "no-shard CP: --set shards_adopt_unsharded_checkpoint=true)")
+    parser.add_argument("--chain-json", type=Path,
+                        help="supervise.py only: this run is one generation of a chain")
     parser.add_argument("--out", type=Path, help="plan: also write the full plan.json here "
                         "(e.g. for `readout.py --plan` on a run made before this launcher)")
     args = parser.parse_args(argv)
@@ -467,7 +486,9 @@ def main(argv: list[str] | None = None) -> int:
                           card_type=args.card_type, layout_spec=args.layout,
                           env_cores=args.env_cores, smoke=args.smoke, probe_rows=rows,
                           fallback=args.fallback, probe_only=args.probe_only,
-                          long_run=args.long_run)
+                          long_run=args.long_run, resume_checkpoint=args.resume_checkpoint,
+                          chain=(json.loads(args.chain_json.read_text())
+                                 if args.chain_json else None))
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2
@@ -492,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
     run = freeze(plan, profile, cmds)
     (run / "preflight.txt").write_text(preflight.report(results) + "\n")
     jobs = submit(run, plan, cmds)
-    print(json.dumps({"run": str(run), "name": plan["name"], "jobs": jobs}, ensure_ascii=False))
+    print(json.dumps({"run": str(run), "name": plan["name"], "jobs": jobs}, ensure_ascii=False),
+          flush=True)
     return 0
 
 

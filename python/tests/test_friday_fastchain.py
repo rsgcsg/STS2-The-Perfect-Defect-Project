@@ -20,7 +20,8 @@ def load_fastchain():
     """The launcher's modules import each other by plain name (as launch.py does from its
     own directory). Load them as one set, then take the plain names back out of
     sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
-    names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout')
+    names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout',
+             'supervise')
     saved_path = list(sys.path)
     saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
     sys.path.insert(0, str(FASTCHAIN))
@@ -34,7 +35,8 @@ def load_fastchain():
     return loaded
 
 
-run_profile, learner_config, layout, preflight, launch, readout = load_fastchain()
+run_profile, learner_config, layout, preflight, launch, readout, supervise = \
+    load_fastchain()
 
 
 def probe_row(node='gpu-a', gpus=3, free=3, cores=128, mem_g=500):
@@ -543,3 +545,191 @@ def test_learner_config_matches_the_frozen_recipe_except_allowed_levers():
 def test_long_run_and_smoke_are_exclusive():
     with pytest.raises(SystemExit):
         plan_for(cards=2, smoke=True, long_run=True)
+
+
+def test_learner_window_follows_the_learner_restore_rules():
+    fresh = learner_config.window('c-x', 72000, 1e9, None, None)
+    assert fresh['operating_budget'] == {'id': 'c-x', 'total_seconds': 72000,
+                                         'consumed_seconds': 0}
+    assert fresh['deadline_at'] == 1e9 and fresh['operating_budget_parent'] is None
+    own = {'operating_budget': {'id': 'c-x', 'total_seconds': 72000, 'consumed_seconds': 9},
+           'deadline_at': 1e9}
+    assert learner_config.window('c-x', 72000, 1e9, 'cp1', own) == {
+        'operating_budget': None, 'operating_budget_parent': None, 'deadline_at': None}
+    other = {'operating_budget': {'id': 'old', 'total_seconds': 3600, 'consumed_seconds': 3600},
+             'deadline_at': 5.0}
+    parent = learner_config.window('c-x', 72000, 1e9, 'cp0', other)['operating_budget_parent']
+    assert parent == {'checkpoint_artifact_id': 'cp0', 'operating_budget': other[
+        'operating_budget'], 'deadline_at': 5.0}
+    assert learner_config.window('c-x', 72000, 1e9, 'cp0', {'operating_budget': None,
+                                 'deadline_at': None})['deadline_at'] == 1e9
+    with pytest.raises(ValueError, match='no operating budget'):
+        learner_config.window('c-x', 72000, 1e9, 'cp0', {'operating_budget': None,
+                                                         'deadline_at': 5.0})
+    with pytest.raises(ValueError):
+        learner_config.window('c-x', 80000, 1e9, None, None)
+
+
+def test_chain_generation_plan_and_resume_preflight():
+    chain = {'id': 'c-t1', 'deadline_at': 10**10, 'total_seconds': 72000, 'generation': 1}
+    plan = launch.build_plan('t1-r1', knobs(), run_profile.load_site(SITE), cards=2,
+                             card_type='A100-40', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()], long_run=True,
+                             resume_checkpoint='cp-0123456789', chain=chain)
+    assert plan['wall_seconds'] == 72000 and plan['resume_checkpoint'] == 'cp-0123456789'
+    env = launch.job_env(plan)
+    assert 'FC_RESUME_CHECKPOINT=cp-0123456789' in env and 'FC_CHAIN_ID=c-t1' in env
+    assert preflight.check_resume(plan).ok
+    late = launch.build_plan('t1-r2', knobs(), run_profile.load_site(SITE), cards=2,
+                             card_type='A100-40', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()], long_run=True,
+                             chain={**chain, 'deadline_at': __import__('time').time() + 600})
+    assert late['wall_seconds'] <= 600
+    assert 'min_generation_seconds' in preflight.check_resume(late).detail
+    assert not preflight.check_resume({**plan, 'resume_checkpoint': 'bad id!'}).ok
+    with pytest.raises(SystemExit):
+        launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=2,
+                          card_type='A100-40', layout_spec=None, env_cores=None, smoke=True,
+                          probe_rows=[probe_row()], chain=chain)
+
+
+def write_outcome(run, failure=None, report=True, disk=False, window_end='deadline'):
+    run.mkdir(parents=True, exist_ok=True)
+    if report:
+        (run / 'learner-report.json').write_text(json.dumps(
+            {'failure': failure, 'summary': None if failure else {'window_end': window_end}}))
+    (run / 'STOP').write_text('learner failure x' if failure else 'learner ended')
+    if disk:
+        (run / 'disk-stop').write_text('DISK STOP /x free 9%')
+
+
+def test_outcome_classifies_only_the_restore_fence_as_resumable(tmp_path):
+    fence = "BoundaryError: input_owner_fenced_restore_last_checkpoint ..."
+    cases = [({}, 'normal'), ({'failure': fence}, 'resumable'),
+             ({'failure': 'BoundaryError: unresolved_worlds_after_drain'}, 'failure'),
+             ({'report': False}, 'no_learner_report'), ({'disk': True}, 'disk_stop'),
+             ({'failure': fence, 'disk': True}, 'disk_stop')]
+    for i, (kw, kind) in enumerate(cases):
+        write_outcome(tmp_path / str(i), **kw)
+        assert supervise.outcome(tmp_path / str(i))['kind'] == kind, kw
+
+
+class FakeCluster:
+    """launch.main / squeue / scancel / CP records for one chain, all in memory."""
+
+    def __init__(self, root, endings):
+        self.root, self.endings, self.argvs, self.alive = root, list(endings), [], set()
+        self.now = 1000.0
+        self.records = []
+
+    def launch_main(self, argv):
+        self.argvs.append(argv)
+        tag = argv[1]
+        run = self.root / f'run-{tag}'
+        run.mkdir(parents=True)
+        number = len(self.argvs)
+        jobs = {'gpu': f'{number}00', 'env': f'{number}01'}
+        (run / 'jobs.json').write_text(json.dumps(jobs))
+        self.alive = set(jobs.values())
+        ending = self.endings.pop(0)
+        write_outcome(run, **ending)
+        self.records.append({'training_generation': f'g-fc-{tag}', 'published_at': self.now,
+                             'checkpoint_artifact_id': f'cp-{tag}'})
+        return 0
+
+    def squeue(self, ids):
+        self.alive.discard(next(i for i in ids if i.endswith('00')))  # GPU job ends
+        return {i for i in self.alive if i in ids}
+
+    def scancel(self, ids):
+        self.alive -= set(ids)
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def chain_for(tmp_path, endings, **sets):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    site = tmp_path / 'site.toml'
+    text = SITE.read_text().replace('/scratch/USER/fastchain"', f'{tmp_path}"', 1)
+    site.write_text(text)
+    cluster = FakeCluster(tmp_path, endings)
+    args = __import__('argparse').Namespace(
+        chain='lr1', profile=PROFILE, site=site, cards=2, card_type='A100-40', layout=None,
+        set=[f'{k}={v}' for k, v in sets.items()], resume_checkpoint=None,
+        eval_execution=None, eval_manifest=None, eval_slot_registered=False, dry_run=False)
+    chain = supervise.Chain(args, clock=lambda: cluster.now, sleep=cluster.sleep,
+                            launch_main=cluster.launch_main, squeue=cluster.squeue,
+                            scancel=cluster.scancel, checkpoints=lambda g: cluster.records)
+    return chain, cluster
+
+
+FENCE = {'failure': 'BoundaryError: input_owner_fenced_restore_last_checkpoint'}
+
+
+def test_chain_resumes_a_fence_from_the_newest_cp_in_a_new_run_and_generation(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    assert chain.run() == 0
+    first, second = cluster.argvs
+    assert first[1] == 'lr1' and '--resume-checkpoint' not in first
+    assert second[1] == 'lr1-r1'
+    assert second[second.index('--resume-checkpoint') + 1] == 'cp-lr1'
+    assert '--long-run' in second and '--chain-json' in second
+    facts = json.loads((tmp_path / 'chain-lr1' / 'chain-1.json').read_text())
+    assert facts['id'] == 'c-lr1' and facts['generation'] == 1
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['ok'] and final['resumes'] == 1
+    assert 'restore_last_checkpoint' in final['first_cause']['failure']
+
+
+def test_chain_stops_loudly_when_resumes_run_out_and_keeps_the_first_cause(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, FENCE], resume_max_total=1)
+    assert chain.run() == 1
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert 'resume budget exhausted' in final['cause'] and len(cluster.argvs) == 2
+    assert final['first_cause']['kind'] == 'resumable'
+
+
+def test_chain_never_resumes_other_failures_or_a_second_fence_within_the_hour(tmp_path):
+    chain, cluster = chain_for(tmp_path / 'a', [{'failure': 'ValueError: boom'}])
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    chain, cluster = chain_for(tmp_path / 'b', [FENCE, FENCE, {}], resume_max_total=3)
+    assert chain.run() == 1 and len(cluster.argvs) == 2
+    assert 'within the last hour' in chain.state['final']['cause']
+
+
+def test_chain_never_resumes_across_a_code_or_profile_change(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    original = supervise.identity
+    calls = []
+
+    def changing(*a):
+        calls.append(1)
+        value = original(*a)
+        return {**value, 'profile': 'changed'} if len(calls) > 1 else value
+    supervise.identity = changing
+    try:
+        assert chain.run() == 1
+    finally:
+        supervise.identity = original
+    assert 'never resumed across a change' in chain.state['final']['cause']
+    assert len(cluster.argvs) == 1
+
+
+def test_chain_ends_on_a_submit_failure_without_repeating_it(tmp_path):
+    chain, cluster = chain_for(tmp_path, [])
+
+    def broken(argv):
+        cluster.argvs.append(argv)
+        raise SystemExit('refused after prep submission')
+    chain.launch_main = broken
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'not repeated' in chain.state['final']['cause']
+
+
+def test_readout_reports_disk_watermarks(tmp_path):
+    (tmp_path / 'disk.txt').write_text('1 /run free_pct=15 avail=15 size=100\n'
+                                       '2 /tmp free_pct=40 avail=40 size=100\n')
+    (tmp_path / 'disk-watermark.txt').write_text('DISK WARN /run free 15% < 20% now\n')
+    disk = readout.disk_edge(tmp_path)
+    assert disk['free_pct'] == {'/run': 15.0, '/tmp': 40.0} and len(disk['events']) == 1

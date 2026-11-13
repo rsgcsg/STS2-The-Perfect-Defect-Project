@@ -58,6 +58,21 @@ GUARD=$FC_MEM_GUARD_BYTES; HARD=$FC_MEM_HARD_BYTES
   if [ "$m" -gt "$HARD" ]; then echo "MEMGUARD hard mem=$m $(date -Is) scancel" >> $RUN/memguard.txt; scancel $SLURM_JOB_ID; fi
 done ) > $RUN/load.txt &
 LS=$!; BG+=($LS)
+# A2 disk watermarks on the run dir (segments) and the node-local tmp: below the warn
+# level one loud line; below the stop level DRAIN once (env nodes stop admitting new
+# games; the learner keeps training on what it has). Samples go to disk.txt.
+( warned=""; while sleep $FC_DISK_SAMPLE_SECONDS; do
+  for d in $RUN $FC_SITE_GPU_LOCAL_TMP; do
+    set -- $(df -P -B1 "$d" 2>/dev/null | awk 'NR==2{print $2, $4}'); [ -n "${1:-}" ] || continue
+    pct=$(( $2 * 100 / $1 )); echo "$(date +%s) $d free_pct=$pct avail=$2 size=$1"
+    if [ $pct -lt $FC_DISK_STOP_FREE_PCT ] && [ ! -e $RUN/disk-stop ]; then
+      echo "DISK STOP $d free ${pct}% < ${FC_DISK_STOP_FREE_PCT}%: no new games $(date -Is)" | tee $RUN/disk-stop >> $RUN/disk-watermark.txt
+      ( set -o noclobber; cat $RUN/disk-stop > $RUN/DRAIN ) 2>/dev/null
+    elif [ $pct -lt $FC_DISK_WARN_FREE_PCT ] && [[ " $warned " != *" $d "* ]]; then
+      warned="$warned $d"; echo "DISK WARN $d free ${pct}% < ${FC_DISK_WARN_FREE_PCT}% $(date -Is)" >> $RUN/disk-watermark.txt
+    fi
+  done; done ) > $RUN/disk.txt 2>&1 &
+DS=$!; BG+=($DS)
 $PY $H/proc_cpu.py $CG $RUN/proc-cpu.txt 10 &
 PS_=$!; BG+=($PS_)
 # The learner is no MPS client (the daemon serves the inference card only).
@@ -74,7 +89,7 @@ wait $LP; LRC=$?; echo "learner exit=$LRC $(date -Is)"
 stop_once "gpu job end"
 SRC=0
 for pid in "${SPS[@]}"; do wait $pid; rc=$?; echo "service pid=$pid exit=$rc $(date -Is)"; [ $rc = 0 ] || SRC=$rc; done
-kill $GS $LS $PS_ 2>/dev/null
+kill $GS $LS $PS_ $DS 2>/dev/null
 df -h $FC_SITE_GPU_LOCAL_TMP | tail -1; du -sh $TMPDIR/learner-live $RUN/segments-* 2>/dev/null
 shm_clean end; echo quit | nvidia-cuda-mps-control 2>/dev/null; trap - EXIT; rm -rf $TMPDIR
 # Smoke gate (FC_SMOKE=1): non-zero unless every service reported, rows were scored and

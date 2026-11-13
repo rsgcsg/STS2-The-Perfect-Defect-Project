@@ -63,7 +63,22 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   hp_rows`），目标只用这个口径判；td-only 并列显示；缺 aux 字段时显示未知、不判。
   分卡布局附损失表骨架（完美装箱理想值、实测、按原因一行）；1卡共用时 MPS 重叠，完美装箱
   不是上界，不算。
-- 尚未包含：自动续跑、段删除开关与磁盘水位、每小时读数排程、每 2 h 评估排程（`fast_eval.py`）。
+- 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
+  空闲 < `disk_warn_free_pct`（20%）写一行 WARN，< `disk_stop_free_pct`（10%）写 `DRAIN`
+  （env 节点停止接新局，学习者继续训练），均进 `disk-watermark.txt` 并在读数里报警。
+- 长跑与自动续跑（用户 11-13 C5「自动」）：`supervise.py start CHAIN --site S --cards 2
+  --card-type A100-40 --layout 1i+1t [--resume-checkpoint CP --set
+  shards_adopt_unsharded_checkpoint=true] [--eval-execution E --eval-manifest M
+  --eval-slot-registered]`。一个链 = 一个运行窗口（`long_wall_seconds`，一个学习者预算 id
+  `c-CHAIN` + 不可变 deadline，由学习者跨恢复保持）；第 0 代 = `launch.py submit CHAIN
+  --long-run`，之后每代 `CHAIN-rN` 是新 run 目录、新训练代，从本链最新 CP（published_at）
+  起步。只有学习者报 `input_owner_fenced_restore_last_checkpoint` 才续；无报告、提交失败、
+  预检拒绝、其他失败、磁盘停止、代码/配置/站点/源码有变都不续；续跑次数受
+  `resume_max_total`/`resume_max_per_hour` 限制，用完以第一原因响亮停止（`FINAL.json`）。
+  每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；带 `--eval-*` 时跑源码里的
+  `tools/friday/fast_eval.py`（每 `eval_interval_seconds`、`eval_seeds` 局，不停训），链结束再评
+  最新 CP 一次。
+- 尚未包含：段删除开关（产品侧尚无此键）。
 
 ## 以下为旧部署操作史
 
