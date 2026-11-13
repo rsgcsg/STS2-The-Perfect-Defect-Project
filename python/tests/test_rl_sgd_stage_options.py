@@ -37,9 +37,8 @@ from stpd.rl.sgd_process import (
 
 FAST = {"sgd_stage_stream_reuse": True, "sgd_stage_lean_tree": True,
         "sgd_verify_split": True, "sgd_verify_threads": 2,
-        "sgd_switch_interval_seconds": 0.0005, "sgd_stage_after_first_step": True,
-        "sgd_step_probe": True, "sgd_gc_freeze": True,
-        "sgd_gc_boundary": True}
+        "sgd_switch_interval_seconds": 0.0005, "sgd_step_probe": True,
+        "sgd_gc_freeze": True}
 
 
 def test_stage_options_are_explicit_and_default_to_the_earlier_path():
@@ -47,23 +46,20 @@ def test_stage_options_are_explicit_and_default_to_the_earlier_path():
     options = sgd_options(base)
     assert options.stage_init() == {"stream_reuse": False, "lean_tree": False,
                                     "verify_split": False, "verify_threads": 4,
-                                    "switch_interval": None, "after_first_step": False,
-                                    "step_probe": False, "gc_freeze": False,
-                                    "gc_boundary": False}
+                                    "switch_interval": None, "step_probe": False,
+                                    "gc_freeze": False}
     assert _StageConfig.from_init(options.stage_init()) == _StageConfig()
     chosen = sgd_options({**base, **FAST})
     assert chosen.stage_init() == {"stream_reuse": True, "lean_tree": True,
                                    "verify_split": True, "verify_threads": 2,
-                                   "switch_interval": 0.0005, "after_first_step": True,
-                                   "step_probe": True, "gc_freeze": True,
-                                   "gc_boundary": True}
+                                   "switch_interval": 0.0005, "step_probe": True,
+                                   "gc_freeze": True}
     for key, bad in (("sgd_stage_stream_reuse", 1), ("sgd_stage_lean_tree", "yes"),
                      ("sgd_verify_split", None), ("sgd_verify_threads", 0),
                      ("sgd_verify_threads", 2.0), ("sgd_verify_threads", True),
                      ("sgd_switch_interval_seconds", 0), ("sgd_switch_interval_seconds", "1"),
                      ("sgd_switch_interval_seconds", float("nan")),
-                     ("sgd_stage_after_first_step", 1), ("sgd_step_probe", "on"),
-                     ("sgd_gc_freeze", 1), ("sgd_gc_boundary", "yes")):
+                     ("sgd_step_probe", "on"), ("sgd_gc_freeze", 1)):
         with pytest.raises(ValueError, match="invalid_" + key):
             sgd_options({**base, key: bad})
     with pytest.raises(ValueError, match="without_explicit_selection"):
@@ -281,14 +277,13 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
     for name, left in one.weights.items():
         close_tree(left, two.weights[name])
     assert timing["sgd_stage_verify_seconds"] > 0 and timing["sgd_stage_pin_seconds"] > 0
-    assert timing["sgd_stage_gate_seconds"] >= 0
     assert all("probe" not in e["sgd_timing"] for e in one_events)
     for event in two_events:  # `sgd_step_probe`: GC and allocator facts of every step
         probe = event["sgd_timing"]["probe"]
         assert probe["gc_seconds"] >= 0 and len(probe["gc_collections"]) == 3
         assert probe["gc_collections"][2] == len(probe["gc_full"])
         assert probe["allocator"] == {}  # CPU: no CUDA allocator
-    # `sgd_gc_freeze` + `sgd_gc_boundary`: one full collection at every dataset
+    # `sgd_gc_freeze`: one full collection at every dataset
     # boundary, reported with the next dataset's first step; the first one also
     # freezes. Never on the earlier path.
     assert all("gc_boundary" not in e["sgd_timing"] for e in one_events)
@@ -434,27 +429,3 @@ def test_a_stall_records_every_SGD_process_thread_stacks(tmp_path, monkeypatch):
             with contextlib.suppress(OSError):
                 os.kill(follower, signal.SIGKILL)
         owner.close()
-
-
-def test_after_first_step_holds_staging_until_the_running_dataset_stepped_once():
-    from stpd.rl.sgd_process import _SgdWorker
-
-    worker = _SgdWorker.__new__(_SgdWorker)
-    worker.staging_config = _StageConfig(after_first_step=True)
-    worker.step_gate, worker.dataset_steps = threading.Condition(), None
-    order: list = []
-    worker._stage_work = lambda plan: (order.append(("stage", worker.dataset_steps)),
-                                       ("batch", {}))[1]
-    worker._staged_done = lambda plan, batch, fields: order.append(("done", fields))
-    worker.wake = None
-    worker._steps_done(0)  # a dataset started, no step yet
-    thread = threading.Thread(target=worker._stage_and_deliver, args=({"dataset": 2},))
-    thread.start()
-    thread.join(0.3)
-    assert thread.is_alive() and order == []
-    worker._steps_done(1)
-    thread.join(5)
-    assert order[0] == ("stage", 1) and order[1][1]["gate_seconds"] >= 0.25
-    worker._steps_done(None)  # idle: no wait at all
-    worker._stage_and_deliver({"dataset": 3})
-    assert order[2] == ("stage", None)

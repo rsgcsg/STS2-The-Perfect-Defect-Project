@@ -1131,7 +1131,7 @@ class SegmentLearner:
         self.timing.update(sgd_stage_wait_seconds=0.0, sgd_staged_ahead_batches=0.0,
                            sgd_prestarted_batches=0.0, sgd_stage_pin_seconds=0.0,
                            sgd_stage_h2d_seconds=0.0, sgd_stage_verify_seconds=0.0,
-                           sgd_stage_verify_wait_seconds=0.0, sgd_stage_gate_seconds=0.0)
+                           sgd_stage_verify_wait_seconds=0.0)
         self.sgd_rates = (self.optimizer.param_groups[0]["lr"],
                           self.optimizer.param_groups[1]["lr"])
         self.sgd_memory: dict[str, Any] | None = None
@@ -1230,7 +1230,6 @@ class SegmentLearner:
         self.timing["sgd_stage_h2d_seconds"] += message["stage_seconds"]
         self.timing["sgd_stage_verify_seconds"] += message["verify_seconds"]
         self.timing["sgd_stage_verify_wait_seconds"] += message["verify_wait_seconds"]
-        self.timing["sgd_stage_gate_seconds"] += message.get("gate_seconds", 0.0)
 
     def _check_releases(self, *, wait: bool = False) -> None:
         """Main thread: drop finished hand-off releases, raising the first failure

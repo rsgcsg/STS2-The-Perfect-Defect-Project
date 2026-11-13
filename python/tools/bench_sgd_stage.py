@@ -16,14 +16,14 @@ same `_DataParallel._verify_split` rank 0 uses.
 
     PYTHONPATH=python python python/tools/bench_sgd_stage.py --megabytes 850 --batches 6
 
-`--gc-datasets N` instead measures `sgd_gc_freeze` / `sgd_gc_boundary`: one rank
+`--gc-datasets N` instead measures `sgd_gc_freeze`: one rank
 holds a long-lived heap sized by `--gc-heap` (objects, standing in for the SGD
 child's model, compiled graphs and caches), stages N datasets back to back (each
 kept alive until the next, as a running dataset holds its batch; each followed
 by a safetensors snapshot like rank 0's) and reports the automatic full
 collections that fell inside, the boundary collections, the tracked-object
 count and peak RSS over time (leak bound) and one full collect's time, for the
-earlier automatic GC, the freeze alone and freeze + boundary.
+earlier automatic GC, a freeze alone and `sgd_gc_freeze` (freeze + boundary).
 """
 
 from __future__ import annotations
