@@ -840,14 +840,21 @@ class BinaryBatchPreparer:
         if remote_prepare is not None:
             if not handoff or not isinstance(remote_prepare, dict):
                 raise ValueError("binary_remote_prepare_requires_handoff")
-            from .remote_prepare import AUTH_ENV, RemoteAssembly
+            from .remote_prepare import AUTH_ENV, RemoteAssembly, RemoteClients
 
-            self.remote = RemoteAssembly(
+            remote_options = dict(
                 endpoints=list(remote_prepare["endpoints"]), vocabulary=vocabulary,
                 threads=threads, connections=remote_prepare.get("connections", 2),
                 auth_env=remote_prepare.get("authkey_env", AUTH_ENV),
                 timeout_seconds=remote_prepare.get("timeout_seconds", 600.0),
                 codec=remote_prepare.get("codec", "none"))
+            # Opt-in: the transfers run in N client processes, off this GIL.
+            # 0 (default) = the original in-process client.
+            clients = remote_prepare.get("client_processes", 0)
+            if type(clients) is not int or clients < 0:
+                raise ValueError("remote_prepare_client_processes_bound")
+            self.remote = (RemoteClients(processes=clients, **remote_options) if clients
+                           else RemoteAssembly(**remote_options))
             self._failed_tasks["remote_assembly"] = self._failed_tasks["remote_labels"] = 0
         self.pool = self._pool()
         self.assembly_pool = self._pool(workers=self.assembly_workers)

@@ -566,12 +566,18 @@ def serve(argv: list[str] | None = None) -> None:
 # --------------------------------------------------------------------------- learner
 
 
+def connection_slots(endpoints: list[str], connections: int) -> list[str]:
+    """One entry per connection, interleaved: the first tasks spread over all hosts."""
+    return [endpoint for _ in range(connections) for endpoint in endpoints]
+
+
 class RemoteAssembly:
     """Learner side: one task per connection at a time, `connections` per endpoint."""
 
     def __init__(self, *, endpoints: list[str], vocabulary: dict[str, Any], threads: int,
                  connections: int = 2, auth_env: str = AUTH_ENV,
-                 timeout_seconds: float = 600.0, codec: str = "none") -> None:
+                 timeout_seconds: float = 600.0, codec: str = "none",
+                 slots: list[str] | None = None) -> None:
         if not endpoints or type(connections) is not int or connections < 1:
             raise ValueError("remote_prepare_endpoints_required")
         if not 0 < timeout_seconds <= 3600:
@@ -583,9 +589,10 @@ class RemoteAssembly:
         self.closed = False
         for endpoint in endpoints:
             _address(endpoint)
-        for _ in range(connections):  # interleaved: the first tasks spread over all hosts
-            for endpoint in endpoints:
-                self.idle.put((endpoint, None))
+        # `slots` (client processes only): this process's share of the endpoint
+        # connections, in the order `connection_slots` gives.
+        for endpoint in slots if slots is not None else connection_slots(endpoints, connections):
+            self.idle.put((endpoint, None))
         self.stats = {"tasks": 0, "label_tasks": 0, "sent_bytes": 0, "received_bytes": 0,
                       "wire_received_bytes": 0, "sources_sent": 0}
         self.cpu = cpu_fingerprint()
@@ -644,15 +651,9 @@ class RemoteAssembly:
             finally:
                 mapping.close()
             healthy = True
-            with self.lock:
-                self.served[output] = endpoint
-                while len(self.served) > 256:
-                    self.served.popitem(last=False)
-                self.stats["tasks"] += 1
-                self.stats["sent_bytes"] += sent
-                self.stats["sources_sent"] += len(need)
-                self.stats["received_bytes"] += used
-                self.stats["wire_received_bytes"] += wire
+            self._account({"tasks": 1, "sent_bytes": sent, "sources_sent": len(need),
+                           "received_bytes": used, "wire_received_bytes": wire},
+                          endpoint, output)
             arrays = tuple(binary._SharedArray(output, offset, count, dtype)
                            for offset, count, dtype in reply["arrays"])
             summary = dict(reply["summary"])
@@ -688,9 +689,23 @@ class RemoteAssembly:
             raise RuntimeError(f"{failure}: {reply['error']}")
         return connection, reply, need, sent
 
+    def _account(self, delta: dict[str, int], endpoint: str, output: str | None) -> None:
+        with self.lock:
+            if output is not None:
+                self.served[output] = endpoint
+                while len(self.served) > 256:
+                    self.served.popitem(last=False)
+            for name, value in delta.items():
+                self.stats[name] += value
+
     def labels(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> Any:
         """Same value as `_timed(_labels, ready, *args)` on a local pool. Row
         snapshots get their packet bodies from this process's own arena."""
+        reply = self._labels_reply(ready, args)
+        return binary._WorkerResult(_unpack_labels(reply["value"], ready), reply["pid"],
+                                    reply["wall"], reply["cpu"])
+
+    def _labels_reply(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> Any:
         if self.closed:
             raise RuntimeError("remote_prepare_closed")
         endpoint, connection = self.idle.get()
@@ -699,14 +714,12 @@ class RemoteAssembly:
             connection, reply, need, sent = self._exchange(
                 endpoint, connection, ready, {"kind": "labels", "args": args},
                 "binary_remote_labels_failed")
-            value = _unpack_labels(reply["value"], ready)
+            if type(reply.get("value")) is not bytes:
+                raise RuntimeError("binary_remote_labels_failed: value_missing")
             healthy = True
-            with self.lock:
-                self.stats["label_tasks"] += 1
-                self.stats["sent_bytes"] += sent
-                self.stats["sources_sent"] += len(need)
-                self.stats["received_bytes"] += len(reply["value"])
-            return binary._WorkerResult(value, reply["pid"], reply["wall"], reply["cpu"])
+            self._account({"label_tasks": 1, "sent_bytes": sent, "sources_sent": len(need),
+                           "received_bytes": len(reply["value"])}, endpoint, None)
+            return reply
         finally:
             if (not healthy or self.closed) and connection is not None:
                 connection.close()
@@ -754,6 +767,284 @@ class RemoteAssembly:
                 return
             if connection is not None:
                 connection.close()
+
+
+# ------------------------------------------------------------ learner client processes
+#
+# Opt-in (`remote_prepare.client_processes: N`): the network and byte work of
+# `RemoteAssembly.run`/`labels` (reading arena bytes, sending sources, receiving
+# the batch into the hand-off file) runs in N spawned processes, each holding its
+# share of the same connection slots. The learner sends each task's source
+# descriptors (arena file path, offset, length, epoch, envelope), args and output
+# path over a pipe and gets back the reply's small fields; its coordinator thread
+# then only waits. Same task, same host protocol, same bytes and errors: a task
+# is never re-sent or re-routed; a client process that exits fails its in-flight
+# tasks with `remote_client_process_died` and is started again for a later task.
+
+DIED = "remote_client_process_died"
+
+
+class _ClientAssembly(RemoteAssembly):
+    """Inside a client process: per-task stat deltas go back to the learner."""
+
+    def __init__(self, **options: Any) -> None:
+        super().__init__(**options)
+        self.local = threading.local()
+
+    def _account(self, delta: dict[str, int], endpoint: str, output: str | None) -> None:
+        self.local.account = delta, endpoint
+
+
+def _portable(error: BaseException) -> BaseException:
+    """The original exception if it survives a pickle round trip, else its text."""
+    try:
+        clone = pickle.loads(pickle.dumps(error))
+        if type(clone) is type(error) and str(clone) == str(error):
+            return clone
+    except Exception:
+        pass
+    return RuntimeError(f"{type(error).__name__}: {error}")
+
+
+def _client_task(remote: _ClientAssembly, kind: str, ready: tuple[Any, ...],
+                 args: tuple[Any, ...], output: str | None) -> dict[str, Any]:
+    remote.local.account = None
+    if kind == "run":
+        result = remote.run(ready, args, str(output))
+        packed = result.value
+        body: dict[str, Any] = {
+            "tree": packed.tree, "summary": packed.summary,
+            "arrays": [(a.offset, a.count, a.dtype) for a in packed.arrays]}
+    else:
+        reply = remote._labels_reply(ready, args)
+        body = {"value": reply["value"]}
+        result = binary._WorkerResult(None, reply["pid"], reply["wall"], reply["cpu"])
+    delta, endpoint = remote.local.account
+    with remote.lock:
+        host_cpu = dict(remote.host_cpus.get(endpoint, {}))
+    body.update(pid=result.pid, wall=result.wall_seconds, cpu=result.cpu_seconds,
+                delta=delta, endpoint=endpoint, host_cpu=host_cpu, client_pid=os.getpid())
+    return body
+
+
+def _client_main(connection: Connection, options: dict[str, Any]) -> None:
+    """Client process: run tasks from the learner, one thread per connection slot."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    remote = _ClientAssembly(**options)
+    send_lock = threading.Lock()
+    pool = ThreadPoolExecutor(len(options["slots"]), thread_name_prefix="rl-remote-client")
+
+    def handle(task_id: int, kind: str, ready: tuple[Any, ...], args: tuple[Any, ...],
+               output: str | None) -> None:
+        try:
+            message: tuple[Any, ...] = (task_id, True, _client_task(remote, kind, ready, args,
+                                                                  output))
+        except BaseException as error:  # reported to the learner as it was raised
+            message = (task_id, False, _portable(error))
+        with send_lock:
+            try:
+                connection.send(message)
+            except BaseException as error:  # e.g. an unpicklable reply: report that
+                try:
+                    connection.send((task_id, False, _portable(error)))
+                except BaseException:
+                    # The learner must never wait on an answer that cannot come:
+                    # exit, and its reader fails every in-flight task as died.
+                    os._exit(70)
+
+    try:
+        while True:
+            try:
+                task = connection.recv()
+            except (EOFError, OSError):
+                return
+            if task is None:
+                return
+            pool.submit(handle, *task)
+    finally:
+        remote.close()
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+class _Client:
+    """Learner side of one client process: a pipe, its reader and in-flight tasks."""
+
+    def __init__(self, options: dict[str, Any]) -> None:
+        context = get_context("spawn")
+        self.connection, child = context.Pipe(duplex=True)
+        self.process = context.Process(target=_client_main, args=(child, options),
+                                       name="rl-remote-client", daemon=True)
+        self.process.start()
+        child.close()
+        self.lock = threading.Lock()  # pending, dead and sends
+        self.pending: dict[int, Future] = {}
+        self.dead = False
+        self.reader = threading.Thread(target=self._read, name="rl-remote-client-reader",
+                                       daemon=True)
+        self.reader.start()
+
+    def _read(self) -> None:
+        closed = False
+        while True:
+            try:
+                task_id, ok, body = self.connection.recv()
+            except (EOFError, OSError):  # the process closed its end
+                closed = True
+                break
+            except BaseException:  # a reply this side cannot take: stop the process
+                break
+            with self.lock:
+                future = self.pending.pop(task_id, None)
+            if future is not None:
+                if ok:
+                    future.set_result(body)
+                else:
+                    future.set_exception(body)
+        # DIED means the process is gone: it must not still read an arena the
+        # learner releases or reuses for the restarted client.
+        if closed:
+            self.process.join(timeout=5)
+        if self.process.is_alive():
+            self.process.kill()
+            self.process.join()
+        with self.lock:
+            self.dead = True
+            pending, self.pending = self.pending, {}
+        for future in pending.values():
+            future.set_exception(RuntimeError(self.died()))
+
+    def died(self) -> str:
+        return f"{DIED}: exitcode={self.process.exitcode}"
+
+    def submit(self, task_id: int, task: tuple[Any, ...]) -> Future:
+        future: Future = Future()
+        with self.lock:
+            if self.dead:
+                raise RuntimeError(self.died())
+            self.pending[task_id] = future
+            try:
+                self.connection.send((task_id, *task))
+            except (OSError, ValueError) as error:
+                self.pending.pop(task_id, None)
+                raise RuntimeError(self.died()) from error
+        return future
+
+    def close(self) -> None:
+        with suppress(Exception), self.lock:
+            self.connection.send(None)
+        self.process.join(timeout=10)
+        if self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=5)
+        self.connection.close()
+
+
+class RemoteClients:
+    """`RemoteAssembly` interface; the transfers run in `processes` client processes.
+
+    The connection slots (`connections` per endpoint, as in `RemoteAssembly`) are
+    dealt round-robin over the processes; a task takes a free slot, so no process
+    ever holds more tasks than connections."""
+
+    def __init__(self, *, processes: int, endpoints: list[str], vocabulary: dict[str, Any],
+                 threads: int, connections: int = 2, auth_env: str = AUTH_ENV,
+                 timeout_seconds: float = 600.0, codec: str = "none") -> None:
+        if type(processes) is not int or processes < 1:
+            raise ValueError("remote_prepare_client_processes_bound")
+        if not endpoints or type(connections) is not int or connections < 1:
+            raise ValueError("remote_prepare_endpoints_required")
+        if not 0 < timeout_seconds <= 3600:
+            raise ValueError("remote_prepare_timeout_bound")
+        authkey(auth_env)  # refuse here, as RemoteAssembly does, not in a child
+        _codec(codec)
+        for endpoint in endpoints:
+            _address(endpoint)
+        slots = connection_slots(endpoints, connections)
+        processes = min(processes, len(slots))
+        groups = [slots[index::processes] for index in range(processes)]
+        self.options = [{"endpoints": list(endpoints), "vocabulary": vocabulary,
+                         "threads": threads, "connections": connections,
+                         "auth_env": auth_env, "timeout_seconds": timeout_seconds,
+                         "codec": codec, "slots": group} for group in groups]
+        self.free: queue.Queue[int] = queue.Queue()
+        for depth in range(len(groups[0])):
+            for index, group in enumerate(groups):
+                if depth < len(group):
+                    self.free.put(index)
+        self.closed = False
+        self.lock = threading.Lock()
+        self.clients = [_Client(options) for options in self.options]
+        self.next_task = 0
+        self.stats = {"tasks": 0, "label_tasks": 0, "sent_bytes": 0, "received_bytes": 0,
+                      "wire_received_bytes": 0, "sources_sent": 0, "client_restarts": 0}
+        self.cpu = cpu_fingerprint()  # this node's, as RemoteAssembly.cpu
+        self.host_cpus: dict[str, dict[str, str]] = {}
+        self.served: OrderedDict[str, str] = OrderedDict()
+
+    def _call(self, kind: str, ready: tuple[Any, ...], args: tuple[Any, ...],
+              output: str | None) -> tuple[dict[str, Any], float]:
+        if self.closed:
+            raise RuntimeError("remote_prepare_closed")
+        queued = time.perf_counter()
+        index = self.free.get()
+        waited = time.perf_counter() - queued
+        try:
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("remote_prepare_closed")
+                client = self.clients[index]
+                if client.dead:  # a later task starts the process again
+                    old, client = client, _Client(self.options[index])
+                    self.clients[index] = client
+                    self.stats["client_restarts"] += 1
+                    threading.Thread(target=old.close, daemon=True).start()
+                self.next_task += 1
+                task_id = self.next_task
+            # Descriptors only: the client reads the source bytes from the arena.
+            sources = tuple(binary._RemoteSource(item.descriptor) for item in ready)
+            body = client.submit(task_id, (kind, sources, args, output)).result()
+        finally:
+            self.free.put(index)
+        with self.lock:
+            endpoint = body["endpoint"]
+            self.host_cpus[endpoint] = body["host_cpu"]
+            if output is not None:
+                self.served[output] = endpoint
+                while len(self.served) > 256:
+                    self.served.popitem(last=False)
+            for name, value in body["delta"].items():
+                self.stats[name] += value
+        return body, waited
+
+    def run(self, ready: tuple[Any, ...], args: tuple[Any, ...], output: str) -> Any:
+        """Same value as `RemoteAssembly.run` (timings measured in the client)."""
+        body, waited = self._call("run", ready, args[:5], output)
+        arrays = tuple(binary._SharedArray(output, offset, count, dtype)
+                       for offset, count, dtype in body["arrays"])
+        summary = dict(body["summary"])
+        timings = dict(summary["timings"])
+        timings["binary_remote_wait_seconds"] = timings["binary_remote_wait_seconds"] + waited
+        summary["timings"] = timings
+        return binary._WorkerResult(binary._PackedBatch(body["tree"], arrays, summary),
+                                    body["pid"], body["wall"], body["cpu"])
+
+    def labels(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> Any:
+        """Same value as `RemoteAssembly.labels`; bodies come from this process's arena."""
+        body, _waited = self._call("labels", ready, args, None)
+        return binary._WorkerResult(_unpack_labels(body["value"], ready), body["pid"],
+                                    body["wall"], body["cpu"])
+
+    def served_by(self, output: str) -> dict[str, str]:
+        with self.lock:
+            return dict(self.host_cpus.get(self.served.get(output, ""), {}))
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+            clients = list(self.clients)
+        for client in clients:
+            client.close()
 
 
 if __name__ == "__main__":

@@ -104,6 +104,24 @@ def _cpu() -> float:
     return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
 
 
+def _thread_cpu() -> dict[str, float]:
+    """CPU seconds of this process's threads by name prefix (Linux /proc; else {})."""
+    if not os.path.isdir("/proc/self/task"):
+        return {}
+    import threading
+
+    names = {t.native_id: t.name for t in threading.enumerate()}
+    tick = os.sysconf("SC_CLK_TCK")
+    out: dict[str, float] = {}
+    for tid in os.listdir("/proc/self/task"):
+        with contextlib.suppress(OSError):
+            with open(f"/proc/self/task/{tid}/stat") as stream:
+                fields = stream.read().rsplit(")", 1)[1].split()
+            name = names.get(int(tid), "native").split("_")[0].rstrip("0123456789-")
+            out[name] = out.get(name, 0.0) + (int(fields[11]) + int(fields[12])) / tick
+    return out
+
+
 def _file_digest(path: str, used: int) -> str:
     with open(path, "rb") as stream:
         mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
@@ -120,6 +138,8 @@ def learner(argv: list[str]) -> None:
     parser.add_argument("--connections", type=int, default=2)
     parser.add_argument("--codec", choices=remote_prepare.CODECS, default="none",
                         help="must match the hosts' --codec")
+    parser.add_argument("--client-processes", type=int, default=0,
+                        help="remote_prepare.client_processes (0 = in-process client)")
     parser.add_argument("--rows", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=12)
     parser.add_argument("--inflight", type=int, default=6)
@@ -163,7 +183,8 @@ def learner(argv: list[str]) -> None:
         persistent_pools=True, max_prepared_bytes=args.inflight * 1536 * 1024**2,
         max_pinned_bytes=64 * 1024**2,
         remote_prepare={"endpoints": args.endpoints.split(","),
-                        "connections": args.connections, "codec": args.codec},
+                        "connections": args.connections, "codec": args.codec,
+                        "client_processes": args.client_processes},
         **dict[str, Any](bench.OPTIONS))
     hasher = ThreadPoolExecutor(4)
     try:
@@ -178,7 +199,7 @@ def learner(argv: list[str]) -> None:
             binary._worker_compiler = compiler
             local, local_batch = _local_digest(plans[0][0], batches[0], work)
             began = time.perf_counter()
-        cpu_began = _cpu()
+        cpu_began, threads_began = _cpu(), _thread_cpu()
         first: dict[int, str] = {}
 
         def finish() -> None:
@@ -227,6 +248,8 @@ def learner(argv: list[str]) -> None:
         while checks:
             drain()
         learner_cpu = _cpu() - cpu_began
+        threads_cpu = {name: round(value - threads_began.get(name, 0.0), 2)
+                       for name, value in _thread_cpu().items()}
         warm = args.warmup if 0 < args.warmup < len(done) - 1 else 0
         steady = done[warm:]
         span = steady[-1]["at"] - (done[warm - 1]["at"] if warm else 0.0)
@@ -250,6 +273,9 @@ def learner(argv: list[str]) -> None:
                                              2),
             "bytes_per_row": round(sum(d["bytes"] for d in done) / sum(d["rows"] for d in done)),
             "remote": preparer.remote.stats, "all_handoff_digests_equal_worker_digest": True,
+            "client_processes": args.client_processes,
+            # Linux only: this process's CPU seconds per thread-name prefix (/proc).
+            "learner_thread_cpu_s": threads_cpu,
             "local_check": None if local is None else _check(
                 local, first[0], local_batch, remote_first, preparer.remote.cpu),
         }), flush=True)
