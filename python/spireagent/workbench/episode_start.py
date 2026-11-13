@@ -161,7 +161,7 @@ class EpisodeStart:
         return {"kind": "from_save", "save": dict(self.save)}
 
     def inference_start(self, origin_game_instance_id: str | None = None) -> dict[str, Any]:
-        """``stpd/rl-inference-3`` ``episode_open.start``: never the seed or a world key."""
+        """``stpd/rl-inference-4`` ``episode_open.start``: never the seed or a world key."""
         if self.save is None:
             return {"kind": "new_run"}
         value = {"kind": "from_save", "save_sha256": self.save["sha256"],

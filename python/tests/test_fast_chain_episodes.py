@@ -37,7 +37,7 @@ MANIFEST = {"character": "Defect", "ascension": 0}
 def _env(slots: int, *, inference_ms: int = 200, request_ms: int = 300) -> dict:
     return {"schema": "sts2.policy-runtime/fast-env-config-1", "env_process_id": "env-a",
             "slots": slots, "inference": {"timeout_ms": inference_ms},
-            "host": {"request_timeout_ms": request_ms}}
+            "host": {"request_timeout_ms": request_ms, "ascension": 0}}
 
 
 def _manager(tmp_path: Path, slots: int, games: list[dict], **scenario) -> GameManager:
@@ -593,6 +593,21 @@ def test_fast_chain_refuses_nonzero_ascension_before_any_offer(tmp_path, capsys)
         "not_started", "fast_chain_ascension_unsupported:10", False)
     assert offered == [] and _commands(tmp_path) == [] and manager.free == {0}
     assert "refuses ascension 10" in capsys.readouterr().err
+    manager.stop()
+
+
+def test_fast_chain_admits_only_the_env_process_ascension(tmp_path, capsys):
+    manager = _manager(tmp_path, 1, [])
+    manager.config["host"]["ascension"] = 5
+    row = {"seed": "a", "intent_id": "intent-a", "selection_id": "model"}
+    _executor(manager)(row, {"character": "Defect", "ascension": 0}, _Artifacts(), lambda: None)
+    assert (row["status"], row["reason"]) == ("not_started", "fast_chain_ascension_unsupported:0")
+    assert "this env process serves 5" in capsys.readouterr().err
+    del manager.config["host"]["ascension"]  # never a default level
+    row = {"seed": "b", "intent_id": "intent-b", "selection_id": "model"}
+    _executor(manager)(row, {"character": "Defect", "ascension": 0}, _Artifacts(), lambda: None)
+    assert row["reason"] == "fast_chain_ascension_unsupported:0"
+    assert _commands(tmp_path) == [] and manager.free == {0}
     manager.stop()
 
 

@@ -347,7 +347,7 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# stpd/rl-inference-3 (P-REWRITE WP4, fast_chain only; the S2-1 service above is
+# stpd/rl-inference-4 (P-REWRITE WP4, fast_chain only; the S2-1 service above is
 # the old chain and is unchanged). One message = u32 envelope length, the
 # envelope (json_bytes), then the binary section that score_request rows point
 # into. Rows from every connection share one queue (no per-connection or 8-row
@@ -355,7 +355,9 @@ if __name__ == "__main__":
 # only forwards (no GIL shared with this process's per-row work); segments and
 # the per-segment mu belong to the WP5 assembler, called around every row.
 # ---------------------------------------------------------------------------
-V3_SCHEMA = "stpd/rl-inference-3"
+# -4 = -3 plus the required episode_open.ascension: an old -3 peer is refused at
+# attach (envelope_schema) instead of labelling an A10 game with the A0 table.
+V3_SCHEMA = "stpd/rl-inference-4"
 V3_REFUSALS = frozenset({"MU_NOT_RESIDENT", "EPISODE_NOT_OPEN", "IDENTITY_MISMATCH",
                          "ROW_DECODE_FAILED", "NONFINITE_SCORES", "SERVICE_STOPPING"})
 _ENVELOPE = struct.Struct("<I")
@@ -426,7 +428,7 @@ _SAMPLING_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def check_sampling(sampling: Any) -> str | None:
-    """The episode_open `sampling` against the rl-inference-3 schema; None if valid.
+    """The episode_open `sampling` against the rl-inference-4 schema; None if valid.
 
     T in [1, 3], uniform_mix in [0, 0.1], both classes, seed and arm_id strings,
     no other keys (#431 review M1): the draw must never meet a value it cannot
@@ -454,6 +456,21 @@ def check_sampling(sampling: Any) -> str | None:
             return "sampling_temperature"
         if type(mix) not in (int, float) or not 0.0 <= mix <= 0.1:
             return "sampling_uniform_mix"
+    return None
+
+
+def check_episode_ascension(ascension: Any) -> str | None:
+    """The episode_open `ascension` (required, rl-inference-4); None if valid.
+
+    An integer level the learner's reward table supports
+    (`heads.SUPPORTED_ASCENSIONS`). Never defaulted: a game without its level
+    would be labelled with another level's table.
+    """
+    from stpd.rl.heads import SUPPORTED_ASCENSIONS
+    if type(ascension) is not int:
+        return "ascension_missing_or_not_an_integer"
+    if ascension not in SUPPORTED_ASCENSIONS:
+        return "ascension_unsupported"
     return None
 
 
@@ -817,7 +834,7 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
                   file=sys.stderr, flush=True)
             os._exit(1)
 
-    threading.Thread(target=forward, daemon=True, name="rl-inference-3-forward").start()
+    threading.Thread(target=forward, daemon=True, name="rl-inference-4-forward").start()
     control.send_bytes(b"ready")
     for end in (control, *inputs, output):
         os.set_inheritable(end.fileno(), False)
@@ -1018,7 +1035,7 @@ def model_blob(model: Any) -> bytes:
 
 
 class FastInferenceService:
-    """`stpd/rl-inference-3` scorer for many node aggregators on one device.
+    """`stpd/rl-inference-4` scorer for many node aggregators on one device.
 
     `assembler` is the WP5 `FastSegmentAssembler` (or anything with its
     open_episode / begin_row / finish_row / abort_row / step_outcome /
@@ -1159,7 +1176,7 @@ class FastInferenceService:
         device_inputs = ([reader for reader, _ in joined_pipes] if join_workers
                          else [pipes[0][0] for pipes in part_pipes])
         self.device_process = context.Process(
-            target=_device_worker, daemon=True, name="rl-inference-3-device",
+            target=_device_worker, daemon=True, name="rl-inference-4-device",
             args=(control_child, device_inputs, results_child,
                   self.device, bf16, compile, device_threads, self.arena,
                   self.device_rows, kernels))
@@ -1167,7 +1184,7 @@ class FastInferenceService:
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
             process = context.Process(target=_join_worker, daemon=True,
-                                      name=f"rl-inference-3-join-{index}",
+                                      name=f"rl-inference-4-join-{index}",
                                       args=([pipes[index][0] for pipes in part_pipes], writer,
                                             self.slot_count + 2, self.arena))
             process.start()
@@ -1176,7 +1193,7 @@ class FastInferenceService:
         for index, ((parent, child), pipes) in enumerate(
                 zip(worker_pipes, part_pipes, strict=True)):
             process = context.Process(target=_prepare_worker, daemon=True,
-                                      name=f"rl-inference-3-prepare-{index}",
+                                      name=f"rl-inference-4-prepare-{index}",
                                       args=(child, [writer for _, writer in pipes],
                                             self.vocabulary,
                                             None if prepare_cpus is None else prepare_cpus[index],
@@ -1214,13 +1231,13 @@ class FastInferenceService:
         self.address = cast(tuple[str, int], self.listener.address)
         self.links: list[threading.Thread] = []
         self.threads = [threading.Thread(target=self._guarded(self._accept), daemon=True,
-                                         name="rl-inference-3-accept"),
+                                         name="rl-inference-4-accept"),
                         threading.Thread(target=self._guarded(self._batch), daemon=True,
-                                         name="rl-inference-3-batch"),
+                                         name="rl-inference-4-batch"),
                         threading.Thread(target=self._guarded(self._results), daemon=True,
-                                         name="rl-inference-3-results")]
+                                         name="rl-inference-4-results")]
         self.threads += [threading.Thread(target=self._guarded(self._sender), args=(index,),
-                                          daemon=True, name=f"rl-inference-3-send-{index}")
+                                          daemon=True, name=f"rl-inference-4-send-{index}")
                          for index in range(prepare_workers)]
         for thread in self.threads:
             thread.start()
@@ -1233,7 +1250,7 @@ class FastInferenceService:
         self.close_outcome: tuple[dict[str, Any] | None, BaseException | None] | None = None
         if exit_code_on_failure is not None:
             threading.Thread(target=self._exit_on_failure, daemon=True,
-                             name="rl-inference-3-exit-watch").start()
+                             name="rl-inference-4-exit-watch").start()
 
     def _guarded(self, target: Callable[..., None]) -> Callable[..., None]:
         """A background thread never dies silently: an unhandled error stops the service."""
@@ -1251,7 +1268,7 @@ class FastInferenceService:
         if self.stop_reason is None:
             return  # an orderly close(): the launcher owns the exit
         closer = threading.Thread(target=self._close_after_failure, daemon=True,
-                                  name="rl-inference-3-failure-close")
+                                  name="rl-inference-4-failure-close")
         closer.start()
         closer.join(self.exit_grace_seconds)
         if not self.closed.is_set():
@@ -1350,7 +1367,7 @@ class FastInferenceService:
                 return
             tcp_nodelay(connection)
             thread = threading.Thread(target=self._link, args=(_V3Link(connection),),
-                                      daemon=True, name="rl-inference-3-link")
+                                      daemon=True, name="rl-inference-4-link")
             self.links[:] = [item for item in self.links if item.is_alive()]
             self.links.append(thread)
             thread.start()
@@ -1379,7 +1396,8 @@ class FastInferenceService:
                 elif not link.attached:
                     raise BoundaryError("rl_inference_3", "attach_required")
                 elif kind == "episode_open":
-                    problem = check_sampling(envelope.get("sampling"))
+                    problem = (check_sampling(envelope.get("sampling"))
+                               or check_episode_ascension(envelope.get("ascension")))
                     if problem is not None:
                         # Refused loudly: the game is never opened, so its rows
                         # come back EPISODE_NOT_OPEN; other games are untouched.

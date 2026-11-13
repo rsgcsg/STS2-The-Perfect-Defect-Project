@@ -1,4 +1,4 @@
-"""P-REWRITE WP0 contract freeze: managed-native-compact-1 and stpd/rl-inference-3.
+"""P-REWRITE WP0 contract freeze: managed-native-compact-1 and stpd/rl-inference-4.
 
 Structure is checked with each JSON Schema; the rules a schema cannot express are
 checked with small reference functions here, against synthetic fixtures. WP1/WP2
@@ -21,7 +21,7 @@ from jsonschema import Draft202012Validator
 
 PYTHON = Path(__file__).parents[1]
 NATIVE = PYTHON.parent / "contracts" / "managed-native"
-INFERENCE = PYTHON / "tests" / "fixtures" / "rl_inference_3"
+INFERENCE = PYTHON / "tests" / "fixtures" / "rl_inference_4"
 REF = re.compile(r"^native-[1-9][0-9]*$")
 
 
@@ -376,11 +376,11 @@ def test_native_compact_default_output_needs_explicit_configure() -> None:
     assert not validator.is_valid(legacy)  # Today's full output is not a compact frame.
 
 
-# stpd/rl-inference-3 ---------------------------------------------------------
+# stpd/rl-inference-4 ---------------------------------------------------------
 
 
 def _inference() -> Draft202012Validator:
-    return _validator(PYTHON / "schemas" / "rl-inference-3.schema.json")
+    return _validator(PYTHON / "schemas" / "rl-inference-4.schema.json")
 
 
 def test_inference_valid_and_invalid_messages() -> None:
@@ -406,7 +406,7 @@ def test_inference_step_outcome_reason_fixes_its_status() -> None:
         assert validator.is_valid({**base, "status": right, "reason": reason}), reason
         assert not validator.is_valid({**base, "status": wrong, "reason": reason}), reason
     assert set(_NOT_STARTED_REASONS + _UNKNOWN_REASONS) == set(
-        json.loads((PYTHON / "schemas" / "rl-inference-3.schema.json").read_bytes())
+        json.loads((PYTHON / "schemas" / "rl-inference-4.schema.json").read_bytes())
         ["$defs"]["step_outcome"]["properties"]["reason"]["enum"])
 
 
@@ -421,7 +421,7 @@ def check_binding(row: dict[str, Any], result: dict[str, Any], open_instances: s
     """
     if result.get("game_instance_id") not in open_instances:
         return "discard_late"
-    envelope = {"schema": "stpd/rl-inference-3", "kind": "score_response", "packet_id": 1,
+    envelope = {"schema": "stpd/rl-inference-4", "kind": "score_response", "packet_id": 1,
                 "results": [result]}
     if not validator.is_valid(envelope) or result["status"] != "scored":
         return "not_started"

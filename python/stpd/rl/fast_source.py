@@ -95,7 +95,7 @@ from .fast_handoff import (
     check_handoff_end,
 )
 from .fast_segment import FORMAT as FAST_FORMAT
-from .fast_segment import MU_KEYS, decode_segment, sha256
+from .fast_segment import MU_KEYS, decode_segment, segment_ascension, sha256
 from .heads import categorical_lambda_targets
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
@@ -207,9 +207,10 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     terminal = seal["terminal"]
     tail = (None if terminal is not None else
             torch.tensor(seal["bootstrap"]["outcome_probabilities"], dtype=torch.float32))
+    # The game's own reward table (format 3 names the level; formats 1/2 are A0).
     targets, advantages = categorical_lambda_targets(
         probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
-        gae_lambda=envelope["gae_lambda"])
+        gae_lambda=envelope["gae_lambda"], ascension=segment_ascension(header))
     labels = {"segment_id": header["segment_id"], "run_id": header["game_instance_id"],
               "terminal": terminal, "hp_battles": []}
     source = bp.PreparedSource(
@@ -648,9 +649,13 @@ class FastSegmentIntake:
                facts: list[dict[str, Any]], terminal: dict[str, Any] | None
                ) -> IntakeDecision:
         header = segment.header
+        ascension = segment_ascension(header)
         with self.lock:
             self.counters["received"] += 1
             self.counters["received_rows"] += segment.rows
+            self.counters[f"received_rows_a{ascension}"] += segment.rows
+            if terminal is not None:
+                self.counters[f"terminal_segments_a{ascension}"] += 1
             if message["training_generation"] != self.generation:
                 # A mu of an older generation: the W2 rule never trains it here.
                 self.counters["old_generation_dropped"] += 1

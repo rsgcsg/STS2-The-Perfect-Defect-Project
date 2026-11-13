@@ -55,6 +55,14 @@ both formats into the same logical header (format 1 shape, `format` naming the
 byte format, `payload` offsets of that layout), checked by the same
 `validate_header`, so nothing downstream of the reader changes. Old format-1
 segments are read as before and never converted (U4).
+
+`stpd/rl-fast-segment-3` (2026-11-13, every ascension enters the fast chain):
+format 2's columnar layout with magic b"STPDFS03" and one more header key,
+`ascension` (the game's Host-checked level, from `episode_open`). Its logical
+header carries `ascension`; formats 1 and 2 carry none and were only ever
+produced for A0 (the actor refused any other level), so `segment_ascension`
+reads them as A0. That is the history of those bytes, not a default: the
+encoders refuse a format 1/2 header that names an ascension.
 """
 from __future__ import annotations
 
@@ -72,10 +80,15 @@ from .segment_validation import _probabilities as learner_distribution_check
 
 FORMAT = "stpd/rl-fast-segment-1"
 FORMAT_2 = "stpd/rl-fast-segment-2"
-FORMATS = (FORMAT, FORMAT_2)
+FORMAT_3 = "stpd/rl-fast-segment-3"
+FORMATS = (FORMAT, FORMAT_2, FORMAT_3)
+COLUMNAR_FORMATS = (FORMAT_2, FORMAT_3)
 ROW_FORMAT = "stpd/rows-v2-row-1"
 MAGIC = b"STPDFS01"
 MAGIC_2 = b"STPDFS02"
+MAGIC_3 = b"STPDFS03"
+_MAGIC_OF = {FORMAT_2: MAGIC_2, FORMAT_3: MAGIC_3}
+_FORMAT_OF = {MAGIC_2: FORMAT_2, MAGIC_3: FORMAT_3}
 MAX_ROWS = 64
 MAX_HEADER_BYTES = 16 * 1024 * 1024
 MAX_SEGMENT_BYTES = 256 * 1024 * 1024
@@ -90,6 +103,9 @@ ROW_KEYS = frozenset({
     "selected_q", "applied", "outcome_probabilities", "outcome"})
 MU_KEYS = frozenset({"snapshot_sha256", "training_generation", "version", "updates"})
 HEADER_KEYS_2 = (HEADER_KEYS - {"rows"}) | {"row_count", "text", "outcomes", "columns"}
+HEADER_KEYS_3 = HEADER_KEYS | {"ascension"}
+STORED_KEYS_3 = HEADER_KEYS_2 | {"ascension"}
+MAX_ASCENSION = 10
 TEXT_COLUMNS_2 = ("consumption_id", "catalog_sha256", "observation_sha256", "row_sha256")
 INT_COLUMNS_2 = ("request_id", "step_index", "catalog_len", "floor", "selected_index",
                  "payload_length")
@@ -216,10 +232,14 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
     checks on these exact values (the assembler, at finish_row and step_outcome);
     every other rule still runs.
     """
-    if not isinstance(header, dict) or set(header) != HEADER_KEYS:
+    if not isinstance(header, dict) or set(header) != (
+            HEADER_KEYS_3 if byte_format == FORMAT_3 else HEADER_KEYS):
         _reject("segment_header_keys")
     if header["format"] != byte_format or header["row_format"] != ROW_FORMAT:
         _reject("segment_format")
+    if byte_format == FORMAT_3 and (type(header["ascension"]) is not int
+                                    or not 0 <= header["ascension"] <= MAX_ASCENSION):
+        _reject("segment_ascension")
     if not isinstance(header["mu"], dict) or set(header["mu"]) != MU_KEYS:
         _reject("segment_mu_identity")
     if type(header["audit_retain_mu"]) is not bool:
@@ -278,6 +298,23 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
     forced = sum((row["outcome"] or {}).get("forced_steps", 0) for row in rows)
     if header["forced_steps"] != forced:
         _reject("segment_forced_steps")
+
+
+def segment_ascension(header: dict[str, Any]) -> int:
+    """The ascension of a decoded (logical) segment header.
+
+    Format 3 names it; formats 1 and 2 were produced only for A0 (see the module
+    docstring), so they are A0. Anything else is refused.
+    """
+    byte_format = header.get("format")
+    if byte_format == FORMAT_3:
+        value = header.get("ascension")
+        if type(value) is not int or not 0 <= value <= MAX_ASCENSION:
+            raise SegmentFormatError("segment_ascension")
+        return int(value)
+    if byte_format in (FORMAT, FORMAT_2) and "ascension" not in header:
+        return 0
+    raise SegmentFormatError("segment_ascension")
 
 
 def _json_safe(value: Any) -> Any:
@@ -387,7 +424,10 @@ def _int_column(name: str, values: list[Any]) -> bytes:
 
 def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
                            bound: bool = False) -> SealedSegment:
-    """Seal `header` (format-1 shape, rows without payload offsets) as format 2.
+    """Seal `header` (format-1 shape, rows without payload offsets) as format 2 or 3.
+
+    The header's own `format` picks the byte format (`FORMAT_2`, or `FORMAT_3`
+    with its `ascension`).
 
     Checks what `encode_segment` checks (the logical header goes through
     `validate_header`, every row is bound by its sha256), plus the column types:
@@ -404,6 +444,9 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
     """
     if not isinstance(header, dict) or not isinstance(header.get("rows"), list):
         _reject("segment_header_keys")
+    byte_format = header.get("format")
+    if not isinstance(byte_format, str) or byte_format not in COLUMNAR_FORMATS:
+        raise SegmentFormatError("segment_format")
     metas = header["rows"]
     if len(rows) != len(metas):
         _reject("segment_row_bytes_count")
@@ -435,7 +478,7 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
         owned_rows.append(row)
         offset += len(raw) + _pad(len(raw))
     logical["rows"] = owned_rows
-    validate_header(logical, FORMAT_2, rows_checked=bound)
+    validate_header(logical, byte_format, rows_checked=bound)
     try:
         expected = {flag: applied_of(logical["sampling"], flag) for flag in (False, True)}
     except (KeyError, TypeError) as error:
@@ -475,7 +518,8 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
     encoded = canonical_json(stored)
     if len(encoded) > MAX_HEADER_BYTES:
         _reject("segment_header_byte_limit")
-    parts = [MAGIC_2, len(encoded).to_bytes(8, "little"), encoded, b"\0" * _pad(len(encoded))]
+    parts = [_MAGIC_OF[byte_format], len(encoded).to_bytes(8, "little"), encoded,
+             b"\0" * _pad(len(encoded))]
     for column in columns:
         parts.extend((column, b"\0" * _pad(len(column))))
     for raw in rows:
@@ -525,12 +569,13 @@ def _header_json(raw: memoryview, length: int) -> Any:
         raise SegmentFormatError("segment_header_json") from error
 
 
-def _decode_columns(raw: memoryview, length: int, header_only: bool
+def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format: str
                     ) -> tuple[dict[str, Any], list[bytes]]:
     stored = _header_json(raw, length)
-    if not isinstance(stored, dict) or set(stored) != HEADER_KEYS_2:
+    if not isinstance(stored, dict) or set(stored) != (
+            STORED_KEYS_3 if byte_format == FORMAT_3 else HEADER_KEYS_2):
         _reject("segment_header_keys")
-    if stored["format"] != FORMAT_2:
+    if stored["format"] != byte_format:
         _reject("segment_format")
     count = stored["row_count"]
     text, outcomes = stored["text"], stored["outcomes"]
@@ -597,7 +642,7 @@ def _decode_columns(raw: memoryview, length: int, header_only: bool
         start += width
         offset += size + _pad(size)
     header["rows"] = rows_meta
-    validate_header(header, FORMAT_2)
+    validate_header(header, byte_format)
     return header, _rows_section(raw, base, header["rows"], header_only)
 
 
@@ -638,15 +683,15 @@ def decode_segment(data: bytes | bytearray | memoryview, *,
     """
     raw = memoryview(data)
     if (len(raw) > MAX_SEGMENT_BYTES or len(raw) < 16
-            or bytes(raw[:8]) not in (MAGIC, MAGIC_2)):
+            or bytes(raw[:8]) not in (MAGIC, MAGIC_2, MAGIC_3)):
         _reject("segment_magic_or_size")
     if expected_sha256 is not None and sha256(raw) != expected_sha256:
         _reject("segment_digest_mismatch")
     length = int.from_bytes(raw[8:16], "little")
     if not 0 < length <= MAX_HEADER_BYTES or 16 + length > len(raw):
         _reject("segment_header_length")
-    if bytes(raw[:8]) == MAGIC_2:
-        return _decode_columns(raw, length, header_only)
+    if bytes(raw[:8]) in _FORMAT_OF:
+        return _decode_columns(raw, length, header_only, _FORMAT_OF[bytes(raw[:8])])
     header = _header_json(raw, length)
     validate_header(header)
     base = 16 + length + _pad(length)

@@ -1,4 +1,4 @@
-"""Device-only curve of the rl-inference-3 rows-v2 forward (diagnostic; no game, no CP).
+"""Device-only curve of the rl-inference-4 rows-v2 forward (diagnostic; no game, no CP).
 
 What one device process can score when the front end is not the limit: real
 encoded observations are prepared and written to a pinned arena up front, then

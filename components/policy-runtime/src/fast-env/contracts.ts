@@ -11,7 +11,7 @@ export const FAST_ENV_LINK_SCHEMA = "sts2.policy-runtime/fast-env-link-1" as con
 export const MAX_SLOTS = 16;
 
 export interface ClassPolicy { temperature: number; uniform_mix: number }
-/** Exactly rl-inference-3 `sampling`; carried to the aggregator unchanged. */
+/** Exactly rl-inference-4 `sampling`; carried to the aggregator unchanged. */
 export interface Sampling {
   mode: "temperature_uniform"; seed: string; arm_id: string;
   classes: { combat: ClassPolicy; noncombat: ClassPolicy };
@@ -79,9 +79,9 @@ export type FastEnvCommand =
   | { cmd: "stop"; command_id: string }
   | { cmd: "status"; command_id: string };
 
-/** rl-inference-3 episode_close.reason. */
+/** rl-inference-4 episode_close.reason. */
 export type CloseReason = "terminal" | "not_started" | "unknown" | "stop" | "budget" | "env_crash";
-/** rl-inference-3 step_outcome.reason, plus native_not_delivered (see the result doc). */
+/** rl-inference-4 step_outcome.reason, plus native_not_delivered (see the result doc). */
 export type OutcomeReason = "inference_timeout" | "response_binding_mismatch" | "refused" | "stop_before_send"
   | "delivery_unknown" | "native_crash" | "compact_state_divergence" | "native_not_delivered";
 
