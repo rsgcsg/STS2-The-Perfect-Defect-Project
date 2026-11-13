@@ -13,6 +13,7 @@ import multiprocessing
 import random
 import threading
 import time
+import types
 from typing import Any, cast
 
 import pytest
@@ -56,7 +57,7 @@ class _Connection:
                           queued(self.owner), message["ack"]))
 
 
-def _batched(owner: SegmentLearner, capacity: int = 64) -> list[Any]:
+def _batched(owner: SegmentLearner, capacity: int = 64, hold: int = 64) -> list[Any]:
     events: list[Any] = []
     stub = cast(Any, owner)
     stub._event = lambda name, **fields: events.append((name, fields))
@@ -64,6 +65,8 @@ def _batched(owner: SegmentLearner, capacity: int = 64) -> list[Any]:
     stub.fast_apply_stats = collections.defaultdict(int)
     owner.input_failure = None
     owner.fast_batched_apply, owner.fast_apply_capacity = True, capacity
+    owner.fast_apply_hold = hold
+    owner.fast_apply_event_failure = None
     owner.fast_apply_items = collections.deque()
     owner.fast_apply_lock = threading.Condition()
     owner.fast_apply_stopping = False
@@ -98,6 +101,10 @@ def test_batched_apply_is_an_explicit_bool(tmp_path, monkeypatch):
     with pytest.raises(BoundaryError, match="fast_apply_queue_must_be_int_1_to_4096"):
         fast_learner(tmp_path / "q", monkeypatch,
                      dataplane_extra={"fast_batched_apply": True, "fast_apply_queue": 0})
+    with pytest.raises(BoundaryError,
+                       match="fast_apply_hold_decisions_must_be_int_1_to_4096"):
+        fast_learner(tmp_path / "h", monkeypatch, dataplane_extra={
+            "fast_batched_apply": True, "fast_apply_hold_decisions": True})
 
 
 def test_one_hold_applies_every_ready_decision_in_order_and_acks_after_it():
@@ -298,6 +305,29 @@ def test_an_ack_that_fails_while_stopping_is_recorded_not_fenced():
     assert not owner.input_fenced and owner.input_failure is None
     assert [name for name, _ in events] == ["fast_ack_failed_while_stopping"]
     assert stream.quiet and stream.failure is not None
+    assert stream.event_failure is None
+    owner._fast_apply_stop()
+
+
+def test_a_stopping_ack_failure_whose_event_raises_keeps_that_error_on_the_stream():
+    owner = _stub_owner(10**6, set())
+    _batched(owner)
+
+    def event(name: str, **fields: Any) -> None:
+        raise RuntimeError("telemetry already shut down")
+
+    cast(Any, owner)._event = event
+    stream = _open(owner, _Connection(owner, fail=True))
+    owner.newlease_stopped = True
+    owner._fast_submit(stream, IntakeDecision(admit=[_stub_segment("a0", "r1", 8)]),
+                       _ticket_message(1))
+    _start(owner)
+    owner._fast_drain(stream)
+    _flush(owner, stream)
+    # Kept, not swallowed, and still not a fence or a close failure.
+    assert isinstance(stream.event_failure, RuntimeError)
+    assert stream.quiet and not owner.input_fenced
+    assert owner.fast_apply_event_failure is None
     owner._fast_apply_stop()
 
 
@@ -500,7 +530,9 @@ def test_an_applier_crash_whose_event_raises_still_fences_and_the_reader_raises(
         assert owner.input_failure["operation"] == "fast_apply"
         assert "applier bug" in owner.input_failure["error"]
     finally:
-        owner.close()
+        # The event's own error is not swallowed: close raises it after its cleanup.
+        with pytest.raises(RuntimeError, match="telemetry down"):
+            owner.close()
 
 
 def test_a_normal_close_applies_queued_exclusions_and_aux_rows_before_shutdown(
@@ -577,3 +609,131 @@ def test_a_normal_close_applies_queued_exclusions_and_aux_rows_before_shutdown(
     assert owner.fast_counters["excluded_dropped_rows"] > 0
     assert owner.fast_counters["excluded_aux_rows"] > 0
     assert not queued(owner)
+
+
+def _state(owner: SegmentLearner) -> dict[str, Any]:
+    stub = cast(Any, owner)
+    return {"queued": queued(owner), "rows": owner.queue.rows,
+            "records": [dict(r) for r in owner.queue.pending],
+            "counters": dict(owner.fast_counters), "released": list(stub.released),
+            "put": list(stub.put), "hot": list(owner.hot_references),
+            "admitted_rows": list(owner.fast_admitted_rows.items()),
+            "discarded": owner.training_discarded_rows,
+            "fenced": owner.input_fenced, "failure": owner.input_failure,
+            "pools": [sorted(pool.groups) for pool in (stub.terminal, stub.hp)]}
+
+
+def test_per_hold_eviction_equals_admitting_one_by_one():
+    """The batched applier decides capacity evictions per admission against its
+    record of the hold and changes the queue once per hold. On random input the
+    result is the sequential path's: the same victims in the same order (queue
+    records, release order), the same refusals, every counter, with read-ahead
+    holds, old-chain records, tiny queues (an admission evicts one admitted
+    earlier in the same hold; an admission no eviction can fit), exclusions in
+    the middle of a hold, raced exclusions, duplicate ids and a failing decision,
+    for every hold size."""
+    rng = random.Random(2026111302)
+    seen: collections.Counter[str] = collections.Counter()
+    for case in range(400):
+        capacity = rng.choice((64, 96, 128, 256, 640))
+        records: list[dict[str, Any]] = []
+        while True:
+            rows = rng.randint(1, 64)
+            if sum(r["rows"] for r in records) + rows > capacity or rng.random() < 0.03:
+                break
+            fast = rng.random() > 0.15
+            records.append({"segment_id": f"q{case}-{len(records)}", "rows": rows,
+                            "run_id": f"r{rng.randint(0, 5)}", **({"fast": True} if fast
+                            else {"actor": "a", "episode": "e"})})
+        held = sorted(r["segment_id"] for r in records
+                      if r.get("fast") and rng.random() < rng.choice((0.0, 0.3, 0.9)))
+        excluded = {f"r{i}" for i in range(6) if rng.random() < 0.1}
+        decisions: list[IntakeDecision] = []
+        for d in range(rng.randint(1, 24)):
+            roll = rng.random()
+            if roll < 0.08:
+                decisions.append(IntakeDecision(exclude_instance=f"r{rng.randint(0, 5)}"))
+                continue
+            admit = [_stub_segment(f"n{case}-{d}-{i}", f"r{rng.randint(0, 5)}",
+                                   rng.randint(1, 64)) for i in range(rng.randint(0, 3))]
+            if roll > 0.985 and records:  # an id that is already queued
+                admit.append(_stub_segment(rng.choice(records)["segment_id"], "r1", 8))
+            if 0.97 < roll <= 0.985:
+                admit.append(_stub_segment(f"bad{case}-{d}", "r1", 8,
+                                           compiler={"compiler": 2}))
+            decisions.append(IntakeDecision(admit=admit))
+        states = []
+        for hold in (0, 1, 3, 64):  # 0: the sequential per-decision path
+            owner = _stub_owner(capacity, excluded)
+            stub = cast(Any, owner)
+            stub.terminal, stub.hp = (types.SimpleNamespace(groups={}) for _ in range(2))
+            stub.put = []
+            stub.fast_sources = types.SimpleNamespace(
+                put=lambda ref, envelope, data, who, put=stub.put: put.append(who))
+            stub._notify_capacity = lambda force=False: None
+            owner.input_failure = None
+            _stub_queue(owner, [dict(r) for r in records])
+            if held:
+                owner.ahead_batches.append(({"segments": [
+                    {"segment_id": sid} for sid in held]}, cast(Any, None)))
+            if hold:
+                _batched(owner, hold=hold)
+                stream = _open(owner, _Connection(owner))
+                for index, decision in enumerate(decisions):
+                    owner._fast_submit(stream, decision, _ticket_message(index + 1))
+                _start(owner)
+                owner._fast_drain(stream)
+                owner._fast_apply_stop()
+                _flush(owner, stream)
+                owner.newlease_stopped = owner.input_fenced  # as left by the reader
+            else:
+                for decision in decisions:
+                    try:
+                        owner._fast_apply(decision)
+                    except ValueError as error:  # what its reader does, then it stops
+                        owner._fast_fence("fast_handoff", error)
+                        break
+            states.append(_state(owner))
+        sequential = states[0]
+        for key in ("capacity_evicted", "capacity_refused", "excluded_instances",
+                    "excluded_admit_raced", "admitted"):
+            seen[key] += bool(sequential["counters"].get(key))
+        seen["fenced"] += sequential["fenced"]
+        for hold, state in zip((1, 3, 64), states[1:], strict=True):
+            assert state == sequential, (case, hold)
+    # Every branch was really exercised.
+    assert all(seen[key] >= 10 for key in (
+        "capacity_evicted", "capacity_refused", "excluded_instances",
+        "excluded_admit_raced", "admitted", "fenced")), seen
+
+
+def test_a_hold_applies_at_most_the_configured_number_of_decisions():
+    owner = _stub_owner(10**6, set())
+    _batched(owner, hold=4)
+    stream = _open(owner, _Connection(owner))
+    for i in range(10):
+        owner._fast_submit(stream, IntakeDecision(admit=[_stub_segment(f"a{i}", "r1", 8)]),
+                           _ticket_message(i + 1))
+    _start(owner)
+    owner._fast_drain(stream)
+    _flush(owner, stream)
+    assert queued(owner) == [f"a{i}" for i in range(10)]
+    assert owner.fast_apply_stats["batches"] == 1 and owner.fast_apply_stats["holds"] == 3
+    # One wake-up per hold; acks follow their own hold, in order.
+    assert cast(_CountingCondition, owner.condition).notified == 3
+    assert [a for _, _, a in stream.connection.sent] == list(range(1, 11))
+    owner._fast_apply_stop()
+
+
+def test_queue_splice_removes_positions_and_appends_on_a_new_deque():
+    owner = _stub_owner(10**6, set())
+    _stub_queue(owner, [{"segment_id": f"q{i}", "rows": i + 1, "run_id": "r", "fast": True}
+                        for i in range(6)])
+    before = owner.queue.pending
+    snapshot = list(before)
+    owner.queue.splice([1, 2, 4], [{"segment_id": "n", "rows": 7, "run_id": "r"}])
+    assert queued(owner) == ["q0", "q3", "q5", "n"]
+    assert owner.queue.rows == 1 + 4 + 6 + 7
+    assert owner.queue.pending is not before and list(before) == snapshot
+    owner.queue.splice([0, 1], [])
+    assert queued(owner) == ["q5", "n"] and owner.queue.rows == 13

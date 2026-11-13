@@ -238,6 +238,47 @@ class SegmentQueue:
                     self.condition.notify_all()
             return removed
 
+    def splice(self, positions: list[int], added: list[dict[str, Any]]) -> None:
+        """fast_chain only: one hold's evictions and admissions in one step.
+
+        `positions`: ascending indexes into `pending` of the records to remove
+        (chosen by the caller under `condition`, with no queue change since).
+        `added`: private records the caller validated (as `admit` does), queued
+        in order behind what stays. The caller notifies `condition` itself.
+        Removal builds a new deque once (a reader that iterates the previous
+        object is never mutated under); plain admissions append, as `admit`.
+        """
+        with self.condition:
+            if positions:
+                items = list(self.pending)
+                self.rows -= sum(items[i]["rows"] for i in positions)
+                first, last = positions[0], positions[-1]
+                if last - first + 1 == len(positions):
+                    del items[first:last + 1]
+                else:
+                    for i in reversed(positions):
+                        del items[i]
+                items.extend(added)
+                self.pending = collections.deque(items)
+            else:
+                self.pending.extend(added)
+            self.rows += sum(s["rows"] for s in added)
+
+    def admission_fault(self, segment: dict[str, Any], queued: set[str],
+                        occupied: int) -> str | None:
+        """The error `admit` would raise for this record, given the ids queued
+        now (`queued`) and the rows occupied now; None: admissible."""
+        size = segment.get("rows")
+        if (type(size) is not int or not 1 <= size <= self.config.steps
+                or not isinstance(segment.get("run_id"), str)
+                or not isinstance(segment.get("segment_id"), str)
+                or segment["segment_id"] in self.leases
+                or segment["segment_id"] in queued):
+            return "fast_segment_admission_binding_mismatch"
+        if occupied + size > self.config.capacity_rows:
+            return "fast_segment_admission_over_capacity"
+        return None
+
     def release(self, lease: str) -> None:
         """Close an unused reservation; this does not retry a game or its actions."""
         with self.condition:

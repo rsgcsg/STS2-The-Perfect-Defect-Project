@@ -235,14 +235,15 @@ class _FastStream:
     more than its window of unacked hand-offs, and it reads acks before each send.
     """
 
-    __slots__ = ("connection", "pending", "failure", "quiet", "acks", "ack_lock",
-                 "ack_closed", "ack_thread")
+    __slots__ = ("connection", "pending", "failure", "quiet", "event_failure", "acks",
+                 "ack_lock", "ack_closed", "ack_thread")
 
     def __init__(self, connection: Any) -> None:
         self.connection = connection
         self.pending = 0  # submitted, not yet applied (or skipped) by the applier
         self.failure: BaseException | None = None  # first apply/ack error: no more acks
         self.quiet = False  # that error was an ack while the learner stopped: no fence
+        self.event_failure: BaseException | None = None  # its telemetry event raised
         self.acks: deque[dict[str, Any]] = deque()  # applied, not yet sent, in order
         self.ack_lock = threading.Condition()  # never held with `condition`
         self.ack_closed = False
@@ -256,6 +257,92 @@ class _FastTicket:
     stream: _FastStream
     decision: IntakeDecision
     ack: dict[str, Any] | None  # the hand-off message to ack once applied (None: closed)
+
+
+class _FastHold:
+    """The queue changes of one condition hold of the batched applier.
+
+    Capacity evictions and admissions are decided one admission at a time, in
+    order, exactly as `_fast_admit` decides them against the live queue, but
+    against this record of the hold: the queue itself changes once (`flush`,
+    one `SegmentQueue.splice`) instead of one whole-queue rebuild and one
+    whole-queue duplicate scan per segment. `flush` runs before anything else
+    reads the queue in the hold and before the hold ends.
+    """
+
+    __slots__ = ("queue", "referenced", "walk", "back", "positions", "added", "cursor",
+                 "delta", "ids")
+
+    def __init__(self, queue: SegmentQueue) -> None:
+        self.queue = queue
+        self.referenced: set[str] | None = None  # prepared-batch ids, once per hold
+        self.walk: Iterator[tuple[int, dict[str, Any]]] | None = None
+        # Candidates taken for an admission that was then refused: still queued,
+        # still the oldest, offered again first.
+        self.back: deque[tuple[int, dict[str, Any]]] = deque()
+        self.positions: list[int] = []  # evicted `queue.pending` indexes, ascending
+        self.added: list[dict[str, Any] | None] = []  # admitted; None: evicted again
+        self.cursor = 0  # next `added` index the victim walk offers
+        self.delta = 0  # rows admitted minus rows evicted, not yet in the queue
+        self.ids: set[str] | None = None  # segment ids queued now (queue + hold)
+
+    def candidate(self, referenced: Callable[[], set[str]]
+                  ) -> tuple[int, dict[str, Any]] | None:
+        """The next oldest queued fast record no prepared batch holds: the same
+        oldest-first walk as `_fast_admit`, continued across the hold. Position
+        >= 0: an index into `queue.pending`; < 0: `~index` into `added`."""
+        if self.back:
+            return self.back.popleft()
+        if self.referenced is None:
+            self.referenced = referenced()
+        held = self.referenced
+        if self.walk is None:
+            pending = self.queue.pending
+            self.walk = itertools.compress(enumerate(pending), map(operator.not_, map(
+                held.__contains__, map(operator.itemgetter("segment_id"), pending))))
+        for position, record in self.walk:
+            if record.get("fast"):
+                return position, record
+        while self.cursor < len(self.added):
+            index = self.cursor
+            self.cursor += 1
+            newer = self.added[index]
+            if newer is not None and newer["segment_id"] not in held:
+                return ~index, newer
+        return None
+
+    def evict(self, position: int, record: dict[str, Any]) -> None:
+        if position >= 0:
+            self.positions.append(position)
+        else:
+            self.added[~position] = None
+        self.delta -= record["rows"]
+        if self.ids is not None:
+            self.ids.discard(record["segment_id"])
+
+    def queued(self) -> set[str]:
+        if self.ids is None:
+            self.ids = set(map(operator.itemgetter("segment_id"), self.queue.pending))
+            self.ids.update(r["segment_id"] for r in self.added if r is not None)
+            for position in self.positions:
+                self.ids.discard(self.queue.pending[position]["segment_id"])
+        return self.ids
+
+    def add(self, record: dict[str, Any]) -> None:
+        self.added.append(record)
+        self.delta += record["rows"]
+        if self.ids is not None:
+            self.ids.add(record["segment_id"])
+
+    def flush(self) -> None:
+        """Put the hold's evictions and admissions into the queue (under the
+        learner condition; the caller wakes waiters)."""
+        added = [record for record in self.added if record is not None]
+        if self.positions or added:
+            self.queue.splice(self.positions, added)
+        self.walk, self.ids = None, None
+        self.back.clear()
+        self.positions, self.added, self.cursor, self.delta = [], [], 0, 0
 
 
 @dataclass
@@ -694,12 +781,14 @@ class SegmentLearner:
         # thread that applies all ready ones under one condition hold.
         self.fast_batched_apply = False
         self.fast_apply_capacity = 0
+        self.fast_apply_hold = 0  # most decisions applied under one condition hold
+        self.fast_apply_event_failure: BaseException | None = None
         self.fast_apply_items: deque[_FastTicket] = deque()
         self.fast_apply_lock = threading.Condition()  # never held with `condition`
         self.fast_apply_stopping = False
         self.fast_apply_failure: BaseException | None = None
         self.fast_apply_thread: threading.Thread | None = None
-        self.fast_apply_stats = {"batches": 0, "items": 0, "max_batch": 0,
+        self.fast_apply_stats = {"batches": 0, "items": 0, "max_batch": 0, "holds": 0,
                                  "submit_waits": 0, "peak_queue": 0}
         self.input_sequence = 0
         self.input_head: str | None = None
@@ -956,7 +1045,12 @@ class SegmentLearner:
                 capacity = self.dataplane.get("fast_apply_queue", 64)
                 if type(capacity) is not int or not 1 <= capacity <= 4096:
                     raise BoundaryError("rl_learner", "fast_apply_queue_must_be_int_1_to_4096")
+                hold = self.dataplane.get("fast_apply_hold_decisions", 32)
+                if type(hold) is not int or not 1 <= hold <= 4096:
+                    raise BoundaryError("rl_learner",
+                                        "fast_apply_hold_decisions_must_be_int_1_to_4096")
                 self.fast_batched_apply, self.fast_apply_capacity = batched, capacity
+                self.fast_apply_hold = hold
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
                     # capacity_dropped = capacity_evicted (an older queued segment
@@ -2200,11 +2294,14 @@ class SegmentLearner:
                 self._fast_ack_close(stream)
                 # The applier / ack writer fenced its failure first (before this
                 # reader could see it): never re-fence, the first failure stays.
-                if stream.failure is not None:
-                    if stream.quiet:
+                with self.fast_apply_lock:  # set together under this lock
+                    failure, quiet = stream.failure, stream.quiet
+                    crashed = self.fast_apply_failure is not None
+                if failure is not None:
+                    if quiet:
                         return  # an ack that failed while stopping: recorded, no fence
                     raise
-                if self.fast_apply_failure is not None:
+                if crashed:
                     raise
             if isinstance(error, (FastVerifyClosed, FastApplyClosed)):
                 # The learner closed the verify pool: a stopping learner just
@@ -2292,14 +2389,20 @@ class SegmentLearner:
         return auxiliary, admits
 
     def _fast_apply_held(self, decision: IntakeDecision, prepared: tuple[Any, list[Any]],
-                         changed: list[str], referenced: list[set[str]]) -> None:
-        """One decision under `condition` (the caller wakes waiters via `_fast_wake`)."""
+                         changed: list[str], referenced: list[set[str]],
+                         hold: _FastHold | None = None) -> None:
+        """One decision under `condition` (the caller wakes waiters via `_fast_wake`).
+
+        `hold` (batched applier): admissions and capacity evictions are recorded
+        there and reach the queue at its `flush`."""
         auxiliary, admits = prepared
         if decision.exclude_instance is not None:
+            if hold is not None:
+                hold.flush()  # the exclusion reads and changes the queue itself
             self._fast_exclude(decision.exclude_instance)
         for segment, envelope, record in admits:
             self._fast_admit(segment, envelope, changed, prepared=record,
-                             referenced=referenced)
+                             referenced=referenced, hold=hold)
         if auxiliary:
             self._add_auxiliary(auxiliary)
 
@@ -2356,10 +2459,13 @@ class SegmentLearner:
             return
         self._fast_drain(stream)
         self._fast_ack_close(stream)
-        if stream.failure is not None and not stream.quiet:
-            raise _FastHandled("fast_handoff_apply_failed") from stream.failure
-        if self.fast_apply_failure is not None:
-            raise _FastHandled("fast_applier_failed") from self.fast_apply_failure
+        with self.fast_apply_lock:
+            failure, quiet = stream.failure, stream.quiet
+            crashed = self.fast_apply_failure
+        if failure is not None and not quiet:
+            raise _FastHandled("fast_handoff_apply_failed") from failure
+        if crashed is not None:
+            raise _FastHandled("fast_applier_failed") from crashed
 
     def _fast_ack_push(self, stream: _FastStream, message: dict[str, Any]) -> None:
         """Applier side: queue one ack (no socket I/O on the applier). A decision
@@ -2438,9 +2544,12 @@ class SegmentLearner:
                         ticket.stream.pending -= 1
                     self.fast_apply_items.clear()
                     self.fast_apply_lock.notify_all()
-                with suppress(Exception):  # the fence above already carries the error
+                try:
                     self._event("fast_applier_failed", error_type=type(error).__name__,
                                 error=str(error)[:400])
+                except Exception as event_error:
+                    # Not lost: `close()` raises it after its cleanup.
+                    self.fast_apply_event_failure = event_error
 
     def _fast_stream_failed(self, stream: _FastStream, error: BaseException, *,
                             acking: bool = False) -> None:
@@ -2454,17 +2563,24 @@ class SegmentLearner:
             with self.condition:
                 stopping = self.newlease_stopped
             if stopping:
-                stream.quiet = True  # before `failure`: a reader seeing it sees this
-                stream.failure = error
-                with suppress(Exception):
+                with self.fast_apply_lock:  # both together: a reader sees both or none
+                    stream.failure, stream.quiet = error, True
+                    self.fast_apply_lock.notify_all()
+                try:
                     self._event("fast_ack_failed_while_stopping",
                                 error_type=type(error).__name__)
+                except Exception as event_error:
+                    # A stopping learner's telemetry may already be shut down:
+                    # kept on the connection, never turned into a close failure.
+                    stream.event_failure = event_error
                 return
         try:
             # Fenced before the reader can see `failure` and stop on it.
             self._fast_fence("fast_handoff", error)
         finally:
-            stream.failure = error
+            with self.fast_apply_lock:
+                stream.failure = error
+                self.fast_apply_lock.notify_all()  # a reader waiting for queue room
 
     def _fast_apply_tickets(self, batch: list[_FastTicket]) -> None:
         prepared: list[tuple[Any, list[Any]] | None] = []
@@ -2476,33 +2592,43 @@ class SegmentLearner:
                 except BaseException as error:
                     self._fast_stream_failed(ticket.stream, error)
             prepared.append(value)
-        applied: list[_FastTicket] = []
-        with self.condition:
-            changed: list[str] = []
-            referenced: list[set[str]] = []
-            try:
-                for ticket, value in zip(batch, prepared, strict=True):
-                    # A connection whose earlier decision failed applies nothing
-                    # more (its reader would have stopped at that failure).
-                    if ticket.stream.failure is not None:
-                        continue
-                    if value is not None:
-                        try:
-                            self._fast_apply_held(ticket.decision, value, changed,
-                                                  referenced)
-                        except BaseException as error:
-                            self._fast_stream_failed(ticket.stream, error)
+        # At most `fast_apply_hold` decisions per condition hold: the training
+        # loop's selection / dispatch gets the condition between holds.
+        step = self.fast_apply_hold or len(batch)
+        for start in range(0, len(batch), step):
+            applied: list[_FastTicket] = []
+            with self.condition:
+                self.fast_apply_stats["holds"] += 1
+                changed: list[str] = []
+                hold = _FastHold(self.queue)
+                try:
+                    for ticket, value in zip(batch[start:start + step],
+                                             prepared[start:start + step], strict=True):
+                        # A connection whose earlier decision failed applies nothing
+                        # more (its reader would have stopped at that failure).
+                        if ticket.stream.failure is not None:
                             continue
-                    applied.append(ticket)
-            finally:
-                self._fast_wake(changed)
-        # Every decision applied above is acked, in order, even if a later one of
-        # the same connection failed in this hold (its reader acked each one
-        # before reading the next). Its writer sends them; after a failed ack
-        # that connection gets none.
-        for ticket in applied:
-            if ticket.ack is not None:
-                self._fast_ack_push(ticket.stream, ticket.ack)
+                        if value is not None:
+                            try:
+                                self._fast_apply_held(ticket.decision, value, changed,
+                                                      [], hold)
+                            except BaseException as error:
+                                hold.flush()  # the fence below sees the real queue
+                                self._fast_stream_failed(ticket.stream, error)
+                                continue
+                        applied.append(ticket)
+                finally:
+                    try:
+                        hold.flush()
+                    finally:
+                        self._fast_wake(changed)
+            # Every decision applied above is acked, in order, even if a later one
+            # of the same connection failed in this hold (its reader acked each
+            # one before reading the next). Its writer sends them; after a failed
+            # ack that connection gets none.
+            for ticket in applied:
+                if ticket.ack is not None:
+                    self._fast_ack_push(ticket.stream, ticket.ack)
 
     def _fast_apply_stop(self) -> None:
         """Learner close: apply what is queued, then end the applier."""
@@ -2514,6 +2640,10 @@ class SegmentLearner:
             thread.join(60)
             if thread.is_alive():
                 self._event("fast_applier_stop_timeout")
+
+    def _fast_apply_check(self) -> None:
+        if self.fast_apply_event_failure is not None:
+            raise self.fast_apply_event_failure
 
     def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
                         ) -> list[tuple[str, str, list[dict[str, Any]]]]:
@@ -2562,14 +2692,17 @@ class SegmentLearner:
     def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any],
                     changed: list[str], *,
                     prepared: tuple[BinaryRef, str, dict[str, Any]] | None = None,
-                    referenced: list[set[str]] | None = None) -> None:
+                    referenced: list[set[str]] | None = None,
+                    hold: _FastHold | None = None) -> None:
         """Admit one segment under `condition`. Each queue change is appended to
         `changed` as it happens ("evicted", "admitted"); the caller
         (`_fast_apply`) notifies the condition (and, after an admission, the
         source prefetch) once for its whole decision, even if this raises.
 
         `prepared`: `_fast_record(segment, envelope)`, built before the hold.
-        `referenced`: a per-hold cache cell for `_fast_referenced()`."""
+        `referenced`: a per-hold cache cell for `_fast_referenced()`.
+        `hold` (batched applier): the same decisions, same victims in the same
+        order and same counters, with the queue changed once per hold."""
         assert self.fast_sources is not None
         if self.newlease_stopped or self.input_fenced:
             self.training_discarded_rows += segment.rows
@@ -2583,6 +2716,9 @@ class SegmentLearner:
             self.fast_counters["excluded_admit_raced"] += 1
             self.fast_counters["excluded_admit_raced_rows"] += segment.rows
             self.fast_counters["excluded_dropped_rows"] += segment.rows
+            return
+        if hold is not None:
+            self._fast_admit_held(segment, envelope, changed, prepared, hold)
             return
         # Full queue: drop the oldest queued, unprepared segments (whole segments,
         # no trace crosses them), counted; decision of 11-09.
@@ -2623,6 +2759,51 @@ class SegmentLearner:
         self.fast_sources.put(ref, envelope, segment.data, owner)
         self.hot_references[ref.slot, owner] = ref
         self.queue.admit(record, notify=False, owned=True)
+        changed.append("admitted")
+        self.fast_admitted_rows[envelope["run_id"]] = (
+            self.fast_admitted_rows.pop(envelope["run_id"], 0) + envelope["rows"])
+        while len(self.fast_admitted_rows) > 65536:
+            self.fast_admitted_rows.popitem(last=False)
+        self.fast_counters["admitted"] += 1
+        self.fast_counters["admitted_rows"] += envelope["rows"]
+
+    def _fast_admit_held(self, segment: FastSegment, envelope: dict[str, Any],
+                         changed: list[str],
+                         prepared: tuple[BinaryRef, str, dict[str, Any]] | None,
+                         hold: _FastHold) -> None:
+        """`_fast_admit` from its capacity step on, against the hold's record of
+        the queue: each step is the one `_fast_admit` takes, in the same order."""
+        assert self.fast_sources is not None
+        overflow = (self.queue.occupied + hold.delta + segment.rows
+                    - self.settings.capacity_rows)
+        taken: list[tuple[int, dict[str, Any]]] = []
+        while overflow > 0:
+            candidate = hold.candidate(self._fast_referenced)
+            if candidate is None:
+                break
+            taken.append(candidate)
+            overflow -= candidate[1]["rows"]
+        if overflow > 0:
+            # Refused: nothing is evicted; what was looked at stays the oldest.
+            hold.back.extendleft(reversed(taken))
+            for counter in ("capacity_dropped", "capacity_refused"):
+                self.fast_counters[counter] += 1
+                self.fast_counters[counter + "_rows"] += segment.rows
+            return
+        if taken:
+            changed.append("evicted")
+        for position, victim in taken:
+            hold.evict(position, victim)
+            self._fast_forget(victim, counters=("capacity_dropped", "capacity_evicted"))
+        ref, owner, record = (prepared if prepared is not None
+                              else self._fast_record(segment, envelope))
+        self.fast_sources.put(ref, envelope, segment.data, owner)
+        self.hot_references[ref.slot, owner] = ref
+        fault = self.queue.admission_fault(record, hold.queued(),
+                                           self.queue.occupied + hold.delta)
+        if fault is not None:
+            raise ValueError(fault)
+        hold.add(record)
         changed.append("admitted")
         self.fast_admitted_rows[envelope["run_id"]] = (
             self.fast_admitted_rows.pop(envelope["run_id"], 0) + envelope["rows"])
@@ -2686,7 +2867,8 @@ class SegmentLearner:
             with self.fast_apply_lock:
                 verify["apply"] = {**self.fast_apply_stats,
                                    "queue": len(self.fast_apply_items),
-                                   "capacity": self.fast_apply_capacity}
+                                   "capacity": self.fast_apply_capacity,
+                                   "hold_decisions": self.fast_apply_hold}
         return {"fast_chain": {"learner": counters, "intake": self.fast_intake.report(),
                                **self.fast_sources.status(), **verify}}
 
@@ -3973,6 +4155,9 @@ class SegmentLearner:
         with ExitStack() as cleanup:
             # Runs last: a failed hand-off release is raised after the cleanup below.
             cleanup.callback(self._check_releases, wait=True)
+            if getattr(self, "fast_apply_thread", None) is not None:
+                # An applier-crash event that could not be recorded is raised here.
+                cleanup.callback(self._fast_apply_check)
             if self.wal is not None and not keep_journal:
                 cleanup.callback(self._close_journal)
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
