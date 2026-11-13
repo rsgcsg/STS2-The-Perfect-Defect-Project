@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import collections
 import copy
+import faulthandler
 import itertools
 import multiprocessing
 import os
@@ -40,6 +41,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -107,6 +109,16 @@ def shard_dataplane(dataplane: dict[str, Any], count: int) -> dict[str, Any]:
                 shared[key] = shared[key] // count
         if "prepare_slots" in shared:
             shared["prepare_slots"] = max(4, -(-shared["prepare_slots"] // count))
+        remote = shared.get("remote_prepare")
+        if isinstance(remote, dict):
+            # Every shard connects to every prepare host: its share of the
+            # configured connections per host and of the client processes, so the
+            # hosts see the configured totals (rounded up, at least one each).
+            remote = dict(remote)
+            for key in ("connections", "client_processes"):
+                if type(remote.get(key)) is int and remote[key] > 0:
+                    remote[key] = -(-remote[key] // count)
+            shared["remote_prepare"] = remote
     return shared
 
 
@@ -153,6 +165,9 @@ class _Shard:
         self.closing = False
         self.connections = 0
         self.exit: dict[str, Any] | None = None
+        # The only thread that ever waits on the process (two concurrent waits on
+        # one child lose its exit status); everyone else joins this thread.
+        self.reader: threading.Thread | None = None
 
 
 class ShardSet:
@@ -173,9 +188,10 @@ class ShardSet:
         self.threads = [threading.Thread(target=self._dispatch, name="rl-shard-dispatch",
                                          daemon=True)]
         for shard in shards:
+            shard.reader = threading.Thread(target=self._read, args=(shard,), daemon=True,
+                                            name=f"rl-shard-read-{shard.index}")
             self.threads += [
-                threading.Thread(target=self._read, args=(shard,), daemon=True,
-                                 name=f"rl-shard-read-{shard.index}"),
+                shard.reader,
                 threading.Thread(target=self._write, args=(shard,), daemon=True,
                                  name=f"rl-shard-write-{shard.index}")]
         for thread in self.threads:
@@ -204,11 +220,17 @@ class ShardSet:
                     "aux_labels": owner.fast_aux_labels,
                     "handoff": owner.sgd_options is not None,
                     "scratch": str(owner.live_work / f"shard-{index}"),
-                    # Shard 0 continues the learner's own selection RNG (with one
-                    # shard: the same draws as without shards); the others get a
-                    # fixed stream of their own from the configured seed.
-                    "rng": (owner.rng.getstate() if index == 0 else random.Random(
-                        f"{owner.config.seed}/dataplane-shard/{index}").getstate()),
+                    # Its stdout/stderr, fence facts with tracebacks and any fatal
+                    # Python error, next to the learner's own files.
+                    "log": str(owner.work / f"dataplane-shard-{index}.log"),
+                    # A restore: the state this shard committed in the CP. A fresh
+                    # start: shard 0 continues the learner's own selection RNG (with
+                    # one shard: the same draws as without shards); the others get
+                    # a fixed stream of their own from the configured seed.
+                    "rng": (owner.shard_rng_states[index]
+                            if owner.shard_rng_states is not None
+                            else owner.rng.getstate() if index == 0 else random.Random(
+                                f"{owner.config.seed}/dataplane-shard/{index}").getstate()),
                 }
                 process = context.Process(target=_shard_main, args=(theirs, init),
                                           name=f"rl-dataplane-shard-{index}", daemon=False)
@@ -283,8 +305,13 @@ class ShardSet:
             # Before the join reaps it (its pid, the group id, is still its own):
             # whatever the lost shard's group still runs goes with it.
             _kill_group(shard.process)
-        shard.process.join(10)
-        facts = {"pid": shard.pid, "exitcode": shard.process.exitcode, **unreadable}
+        shard.process.join(30)
+        lingering = shard.process.is_alive()
+        if lingering:  # its pipe is closed but it does not exit
+            _kill_group(shard.process)
+            shard.process.join(30)
+        facts = {"pid": shard.pid, "exitcode": shard.process.exitcode,
+                 **({"killed_after_pipe_closed": True} if lingering else {}), **unreadable}
         with shard.lock:
             shard.dead = facts
             waiting, shard.replies = list(shard.replies.values()), {}
@@ -572,13 +599,17 @@ class ShardSet:
             except DataplaneShardFailed as error:
                 failures.append(error)
             shard.outbox.put(None)
-            shard.process.join(30 if slot is not None else 0)
-            if shard.process.is_alive():
-                _kill_group(shard.process)
-                shard.process.join(30)
+            assert shard.reader is not None
+            shard.reader.join(60 if slot is not None else 0)
+            if shard.reader.is_alive():
+                _kill_group(shard.process)  # the reader then sees the end and reaps it
+                shard.reader.join(90)
                 failures.append(DataplaneShardFailed(
                     "dataplane_shard_killed_at_close", {"shard": shard.index}))
-            shard.exit = {"exitcode": shard.process.exitcode}
+            shard.exit = dict(shard.dead or {"exitcode": None})
+            if not failures and shard.exit.get("exitcode") != 0:
+                failures.append(DataplaneShardFailed(
+                    "dataplane_shard_exit_not_clean", {"shard": shard.index, **shard.exit}))
         if len(final) == self.count:
             self.final = final
         self.deferred.put(None)
@@ -592,7 +623,8 @@ class ShardSet:
             shard.outbox.put(None)
             _kill_group(shard.process)
         for shard in self.shards:
-            shard.process.join(30)
+            if shard.reader is not None:
+                shard.reader.join(90)
         self.deferred.put(None)
 
 
@@ -768,6 +800,7 @@ class _ShardLearner(SegmentLearner):
         self.fence_report.wait()
         with self.condition:  # the fencing block has set its failure by now
             failure = dict(self.input_failure or {"operation": "unknown"})
+        _log(f"input fenced: {failure}")
         self.send({"kind": "fenced", "failure": failure})
 
     def _event(self, kind: str, *, _build: Any = None, **fields: Any) -> None:
@@ -796,6 +829,7 @@ class _ShardLearner(SegmentLearner):
             try:
                 value = getattr(self, "_on_" + kind)(message)
             except BaseException as error:
+                _log(f"operation {kind} failed", error=error)
                 failure = {"operation": "dataplane_shard_" + kind,
                            "error_type": type(error).__name__, "error": str(error)[:400]}
                 if "id" in message:
@@ -908,6 +942,7 @@ class _ShardLearner(SegmentLearner):
                     self.announced = sequence
                     self.send({"kind": "ready", "sequence": sequence, "batch": batch})
         except BaseException as error:
+            _log("a preparation failed", error=error)
             with self.condition:
                 self.input_fenced = self.newlease_stopped = True
                 self.input_failure = {"operation": "prepare", "code": "INVALID_PACKET",
@@ -1040,8 +1075,22 @@ class _ShardLearner(SegmentLearner):
         return self._on_status(message)
 
 
+def _log(text: str, *, error: BaseException | None = None) -> None:
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {text}", file=sys.stderr, flush=True)
+    if error is not None:
+        traceback.print_exception(error, file=sys.stderr)
+        sys.stderr.flush()
+
+
 def _shard_main(connection: Any, init: dict[str, Any]) -> None:
     os.setpgrp()  # own group: see `_kill_group`
+    # Everything this process (and its pools and clients) prints goes to its own
+    # log file; a crash of the interpreter leaves its stacks there too.
+    with open(init["log"], "ab", buffering=0) as log:
+        os.dup2(log.fileno(), 1)
+        os.dup2(log.fileno(), 2)
+    faulthandler.enable()
+    _log(f"dataplane shard {init['index']} of {init['count']} started pid={os.getpid()}")
     # Stop signals belong to the learner's own stop path, like the SGD process.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -1082,6 +1131,7 @@ def _shard_main(connection: Any, init: dict[str, Any]) -> None:
     try:
         shard = _ShardLearner(init, outbox.put)
     except BaseException as error:
+        _log("start failed", error=error)
         outbox.put({"kind": "started", "pid": os.getpid(), "failure": {
             "error_type": type(error).__name__, "error": str(error)[:400]}})
         outbox.put(None)

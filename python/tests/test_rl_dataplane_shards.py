@@ -13,6 +13,7 @@ from test_rl41_w1 import configuration
 from test_rl_fast_learner import admission, eventually, learner_mu
 from test_rl_fast_source import Game, _sender, closed_for
 from test_rl_pipeline_checkpoint import SGD_PROCESS
+from test_rl_segment_learner import read_cp
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.frame_compiler import FrameCompiler
@@ -25,7 +26,7 @@ STEP_FACTS = ("update", "dataset", "minibatch", "epoch", "stepped", "kl_stopped"
               "approx_kl_mu_theta", "terminal_loss", "hp_loss", "gradient_norm")
 
 
-def learner(tmp_path, monkeypatch, shards: int, **dataplane_extra: Any) -> SegmentLearner:
+def parts(tmp_path, monkeypatch, shards: int, **dataplane_extra: Any) -> tuple[Any, Any]:
     from stpd.p1.local_inference import AUTH_ENV
 
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -44,7 +45,12 @@ def learner(tmp_path, monkeypatch, shards: int, **dataplane_extra: Any) -> Segme
                  "fast_chain": True, **SGD_PROCESS, **dataplane_extra}
     if shards:
         dataplane["shards"] = shards
-    return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
+    return config, dataclasses.replace(io, dataplane=dataplane)
+
+
+def learner(tmp_path, monkeypatch, shards: int, **dataplane_extra: Any) -> SegmentLearner:
+    config, io = parts(tmp_path, monkeypatch, shards, **dataplane_extra)
+    return SegmentLearner(config, tmp_path / "owner", io)
 
 
 def game(owner: SegmentLearner, index: int) -> list[Any]:
@@ -129,6 +135,8 @@ def test_a_dead_shard_fences_the_learner_and_nothing_is_rerouted(tmp_path, monke
         hand_off(owner, sealed)  # first connection: shard 0
         before = owner.fast_status()["fast_chain"]
         assert before["shards"]["count"] == 2
+        log = (owner.work / "dataplane-shard-0.log").read_text()
+        assert "dataplane shard 0 of 2 started" in log
         assert [s["connections"] for s in before["shards"]["per_shard"]] == [1, 0]
         assert before["learner"]["admitted"] == len(sealed)
         victim, other = owner.shards.shards
@@ -197,16 +205,46 @@ def test_two_shards_split_connections_and_count_a_broadcast_exclusion_once(
         owner.close()
 
 
-def test_restore_into_shards_is_refused_until_it_is_written(tmp_path, monkeypatch):
-    from stpd.p1.local_inference import AUTH_ENV
+def test_a_restore_keeps_every_shards_selection_rng_and_refuses_another_count(
+        tmp_path, monkeypatch):
+    config, io = parts(tmp_path / "a", monkeypatch, 2)
+    owner = SegmentLearner(config, tmp_path / "a" / "owner", io)
+    try:
+        hand_off(owner, game(owner, 1))
+        hand_off(owner, game(owner, 2))
+        train(owner, 2)
+        owner.checkpoint(final=True)
+        record, cp = read_cp(owner)
+    finally:
+        owner.close()
+    recorded = cp.input_pipeline["dataplane_shards"]
+    assert recorded["count"] == 2
 
-    config, io = configuration(tmp_path, monkeypatch, generation="g-shards")
-    monkeypatch.setenv(AUTH_ENV, "ab" * 32)
-    config = dataclasses.replace(config, resume_checkpoint="cp-of-an-earlier-generation")
-    dataplane = {"lanes": 1, "root": str(tmp_path / "live"), "fast_chain": True,
-                 "shards": 2, **SGD_PROCESS}
-    with pytest.raises(BoundaryError, match="dataplane_shards_restore_not_supported_yet"):
-        SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
+    def restore(name: str, shards: int) -> SegmentLearner:
+        request = dataclasses.replace(
+            config, start_package=None, resume_checkpoint=record["checkpoint_artifact_id"],
+            segments=dataclasses.replace(config.segments, training_generation="g-" + name))
+        dataplane = {**io.dataplane, "root": str(tmp_path / ("live-" + name))}
+        dataplane.pop("shards")
+        if shards:
+            dataplane["shards"] = shards
+        return SegmentLearner(request, tmp_path / name, dataclasses.replace(
+            io, dataplane=dataplane))
+
+    for other in (0, 1, 3):
+        with pytest.raises(BoundaryError, match="checkpoint_dataplane_shard_count_changed"):
+            restore(f"other-{other}", other)
+    restored = restore("same", 2)
+    try:
+        assert restored.updates == cp.counters.updates
+        now = restored.shards.snapshot()
+        for before, after in zip(recorded["shards"], now["shards"], strict=True):
+            for name in ("committed_selection_rng", "speculative_selection_rng"):
+                assert after[name][0] == before["committed_selection_rng"][0]
+                assert list(after[name][1]) == list(before["committed_selection_rng"][1])
+        assert not restored.input_fenced
+    finally:
+        restored.close()
 
 
 def test_switch_is_explicit_and_shares_are_even():
@@ -219,8 +257,12 @@ def test_switch_is_explicit_and_shares_are_even():
         2048, 85, 42, 2)
     # The per-dataset byte budget is unchanged: 7 KiB // (6 + 1) per dataset.
     assert third.prepared_bytes // (ahead + 1) == settings.prepared_bytes // 7
-    assert shard_dataplane({"source_bytes": 30, "prepare_slots": 9, "lanes": 4}, 3) == {
-        "source_bytes": 10, "prepare_slots": 4, "lanes": 4}
+    remote = {"endpoints": ["h:1"], "connections": 36, "client_processes": 2}
+    assert shard_dataplane({"source_bytes": 30, "prepare_slots": 9, "lanes": 4,
+                            "remote_prepare": remote}, 3) == {
+        "source_bytes": 10, "prepare_slots": 4, "lanes": 4,
+        "remote_prepare": {"endpoints": ["h:1"], "connections": 12, "client_processes": 1}}
+    assert remote["connections"] == 36  # the learner's own configuration is not changed
 
 
 @pytest.mark.parametrize("extra", [{"shards": True}, {"shards": 9}, {"shards": -1},

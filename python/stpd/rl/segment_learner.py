@@ -545,10 +545,6 @@ class SegmentLearner:
         self.shard_count = (self.dataplane or {}).get("shards", 0)
         if type(self.shard_count) is not int or not 0 <= self.shard_count <= 8:
             raise BoundaryError("rl_learner", "dataplane_shards_must_be_int_0_to_8")
-        if self.shard_count and config.resume_checkpoint:
-            # First slice: a CP records every shard's selection RNG, but restoring
-            # them is not written yet. Refused here, never a silent RNG reset.
-            raise BoundaryError("rl_learner", "dataplane_shards_restore_not_supported_yet")
         # Threads that copy batch sources into preparer arenas concurrently.
         self.dispatch_workers = (self.dataplane.get("prepare_dispatch_workers", 4)
                                  if self.dataplane is not None else 1)
@@ -734,6 +730,20 @@ class SegmentLearner:
         restored = (
             self._read_checkpoint(config.resume_checkpoint) if config.resume_checkpoint else None
         )
+        # A CP names its shard count and every shard's committed selection RNG. A
+        # restore keeps both: another count (a CP without shards counts as 0) is
+        # refused, never answered with fresh or re-dealt RNG streams.
+        self.shard_rng_states: list[tuple[Any, ...]] | None = None
+        if restored is not None:
+            recorded = (restored.input_pipeline or {}).get("dataplane_shards")
+            if (recorded["count"] if recorded else 0) != self.shard_count:
+                raise BoundaryError("rl_learner", "checkpoint_dataplane_shard_count_changed")
+            if recorded:
+                states = [shard["committed_selection_rng"] for shard in recorded["shards"]]
+                if len(states) != self.shard_count:
+                    raise BoundaryError("rl_learner", "checkpoint_dataplane_shard_rng_missing")
+                self.shard_rng_states = [(state[0], tuple(state[1]), state[2])
+                                         for state in states]
         cp_deadline = restored.config.get("deadline_at") if restored is not None else None
         cp_budget = restored.config.get("operating_budget") if restored is not None else None
         budget = copy.deepcopy(config.operating_budget if config.operating_budget is not None

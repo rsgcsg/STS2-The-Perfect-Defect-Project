@@ -488,6 +488,10 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     else:
                         result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
+                    # Also in this host's own log: the learner only gets one line,
+                    # and a broken pool fails every later task of this host.
+                    print(f"remote_prepare task failed: {type(error).__name__}: {error}",
+                          flush=True)
                     _send(connection, timeout, {"error": f"{type(error).__name__}: {error}"})
                     return
                 if task.get("kind") == "labels":
