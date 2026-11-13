@@ -57,6 +57,7 @@ OPTION_KEYS = frozenset((
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
     "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split", "sgd_verify_threads",
     "sgd_switch_interval_seconds", "sgd_stage_after_first_step", "sgd_step_probe",
+    "sgd_gc_freeze",
 ))
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
@@ -128,6 +129,10 @@ class SgdOptions:
     stage_after_first_step: bool = False
     # Per step: Python GC time/collections and CUDA allocator deltas in `sgd_timing`.
     step_probe: bool = False
+    # Every SGD rank collects once and `gc.freeze()`s after its first dataset
+    # (imports, model, optimizer, compiled graphs, caches: never garbage), so later
+    # full collections no longer rescan that heap with the GIL held mid-step.
+    gc_freeze: bool = False
 
     def stage_init(self) -> dict[str, Any]:
         """The SGD child's staging options (part of its init message)."""
@@ -135,7 +140,7 @@ class SgdOptions:
                 "verify_split": self.verify_split, "verify_threads": self.verify_threads,
                 "switch_interval": self.switch_interval,
                 "after_first_step": self.stage_after_first_step,
-                "step_probe": self.step_probe}
+                "step_probe": self.step_probe, "gc_freeze": self.gc_freeze}
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -223,7 +228,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         raise ValueError("invalid_sgd_prestart")
     flags = {}
     for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
-                "sgd_stage_after_first_step", "sgd_step_probe"):
+                "sgd_stage_after_first_step", "sgd_step_probe", "sgd_gc_freeze"):
         flags[key] = dataplane.get(key, False)
         if type(flags[key]) is not bool:
             raise ValueError("invalid_" + key)
@@ -255,6 +260,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         switch_interval=float(switch) if switch is not None else None,
         stage_after_first_step=flags["sgd_stage_after_first_step"],
         step_probe=flags["sgd_step_probe"],
+        gc_freeze=flags["sgd_gc_freeze"],
     )
 
 
@@ -435,6 +441,7 @@ class _StageConfig:
     switch_interval: float | None = None
     after_first_step: bool = False
     step_probe: bool = False
+    gc_freeze: bool = False
 
     @classmethod
     def from_init(cls, value: Any) -> _StageConfig:
@@ -442,7 +449,7 @@ class _StageConfig:
             return cls()
         if not isinstance(value, dict) or set(value) != {
                 "stream_reuse", "lean_tree", "verify_split", "verify_threads",
-                "switch_interval", "after_first_step", "step_probe"}:
+                "switch_interval", "after_first_step", "step_probe", "gc_freeze"}:
             raise _ChildViolation("sgd_stage_options_changed")
         return cls(**value)
 
@@ -1339,6 +1346,9 @@ class _SgdWorker:
         self.step_gate = threading.Condition()
         self.dataset_steps: int | None = None
         self.copy_stream: Any = None  # `stream_reuse`: created on first use
+        # `gc_freeze`: facts of the one collect+freeze, reported with the next step.
+        self.gc_frozen: dict[str, Any] | None = None
+        self.gc_freeze_report: dict[str, Any] | None = None
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
@@ -1772,7 +1782,10 @@ class _SgdWorker:
                                  if minibatch == epoch == 0
                                  and self.replica_seconds is not None else {}),
                               **({"offline_dump": dumped} if dumped is not None else {}),
-                              **({"probe": probed} if probed is not None else {})})
+                              **({"probe": probed} if probed is not None else {}),
+                              **({"gc_freeze": self.gc_freeze_report}
+                                 if self.gc_freeze_report is not None else {})})
+            self.gc_freeze_report = None
             minibatch += 1
             end_epoch = minibatch == len(device_batch.minibatches)
             finished = result["kl_stopped"] or (end_epoch and epoch + 1 >= epochs)
@@ -1795,7 +1808,24 @@ class _SgdWorker:
             self.replica_seconds = time.perf_counter() - check_began
         if self.updates > start_updates and self.rank == 0:
             self.snapshot()
+        if self.staging_config.gc_freeze and self.gc_frozen is None:
+            self.freeze_heap()
         self.idle_since = time.perf_counter()
+
+    def freeze_heap(self) -> None:
+        """`gc_freeze`, once, after the first dataset (compile warm-up done), on the
+        stepping thread between datasets: one full collect, then every surviving
+        object leaves the collector's view for good. Later collections scan only
+        what was created after it. Frozen objects are still freed by refcount; a
+        cycle among them that dies later is never reclaimed (bounded: what was
+        alive at this point)."""
+        self.state["stage"] = "gc_freeze"
+        began = time.perf_counter()
+        collected = gc.collect()
+        gc.freeze()
+        self.gc_frozen = self.gc_freeze_report = {
+            "seconds": time.perf_counter() - began, "collected": collected,
+            "frozen": gc.get_freeze_count()}
 
     def _steps_done(self, steps: int | None) -> None:
         with self.step_gate:

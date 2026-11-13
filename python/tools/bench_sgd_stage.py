@@ -15,6 +15,13 @@ stage; with `sgd_verify_split` the follower's chunk hashes are combined by the
 same `_DataParallel._verify_split` rank 0 uses.
 
     PYTHONPATH=python python python/tools/bench_sgd_stage.py --megabytes 850 --batches 6
+
+`--gc-datasets N` instead measures `sgd_gc_freeze`: one rank holds a long-lived
+heap sized by `--gc-heap` (objects, standing in for the SGD child's model,
+compiled graphs and caches), stages N datasets back to back (each kept alive
+until the next, as a running dataset holds its batch) and reports the full
+collections that fell inside, the tracked-object count over time (leak bound)
+and one full collect's time, without and with the freeze.
 """
 
 from __future__ import annotations
@@ -230,18 +237,102 @@ def run(plan: dict[str, Any], world: int, config: dict[str, Any], batches: int) 
                       for r in reports]}
 
 
+def _long_lived_heap(objects: int) -> list[Any]:
+    """Container objects that never die, linked like a real object graph."""
+    heap: list[Any] = []
+    for index in range(objects // 4):
+        node = {"i": index, "attrs": [index], "parent": heap[index // 2] if heap else None}
+        heap.append(node)
+        heap.append((node, index))
+    return heap
+
+
+def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, freeze: bool,
+            results: Any) -> None:
+    import gc
+
+    import torch
+
+    from stpd.rl import sgd_process as sp
+
+    torch.set_num_threads(4)
+    # The CUDA direct path stages with no explicit `gc.collect()` per batch (the
+    # CPU path in `_stage_work` has one); only automatic collections remain.
+    sp.gc = SimpleNamespace(collect=lambda *a: 0)  # type: ignore[assignment]
+    heap = _long_lived_heap(heap_objects)
+    worker = stage_worker(0, 1, {"lean_tree": True})
+    held = sp._SgdWorker._stage_work(cast(Any, worker), plan)  # first dataset: warm-up
+    gc.collect()
+    began = time.perf_counter()
+    gc.collect()
+    full_before = time.perf_counter() - began
+    if freeze:  # what `SgdWorker.freeze_heap` does after the first dataset
+        gc.collect()
+        gc.freeze()
+    began = time.perf_counter()
+    gc.collect()
+    full_after = time.perf_counter() - began
+    pauses: list[tuple[int, float]] = []
+    started: list[float] = []
+
+    def callback(phase: str, info: dict[str, Any]) -> None:
+        if phase == "start":
+            started.append(time.perf_counter())
+        else:
+            pauses.append((info["generation"], time.perf_counter() - started.pop()))
+
+    gc.callbacks.append(callback)
+    tracked = []
+    for index in range(datasets):
+        held = sp._SgdWorker._stage_work(cast(Any, worker), plan)
+        if index % max(1, datasets // 10) == 0 or index == datasets - 1:
+            tracked.append(len(gc.get_objects()))
+    gc.callbacks.remove(callback)
+    del held
+    full = [s for g, s in pauses if g == 2]
+    results.put({"freeze": freeze, "heap_objects": heap_objects,
+                 "frozen": gc.get_freeze_count(),
+                 "full_collect_seconds_before_freeze": round(full_before, 4),
+                 "full_collect_seconds_after": round(full_after, 4),
+                 "datasets": datasets, "gen2_collections": len(full),
+                 "gen2_seconds": round(sum(full), 3),
+                 "gen2_max_seconds": round(max(full), 4) if full else 0.0,
+                 "all_gc_seconds": round(sum(s for _, s in pauses), 3),
+                 "tracked_objects": tracked})
+    del heap  # alive until here: the long-lived heap the collections had to scan
+
+
+def gc_main(plan: dict[str, Any], heap_objects: int, datasets: int) -> None:
+    context = multiprocessing.get_context("spawn")
+    for freeze in (False, True):
+        results = context.Queue()
+        process = context.Process(target=gc_rank,
+                                  args=(plan, heap_objects, datasets, freeze, results))
+        process.start()
+        report = results.get(timeout=3600)
+        process.join()
+        if process.exitcode != 0:
+            raise SystemExit(f"rank exited {process.exitcode}")
+        print(json.dumps(report), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--megabytes", type=int, default=850)
     parser.add_argument("--rows", type=int, default=4126)
     parser.add_argument("--batches", type=int, default=6)
     parser.add_argument("--worlds", default="1,2")
+    parser.add_argument("--gc-datasets", type=int, default=0)
+    parser.add_argument("--gc-heap", type=int, default=6_000_000)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rl-stage-bench-") as directory:
         began = time.perf_counter()
         plan = write_handoff(build_batch(args.megabytes, args.rows, 4, 2), Path(directory))
         print(json.dumps({"file_bytes": plan["used_bytes"], "tree_pickle_bytes": len(plan["tree"]),
                           "build_seconds": round(time.perf_counter() - began, 1)}), flush=True)
+        if args.gc_datasets:
+            gc_main(plan, args.gc_heap, args.gc_datasets)
+            return
         for world in (int(w) for w in args.worlds.split(",")):
             for name, config in CONFIGS.items():
                 report = run(plan, world, config, args.batches)
