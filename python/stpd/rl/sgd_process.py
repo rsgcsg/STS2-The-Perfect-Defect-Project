@@ -56,7 +56,7 @@ OPTION_KEYS = frozenset((
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
     "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split", "sgd_verify_threads",
-    "sgd_switch_interval_seconds",
+    "sgd_switch_interval_seconds", "sgd_stage_after_first_step", "sgd_step_probe",
 ))
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
@@ -123,12 +123,19 @@ class SgdOptions:
     # `sys.setswitchinterval` in every SGD rank (None = Python's default, 5 ms):
     # the stepping thread gets the GIL back sooner from the stage thread.
     switch_interval: float | None = None
+    # The stage thread starts the next dataset's staging only once the running
+    # dataset's first step is done (or none runs): it no longer overlaps that step.
+    stage_after_first_step: bool = False
+    # Per step: Python GC time/collections and CUDA allocator deltas in `sgd_timing`.
+    step_probe: bool = False
 
     def stage_init(self) -> dict[str, Any]:
         """The SGD child's staging options (part of its init message)."""
         return {"stream_reuse": self.stage_stream_reuse, "lean_tree": self.stage_lean_tree,
                 "verify_split": self.verify_split, "verify_threads": self.verify_threads,
-                "switch_interval": self.switch_interval}
+                "switch_interval": self.switch_interval,
+                "after_first_step": self.stage_after_first_step,
+                "step_probe": self.step_probe}
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -215,7 +222,8 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
     if type(prestart) is not bool:
         raise ValueError("invalid_sgd_prestart")
     flags = {}
-    for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split"):
+    for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
+                "sgd_stage_after_first_step", "sgd_step_probe"):
         flags[key] = dataplane.get(key, False)
         if type(flags[key]) is not bool:
             raise ValueError("invalid_" + key)
@@ -245,6 +253,8 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         verify_split=flags["sgd_verify_split"],
         verify_threads=verify_threads,
         switch_interval=float(switch) if switch is not None else None,
+        stage_after_first_step=flags["sgd_stage_after_first_step"],
+        step_probe=flags["sgd_step_probe"],
     )
 
 
@@ -423,6 +433,8 @@ class _StageConfig:
     verify_split: bool = False
     verify_threads: int = VERIFY_THREADS
     switch_interval: float | None = None
+    after_first_step: bool = False
+    step_probe: bool = False
 
     @classmethod
     def from_init(cls, value: Any) -> _StageConfig:
@@ -430,7 +442,7 @@ class _StageConfig:
             return cls()
         if not isinstance(value, dict) or set(value) != {
                 "stream_reuse", "lean_tree", "verify_split", "verify_threads",
-                "switch_interval"}:
+                "switch_interval", "after_first_step", "step_probe"}:
             raise _ChildViolation("sgd_stage_options_changed")
         return cls(**value)
 
@@ -466,6 +478,62 @@ class _Digest(threading.Thread):
         finally:
             self.view.release()
             self.seconds = time.perf_counter() - began
+
+
+# --- stall evidence ----------------------------------------------------------
+
+STACKS_PREFIX = "stacks-"
+STACKS_TAIL_BYTES = 16384
+_stack_file: Any = None
+
+
+def _register_stacks(root: Path, label: str, *, clean: bool = False) -> None:
+    """SIGUSR1 writes every thread's stack of this process (faulthandler, no GIL
+    needed) to `root/stacks-<label>-<pid>.txt`; the file names the signalable pids."""
+    global _stack_file
+    if not hasattr(signal, "SIGUSR1"):
+        return
+    import faulthandler
+
+    if clean:  # rank 0, before any follower exists: no stale pid is ever signalled
+        for old in root.glob(STACKS_PREFIX + "*.txt"):
+            with suppress(OSError):
+                old.unlink()
+    _stack_file = open(root / f"{STACKS_PREFIX}{label}-{os.getpid()}.txt", "w")  # noqa: SIM115
+    faulthandler.register(signal.SIGUSR1, file=_stack_file, all_threads=True)
+
+
+def _stack_pids(root: Path) -> list[int]:
+    pids = []
+    for path in root.glob(STACKS_PREFIX + "*.txt"):
+        with suppress(ValueError):
+            pids.append(int(path.stem.rsplit("-", 1)[1]))
+    return pids
+
+
+def collect_stacks(root: Path, *, own: bool = False, wait: float = 1.0) -> dict[str, str]:
+    """Signal every registered SGD process (child and follower ranks) to dump its
+    thread stacks, then return each file's tail. Evidence only: never raises."""
+    stacks: dict[str, str] = {}
+    try:
+        if own and _stack_file is not None:
+            import faulthandler
+
+            faulthandler.dump_traceback(file=_stack_file, all_threads=True)
+        for pid in _stack_pids(root):
+            if pid != os.getpid():
+                with suppress(OSError):
+                    os.kill(pid, signal.SIGUSR1)
+        deadline = time.monotonic() + wait
+        paths = sorted(root.glob(STACKS_PREFIX + "*.txt"))
+        while time.monotonic() < deadline and any(p.stat().st_size == 0 for p in paths):
+            time.sleep(0.05)
+        for path in paths:
+            data = path.read_bytes()[-STACKS_TAIL_BYTES:]
+            stacks[path.stem] = data.decode("utf-8", "replace")
+    except Exception as error:  # the failure itself is reported regardless
+        stacks["error"] = type(error).__name__
+    return stacks
 
 
 # --- controller handle -----------------------------------------------------
@@ -625,9 +693,11 @@ class SgdProcess:
                     self.process.join(1)
                     raise self._fail("sgd_process_exited", waited_for=kind) from None
                 if remaining <= 0:
+                    # Before the kill: every SGD process's thread stacks right now.
                     raise self._fail("sgd_process_stalled", waited_for=kind,
                                      waited_seconds=time.monotonic() - began,
-                                     timeout_seconds=timeout) from None
+                                     timeout_seconds=timeout,
+                                     stacks=collect_stacks(self.root)) from None
                 continue
             if message is None:
                 self.process.join(5)
@@ -802,6 +872,8 @@ def _child_main(connection: Any, parent: int) -> None:
     parallel = None
     try:
         message = connection.recv()
+        if isinstance(message, dict) and isinstance(message.get("root"), str):
+            _register_stacks(Path(message["root"]), "rank0", clean=True)
         parallel_init = message.get("data_parallel") if isinstance(message, dict) else None
         if parallel_init is not None:
             parallel = _DataParallel.leader(message, send, state, followers)
@@ -821,6 +893,8 @@ def _child_main(connection: Any, parent: int) -> None:
         facts: dict[str, Any] = {"stage": state["stage"], "error_type": type(error).__name__,
                                  "error_code": getattr(error, "code", None),
                                  "diagnostic": exception_facts(error)}
+        if followers and worker is not None:  # e.g. a collective timeout: every rank's stacks
+            facts["stacks"] = collect_stacks(worker.root, own=True)
         if worker is not None:
             facts.update(updates=worker.updates, datasets=worker.datasets)
             try:
@@ -846,6 +920,7 @@ class _Follower:
     def __init__(self, context: Any, init: dict[str, Any], rank: int, send: Any,
                  state: dict[str, Any], on_staged: Any) -> None:
         self.rank, self.send, self.state, self.on_staged = rank, send, state, on_staged
+        self.root = init["root"]
         self.connection, child = context.Pipe(duplex=True)
         self.process = context.Process(target=_follower_main,
                                        args=(child, init, rank, os.getpid()),
@@ -880,7 +955,8 @@ class _Follower:
             self.send("failed", stage="data_parallel_rank", error_type=facts.get(
                 "error_type", "DataParallelRankExited"), error_code=facts.get("error_code"),
                 rank=self.rank, exitcode=self.process.exitcode,
-                diagnostic=facts.get("diagnostic"))
+                diagnostic=facts.get("diagnostic"),
+                stacks=collect_stacks(Path(self.root), own=True))
         self.state["closing"] = True
         os._exit(1)
 
@@ -1053,6 +1129,7 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
     worker = None
     parallel = None
     try:
+        _register_stacks(Path(init["root"]), f"rank{rank}")
         parallel = _DataParallel(init, rank)
         threading.Thread(target=receive, name="rl-sgd-follower-receiver", daemon=True).start()
         def answer(kind: str, **fields: Any) -> None:
@@ -1132,6 +1209,47 @@ def _child_next(inbox: queue.Queue[Any], state: dict[str, Any], *, block: bool) 
     if message["kind"] == "shutdown":
         raise _Shutdown
     return message
+
+
+class _StepProbe:
+    """`sgd_step_probe`: what else happened inside one step's wall time."""
+
+    ALLOCATOR = ("num_alloc_retries", "num_device_alloc", "num_device_free",
+                 "num_sync_all_streams", "num_ooms")
+
+    def __init__(self, torch: Any, cuda: bool) -> None:
+        self.torch, self.cuda = torch, cuda
+        self.gc_seconds, self.collections = 0.0, [0, 0, 0]
+        self.started: float | None = None
+        self.before: dict[str, int] = {}
+        gc.callbacks.append(self._gc)
+
+    def _gc(self, phase: str, info: dict[str, Any]) -> None:
+        if phase == "start":
+            self.started = time.perf_counter()
+        elif self.started is not None:
+            self.gc_seconds += time.perf_counter() - self.started
+            self.collections[info["generation"]] += 1
+            self.started = None
+
+    def _allocator(self) -> dict[str, int]:
+        if not self.cuda:
+            return {}
+        stats = self.torch.cuda.memory_stats()
+        return {key: int(stats.get(key, 0)) for key in self.ALLOCATOR}
+
+    def begin(self) -> None:
+        self.gc_seconds, self.collections = 0.0, [0, 0, 0]
+        self.before = self._allocator()
+
+    def end(self) -> dict[str, Any]:
+        after = self._allocator()
+        return {"gc_seconds": self.gc_seconds, "gc_collections": list(self.collections),
+                "allocator": {key: after[key] - self.before.get(key, 0) for key in after}}
+
+    def close(self) -> None:
+        with suppress(ValueError):
+            gc.callbacks.remove(self._gc)
 
 
 class _SgdWorker:
@@ -1217,6 +1335,9 @@ class _SgdWorker:
         self.staging_config = _StageConfig.from_init(init.get("stage_options"))
         if self.staging_config.switch_interval is not None:
             sys.setswitchinterval(self.staging_config.switch_interval)
+        # `after_first_step`: steps done in the running dataset (None = none runs).
+        self.step_gate = threading.Condition()
+        self.dataset_steps: int | None = None
         self.copy_stream: Any = None  # `stream_reuse`: created on first use
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
@@ -1396,7 +1517,15 @@ class _SgdWorker:
     def _stage_and_deliver(self, plan: dict[str, Any]) -> None:
         """Stage thread: stage, then deliver at once; a failure fails the child."""
         try:
-            self._staged_done(plan, *self._stage_work(plan))
+            gated = time.perf_counter()
+            if self.staging_config.after_first_step:
+                with self.step_gate:
+                    self.step_gate.wait_for(
+                        lambda: self.dataset_steps is None or self.dataset_steps >= 1)
+            gate_seconds = time.perf_counter() - gated
+            device_batch, fields = self._stage_work(plan)
+            fields["gate_seconds"] = gate_seconds
+            self._staged_done(plan, device_batch, fields)
         except BaseException as error:
             if self.wake is not None:
                 self.wake(_Raise(error, "stage_wait"))
@@ -1564,6 +1693,8 @@ class _SgdWorker:
         boundary = (time.perf_counter() - self.last_step_end
                     if self.last_step_end is not None else None)
         cuda = self.device.type == "cuda"
+        self._steps_done(0)
+        probe = _StepProbe(torch, cuda) if self.staging_config.step_probe else None
         while True:
             inbox_began = time.perf_counter()
             while (message := next_message(False)) is not None:
@@ -1591,6 +1722,8 @@ class _SgdWorker:
                 self.state["stage"] = "offline_dump"
                 dumped = self.dump_offline_step(batch, device_batch, dataset, minibatch, epoch)
             self.state["stage"] = "update"
+            if probe is not None:
+                probe.begin()
             step_began = time.perf_counter()
             observed_at = time.time()
             if cuda:
@@ -1621,6 +1754,8 @@ class _SgdWorker:
                 cuda_seconds = events[0].elapsed_time(events[1]) / 1000
             end = time.perf_counter()
             self.last_step_end = end
+            probed = probe.end() if probe is not None else None
+            self._steps_done(minibatch + 1 + epoch * len(device_batch.minibatches))
             groups = self.optimizer.param_groups
             self.send("step", dataset=dataset, minibatch=minibatch, epoch=epoch,
                       update=self.updates, stepped=result["stepped"],
@@ -1636,7 +1771,8 @@ class _SgdWorker:
                               **({"replica_check_seconds": self.replica_seconds}
                                  if minibatch == epoch == 0
                                  and self.replica_seconds is not None else {}),
-                              **({"offline_dump": dumped} if dumped is not None else {})})
+                              **({"offline_dump": dumped} if dumped is not None else {}),
+                              **({"probe": probed} if probed is not None else {})})
             minibatch += 1
             end_epoch = minibatch == len(device_batch.minibatches)
             finished = result["kl_stopped"] or (end_epoch and epoch + 1 >= epochs)
@@ -1644,6 +1780,9 @@ class _SgdWorker:
                 epoch, minibatch = epoch + 1, 0
             if finished:
                 break
+        if probe is not None:
+            probe.close()
+        self._steps_done(None)
         del device_batch, batch
         self.datasets += 1
         if self.parallel is not None:
@@ -1657,6 +1796,11 @@ class _SgdWorker:
         if self.updates > start_updates and self.rank == 0:
             self.snapshot()
         self.idle_since = time.perf_counter()
+
+    def _steps_done(self, steps: int | None) -> None:
+        with self.step_gate:
+            self.dataset_steps = steps
+            self.step_gate.notify_all()
 
     def gather_step(self, result: dict[str, Any], diagnostics: bool) -> dict[str, Any]:
         """Rank 0 gets every rank's per-row policy facts (in group order) and timing."""

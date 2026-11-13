@@ -3,11 +3,13 @@ child switch interval. Every option is opt-in; defaults keep the earlier path.""
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import mmap
 import os
 import pickle
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -35,7 +37,8 @@ from stpd.rl.sgd_process import (
 
 FAST = {"sgd_stage_stream_reuse": True, "sgd_stage_lean_tree": True,
         "sgd_verify_split": True, "sgd_verify_threads": 2,
-        "sgd_switch_interval_seconds": 0.0005}
+        "sgd_switch_interval_seconds": 0.0005, "sgd_stage_after_first_step": True,
+        "sgd_step_probe": True}
 
 
 def test_stage_options_are_explicit_and_default_to_the_earlier_path():
@@ -43,17 +46,20 @@ def test_stage_options_are_explicit_and_default_to_the_earlier_path():
     options = sgd_options(base)
     assert options.stage_init() == {"stream_reuse": False, "lean_tree": False,
                                     "verify_split": False, "verify_threads": 4,
-                                    "switch_interval": None}
+                                    "switch_interval": None, "after_first_step": False,
+                                    "step_probe": False}
     assert _StageConfig.from_init(options.stage_init()) == _StageConfig()
     chosen = sgd_options({**base, **FAST})
     assert chosen.stage_init() == {"stream_reuse": True, "lean_tree": True,
                                    "verify_split": True, "verify_threads": 2,
-                                   "switch_interval": 0.0005}
+                                   "switch_interval": 0.0005, "after_first_step": True,
+                                   "step_probe": True}
     for key, bad in (("sgd_stage_stream_reuse", 1), ("sgd_stage_lean_tree", "yes"),
                      ("sgd_verify_split", None), ("sgd_verify_threads", 0),
                      ("sgd_verify_threads", 2.0), ("sgd_verify_threads", True),
                      ("sgd_switch_interval_seconds", 0), ("sgd_switch_interval_seconds", "1"),
-                     ("sgd_switch_interval_seconds", float("nan"))):
+                     ("sgd_switch_interval_seconds", float("nan")),
+                     ("sgd_stage_after_first_step", 1), ("sgd_step_probe", "on")):
         with pytest.raises(ValueError, match="invalid_" + key):
             sgd_options({**base, key: bad})
     with pytest.raises(ValueError, match="without_explicit_selection"):
@@ -271,6 +277,12 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
     for name, left in one.weights.items():
         close_tree(left, two.weights[name])
     assert timing["sgd_stage_verify_seconds"] > 0 and timing["sgd_stage_pin_seconds"] > 0
+    assert timing["sgd_stage_gate_seconds"] >= 0
+    assert all("probe" not in e["sgd_timing"] for e in one_events)
+    for event in two_events:  # `sgd_step_probe`: GC and allocator facts of every step
+        probe = event["sgd_timing"]["probe"]
+        assert probe["gc_seconds"] >= 0 and len(probe["gc_collections"]) == 3
+        assert probe["allocator"] == {}  # CPU: no CUDA allocator
 
 
 @pytest.mark.parametrize("split", [False, True])
@@ -299,11 +311,47 @@ def test_stage_batch_and_pinned_slabs_accept_a_fixed_stream_on_cpu():
     assert bp.stage_batch(batch, torch.device("cpu"), stream=None, lean=True) == (batch, 0)
 
 
+def _deterministic_prestart(monkeypatch):
+    """Prestart fires only if N+1 is already staged when N's next answer is awaited:
+    a race on a slow runner. Before each prestart check, wait for N+1's preparation
+    and its `staged` answer (earlier answers are kept, in order, for `expect`)."""
+    from collections import deque
+
+    from stpd.rl.segment_learner import SegmentLearner
+
+    original = SegmentLearner._sgd_prestart
+
+    def prestart(self):
+        sgd = self.sgd
+        if (sgd is not None and sgd.options.prestart and self.active_batch is not None
+                and self.next_active is None and self.pending_batch is not None
+                and not self.checkpoint_requested):
+            self.pending_batch[1].result(timeout=120)
+            self._sgd_plan_ahead()
+            sequence = self.pending_batch[1].result().request.identity.sequence
+            if sequence in sgd.planned and sequence not in sgd.staged:
+                held = sgd.__dict__.setdefault("_held", deque())
+                get = type(sgd)._get.__get__(sgd)
+                if "_get" not in sgd.__dict__:
+                    sgd._get = lambda *a, **k: held.popleft() if held else get(*a, **k)
+                deadline = time.monotonic() + 120
+                while sequence not in sgd.staged:
+                    message = get(deadline, "staged", 120)
+                    if message["kind"] == "staged":
+                        sgd._staged(message)
+                    else:
+                        held.append(message)
+        return original(self)
+
+    monkeypatch.setattr(SegmentLearner, "_sgd_prestart", prestart)
+
+
 def test_prestart_with_every_stage_option_still_equals_lockstep(tmp_path, monkeypatch):
     """Single rank: the options change only staging, so prestart stays bitwise equal
     to lockstep, including a mid-run CP."""
     from test_rl_sgd_prestart import assert_same, run
 
+    _deterministic_prestart(monkeypatch)
     lockstep = run(tmp_path / "lockstep", monkeypatch, prestart=False, dataplane=FAST,
                    checkpoint_at=2)
     prestart = run(tmp_path / "prestart", monkeypatch, prestart=True, dataplane=FAST,
@@ -317,6 +365,7 @@ def test_prestart_with_every_stage_option_still_equals_lockstep(tmp_path, monkey
 def test_prestart_two_ranks_with_every_stage_option_match_lockstep(tmp_path, monkeypatch):
     from test_rl_sgd_prestart import assert_same, run
 
+    _deterministic_prestart(monkeypatch)
     lockstep = run(tmp_path / "lockstep", monkeypatch, prestart=False,
                    dataplane={**PARALLEL, **FAST})
     prestart = run(tmp_path / "prestart", monkeypatch, prestart=True,
@@ -324,3 +373,65 @@ def test_prestart_two_ranks_with_every_stage_option_match_lockstep(tmp_path, mon
     assert prestart["prestarted"] >= 1
     assert_same(lockstep, prestart, exact=False)
     assert prestart["owner"].sgd.exit["exitcode"] == 0
+
+
+def test_a_stall_records_every_SGD_process_thread_stacks(tmp_path, monkeypatch):
+    """A follower that stops answering hangs rank 0 in the gradient all-reduce; the
+    controller's stall record carries rank 0's live thread stacks (the stopped
+    follower dumps once it is continued), then the child is killed as before."""
+    import signal
+
+    from stpd.rl.sgd_process import STACKS_PREFIX, SgdProcessFailed
+
+    if not hasattr(signal, "SIGUSR1"):
+        pytest.skip("no SIGUSR1")
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=2, dataplane={
+        **PARALLEL, "sgd_stall_seconds": 3})
+    follower = None
+    try:
+        assert owner._prepare()
+        owner._step()
+        files = {p.stem.split("-")[1]: int(p.stem.rsplit("-", 1)[1])
+                 for p in owner.sgd.root.glob(STACKS_PREFIX + "*.txt")}
+        assert set(files) == {"rank0", "rank1"} and files["rank0"] == owner.sgd.pid
+        follower = files["rank1"]
+        os.kill(follower, signal.SIGSTOP)
+        with pytest.raises(SgdProcessFailed) as raised:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:  # whichever step needs rank 1 first
+                if owner.active is None:
+                    assert owner._prepare()
+                owner._step()
+        facts = raised.value.facts
+        assert facts["code"] == "sgd_process_stalled"
+        rank0 = facts["stacks"][f"{STACKS_PREFIX}rank0-{files['rank0']}"]
+        assert "run_dataset" in rank0 and "Thread" in rank0, rank0
+    finally:
+        if follower is not None:
+            with contextlib.suppress(OSError):
+                os.kill(follower, signal.SIGKILL)
+        owner.close()
+
+
+def test_after_first_step_holds_staging_until_the_running_dataset_stepped_once():
+    from stpd.rl.sgd_process import _SgdWorker
+
+    worker = _SgdWorker.__new__(_SgdWorker)
+    worker.staging_config = _StageConfig(after_first_step=True)
+    worker.step_gate, worker.dataset_steps = threading.Condition(), None
+    order: list = []
+    worker._stage_work = lambda plan: (order.append(("stage", worker.dataset_steps)),
+                                       ("batch", {}))[1]
+    worker._staged_done = lambda plan, batch, fields: order.append(("done", fields))
+    worker.wake = None
+    worker._steps_done(0)  # a dataset started, no step yet
+    thread = threading.Thread(target=worker._stage_and_deliver, args=({"dataset": 2},))
+    thread.start()
+    thread.join(0.3)
+    assert thread.is_alive() and order == []
+    worker._steps_done(1)
+    thread.join(5)
+    assert order[0] == ("stage", 1) and order[1][1]["gate_seconds"] >= 0.25
+    worker._steps_done(None)  # idle: no wait at all
+    worker._stage_and_deliver({"dataset": 3})
+    assert order[2] == ("stage", None)
