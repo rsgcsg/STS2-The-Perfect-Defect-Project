@@ -875,6 +875,10 @@ class SegmentLearner:
                     gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
+                    # capacity_dropped = capacity_evicted (an older queued segment
+                    # made room) + capacity_refused (no room: the new one dropped).
+                    "capacity_evicted", "capacity_evicted_rows",
+                    "capacity_refused", "capacity_refused_rows",
                     "excluded_instances", "excluded_dropped_rows", "excluded_used_rows",
                     "excluded_trained_rows", "excluded_prefetched_rows",
                     "excluded_admit_raced", "excluded_admit_raced_rows",
@@ -2117,8 +2121,21 @@ class SegmentLearner:
         with self.condition:
             if decision.exclude_instance is not None:
                 self._fast_exclude(decision.exclude_instance)
-            for segment, envelope in decision.admit:
-                self._fast_admit(segment, envelope)
+            # One wake-up per decision, not per segment: every admission and
+            # capacity eviction below runs under this one condition hold, so no
+            # waiter can run (or start waiting) in between; the single
+            # `notify_all` after them wakes exactly the waiters each per-segment
+            # notify would have. `finally`: an admission that raises after an
+            # earlier one changed the queue still wakes them, as before.
+            changed: list[str] = []
+            try:
+                for segment, envelope in decision.admit:
+                    self._fast_admit(segment, envelope, changed)
+            finally:
+                if changed:
+                    self.condition.notify_all()
+                if "admitted" in changed:
+                    self.source_prefetch_changed.set()
             if auxiliary:
                 self._add_auxiliary(auxiliary)
 
@@ -2149,7 +2166,12 @@ class SegmentLearner:
             result.append((kind, identity, values))
         return result
 
-    def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any]) -> None:
+    def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any],
+                    changed: list[str]) -> None:
+        """Admit one segment under `condition`. Each queue change is appended to
+        `changed` as it happens ("evicted", "admitted"); the caller
+        (`_fast_apply`) notifies the condition (and, after an admission, the
+        source prefetch) once for its whole decision, even if this raises."""
         assert self.fast_sources is not None
         if self.newlease_stopped or self.input_fenced:
             self.training_discarded_rows += segment.rows
@@ -2179,11 +2201,15 @@ class SegmentLearner:
                 victims.add(record["segment_id"])
                 overflow -= record["rows"]
         if overflow > 0:
-            self.fast_counters["capacity_dropped"] += 1
-            self.fast_counters["capacity_dropped_rows"] += segment.rows
+            for counter in ("capacity_dropped", "capacity_refused"):
+                self.fast_counters[counter] += 1
+                self.fast_counters[counter + "_rows"] += segment.rows
             return
-        for record in self.queue.discard(victims):
-            self._fast_forget(record, counter="capacity_dropped")
+        evicted = self.queue.discard(victims, notify=False)
+        if evicted:
+            changed.append("evicted")
+        for record in evicted:
+            self._fast_forget(record, counters=("capacity_dropped", "capacity_evicted"))
         ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
                         f"{segment.segment_id}", envelope["packet_sha256"],
                         envelope["packet_size"])
@@ -2196,20 +2222,21 @@ class SegmentLearner:
                   "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
                   "episode": envelope["episode"], "actor": envelope["actor"],
                   "envelope": envelope}
-        self.queue.admit(record)
+        self.queue.admit(record, notify=False)
+        changed.append("admitted")
         self.fast_admitted_rows[envelope["run_id"]] = (
             self.fast_admitted_rows.pop(envelope["run_id"], 0) + envelope["rows"])
         while len(self.fast_admitted_rows) > 65536:
             self.fast_admitted_rows.popitem(last=False)
         self.fast_counters["admitted"] += 1
         self.fast_counters["admitted_rows"] += envelope["rows"]
-        self.source_prefetch_changed.set()
 
-    def _fast_forget(self, record: dict[str, Any], *, counter: str) -> None:
+    def _fast_forget(self, record: dict[str, Any], *, counters: tuple[str, ...]) -> None:
         payload = self._member(record).payload
         self._release(payload, "ppo:" + record["segment_id"])
-        self.fast_counters[counter] += 1
-        self.fast_counters[counter + "_rows"] += record["rows"]
+        for counter in counters:
+            self.fast_counters[counter] += 1
+            self.fast_counters[counter + "_rows"] += record["rows"]
         if record["run_id"] in self.fast_admitted_rows:
             self.fast_admitted_rows[record["run_id"]] -= record["rows"]
 
@@ -2452,6 +2479,13 @@ class SegmentLearner:
         its preparation window is a FIFO prefix. This only reads that prefix;
         it never freezes a request, samples auxiliary rows or advances RNG.
         """
+        # This thread's own `_member` results for the window it read last time,
+        # keyed by record object (kept alive here, so its id is never reused).
+        # A queued record is never mutated (built, appended, then only read,
+        # taken or discarded), so its member is a fixed function of the object:
+        # one wake (one per admission decision) no longer rebuilds every
+        # BinaryRef/BatchMember of the window under the learner condition.
+        members: dict[int, tuple[dict[str, Any], BatchMember]] = {}
         while True:
             self.source_prefetch_changed.wait()
             self.source_prefetch_changed.clear()
@@ -2468,14 +2502,20 @@ class SegmentLearner:
                     if self.newlease_stopped or self.input_fenced:
                         continue
                     rows = 0
+                    window: dict[int, tuple[dict[str, Any], BatchMember]] = {}
                     for record in self.queue.pending:
-                        member = self._member(record)
+                        known = members.get(id(record))
+                        if known is None or known[0] is not record:
+                            known = record, self._member(record)
+                        window[id(record)] = known
+                        member = known[1]
                         if member.payload not in cached:
                             self._retain(member.payload, "source-prefetch")
                             held.append(member)
                         rows += member.rows
                         if rows >= (self.prepared_batches + 1) * self.settings.dataset_rows:
                             break
+                    members = window
                 # Provider borrow, hashing, arena copy and worker submission
                 # hold neither the learner condition nor a socket handler.
                 # Short chunks: two preparer lock holds per chunk, not per

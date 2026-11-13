@@ -1,10 +1,14 @@
 """WP8: SegmentLearner consumes fast_chain segments (admission, exclusion, capacity, switch)."""
 from __future__ import annotations
 
+import collections
 import dataclasses
 import multiprocessing
+import random
+import threading
 import time
-from typing import Any
+import types
+from typing import Any, cast
 
 import pytest
 from test_rl41_w1 import configuration
@@ -14,7 +18,7 @@ from spireagent.json_boundary import BoundaryError
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.rl.fast_assembly import MuHandoff
 from stpd.rl.fast_segment import FORMAT, FORMAT_2
-from stpd.rl.fast_source import FAST_FORMAT
+from stpd.rl.fast_source import FAST_FORMAT, FastSegment, IntakeDecision
 from stpd.rl.segment_learner import SegmentLearner
 
 
@@ -167,6 +171,7 @@ def test_full_queue_drops_the_oldest_unprepared_segment_counted(tmp_path, monkey
         assert queued(owner) == first[1:]
         counters = owner.fast_status()["fast_chain"]["learner"]
         assert counters["capacity_dropped"] == 1 and counters["capacity_dropped_rows"] == 64
+        assert counters["capacity_evicted"] == 1 and counters["capacity_refused"] == 0
         assert owner.queue.occupied == capacity
         assert eventually(lambda: owner.fast_status()["fast_chain"]["fast_source_segments"]
                           == capacity // 64)
@@ -297,7 +302,6 @@ def test_a_full_queue_admission_never_drops_a_read_ahead_selection_in_flight(
     """h100c 11-12: a read-ahead selection (take=False) stays queued; an admission
     that overflowed the queue between the selection and its retain dropped it and
     released its bytes, and the learner died with fast_source_already_released."""
-    import threading
 
     owner = fast_learner(tmp_path, monkeypatch)
     try:
@@ -330,6 +334,7 @@ def test_a_full_queue_admission_never_drops_a_read_ahead_selection_in_flight(
         assert selected in queued(owner) and late.segment_id in queued(owner)
         counters = owner.fast_status()["fast_chain"]["learner"]
         assert counters["capacity_dropped"] == 1 and counters["capacity_dropped_rows"] == 64
+        assert counters["capacity_evicted"] == 1 and counters["capacity_refused"] == 0
     finally:
         owner.close()
 
@@ -446,6 +451,7 @@ def test_capacity_drop_never_takes_an_old_chain_segment(tmp_path, monkeypatch):
         assert queued(owner) == ["old-chain-1", *fast[1:]]
         counters = owner.fast_status()["fast_chain"]["learner"]
         assert counters["capacity_dropped"] == 1 and counters["capacity_dropped_rows"] == 64
+        assert counters["capacity_evicted"] == 1 and counters["capacity_refused"] == 0
         assert not owner.input_fenced
     finally:
         with owner.queue.condition:
@@ -467,3 +473,205 @@ def test_a_bad_buffered_segment_released_by_an_attest_fences_input(tmp_path, mon
         assert owner.input_failure["operation"] == "fast_control"
     finally:
         owner.close()
+
+
+# --- Capacity admission against the pre-change algorithm (int 9a3925aa) -------
+
+def _old_capacity_admit(pending: list[dict[str, Any]], referenced: set[str],
+                        excluded: set[str], capacity: int, new: dict[str, Any],
+                        counters: collections.Counter[str]) -> list[dict[str, Any]]:
+    """Reference: `_fast_admit`'s selection as it was before the counter split."""
+    if new["run_id"] in excluded:
+        counters["raced"] += 1
+        return pending
+    overflow = sum(r["rows"] for r in pending) + new["rows"] - capacity
+    victims: set[str] = set()
+    for record in pending:
+        if overflow <= 0:
+            break
+        if record.get("fast") and record["segment_id"] not in referenced:
+            victims.add(record["segment_id"])
+            overflow -= record["rows"]
+    if overflow > 0:
+        counters["dropped"] += 1
+        counters["dropped_rows"] += new["rows"]
+        counters["refused"] += 1
+        return pending
+    kept = []
+    for record in pending:
+        if record["segment_id"] in victims:
+            counters["dropped"] += 1
+            counters["dropped_rows"] += record["rows"]
+            counters["evicted"] += 1
+        else:
+            kept.append(record)
+    return [*kept, {"segment_id": new["segment_id"], "fast": True, "rows": new["rows"],
+                    "run_id": new["run_id"]}]
+
+
+class _CountingCondition(threading.Condition):
+    def __init__(self) -> None:
+        super().__init__(threading.RLock())
+        self.notified = 0
+
+    def notify_all(self) -> None:
+        self.notified += 1
+        super().notify_all()
+
+
+def _stub_owner(capacity: int, excluded: set[str]) -> SegmentLearner:
+    """Only what `_fast_apply` / `_fast_admit` touch on the admission path."""
+    from stpd.rl.segments import SegmentQueue
+
+    owner = SegmentLearner.__new__(SegmentLearner)
+    owner.queue = SegmentQueue(cast(Any, types.SimpleNamespace(
+        steps=64, capacity_rows=capacity, episode_rows=10**9, dataset_rows=64)))
+    owner.condition = owner.queue.condition = _CountingCondition()
+    owner.settings = cast(Any, types.SimpleNamespace(capacity_rows=capacity))
+    owner.config = cast(Any, types.SimpleNamespace(run="run"))
+    owner.generation = "gen"
+    owner.compiler_identity = {"compiler": 1}
+    owner.newlease_stopped = owner.input_fenced = False
+    owner.training_discarded_rows = 0
+    owner.fast_intake = cast(Any, types.SimpleNamespace(excluded=lambda run: run in excluded))
+    owner.fast_sources = cast(Any, types.SimpleNamespace(put=lambda *args: None))
+    owner.hot_references = {}
+    owner.fast_counters = collections.defaultdict(int)
+    owner.fast_admitted_rows = collections.OrderedDict()
+    released: list[str] = []
+    owner._release = lambda payload, who: released.append(who)  # type: ignore[method-assign]
+    cast(Any, owner).released = released
+    owner.pending_batch = None
+    owner.ahead_batches = collections.deque()
+    owner.source_prefetch_changed = threading.Event()
+    return owner
+
+
+def _stub_segment(sid: str, run: str, rows: int, *, compiler: Any = None
+                  ) -> tuple[FastSegment, dict[str, Any]]:
+    header = {"segment_id": sid, "game_instance_id": run, "rows": [{}] * rows}
+    envelope = {"compiler_identity": compiler or {"compiler": 1}, "run_id": run,
+                "rows": rows, "packet_sha256": "ab" * 32, "packet_size": 100,
+                "mu": {"snapshot_sha256": "cd" * 32}, "episode": "e-" + run,
+                "actor": "actor-1"}
+    return FastSegment({}, header, b"x"), envelope
+
+
+def _stub_queue(owner: SegmentLearner, records: list[dict[str, Any]]) -> None:
+    for record in records:
+        if record.get("fast"):
+            record["payload"] = {"format": FAST_FORMAT, "slot": "s/" + record["segment_id"],
+                                 "sha256": "ab" * 32, "size": 100}
+            record["mu"] = {"snapshot_sha256": "cd" * 32}
+            record["episode"] = "e"
+        owner.queue.pending.append(record)
+        owner.queue.rows += record["rows"]
+
+
+def test_capacity_admission_matches_the_pre_change_selection_record_by_record():
+    """Full-queue eviction, read-ahead selections at the head of the queue (held,
+    never evicted), old-chain records (never evicted) and an exclusion applied
+    between the admit decision and its use: queue, counters and releases match
+    the old algorithm in every random case; the split counters sum to the old one."""
+    rng = random.Random(20261113)
+    for case in range(400):
+        capacity = rng.choice((128, 256, 640))
+        records: list[dict[str, Any]] = []
+        while True:
+            rows = rng.randint(1, 64)
+            if sum(r["rows"] for r in records) + rows > capacity:
+                break
+            fast = rng.random() > 0.1
+            records.append({"segment_id": f"q{case}-{len(records)}", "rows": rows,
+                            "run_id": f"r{rng.randint(0, 5)}", **({"fast": True} if fast
+                            else {"actor": "a", "episode": "e"})})
+        # Read-ahead (take=False) selections come from the head of the queue.
+        head = rng.randint(0, len(records))
+        referenced = {r["segment_id"] for r in records[:head]
+                      if r.get("fast") and rng.random() > 0.1}
+        excluded = {f"r{i}" for i in range(6) if rng.random() < 0.15}
+        owner = _stub_owner(capacity, excluded)
+        _stub_queue(owner, [dict(r) for r in records])
+        if referenced:
+            owner.ahead_batches.append(({"segments": [
+                {"segment_id": sid} for sid in sorted(referenced)]}, cast(Any, None)))
+        admits = [_stub_segment(f"n{case}-{i}", f"r{rng.randint(0, 5)}", rng.randint(1, 64))
+                  for i in range(rng.randint(1, 3))]
+        expected = [dict(r) for r in records]
+        counters: collections.Counter[str] = collections.Counter()
+        for segment, envelope in admits:
+            expected = _old_capacity_admit(expected, referenced, excluded, capacity,
+                                           {"segment_id": segment.segment_id,
+                                            "run_id": envelope["run_id"],
+                                            "rows": segment.rows}, counters)
+        owner._fast_apply(IntakeDecision(admit=admits))
+        assert queued(owner) == [r["segment_id"] for r in expected], case
+        got = owner.fast_counters
+        assert got["capacity_dropped"] == counters["dropped"], case
+        assert got["capacity_dropped_rows"] == counters["dropped_rows"], case
+        assert got["capacity_evicted"] == counters["evicted"], case
+        assert got["capacity_refused"] == counters["refused"], case
+        assert got["capacity_dropped"] == got["capacity_evicted"] + got["capacity_refused"]
+        assert got["capacity_dropped_rows"] == (got["capacity_evicted_rows"]
+                                                + got["capacity_refused_rows"])
+        assert got["excluded_admit_raced"] == counters["raced"], case
+        assert len(cast(Any, owner).released) == counters["evicted"], case
+        assert not referenced & {r["segment_id"] for r in records
+                                 if r["segment_id"] not in queued(owner)}, case
+        assert owner.queue.rows == sum(r["rows"] for r in expected) <= capacity
+
+
+def test_one_decision_notifies_once_and_wakes_every_waiter():
+    owner = _stub_owner(256, set())
+    _stub_queue(owner, [{"segment_id": f"old{i}", "fast": True, "rows": 64,
+                         "run_id": "r0"} for i in range(4)])
+    condition = cast(_CountingCondition, owner.condition)
+    woke: list[bool] = []
+    ready = [0]
+
+    def wait_for_the_new_segments() -> None:
+        with condition:
+            ready[0] += 1
+            woke.append(condition.wait_for(
+                lambda: {"n1", "n2"} <= set(queued(owner)), timeout=10))
+
+    waiters = [threading.Thread(target=wait_for_the_new_segments) for _ in range(3)]
+    for waiter in waiters:
+        waiter.start()
+    deadline = time.monotonic() + 10
+    while True:  # holding the lock with ready == 3: all three are inside `wait_for`
+        with condition:
+            if ready[0] == 3:
+                break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    # Two evictions and two admissions in one decision: one notify_all.
+    applied = time.monotonic()
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("n1", "r1", 64),
+                                            _stub_segment("n2", "r1", 64)]))
+    for waiter in waiters:
+        waiter.join(10)
+    # Woken by the notify, not by their 10 s `wait_for` timeout.
+    assert time.monotonic() - applied < 5
+    assert woke == [True, True, True]
+    assert condition.notified == 1 and owner.source_prefetch_changed.is_set()
+    assert owner.fast_counters["capacity_evicted"] == 2
+    # A refused admission changes nothing: no wake-up, no prefetch hint.
+    owner.source_prefetch_changed.clear()
+    owner.ahead_batches.append(({"segments": [{"segment_id": s} for s in queued(owner)]},
+                                cast(Any, None)))
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("n3", "r1", 64)]))
+    assert condition.notified == 1 and not owner.source_prefetch_changed.is_set()
+    assert owner.fast_counters["capacity_refused"] == 1
+
+
+def test_an_admission_that_raises_after_a_queue_change_still_wakes_waiters():
+    owner = _stub_owner(128, set())
+    _stub_queue(owner, [{"segment_id": "old0", "fast": True, "rows": 64, "run_id": "r0"}])
+    condition = cast(_CountingCondition, owner.condition)
+    with pytest.raises(ValueError, match="fast_segment_compiler_identity_changed"):
+        owner._fast_apply(IntakeDecision(admit=[
+            _stub_segment("n1", "r1", 64),
+            _stub_segment("n2", "r1", 64, compiler={"compiler": 2})]))
+    assert queued(owner) == ["old0", "n1"]
+    assert condition.notified == 1 and owner.source_prefetch_changed.is_set()
