@@ -88,13 +88,17 @@ def newest_checkpoint(peer: dict[str, Any], run: str,
     return max(records, key=lambda r: r["published_at"]) if records else None
 
 
-def check_manifest(path: Path) -> None:
+def check_manifest(path: Path, suite: str | None = None, seeds: int = SEEDS) -> None:
+    """The frozen manifest is the named suite (default: the fixed A0 100) with enough seeds.
+
+    One suite per watcher; an A10 suite runs as its own watcher and is reported apart.
+    """
     from spireagent.workbench.reference_suite import load_manifest
     from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
 
     _, frozen = load_manifest(path, hashed(path))
-    if frozen["suite_id"] != RL3_LEARNING_CURVE_SUITE_ID or len(frozen["seeds"]) != 100:
-        raise ValueError("RL3_registered100_evaluation_manifest_required")
+    if frozen["suite_id"] != (suite or RL3_LEARNING_CURVE_SUITE_ID) or len(frozen["seeds"]) < seeds:
+        raise ValueError("named_frozen_evaluation_suite_manifest_required")
 
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
@@ -458,7 +462,8 @@ def main() -> None:
     parser.add_argument("--learner-config", type=Path, required=True)
     parser.add_argument("--execution", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True,
-                        help="evaluate.py prepare-manifest output (RL3 100 seeds)")
+                        help="evaluate.py prepare-manifest output of --suite")
+    parser.add_argument("--suite", help="frozen suite id (default: the fixed A0 100 seeds)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--training-generation")
     parser.add_argument("--interval", type=int, default=INTERVAL_SECONDS)
@@ -489,7 +494,7 @@ def main() -> None:
         parser.error("register a GAME-SLOT line first (working rule 5), then --slot-registered")
     if not 600 <= args.interval <= 86400 or not 1 <= args.max_live <= 4:
         parser.error("interval 600..86400 s, max-live 1..4")
-    check_manifest(args.manifest.resolve())
+    check_manifest(args.manifest.resolve(), args.suite, args.seeds)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     import contextlib
