@@ -171,10 +171,12 @@ class SegmentQueue:
             self.rows += size
             self.condition.notify_all()
 
-    def admit(self, segment: dict[str, Any]) -> None:
+    def admit(self, segment: dict[str, Any], *, notify: bool = True) -> None:
         """fast_chain only: a sealed segment that never had an actor lease.
 
         The caller has made room first (`discard`); capacity is never exceeded.
+        `notify=False`: the caller holds `condition` and notifies it itself
+        before releasing it.
         """
         with self.condition:
             size = segment.get("rows")
@@ -188,17 +190,21 @@ class SegmentQueue:
                 raise ValueError("fast_segment_admission_over_capacity")
             self.pending.append(copy.deepcopy(segment))
             self.rows += size
-            self.condition.notify_all()
+            if notify:
+                self.condition.notify_all()
 
-    def discard(self, segment_ids: set[str]) -> list[dict[str, Any]]:
-        """Remove these not-yet-taken segments; returns what was removed (never retried)."""
+    def discard(self, segment_ids: set[str], *, notify: bool = True) -> list[dict[str, Any]]:
+        """Remove these not-yet-taken segments; returns what was removed (never retried).
+
+        `notify=False`: as in `admit`."""
         with self.condition:
             removed = [s for s in self.pending if s["segment_id"] in segment_ids]
             if removed:
                 self.pending = collections.deque(
                     s for s in self.pending if s["segment_id"] not in segment_ids)
                 self.rows -= sum(s["rows"] for s in removed)
-                self.condition.notify_all()
+                if notify:
+                    self.condition.notify_all()
             return removed
 
     def release(self, lease: str) -> None:
