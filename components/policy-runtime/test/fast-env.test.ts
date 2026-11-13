@@ -327,7 +327,8 @@ describe("fast-env K-game process", () => {
       public_facts: { act: 1, floor: 4, hp: 0, max_hp: 75 } });
     const gid = opened.game_instance_id;
     expect(h.linkMessages[0]).toMatchObject({ type: "hello", env_process_id: "env-test", slots: 1 });
-    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", start: { kind: "new_run" }, sampling: SAMPLING });
+    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", start: { kind: "new_run" }, sampling: SAMPLING,
+      audit_retain_mu: false });
     const decision = linkOf(h.linkMessages, "decision", gid)[0];
     expect(decision).toMatchObject({ row_id: 1, step_index: 0, catalog_len: 6, in_combat: true, floor: 1 });
     expect(decision.input.observation).toBeTypeOf("object");
@@ -532,6 +533,8 @@ describe("fast-env K-game process", () => {
     expect(calls.filter(([kind]) => kind === "line").map(([, line]) => JSON.parse(line).seq)).toEqual([0, 1, 2, 3]);
     expect(calls[0][1]).toMatchObject({ slot: 0, game_instance_id: closed.game_instance_id, seed: "seed-0",
       start: { kind: "new_run" }, r7: true, retain_originals: true, native_lines: true });
+    // An R7 game tells the assembler to archive the mu its segments bind.
+    expect(linkOf(h.linkMessages, "episode_open", closed.game_instance_id)[0]).toMatchObject({ audit_retain_mu: true });
     const decisions = linkOf(h.linkMessages, "decision", closed.game_instance_id);
     const steps = calls.filter(([kind]) => kind === "step").map(([, record]) => record);
     for (const [index, record] of steps.entries()) {
