@@ -48,15 +48,18 @@ def knobs(**changes):
     return values
 
 
-def plan_for(cards=3, layout_spec=None, smoke=False, probe=None, **changes):
+def plan_for(cards=3, layout_spec=None, smoke=False, probe=None, env_cores=None,
+             probe_only=True, **changes):
     return launch.build_plan('t1', knobs(**changes), run_profile.load_site(SITE), cards=cards,
-                             card_type='A100-40', layout_spec=layout_spec, env_cores=None,
-                             smoke=smoke, probe_rows=probe or [probe_row()])
+                             card_type='A100-40', layout_spec=layout_spec, env_cores=env_cores,
+                             smoke=smoke, probe_rows=probe or [probe_row()],
+                             probe_only=probe_only)
 
 
 def good_facts(plan):
     k = plan['knobs']
-    return {'src_rev': f'int {k["env_pkg_build"]}', 'src_features': {'shards': True},
+    return {'src_rev': f'int {k["env_pkg_build"]}',
+            'src_features': {name: True for name in launch.FEATURES}, 'src_checkout': False,
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'prep_test_start_seconds': 0.0,
             'env_candidate_sha256': k['env_candidate_artifact_sha256'] + '0' * 48,
@@ -228,6 +231,13 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'env_pkg_rev': 'deadbeef built'}, 'env_package'),
     ({}, {'env_candidate_sha256': 'ffff'}, 'env_package'),
     ({}, {'src_features': {'shards': False}}, 'shards'),
+    ({}, {'src_features': {'residual': False}}, 'source_features'),
+    ({}, {'src_features': {'stage_options': False}}, 'source_features'),
+    ({'shards_adopt_unsharded_checkpoint': True}, {'src_features': {
+        name: name != 'adopt_unsharded' for name in launch.FEATURES}}, 'source_features'),
+    ({'env_candidate_artifact_sha256': ''}, {}, 'env_package'),
+    ({'env_candidate_artifact_sha256': 'b77f5139'}, {}, 'env_package'),
+    ({'producer_identity': 'checkout'}, {}, 'producer_identity'),
     ({'remote_prepare_connections': 35}, {}, 'shards'),
     ({}, {'prep_test_start_seconds': None}, 'prep_schedulable'),
     ({}, {'prep_test_start_seconds': 99_999.0}, 'prep_schedulable'),
@@ -266,6 +276,95 @@ def test_preflight_refuses_bad_site_and_plan_edits():
     assert not preflight.check_gpu_node(nonode).ok
 
 
+def test_old_build_keeps_the_two_worker_workaround_only():
+    """Without #523 a437612d the SGD budget counts idle local pools: gate workers refuse,
+    the 2/2 workaround (and no scratch flag) passes; with the commit the gate values pass."""
+    plan = plan_for(cards=3, wall_seconds=2400)
+    old = {**good_facts(plan), 'src_features': {
+        name: name != 'budget_counts_remote' for name in launch.FEATURES}}
+    assert plan['knobs']['preparation_workers'] == 12
+    assert not preflight.check_features(plan, old).ok
+    workaround = plan_for(cards=3, wall_seconds=2400, preparation_workers=2,
+                          assembly_workers=2, prep_scratch_min_free=False)
+    assert preflight.check_features(workaround, old).ok
+    assert preflight.check_features(plan, good_facts(plan)).ok
+
+
+def test_zero_or_too_few_env_nodes_refuse():
+    plan = plan_for(cards=3, wall_seconds=2400, env_cores=20)  # < one balanced step
+    assert plan['env_nodes_max'] == 0
+    shards = preflight.check_shards(plan, good_facts(plan))
+    assert not shards.ok and 'env nodes' in shards.detail
+    assert 'env' not in launch.commands(plan)
+
+
+def test_placeholder_producer_needs_smoke_or_probe_only():
+    plan = plan_for(cards=3, wall_seconds=2400, probe_only=False)
+    assert plan['checkpoints_void'] and not plan['probe_only']
+    assert not preflight.check_producer(plan, good_facts(plan)).ok
+    assert preflight.check_producer(plan_for(cards=3, smoke=True, probe_only=False),
+                                    good_facts(plan)).ok
+    assert preflight.check_producer(plan_for(cards=3, probe_only=True), good_facts(plan)).ok
+    real = plan_for(cards=3, producer_identity='checkout', probe_only=False)
+    assert not real['checkpoints_void']
+    assert preflight.check_producer(real, {**good_facts(real), 'src_checkout': True}).ok
+
+
+def test_table_knobs_and_nan_are_validated():
+    with pytest.raises(run_profile.ProfileError, match='prepared_gib'):
+        run_profile.load_profile(PROFILE, ['prepared_gib=nan'])
+    with pytest.raises(run_profile.ProfileError, match='service_kwargs'):
+        run_profile.load_profile(PROFILE, ['service_kwargs={ no_such = 1 }'])
+    with pytest.raises(run_profile.ProfileError, match='env_memo'):
+        run_profile.load_profile(PROFILE, ['env_memo={ projection = "x" }'])
+    with pytest.raises(run_profile.ProfileError, match='sgd_switch_interval_seconds'):
+        run_profile.load_profile(PROFILE, ['sgd_switch_interval_seconds=1.0'])
+    check = run_profile.SITE_KEYS['partition_max_minutes']
+    assert check({'debug': 60}) is None and check({'debug': '60'}) is not None
+    assert run_profile.SITE_KEYS['prep_scratch']({'r640': 1}) is not None
+    twice = run_profile.load_profile(PROFILE, ['services=4', 'services=3'])
+    assert twice['services']['value'] == 3 and twice['services']['overridden_from'] == 6
+
+
+def test_submit_cancels_every_submitted_job_on_a_later_failure(tmp_path, monkeypatch):
+    plan = plan_for(cards=3, wall_seconds=2400)
+    cmds = launch.commands(plan)
+    cancelled = []
+    monkeypatch.setattr(launch.subprocess, 'run',
+                        lambda cmd, **kw: cancelled.append(cmd[1:]) if cmd[0] == 'scancel'
+                        else None)
+    ids = iter(['11', '12'])
+
+    def run_cmd(cmd):
+        if cmd[-1].endswith('env.sh'):
+            raise launch.subprocess.CalledProcessError(1, cmd)
+        return next(ids)
+
+    with pytest.raises(launch.subprocess.CalledProcessError):
+        launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd, wait=lambda *a: None)
+    assert cancelled == [['11', '12']]  # prep and GPU, no retry
+    assert 'cancelled' in (tmp_path / 'submit-failed.txt').read_text()
+
+    cancelled.clear()
+
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: '21', wait=interrupted)
+    assert cancelled == [['21']]
+
+
+def test_prep_min_free_bytes_and_new_switches_reach_the_jobs():
+    plan = plan_for(cards=3, wall_seconds=2400)
+    env = launch.job_env(plan)
+    assert 'export FC_PREP_MIN_FREE_BYTES=15000000000' in env
+    assert plan['knobs']['prepared_kernels'].endswith('+residual')
+    assert plan['knobs']['diagnostics_every'] == 512
+    off = launch.job_env(plan_for(cards=3, prep_scratch_min_free=False))
+    assert 'export FC_PREP_MIN_FREE_BYTES=0' in off
+
+
 def test_time_limits_refuse_a_prep_job_longer_than_its_partition_allows():
     plan = plan_for(cards=3)
     assert plan['partition_max_minutes'] == {'gpu': None, 'env': None, 'prep': 60}
@@ -289,8 +388,10 @@ def test_memory_budget_does_not_count_idle_local_pools():
 def test_job_side_pure_helpers():
     assert preflight.scratch_ok(31 * 10**9, 15)[0]
     assert not preflight.scratch_ok(29 * 10**9, 15)[0]
-    assert preflight.network_fs('nfs4') and preflight.network_fs('lustre')
-    assert not preflight.network_fs('tmpfs') and not preflight.network_fs('xfs')
+    assert preflight.local_fs('tmpfs') and preflight.local_fs('xfs')
+    assert preflight.local_fs('ext2/ext3') and preflight.local_fs('btrfs')
+    for other in ('nfs4', 'lustre', 'unknown', 'UNKNOWN (0x19830326)', 'beegfs', ''):
+        assert not preflight.local_fs(other)
 
 
 # ---------------- readout ----------------
@@ -301,8 +402,8 @@ def write_run(run, cards=3):
     (run / 'plan.json').write_text(json.dumps(plan))
     t0 = 1000.0
     events = [{'t': t0, 'kind': 'training_started'}]
-    events += [{'t': t0 + i, 'kind': 'progress', 'stepped': True, 'rows': 8000, 'seconds': 1.0}
-               for i in range(1, 1300)]
+    events += [{'t': t0 + i, 'kind': 'progress', 'stepped': True, 'rows': 8000,
+                'terminal_rows': 600, 'hp_rows': 400, 'seconds': 1.0} for i in range(1, 1300)]
     (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
     status = [{'t': t0 + i, 'queued_rows': 50_000, 'timing': {
         'preparation_wait_seconds': 0.1 * i, 'sgd_stage_wait_seconds': 0.05 * i,
@@ -325,8 +426,11 @@ def test_readout_edge_table_target_and_loss_table(tmp_path):
     write_run(run)
     result = readout.build(run, 1200)
     assert result['name'] == '3卡 · 1推理+2训练 · A100-40'
-    assert result['training']['rows_h'] == pytest.approx(8000 * 3600, rel=0.01)
-    assert result['verdict'] == 'below target'
+    # incl. aux = td + terminal + hp (9,000/s); td only shown beside it
+    assert result['training']['rows_h'] == pytest.approx(9000 * 3600, rel=0.01)
+    assert result['training']['td_rows_h'] == pytest.approx(8000 * 3600, rel=0.01)
+    assert result['training']['aux_share'] == pytest.approx(1000 / 9000, rel=0.01)
+    assert result['verdict'] == 'meets target'  # 3,240万 > 3,000万 (td only would fail)
     assert result['training']['prepare_wait_pct'] == pytest.approx(10, abs=0.5)
     assert result['services'][0]['rows_s'] == pytest.approx(2000)
     assert result['gpu']['1']['busy_pct'] == 90
@@ -334,6 +438,29 @@ def test_readout_edge_table_target_and_loss_table(tmp_path):
     assert table[0]['cause'].startswith('ideal') and table[1]['cause'] == 'measured'
     text = readout.render(result)
     assert 'target: 3,000万' in text and 'loss table' in text and 'infer 0' in text
+    assert 'incl. aux' in text and 'td only' in text
+
+
+def test_readout_refuses_to_guess_missing_aux(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    events = [json.loads(line) for line in (run / 'learner-events.jsonl').read_text().split('\n')]
+    for event in events[5:]:
+        event.pop('hp_rows', None)
+    (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+    result = readout.build(run, 1200)
+    assert result['training']['rows_h'] is None and result['training']['aux_missing']
+    assert result['verdict'] is None
+    assert 'aux fields missing' in readout.render(result)
+
+
+def test_verdict_strict_for_three_cards_and_ready():
+    three = {'cards': 3, 'target_rows_h': 30_000_000, 'ready_rows_h': 35_000_000}
+    assert readout.verdict(30_000_000, three) == 'below target'
+    assert readout.verdict(30_000_001, three) == 'meets target'
+    assert readout.verdict(35_000_000, three) == 'ready'
+    assert readout.verdict(14_000_000, {'cards': 1, 'target_rows_h': 14_000_000}) == \
+        'meets target'
 
 
 def test_readout_single_card_has_no_loss_table(tmp_path):
@@ -343,3 +470,4 @@ def test_readout_single_card_has_no_loss_table(tmp_path):
     result = readout.build(run, 1200)
     assert result['loss_table'] is None
     assert result['target']['target_rows_h'] == 14_000_000
+    assert 'perfect_packing_rows_h' not in plan['target']  # shared card: not an upper bound

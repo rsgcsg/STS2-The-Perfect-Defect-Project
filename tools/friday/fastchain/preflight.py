@@ -3,9 +3,10 @@
 
 Two halves, both decided by the pure functions below:
 - login side (`checks(plan, facts)`), before anything is submitted: layout placement,
-  machine types, prep scratch, prep schedulability, speed switches, env package
-  identity and memo, shard balance, memory budget, cross-node identity, hot path,
-  secret files, core cap;
+  machine types, prep scratch, prep schedulability, speed switches, source features
+  the knobs need, producer identity, env package identity and memo, env nodes and
+  shard balance, memory budget, cross-node identity, hot path, secret files, time
+  limits, core cap;
 - job side (`preflight.py job-gpu | prep-host | env-node`), when a role starts on its
   node: dependencies + python_env_sha256, node-local hot path, prep scratch free space,
   env sha equal to the GPU side's.
@@ -16,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,8 +31,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_profile  # noqa: E402
 
 GIB = 1024**3
-NETWORK_FS = ("nfs", "nfs4", "lustre", "gpfs", "cifs", "smb", "smb2", "beegfs", "ceph",
-              "fuse", "autofs")
+# Node-local file systems (`stat -f -c %T` names). Anything else, including "unknown"
+# and the "UNKNOWN (0x...)" that BeeGFS/Ceph mounts print, is refused.
+LOCAL_FS = ("tmpfs", "xfs", "ext2/ext3", "ext4", "btrfs", "overlayfs", "overlay", "zfs")
+HEX12 = re.compile(r"^[0-9a-f]{12,64}$")
 # sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
@@ -156,7 +161,11 @@ def check_env_package(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     if build and build not in src:
         problems.append(f"source REV '{src}' does not name the env build {build}")
     cand = facts.get("env_candidate_sha256")
-    if not cand or not cand.startswith(k["env_candidate_artifact_sha256"]):
+    prefix = k["env_candidate_artifact_sha256"]
+    if not HEX12.match(prefix):
+        problems.append(f"env_candidate_artifact_sha256 {prefix!r} is not a sha256 prefix of "
+                        ">= 12 lowercase hex characters")
+    elif not cand or not cand.startswith(prefix):
         problems.append(f"candidate bin Sts2Headless.dll {str(cand)[:16]} does not start with "
                         f"{k['env_candidate_artifact_sha256']} (PKG and CAND change together)")
     if not k["env_memo"]:
@@ -170,6 +179,11 @@ def check_shards(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     shards, services = k["shards"], k["services"]
     aggregators = plan["env_nodes_max"] * k["env_aggregators"]
     problems = []
+    need = services // math.gcd(k["env_aggregators"], services)
+    if plan["env_nodes_max"] < need:
+        problems.append(f"{plan['env_nodes_max']} env nodes < {need}, the fewest whose "
+                        f"aggregators reach all {services} services (env core budget too "
+                        "small: core_cap, env_core_budget or --env-cores)")
     if aggregators % services:
         problems.append(f"{aggregators} aggregators do not spread evenly over {services} services")
     if shards:
@@ -184,6 +198,54 @@ def check_shards(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     return Result("shards", not problems, "; ".join(problems) or
                   f"shards {shards}, services {services}, aggregators {aggregators} "
                   f"({aggregators // services} per service)")
+
+
+def required_features(plan: dict[str, Any]) -> dict[str, str]:
+    """Source features this run's knobs need -> why (PR that brings it)."""
+    k = plan["knobs"]
+    need = {}
+    if k["shards"]:
+        need["shards"] = "dataplane.shards (#523)"
+    if k["prep_scratch_min_free"] and k["remote_prepare"]:
+        need["budget_counts_remote"] = "remote_prepare --scratch-min-free-bytes (#523 a437612d)"
+    if (k["shards"] and k["remote_prepare"]
+            and max(k["preparation_workers"], k["assembly_workers"]) > 2):
+        need["budget_counts_remote"] = ("SGD budget that does not count idle local pools "
+                                        "(#523 a437612d); older builds need "
+                                        "preparation/assembly_workers <= 2")
+    if k["shards_adopt_unsharded_checkpoint"]:
+        need["adopt_unsharded"] = "dataplane.shards_adopt_unsharded_checkpoint (#523 a437612d)"
+    if (k["sgd_stage_stream_reuse"] or k["sgd_stage_lean_tree"] or k["sgd_switch_interval_seconds"]
+            or k["sgd_verify_threads"] != 4
+            or (k["sgd_verify_split"] and plan["placement"]["ranks"] > 1)):
+        need["stage_options"] = "sgd staging options (#525)"
+    if k["levers"] and "residual" in k["prepared_kernels"].split("+"):
+        need["residual"] = "prepared_kernels residual lever (#526)"
+    return need
+
+
+def check_features(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    have = facts.get("src_features") or {}
+    need = required_features(plan)
+    missing = [f"{name}: {why}" for name, why in need.items() if not have.get(name)]
+    return Result("source_features", not missing,
+                  ("source build lacks " + "; ".join(missing)) if missing else
+                  "source has " + (", ".join(sorted(need)) or "(nothing extra needed)"))
+
+
+def check_producer(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    mode = plan["knobs"]["producer_identity"]
+    if mode == "checkout":
+        ok = bool(facts.get("src_checkout"))
+        return Result("producer_identity", ok, "real source identity" if ok else
+                      "producer_identity=checkout needs src_dir to be a git checkout")
+    ok = plan["smoke"] or plan.get("probe_only", False)
+    return Result("producer_identity", ok,
+                  "placeholder producer: CPs void (" +
+                  ("smoke" if plan["smoke"] else "--probe-only") + ")" if ok else
+                  "placeholder producer identity outside --smoke: its CPs would look valid "
+                  "but carry a fake producer; use producer_identity=checkout, or pass "
+                  "--probe-only for a measurement run whose CPs are void")
 
 
 def memory_estimate(plan: dict[str, Any]) -> dict[str, Any]:
@@ -294,7 +356,8 @@ def check_cores(plan: dict[str, Any]) -> Result:
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_node(plan), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
-            check_switches(plan), check_env_package(plan, facts), check_shards(plan, facts),
+            check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
+            check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan)]
 
@@ -313,8 +376,8 @@ def scratch_ok(free_bytes: int, inflight_gb: float) -> tuple[bool, str]:
     return free_bytes >= need, f"free {free_bytes / 1e9:.1f} GB, need {need / 1e9:.1f} GB"
 
 
-def network_fs(fstype: str) -> bool:
-    return fstype.lower().startswith(NETWORK_FS)
+def local_fs(fstype: str) -> bool:
+    return fstype.lower() in LOCAL_FS
 
 
 def _fstype(path: str) -> str:
@@ -351,12 +414,16 @@ def job_main(argv: list[str]) -> int:
     try:
         sha = _env_sha()
     except Exception as error:  # noqa: BLE001 - reported as the refusal
-        print(f"preflight {args.role}: dependency import failed: {error!r}", flush=True)
+        detail = f"dependency import failed: {error!r}"
+        if args.role == "prep-host":  # the launcher stops waiting at once
+            _write(args.run / "prep-refused" / args.index, f"{os.uname().nodename} {detail}\n")
+        print(f"preflight {args.role}: {detail}", flush=True)
         return 9
     if args.role == "job-gpu":
         fstype = _fstype(args.path)
-        if network_fs(fstype):
-            print(f"preflight job-gpu: local tmp {args.path} is {fstype}", flush=True)
+        if not local_fs(fstype):
+            print(f"preflight job-gpu: local tmp {args.path} is {fstype}, not one of "
+                  f"{LOCAL_FS}", flush=True)
             return 9
         _write(args.run / "env-sha.txt", sha + "\n")
         print(f"preflight job-gpu ok: bz2+lz4, env_sha {sha}, local tmp {fstype}", flush=True)
@@ -365,8 +432,8 @@ def job_main(argv: list[str]) -> int:
         Path(args.path).mkdir(parents=True, exist_ok=True)
         fstype = _fstype(args.path)
         ok, detail = scratch_ok(shutil.disk_usage(args.path).free, knobs["prep_host_inflight_gb"])
-        if network_fs(fstype):
-            ok, detail = False, f"scratch is {fstype}"
+        if not local_fs(fstype):
+            ok, detail = False, f"scratch is {fstype}, not one of {LOCAL_FS}"
         _write(args.run / "prep-env" / args.index, sha + "\n")
         if not ok:
             _write(args.run / "prep-refused" / args.index, f"{os.uname().nodename} {detail}\n")

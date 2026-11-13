@@ -8,8 +8,10 @@
 Options: --layout L (default: the profile's default layout for N cards; "shared",
 "1i+1t", "1i+2t" or an explicit per-card list, see layout.py), --env-cores C (cap on
 environment cores), --set knob=value (repeatable, recorded as an override), --smoke
-(5 min, the smallest balanced env), --fallback (fewer cards with their default layouts
-when N do not fit), --probe-json F (a recorded sinfo probe instead of sinfo).
+(5 min, the smallest balanced env), --probe-only (allow the placeholder producer
+identity outside --smoke: CPs void, recorded in plan.json), --fallback (fewer cards
+with their default layouts when N do not fit), --probe-json F (a recorded sinfo probe
+instead of sinfo).
 
 What this replaces: the private fc-launch.py tiers (1/2/3/h100) and the hand-edited
 fc_gpu.py / fc-gpu3.sh / fc-env2.sh / fc-prep3w.sh. A layout is data; every knob comes
@@ -94,7 +96,8 @@ def split_slow(env_nodes: int, slow_opt_in: int) -> tuple[int, int]:
 
 def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, cards: int,
                card_type: str, layout_spec: str | None, env_cores: int | None, smoke: bool,
-               probe_rows: list[dict[str, Any]], fallback: bool = False) -> dict[str, Any]:
+               probe_rows: list[dict[str, Any]], fallback: bool = False,
+               probe_only: bool = False) -> dict[str, Any]:
     if card_type not in site["gpu_types"]:
         raise SystemExit(f"card type {card_type} not in the site profile")
     gpu = site["gpu_types"][card_type]
@@ -138,7 +141,9 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
     limit = mem * preflight.GIB
     target = layouts.target(count, knobs["targets_rows_h"], knobs["ready_rows_h"])
     cap_rows = knobs["card_capacity_rows_h"].get(card_type)
-    if cap_rows:
+    # Perfect packing is the ideal for split cards only: on one shared card inference and
+    # training overlap under MPS, so N / (1/inf + 1/train) is not an upper bound there.
+    if cap_rows and not place.shared_inference_card:
         target["perfect_packing_rows_h"] = round(layouts.perfect_packing(
             count, cap_rows["inference"], cap_rows["training"]))
     prep_hosts = sum(g["nodes"] for g in knobs["prep_groups"]) if knobs["remote_prepare"] else 0
@@ -148,6 +153,8 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "requested": {"cards": cards, "card_type": card_type, "layout": layout_spec,
                       "env_cores": env_cores, "fallback": fallback},
         "why": tried, "smoke": smoke, "wall_seconds": wall,
+        "producer_identity": knobs["producer_identity"], "probe_only": probe_only,
+        "checkpoints_void": knobs["producer_identity"] == "placeholder",
         "placement": place.as_dict(), "layout_spec": spec, "name": place.name,
         "target": target, "gpu_node": node, "gpu_node_why": "; ".join(tried),
         "gpu_partition": gpu["partition"], "gpu_gres": gpu["gres"],
@@ -249,6 +256,9 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_PREP_GROUPS_JSON": json.dumps(groups, separators=(",", ":")),
         "FC_MEM_GUARD_BYTES": plan["mem_guard_bytes"], "FC_MEM_HARD_BYTES": plan["mem_hard_bytes"],
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
+        # remote_prepare --scratch-min-free-bytes (#523 a437612d) = the in-flight budget.
+        "FC_PREP_MIN_FREE_BYTES": int(k["prep_host_inflight_gb"] * 1e9)
+        if k["prep_scratch_min_free"] else 0,
     }
     lines += [f"export {key}={shlex.quote(str(value))}" for key, value in derived.items()]
     return "\n".join(lines) + "\n"
@@ -259,9 +269,8 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts: dict[str, Any] = {}
     src = Path(site["src_dir"])
     facts["src_rev"] = (src / "REV").read_text().strip() if (src / "REV").exists() else None
-    learner = src / "python/stpd/rl/segment_learner.py"
-    facts["src_features"] = {"shards": learner.exists()
-                             and '"shards"' in learner.read_text(errors="replace")}
+    facts["src_features"] = source_features(src)
+    facts["src_checkout"] = (src / ".git").exists()
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL
@@ -272,6 +281,26 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
         for key in ("inference_auth_file", "prepare_auth_file")}
     facts["prep_test_start_seconds"] = (test_start(cmds["prep"]) if "prep" in cmds else 0.0)
     return facts
+
+
+# feature -> (source file, text that only a build with it contains).
+FEATURES = {
+    "shards": ("python/stpd/rl/segment_learner.py", '"shards"'),  # #523
+    "budget_counts_remote": ("python/stpd/rl/remote_prepare.py",  # #523 a437612d
+                             "--scratch-min-free-bytes"),
+    "adopt_unsharded": ("python/stpd/rl/segment_learner.py",  # #523 a437612d
+                        "shards_adopt_unsharded_checkpoint"),
+    "stage_options": ("python/stpd/rl/sgd_process.py", "sgd_stage_stream_reuse"),  # #525
+    "residual": ("python/stpd/p1/rows_forward.py", "def residual_stream"),  # #526
+}
+
+
+def source_features(src: Path) -> dict[str, bool]:
+    out = {}
+    for name, (rel, marker) in FEATURES.items():
+        path = src / rel
+        out[name] = path.exists() and marker in path.read_text(errors="replace")
+    return out
 
 
 def test_start(cmd: list[str]) -> float | None:
@@ -331,34 +360,47 @@ def wait_prep(run: Path, job: str, hosts: int, timeout: float) -> str | None:
     return f"prep hosts not ready within {timeout:.0f} s"
 
 
-def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str, Any]:
+def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
+           *, run_cmd: Any = None, wait: Any = None) -> dict[str, Any]:
+    """prep -> wait every host ready -> GPU -> env arrays. Any failure or interrupt on the
+    way (a later sbatch failing, a prep refusal, Ctrl-C during the wait) cancels every job
+    already submitted, then re-raises. Nothing is retried."""
+    run_cmd = run_cmd or (lambda cmd: sh(*cmd))
+    wait = wait or wait_prep
     jobs: dict[str, Any] = {}
 
     def go(name: str) -> str:
-        job = sh(*cmds[name]).strip().split(";")[0]
+        job = run_cmd(cmds[name]).strip().split(";")[0]
         jobs[name] = job
         (run / "jobs.json").write_text(json.dumps(jobs, indent=1))
         return job
 
-    if "prep" in cmds:
-        prep = go("prep")
-        why = wait_prep(run, prep, plan["prep_hosts"],
-                        plan["knobs"]["prep_start_timeout_seconds"] + 300)
-        if why:
-            subprocess.run(["scancel", prep], check=False)
-            raise SystemExit(f"refused after prep submission: {why}; prep job {prep} cancelled, "
-                             "GPU job not submitted")
     try:
+        if "prep" in cmds:
+            prep = go("prep")
+            why = wait(run, prep, plan["prep_hosts"],
+                       plan["knobs"]["prep_start_timeout_seconds"] + 300)
+            if why:
+                raise SystemExit(f"refused after prep submission: {why}; GPU job not "
+                                 "submitted")
         gpu = go("gpu")
-    except subprocess.CalledProcessError:
-        if "prep" in jobs:
-            subprocess.run(["scancel", jobs["prep"]], check=False)
+        (run / "gpu-job.txt").write_text(gpu + "\n")
+        for name in ("env", "env_c8220"):
+            if name in cmds:
+                go(name)
+    except BaseException as error:
+        cancelled = cancel_all(jobs)
+        (run / "submit-failed.txt").write_text(f"{error!r}\ncancelled {cancelled}\n")
+        print(f"submit failed ({error!r}); cancelled {cancelled}", file=sys.stderr)
         raise
-    (run / "gpu-job.txt").write_text(gpu + "\n")
-    for name in ("env", "env_c8220"):
-        if name in cmds:
-            go(name)
     return jobs
+
+
+def cancel_all(jobs: dict[str, Any]) -> list[str]:
+    ids = [str(job) for job in jobs.values()]
+    if ids:
+        subprocess.run(["scancel", *ids], check=False)
+    return ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set", action="append", default=[], dest="overrides")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--fallback", action="store_true")
+    parser.add_argument("--probe-only", action="store_true",
+                        help="allow producer_identity=placeholder outside --smoke (CPs void)")
     parser.add_argument("--probe-json", type=Path)
     parser.add_argument("--out", type=Path, help="plan: also write the full plan.json here "
                         "(e.g. for `readout.py --plan` on a run made before this launcher)")
@@ -392,13 +436,14 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_plan(args.runtag, knobs, site, cards=args.cards,
                           card_type=args.card_type, layout_spec=args.layout,
                           env_cores=args.env_cores, smoke=args.smoke, probe_rows=rows,
-                          fallback=args.fallback)
+                          fallback=args.fallback, probe_only=args.probe_only)
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2
     cmds = commands(plan)  # without a free GPU node: shown, refused by check_gpu_node
     summary = {k: plan[k] for k in ("name", "target", "gpu_node", "why", "env_nodes_max",
-                                     "env_cores_max", "prep_hosts", "wall_seconds")}
+                                     "env_cores_max", "prep_hosts", "wall_seconds",
+                                     "producer_identity", "checkpoints_void")}
     summary["placement"] = plan["placement"]
     summary["commands"] = cmds
     if args.command == "plan":

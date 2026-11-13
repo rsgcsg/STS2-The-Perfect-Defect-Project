@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shlex
 import sys
 import tomllib
@@ -44,8 +45,9 @@ def _int(low: int = 0, high: int | None = None) -> Callable[[Any], str | None]:
 
 def _num(low: float = 0.0, high: float | None = None) -> Callable[[Any], str | None]:
     def check(value: Any) -> str | None:
-        if type(value) not in (int, float) or value < low or (high is not None and value > high):
-            return f"number in [{low}, {high if high is not None else 'inf'}]"
+        if (type(value) not in (int, float) or not math.isfinite(value) or value < low
+                or (high is not None and value > high)):
+            return f"finite number in [{low}, {high if high is not None else 'inf'}]"
         return None
     return check
 
@@ -69,8 +71,47 @@ def _strs(value: Any) -> str | None:
     return None if ok else "list of strings"
 
 
-def _table(value: Any) -> str | None:
-    return None if isinstance(value, dict) else "table"
+def _table_of(check: Callable[[Any], str | None], keys: frozenset[str] | None = None,
+              what: str = "values") -> Callable[[Any], str | None]:
+    """A table whose every value passes `check` (and, with `keys`, only those keys)."""
+    def inner(value: Any) -> str | None:
+        if not isinstance(value, dict):
+            return f"table of {what}"
+        bad = sorted(set(value) - keys) if keys is not None else []
+        if bad:
+            return f"table with keys from {sorted(keys)} (unknown: {bad})"
+        for key, item in value.items():
+            if check(item) is not None:
+                return f"table of {what} ({key}: {check(item)})"
+        return None
+    return inner
+
+
+def _any_of(*checks: Callable[[Any], str | None]) -> Callable[[Any], str | None]:
+    def check(value: Any) -> str | None:
+        errors = [c(value) for c in checks]
+        return None if None in errors else " or ".join(e for e in errors if e)
+    return check
+
+
+def _zero(value: Any) -> str | None:
+    return None if type(value) in (int, float) and value == 0 else "0 (unset)"
+
+
+def _service_kwarg(value: Any) -> str | None:
+    """FastInferenceService keyword values are scalars (bool/int/finite float/str)."""
+    if type(value) in (bool, str, int):
+        return None
+    return None if type(value) is float and math.isfinite(value) else "bool/int/finite/str"
+
+
+# FastInferenceService keywords a profile may pass (the rest are set by roles.py), plus
+# `segment_format`, which roles.py hands to the FastSegmentAssembler instead.
+SERVICE_KWARGS = frozenset(("segment_format",
+    "in_flight", "job_parts", "join_workers", "arena_row_bytes", "device_threads", "bf16",
+    "part_rows", "device_rows", "trace", "audit_fraction", "kernels", "exit_grace_seconds"))
+# env_driver.mjs memo layers: int = check interval, bool = layer on.
+ENV_MEMO_KEYS = frozenset(("projection", "receipt", "reduce", "deck", "hud"))
 
 
 def _per_cards(check: Callable[[Any], str | None]) -> Callable[[Any], str | None]:
@@ -136,6 +177,19 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "fast_batched_apply": _bool,
     "fast_verify_workers": _int(0, 64),
     "lock_timing": _bool,
+    "persistent_pools": _bool,
+    "ahead_while_waiting": _bool,
+    "sgd_stage_thread": _bool,
+    "fast_verify_arena_slots": _int(1, 4096),
+    "fast_verify_slot_bytes": _int(4096),
+    "sgd_stage_stream_reuse": _bool,
+    "sgd_stage_lean_tree": _bool,
+    "sgd_verify_split": _bool,
+    "sgd_verify_threads": _int(1, 32),
+    "sgd_switch_interval_seconds": _any_of(_zero, _num(1e-5, 0.1)),
+    "diagnostics_every": _int(1),
+    "shards_adopt_unsharded_checkpoint": _bool,
+    "producer_identity": _choice("checkout", "placeholder"),
     # remote prepare
     "remote_prepare": _bool,
     "remote_prepare_connections": _int(1, 1024),
@@ -145,13 +199,16 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "remote_prepare_wait_seconds": _num(1),
     "prep_groups": _prep_groups,
     "prep_host_inflight_gb": _num(0),
+    "prep_scratch_min_free": _bool,
     "prep_start_timeout_seconds": _num(0),
     # inference services
     "services": _int(1, 64),
-    "service_kwargs": _table,
+    "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),
+    "service_max_rows": _int(1),
+    "service_max_job_rows": _int(1),
     "mu_poll_seconds": _num(0.1),
     "handoff_write_workers": _int(1, 64),
     "drain_seconds": _num(0),
@@ -182,7 +239,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "aggregator_window_ms": _num(0),
     "env_pkg_build": _str,
     "env_candidate_artifact_sha256": _str,
-    "env_memo": _table,
+    "env_memo": _table_of(_any_of(_bool, _int(1)), ENV_MEMO_KEYS, "memo layers"),
     "driver_inference_timeout_ms": _int(100),
     "driver_reopen_backoff_start_ms": _int(0),
     "driver_reopen_backoff_cap_ms": _int(0),
@@ -216,8 +273,9 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "initial_progress_file": _str, "env_pkg": _str, "env_candidate": _str,
     "gpu_local_tmp": _str, "env_tmp_root": _str, "shared_fs_prefixes": _strs,
     "env_partition": _str, "prep_partition": _str, "excluded_prep_hosts": _strs,
-    "prep_scratch": _table, "run_name": _str, "gpu_types": _table,
-    "partition_max_minutes": _table,
+    "prep_scratch": _table_of(_str, what="paths"), "run_name": _str,
+    "gpu_types": _table_of(_table_of(lambda v: None), what="gpu types"),
+    "partition_max_minutes": _table_of(_int(1), what="minutes (int)"),
 }
 GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list}
 
@@ -271,9 +329,9 @@ def load_profile(path: Path, overrides: list[str] | None = None) -> dict[str, An
         if error:
             problems.append(f"--set {name}: expected {error}, got {value!r}")
             continue
-        if name in result:
-            result[name] = {**result[name], "overridden_from": result[name]["value"],
-                            "value": value}
+        if name in result:  # a repeated --set keeps the profile value as the origin
+            origin = result[name].get("overridden_from", result[name]["value"])
+            result[name] = {**result[name], "overridden_from": origin, "value": value}
     if problems:
         raise ProfileError("profile refused:\n  " + "\n  ".join(problems))
     return result

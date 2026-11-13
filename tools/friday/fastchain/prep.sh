@@ -13,13 +13,16 @@ export LD_LIBRARY_PATH=$FC_SITE_LIB_PATH:${LD_LIBRARY_PATH:-} OMP_NUM_THREADS=1 
 export PYTHONPATH=$FC_SITE_SRC_DIR/python:$FC_SITE_LZ4_PATH
 export STPD_REMOTE_PREPARE_AUTH=$(cat "$FC_SITE_PREPARE_AUTH_FILE")
 NG=$($PY -c "import json,os; print(len(json.loads(os.environ['FC_PREP_GROUPS_JSON'])))")
+# #523 a437612d: the host refuses to become ready with less free scratch than the
+# in-flight budget (0 = not passed; preflight checked the build has the flag).
+MINFREE=""; [ "${FC_PREP_MIN_FREE_BYTES:-0}" -gt 0 ] && MINFREE="--scratch-min-free-bytes $FC_PREP_MIN_FREE_BYTES"
 n=0
 for g in $(seq 0 $((NG - 1))); do
   read -r W TB C <<< "$($PY -c "import json,os; x=json.loads(os.environ['FC_PREP_GROUPS_JSON'])[$g]; print(x['workers'], x['scratch'], x['cpus'])")"
   NL=$(eval echo \${SLURM_JOB_NODELIST_HET_GROUP_$g:-$SLURM_JOB_NODELIST})
   for h in $(scontrol show hostnames $NL); do
     # srun does not inherit --cpus-per-task (c3c25: every host ran on 1 CPU): pass it.
-    srun --het-group=$g --nodes=1 --ntasks=1 --cpus-per-task=$C -w $h bash -c "T=$TB/fc-prep-\$SLURM_JOB_ID-h$n; trap \"rm -rf \$T\" EXIT; echo \$(hostname -s) \$(nproc) \$(grep -m1 \"model name\" /proc/cpuinfo | cut -d: -f2); $PY $H/preflight.py prep-host --run $RUN --path \$T --index $n || exit 9; (while sleep 30; do echo LOAD \$(date +%s) \$(cat /proc/loadavg) tmp_avail_kb=\$(df --output=avail \$T | tail -1) scratch_kb=\$(du -sk \$T 2>/dev/null | cut -f1); done) & exec $PY -u -m stpd.rl.remote_prepare --scratch \$T --decode-workers $W --assembly-workers $W --cache-bytes 1 --codec $FC_REMOTE_PREPARE_CODEC --ready-file $R/ready-$n" > $RUN/prep-host-$n.log 2>&1 &
+    srun --het-group=$g --nodes=1 --ntasks=1 --cpus-per-task=$C -w $h bash -c "T=$TB/fc-prep-\$SLURM_JOB_ID-h$n; trap \"rm -rf \$T\" EXIT; echo \$(hostname -s) \$(nproc) \$(grep -m1 \"model name\" /proc/cpuinfo | cut -d: -f2); $PY $H/preflight.py prep-host --run $RUN --path \$T --index $n || exit 9; (while sleep 30; do echo LOAD \$(date +%s) \$(cat /proc/loadavg) tmp_avail_kb=\$(df --output=avail \$T | tail -1) scratch_kb=\$(du -sk \$T 2>/dev/null | cut -f1); done) & exec $PY -u -m stpd.rl.remote_prepare --scratch \$T --decode-workers $W --assembly-workers $W --cache-bytes 1 --codec $FC_REMOTE_PREPARE_CODEC $MINFREE --ready-file $R/ready-$n" > $RUN/prep-host-$n.log 2>&1 &
     n=$((n+1))
   done
 done

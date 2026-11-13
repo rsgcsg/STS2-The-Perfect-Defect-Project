@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 WAN = 10_000
+AUX = {"rows", "terminal_rows", "hp_rows"}
 
 
 def jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -62,19 +63,29 @@ def delta(a: dict[str, Any], z: dict[str, Any], *path: str) -> float:
 
 def training_edge(events: list[dict[str, Any]], status: list[dict[str, Any]],
                   window: float) -> dict[str, Any]:
+    """Training rows INCLUDE aux: per stepped step td `rows` + `terminal_rows` + `hp_rows`
+    (every target is in this unit; the private tool counted td only, -12.4 %). A stepped
+    event without the aux fields makes the incl.-aux number unknown, never td-only."""
     starts = [e["t"] for e in events if e.get("kind") == "training_started"]
-    steps = [(e["t"], e["rows"]) for e in events
-             if e.get("kind") == "progress" and e.get("stepped")]
-    if not starts or not steps:
-        return {"rows_h": None, "window": None}
+    stepped = [e for e in events if e.get("kind") == "progress" and e.get("stepped")]
+    if not starts or not stepped:
+        return {"rows_h": None, "td_rows_h": None, "window": None}
     t0 = starts[0]
+    complete = all(set(e) >= AUX for e in stepped)
+    steps = [(e["t"], e["rows"] + (e.get("terminal_rows", 0) + e.get("hp_rows", 0)))
+             for e in stepped]
     rows, a_t, z_t = best_window(steps, t0, window)
     span = max(z_t - a_t, 1e-9)
-    secs = sorted(e["seconds"] for e in events if e.get("kind") == "progress"
-                  and e.get("stepped") and a_t <= e["t"] <= z_t and "seconds" in e)
+    inside = [e for e in stepped if a_t <= e["t"] <= z_t]
+    td = sum(e["rows"] for e in inside)
+    secs = sorted(e["seconds"] for e in inside if "seconds" in e)
     out: dict[str, Any] = {
-        "t0": t0, "window": (a_t, z_t), "rows": rows, "rows_s": rows / span,
-        "rows_h": rows / span * 3600,
+        "t0": t0, "window": (a_t, z_t), "rows": rows if complete else None,
+        "rows_s": rows / span if complete else None,
+        "rows_h": rows / span * 3600 if complete else None,
+        "td_rows_h": td / span * 3600,
+        "aux_share": (rows - td) / rows if complete and rows else None,
+        "aux_missing": not complete,
         "step_median_s": secs[len(secs) // 2] if secs else None,
         "step_p90_s": secs[int(len(secs) * 0.9)] if secs else None}
     timed = [x for x in status if "timing" in x]
@@ -198,18 +209,28 @@ def loss_table(plan: dict[str, Any], train: dict[str, Any]) -> list[dict[str, An
             {"cause": "measured", "loss_rows_h": measured}, *rows]
 
 
+def verdict(rows_h: float | None, target: dict[str, Any]) -> str | None:
+    """1 card: >= target; 3 cards: strictly > target (CHAIN-CONFIG-MODEL §2); ready >=."""
+    goal = target.get("target_rows_h")
+    if goal is None or rows_h is None:
+        return None
+    met = rows_h > goal if target.get("cards", 1) > 1 else rows_h >= goal
+    ready = target.get("ready_rows_h")
+    if met and ready and rows_h >= ready:
+        return "ready"
+    return "meets target" if met else "below target"
+
+
 def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, Any]:
     plan = json.loads((plan_path or run / "plan.json").read_text())
     train = training_edge(jsonl(run / "learner-events.jsonl"),
                           jsonl(run / "learner-status.jsonl"), window)
     span = train.get("window")
     target = plan["target"]
-    goal = target.get("target_rows_h")
     return {"name": plan["name"], "target": target, "training": train,
             "services": service_edges(run, span), "gpu": gpu_cards(run, span),
             "env": env_edge(run, span),
-            "verdict": None if goal is None or train.get("rows_h") is None else
-            ("meets target" if train["rows_h"] >= goal else "below target"),
+            "verdict": verdict(train.get("rows_h"), target),
             "loss_table": loss_table(plan, train)}
 
 
@@ -225,8 +246,12 @@ def render(r: dict[str, Any]) -> str:
     out = [f"== {r['name']}",
            "target: " + (f"{goal / WAN:,.0f}万 rows/h" if goal else (tg.get("note") or "-"))
            + (f" (ready {tg['ready_rows_h'] / WAN:,.0f}万)" if tg.get("ready_rows_h") else ""),
-           f"training: {fmt(t.get('rows_h') and t['rows_h'] / WAN)}万 rows/h"
-           + (f" -> {r['verdict']}" if r["verdict"] else ""),
+           f"training (incl. aux = td + terminal + hp): "
+           f"{fmt(t.get('rows_h') and t['rows_h'] / WAN)}万 rows/h"
+           + (f" -> {r['verdict']}" if r["verdict"] else "")
+           + (" [aux fields missing: incl.-aux unknown]" if t.get("aux_missing") else ""),
+           f"training td only: {fmt(t.get('td_rows_h') and t['td_rows_h'] / WAN)}万 rows/h"
+           f" (aux share {fmt(t.get('aux_share') and 100 * t['aux_share'], 1)}%)",
            "", f"{'edge':<12}{'rows/s':>10}{'busy%':>8}{'queue':>10}{'wait%':>8}{'drop/s':>9}"]
     env = r["env"]
     out.append(f"{'env':<12}{'-':>10}{fmt(env['busy_cores'], 0) + 'c':>8}{'-':>10}{'-':>8}"
@@ -247,7 +272,7 @@ def render(r: dict[str, Any]) -> str:
         out.append(f"{'gpu ' + card:<12}{'-':>10}{fmt(g['busy_pct']):>8}  mem max "
                    f"{fmt(g['mem_mib_max'])} MiB")
     if r["loss_table"]:
-        out += ["", "loss table (万 rows/h; fixable / bound to fill):"]
+        out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:
             loss = row["loss_rows_h"]
             out.append(f"  {row['cause']:<58}{fmt(loss and loss / WAN):>8}"

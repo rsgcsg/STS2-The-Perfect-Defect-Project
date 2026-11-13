@@ -10,8 +10,8 @@ source_gb = { value = 36, default = 10, why = "prepare source budget must hold i
 source_slots = { value = 4096, default = 4096, why = "fast segments live in FastSources, not slots; slot count is not the cap", measured = "c3c31 + wu review (12288 slots did not prevent the collapse)" }
 prepared_batches = { value = 40, default = 8, why = "remote prepare keeps ~40 batches in flight; fewer starves the learner", measured = "c2j (40, prepwait 0)" }
 prepared_gib = { value = 38.4, default = 10, why = "prepared-output budget sized with prepared_batches", measured = "c2j (41231686041 bytes)" }
-preparation_workers = { value = 2, default = 12, why = "local pools are unused under remote prepare but the learner memory budget counts them per shard", measured = "c3s1 refused at 12/8 (73 counted workers = 110 GB); c3s2 2/2, prepwait 0" }
-assembly_workers = { value = 2, default = 8, why = "same as preparation_workers", measured = "c3s1/c3s2" }
+preparation_workers = { value = 12, default = 12, why = "gate value; under remote prepare the local pools are idle and #523 a437612d no longer counts them in the SGD budget (preflight refuses > 2 on an older build with shards + remote prepare)", measured = "c3s1 refused at 12/8 before a437612d (73 counted workers = 110 GB); c3s2 ran the 2/2 workaround" }
+assembly_workers = { value = 8, default = 8, why = "same as preparation_workers", measured = "c3s1/c3s2; a437612d budget fix" }
 dispatch_workers = { value = 4, default = 4, why = "prepare dispatch threads (#509)", measured = "c3c10 onward" }
 prepare_slots = { value = 896, default = 896, why = "gate value", measured = "c3c series" }
 capacity_rows = { value = 212992, default = 212992, why = "learner queue capacity", measured = "c3c series" }
@@ -25,13 +25,26 @@ sgd_threads_per_rank = { value = 4, default = 4, why = "threads per data-paralle
 sgd_cpus = { value = 8, default = 8, why = "CPUs pinned for data-parallel SGD children", measured = "c3c series" }
 data_parallel_timeout_seconds = { value = 600, default = 600, why = "NCCL init/step timeout", measured = "c3c series" }
 levers = { value = true, default = false, why = "prepared_compile + kernels + bucket rows: the offline 1,866-1,934 wan/h step ran with them; the gate base had them off", measured = "h100h (off by mistake), h100i onward" }
-prepared_kernels = { value = "cross+embed+heads+nodes", default = "cross+embed+heads+nodes", why = "kernel set of the offline best step", measured = "V3-yin 1466869/1466810" }
+prepared_kernels = { value = "cross+embed+heads+nodes+residual", default = "cross+embed+heads+nodes", why = "kernel set of the offline best step plus the BF16 residual stream (#526); preflight refuses a build without the residual lever", measured = "V3-yin 1466869/1466810; residual lever PR #526 (11-13)" }
 prepared_bucket_rows = { value = 1048576, default = 1048576, why = "one bucket per group", measured = "V3-yin 1466869" }
 learner_alloc_conf = { value = "expandable_segments:True", default = "", why = "learner reserved memory crowded the services under MPS", measured = "smoke2, s1d" }
 prefetch_referenced_only = { value = false, default = false, why = "#520 did not fix the full-queue collapse", measured = "c3c30" }
 fast_batched_apply = { value = false, default = false, why = "#522 batched apply was slower in the single learner process (not merged)", measured = "c3c33 (585), c2c (510)" }
 fast_verify_workers = { value = 0, default = 0, why = "#518 verify subprocesses: +22% admission but same ceiling; off", measured = "c3c23" }
 lock_timing = { value = false, default = false, why = "control_lock holder timing; diagnostics only", measured = "c3c29-c3c33" }
+persistent_pools = { value = true, default = false, why = "keep the prepare pools alive between batches", measured = "gate fast-chain config, c3c series" }
+ahead_while_waiting = { value = true, default = false, why = "prepare ahead while the SGD step waits", measured = "gate fast-chain config, c3c series" }
+sgd_stage_thread = { value = true, default = false, why = "stage the next batch on its own thread", measured = "gate fast-chain config, c3c series" }
+fast_verify_arena_slots = { value = 64, default = 64, why = "verify arena slots (used only with fast_verify_workers > 0, #518)", measured = "c3c23" }
+fast_verify_slot_bytes = { value = 2097152, default = 2097152, why = "verify arena slot size (used only with fast_verify_workers > 0)", measured = "c3c23" }
+sgd_stage_stream_reuse = { value = true, default = false, why = "one persistent copy stream for staging (#525)", measured = "PR #525 bench_sgd_stage (11-13)" }
+sgd_stage_lean_tree = { value = true, default = false, why = "lean staged tensor tree (#525)", measured = "PR #525 bench_sgd_stage (11-13)" }
+sgd_verify_split = { value = true, default = false, why = "each data-parallel rank hashes its own chunks (#525); applied only with more than 1 rank", measured = "PR #525 (11-13)" }
+sgd_verify_threads = { value = 4, default = 4, why = "threads hashing one prepared file (#525 VERIFY_THREADS)", measured = "PR #525 (11-13)" }
+sgd_switch_interval_seconds = { value = 0.0005, default = 0, why = "sys.setswitchinterval in the SGD process (#525); 0 = interpreter default 5 ms", measured = "PR #525 (11-13)" }
+diagnostics_every = { value = 512, default = 8, why = "learner diagnostics every N steps; 8 cost step time in the chain", measured = "lead 11-13" }
+shards_adopt_unsharded_checkpoint = { value = false, default = false, why = "true only for a first sharded start from an unsharded CP (#523 a437612d: shard 0 continues it); --set it for that one start", measured = "#523 a437612d" }
+producer_identity = { value = "placeholder", default = "checkout", why = "placeholder = a scratch producer for a git-archive source (CPs void, probe only); refused outside --smoke unless --probe-only is passed. checkout = the real source_identity, needs a clean git checkout as src_dir", measured = "review of #524 (S4)" }
 # --- remote prepare ---
 remote_prepare = { value = true, default = false, why = "prepare on CPU hosts (#491/#496); lead default on", measured = "h100g onward, PLAN-TABLE §9" }
 remote_prepare_connections = { value = 36, default = 6, why = "connections over all prep hosts; must divide evenly over shards", measured = "c2j" }
@@ -41,6 +54,7 @@ remote_prepare_timeout_seconds = { value = 600, default = 600, why = "per-reques
 remote_prepare_wait_seconds = { value = 900, default = 900, why = "the learner waits this long for every prep host, never fewer", measured = "h100g onward" }
 prep_groups = { value = [{ type = "r640", nodes = 5, cpus = 32, mem_g = 150, workers = 14 }, { type = "fc430", nodes = 3, cpus = 24, mem_g = 100, workers = 10 }], default = [], why = "8 prep hosts; srun must pass --cpus-per-task (c3c25: hosts ran on 1 CPU)", measured = "c2h-c3s2 (8 hosts, prepwait 0); c3c26 cpus fix" }
 prep_host_inflight_gb = { value = 15, default = 0, why = "in-flight prepared output per host; scratch must have >= 2x free or the worker is killed (BrokenProcessPool)", measured = "c2f (8.7 GB free host failed), c2i (~14 GB per host)" }
+prep_scratch_min_free = { value = true, default = false, why = "remote_prepare --scratch-min-free-bytes = the in-flight budget (prep_host_inflight_gb): a host with less free scratch never becomes ready, and later pool failures below it are named remote_prepare_scratch_full", measured = "#523 a437612d; c2f (8.7 GB free host failed)" }
 prep_start_timeout_seconds = { value = 600, default = 0, why = "the prep job must be running and every host ready before the GPU job is submitted", measured = "c2g void (prep pended 16 min, GPU gave up)" }
 # --- inference services ---
 services = { value = 6, default = 1, why = "K services on the inference card under MPS", measured = "s1d onward, c3c series" }
@@ -48,6 +62,8 @@ service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, are
 service_window_ms = { value = 3, default = 3, why = "batching window", measured = "s1d onward" }
 service_compile = { value = true, default = true, why = "compiled inference", measured = "s1d onward" }
 service_prepare_workers = { value = 8, default = 8, why = "prepare workers per service", measured = "c3c series" }
+service_max_rows = { value = 4096, default = 1024, why = "rows per inference batch", measured = "s1d onward, c3c series" }
+service_max_job_rows = { value = 256, default = 256, why = "rows per prepare job", measured = "s1d onward, c3c series" }
 mu_poll_seconds = { value = 2, default = 2, why = "mu follower poll", measured = "s1 series" }
 handoff_write_workers = { value = 4, default = 4, why = "durable segment writers; 12 had no effect", measured = "c3c28" }
 drain_seconds = { value = 45, default = 45, why = "services drain before the learner wall closes the mu source", measured = "smoke2" }
@@ -94,5 +110,5 @@ native_nice = { value = 5, default = 0, why = "native processes at nice +5 (E8)"
 default_layouts = { value = { "1" = "shared", "2" = "1i+1t", "3" = "1i+2t" }, default = { "1" = "shared", "2" = "1i+1t", "3" = "1i+2t" }, why = "default layout per card count", measured = "PLAN-TABLE §9" }
 targets_rows_h = { value = { "1" = 14000000, "3" = 30000000 }, default = { "1" = 14000000, "3" = 30000000 }, why = "1 card >= 1,400 wan; 3 cards > 3,000 wan; 2 cards report the loss table", measured = "user 11-12/11-13, CHAIN-CONFIG-MODEL" }
 ready_rows_h = { value = { "3" = 35000000 }, default = { "3" = 35000000 }, why = "3 cards >= 3,500 wan = ready", measured = "user 11-12" }
-card_capacity_rows_h = { value = { "A100-40" = { inference = 42500000, training = 18500000 }, "A100-80" = { inference = 42500000, training = 19770000 } }, default = {}, why = "per-card capacities for the perfect-packing ideal N / (1/inference + 1/training)", measured = "PLAN-TABLE §9 (1464315 inference, V3-yin training)" }
+card_capacity_rows_h = { value = { "A100-40" = { inference = 42500000, training = 18500000 }, "A100-80" = { inference = 42500000, training = 19770000 } }, default = {}, why = "per-card capacities (training rows/h incl. aux) for the split-card perfect-packing ideal N / (1/inference + 1/training); not applied to one shared card (MPS overlap)", measured = "inference 1464315 (10.5k rows/s); training offline A100-40 1,788-1,887 wan (V3-yin/ren), in-chain c3s2 ~4,636 rows per 1.25 s cycle = ~1,335 wan" }
 allow_switch_off = { value = [], default = [], why = "speed switches a run may turn off (names from REQUIRED_ON); empty = all on", measured = "playbook §11.4 item 2" }

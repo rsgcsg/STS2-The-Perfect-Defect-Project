@@ -10,7 +10,14 @@ service  the real FastInferenceService + FastSegmentAssembler + SegmentHandoff
 
 Glue and counters only; every decision stays in the production components. Every
 setting comes from RUN/effective-profile.json (the run profile) and RUN/job-env.sh
-(site paths, layout); nothing here has a default of its own. CPs are void scratch.
+(site paths, layout); nothing here has a default of its own. With
+`producer_identity = "placeholder"` the CPs carry a scratch producer and are void (probe
+only); "checkout" uses the real source identity.
+
+Fixed here, not knobs: device "cuda" for the services, the gate's learner-base.json and
+dataplane.json as the base (minus gil_probe/lock_timing and the archive peer), the
+local peer, R2 off, and `exit_code_on_failure=70` passed only when the source's
+FastInferenceService accepts it (older builds: the service failure still writes STOP).
 
 argv: learner|service RUN
 """
@@ -57,6 +64,17 @@ def check_prep_env(own: str, hosts: int) -> None:
                          f"different from {own[:12]}: {sorted(bad)}")
 
 
+def stop_once(text: str) -> bool:
+    """Write STOP only if no STOP exists: the first reason (a failure) is never overwritten
+    by a later "learner ended" (review B2). True when this call wrote it."""
+    try:
+        with open(STOP, "x") as handle:
+            handle.write(text)
+        return True
+    except FileExistsError:
+        return False
+
+
 def jline(path: Path, record: dict) -> None:
     with path.open("a") as handle:
         handle.write(json.dumps(record, default=str) + "\n")
@@ -72,10 +90,16 @@ def learner() -> None:
     from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
 
     check_learner_cards()
-    # The source is a git-archive copy without a checkout: a scratch producer identity
-    # (CPs of these runs are void; the long-run freeze records the real revision).
-    producer = Producer("fastchain-scratch", "a" * 40, "b" * 64)
-    module.source_identity = lambda _root: producer
+    # A git-archive source has no checkout: "placeholder" = a scratch producer identity
+    # (CPs of these runs are void, probe only; preflight allows it only for --smoke or
+    # --probe-only). "checkout" keeps the real source_identity (clean git checkout).
+    if K["producer_identity"] == "placeholder":
+        producer = Producer("fastchain-scratch", "a" * 40, "b" * 64)
+        module.source_identity = lambda _root: producer
+    jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_producer_identity",
+                                         "mode": K["producer_identity"],
+                                         "checkpoints_void": K["producer_identity"]
+                                         == "placeholder"})
     gate = Path(site("gate_dir"))
     base = json.loads((gate / "learner-base.json").read_bytes())
     base.pop("peer")  # never carry the gate's archive subtree
@@ -104,6 +128,7 @@ def learner() -> None:
                      # with; this run's code has its own, which the
                      # services and aggregators use too: let the learner derive it.
                      "input_compiler_identity": None,
+                     "diagnostics_every": K["diagnostics_every"],
                      **({"checkpoint_seconds": float(K["checkpoint_seconds"])}
                         if K["checkpoint_seconds"] else {})})
     work = RUN / "learner"
@@ -130,13 +155,28 @@ def learner() -> None:
                       "preparation_workers": K["preparation_workers"],
                       "assembly_workers": K["assembly_workers"],
                       "prepared_batches": K["prepared_batches"],
-                      "prepare_slots": K["prepare_slots"], "persistent_pools": True,
-                      "ahead_while_waiting": True, "sgd_stage_thread": True,
+                      "prepare_slots": K["prepare_slots"],
+                      "persistent_pools": K["persistent_pools"],
+                      "ahead_while_waiting": K["ahead_while_waiting"],
+                      "sgd_stage_thread": K["sgd_stage_thread"],
                       "prepare_dispatch_workers": K["dispatch_workers"],
                       **({"fast_verify_workers": K["fast_verify_workers"],
-                          "fast_verify_arena_slots": 64, "fast_verify_slot_bytes": 2097152}
+                          "fast_verify_arena_slots": K["fast_verify_arena_slots"],
+                          "fast_verify_slot_bytes": K["fast_verify_slot_bytes"]}
                          if K["fast_verify_workers"] else {}),
                       "sgd_start_seconds": float(K["sgd_start_seconds"])})
+    # PR #525 staging options (preflight checked the build has them when any is on).
+    for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree"):
+        if K[key]:
+            dataplane[key] = True
+    if K["sgd_verify_split"] and ranks > 1:  # only data-parallel ranks split the hash
+        dataplane["sgd_verify_split"] = True
+    if K["sgd_verify_threads"] != 4:  # 4 = sgd_process.VERIFY_THREADS
+        dataplane["sgd_verify_threads"] = K["sgd_verify_threads"]
+    if K["sgd_switch_interval_seconds"]:
+        dataplane["sgd_switch_interval_seconds"] = float(K["sgd_switch_interval_seconds"])
+    if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only
+        dataplane["shards_adopt_unsharded_checkpoint"] = True
     if ranks > 1:
         dataplane["sgd_data_parallel"] = {"world": ranks, "backend": "nccl",
                                           "timeout_seconds": K["data_parallel_timeout_seconds"]}
@@ -173,7 +213,11 @@ def learner() -> None:
                "sgd_process", "sgd_stage_thread", "sgd_data_parallel", "sgd_cpus", "fast_chain",
                "prepared_batches", "fast_verify_workers", "preparation_workers",
                "assembly_workers", "persistent_pools", "shards", "prefetch_referenced_only",
-               "fast_batched_apply", "source_bytes")},
+               "fast_batched_apply", "source_bytes", "ahead_while_waiting",
+               "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
+               "sgd_verify_threads", "sgd_switch_interval_seconds",
+               "shards_adopt_unsharded_checkpoint")},
+           "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}
     jline(RUN / "learner-events.jsonl", eff)
@@ -326,8 +370,9 @@ def learner() -> None:
         except BaseException as error:  # noqa: BLE001
             report["close_failure"] = repr(error)
         (RUN / "learner-report.json").write_text(json.dumps(report, default=str, indent=1))
-        STOP.write_text("learner ended")
+        stop_once(f"learner failure {failure}" if failure else "learner ended")
         listener.close()
+    return failure
 
 
 def service() -> None:
@@ -390,8 +435,10 @@ def service() -> None:
     service = FastInferenceService(
         vocabulary, compiler.identity, assembler,
         training_generation=first["training_generation"], prepare_workers=workers,
-        prepare_cpus=mine, max_rows=4096, device="cuda", failure_dir=str(RUN / f"failures{tag}"),
-        **{"window_ms": float(K["service_window_ms"]), "max_job_rows": 256,
+        prepare_cpus=mine, max_rows=K["service_max_rows"], device="cuda",
+        failure_dir=str(RUN / f"failures{tag}"),
+        **{"window_ms": float(K["service_window_ms"]),
+           "max_job_rows": K["service_max_job_rows"],
            "compile": K["service_compile"], **kwargs}, **exit_option)
     follower = FastMuFollower(source, service, interval=float(K["mu_poll_seconds"]))
     if not follower.step():
@@ -448,7 +495,7 @@ def service() -> None:
                 raise handoff_error
         except BaseException as caught:  # noqa: BLE001 - stops the chain loudly
             error = repr(caught)
-            STOP.write_text("service failure " + error)
+            stop_once("service failure " + error)
         jline(log, {"t": time.time(), "service": {k: v for k, v in service.stats.items()
                                                   if isinstance(v, (int, float))},
                     "follower": follower.status(), "handoff": dict(holder["h"].counters),
@@ -469,17 +516,20 @@ def service() -> None:
         holder["h"].close()
     report["handoff"] = holder["h"].counters
     (RUN / f"service-report{tag}.json").write_text(json.dumps(report, default=str, indent=1))
+    if error is not None:
+        raise SystemExit(70)  # a failed service never exits 0 (review B2)
 
 
 if __name__ == "__main__":
     if MODE == "learner":
-        learner()
+        if learner() is not None:
+            sys.exit(6)
     else:
         try:
             service()
         except BaseException:  # noqa: BLE001 - any service failure ends the process loudly
             import traceback
             traceback.print_exc()
-            STOP.write_text("service failure (see service-*.log)")
+            stop_once("service failure (see service-*.log)")
             sys.stderr.flush()
             os._exit(70)

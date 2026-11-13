@@ -32,12 +32,24 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 - 预检任何一项不过就拒绝启动并逐项说明：卡位、单 rank 设备、备料机型与 scratch（每台开工时
   再查空闲 ≥ 2×在途）、备料能否按时排上（`sbatch --test-only`）、分区时限、python_env_sha256
   与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
-  同一 int 且 memo 开、candidate dll 前缀、分片均衡、只计实际运行部分的内存预算、跨节点身份、
-  热路径不在共享盘、核数上限。
+  同一 int 且 memo 开、candidate dll 前缀（≥12 位十六进制）、env 节点数够把聚合器铺满全部
+  服务（0 个直接拒绝）、分片均衡、旋钮所需源码特性（#523 a437612d 的预算修复与
+  `--scratch-min-free-bytes`、#525 暂存选项、#526 `residual`；源码没有就拒绝，旧源码只能
+  用 `--set` 退回 2/2 等旧值）、只计实际运行部分的内存预算、跨节点身份、热路径不在共享盘
+  （作业侧文件系统必须在本地白名单内，未知类型拒绝）、核数上限。
+- 生产者身份：`producer_identity = "placeholder"` 时 CP 带占位身份，一律作废，只作探测；
+  预检只在 `--smoke` 或显式 `--probe-only` 下放行，`plan.json` 记 `checkpoints_void`。
+  要产出有效 CP 须改用 `checkout`（源码目录为干净 git checkout）。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
-  `plan.json`；先交备料、等全部就绪才交 GPU，再交 env 数组。
+  `plan.json`；先交备料、等全部就绪才交 GPU，再交 env 数组。中途任一提交失败、备料拒绝
+  或 Ctrl-C，已交的作业全部取消再报错（`submit-failed.txt`），不自动重试。
+- 失败不被覆盖：STOP 只写第一次原因；任一服务或学习者非零退出、学习者无报告，GPU 作业
+  rc ≠ 0；MPS 起不来直接拒绝（不允许无 MPS 共卡）。
 - 读数：`readout.py <run>`（老 run 用 `--plan`）给每个角色的行/s、忙碌%、队列、等待、丢弃，
-  对照该卡数目标；多卡附损失表骨架（完美装箱理想值、实测、按原因一行）。
+  对照该卡数目标。训练行数按含 aux 计（每个 progress 事件 `rows + terminal_rows +
+  hp_rows`），目标只用这个口径判；td-only 并列显示；缺 aux 字段时显示未知、不判。
+  分卡布局附损失表骨架（完美装箱理想值、实测、按原因一行）；1卡共用时 MPS 重叠，完美装箱
+  不是上界，不算。
 - 尚未包含：自动续跑、5% 段保留与磁盘水位、每小时读数排程、每 2 h 评估排程（`fast_eval.py`）。
 
 ## 以下为旧部署操作史
