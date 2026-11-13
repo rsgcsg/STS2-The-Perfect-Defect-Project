@@ -289,8 +289,9 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts: dict[str, Any] = {}
     src = Path(site["src_dir"])
     facts["src_checkout"] = checkout_facts(src)
-    facts["src_rev"] = ((src / "REV").read_text().strip() if (src / "REV").exists()
-                        else facts["src_checkout"].get("head"))
+    facts["src_rev"] = (facts["src_checkout"].get("head") if facts["src_checkout"]["git"]
+                        else (src / "REV").read_text().strip() if (src / "REV").exists()
+                        else None)
     facts["src_features"] = source_features(src)
     frozen = src / plan["knobs"]["frozen_learner_config"]
     facts["frozen_recipe"] = json.loads(frozen.read_text()) if frozen.exists() else None

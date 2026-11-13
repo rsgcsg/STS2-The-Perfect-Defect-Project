@@ -73,7 +73,7 @@ def gate_base():
 
 def good_facts(plan):
     k = plan['knobs']
-    return {'src_rev': f'int {k["env_pkg_build"]}',
+    return {'src_rev': f'{k["env_pkg_build"]}{"0" * 32}',
             'src_features': {name: True for name in launch.FEATURES},
             'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
@@ -266,8 +266,7 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'src_features': {name: name != 'gc_freeze' for name in launch.FEATURES}},
      'source_features'),
     ({'remote_prepare_connections': 35}, {}, 'shards'),
-    ({}, {'prep_test_start_seconds': None}, 'prep_schedulable'),
-    ({}, {'prep_test_start_seconds': 99_999.0}, 'prep_schedulable'),
+    ({}, {'src_rev': 'feedface' * 5}, 'env_package'),
     ({}, {'secret_files': {'/x/auth.hex': 0o644}}, 'secret_files'),
     ({}, {'secret_files': {'/x/auth.hex': None}}, 'secret_files'),
 ])
@@ -593,21 +592,24 @@ def test_chain_generation_plan_and_resume_preflight():
                           probe_rows=[probe_row()], chain=chain)
 
 
-def write_outcome(run, failure=None, report=True, disk=False, window_end='deadline'):
+def write_outcome(run, failure=None, report=True, disk=False, window_end='deadline',
+                  stop=None):
     run.mkdir(parents=True, exist_ok=True)
     if report:
         (run / 'learner-report.json').write_text(json.dumps(
             {'failure': failure, 'summary': None if failure else {'window_end': window_end}}))
-    (run / 'STOP').write_text('learner failure x' if failure else 'learner ended')
+    (run / 'STOP').write_text(stop or ('learner failure x' if failure else 'learner ended'))
     if disk:
         (run / 'disk-stop').write_text('DISK STOP /x free 9%')
 
 
-def test_outcome_classifies_only_the_restore_fence_as_resumable(tmp_path):
+def test_outcome_resumes_fences_lost_hosts_and_dead_jobs_only(tmp_path):
     fence = "BoundaryError: input_owner_fenced_restore_last_checkpoint ..."
     cases = [({}, 'normal'), ({'failure': fence}, 'resumable'),
              ({'failure': 'BoundaryError: unresolved_worlds_after_drain'}, 'failure'),
-             ({'report': False}, 'no_learner_report'), ({'disk': True}, 'disk_stop'),
+             ({'failure': 'BoundaryError: unresolved_worlds_after_drain',
+               'stop': 'service failure 2 exited'}, 'resumable'),
+             ({'report': False}, 'resumable'), ({'disk': True}, 'disk_stop'),
              ({'failure': fence, 'disk': True}, 'disk_stop')]
     for i, (kw, kind) in enumerate(cases):
         write_outcome(tmp_path / str(i), **kw)
@@ -690,12 +692,15 @@ def test_chain_stops_loudly_when_resumes_run_out_and_keeps_the_first_cause(tmp_p
     assert final['first_cause']['kind'] == 'resumable'
 
 
-def test_chain_never_resumes_other_failures_or_a_second_fence_within_the_hour(tmp_path):
+def test_chain_never_resumes_other_failures_and_allows_three_resumes(tmp_path):
     chain, cluster = chain_for(tmp_path / 'a', [{'failure': 'ValueError: boom'}])
     assert chain.run() == 1 and len(cluster.argvs) == 1
-    chain, cluster = chain_for(tmp_path / 'b', [FENCE, FENCE, {}], resume_max_total=3)
-    assert chain.run() == 1 and len(cluster.argvs) == 2
-    assert 'within the last hour' in chain.state['final']['cause']
+    chain, cluster = chain_for(tmp_path / 'b', [FENCE, {'report': False},
+                                                {'stop': 'service failure 1', 'failure': 'x'},
+                                                FENCE])
+    assert chain.run() == 1 and len(cluster.argvs) == 4
+    assert 'resume budget exhausted (3 of 3)' in chain.state['final']['cause']
+    assert 'restore_last_checkpoint' in chain.state['final']['first_cause']['failure']
 
 
 def test_chain_never_resumes_across_a_code_or_profile_change(tmp_path):
@@ -733,3 +738,12 @@ def test_readout_reports_disk_watermarks(tmp_path):
     (tmp_path / 'disk-watermark.txt').write_text('DISK WARN /run free 15% < 20% now\n')
     disk = readout.disk_edge(tmp_path)
     assert disk['free_pct'] == {'/run': 15.0, '/tmp': 40.0} and len(disk['events']) == 1
+
+
+def test_prep_estimate_is_only_a_warning():
+    plan = plan_for(cards=3)
+    for start in (None, 99_999.0):
+        result = preflight.check_prep_schedulable(plan, {**good_facts(plan),
+                                                         'prep_test_start_seconds': start})
+        assert result.ok and result.warn
+    assert 'WARN prep_schedulable' in preflight.report([result])

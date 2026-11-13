@@ -29,7 +29,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
 - 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
   照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
-- 预检任何一项不过就拒绝启动并逐项说明：卡位、单 rank 设备、备料机型与 scratch（每台开工时
+- 预检任何一项不过就拒绝启动并逐项说明（备料排队估计例外：无时限分区上 `--test-only`
+  估计不可靠，只打印 WARN）：卡位、单 rank 设备、备料机型与 scratch（每台开工时
   再查空闲 ≥ 2×在途）、备料能否按时排上（`sbatch --test-only`）、分区时限、python_env_sha256
   与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
   同一 int 且 memo 开、candidate dll 前缀（≥12 位十六进制）、env 节点数够把聚合器铺满全部
@@ -72,9 +73,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   --eval-slot-registered]`。一个链 = 一个运行窗口（`long_wall_seconds`，一个学习者预算 id
   `c-CHAIN` + 不可变 deadline，由学习者跨恢复保持）；第 0 代 = `launch.py submit CHAIN
   --long-run`，之后每代 `CHAIN-rN` 是新 run 目录、新训练代，从本链最新 CP（published_at）
-  起步。只有学习者报 `input_owner_fenced_restore_last_checkpoint` 才续；无报告、提交失败、
-  预检拒绝、其他失败、磁盘停止、代码/配置/站点/源码有变都不续；续跑次数受
-  `resume_max_total`/`resume_max_per_hour` 限制，用完以第一原因响亮停止（`FINAL.json`）。
+  起步（学习者自己的 CP-only 恢复，CP 记分片数）。可续：学习者报
+  `input_owner_fenced_restore_last_checkpoint`、服务/备料主机丢失（STOP「service failure」）、
+  GPU 作业无学习者报告就结束（节点故障、抢占）；不续：正常结束、其他学习者失败、提交失败或
+  预检拒绝、磁盘停止、代码/配置/站点/源码有变。最多 `resume_max_total`（3）次，用完以第一
+  原因响亮停止（`FINAL.json`）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
   每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；带 `--eval-*` 时跑源码里的
   `tools/friday/fast_eval.py`（每 `eval_interval_seconds`、`eval_seeds` 局，不停训），链结束再评
   最新 CP 一次。

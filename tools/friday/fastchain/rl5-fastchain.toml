@@ -84,8 +84,7 @@ mem_hard_gb = { value = 224, default = 224, why = "above this the job scancels i
 core_cap = { value = { "1" = 300, "2" = 300, "3" = 450 }, default = { "1" = 300, "2" = 300, "3" = 450 }, why = "total cores (GPU job + env); 3 cards within the user's <=500 approval", measured = "coordinator 2026-11-12" }
 wall_seconds = { value = 3000, default = 3300, why = "GPU wall per test run (long runs set their own)", measured = "c2j" }
 long_wall_seconds = { value = 72000, default = 72000, why = "first RL5 long run: 20 h in one GPU job, no successor (user 11-13 C4); 72000 s is the product operating-budget cap", measured = "LONG-RUN-CHECK §五 C4" }
-resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain (user 11-13 C5: automatic); bounded, then a loud final stop with the first cause", measured = "LONG-RUN-CHECK §五 C5; RL4.1 long-run log (2 continuations in 36 h)" }
-resume_max_per_hour = { value = 1, default = 1, why = "a second fence within the hour is not transient: stop loudly instead of looping", measured = "RL4.1 long-run log" }
+resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain (user 11-13 C5: automatic; lead 11-14 default 3); then a loud final stop with the first cause", measured = "LONG-RUN-CHECK §五 C5; RL4.1 long-run log (2 continuations in 36 h)" }
 min_generation_seconds = { value = 1800, default = 1800, why = "a generation shorter than this cannot reach its first CP after warm-up: the chain ends instead", measured = "c2k (warm-up + first CP ~20 min)" }
 supervise_poll_seconds = { value = 60, default = 60, why = "supervisor checks the GPU job and the schedules once per poll", measured = "watcher cadence" }
 readout_every_seconds = { value = 3600, default = 3600, why = "hourly readout of the current generation (lead 11-13 item 5)", measured = "RL4.2 hourly check" }

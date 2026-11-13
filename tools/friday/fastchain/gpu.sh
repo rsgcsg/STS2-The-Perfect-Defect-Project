@@ -22,7 +22,7 @@ shm_clean() { [ "$(squeue -u $USER -w $(hostname -s) -h -o %i | grep -vc "^$SLUR
   echo "shm cleanup ($1): $(find /dev/shm -maxdepth 1 -user $USER -name 'psm_*' -print -delete | wc -l) blocks"; }
 shm_clean start
 ulimit -n 65536 2>/dev/null || ulimit -n $(ulimit -Hn)
-echo "node=$(hostname -s) start=$(date -Is) job=$SLURM_JOB_ID run=$FC_RUNTAG src=$(cat $FC_SITE_SRC_DIR/REV) cpus=$(taskset -pc $$ | sed 's/.*: //')"
+echo "node=$(hostname -s) start=$(date -Is) job=$SLURM_JOB_ID run=$FC_RUNTAG src=$(cat $FC_SITE_SRC_DIR/REV 2>/dev/null || git -C $FC_SITE_SRC_DIR rev-parse HEAD) cpus=$(taskset -pc $$ | sed 's/.*: //')"
 echo "layout: $FC_NAME services=$FC_SERVICES -> card $FC_SERVICE_CARD; learner sees $FC_LEARNER_VISIBLE device $FC_LEARNER_DEVICE ranks $FC_RANKS"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 # Start checks on this node (refuse = no run): bz2, lz4, python_env_sha256, local tmp.

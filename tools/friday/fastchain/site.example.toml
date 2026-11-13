@@ -30,7 +30,7 @@ gpu_local_tmp = "/tmp"                           # node-local; hot path lives he
 env_tmp_root = "/scratch/USER/fastchain/tmp"
 shared_fs_prefixes = ["/scratch", "/home", "/data"]
 env_partition = "CPU-PARTITION"
-prep_partition = "PREP-PARTITION"
+prep_partition = "PREP-PARTITION"   # long run: a partition whose limit covers 20 h + margins (e.g. a 24 h one), never a 60 min debug partition
 excluded_prep_hosts = []                         # e.g. a host whose scratch is too small
 prep_scratch = { r640 = "/tmp", fc430 = "/dev/shm" }   # scratch per prep host type
 run_name = "fastchain-run"

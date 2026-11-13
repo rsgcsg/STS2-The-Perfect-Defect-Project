@@ -232,7 +232,6 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "long_wall_seconds": _int(60, 72000),
     # resume chain (supervise.py) and its schedules
     "resume_max_total": _int(0, 20),
-    "resume_max_per_hour": _int(0, 10),
     "min_generation_seconds": _int(300),
     "supervise_poll_seconds": _int(10, 600),
     "readout_every_seconds": _int(600),

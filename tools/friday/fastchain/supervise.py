@@ -13,14 +13,19 @@ generation `CHAIN-rN` is a NEW run directory and a NEW training generation, star
 the newest CP of the chain (RL4.1 long-run lessons: continuation = new dir + reconciled
 state; newest CP by published_at; re-freeze on code change).
 
-Resume rules (user 11-13 C5: automatic):
+Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - resumable = the learner reported `input_owner_fenced_restore_last_checkpoint` (the
-  product's own instruction: the fenced owner restores its last CP) and every job of the
-  old generation is gone; nothing else is resumed (no learner report, a submit failure,
-  a refused preflight, any other learner failure, a disk-watermark stop);
-- the chain's code, run profile, site file, overrides and source identity must be the
-  ones it started with; any change ends the chain (never resumed across a change);
-- at most `resume_max_total` resumes, at most `resume_max_per_hour` within an hour;
+  product's own instruction: the fenced owner restores its last CP), a service or prep
+  host was lost (STOP "service failure ..."), or the GPU job died without a learner
+  report (node failure, preemption); the old generation's jobs are cancelled first;
+- not resumed: a normal end, any other learner failure (it would repeat), a refused
+  preflight or failed submit, a disk-watermark stop, a code/profile/site/source change
+  since the chain started (RL4.1 lesson: re-freeze on code change);
+- at most `resume_max_total` resumes (default 3);
+- the restore itself is the learner's: CP-only restore (fresh generation, in-flight input
+  discarded), shard count recorded in the CP. Not covered: a CP that fails to restore is
+  not skipped for an older one (the next generation fails and the chain stops), and
+  evaluations already submitted are not re-checked across generations;
 - a submission is never repeated: a launcher failure after jobs were submitted (unknown
   delivery) ends the chain;
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
@@ -82,12 +87,13 @@ def outcome(run: Path) -> dict[str, Any]:
     failure = (report or {}).get("failure")
     disk = (run / "disk-stop").read_text().strip() if (run / "disk-stop").exists() else None
     first = stop.read_text().strip() if stop.exists() else None
-    if report is None:
-        kind = "no_learner_report"
-    elif failure is None:
-        kind = "disk_stop" if disk else "normal"
-    elif any(code in failure for code in RESUMABLE):
-        kind = "disk_stop" if disk else "resumable"
+    lost = (first or "").startswith("service failure")
+    if disk:
+        kind = "disk_stop"
+    elif report is not None and failure is None:
+        kind = "normal"
+    elif report is None or lost or any(code in failure for code in RESUMABLE):
+        kind = "resumable"
     else:
         kind = "failure"
     return {"kind": kind, "failure": failure, "stop": first, "disk_stop": disk,
@@ -318,9 +324,6 @@ class Chain:
         done = self.state["resumes_at"]
         if len(done) >= self.knobs["resume_max_total"]:
             return f"resume budget exhausted ({len(done)} of {self.knobs['resume_max_total']})"
-        if sum(1 for t in done if now - t < 3600) >= self.knobs["resume_max_per_hour"]:
-            return (f"{self.knobs['resume_max_per_hour']} resume(s) within the last hour "
-                    "already: not transient")
         left = self.state["deadline_at"] - now
         if left < self.knobs["min_generation_seconds"]:
             return f"only {left:.0f} s of the window left (< min_generation_seconds)"

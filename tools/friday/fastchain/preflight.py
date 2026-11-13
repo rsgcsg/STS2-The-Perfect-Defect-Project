@@ -47,6 +47,7 @@ class Result:
     name: str
     ok: bool
     detail: str
+    warn: bool = False  # printed as WARN, never refuses
 
 
 def _under(path: str, prefixes: list[str]) -> bool:
@@ -125,12 +126,15 @@ def check_prep_schedulable(plan: dict[str, Any], facts: dict[str, Any]) -> Resul
         return Result("prep_schedulable", False, "remote prepare on but no prep hosts")
     start = facts.get("prep_test_start_seconds")
     limit = k["prep_start_timeout_seconds"]
+    # Owner 11-14: the --test-only estimate is unreliable on no-limit partitions (running
+    # jobs have no end time): a warning with the estimate, never a refusal.
     if start is None:
-        return Result("prep_schedulable", False,
-                      f"sbatch --test-only gave no start estimate for {hosts} prep hosts")
-    return Result("prep_schedulable", start <= limit,
-                  f"{hosts} prep hosts, estimated start in {start:.0f} s (limit {limit:.0f} s; "
-                  "the GPU job is submitted only after every host is ready)")
+        return Result("prep_schedulable", True, f"sbatch --test-only gave no start estimate "
+                      f"for {hosts} prep hosts", warn=True)
+    return Result("prep_schedulable", True,
+                  f"{hosts} prep hosts, estimated start in {start:.0f} s (prep wait limit "
+                  f"{limit:.0f} s; the GPU job is submitted only after every host is ready)",
+                  warn=start > limit)
 
 
 def check_switches(plan: dict[str, Any]) -> Result:
@@ -159,8 +163,10 @@ def check_env_package(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     elif not build or not rev.split()[0].startswith(build):
         problems.append(f"env package SOURCE_REVISION {rev.split()[0][:12]} is not the "
                         f"env_pkg_build {build}")
-    if build and build not in src:
-        problems.append(f"source REV '{src}' does not name the env build {build}")
+    head = (src.split() or [""])[0]
+    if build and not head.startswith(build):
+        problems.append(f"source {head[:12] or '-'} is not the env build {build} (build the "
+                        "env package from the run's source)")
     cand = facts.get("env_candidate_sha256")
     prefix = k["env_candidate_artifact_sha256"]
     if not HEX12.match(prefix):
@@ -451,7 +457,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
 
 
 def report(results: list[Result]) -> str:
-    lines = [f"{'PASS' if r.ok else 'FAIL'} {r.name}: {r.detail}" for r in results]
+    lines = [f"{'FAIL' if not r.ok else 'WARN' if r.warn else 'PASS'} {r.name}: {r.detail}"
+             for r in results]
     failed = [r.name for r in results if not r.ok]
     lines.append("preflight: " + (f"REFUSED ({', '.join(failed)})" if failed else "ok"))
     return "\n".join(lines)
