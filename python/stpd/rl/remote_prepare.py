@@ -513,12 +513,8 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                         result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
                     text = f"{type(error).__name__}: {error}"
-                    # A full scratch is named as such, whether it was refused before
-                    # the work, raised as ENOSPC or left a worker dead.
-                    full = (str(error) if isinstance(error, ScratchFull)
-                            else host.scratch_full()
-                            if (isinstance(error, BrokenProcessPool)
-                                or getattr(error, "errno", None) == errno.ENOSPC) else None)
+                    full = _scratch_label(host, error, 0 if task.get("kind") == "labels"
+                                          else task["args"][0].max_output_bytes)
                     if full is not None:
                         text = f"{full} ({type(error).__name__})"
                     # Also in this host's own log: the learner only gets one line,
@@ -562,11 +558,32 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
             finally:
                 host.release(digests)
     except Exception as error:  # one client's failure never stops the host
-        full = host.scratch_full() if getattr(error, "errno", None) == errno.ENOSPC else None
+        full = _scratch_label(host, error, 0)
         print(f"remote_prepare connection ended: {type(error).__name__}"
               + (f" {full}" if full is not None else ""), flush=True)
     finally:
         connection.close()
+
+
+def _scratch_label(host: Any, error: BaseException, needed: int) -> str | None:
+    """`remote_prepare_scratch_full` text for a failed task, or None.
+
+    A full scratch is named as such when the task was refused before the work
+    (`ScratchFull`), when the error is ENOSPC-class, or when a dead worker pool
+    left the scratch with less free space than this task's output needs. A dead
+    worker with that space free (an OOM kill, say) is not labelled: the reserve
+    is the start/admission margin, not evidence of what killed a worker."""
+    if isinstance(error, ScratchFull):
+        return str(error)
+    code = getattr(error, "errno", None)
+    if code in (errno.ENOSPC, errno.EDQUOT):
+        free = shutil.disk_usage(host.scratch).free
+        return f"{SCRATCH_FULL}: free_bytes={free} errno={errno.errorcode.get(code, code)}"
+    if isinstance(error, BrokenProcessPool) and needed > 0:
+        free = shutil.disk_usage(host.scratch).free
+        if free < needed:
+            return f"{SCRATCH_FULL}: free_bytes={free} needed_bytes={needed} (worker died)"
+    return None
 
 
 def serve(argv: list[str] | None = None) -> None:

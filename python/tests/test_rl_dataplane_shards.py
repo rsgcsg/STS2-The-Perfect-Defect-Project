@@ -203,7 +203,10 @@ def test_with_prestart_one_shard_still_trains_exactly_as_the_in_process_data_pla
     prestart fires. All three datasets are selected before the first step
     (two ahead), so when it fires cannot change a selection: the shard path
     trains the same datasets with the same members, aux selections, RNG
-    states, losses and counters. The prestart count itself depends on timing."""
+    states, losses and counters. The prestart count itself depends on timing.
+    Known limit: for that reason it never covers a selection made while a
+    prestarted dataset trains (the two-shard training test runs that path,
+    without a value-by-value comparison)."""
     inline = run_arm(tmp_path / "inline", monkeypatch, 0, prestart=True, epochs=4)
     shard = run_arm(tmp_path / "shard", monkeypatch, 1, prestart=True, epochs=4)
     assert inline["datasets"] == 3 and inline["prestarted"] >= 1 and shard["prestarted"] >= 1
@@ -430,55 +433,68 @@ def _send_then_vanish(connection: Any, segments: list[Any], go: Any) -> None:
     connection.close()
 
 
-def test_a_normal_stop_is_not_a_fence_when_services_end_before_the_shards_hear_of_it(
+def _vanishing_services(owner: SegmentLearner, go: Any,
+                        indices: tuple[int, ...]) -> tuple[list[Any], int]:
+    """One still-open game per index, each on its own connection (connections go
+    to the shards in turn), all admitted; the services end without their orderly
+    end on `go`."""
+    senders: list[Any] = []
+    admitted = 0
+    for index in indices:
+        sealed = game(owner, index, terminal=False)
+        admitted += sum(len(segment.header["rows"]) for segment in sealed)
+        ours, theirs = multiprocessing.Pipe()
+        process = multiprocessing.Process(target=_send_then_vanish, args=(theirs, sealed, go))
+        process.start()
+        theirs.close()
+        owner.attach_fast_handoff(ours)
+        senders.append(process)
+    assert eventually(lambda: owner.fast_status()["fast_chain"]["learner"][
+        "admitted_rows"] == admitted, 60)
+    return senders, admitted
+
+
+def _record_events(owner: SegmentLearner) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+    record = owner._event
+    owner._event = lambda kind, **fields: (events.append((kind, fields)),  # type: ignore[method-assign]
+                                           record(kind, **fields))[1]
+    return events
+
+
+def test_a_normal_stop_is_not_a_fence_when_services_end_after_the_stop_reply(
         tmp_path, monkeypatch):
-    """S2: the stop flag reaches a shard by message. A service that ends right
-    after the stop reply may reach its shard first; the shard reports the lost
-    hand-off, the stopping learner records it, and nothing admitted is lost."""
+    """S2, order B: the stop flag is acknowledged by every shard before the stop
+    reply, so a service that ends right after that reply ends after its shard
+    applied the stop. The shard only records the lost hand-off, the learner is
+    not fenced, nothing admitted is lost, and the shard's fence report is not
+    spent: a later genuine failure of that shard still fences the learner."""
     owner = learner(tmp_path, monkeypatch, 2)
     go = multiprocessing.Event()
     senders: list[Any] = []
-    events: list[tuple[str, dict[str, Any]]] = []
+    fenced_later = False
     try:
-        admitted = 0
-        for index in (1, 2):  # one open game on a connection of each shard
-            sealed = game(owner, index, terminal=False)
-            admitted += sum(len(segment.header["rows"]) for segment in sealed)
-            ours, theirs = multiprocessing.Pipe()
-            process = multiprocessing.Process(target=_send_then_vanish,
-                                              args=(theirs, sealed, go))
-            process.start()
-            theirs.close()
-            owner.attach_fast_handoff(ours)
-            senders.append(process)
-        assert eventually(lambda: owner.fast_status()["fast_chain"]["learner"][
-            "admitted_rows"] == admitted, 60)
-        # The stop flags are held back: the shards hear of the stop only after
-        # the services ended (the widest form of the race).
-        held = owner.shards.flags
-        owner.shards.flags = lambda **_: None
-        record = owner._event
-        owner._event = lambda kind, **fields: (events.append((kind, fields)),
-                                               record(kind, **fields))[1]
+        senders, admitted = _vanishing_services(owner, go, (1, 2))
+        events = _record_events(owner)
         reply = owner.control({"operation": "stop", "run": owner.config.run,
                                "training_generation": owner.generation, "epoch": 1,
                                "reason": "window_end"})
         assert reply["stopped"] is True
+        # The reply came after every shard applied the stop.
+        assert all(owner.shards._call(shard, "status")["newlease_stopped"]
+                   for shard in owner.shards.shards)
         go.set()
         for process in senders:
             process.join(60)
             assert process.exitcode == 0
-        # Each shard saw an EOF before the stop and fenced itself ...
-        for shard in owner.shards.shards:
-            assert eventually(lambda shard=shard: owner.shards._call(
-                shard, "status")["input_fenced"], 30)
+        # Each shard saw its EOF after the stop: an event, not a fence.
         assert eventually(lambda: sorted(fields["shard"] for kind, fields in events
                                          if kind == "fast_handoff_lost"
                                          and fields.get("learner_stopping")) == [0, 1], 30)
-        # ... and the learner, already stopping, only recorded it.
+        assert not any(owner.shards._call(shard, "status")["input_fenced"]
+                       for shard in owner.shards.shards)
         assert not owner.input_fenced and owner.input_failure is None
         assert not any(shard.failed for shard in owner.shards.shards)
-        owner.shards.flags = held
         with owner.input_gate, owner.condition:
             owner._discard_stopped_shards()  # as `_run` does at the stop
         assert not owner.input_fenced
@@ -486,13 +502,56 @@ def test_a_normal_stop_is_not_a_fence_when_services_end_before_the_shards_hear_o
         status = owner.fast_status()["fast_chain"]["shards"]["per_shard"]
         assert sum(s["training_discarded_rows"] for s in status) == admitted
         assert sum(s["queue_rows"] for s in status) == 0
+        # A later genuine failure (an asynchronous message the shard cannot apply:
+        # no reply carries it) still reaches the learner as that shard's fence.
+        owner.shards._cast(owner.shards.shards[0], "release", sequence=10**9)
+        assert eventually(lambda: owner.input_fenced, 30)
+        fenced_later = True
+        assert owner.input_failure["shard"] == 0
+        assert owner.input_failure["failure"]["operation"] == "dataplane_shard_release"
     finally:
         go.set()
         for process in senders:
             if process.is_alive():
                 process.kill()
-        owner.close()  # both shards end cleanly: no fence was raised
+        owner.close()
+    assert fenced_later
     assert [shard.exit["exitcode"] for shard in owner.shards.shards] == [0, 0]
+
+
+def test_a_hand_off_lost_before_the_stop_fences_even_when_its_report_arrives_after(
+        tmp_path, monkeypatch):
+    """S2, order A (the delta review's case): a service dies with unacked work
+    just before the stop. Its shard reports the loss, but the report waits for
+    the learner's condition, which the stop holds, so it arrives after the stop
+    flag is set. The shard saw the EOF before it applied the stop: a real loss,
+    fenced, not recorded as a stop-time end."""
+    owner = learner(tmp_path, monkeypatch, 2)
+    go = multiprocessing.Event()
+    senders: list[Any] = []
+    try:
+        senders, _admitted = _vanishing_services(owner, go, (1,))  # on shard 0
+        victim = owner.shards.shards[0]
+        with owner.input_gate, owner.condition:
+            go.set()
+            senders[0].join(60)
+            assert senders[0].exitcode == 0
+            # The shard fenced itself on the EOF; its report cannot be handled
+            # while this condition is held ...
+            assert eventually(lambda: owner.shards._call(victim, "status")["input_fenced"], 30)
+            assert not owner.input_fenced
+            # ... and the stop comes first (every shard acknowledges it).
+            owner.newlease_stopped = True
+        assert eventually(lambda: owner.input_fenced, 30)
+        assert owner.input_failure["shard"] == 0
+        assert owner.input_failure["failure"]["operation"] == "fast_handoff_lost"
+        assert victim.failed
+    finally:
+        go.set()
+        for process in senders:
+            if process.is_alive():
+                process.kill()
+        owner.close()
 
 
 @pytest.mark.parametrize("failure", ["dead", "hung"])
@@ -500,15 +559,29 @@ def test_a_shard_lost_at_the_stop_fences_and_everything_is_still_closed(
         tmp_path, monkeypatch, failure):
     """S1: the stop discard asks every shard. A dead or a hung one fences the
     learner (no disposition for what it held, no final CP: restore the last
-    one), and the close still ends the shards, the pool and the SGD process."""
+    one), and the close still ends the shards, the pool and the SGD process.
+    The shard that did answer released its rows: they get their disposition."""
     monkeypatch.setattr(dataplane_shards, "REPLY_SECONDS", 10.0)
     monkeypatch.setattr(dataplane_shards, "FAILED_CLOSE_SECONDS", 2.0)
     owner = learner(tmp_path, monkeypatch, 2)
     shards = owner.shards
     victim = shards.shards[0 if failure == "dead" else 1]
+    survivor_rows = 0
+    dispositions: list[dict[str, Any]] = []
+    durable = owner._append_durable
+
+    def append_durable(key: str, original: Any, response: Any, **fields: Any) -> Any:
+        if fields.get("kind") == "disposition":
+            dispositions.append(original)
+        return durable(key, original, response, **fields)
+
+    owner._append_durable = append_durable  # type: ignore[method-assign]
     try:
-        hand_off(owner, game(owner, 1))  # queued on shard 0
-        hand_off(owner, game(owner, 2))  # queued on shard 1
+        for index in (1, 2):  # game 1 queued on shard 0, game 2 on shard 1
+            sealed = game(owner, index)
+            hand_off(owner, sealed)
+            if index - 1 != victim.index:
+                survivor_rows = sum(len(segment.header["rows"]) for segment in sealed)
         discard = shards.discard_stopped
 
         def at_the_stop() -> list[dict[str, Any]]:
@@ -533,6 +606,9 @@ def test_a_shard_lost_at_the_stop_fences_and_everything_is_still_closed(
     assert owner.input_failure["shard"] == victim.index
     assert owner.input_failure["failure"]["operation"] == "dataplane_shard_discard_at_stop"
     assert owner.checkpoint_sequence == sequence  # no final CP from a fenced stop
+    # The surviving shard's discard is durable before the fence.
+    assert [d["operation"] for d in dispositions] == ["training_discard"]
+    assert sum(record["rows"] for record in dispositions[0]["segments"]) == survivor_rows
     # The close ran to its end: every shard reaped, the SGD process shut down,
     # no child process of this learner left.
     assert all(shard.exit is not None and not shard.process.is_alive()
@@ -686,12 +762,16 @@ def test_an_unsharded_CP_is_continued_with_shards_only_by_the_explicit_switch(
         now = adopted.shards.snapshot()
         assert now["count"] == 2
         for index, shard in enumerate(now["shards"]):
-            expected = adopted_rng_state(committed, index)
+            expected = adopted_rng_state(committed, adopted.generation, index)
             assert shard["committed_selection_rng"][0] == expected[0]
             assert list(shard["committed_selection_rng"][1]) == list(expected[1])
         assert list(now["shards"][0]["committed_selection_rng"][1]) == list(committed[1])
         assert (now["shards"][1]["committed_selection_rng"]
                 != now["shards"][0]["committed_selection_rng"])
+        # The generation is part of the derivation: shard 0 stays the committed RNG.
+        assert adopted_rng_state(committed, "g-other", 0) == committed
+        assert adopted_rng_state(committed, "g-other", 1) != adopted_rng_state(
+            committed, adopted.generation, 1)
         # Its next CP names the shards, so a later restore needs no switch.
         assert adopted._learning_state().input_pipeline["dataplane_shards"]["count"] == 2
     finally:
@@ -742,3 +822,35 @@ def test_invalid_shard_configuration_is_refused_before_anything_starts(
     with pytest.raises(BoundaryError, match="dataplane_shards"):
         learner(tmp_path, monkeypatch, extra["shards"],
                 **{key: value for key, value in extra.items() if key != "shards"})
+
+
+class _NoScan(dict):
+    """An instance ledger that fails any walk over it (lookups stay allowed)."""
+
+    def _walk(self, *args: Any) -> Any:
+        raise AssertionError("the open instances were walked during an offer")
+
+    __iter__ = items = keys = values = _walk  # type: ignore[assignment]
+
+
+def test_a_shard_offer_claims_only_its_own_instance_without_walking_the_open_ones():
+    """With several shards every shard holds every attested open game (control is
+    broadcast). An offer reports only the instance it bound: O(1), not O(open)."""
+    from test_rl_fast_source import attest, bootstrap_and_terminal, message, mu, published
+
+    from stpd.rl.dataplane_shards import _ShardIntake
+    from stpd.rl.fast_source import _Instance
+
+    intake = _ShardIntake(run="run-1", generation="gen-1")
+    intake.publish_mu(published(mu(1)))
+    sent: list[dict[str, Any]] = []
+    intake.notify = sent.append
+    for index in range(3000):  # open games attested here, bound on other shards
+        intake.attest(attest(f"other-{index}"))
+    first, second = bootstrap_and_terminal("g1")
+    intake.instances = _NoScan(intake.instances)
+    assert not intake.offer(message(first), first.data).admit  # buffered, bound, claimed
+    intake.attest(attest("g1"))
+    intake.offer(message(second, 2), second.data)
+    assert sent == [{"kind": "claims", "instances": ["g1"]}]  # once, only its own
+    assert isinstance(intake.instances.get("other-1"), _Instance)
