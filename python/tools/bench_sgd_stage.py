@@ -16,12 +16,14 @@ same `_DataParallel._verify_split` rank 0 uses.
 
     PYTHONPATH=python python python/tools/bench_sgd_stage.py --megabytes 850 --batches 6
 
-`--gc-datasets N` instead measures `sgd_gc_freeze`: one rank holds a long-lived
-heap sized by `--gc-heap` (objects, standing in for the SGD child's model,
-compiled graphs and caches), stages N datasets back to back (each kept alive
-until the next, as a running dataset holds its batch) and reports the full
-collections that fell inside, the tracked-object count over time (leak bound)
-and one full collect's time, without and with the freeze.
+`--gc-datasets N` instead measures `sgd_gc_freeze` / `sgd_gc_boundary`: one rank
+holds a long-lived heap sized by `--gc-heap` (objects, standing in for the SGD
+child's model, compiled graphs and caches), stages N datasets back to back (each
+kept alive until the next, as a running dataset holds its batch; each followed
+by a safetensors snapshot like rank 0's) and reports the automatic full
+collections that fell inside, the boundary collections, the tracked-object
+count and peak RSS over time (leak bound) and one full collect's time, for the
+earlier automatic GC, the freeze alone and freeze + boundary.
 """
 
 from __future__ import annotations
@@ -247,13 +249,19 @@ def _long_lived_heap(objects: int) -> list[Any]:
     return heap
 
 
-def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, freeze: bool,
+def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, mode: str,
             results: Any) -> None:
     import gc
+    import resource
 
     import torch
 
     from stpd.rl import sgd_process as sp
+    from stpd.rl.checkpoint_codec import encode_checkpoint
+    from stpd.rl.checkpoint_state import snapshot_weights
+
+    freeze, boundary = mode != "automatic", mode == "freeze+boundary"
+    weights = {f"w{i}": torch.randn(40_000) for i in range(100)}  # ~16 MB, 100 tensors
 
     torch.set_num_threads(4)
     # The CUDA direct path stages with no explicit `gc.collect()` per batch (the
@@ -266,7 +274,9 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, freeze: bool
     began = time.perf_counter()
     gc.collect()
     full_before = time.perf_counter() - began
-    if freeze:  # what `SgdWorker.freeze_heap` does after the first dataset
+    if boundary:
+        gc.set_threshold(*gc.get_threshold()[:2], sp.GC_AUTOMATIC_FULL_OFF)
+    if freeze:  # what `SgdWorker.collect_boundary` does after the first dataset
         gc.collect()
         gc.freeze()
     began = time.perf_counter()
@@ -282,15 +292,25 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, freeze: bool
             pauses.append((info["generation"], time.perf_counter() - started.pop()))
 
     gc.callbacks.append(callback)
-    tracked = []
+    tracked, rss, boundaries = [], [], []
     for index in range(datasets):
         held = sp._SgdWorker._stage_work(cast(Any, worker), plan)
+        encode_checkpoint({"weights": snapshot_weights(weights)})  # rank 0's snapshot
+        if boundary:
+            gc.callbacks.remove(callback)
+            began = time.perf_counter()
+            gc.collect()
+            if len(gc.get_objects(2)) >= sp.GC_REFREEZE_OBJECTS:
+                gc.freeze()
+            boundaries.append(time.perf_counter() - began)
+            gc.callbacks.append(callback)
         if index % max(1, datasets // 10) == 0 or index == datasets - 1:
             tracked.append(len(gc.get_objects()))
+            rss.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     gc.callbacks.remove(callback)
     del held
     full = [s for g, s in pauses if g == 2]
-    results.put({"freeze": freeze, "heap_objects": heap_objects,
+    results.put({"mode": mode, "heap_objects": heap_objects,
                  "frozen": gc.get_freeze_count(),
                  "full_collect_seconds_before_freeze": round(full_before, 4),
                  "full_collect_seconds_after": round(full_after, 4),
@@ -298,16 +318,19 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, freeze: bool
                  "gen2_seconds": round(sum(full), 3),
                  "gen2_max_seconds": round(max(full), 4) if full else 0.0,
                  "all_gc_seconds": round(sum(s for _, s in pauses), 3),
-                 "tracked_objects": tracked})
+                 "boundary_seconds_median": (round(statistics.median(boundaries), 4)
+                                             if boundaries else None),
+                 "boundary_seconds_max": round(max(boundaries), 4) if boundaries else None,
+                 "tracked_objects": tracked, "peak_rss": rss})
     del heap  # alive until here: the long-lived heap the collections had to scan
 
 
 def gc_main(plan: dict[str, Any], heap_objects: int, datasets: int) -> None:
     context = multiprocessing.get_context("spawn")
-    for freeze in (False, True):
+    for mode in ("automatic", "freeze", "freeze+boundary"):
         results = context.Queue()
         process = context.Process(target=gc_rank,
-                                  args=(plan, heap_objects, datasets, freeze, results))
+                                  args=(plan, heap_objects, datasets, mode, results))
         process.start()
         report = results.get(timeout=3600)
         process.join()

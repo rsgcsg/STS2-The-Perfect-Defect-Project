@@ -57,8 +57,13 @@ OPTION_KEYS = frozenset((
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
     "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split", "sgd_verify_threads",
     "sgd_switch_interval_seconds", "sgd_stage_after_first_step", "sgd_step_probe",
-    "sgd_gc_freeze",
+    "sgd_gc_freeze", "sgd_gc_boundary",
 ))
+# `sgd_gc_freeze`: freeze again at a dataset boundary once this many unfrozen
+# objects sit in the oldest generation (graphs compiled lazily, caches).
+GC_REFREEZE_OBJECTS = 200_000
+# `sgd_gc_boundary`: third threshold that keeps automatic full collections off.
+GC_AUTOMATIC_FULL_OFF = 1_000_000_000
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
 DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
@@ -130,9 +135,14 @@ class SgdOptions:
     # Per step: Python GC time/collections and CUDA allocator deltas in `sgd_timing`.
     step_probe: bool = False
     # Every SGD rank collects once and `gc.freeze()`s after its first dataset
-    # (imports, model, optimizer, compiled graphs, caches: never garbage), so later
-    # full collections no longer rescan that heap with the GIL held mid-step.
+    # (imports, model, optimizer, compiled graphs, caches: never garbage), and
+    # again at a boundary when `GC_REFREEZE_OBJECTS` new long-lived objects piled
+    # up, so full collections no longer rescan that heap with the GIL held.
     gc_freeze: bool = False
+    # Every SGD rank: no automatic full collection (they land inside steps); one
+    # full `gc.collect()` at each dataset boundary instead, off-step, after the
+    # snapshot (whose safetensors encoding leaves its CPU slab in a cycle).
+    gc_boundary: bool = False
 
     def stage_init(self) -> dict[str, Any]:
         """The SGD child's staging options (part of its init message)."""
@@ -140,7 +150,8 @@ class SgdOptions:
                 "verify_split": self.verify_split, "verify_threads": self.verify_threads,
                 "switch_interval": self.switch_interval,
                 "after_first_step": self.stage_after_first_step,
-                "step_probe": self.step_probe, "gc_freeze": self.gc_freeze}
+                "step_probe": self.step_probe, "gc_freeze": self.gc_freeze,
+                "gc_boundary": self.gc_boundary}
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -228,7 +239,8 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         raise ValueError("invalid_sgd_prestart")
     flags = {}
     for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
-                "sgd_stage_after_first_step", "sgd_step_probe", "sgd_gc_freeze"):
+                "sgd_stage_after_first_step", "sgd_step_probe", "sgd_gc_freeze",
+                "sgd_gc_boundary"):
         flags[key] = dataplane.get(key, False)
         if type(flags[key]) is not bool:
             raise ValueError("invalid_" + key)
@@ -261,6 +273,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         stage_after_first_step=flags["sgd_stage_after_first_step"],
         step_probe=flags["sgd_step_probe"],
         gc_freeze=flags["sgd_gc_freeze"],
+        gc_boundary=flags["sgd_gc_boundary"],
     )
 
 
@@ -442,6 +455,7 @@ class _StageConfig:
     after_first_step: bool = False
     step_probe: bool = False
     gc_freeze: bool = False
+    gc_boundary: bool = False
 
     @classmethod
     def from_init(cls, value: Any) -> _StageConfig:
@@ -449,7 +463,8 @@ class _StageConfig:
             return cls()
         if not isinstance(value, dict) or set(value) != {
                 "stream_reuse", "lean_tree", "verify_split", "verify_threads",
-                "switch_interval", "after_first_step", "step_probe", "gc_freeze"}:
+                "switch_interval", "after_first_step", "step_probe", "gc_freeze",
+                "gc_boundary"}:
             raise _ChildViolation("sgd_stage_options_changed")
         return cls(**value)
 
@@ -1227,16 +1242,24 @@ class _StepProbe:
     def __init__(self, torch: Any, cuda: bool) -> None:
         self.torch, self.cuda = torch, cuda
         self.gc_seconds, self.collections = 0.0, [0, 0, 0]
+        self.full: list[dict[str, Any]] = []
         self.started: float | None = None
+        self.full_objects = 0
         self.before: dict[str, int] = {}
         gc.callbacks.append(self._gc)
 
     def _gc(self, phase: str, info: dict[str, Any]) -> None:
         if phase == "start":
+            if info["generation"] == 2:  # what this full collection has to scan
+                self.full_objects = len(gc.get_objects(2))
             self.started = time.perf_counter()
         elif self.started is not None:
-            self.gc_seconds += time.perf_counter() - self.started
+            seconds = time.perf_counter() - self.started
+            self.gc_seconds += seconds
             self.collections[info["generation"]] += 1
+            if info["generation"] == 2:
+                self.full.append({"objects": self.full_objects, "collected": info["collected"],
+                                  "seconds": seconds})
             self.started = None
 
     def _allocator(self) -> dict[str, int]:
@@ -1246,12 +1269,13 @@ class _StepProbe:
         return {key: int(stats.get(key, 0)) for key in self.ALLOCATOR}
 
     def begin(self) -> None:
-        self.gc_seconds, self.collections = 0.0, [0, 0, 0]
+        self.gc_seconds, self.collections, self.full = 0.0, [0, 0, 0], []
         self.before = self._allocator()
 
     def end(self) -> dict[str, Any]:
         after = self._allocator()
         return {"gc_seconds": self.gc_seconds, "gc_collections": list(self.collections),
+                "gc_full": self.full,
                 "allocator": {key: after[key] - self.before.get(key, 0) for key in after}}
 
     def close(self) -> None:
@@ -1346,9 +1370,13 @@ class _SgdWorker:
         self.step_gate = threading.Condition()
         self.dataset_steps: int | None = None
         self.copy_stream: Any = None  # `stream_reuse`: created on first use
-        # `gc_freeze`: facts of the one collect+freeze, reported with the next step.
-        self.gc_frozen: dict[str, Any] | None = None
-        self.gc_freeze_report: dict[str, Any] | None = None
+        # `gc_freeze` / `gc_boundary`: facts of the last boundary collection,
+        # reported with the next step (the next dataset's first).
+        self.gc_frozen = 0  # freezes so far
+        self.gc_report: dict[str, Any] | None = None
+        if self.staging_config.gc_boundary:
+            young = gc.get_threshold()[:2]
+            gc.set_threshold(*young, GC_AUTOMATIC_FULL_OFF)
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
@@ -1783,9 +1811,9 @@ class _SgdWorker:
                                  and self.replica_seconds is not None else {}),
                               **({"offline_dump": dumped} if dumped is not None else {}),
                               **({"probe": probed} if probed is not None else {}),
-                              **({"gc_freeze": self.gc_freeze_report}
-                                 if self.gc_freeze_report is not None else {})})
-            self.gc_freeze_report = None
+                              **({"gc_boundary": self.gc_report}
+                                 if self.gc_report is not None else {})})
+            self.gc_report = None
             minibatch += 1
             end_epoch = minibatch == len(device_batch.minibatches)
             finished = result["kl_stopped"] or (end_epoch and epoch + 1 >= epochs)
@@ -1808,24 +1836,35 @@ class _SgdWorker:
             self.replica_seconds = time.perf_counter() - check_began
         if self.updates > start_updates and self.rank == 0:
             self.snapshot()
-        if self.staging_config.gc_freeze and self.gc_frozen is None:
-            self.freeze_heap()
+        if self.staging_config.gc_freeze or self.staging_config.gc_boundary:
+            self.collect_boundary()
         self.idle_since = time.perf_counter()
 
-    def freeze_heap(self) -> None:
-        """`gc_freeze`, once, after the first dataset (compile warm-up done), on the
-        stepping thread between datasets: one full collect, then every surviving
-        object leaves the collector's view for good. Later collections scan only
-        what was created after it. Frozen objects are still freed by refcount; a
-        cycle among them that dies later is never reclaimed (bounded: what was
-        alive at this point)."""
-        self.state["stage"] = "gc_freeze"
+    def collect_boundary(self) -> None:
+        """On the stepping thread between datasets, after the snapshot (no step
+        runs, the GPU queue is drained):
+
+        - `gc_boundary`: one full collection (automatic ones are off);
+        - `gc_freeze`: after the first dataset (compile warm-up done), and again
+          whenever `GC_REFREEZE_OBJECTS` unfrozen objects sit in the oldest
+          generation, collect and `gc.freeze()`: survivors leave the collector's
+          view for good, so later collections scan only what came after.
+
+        Frozen objects are still freed by refcount; a cycle among them that dies
+        later is never reclaimed (bounded by what was alive at a freeze)."""
+        config = self.staging_config
+        self.state["stage"] = "gc_boundary"
         began = time.perf_counter()
-        collected = gc.collect()
-        gc.freeze()
-        self.gc_frozen = self.gc_freeze_report = {
-            "seconds": time.perf_counter() - began, "collected": collected,
-            "frozen": gc.get_freeze_count()}
+        objects = len(gc.get_objects(2))
+        refreeze = config.gc_freeze and (self.gc_frozen == 0
+                                         or objects >= GC_REFREEZE_OBJECTS)
+        collected = gc.collect() if config.gc_boundary or refreeze else 0
+        if refreeze:
+            gc.freeze()
+            self.gc_frozen += 1
+        self.gc_report = {"seconds": time.perf_counter() - began, "objects": objects,
+                          "collected": collected, "froze": refreeze,
+                          "freezes": self.gc_frozen, "frozen": gc.get_freeze_count()}
 
     def _steps_done(self, steps: int | None) -> None:
         with self.step_gate:

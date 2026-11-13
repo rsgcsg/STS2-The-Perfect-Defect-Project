@@ -38,7 +38,8 @@ from stpd.rl.sgd_process import (
 FAST = {"sgd_stage_stream_reuse": True, "sgd_stage_lean_tree": True,
         "sgd_verify_split": True, "sgd_verify_threads": 2,
         "sgd_switch_interval_seconds": 0.0005, "sgd_stage_after_first_step": True,
-        "sgd_step_probe": True, "sgd_gc_freeze": True}
+        "sgd_step_probe": True, "sgd_gc_freeze": True,
+        "sgd_gc_boundary": True}
 
 
 def test_stage_options_are_explicit_and_default_to_the_earlier_path():
@@ -47,20 +48,22 @@ def test_stage_options_are_explicit_and_default_to_the_earlier_path():
     assert options.stage_init() == {"stream_reuse": False, "lean_tree": False,
                                     "verify_split": False, "verify_threads": 4,
                                     "switch_interval": None, "after_first_step": False,
-                                    "step_probe": False, "gc_freeze": False}
+                                    "step_probe": False, "gc_freeze": False,
+                                    "gc_boundary": False}
     assert _StageConfig.from_init(options.stage_init()) == _StageConfig()
     chosen = sgd_options({**base, **FAST})
     assert chosen.stage_init() == {"stream_reuse": True, "lean_tree": True,
                                    "verify_split": True, "verify_threads": 2,
                                    "switch_interval": 0.0005, "after_first_step": True,
-                                   "step_probe": True, "gc_freeze": True}
+                                   "step_probe": True, "gc_freeze": True,
+                                   "gc_boundary": True}
     for key, bad in (("sgd_stage_stream_reuse", 1), ("sgd_stage_lean_tree", "yes"),
                      ("sgd_verify_split", None), ("sgd_verify_threads", 0),
                      ("sgd_verify_threads", 2.0), ("sgd_verify_threads", True),
                      ("sgd_switch_interval_seconds", 0), ("sgd_switch_interval_seconds", "1"),
                      ("sgd_switch_interval_seconds", float("nan")),
                      ("sgd_stage_after_first_step", 1), ("sgd_step_probe", "on"),
-                     ("sgd_gc_freeze", 1)):
+                     ("sgd_gc_freeze", 1), ("sgd_gc_boundary", "yes")):
         with pytest.raises(ValueError, match="invalid_" + key):
             sgd_options({**base, key: bad})
     with pytest.raises(ValueError, match="without_explicit_selection"):
@@ -283,16 +286,26 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
     for event in two_events:  # `sgd_step_probe`: GC and allocator facts of every step
         probe = event["sgd_timing"]["probe"]
         assert probe["gc_seconds"] >= 0 and len(probe["gc_collections"]) == 3
+        assert probe["gc_collections"][2] == len(probe["gc_full"])
         assert probe["allocator"] == {}  # CPU: no CUDA allocator
-    # `sgd_gc_freeze`: one collect+freeze after the first dataset, reported once with
-    # the next step (the second dataset's first); never on the earlier path.
-    assert all("gc_freeze" not in e["sgd_timing"] for e in one_events)
-    frozen = [(i, e["sgd_timing"]["gc_freeze"]) for i, e in enumerate(two_events)
-              if "gc_freeze" in e["sgd_timing"]]
-    assert len(frozen) == 1, frozen
-    index, facts = frozen[0]
-    assert two_events[index]["sgd_timing"]["boundary_seconds"] is not None  # first step
-    assert facts["frozen"] > 10_000 and facts["seconds"] >= 0
+    # `sgd_gc_freeze` + `sgd_gc_boundary`: one full collection at every dataset
+    # boundary, reported with the next dataset's first step; the first one also
+    # freezes. Never on the earlier path.
+    assert all("gc_boundary" not in e["sgd_timing"] for e in one_events)
+    reports = [e["sgd_timing"]["gc_boundary"] for e in two_events
+               if "gc_boundary" in e["sgd_timing"]]
+    firsts = [e for e in two_events if e["sgd_timing"]["boundary_seconds"] is not None]
+    assert len(reports) == len(firsts) >= 2  # every dataset after the first
+    assert reports[0]["froze"] and reports[0]["freezes"] == 1
+    assert reports[0]["frozen"] > 10_000 and reports[0]["objects"] > 10_000
+    for report in reports[1:]:  # what came after the freeze stays small
+        assert not report["froze"] and report["objects"] < 10_000, report
+    # Automatic full collections are off; the CPU staging path's explicit
+    # per-batch collect (the CUDA direct path has none) scans only post-freeze objects.
+    frozen_at = next(i for i, e in enumerate(two_events) if "gc_boundary" in e["sgd_timing"])
+    for event in two_events[frozen_at:]:
+        for full in event["sgd_timing"]["probe"]["gc_full"]:
+            assert full["objects"] < 10_000 and full["seconds"] >= 0, full
 
 
 @pytest.mark.parametrize("split", [False, True])
