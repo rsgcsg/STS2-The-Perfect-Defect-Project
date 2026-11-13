@@ -97,14 +97,17 @@ def test_compiled_defaults_raise_the_limit_and_stall_floor_but_explicit_values_w
     plain = sgd_options({"sgd_process": True})
     assert plain.compile is None and plain.stall_seconds == 120
     selected = compiled_defaults(plain, {"sgd_process": True})
-    assert selected.compile == {"cache_dir": None, "warmup": [],
+    assert selected.compile == {"cache_dir": None, "warmup": [], "size_guard": False,
                                 "recompile_limit": COMPILED_RECOMPILE_LIMIT}
     assert selected.stall_seconds == COMPILED_STALL_SECONDS == 300
     dataplane = {"sgd_process": True, "sgd_stall_seconds": 90,
                  "sgd_compile": {"recompile_limit": 24, "cache_dir": "/c", "warmup": ["/w"]}}
     explicit = compiled_defaults(sgd_options(dataplane), dataplane)
     assert explicit.stall_seconds == 90
-    assert explicit.compile == {"cache_dir": "/c", "recompile_limit": 24, "warmup": ["/w"]}
+    assert explicit.compile == {"cache_dir": "/c", "recompile_limit": 24, "warmup": ["/w"],
+                                "size_guard": False}
+    guarded = {"sgd_process": True, "sgd_compile": {"size_guard": True}}
+    assert compiled_defaults(sgd_options(guarded), guarded).compile["size_guard"] is True
     higher = {"sgd_process": True, "sgd_compile": {}}
     assert compiled_defaults(sgd_options(higher), higher).compile["recompile_limit"] == 16
 

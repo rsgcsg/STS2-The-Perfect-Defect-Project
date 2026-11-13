@@ -33,6 +33,7 @@ the decompressed bytes, so the SGD sha256 check is unchanged.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import importlib
 import io
@@ -41,6 +42,7 @@ import mmap
 import os
 import pickle
 import queue
+import shutil
 import socket
 import struct
 import threading
@@ -49,6 +51,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager, suppress
 from multiprocessing import get_context
 from multiprocessing.connection import (
@@ -68,6 +71,12 @@ from .prepared_batch import AuxiliaryInput
 AUTH_ENV = "STPD_REMOTE_PREPARE_AUTH"
 CHUNK_BYTES = 64 * 1024**2
 PROTOCOL = "stpd/rl-remote-prepare-4"
+SCRATCH_FULL = "remote_prepare_scratch_full"
+
+
+class ScratchFull(RuntimeError):
+    """This host's scratch cannot hold another task's output."""
+
 CODECS = ("none", "lz4")
 LZ4_CHUNK_BYTES = 4 * 1024**2
 
@@ -248,6 +257,8 @@ class _Host:
     def __init__(self, scratch: Path, decode_workers: int, assembly_workers: int,
                  cache_bytes: int, codec: str = "none") -> None:
         self.scratch, self.cache_bytes, self.codec = scratch, cache_bytes, _codec(codec)
+        # Free scratch bytes below which a pool failure is named as a full scratch.
+        self.scratch_reserve = 0
         self.decode_workers, self.assembly_workers = decode_workers, assembly_workers
         self.lock = threading.Lock()
         self.settings: tuple[Any, ...] | None = None
@@ -381,9 +392,22 @@ class _Host:
         assert self.assembly is not None
         return self.assembly.submit(binary._timed, binary._labels, ready, *args).result()
 
+    def scratch_full(self, needed: int = 0) -> str | None:
+        """The explicit error text when the scratch cannot hold `needed` more bytes
+        (a worker that writes its mapped output into a full scratch is killed by
+        the kernel, and all the learner would see is a broken pool)."""
+        free = shutil.disk_usage(self.scratch).free
+        if free < needed + self.scratch_reserve:
+            return (f"{SCRATCH_FULL}: free_bytes={free} needed_bytes={needed} "
+                    f"reserve_bytes={self.scratch_reserve}")
+        return None
+
     def run(self, ready: tuple[Any, ...], args: tuple[Any, ...]) -> tuple[Any, str]:
         assert self.assembly is not None
         request = args[0]
+        full = self.scratch_full(request.max_output_bytes)
+        if full is not None:
+            raise ScratchFull(full)
         output = self.scratch / ("out-" + uuid.uuid4().hex)
         with output.open("xb") as stream:
             os.chmod(output, 0o600)
@@ -488,7 +512,15 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
                     else:
                         result, output = host.run(ready, task["args"])
                 except BaseException as error:  # reported, then this connection ends
-                    _send(connection, timeout, {"error": f"{type(error).__name__}: {error}"})
+                    text = f"{type(error).__name__}: {error}"
+                    full = _scratch_label(host, error, 0 if task.get("kind") == "labels"
+                                          else task["args"][0].max_output_bytes)
+                    if full is not None:
+                        text = f"{full} ({type(error).__name__})"
+                    # Also in this host's own log: the learner only gets one line,
+                    # and a broken pool fails every later task of this host.
+                    print(f"remote_prepare task failed: {text}", flush=True)
+                    _send(connection, timeout, {"error": text})
                     return
                 if task.get("kind") == "labels":
                     _send(connection, timeout, {
@@ -526,9 +558,32 @@ def _serve(host: _Host, connection: Connection, key: bytes | None = None) -> Non
             finally:
                 host.release(digests)
     except Exception as error:  # one client's failure never stops the host
-        print(f"remote_prepare connection ended: {type(error).__name__}", flush=True)
+        full = _scratch_label(host, error, 0)
+        print(f"remote_prepare connection ended: {type(error).__name__}"
+              + (f" {full}" if full is not None else ""), flush=True)
     finally:
         connection.close()
+
+
+def _scratch_label(host: Any, error: BaseException, needed: int) -> str | None:
+    """`remote_prepare_scratch_full` text for a failed task, or None.
+
+    A full scratch is named as such when the task was refused before the work
+    (`ScratchFull`), when the error is ENOSPC-class, or when a dead worker pool
+    left the scratch with less free space than this task's output needs. A dead
+    worker with that space free (an OOM kill, say) is not labelled: the reserve
+    is the start/admission margin, not evidence of what killed a worker."""
+    if isinstance(error, ScratchFull):
+        return str(error)
+    code = getattr(error, "errno", None)
+    if code in (errno.ENOSPC, errno.EDQUOT):
+        free = shutil.disk_usage(host.scratch).free
+        return f"{SCRATCH_FULL}: free_bytes={free} errno={errno.errorcode.get(code, code)}"
+    if isinstance(error, BrokenProcessPool) and needed > 0:
+        free = shutil.disk_usage(host.scratch).free
+        if free < needed:
+            return f"{SCRATCH_FULL}: free_bytes={free} needed_bytes={needed} (worker died)"
+    return None
 
 
 def serve(argv: list[str] | None = None) -> None:
@@ -539,12 +594,23 @@ def serve(argv: list[str] | None = None) -> None:
     parser.add_argument("--assembly-workers", type=int, required=True)
     parser.add_argument("--cache-bytes", type=int, default=8 * 1024**3)
     parser.add_argument("--codec", choices=CODECS, default="none")
+    parser.add_argument("--scratch-min-free-bytes", type=int, default=0,
+                        help="in-flight budget: refuse to start (no ready file) with less "
+                             "free scratch, and name later pool failures below it as "
+                             "remote_prepare_scratch_full")
     parser.add_argument("--ready-file", type=Path,
                         help="written atomically with host:port once listening")
     args = parser.parse_args(argv)
     args.scratch.mkdir(parents=True, exist_ok=True)
     host = _Host(args.scratch, args.decode_workers, args.assembly_workers, args.cache_bytes,
                  args.codec)
+    if args.scratch_min_free_bytes < 0:
+        raise SystemExit("remote_prepare_scratch_min_free_bytes_bound")
+    full = host.scratch_full(args.scratch_min_free_bytes)
+    if full is not None:  # before listening: this host never registers
+        raise SystemExit(full)
+    # Later: a quarter of the budget left counts as full when a worker dies.
+    host.scratch_reserve = args.scratch_min_free_bytes // 4
     key = authkey()
     listener = Listener(_address(args.listen))  # handshake runs per connection thread
     bound = listener.address
