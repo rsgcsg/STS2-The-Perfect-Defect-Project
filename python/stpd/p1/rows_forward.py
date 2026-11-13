@@ -367,6 +367,26 @@ def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     return block
 
 
+def owned(value: Any) -> Any:
+    """Each tensor in `value` as its own storage (one small device copy each).
+
+    Compiled-function inputs only. Batch tensors arrive as views into staging
+    slabs whose layout differs between a live prepared file and a reloaded dump
+    (the compile warm-up); dynamo guards a view's base size and storage offset
+    (duck-sized against other sizes, 0 specialized), so the first live step after
+    a warm-up compiled again (V3 壬2: chain run c2o, CPU test). Owned copies make
+    the guards independent of how the batch was staged. Values are unchanged."""
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: owned(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(owned(item) for item in value)
+    if isinstance(value, list):
+        return [owned(item) for item in value]
+    return value
+
+
 def _at_least_two_terms(role: tuple[Tensor, Tensor, Tensor, Tensor]
                         ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """A role with 0 or 1 terms gets zero-weight terms up to two (candidate 0, slot 0).
@@ -502,12 +522,15 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     scores, logits, hp = [], [], []
     for index, (count, width, longest, _slots) in enumerate(buckets):
         member = members[index]
+        bucket = (positions[index], lengths[index], offsets[index], role_parts[index])
+        if compile:
+            bucket = owned(bucket)
         score, logit, value = block(
-            model, tokens[index], positions[index], lengths[index], offsets[index], count, width,
+            model, tokens[index], bucket[0], bucket[1], bucket[2], count, width,
             longest, t["outcome_valid"].index_select(0, member),
             t["action_types"].index_select(0, member) if group.policy else None,
             t["catalog_mask"].index_select(0, member) if group.policy else None,
-            role_parts[index])
+            bucket[3])
         logits.append(logit)
         hp.append(value)
         if score is not None:

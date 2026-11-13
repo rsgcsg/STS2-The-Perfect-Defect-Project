@@ -145,20 +145,18 @@ def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, 
     """WP8: bz2 preflight, recompile limit, cache dir and warm-up on real dumps.
 
     The warm-up compiles with the run's own `performance`, levers included (e.g. the
-    `residual` BF16 trunk), so the run's variant graphs exist before `ready`. "No new
-    graph after warm-up" is a GPU fact (Friday 1470333: packed path, inductor size
-    guard off, 15 steps, 0 graphs): this CPU masked path adds CPU-only guards (C++
-    accumulator size range, duck-sized equalities, view-base sizes) that differ
-    between a reloaded dump and the live arena tensors."""
+    `residual` BF16 trunk), on the live storage layout (shared slabs): warmed on the
+    dumps of the same minibatches, the run's compiled update adds no dynamo graph."""
     dumps = tmp_path / "dumps"
     split, owner = _owner(tmp_path / "dump", monkeypatch, "rows-v2", {
-        "sgd_offline_dump_every": 1, "sgd_offline_dump_limit": 1,
+        "sgd_offline_dump_every": 1, "sgd_offline_dump_limit": 2,
         "sgd_offline_dump_directory": str(dumps)})
     try:
         split.train(owner, 2)
     finally:
         owner.close()
-    (root,) = sorted(dumps.iterdir())
+    roots = sorted(dumps.iterdir())
+    assert len(roots) == 2
     original = split.configuration
 
     def compiled(path, patch, **kwargs):
@@ -168,15 +166,17 @@ def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, 
 
     monkeypatch.setattr(split, "configuration", compiled)
     cache = tmp_path / "inductor"
+    warmup = [str(root) for root in roots]
     owner = split.terminal_owner(tmp_path / "warm", monkeypatch, dataplane={"sgd_compile": {
-        "cache_dir": str(cache), "recompile_limit": 16, "warmup": [str(root)]}})[0]
+        "cache_dir": str(cache), "recompile_limit": 16, "warmup": warmup}})[0]
     try:
         # The controller already refused a ready whose theta differs from init.
         facts = owner.sgd_compile
         assert facts["bz2"] and facts["recompile_limit"] == 16 and facts["size_guard"] is False
         assert facts["cache_dir"] == str(cache) and cache.exists()
-        (warm,) = facts["warmup"]
-        assert warm["path"] == str(root) and warm["rows"] > 0
+        assert [warm["path"] for warm in facts["warmup"]] == warmup
+        warm = facts["warmup"][-1]
+        assert warm["rows"] > 0
         assert warm["rows_forward"]["compiled"] and warm["rows_forward"]["dynamo_frames_ok"] > 0
         assert warm["rows_forward"].get("kernels", "") == kernels
         events = split.train(owner, 1)
@@ -184,8 +184,8 @@ def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, 
         # Diagnostics attempts (update 0 here) run eager by design; the rest compile.
         assert [event["rows_forward"]["compiled"] for event in events] == [False, True]
         assert events[1]["rows_forward"].get("kernels", "") == kernels
-        assert (events[1]["rows_forward"]["dynamo_unique_graphs"]
-                >= warm["rows_forward"]["dynamo_unique_graphs"] > 0)
+        graphs = warm["rows_forward"]["dynamo_unique_graphs"]
+        assert events[1]["rows_forward"]["dynamo_unique_graphs"] == graphs > 0
     finally:
         owner.close()
 

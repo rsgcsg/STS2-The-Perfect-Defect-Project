@@ -356,11 +356,14 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
     owners = {key: _owners(flat[key], rows, terms[key], key in PARTITION_REDUCTIONS)
               for key in ("ids", "numbers", "text", "refs")}
     builder: Any = _node_builder
+    refs = flat["refs"][0]
     if compile:
         builder = getattr(model, "_rows_nodes_compiled", None)
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
             model.__dict__["_rows_nodes_compiled"] = builder  # learner-process runtime only
-    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0], private,
-                            out_dtype)
+        from .rows_forward import owned
+
+        t, owners, refs = owned((t, owners, refs))
+    nodes: Tensor = builder(model, t, vectors.float(), owners, refs, private, out_dtype)
     return nodes
