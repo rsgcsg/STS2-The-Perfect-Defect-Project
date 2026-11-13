@@ -643,6 +643,8 @@ class SegmentLearner:
         self.fast_admitted_rows: OrderedDict[str, int] = OrderedDict()
         self.fast_counters: dict[str, int] = {}
         self.fast_receivers: list[threading.Thread] = []
+        # `dataplane.fast_verify_workers` > 0: hand-off reads in verify processes.
+        self.fast_verifier: Any = None
         self.input_sequence = 0
         self.input_head: str | None = None
         self.input_anchor = config.resume_checkpoint
@@ -873,6 +875,18 @@ class SegmentLearner:
                     excluded_seeds=frozenset(settings.excluded_seeds),
                     buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
                     gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
+                verify_workers = self.dataplane.get("fast_verify_workers", 0)
+                if type(verify_workers) is not int or not 0 <= verify_workers <= 8:
+                    raise BoundaryError("rl_learner", "fast_verify_workers_must_be_int_0_to_8")
+                if verify_workers:
+                    from stpd.rl.fast_verify import FastVerifyPool
+
+                    # Default arena: 64 x 2 MiB (a 64-row segment is ~1.25 MB; a
+                    # labels message spans several contiguous slots).
+                    self.fast_verifier = FastVerifyPool(
+                        workers=verify_workers,
+                        slots=self.dataplane.get("fast_verify_arena_slots", 64),
+                        slot_bytes=self.dataplane.get("fast_verify_slot_bytes", 2 * 1024**2))
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
                     "excluded_instances", "excluded_dropped_rows", "excluded_used_rows",
@@ -2048,7 +2062,15 @@ class SegmentLearner:
         try:
             while True:
                 try:
-                    kind, message, data = read_handoff(connection)
+                    if self.fast_verifier is None:
+                        kind, message, data = read_handoff(connection)
+                        checked = None
+                    else:
+                        # Same read, digest and header parse in one verify worker;
+                        # its errors come back as raised here, a gone worker is
+                        # `fast_verify_worker_died` (never EOFError: fences below).
+                        kind, message, data, checked = self.fast_verifier.read_handoff(
+                            connection, decode_headers=bool(self.fast_intake.aux_labels))
                 except (EOFError, ConnectionResetError):
                     # A sender process that dies with our ack unread resets the socket
                     # instead of a clean EOF: the same lost assembler.
@@ -2071,7 +2093,8 @@ class SegmentLearner:
                     assert data is not None
                     intake = (self.fast_intake.offer if kind == "segment"
                               else self.fast_intake.labels)
-                    self._fast_apply(intake(message, data))
+                    self._fast_apply(intake(message, data) if checked is None
+                                     else intake(message, data, checked))
                     # Ack after the bytes are owned here: the sender's in-flight
                     # bound is the only back-pressure on the assembler.
                     ack(connection, message)
@@ -2253,8 +2276,10 @@ class SegmentLearner:
             return {}
         with self.condition:
             counters = dict(self.fast_counters)
+        verify = ({"verify": self.fast_verifier.status()} if self.fast_verifier is not None
+                  else {})
         return {"fast_chain": {"learner": counters, "intake": self.fast_intake.report(),
-                               **self.fast_sources.status()}}
+                               **self.fast_sources.status(), **verify}}
 
     @staticmethod
     def _member(record: dict[str, Any]) -> BatchMember:
@@ -3531,6 +3556,8 @@ class SegmentLearner:
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
             if self.archive is not None:
                 cleanup.callback(self.archive.stop_capacity_monitor)
+            if self.fast_verifier is not None:
+                cleanup.callback(self.fast_verifier.close)
             try:
                 self.pool.close()
             finally:

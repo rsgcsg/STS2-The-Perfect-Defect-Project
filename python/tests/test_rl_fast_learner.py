@@ -19,7 +19,9 @@ from stpd.rl.segment_learner import SegmentLearner
 
 
 def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
-                 aux_labels: list[str] | None = None, **loss: float) -> SegmentLearner:
+                 aux_labels: list[str] | None = None,
+                 dataplane_extra: dict[str, Any] | None = None,
+                 **loss: float) -> SegmentLearner:
     from stpd.p1.local_inference import AUTH_ENV
 
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -36,6 +38,7 @@ def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
         dataplane["fast_chain"] = fast
     if aux_labels is not None:
         dataplane["fast_aux_labels"] = aux_labels
+    dataplane.update(dataplane_extra or {})
     return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
 
 
