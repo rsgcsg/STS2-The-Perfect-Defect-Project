@@ -250,8 +250,14 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
     return plan
 
 
-def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.py') -> str:
-    """Nonsensitive user launcher; the program loads the user's private credentials."""
+def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.py',
+             credentials: bool = True) -> str:
+    """Nonsensitive user launcher; the program loads the user's private credentials.
+
+    ``credentials=False`` only for an execution validated as SHARED_LOCAL (a local
+    shared-disk peer, no archive): nothing in that job opens R2, so the R2
+    environment is neither required nor loaded. Every other mode keeps it.
+    """
     if program not in {'evaluate.py', 'quick.py'}:
         raise ValueError('normal_evaluation_entrypoint_required')
     source = Path(plan["source_root"])
@@ -266,16 +272,7 @@ set -euo pipefail
 umask 077
 actor_root=__ACTOR__
 source_root=__SOURCE__
-credentials=${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}
-[[ -f "$credentials" && ! -L "$credentials" \
-   && $(stat -c '%a' "$credentials") = 600 \
-   && $(stat -c '%u' "$credentials") = $(id -u) ]] || {
-  echo 'Friday evaluation needs the user-owned600 R2 environment' >&2; exit 2;
-}
-set -a
-source "$credentials"
-set +a
-if ! type module >/dev/null 2>&1; then set +u; source /etc/profile; set -u; fi
+__CREDENTIALS__if ! type module >/dev/null 2>&1; then set +u; source /etc/profile; set -u; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
 test -x "$actor_root/node22.23.4/bin/node" || { echo 'pinned Node22.23.4 required' >&2; exit 2; }
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
@@ -291,7 +288,25 @@ exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
 '''
     for token, value in replacements.items():
         script = script.replace(token, value)
-    return script
+    return script.replace('__CREDENTIALS__', R2_ENVIRONMENT if credentials else
+                          '# shared_local storage: no R2 environment is read\n')
+
+
+R2_ENVIRONMENT = r'''credentials=${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}
+[[ -f "$credentials" && ! -L "$credentials" \
+   && $(stat -c '%a' "$credentials") = 600 \
+   && $(stat -c '%u' "$credentials") = $(id -u) ]] || {
+  echo 'Friday evaluation needs the user-owned600 R2 environment' >&2; exit 2;
+}
+set -a
+source "$credentials"
+set +a
+'''
+
+
+def needs_r2(execution: dict[str, Any]) -> bool:
+    """Only a validated SHARED_LOCAL execution runs without the R2 environment."""
+    return execution.get('storage_mode', 'remote') != SHARED_LOCAL
 
 
 def submit(plan_path: Path, *, constraint: str | None = None,
@@ -332,7 +347,9 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         if capacity(idle, queued, plan['workers']) < plan['workers']:
             raise ValueError('requested_evaluation_workers_exceed_current_fair_share')
         script = root / 'launch.sh'
-        script.write_text(launcher(plan_path, plan), encoding='utf-8')
+        script.write_text(launcher(plan_path, plan,
+                                   credentials=needs_r2(read_pinned(plan['execution']))),
+                          encoding='utf-8')
         script.chmod(0o700)
         logs = private_root(root / 'slurm')
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
@@ -767,6 +784,11 @@ def main():
     export_parser.add_argument('--checkpoint', required=True)
     export_parser.add_argument('--output', type=Path, required=True)
     export_parser.add_argument('--construction-package', type=Path)
+    check_parser = commands.add_parser(
+        'check-checkpoint', help='dry mode: every export check on one CP; writes nothing')
+    check_parser.add_argument('--learner-config', type=Path, required=True)
+    check_parser.add_argument('--checkpoint', required=True)
+    check_parser.add_argument('--training-generation')
     cp_parser = commands.add_parser('prepare-checkpoint')
     cp_parser.add_argument('--learner-config', type=Path, required=True)
     cp_parser.add_argument('--checkpoint', required=True)
@@ -814,6 +836,12 @@ def main():
         result = prepare_learning_curve_manifest(args.game_directory, args.output)
     elif args.command == 'project-report':
         result = project_observation_report(args.result, args.plan, args.output)
+    elif args.command == 'check-checkpoint':
+        from spireagent.storage.config import open_peer
+        from stpd.evaluation.rl_checkpoint import inspect_checkpoint
+        config = json.loads(args.learner_config.read_bytes())
+        result = inspect_checkpoint(open_peer(config['peer']), args.checkpoint,
+                                    run=config['run'], generation=args.training_generation)
     elif args.command == 'export-checkpoint':
         from spireagent.source import source_identity
         from spireagent.storage.config import open_peer
@@ -856,6 +884,8 @@ def main():
     print(json.dumps(result, sort_keys=True))
     if args.command == 'run' and result.get('error_type'):
         raise SystemExit(1)
+    if args.command == 'check-checkpoint' and not result['evaluable']:
+        raise SystemExit(3)
 
 
 if __name__ == '__main__':

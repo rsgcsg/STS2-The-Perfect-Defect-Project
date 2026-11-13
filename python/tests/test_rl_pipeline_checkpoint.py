@@ -8,7 +8,7 @@ import time
 
 import pytest
 from rl_actor_test_runtime import isolated_actor_runtime as isolated_actor_runtime
-from test_rl41_w1 import configuration, segment
+from test_rl41_w1 import SOURCE_PRODUCER, configuration, segment
 from test_rl_segment_learner import read_cp
 
 from spireagent.rl_socket_transport import AUTH_ENV, upload
@@ -29,7 +29,7 @@ SGD_PROCESS = {"sgd_process": True, "memory_limit_bytes": 64 * 1024**3, "memory_
 
 
 def binary_owner(tmp_path, monkeypatch, datasets=3, dataplane=None):
-    config, io = configuration(tmp_path, monkeypatch)
+    config, io = configuration(tmp_path, monkeypatch, producer=SOURCE_PRODUCER)
     config = dc.replace(config, segments=dc.replace(config.segments, minibatches=2,
         archive_min_free_bytes=0, archive_min_free_inodes=0))
     io = dc.replace(io, dataplane={

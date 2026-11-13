@@ -535,13 +535,28 @@ def write_report(
     svg = distribution_svg(cohorts, through_floor=through_floor, scope_note=scope_note)
     (output / 'distribution.svg').write_text(svg, encoding='utf-8')
     lines = ['# Saved fixed-seed evaluation', '',
-             '| Cohort | Planned | Scored floors | Win / loss | Mean | Median | Max |',
-             '|---|---:|---:|---|---:|---:|---:|']
+             '| Cohort | Planned | Scored floors | Win / loss | Mean | Median | Max | '
+             'Act1 Boss cleared | Act2 Boss cleared | Act3 Boss reached | Not scored |',
+             '|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|']
     if scope_note:
         lines[2:2] = [scope_note, '']
     for name, c in cohorts.items():
+        boss = {b['act']: b for b in progress[name]['bosses']}
         lines.append(f"| {name} | {c['planned']} | {c['floor_n']} | {c['wins']} / {c['losses']} | "
-                     f"{c['mean_floor']} | {c['median_floor']} | {c['max_floor']} |")
+                     f"{c['mean_floor']} | {c['median_floor']} | {c['max_floor']} | "
+                     f"{boss[1]['cleared_witnessed']} | {boss[2]['cleared_witnessed']} | "
+                     f"{boss[3]['reached_witnessed']} | "
+                     f"{sum(not r['scored'] for r in c['rows'])} |")
+    if comparisons:
+        lines += ['', '| current vs | Floor pairs | Farther / same / nearer | Mean floor delta | '
+                  'Bootstrap 95% |', '|---|---:|---|---:|---|']
+        for name, c in comparisons.items():
+            counts, interval = c['counts'], c['bootstrap95_fixed_seed_sensitivity']
+            lines.append(f"| {name} | {c['paired_n']} | {counts.get('farther', 0)} / "
+                         f"{counts.get('same', 0)} / {counts.get('nearer', 0)} | "
+                         f"{_number(c['mean_delta'], True)} | "
+                         + (f"[{_number(interval[0], True)}, {_number(interval[1], True)}]"
+                            if interval else '—') + ' |')
     lines += reward_lines(rewards, reward_comparisons)
     lines += ['', '![Loss histogram and observed reach](distribution.svg)', '',
         'bosses.csv counts positive witnesses for all three acts and the scored subset.',
