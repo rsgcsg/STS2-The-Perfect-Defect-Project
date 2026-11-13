@@ -53,6 +53,7 @@ from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError
 
+from .fast_release import release_option
 from .fast_source import FastIntakeError, FastSegmentIntake, FastSources, RoutedSources
 from .segment_learner import (
     FAST_INSTANCE_ADMISSION,
@@ -606,8 +607,18 @@ class ShardSet:
                 failures.append(error)
         return records, failures
 
-    def snapshot(self) -> dict[str, Any]:
-        return {"count": self.count, "shards": self._call_all("snapshot")}
+    def snapshot(self, *, release_sequence: int | None = None) -> dict[str, Any]:
+        """Each shard's recovery state. `release_sequence` (a CP to be published,
+        with `release_trained_segments`): each shard also marks the originals it
+        found trained or dropped now, deleted on `covered(sequence)`."""
+        return {"count": self.count,
+                "shards": self._call_all("snapshot", release_sequence=release_sequence)}
+
+    def covered(self, sequence: int) -> None:
+        """CP `sequence` is published durably: each shard deletes what it covers.
+        Cast (the learner never waits on disk I/O); a dead shard keeps its files."""
+        for shard in self.shards:
+            self._cast(shard, "covered", sequence=sequence)
 
     # -- status -------------------------------------------------------------------
     def _statuses(self) -> list[dict[str, Any]]:
@@ -649,6 +660,7 @@ class ShardSet:
         intake: dict[str, Any] = {}
         reasons: dict[str, int] = dict(unowned)
         sources: dict[str, int] = {}
+        release: dict[str, int] = {}
         for status in statuses:
             for key, value in status["learner"].items():
                 learner[key] = learner.get(key, 0) + value
@@ -665,12 +677,15 @@ class ShardSet:
                     intake[key] = intake.get(key, 0) + value
             for key, value in status["sources"].items():
                 sources[key] = sources.get(key, 0) + value
+            for key, value in status.get("segment_release", {}).items():
+                release[key] = release.get(key, 0) + value
         if "excluded_instances" in learner:
             learner["excluded_instances"] += sum(unowned.values()) - sum(
                 status["foreign_exclusions"] for status in statuses)
         intake["excluded_by_reason"] = {k: v for k, v in sorted(reasons.items()) if v}
         return {"fast_chain": {
             "learner": learner, "intake": intake, **sources,
+            **({"segment_release": release} if release else {}),
             "shards": {"count": self.count, "balance": self._balance(every),
                        "unowned_exclusions": unowned, "per_shard": every}}}
 
@@ -925,6 +940,8 @@ class _ShardLearner(SegmentLearner):
             intake.notify = send
         self.fast_intake = self.shard_intake = intake
         self.fast_verifier = None
+        self.release_segments = release_option(dataplane)
+        self.segment_release = self._segment_release() if self.release_segments else None
         self.fast_admitted_rows = collections.OrderedDict()
         self.fast_counters = {key: 0 for key in (
             "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
@@ -1070,6 +1087,8 @@ class _ShardLearner(SegmentLearner):
         except BaseException as error:
             self._fast_fence("fast_control", error)
             raise
+        if self.segment_release is not None and decision.exclude_instance is not None:
+            self.segment_release.excluded(decision.exclude_instance)
         counted = None
         if operation != FAST_INSTANCE_ADMISSION and decision.exclude_instance is not None:
             counted = "actor:" + request["reason"]
@@ -1196,12 +1215,20 @@ class _ShardLearner(SegmentLearner):
 
     def _on_snapshot(self, message: dict[str, Any]) -> dict[str, Any]:
         with self.condition:
-            return {"index": self.shard_index,
-                    "committed_selection_rng": self.committed_selection_rng,
-                    "speculative_selection_rng": self.rng.getstate(),
-                    "pending_requests": [_pending_receipt(active["request"])
-                                         for active, _ in self._pending_batches()],
-                    "pending_labels": copy.deepcopy(self.pending_label_requests)}
+            state = {"index": self.shard_index,
+                     "committed_selection_rng": self.committed_selection_rng,
+                     "speculative_selection_rng": self.rng.getstate(),
+                     "pending_requests": [_pending_receipt(active["request"])
+                                          for active, _ in self._pending_batches()],
+                     "pending_labels": copy.deepcopy(self.pending_label_requests)}
+        sequence = message.get("release_sequence")
+        if sequence is not None and self.segment_release is not None:
+            self.segment_release.capture(sequence)
+        return state
+
+    def _on_covered(self, message: dict[str, Any]) -> None:
+        if self.segment_release is not None:
+            self.segment_release.covered(message["sequence"])
 
     def _on_status(self, message: dict[str, Any]) -> dict[str, Any]:
         intake = self.shard_intake
@@ -1224,6 +1251,8 @@ class _ShardLearner(SegmentLearner):
                 "foreign_exclusions": self.foreign_exclusions,
                 "foreign_by_reason": dict(self.foreign_by_reason),
                 "sources": self.shard_sources.status(),
+                **({"segment_release": self.segment_release.status()}
+                   if self.segment_release is not None else {}),
                 "queue_rows": rows, "pending_batches": pending, "announced": self.announced,
                 "taken": taken, "datasets": self.datasets, "actors": actors,
                 "training_discarded_rows": discarded,
@@ -1249,6 +1278,8 @@ class _ShardLearner(SegmentLearner):
             for (_slot, owner), payload in list(self.hot_references.items()):
                 self._release(payload, owner)
         self._check_releases(wait=True)
+        if self.segment_release is not None:
+            self.segment_release.close()
         return self._on_status(message)
 
 

@@ -483,6 +483,9 @@ class IntakeDecision:
     # Verified aux label groups: (kind, identity, rows); a row names its original
     # segment (`FastSegment`), the learner envelope, row index and label value.
     auxiliary: list[tuple[str, str, list[dict[str, Any]]]] = field(default_factory=list)
+    # `offer` only: the segment it parsed, whatever was decided (the original's
+    # deletion owner tracks it, `fast_release.py`).
+    segment: FastSegment | None = None
 
 
 class FastSegmentIntake:
@@ -637,6 +640,14 @@ class FastSegmentIntake:
         facts = row_facts(header) if checked is None or checked.facts is None else checked.facts
         terminal = (copy.deepcopy(header["seal"]["terminal"])
                     if header["seal"]["kind"] == "terminal" else None)
+        decision = self._place(segment, message, facts, terminal)
+        decision.segment = segment
+        return decision
+
+    def _place(self, segment: FastSegment, message: dict[str, Any],
+               facts: list[dict[str, Any]], terminal: dict[str, Any] | None
+               ) -> IntakeDecision:
+        header = segment.header
         with self.lock:
             self.counters["received"] += 1
             self.counters["received_rows"] += segment.rows
@@ -671,7 +682,7 @@ class FastSegmentIntake:
                     self.counters["label_facts_gap"] += 1
                 else:
                     instance.segments[segment.segment_id] = (
-                        header["segment_index"], message["sha256"], len(data))
+                        header["segment_index"], message["sha256"], len(segment.data))
                     instance.facts.extend(facts)
                     if header["seal"]["kind"] == "terminal":
                         instance.terminal = terminal
