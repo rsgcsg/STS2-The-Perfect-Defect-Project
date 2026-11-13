@@ -1463,6 +1463,7 @@ def test_early_source_prefetch_is_bounded_to_two_fifo_datasets_and_pins_bytes(
     owner.source_prefetch_stopping = threading.Event()
     owner.source_prefetch_gate = threading.Lock()
     owner.prepared_batches = 1
+    owner.prefetch_referenced_only = False
     owner.newlease_stopped = owner.input_fenced = False
     calls = []
 
@@ -1550,6 +1551,7 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     owner.source_prefetch_stopping = threading.Event()
     owner.source_prefetch_gate = threading.Lock()
     owner.prepared_batches = 1
+    owner.prefetch_referenced_only = False
     owner.newlease_stopped = owner.input_fenced = False
     preparer = BinaryBatchPreparer(
         provider=owner.binary_sources,

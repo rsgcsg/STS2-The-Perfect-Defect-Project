@@ -668,6 +668,14 @@ class SegmentLearner:
         self.ahead_while_waiting = (self.dataplane or {}).get("ahead_while_waiting", False)
         if type(self.ahead_while_waiting) is not bool:
             raise ValueError("ahead_while_waiting_must_be_explicit")
+        # The source prefetch pre-copies only segments a read-ahead batch already
+        # holds (default off: the whole FIFO window). On a full fast queue the
+        # oldest unreferenced segments, the window's tail, are the next capacity
+        # victims: copying them is wasted hash/copy work and dead arena bytes.
+        self.prefetch_referenced_only = (self.dataplane or {}).get(
+            "prefetch_referenced_only", False)
+        if type(self.prefetch_referenced_only) is not bool:
+            raise ValueError("prefetch_referenced_only_must_be_explicit")
         self.performance = config.performance or PerformanceConfig(
             packed=True,
             tensor_cache=True,
@@ -2535,13 +2543,17 @@ class SegmentLearner:
                         continue
                     rows = 0
                     window: dict[int, tuple[dict[str, Any], BatchMember]] = {}
+                    referenced = (self._fast_referenced() if self.prefetch_referenced_only
+                                  else None)
                     for record in self.queue.pending:
                         known = members.get(id(record))
                         if known is None or known[0] is not record:
                             known = record, self._member(record)
                         window[id(record)] = known
                         member = known[1]
-                        if member.payload not in cached:
+                        if referenced is not None and record["segment_id"] not in referenced:
+                            pass  # not selected yet: its batch's dispatch copies it
+                        elif member.payload not in cached:
                             self._retain(member.payload, "source-prefetch")
                             held.append(member)
                         rows += member.rows
