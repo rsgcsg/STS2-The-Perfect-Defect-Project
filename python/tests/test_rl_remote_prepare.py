@@ -494,3 +494,21 @@ def test_a_full_scratch_is_refused_at_start_and_named_instead_of_a_dead_pool(
     assert list(state.scratch.iterdir()) == []
     usage.free = 1024**3
     assert state.scratch_full(11 * 1024**2) is None
+    # A failed task is labelled scratch-full only for an ENOSPC-class error or a
+    # dead pool with less free space than the task needs, never for any dead
+    # worker while the free space is under the reserve.
+    import errno
+    from concurrent.futures.process import BrokenProcessPool
+
+    label = remote_prepare._scratch_label
+    state.scratch_reserve = 64 * 1024**2
+    usage.free = 32 * 1024**2  # under the reserve, above what the task needs
+    assert label(state, BrokenProcessPool("killed"), 11 * 1024**2) is None
+    assert label(state, BrokenProcessPool("killed"), 0) is None
+    assert label(state, RuntimeError("other"), 11 * 1024**2) is None
+    assert label(state, OSError(errno.ENOSPC, "full"), 0).startswith(
+        "remote_prepare_scratch_full: free_bytes=33554432 errno=ENOSPC")
+    usage.free = 10 * 1024**2  # less than the task needs
+    assert "needed_bytes=11534336" in label(state, BrokenProcessPool("killed"), 11 * 1024**2)
+    refused = remote_prepare.ScratchFull("remote_prepare_scratch_full: x")
+    assert label(state, refused, 0) == "remote_prepare_scratch_full: x"

@@ -744,12 +744,12 @@ class SegmentLearner:
             recorded = (restored.input_pipeline or {}).get("dataplane_shards")
             if not recorded and self.shards_adopt:
                 # The one explicit exception: a CP without shards. Each shard's RNG
-                # follows from the CP's committed RNG and the shard index; the next
-                # CP records the shards like any other.
+                # follows from the CP's committed RNG, this generation and the shard
+                # index; the next CP records the shards like any other.
                 from .dataplane_shards import adopted_rng_state
 
                 self.shard_rng_states = [
-                    adopted_rng_state(restored.rng.learner_random, index)
+                    adopted_rng_state(restored.rng.learner_random, self.generation, index)
                     for index in range(self.shard_count)]
             elif (recorded["count"] if recorded else 0) != self.shard_count:
                 raise BoundaryError("rl_learner", "checkpoint_dataplane_shard_count_changed")
@@ -1205,16 +1205,13 @@ class SegmentLearner:
         """A data-plane shard fenced itself, failed an operation or died: all input
         is fenced (every other shard too). Nothing is restarted or re-routed.
 
-        One case is not a fence, as on one ledger (`_fast_lost`): a hand-off
-        connection that ended after this learner stopped taking input. The stop
-        flag reaches a shard by message, so the shard may see the service's EOF
-        first and report it as lost; the learner, which is already stopping,
-        only records it. Returns whether the learner is fenced by this."""
-        with self.condition:
-            stopping = self.newlease_stopped and not self.input_fenced
-        if failure.get("operation") == "fast_handoff_lost" and stopping:
-            self._event("fast_handoff_lost", shard=index, learner_stopping=True)
-            return False
+        A hand-off that ended after the stop is not a fence, as on one ledger
+        (`_fast_lost`), and the shard decides that itself: every shard
+        acknowledges the stop before the learner goes on (`ShardSet.flags`). So a
+        `fast_handoff_lost` that arrives here, even after the stop, was seen by
+        the shard before it applied the stop: a real loss, fenced. (Strict at one
+        edge: an EOF between the stop decision and a shard's acknowledgement
+        fences too.) Returns whether the learner is fenced by this."""
         with self.condition:
             if not self.input_fenced:
                 self.input_failure = {"operation": "dataplane_shard", "shard": index,
@@ -1598,24 +1595,28 @@ class SegmentLearner:
 
     def _discard_stopped_shards(self) -> None:
         """The same terminal training discard for what the shards still queue: one
-        durable disposition here (the shards journal nothing), bytes released there."""
-        try:
-            records = self.shards.discard_stopped()
-        except BoundaryError as error:
-            # A shard that is dead or does not answer at stop: fence (no
-            # disposition is written for what it held) and go on to the close,
-            # which ends the shards, the pool and the SGD process.
-            facts = getattr(error, "facts", {})
-            self._shard_fenced(facts.get("shard", -1), {
-                "operation": "dataplane_shard_discard_at_stop", "error": str(error)[:400]})
-            return
-        if not records:
-            return
-        disposition = {"run": self.config.run, "training_generation": self.generation,
-            "operation": "training_discard", "reason": "STOPPED", "segments": records}
-        self._append_durable("discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
-                        disposition, {"discarded_rows": sum(r["rows"] for r in records)},
-                        kind="disposition")
+        durable disposition here (the shards journal nothing), bytes released there.
+
+        A shard that is dead or does not answer at stop fences the learner (no
+        disposition for what it held) and the caller goes on to the close, which
+        ends the shards, the pool and the SGD process. The shards that did answer
+        have released their rows: those still get their disposition. The fence
+        is recorded first (the durable write waits on this condition, and the
+        lost shard's own report must not name the failure instead)."""
+        records, failures = self.shards.discard_stopped()
+        if failures:
+            error = failures[0]
+            self._shard_fenced(error.facts.get("shard", -1), {
+                "operation": "dataplane_shard_discard_at_stop", "error": str(error)[:400],
+                **({"other_failures": [str(other)[:400] for other in failures[1:]]}
+                   if len(failures) > 1 else {})})
+        if records:
+            disposition = {"run": self.config.run, "training_generation": self.generation,
+                "operation": "training_discard", "reason": "STOPPED", "segments": records}
+            self._append_durable(
+                "discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
+                disposition, {"discarded_rows": sum(r["rows"] for r in records)},
+                kind="disposition")
 
     def _model_files(self, key: str | None, node: str, cached: list[str]) -> tuple[
             dict[str, Any], list[tuple[str, Path]], dict[str, Any]]:

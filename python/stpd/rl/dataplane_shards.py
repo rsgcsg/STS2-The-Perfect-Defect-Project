@@ -156,15 +156,17 @@ def shard_budget(dataplane: dict[str, Any], settings: Any, prepared_batches: int
             count * (1 + pools))
 
 
-def adopted_rng_state(committed: tuple[Any, ...], index: int) -> tuple[Any, ...]:
+def adopted_rng_state(committed: tuple[Any, ...], generation: str,
+                      index: int) -> tuple[Any, ...]:
     """Shard `index`'s selection RNG when a CP written without shards is continued
     with shards (`dataplane.shards_adopt_unsharded_checkpoint`): shard 0 continues
     the committed RNG itself; every other shard gets a stream fixed by that
-    committed state and its index."""
+    committed state, the new training generation and its index (two adoptions
+    of one CP under different generations draw differently there)."""
     if index == 0:
         return committed
     digest = hashlib.sha256(repr((committed[0], tuple(committed[1]), committed[2],
-                                  "dataplane-shard", index)).encode()).hexdigest()
+                                  "dataplane-shard", generation, index)).encode()).hexdigest()
     return random.Random(int(digest, 16)).getstate()
 
 
@@ -524,8 +526,32 @@ class ShardSet:
         self._call_all("publish_mu", identity=identity)
 
     def flags(self, *, stopped: bool, fenced: bool) -> None:
+        """Pass a False -> True flag change to every shard.
+
+        A fence is cast: it may come from the dispatcher, which holds the learner's
+        condition, and a fenced learner takes nothing more anyway. A stop is
+        acknowledged: the learner goes on (and answers its stop request) only
+        after every live shard applied it, so a shard that reports a hand-off
+        lost reports one it saw before the stop, a real loss, and one that saw
+        it after the stop only records it (`_fast_lost`). A shard that cannot
+        acknowledge is already on its way to fencing the learner: a death is
+        reported by its reader, a timeout by `_wait`, a failed operation by the
+        shard itself."""
+        if fenced or not stopped:
+            for shard in self.shards:
+                self._cast(shard, "flags", stopped=stopped, fenced=fenced)
+            return
+        slots: list[tuple[_Shard, _Slot]] = []
         for shard in self.shards:
-            self._cast(shard, "flags", stopped=stopped, fenced=fenced)
+            try:
+                slots.append((shard, self._send(shard, "flags", stopped=True, fenced=False)))
+            except DataplaneShardFailed:
+                continue  # dead: its reader reported it
+        for shard, slot in slots:
+            try:
+                self._wait(shard, "flags", slot, REPLY_SECONDS)
+            except DataplaneShardFailed:
+                continue  # reported as above; the learner is fenced by it
 
     # -- datasets -----------------------------------------------------------------
     def ahead(self) -> None:
@@ -561,8 +587,24 @@ class ShardSet:
         self._cast(self.shards[active["shard"]], "finished",
                    sequence=active["shard_sequence"])
 
-    def discard_stopped(self) -> list[dict[str, Any]]:
-        return [record for records in self._call_all("discard") for record in records]
+    def discard_stopped(self) -> tuple[list[dict[str, Any]], list[DataplaneShardFailed]]:
+        """The stop discard on every shard: the records of each shard that answered
+        (it has released those rows: they need their disposition even when
+        another shard fails) and the failure of each one that did not."""
+        records: list[dict[str, Any]] = []
+        failures: list[DataplaneShardFailed] = []
+        slots: list[tuple[_Shard, _Slot]] = []
+        for shard in self.shards:
+            try:
+                slots.append((shard, self._send(shard, "discard")))
+            except DataplaneShardFailed as error:
+                failures.append(error)
+        for shard, slot in slots:
+            try:
+                records.extend(self._wait(shard, "discard", slot, REPLY_SECONDS))
+            except DataplaneShardFailed as error:
+                failures.append(error)
+        return records, failures
 
     def snapshot(self) -> dict[str, Any]:
         return {"count": self.count, "shards": self._call_all("snapshot")}
@@ -1169,6 +1211,7 @@ class _ShardLearner(SegmentLearner):
             pending = len(self._pending_batches())
             actors, taken = len(self.shard_actors), len(self.taken)
             fenced, failure = self.input_fenced, self.input_failure
+            stopped = self.newlease_stopped
         with intake.lock:
             owned = sum(1 for instance_id in intake.instances if intake.owns(instance_id))
         timing = (self.control_lock.snapshot() if hasattr(self.control_lock, "snapshot")
@@ -1184,7 +1227,7 @@ class _ShardLearner(SegmentLearner):
                 "queue_rows": rows, "pending_batches": pending, "announced": self.announced,
                 "taken": taken, "datasets": self.datasets, "actors": actors,
                 "training_discarded_rows": discarded,
-                "input_fenced": fenced, "input_failure": failure,
+                "input_fenced": fenced, "input_failure": failure, "newlease_stopped": stopped,
                 "preparation": cast(Any, self.input_preparer).summary(),
                 "control_lock_timing": timing, "cpu_seconds": time.process_time()}
 
