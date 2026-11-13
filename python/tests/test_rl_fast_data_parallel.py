@@ -46,7 +46,11 @@ def fast_sgd_learner(tmp_path, monkeypatch, *, world: int) -> SegmentLearner:
     dataplane = {"lanes": 1, "root": str(tmp_path / "live"), "source_slots": 16,
                  "prepare_slots": 4, "source_bytes": 32 * 1024**2,
                  "preparation_workers": 1, "assembly_workers": 1, "prepared_batches": 2,
-                 "fast_chain": True, **SGD_PROCESS, **(PARALLEL if world == 2 else {})}
+                 "fast_chain": True, **SGD_PROCESS, **(PARALLEL if world == 2 else {}),
+                 # Prestart (default on) authorizes dataset N+1 only if it is already
+                 # staged at N's boundary, so `train(owner, 2)` may run a third dataset
+                 # on one world size and not the other: compare lockstep runs.
+                 "sgd_prestart": False}
     return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
 
 
