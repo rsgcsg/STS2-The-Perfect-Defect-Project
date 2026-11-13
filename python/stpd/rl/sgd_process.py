@@ -59,7 +59,7 @@ OPTION_KEYS = frozenset((
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
 DATA_PARALLEL_KEYS = frozenset(("world", "backend", "timeout_seconds"))
-COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup"))
+COMPILE_KEYS = frozenset(("cache_dir", "recompile_limit", "warmup", "size_guard"))
 # Per-process bases from measurement where one exists (margin ~15-25%); override
 # with `dataplane.memory_budget` once a run measures better. The check refuses;
 # it never shrinks a limit.
@@ -120,7 +120,7 @@ COMPILED_STALL_SECONDS = 300.0
 def compiled_defaults(options: SgdOptions, dataplane: dict[str, Any]) -> SgdOptions:
     """Defaults for a learner that selected `prepared_compile`; explicit values win."""
     compiled = dict(options.compile) if options.compile is not None else {
-        "cache_dir": None, "recompile_limit": None, "warmup": []}
+        "cache_dir": None, "recompile_limit": None, "warmup": [], "size_guard": False}
     if compiled["recompile_limit"] is None:
         compiled["recompile_limit"] = COMPILED_RECOMPILE_LIMIT
     stall = (options.stall_seconds if "sgd_stall_seconds" in dataplane
@@ -177,7 +177,9 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         limit_value = compiled.get("recompile_limit") if isinstance(compiled, dict) else None
         warm = compiled.get("warmup", []) if isinstance(compiled, dict) else None
         cache_dir = compiled.get("cache_dir") if isinstance(compiled, dict) else None
+        size_guard = compiled.get("size_guard", False) if isinstance(compiled, dict) else None
         if (not isinstance(compiled, dict) or set(compiled) - COMPILE_KEYS
+                or type(size_guard) is not bool
                 or (limit_value is not None and (type(limit_value) is not int
                                                  or not 8 <= limit_value <= 64))
                 or not isinstance(warm, list) or len(warm) > 8
@@ -185,7 +187,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
                 or (cache_dir is not None and (not isinstance(cache_dir, str) or not cache_dir))):
             raise ValueError("invalid_sgd_compile")
         compiled = {"cache_dir": cache_dir, "recompile_limit": limit_value,
-                    "warmup": list(warm)}
+                    "warmup": list(warm), "size_guard": size_guard}
     stage_thread = dataplane.get("sgd_stage_thread", False)
     if type(stage_thread) is not bool:
         raise ValueError("invalid_sgd_stage_thread")
@@ -1182,6 +1184,17 @@ class _SgdWorker:
             else:
                 dynamo.cache_size_limit = options["recompile_limit"]
             facts["recompile_limit"] = options["recompile_limit"]
+        if not options.get("size_guard", False):
+            import torch._inductor.config as inductor
+
+            # Inductor's mix-order-reduction fusion skips workloads under 5 Mi elements
+            # with a guard on the symbolic size: every rows-v2 graph (node builder,
+            # block) then compiles once more when the first group crosses 5 Mi / 192
+            # nodes, mid-run, after any warm-up that saw one side only (Friday 1470331).
+            # Fusing regardless removes the guard; equal step time on chain dumps
+            # (1470333: 0.2377 vs 0.2371-0.2395 s, 3 graphs instead of 5).
+            inductor.triton.mix_order_reduction_non_strict_mode = True
+        facts["size_guard"] = bool(options.get("size_guard", False))
         facts["warmup"] = [self.warm(Path(path)) for path in options["warmup"]]
         return facts
 
