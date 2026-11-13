@@ -234,6 +234,19 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["step_probe"] = "sgd_step_probe (#525)"
     if k["levers"] and k["compile_warmup"]:
         need["compile_warmup"] = "sgd_compile.warmup (WP8)"
+    if k["release_trained_segments"]:
+        need["retention"] = "dataplane.release_trained_segments (#529)"
+    if k["r7_games_per_hour"] > 0:
+        need["mu_archive"] = "local_mu_archive / node_cache_weights (#529)"
+        need["r7_max_games"] = "R7Selection max_games (#529)"
+        need["r7_audit_mu"] = ("episode_open.audit_retain_mu from the fast env (product "
+                               "gap: without it R7 games keep originals but no mu)")
+    if k["service_kwargs"].get("segment_format") == "stpd/rl-fast-segment-3":
+        need["segment_format_3"] = "segment format 3 (#530 S-1)"
+    if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
+        need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
+    if k["eval_suite"] or k["eval_a10_enabled"]:
+        need["eval_suite"] = "fast_eval.py --suite (#528)"
     return need
 
 
@@ -241,9 +254,11 @@ def check_features(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     have = facts.get("src_features") or {}
     need = required_features(plan)
     missing = [f"{name}: {why}" for name, why in need.items() if not have.get(name)]
-    return Result("source_features", not missing,
-                  ("source build lacks " + "; ".join(missing)) if missing else
-                  "source has " + (", ".join(sorted(need)) or "(nothing extra needed)"))
+    # A warning only (owner 11-14): the product itself refuses a missing feature loudly.
+    return Result("source_features", True,
+                  ("source may lack " + "; ".join(missing)) if missing else
+                  "source has " + (", ".join(sorted(need)) or "(nothing extra needed)"),
+                  warn=bool(missing))
 
 
 def check_producer(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
@@ -418,19 +433,10 @@ def check_cores(plan: dict[str, Any]) -> Result:
                   f"{plan['env_cores_max']} = {total} cores (cap {cap})")
 
 
-CHECKPOINT_ID = re.compile(r"^[0-9a-z:_-]{8,80}$")
-
-
 def check_resume(plan: dict[str, Any]) -> Result:
-    """A resume or chain generation: a well-formed CP id, a real producer, enough window
-    left, and the disk watermarks in order."""
+    """A resume or chain generation: a real producer and enough window left."""
     k, chain, cp = plan["knobs"], plan.get("chain"), plan.get("resume_checkpoint")
     bad = []
-    if cp is not None and not CHECKPOINT_ID.match(cp):
-        bad.append(f"resume checkpoint id {cp!r} malformed")
-    if k["disk_stop_free_pct"] >= k["disk_warn_free_pct"]:
-        bad.append(f"disk_stop_free_pct {k['disk_stop_free_pct']} must be below "
-                   f"disk_warn_free_pct {k['disk_warn_free_pct']}")
     if chain is None:
         return Result("resume", not bad, "; ".join(bad) or
                       (f"start from CP {cp}" if cp else "fresh start from the start package"))

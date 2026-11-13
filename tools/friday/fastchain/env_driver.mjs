@@ -14,6 +14,14 @@ import { pathToFileURL } from "node:url";
 
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : fallback; };
 const PKG = arg("pkg"), OUT = arg("out"), K = Number(arg("slots", "8"));
+// #530 S-1: the level every game of this driver plays; required, never a default.
+const ASCENSION_RAW = arg("ascension");
+if (!/^(10|[0-9])$/.test(ASCENSION_RAW ?? "")) {
+  process.stderr.write(`--ascension is required: an integer 0-10 (got ${ASCENSION_RAW})\n`); process.exit(2);
+}
+const ASCENSION = Number(ASCENSION_RAW);
+// #529 R7 audit games: before each open the node sidecar's R7Selection decides `open.r7`.
+const R7 = arg("r7", "off") === "on";
 const WARM_S = Number(arg("warm-s", "90")), STEADY_S = Number(arg("steady-s", "240"));
 // c3b (lead 11-12): named flags, printed at startup. Both only touch latency tolerance and
 // the pause before a fresh seed after a not_started close; no game is retried or resent.
@@ -52,7 +60,7 @@ const MEMO = MEMO_RAW && Object.keys(MEMO_RAW).length ? MEMO_RAW : null;  // {} 
 const COMPACT = arg("compact", "on") === "on";
 const config = { schema: "sts2.policy-runtime/fast-env-config-1", env_process_id: `wp8-${process.env.SLURM_JOB_ID ?? "local"}-${arg("tag")}`, slots: K,
   host: { package: join(PKG, "components/host-runtime"), candidate_directory: arg("candidate"), game_directory: `${rel}/game`,
-    character: "Defect", language: "zh", ascension: 0, request_timeout_ms: 30000 },
+    character: "Defect", language: "zh", ascension: ASCENSION, request_timeout_ms: 30000 },
   agent_manifest: join(OUT, "agent-manifest.json"), compact: { enabled: COMPACT, reconcile_interval: 64,
     ...(MEMO?.projection ? { projection_memo: { check_interval: MEMO.projection } } : {}) }, checks: { sample_rate: 0.01,
     // C1 (V3-wu/V3-shen): --reduce-light-interval N > 0 sets reduce_light.strict_interval
@@ -72,7 +80,8 @@ const config = { schema: "sts2.policy-runtime/fast-env-config-1", env_process_id
 writeFileSync(join(OUT, "config.json"), JSON.stringify(config, null, 1), { mode: 0o600 });
 const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-gc (V3-shen)
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
-  single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO };
+  single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
+  ascension: ASCENSION, r7: R7 };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 
@@ -82,17 +91,33 @@ const env = spawn(process.execPath, [...(GC1 ? ["--single-threaded-gc"] : []), .
 env.stderr.on("data", chunk => appendFileSync(join(OUT, "env.stderr"), chunk));
 let commandId = 0, opened = 0, stopping = false, stopSent = false, isReady = false;
 const send = (command) => (stopSent && command.cmd !== "stop") ? false : env.stdin.write(`${JSON.stringify({ schema: "sts2.policy-runtime/fast-env-command-1", command_id: `c${++commandId}`, ...command })}\n`);
-const open = (slot) => {
+const r7Counts = { selected: 0, not_selected: 0, failed: {} };
+const openWith = (slot, r7) => {
   if (stopping) return;
   const seed = SEEDS[seedIndex++ % SEEDS.length];
   opened += 1;
   seedOf.set(`g${opened}`, seed);
-  send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start: { kind: "new_run" }, r7: false, retain_originals: false });
+  send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start: { kind: "new_run" }, r7, retain_originals: false });
+};
+// The R7 choice comes before the game (never from its seed or content). A failed choice
+// opens nothing: logged and counted, the slot tries again after 1 s (never a default).
+const open = (slot) => {
+  if (stopping) return;
+  if (!R7) return openWith(slot, false);
+  admitCall({ op: "r7", actor: `v3g-${arg("tag")}`, intent_id: "-", seed: "-", game_instance_id: "-" }).then(r => {
+    if (r.ok && typeof r.selected === "boolean") {
+      r7Counts[r.selected ? "selected" : "not_selected"] += 1;
+      return openWith(slot, r.selected);
+    }
+    r7Counts.failed[r.code ?? "malformed"] = (r7Counts.failed[r.code ?? "malformed"] ?? 0) + 1;
+    log({ event: "r7_select_failed", slot, code: r.code ?? null, detail: r.detail ?? null });
+    setTimeout(() => open(slot), 1000);
+  });
 };
 const exclude = (gameInstanceId, reason) => admitCall({ op: "exclude", actor: `v3g-${arg("tag")}`, intent_id: "-", seed: "-", game_instance_id: gameInstanceId, reason })
   .then(r => { if (r.ok) admission.excluded += 1; else admission.exclusion_failed[r.code] = (admission.exclusion_failed[r.code] ?? 0) + 1; });
 const excludedSent = new Set();
-const summary = { tag: arg("tag"), slots: K, admission, single_choice: SINGLE, warm_s: WARM_S, steady_s: STEADY_S, closed: [], refused: [], failures: [], statuses: [] };
+const summary = { tag: arg("tag"), slots: K, admission, ascension: ASCENSION, r7: r7Counts, single_choice: SINGLE, warm_s: WARM_S, steady_s: STEADY_S, closed: [], refused: [], failures: [], statuses: [] };
 createInterface({ input: env.stdout }).on("line", line => {
   const event = JSON.parse(line);
   log({ event: event.event, slot: event.slot ?? null, reason: event.reason ?? null, detail: event.detail ?? null });

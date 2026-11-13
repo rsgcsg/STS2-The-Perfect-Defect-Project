@@ -186,6 +186,8 @@ def learner() -> None:
         dataplane["sgd_compile"] = {
             "warmup": json.loads(site("compile_warmup_dumps")),
             "recompile_limit": K["compile_recompile_limit"]}
+    if K["release_trained_segments"]:  # #529: delete trained originals once a CP covers them
+        dataplane["release_trained_segments"] = True
     if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
         dataplane["sgd_gc_freeze"] = True
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
@@ -232,7 +234,7 @@ def learner() -> None:
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
                "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
-               "sgd_step_probe")},
+               "sgd_step_probe", "release_trained_segments")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}
@@ -305,9 +307,10 @@ def learner() -> None:
     def status() -> None:
         while not STOP.exists():
             time.sleep(10)
-            if STOP.exists() and STOP.read_text().startswith("service"):
-                # The service failed: the learner stops now (fails closed), never waits
-                # for data until its deadline. Its hand-off EOF also fences input.
+            if STOP.exists() and STOP.read_text().startswith(("service", "disk stop")):
+                # The service failed (or the disk watermark drained the env side): the
+                # learner stops now, never waits for data until its deadline. A service's
+                # hand-off EOF also fences input.
                 (work / "owner" / "STOP").write_text("service stopped")
             try:
                 jline(RUN / "learner-status.jsonl", {
@@ -431,8 +434,18 @@ def service() -> None:
     kwargs = dict(K["service_kwargs"])
     formats = ({"segment_format": kwargs.pop("segment_format")}
                if "segment_format" in kwargs else {})
+    # #529 R7 audit games: every mu such a game's segments bind is archived by sha256
+    # (run dir, `mu_archive_gb` split over the services; full = that row refused loudly),
+    # read from this node's mu cache under its reader lock.
+    audit: dict = {}
+    if K["r7_games_per_hour"] > 0:
+        from stpd.rl.fast_mu_pack import local_mu_archive, node_cache_weights
+
+        audit["mu_archive"] = local_mu_archive(
+            RUN / f"mu-archive{tag}",
+            max_bytes=int(K["mu_archive_gb"] * 1e9 / K["services"]))
     assembler = FastSegmentAssembler(
-        assembler_id=f"fc{tag}", compiler_identity=compiler.identity, **formats,
+        assembler_id=f"fc{tag}", compiler_identity=compiler.identity, **formats, **audit,
         emit=lambda segment: holder["h"].submit(segment),
         on_closed=lambda item: holder["h"].submit_closed(item))
     auth = bytes.fromhex(os.environ["STPD_P1_LOCAL_INFERENCE_AUTH"])
@@ -456,7 +469,9 @@ def service() -> None:
         **{"window_ms": float(K["service_window_ms"]),
            "max_job_rows": K["service_max_job_rows"],
            "compile": K["service_compile"], **kwargs}, **exit_option)
-    follower = FastMuFollower(source, service, interval=float(K["mu_poll_seconds"]))
+    weights = ({"weights": lambda identity: node_cache_weights(source._cache(refresh=False),
+                                                               identity)} if audit else {})
+    follower = FastMuFollower(source, service, interval=float(K["mu_poll_seconds"]), **weights)
     if not follower.step():
         raise SystemExit("first mu refused")
     follower.start()
@@ -538,7 +553,20 @@ def service() -> None:
 
 if __name__ == "__main__":
     if MODE == "learner":
-        if learner() is not None:
+        try:
+            failed = learner()
+        except BaseException as error:  # noqa: BLE001 - setup failed before owner.run()
+            # Review D2: a setup failure (an unrestorable CP, no prep hosts, a refused
+            # config) writes a report too, so the supervisor stops instead of resuming.
+            import traceback
+            failed = f"setup {type(error).__name__}: {getattr(error, 'code', '')} {error}"
+            if not (RUN / "learner-report.json").exists():
+                (RUN / "learner-report.json").write_text(json.dumps({
+                    "failure": failed, "setup_failure": True, "summary": None,
+                    "failure_trace": traceback.format_exc()}, default=str, indent=1))
+            stop_once(f"learner failure {failed}")
+            traceback.print_exc()
+        if failed is not None:
             sys.exit(6)
     else:
         try:

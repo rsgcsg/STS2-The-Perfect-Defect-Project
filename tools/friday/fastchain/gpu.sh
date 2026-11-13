@@ -10,6 +10,8 @@ set +u; source /etc/profile >/dev/null 2>&1
 source "$FC_RUN/job-env.sh"
 module load "$FC_SITE_MODULE_LOAD" >/dev/null 2>&1; set -u
 RUN=$FC_RUN; H=$FC_HARNESS; PY=$FC_SITE_PYTHON
+# The job's exit code for supervise.py (review D1): absent = the node died or was preempted.
+trap 'echo $? > "$RUN/gpu-rc"' EXIT
 export PYTHONPATH=$FC_SITE_SRC_DIR/python:$FC_SITE_LZ4_PATH PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
 export LD_LIBRARY_PATH=$FC_SITE_LIB_PATH:${LD_LIBRARY_PATH:-}
 export TORCHINDUCTOR_CACHE_DIR=$FC_SITE_INDUCTOR_CACHE TMPDIR=$FC_SITE_GPU_LOCAL_TMP/fc-$SLURM_JOB_ID
@@ -42,7 +44,7 @@ CUDA_VISIBLE_DEVICES=$SVCG nvidia-cuda-mps-control -d || { stop_once "service fa
 sleep 1; echo get_server_list | nvidia-cuda-mps-control >/dev/null 2>&1 || { stop_once "service failure: mps control not answering"; exit 8; }
 echo "mps daemon started (card $SVCG only)"
 BG=()
-trap 'kill "${BG[@]}" 2>/dev/null; echo quit | nvidia-cuda-mps-control 2>/dev/null' EXIT
+trap 'rc=$?; echo $rc > "$RUN/gpu-rc"; kill "${BG[@]}" 2>/dev/null; echo quit | nvidia-cuda-mps-control 2>/dev/null' EXIT
 CPUS=($($PY -c "import os; print(' '.join(map(str, sorted(os.sched_getaffinity(0)))))"))
 LC=$FC_LEARNER_CORES
 LCPU=$(IFS=,; echo "${CPUS[*]:0:$LC}"); SCPU=$(IFS=,; echo "${CPUS[*]:$LC}")
@@ -60,8 +62,11 @@ done ) > $RUN/load.txt &
 LS=$!; BG+=($LS)
 # A2 disk watermarks on the run dir (segments) and the node-local tmp: below the warn
 # level one loud line; below the stop level DRAIN once (env nodes stop admitting new
-# games; the learner keeps training on what it has). Samples go to disk.txt.
+# games), then after FC_ENV_DRAIN_SECONDS STOP "disk stop" (review D3: the learner stops
+# instead of waiting for data until its deadline). Samples go to disk.txt.
 ( warned=""; while sleep $FC_DISK_SAMPLE_SECONDS; do
+  if [ -e $RUN/disk-stop ] && [ $(( $(date +%s) - $(stat -c %Y $RUN/disk-stop) )) -ge $FC_ENV_DRAIN_SECONDS ]; then
+    stop_once "disk stop: $(cat $RUN/disk-stop)"; fi
   for d in $RUN $FC_SITE_GPU_LOCAL_TMP; do
     set -- $(df -P -B1 "$d" 2>/dev/null | awk 'NR==2{print $2, $4}'); [ -n "${1:-}" ] || continue
     pct=$(( $2 * 100 / $1 )); echo "$(date +%s) $d free_pct=$pct avail=$2 size=$1"
@@ -91,7 +96,7 @@ SRC=0
 for pid in "${SPS[@]}"; do wait $pid; rc=$?; echo "service pid=$pid exit=$rc $(date -Is)"; [ $rc = 0 ] || SRC=$rc; done
 kill $GS $LS $PS_ $DS 2>/dev/null
 df -h $FC_SITE_GPU_LOCAL_TMP | tail -1; du -sh $TMPDIR/learner-live $RUN/segments-* 2>/dev/null
-shm_clean end; echo quit | nvidia-cuda-mps-control 2>/dev/null; trap - EXIT; rm -rf $TMPDIR
+shm_clean end; echo quit | nvidia-cuda-mps-control 2>/dev/null; trap 'echo $? > "$RUN/gpu-rc"' EXIT; rm -rf $TMPDIR
 # Smoke gate (FC_SMOKE=1): non-zero unless every service reported, rows were scored and
 # handed off, and nothing failed.
 RC=0

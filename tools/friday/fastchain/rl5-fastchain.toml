@@ -64,7 +64,7 @@ prep_scratch_min_free = { value = true, default = false, why = "remote_prepare -
 prep_start_timeout_seconds = { value = 600, default = 0, why = "the prep job must be running and every host ready before the GPU job is submitted", measured = "c2g void (prep pended 16 min, GPU gave up)" }
 # --- inference services ---
 services = { value = 6, default = 1, why = "K services on the inference card under MPS", measured = "s1d onward, c3c series" }
-service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, segment_format = "stpd/rl-fast-segment-2", device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
+service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, segment_format = "stpd/rl-fast-segment-3", device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
 service_window_ms = { value = 3, default = 3, why = "batching window", measured = "s1d onward" }
 service_compile = { value = true, default = true, why = "compiled inference", measured = "s1d onward" }
 service_prepare_workers = { value = 8, default = 8, why = "prepare workers per service", measured = "c3c series" }
@@ -93,6 +93,16 @@ eval_seeds = { value = 100, default = 100, why = "100 games per evaluation (user
 disk_sample_seconds = { value = 60, default = 60, why = "disk watermark sampling period (run dir and GPU local tmp)", measured = "A2" }
 disk_warn_free_pct = { value = 20, default = 20, why = "free space below this: loud warning (disk-watermark.txt, readout)", measured = "LONG-RUN-CHECK A2" }
 disk_stop_free_pct = { value = 10, default = 10, why = "free space below this: DRAIN (env nodes stop admitting new games), loud", measured = "LONG-RUN-CHECK A2" }
+eval_suite = { value = "", default = "", why = "fast_eval.py --suite of the standing watcher; empty = the fixed A0 100-seed suite (RL3 registered)", measured = "#528 1c59c87d" }
+eval_a10_enabled = { value = false, default = false, why = "a second standing watcher on the A10 50-game suite; on once #530 S-2 lands", measured = "lead 11-14" }
+eval_a10_suite = { value = "", default = "", why = "the A10 suite id for the second watcher (#530 S-2)", measured = "lead 11-14" }
+eval_a10_seeds = { value = 50, default = 50, why = "A10 suite size", measured = "lead 11-14" }
+release_trained_segments = { value = true, default = true, why = "delete trained fast-chain originals once a durable CP covers them (learner dataplane)", measured = "#529 27ffd49b" }
+r7_games_per_hour = { value = 10, default = 10, why = "R7 audit games per hour in total (owner 11-06: 10-20/h); split evenly over env nodes; 0 = none", measured = "#529; owner 11-06" }
+r7_max_games = { value = 200, default = 200, why = "R7 games per generation in total (split over env nodes): 20 h x 10/h; the first bound on the local mu archive", measured = "#529 R7Selection max_games" }
+r7_expected_games_per_node_hour = { value = 1000, default = 1000, why = "the R7 sampler's games per env node per hour (estimate: ~160 slots per node, games of minutes); fewer games = fewer chosen, more = later games never chosen (r7 report)", measured = "estimate; set from the first readout" }
+mu_archive_gb = { value = 60, default = 60, why = "bound of the local R7 mu archive per service (each R7 game keeps ~19 MB per mu it played); full = the audit row is refused loudly", measured = "#529 lead 11-14" }
+ascension_mix = { value = { 0 = 1.0 }, default = { 0 = 1.0 }, why = "ascension level -> share of env drivers (largest remainder per node); above 0 needs segment format 3; no curriculum", measured = "#530 S-1 lead 11-14" }
 smoke_wall_seconds = { value = 300, default = 300, why = "5 min smoke first (playbook §11.4 item 5)", measured = "s2c-smoke" }
 # --- environment nodes ---
 env_node_cores = { value = 16, default = 20, why = "a size every fast type holds", measured = "c2j" }

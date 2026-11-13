@@ -4,7 +4,8 @@
 
     supervise.py start CHAIN --site S --cards N --card-type T [--layout L] [--set k=v]...
                  [--resume-checkpoint CP] [--eval-execution E --eval-manifest M
-                 --eval-slot-registered] [--dry-run]
+                 [--eval-baseline-plan P] [--eval-a10-manifest M10] --eval-slot-registered]
+                 [--dry-run]
 
 One chain is one operating window: `long_wall_seconds` (<= 72000 s), one learner budget id
 (`c-CHAIN`) and one immutable deadline, kept by the learner across restorations
@@ -14,13 +15,18 @@ the newest CP of the chain (RL4.1 long-run lessons: continuation = new dir + rec
 state; newest CP by published_at; re-freeze on code change).
 
 Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
-- resumable = the learner reported `input_owner_fenced_restore_last_checkpoint` (the
-  product's own instruction: the fenced owner restores its last CP), a service or prep
-  host was lost (STOP "service failure ..."), or the GPU job died without a learner
-  report (node failure, preemption); the old generation's jobs are cancelled first;
-- not resumed: a normal end, any other learner failure (it would repeat), a refused
-  preflight or failed submit, a disk-watermark stop, a code/profile/site/source change
-  since the chain started (RL4.1 lesson: re-freeze on code change);
+- normal = gpu.sh exited 0 (its `gpu-rc` file), the learner report has no failure and a
+  window end, and STOP names no failure;
+- resumable = only the learner's own signal: its report failure names
+  `input_owner_fenced_restore_last_checkpoint` (the product's instruction: the fenced
+  owner restores its last CP; `input_failure.operation` says why, e.g. a lost hand-off),
+  or there is neither a learner report nor a `gpu-rc` (node failure, preemption); the old
+  generation's jobs are cancelled first;
+- not resumed: any other learner failure, including a setup failure (an unrestorable CP
+  writes a report too, so the chain stops at once), a "service failure" STOP alone (gpu
+  preflight, GPU count, MPS, memory guard: they would repeat), a refused preflight or
+  failed submit, a disk-watermark stop, a code/profile/site/source change since the
+  chain started (RL4.1 lesson: re-freeze on code change);
 - at most `resume_max_total` resumes (default 3);
 - the restore itself is the learner's: CP-only restore (fresh generation, in-flight input
   discarded), shard count recorded in the CP. Not covered: a CP that fails to restore is
@@ -31,9 +37,13 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
   window exits 0.
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
-and with --eval-*: the source's tools/friday/fast_eval.py loop on the run's peer
-(every `eval_interval_seconds`, `eval_seeds` games, never stopping training), plus one
-evaluation of the newest CP once the chain ends.
+and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the
+run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
+`eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
+A10 suite when `eval_a10_enabled`. The watchers outlive the chain, so the last CP is
+evaluated on their next tick; FINAL.json names their pids (stop them after that report).
+--eval-execution is a template (models, retention, pipeline): the chain writes its copy
+with `"storage_mode": "shared_local"` on the site's peer (no R2).
 """
 from __future__ import annotations
 
@@ -41,6 +51,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -81,23 +92,34 @@ def source_identity(site: dict[str, Any]) -> dict[str, Any]:
 
 
 def outcome(run: Path) -> dict[str, Any]:
-    """How a generation ended, from its own files only."""
-    report_path, stop = run / "learner-report.json", run / "STOP"
+    """How a generation ended, from its own files only (review 11-14 D1/D2).
+
+    normal: gpu.sh exit 0 (`gpu-rc`), a learner report without failure that reached its
+    window end, and no failure STOP. resumable: only the learner's own signal (its report
+    failure names `input_owner_fenced_restore_last_checkpoint`), or no learner report and
+    no `gpu-rc` (the node died or the job was preempted). Everything else repeats: stop.
+    """
+    report_path, stop, rc_path = run / "learner-report.json", run / "STOP", run / "gpu-rc"
     report = json.loads(report_path.read_text()) if report_path.exists() else None
     failure = (report or {}).get("failure")
     disk = (run / "disk-stop").read_text().strip() if (run / "disk-stop").exists() else None
     first = stop.read_text().strip() if stop.exists() else None
-    lost = (first or "").startswith("service failure")
+    text = rc_path.read_text().strip() if rc_path.exists() else ""
+    rc = int(text) if text.lstrip("-").isdigit() else None
+    window_end = ((report or {}).get("summary") or {}).get("window_end")
+    failed_stop = (first or "").startswith(("service failure", "learner failure"))
     if disk:
         kind = "disk_stop"
-    elif report is not None and failure is None:
+    elif rc == 0 and report is not None and failure is None and window_end and not failed_stop:
         kind = "normal"
-    elif report is None or lost or any(code in failure for code in RESUMABLE):
+    elif (failure and any(code in failure for code in RESUMABLE)) or (
+            report is None and rc is None):
         kind = "resumable"
     else:
         kind = "failure"
     return {"kind": kind, "failure": failure, "stop": first, "disk_stop": disk,
-            "window_end": ((report or {}).get("summary") or {}).get("window_end")}
+            "gpu_rc": rc, "window_end": window_end,
+            "input_failure": (report or {}).get("input_failure")}
 
 
 class Chain:
@@ -118,7 +140,7 @@ class Chain:
             cmd, stdout=log.open("a"), stderr=subprocess.STDOUT, start_new_session=True))
         self.dir = Path(self.site["work_root"]) / f"chain-{args.chain}"
         self.state_path = self.dir / "state.json"
-        self.eval_loop: Any = None
+        self.eval_loops: dict[str, Any] = {}
 
     # ---------------- state ----------------
     def note(self, kind: str, **fields: Any) -> None:
@@ -137,7 +159,11 @@ class Chain:
                      if (g.get("outcome") or {}).get("kind") not in (None, "normal")]
         record = {"ok": ok, "cause": cause, "first_cause": resumable[0] if resumable else None,
                   "generations": len(self.state["generations"]),
-                  "resumes": len(self.state["generations"]) - 1, "t": self.clock()}
+                  "resumes": len(self.state["generations"]) - 1, "t": self.clock(),
+                  # standing watchers outlive the chain (the last CP is evaluated on
+                  # their next tick); stop them with `kill PID` after its report.
+                  "evaluation_watchers": {name: getattr(loop, "pid", None)
+                                          for name, loop in self.eval_loops.items()}}
         self.state["final"] = record
         (self.dir / "FINAL.json").write_text(json.dumps(record, indent=1, default=str))
         self.note("chain_end", **record)
@@ -241,39 +267,69 @@ class Chain:
                 handle.write(f"\n## {time.strftime('%Y-%m-%d %H:%M:%S')} {run.name}\n"
                              f"{text}\n{self.eval_status()}\n")
             self.persist()
-        if self.eval_loop is not None and self.eval_loop.poll() is not None:
-            self.note("evaluation_loop_ended", code=self.eval_loop.returncode)
-            self.eval_loop = None
+        for name, loop in list(self.eval_loops.items()):
+            if loop.poll() is not None:
+                self.note("evaluation_loop_ended", watcher=name, code=loop.returncode)
+                del self.eval_loops[name]
 
     # ---------------- evaluation ----------------
-    def eval_command(self, once: bool) -> list[str]:
+    def watchers(self) -> dict[str, dict[str, Any]]:
+        """Standing fast_eval.py watchers (#528): one per suite, each its own output."""
+        out = {"a0": {"suite": self.knobs["eval_suite"], "manifest": self.args.eval_manifest,
+                      "seeds": self.knobs["eval_seeds"],
+                      "baseline": self.args.eval_baseline_plan}}
+        if self.knobs["eval_a10_enabled"]:
+            out["a10"] = {"suite": self.knobs["eval_a10_suite"],
+                          "manifest": self.args.eval_a10_manifest,
+                          "seeds": self.knobs["eval_a10_seeds"], "baseline": None}
+        return out
+
+    def eval_command(self, name: str, watcher: dict[str, Any]) -> list[str]:
+        """No --checkpoint/--once/--deadline-at: the newest CP every eval_interval_seconds,
+        and it keeps going after the chain so the last CP gets its evaluation too."""
         config = self.dir / "eval-learner.json"
         config.write_text(json.dumps({"peer": {"kind": "local",
                                                "directory": self.site["peer_dir"]},
                                       "run": self.site["run_name"]}))
+        # The execution template (models, retention, pipeline) with the shared-local
+        # storage of this site's peer: no R2 (lead 11-12, evaluate.validate_execution).
+        execution = self.dir / "eval-execution.json"
+        execution.write_text(json.dumps({
+            **json.loads(Path(self.args.eval_execution).read_text()),
+            "storage_mode": "shared_local", "store": self.site["peer_dir"],
+            "peer": {"kind": "local", "directory": self.site["peer_dir"]}}, indent=1))
         cmd = [self.site["python"], str(Path(self.site["src_dir"]) / "tools/friday/fast_eval.py"),
-               "--learner-config", str(config), "--execution", str(self.args.eval_execution),
-               "--manifest", str(self.args.eval_manifest), "--output", str(self.dir / "eval"),
+               "--learner-config", str(config), "--execution", str(execution),
+               "--manifest", str(watcher["manifest"]), "--output", str(self.dir / f"eval-{name}"),
                "--interval", str(self.knobs["eval_interval_seconds"]),
-               "--seeds", str(self.knobs["eval_seeds"])]
-        cmd += ["--once"] if once else ["--deadline-at", str(self.state["deadline_at"])]
+               "--seeds", str(watcher["seeds"])]
+        cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
+        cmd += ["--baseline-plan", str(watcher["baseline"])] if watcher["baseline"] else []
         cmd += ["--slot-registered"] if self.args.eval_slot_registered else ["--dry-run"]
         return cmd
 
-    def start_eval(self, once: bool = False) -> None:
+    def start_eval(self) -> None:
         if not self.args.eval_execution or self.args.dry_run:
             return
-        self.eval_loop = self.spawn(self.eval_command(once), self.dir / "eval.log")
-        self.note("evaluation_loop_started", once=once)
+        for name, watcher in self.watchers().items():
+            self.eval_loops[name] = self.spawn(self.eval_command(name, watcher),
+                                               self.dir / f"eval-{name}.log")
+            self.note("evaluation_watcher_started", watcher=name, suite=watcher["suite"])
 
     def eval_status(self) -> str:
-        path = self.dir / "eval" / "state.json"
-        if not path.exists():
-            return "evaluation: " + ("off" if not self.args.eval_execution else "no state yet")
-        stages: dict[str, int] = {}
-        for item in json.loads(path.read_text()).get("evaluations", []):
-            stages[item["stage"]] = stages.get(item["stage"], 0) + 1
-        return "evaluation: " + ", ".join(f"{k} {v}" for k, v in sorted(stages.items()))
+        if not self.args.eval_execution:
+            return "evaluation: off"
+        parts = []
+        for name in self.watchers():
+            path = self.dir / f"eval-{name}" / "state.json"
+            if not path.exists():
+                parts.append(f"{name} no state yet")
+                continue
+            stages: dict[str, int] = {}
+            for item in json.loads(path.read_text()).get("evaluations", []):
+                stages[item["stage"]] = stages.get(item["stage"], 0) + 1
+            parts.append(f"{name} " + ", ".join(f"{k} {v}" for k, v in sorted(stages.items())))
+        return "evaluation: " + "; ".join(parts)
 
     # ---------------- the chain ----------------
     def run(self) -> int:
@@ -313,10 +369,6 @@ class Chain:
                 self.state["resumes_at"].append(self.clock())
                 self.note("resume", number=number, checkpoint=checkpoint)
         finally:
-            if self.eval_loop is not None:
-                self.eval_loop.terminate()  # its OS lock goes with it
-                self.eval_loop.wait(timeout=60)
-            self.start_eval(once=True)  # the chain's last CP gets its evaluation too
             self.persist()
 
     def refuse_resume(self) -> str | None:
@@ -363,6 +415,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume-checkpoint")
     parser.add_argument("--eval-execution", type=Path)
     parser.add_argument("--eval-manifest", type=Path)
+    parser.add_argument("--eval-baseline-plan", type=Path,
+                        help="plan.json of the reference round for the A0 watcher's report")
+    parser.add_argument("--eval-a10-manifest", type=Path,
+                        help="prepare-manifest output of eval_a10_suite (eval_a10_enabled)")
     parser.add_argument("--eval-slot-registered", action="store_true",
                         help="a GAME-SLOT line for the evaluation games is registered")
     parser.add_argument("--dry-run", action="store_true",
@@ -370,8 +426,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not launch.TAG.match(args.chain) or len(args.chain) > 30:
         parser.error("chain: lowercase letters, digits and '-', at most 30")
+    if re.search(r"-r\d+$", args.chain):  # generation names are CHAIN-rN (review D4)
+        parser.error("chain: must not end in -rN (that names a generation of another chain)")
     if bool(args.eval_execution) != bool(args.eval_manifest):
         parser.error("--eval-execution and --eval-manifest go together")
+    if args.eval_execution and bool(args.eval_a10_manifest) != bool(
+            run_profile.values(run_profile.load_profile(args.profile, args.set))
+            ["eval_a10_enabled"]):
+        parser.error("--eval-a10-manifest goes with eval_a10_enabled = true")
     args.profile, args.site = args.profile.resolve(), args.site.resolve()
     return Chain(args).run()
 

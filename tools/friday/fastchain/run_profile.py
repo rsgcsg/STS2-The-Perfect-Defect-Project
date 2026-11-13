@@ -87,6 +87,52 @@ def _table_of(check: Callable[[Any], str | None], keys: frozenset[str] | None = 
     return inner
 
 
+def _str_or_empty(value: Any) -> str | None:
+    return None if isinstance(value, str) else "string (empty = the tool's default)"
+
+
+def _ascension_mix(value: Any) -> str | None:
+    """{"level": weight}: levels 0-10, weights >= 0 summing to 1 (#530 S-1)."""
+    if not isinstance(value, dict) or not value:
+        return "table ascension level (0-10) -> weight"
+    for key, weight in value.items():
+        if not (key.isdigit() and 0 <= int(key) <= 10 and str(int(key)) == key):
+            return f"table ascension level (0-10) -> weight (bad level {key!r})"
+        if type(weight) not in (int, float) or not 0 <= weight <= 1:
+            return f"table ascension level -> weight in [0, 1] (bad weight {weight!r})"
+    if abs(sum(value.values()) - 1) > 1e-9:
+        return f"weights summing to 1 (sum {sum(value.values())})"
+    return None
+
+
+def ascension_plan(mix: dict[str, float], drivers: int) -> list[int]:
+    """Per-driver ascension levels by largest remainder (ties: lower level first)."""
+    quotas = {int(level): weight * drivers for level, weight in mix.items()}
+    counts = {level: int(quota) for level, quota in quotas.items()}
+    rest = sorted(quotas, key=lambda level: (-(quotas[level] - counts[level]), level))
+    for level in rest[:drivers - sum(counts.values())]:
+        counts[level] += 1
+    return [level for level in sorted(counts) for _ in range(counts[level])]
+
+
+SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
+
+
+def cross_problems(values: dict[str, Any]) -> list[str]:
+    """Relations between knobs (a profile that breaks one is refused)."""
+    out = []
+    if values["disk_stop_free_pct"] >= values["disk_warn_free_pct"]:
+        out.append(f"disk_stop_free_pct {values['disk_stop_free_pct']} must be below "
+                   f"disk_warn_free_pct {values['disk_warn_free_pct']}")
+    if (any(int(level) > 0 and weight > 0 for level, weight in values["ascension_mix"].items())
+            and values["service_kwargs"].get("segment_format") != SEGMENT_FORMAT_3):
+        out.append(f"ascension_mix above 0 needs service_kwargs.segment_format = "
+                   f"{SEGMENT_FORMAT_3!r} (#530: format 2 cannot carry the level)")
+    if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
+        out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
+    return out
+
+
 def _any_of(*checks: Callable[[Any], str | None]) -> Callable[[Any], str | None]:
     def check(value: Any) -> str | None:
         errors = [c(value) for c in checks]
@@ -240,6 +286,18 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "disk_sample_seconds": _int(5, 3600),
     "disk_warn_free_pct": _int(1, 99),
     "disk_stop_free_pct": _int(1, 99),
+    "eval_suite": _str_or_empty,
+    "eval_a10_enabled": _bool,
+    "eval_a10_suite": _str_or_empty,
+    "eval_a10_seeds": _int(1, 100),
+    # retention and R7 audit games (#529)
+    "release_trained_segments": _bool,
+    "r7_games_per_hour": _num(0, 100),
+    "r7_max_games": _int(0),
+    "r7_expected_games_per_node_hour": _int(1),
+    "mu_archive_gb": _num(1, 4096),
+    # ascension (#530 S-1): level -> weight, summing to 1
+    "ascension_mix": _ascension_mix,
     # environment nodes
     "env_node_cores": _int(1, 512),
     "env_node_mem_g": _int(1),
@@ -350,6 +408,8 @@ def load_profile(path: Path, overrides: list[str] | None = None) -> dict[str, An
         if name in result:  # a repeated --set keeps the profile value as the origin
             origin = result[name].get("overridden_from", result[name]["value"])
             result[name] = {**result[name], "overridden_from": origin, "value": value}
+    if not problems:
+        problems += cross_problems(values(result))
     if problems:
         raise ProfileError("profile refused:\n  " + "\n  ".join(problems))
     return result

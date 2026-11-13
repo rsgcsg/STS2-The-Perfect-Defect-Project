@@ -271,6 +271,7 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_PREP_GROUPS_JSON": json.dumps(groups, separators=(",", ":")),
         "FC_MEM_GUARD_BYTES": plan["mem_guard_bytes"], "FC_MEM_HARD_BYTES": plan["mem_hard_bytes"],
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
+        "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
         **({"FC_CHAIN_ID": plan["chain"]["id"],
             "FC_CHAIN_DEADLINE": repr(float(plan["chain"]["deadline_at"])),
@@ -323,6 +324,16 @@ FEATURES = {
     "gc_freeze": ("python/stpd/rl/sgd_process.py", '"sgd_gc_freeze"'),  # #525 b40d31db
     "step_probe": ("python/stpd/rl/sgd_process.py", '"sgd_step_probe"'),  # #525
     "compile_warmup": ("python/stpd/rl/sgd_process.py", '"warmup"'),  # WP8 sgd_compile
+    "retention": ("python/stpd/rl/fast_release.py", "release_trained_segments"),  # #529
+    "mu_archive": ("python/stpd/rl/fast_mu_pack.py", "def local_mu_archive"),  # #529
+    "r7_max_games": ("python/spireagent/workbench/fast_chain_episodes.py",  # #529
+                     '"max_games"'),
+    # R7 games' episode_open must ask the assembler to archive their mu (not yet in #529)
+    "r7_audit_mu": ("components/policy-runtime/src/fast-env/kernel.ts", "audit_retain_mu"),
+    "segment_format_3": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-3"),  # #530
+    "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
+                  "managed_ascension_mismatch"),
+    "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528
 }
 
 

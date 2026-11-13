@@ -249,10 +249,6 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'env_pkg_rev': 'deadbeef built'}, 'env_package'),
     ({}, {'env_candidate_sha256': 'ffff'}, 'env_package'),
     ({}, {'src_features': {'shards': False}}, 'shards'),
-    ({}, {'src_features': {'residual': False}}, 'source_features'),
-    ({}, {'src_features': {'stage_options': False}}, 'source_features'),
-    ({'shards_adopt_unsharded_checkpoint': True}, {'src_features': {
-        name: name != 'adopt_unsharded' for name in launch.FEATURES}}, 'source_features'),
     ({'env_candidate_artifact_sha256': ''}, {}, 'env_package'),
     ({'env_candidate_artifact_sha256': 'b77f5139'}, {}, 'env_package'),
     ({}, {'src_checkout': {'git': False}}, 'producer_identity'),
@@ -263,8 +259,6 @@ def test_preflight_passes_a_consistent_plan():
         **FROZEN, 'lr': 0.0002}}, 'frozen_recipe'),
     ({}, {'compile_warmup_dumps': {'/x/missing.pt': False}}, 'compile_warmup'),
     ({}, {'compile_warmup_dumps': {}}, 'compile_warmup'),
-    ({}, {'src_features': {name: name != 'gc_freeze' for name in launch.FEATURES}},
-     'source_features'),
     ({'remote_prepare_connections': 35}, {}, 'shards'),
     ({}, {'src_rev': 'feedface' * 5}, 'env_package'),
     ({}, {'secret_files': {'/x/auth.hex': 0o644}}, 'secret_files'),
@@ -309,10 +303,10 @@ def test_old_build_keeps_the_two_worker_workaround_only():
     old = {**good_facts(plan), 'src_features': {
         name: name != 'budget_counts_remote' for name in launch.FEATURES}}
     assert plan['knobs']['preparation_workers'] == 12
-    assert not preflight.check_features(plan, old).ok
+    assert preflight.check_features(plan, old).warn  # owner 11-14: a warning only
     workaround = plan_for(cards=3, wall_seconds=2400, preparation_workers=2,
                           assembly_workers=2, prep_scratch_min_free=False)
-    assert preflight.check_features(workaround, old).ok
+    assert not preflight.check_features(workaround, old).warn
     assert preflight.check_features(plan, good_facts(plan)).ok
 
 
@@ -585,7 +579,6 @@ def test_chain_generation_plan_and_resume_preflight():
                              chain={**chain, 'deadline_at': __import__('time').time() + 600})
     assert late['wall_seconds'] <= 600
     assert 'min_generation_seconds' in preflight.check_resume(late).detail
-    assert not preflight.check_resume({**plan, 'resume_checkpoint': 'bad id!'}).ok
     with pytest.raises(SystemExit):
         launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=2,
                           card_type='A100-40', layout_spec=None, env_cores=None, smoke=True,
@@ -593,8 +586,12 @@ def test_chain_generation_plan_and_resume_preflight():
 
 
 def write_outcome(run, failure=None, report=True, disk=False, window_end='deadline',
-                  stop=None):
+                  stop=None, rc='auto'):
     run.mkdir(parents=True, exist_ok=True)
+    if rc == 'auto':  # gpu.sh: 0 clean, 6 learner failure, none when the node died
+        rc = None if not report else 6 if failure else 0
+    if rc is not None:
+        (run / 'gpu-rc').write_text(f'{rc}\n')
     if report:
         (run / 'learner-report.json').write_text(json.dumps(
             {'failure': failure, 'summary': None if failure else {'window_end': window_end}}))
@@ -603,14 +600,19 @@ def write_outcome(run, failure=None, report=True, disk=False, window_end='deadli
         (run / 'disk-stop').write_text('DISK STOP /x free 9%')
 
 
-def test_outcome_resumes_fences_lost_hosts_and_dead_jobs_only(tmp_path):
+def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
     fence = "BoundaryError: input_owner_fenced_restore_last_checkpoint ..."
     cases = [({}, 'normal'), ({'failure': fence}, 'resumable'),
              ({'failure': 'BoundaryError: unresolved_worlds_after_drain'}, 'failure'),
+             # review D2: a "service failure" STOP alone would repeat (gpu preflight, MPS...)
              ({'failure': 'BoundaryError: unresolved_worlds_after_drain',
-               'stop': 'service failure 2 exited'}, 'resumable'),
-             ({'report': False}, 'resumable'), ({'disk': True}, 'disk_stop'),
-             ({'failure': fence, 'disk': True}, 'disk_stop')]
+               'stop': 'service failure 2 exited'}, 'failure'),
+             ({'report': False}, 'resumable'), ({'report': False, 'rc': 9}, 'failure'),
+             # review D1: the learner stopped cleanly on a service STOP, the job exits 5
+             ({'stop': 'service failure handoff EOF', 'rc': 5}, 'failure'),
+             ({'stop': 'service failure handoff EOF', 'rc': 0}, 'failure'),
+             ({'rc': 5}, 'failure'), ({'window_end': None}, 'failure'),
+             ({'disk': True}, 'disk_stop'), ({'failure': fence, 'disk': True}, 'disk_stop')]
     for i, (kw, kind) in enumerate(cases):
         write_outcome(tmp_path / str(i), **kw)
         assert supervise.outcome(tmp_path / str(i))['kind'] == kind, kw
@@ -659,7 +661,8 @@ def chain_for(tmp_path, endings, **sets):
     args = __import__('argparse').Namespace(
         chain='lr1', profile=PROFILE, site=site, cards=2, card_type='A100-40', layout=None,
         set=[f'{k}={v}' for k, v in sets.items()], resume_checkpoint=None,
-        eval_execution=None, eval_manifest=None, eval_slot_registered=False, dry_run=False)
+        eval_execution=None, eval_manifest=None, eval_baseline_plan=None,
+        eval_a10_manifest=None, eval_slot_registered=False, dry_run=False)
     chain = supervise.Chain(args, clock=lambda: cluster.now, sleep=cluster.sleep,
                             launch_main=cluster.launch_main, squeue=cluster.squeue,
                             scancel=cluster.scancel, checkpoints=lambda g: cluster.records)
@@ -696,8 +699,7 @@ def test_chain_never_resumes_other_failures_and_allows_three_resumes(tmp_path):
     chain, cluster = chain_for(tmp_path / 'a', [{'failure': 'ValueError: boom'}])
     assert chain.run() == 1 and len(cluster.argvs) == 1
     chain, cluster = chain_for(tmp_path / 'b', [FENCE, {'report': False},
-                                                {'stop': 'service failure 1', 'failure': 'x'},
-                                                FENCE])
+                                                FENCE, FENCE])
     assert chain.run() == 1 and len(cluster.argvs) == 4
     assert 'resume budget exhausted (3 of 3)' in chain.state['final']['cause']
     assert 'restore_last_checkpoint' in chain.state['final']['first_cause']['failure']
@@ -747,3 +749,87 @@ def test_prep_estimate_is_only_a_warning():
                                                          'prep_test_start_seconds': start})
         assert result.ok and result.warn
     assert 'WARN prep_schedulable' in preflight.report([result])
+
+
+def test_missing_source_features_only_warn():
+    plan = plan_for(cards=3, shards_adopt_unsharded_checkpoint=True)
+    facts = {**good_facts(plan), 'src_features': {
+        name: name != 'adopt_unsharded' for name in launch.FEATURES}}
+    result = preflight.check_features(plan, facts)
+    assert result.ok and result.warn and 'adopt_unsharded' in result.detail
+
+
+def test_new_knobs_name_their_source_features():
+    need = preflight.required_features(plan_for(cards=3))
+    assert {'retention', 'mu_archive', 'r7_max_games', 'r7_audit_mu',
+            'segment_format_3'} <= set(need)
+    off = preflight.required_features(plan_for(
+        cards=3, release_trained_segments=False, r7_games_per_hour=0,
+        service_kwargs={**knobs()['service_kwargs'], 'segment_format': 'stpd/rl-fast-segment-2'}))
+    assert not {'retention', 'mu_archive', 'r7_audit_mu', 'segment_format_3'} & set(off)
+    a10 = preflight.required_features(plan_for(cards=3, ascension_mix={'0': 0.5, '10': 0.5}))
+    assert 'ascension' in a10
+
+
+def test_profile_relations_are_refused_at_load():
+    with pytest.raises(run_profile.ProfileError, match='disk_stop_free_pct'):
+        run_profile.load_profile(PROFILE, ['disk_stop_free_pct=30'])
+    with pytest.raises(run_profile.ProfileError, match='segment_format'):
+        run_profile.load_profile(PROFILE, [
+            'ascension_mix={ 0 = 0.5, 10 = 0.5 }',
+            'service_kwargs={ segment_format = "stpd/rl-fast-segment-2" }'])
+    with pytest.raises(run_profile.ProfileError, match='summing to 1'):
+        run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
+    with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):
+        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true'])
+    assert run_profile.values(run_profile.load_profile(PROFILE))['ascension_mix'] == {'0': 1.0}
+
+
+def test_ascension_plan_is_largest_remainder():
+    assert run_profile.ascension_plan({'0': 1.0}, 10) == [0] * 10
+    assert run_profile.ascension_plan({'0': 0.5, '10': 0.5}, 10) == [0] * 5 + [10] * 5
+    assert run_profile.ascension_plan({'0': 0.9, '10': 0.1}, 12) == [0] * 11 + [10]
+    plan = run_profile.ascension_plan({'0': 0.34, '5': 0.33, '10': 0.33}, 10)
+    assert len(plan) == 10 and plan.count(0) == 4 and plan.count(5) == 3
+
+
+def test_job_env_carries_r7_and_ascension_knobs():
+    env = launch.job_env(plan_for(cards=3))
+    assert 'FC_ENV_NODES=' in env and 'FC_R7_GAMES_PER_HOUR=10' in env
+    assert """FC_ASCENSION_MIX='{"0":1.0}'""" in env and 'FC_RELEASE_TRAINED_SEGMENTS=1' in env
+
+
+def test_chain_name_must_not_look_like_a_generation(tmp_path):
+    site = tmp_path / 'site.toml'
+    site.write_text(SITE.read_text())
+    with pytest.raises(SystemExit):
+        supervise.main(['start', 'a-r1', '--site', str(site), '--cards', '2',
+                        '--card-type', 'A100-40'])
+
+
+def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
+    chain, _ = chain_for(tmp_path, [], eval_suite='rl3-a0-100', eval_a10_enabled='true',
+                         eval_a10_suite='a10-50')
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}, 'storage_mode': 'remote',
+                                    'store': 's3', 'peer': {'kind': 's3'}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.args.eval_baseline_plan = tmp_path / 'base' / 'plan.json'
+    chain.dir.mkdir(parents=True)
+    chain.state = {'deadline_at': 1e10, 'log': []}
+    started = []
+    chain.spawn = lambda cmd, log: started.append(cmd) or type(
+        'P', (), {'pid': 7, 'poll': lambda self: None})()
+    chain.persist = lambda: None
+    chain.start_eval()
+    a0, a10 = started
+    for cmd in started:
+        assert '--once' not in cmd and '--checkpoint' not in cmd and '--deadline-at' not in cmd
+    assert a0[a0.index('--suite') + 1] == 'rl3-a0-100' and '--baseline-plan' in a0
+    assert a10[a10.index('--suite') + 1] == 'a10-50' and a10[a10.index('--seeds') + 1] == '50'
+    assert '--baseline-plan' not in a10 and '--dry-run' in a0
+    execution = json.loads((chain.dir / 'eval-execution.json').read_text())
+    assert execution['storage_mode'] == 'shared_local' and execution['peer'] == {
+        'kind': 'local', 'directory': chain.site['peer_dir']}
+    assert execution['store'] == chain.site['peer_dir'] and execution['models'] == {}

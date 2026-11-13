@@ -29,14 +29,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
 - 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
   照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
-- 预检任何一项不过就拒绝启动并逐项说明（备料排队估计例外：无时限分区上 `--test-only`
-  估计不可靠，只打印 WARN）：卡位、单 rank 设备、备料机型与 scratch（每台开工时
+- 预检任何一项不过就拒绝启动并逐项说明（只打印 WARN 的例外：无时限分区上不可靠的
+  `--test-only` 备料排队估计，以及旋钮所需源码特性——产品自己会对缺失特性响亮拒绝）：卡位、单 rank 设备、备料机型与 scratch（每台开工时
   再查空闲 ≥ 2×在途）、备料能否按时排上（`sbatch --test-only`）、分区时限、python_env_sha256
   与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
   同一 int 且 memo 开、candidate dll 前缀（≥12 位十六进制）、env 节点数够把聚合器铺满全部
-  服务（0 个直接拒绝）、分片均衡、旋钮所需源码特性（#523 a437612d 的预算修复与
-  `--scratch-min-free-bytes`、#525 暂存选项、#526 `residual`；源码没有就拒绝，旧源码只能
-  用 `--set` 退回 2/2 等旧值）、只计实际运行部分的内存预算、跨节点身份、热路径不在共享盘
+  服务（0 个直接拒绝）、分片均衡、旋钮所需源码特性（#523/#525/#526/#528/#529/#530 的
+  标记；缺了只 WARN）、只计实际运行部分的内存预算、跨节点身份、热路径不在共享盘
   （作业侧文件系统必须在本地白名单内，未知类型拒绝）、核数上限。
 - 生产者身份：默认 `producer_identity = "checkout"`，站点 `src_dir` 须是干净 git checkout
   （不是 checkout 或有改动就拒绝），CP 带真实源码身份。`placeholder` 时 CP 带占位身份，一律
@@ -66,22 +65,42 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   不是上界，不算。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
   空闲 < `disk_warn_free_pct`（20%）写一行 WARN，< `disk_stop_free_pct`（10%）写 `DRAIN`
-  （env 节点停止接新局，学习者继续训练），均进 `disk-watermark.txt` 并在读数里报警。
+  （env 节点停止接新局），再过 `env_drain_seconds` 写 STOP「disk stop」让学习者停下（不空等
+  数据到 deadline），均进 `disk-watermark.txt` 并在读数里报警。两个百分比的先后在载入配置时
+  核对。
 - 长跑与自动续跑（用户 11-13 C5「自动」）：`supervise.py start CHAIN --site S --cards 2
   --card-type A100-40 --layout 1i+1t [--resume-checkpoint CP --set
   shards_adopt_unsharded_checkpoint=true] [--eval-execution E --eval-manifest M
-  --eval-slot-registered]`。一个链 = 一个运行窗口（`long_wall_seconds`，一个学习者预算 id
+  [--eval-baseline-plan P] [--eval-a10-manifest M10] --eval-slot-registered]`；链名不能以
+  `-rN` 结尾（那是别的链的代名）。一个链 = 一个运行窗口（`long_wall_seconds`，一个学习者预算 id
   `c-CHAIN` + 不可变 deadline，由学习者跨恢复保持）；第 0 代 = `launch.py submit CHAIN
   --long-run`，之后每代 `CHAIN-rN` 是新 run 目录、新训练代，从本链最新 CP（published_at）
-  起步（学习者自己的 CP-only 恢复，CP 记分片数）。可续：学习者报
-  `input_owner_fenced_restore_last_checkpoint`、服务/备料主机丢失（STOP「service failure」）、
-  GPU 作业无学习者报告就结束（节点故障、抢占）；不续：正常结束、其他学习者失败、提交失败或
-  预检拒绝、磁盘停止、代码/配置/站点/源码有变。最多 `resume_max_total`（3）次，用完以第一
+  起步（学习者自己的 CP-only 恢复，CP 记分片数）。正常 = `gpu.sh` 退出码文件 `gpu-rc` 为 0、
+  学习者报告无失败且有 `window_end`、STOP 不是失败。可续只看学习者自己的信号：报告失败含
+  `input_owner_fenced_restore_last_checkpoint`（`input_failure.operation` 说明原因，如
+  `fast_handoff_lost`），或既无学习者报告也无 `gpu-rc`（节点故障、抢占）；不续：其他学习者
+  失败（含启动失败：恢复不了的 CP 也写报告，链立即停）、只有 STOP「service failure」（GPU
+  预检、GPU 数、MPS、内存守卫，会重复）、提交失败或预检拒绝、磁盘停止、代码/配置/站点/源码
+  有变。最多 `resume_max_total`（3）次，用完以第一
   原因响亮停止（`FINAL.json`）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
-  每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；带 `--eval-*` 时跑源码里的
-  `tools/friday/fast_eval.py`（每 `eval_interval_seconds`、`eval_seeds` 局，不停训），链结束再评
-  最新 CP 一次。
-- 尚未包含：段删除开关（产品侧尚无此键）。
+  每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；带 `--eval-*` 时每个套件
+  一个常驻 `tools/friday/fast_eval.py` 看守（#528，不带 `--checkpoint/--once`）：每
+  `eval_interval_seconds` 评最新 CP，`eval_seeds` 局 `eval_suite`（空 = 固定 A0 100），
+  `--eval-baseline-plan` 给配对报告；`eval_a10_enabled`（默认关，#530 S-2 后开）再起一个
+  A10 50 局看守。`--eval-execution` 是模板，链写一份 `storage_mode = "shared_local"`
+  （站点 peer，不走 R2）。看守在链结束后继续，下一拍评到最后的 CP；`FINAL.json` 记它们的
+  pid，看到那份报告后再停。
+- 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
+  删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
+  sidecar 持有 `R7Selection`（自己的随机 key、`r7_expected_games_per_node_hour` 估计、
+  `r7_max_games` 均分上限），驱动开局前问 `r7`，选中的局 `open.r7 = true`（原件全留）；
+  服务侧 `mu_archive = local_mu_archive(run/mu-archive-K, mu_archive_gb 均分)`、跟随器
+  `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
+  普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
+  之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+- 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
+  分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）；任一级别 > 0 要求
+  `service_kwargs.segment_format = "stpd/rl-fast-segment-3"`（现默认即 3）。无课程、无系数。
 
 ## 以下为旧部署操作史
 
