@@ -36,29 +36,22 @@ from stpd.rl.sgd_process import (
 )
 
 FAST = {"sgd_stage_stream_reuse": True, "sgd_stage_lean_tree": True,
-        "sgd_verify_split": True, "sgd_verify_threads": 2,
-        "sgd_switch_interval_seconds": 0.0005, "sgd_step_probe": True,
-        "sgd_gc_freeze": True}
+        "sgd_verify_split": True, "sgd_step_probe": True, "sgd_gc_freeze": True}
 
 
 def test_stage_options_are_explicit_and_default_to_the_earlier_path():
     base = {"sgd_process": True}
     options = sgd_options(base)
     assert options.stage_init() == {"stream_reuse": False, "lean_tree": False,
-                                    "verify_split": False, "verify_threads": 4,
-                                    "switch_interval": None, "step_probe": False,
+                                    "verify_split": False, "step_probe": False,
                                     "gc_freeze": False}
     assert _StageConfig.from_init(options.stage_init()) == _StageConfig()
     chosen = sgd_options({**base, **FAST})
     assert chosen.stage_init() == {"stream_reuse": True, "lean_tree": True,
-                                   "verify_split": True, "verify_threads": 2,
-                                   "switch_interval": 0.0005, "step_probe": True,
+                                   "verify_split": True, "step_probe": True,
                                    "gc_freeze": True}
     for key, bad in (("sgd_stage_stream_reuse", 1), ("sgd_stage_lean_tree", "yes"),
-                     ("sgd_verify_split", None), ("sgd_verify_threads", 0),
-                     ("sgd_verify_threads", 2.0), ("sgd_verify_threads", True),
-                     ("sgd_switch_interval_seconds", 0), ("sgd_switch_interval_seconds", "1"),
-                     ("sgd_switch_interval_seconds", float("nan")),
+                     ("sgd_verify_split", None),
                      ("sgd_step_probe", "on"), ("sgd_gc_freeze", 1)):
         with pytest.raises(ValueError, match="invalid_" + key):
             sgd_options({**base, key: bad})
@@ -134,7 +127,7 @@ def test_a_changed_follower_chunk_fails_through_stage_work_and_flush(tmp_path, m
         byte = stream.read(1)
         stream.seek(PREPARED_DIGEST_CHUNK + 11)
         stream.write(bytes([byte[0] ^ 1]))
-    config = {"lean_tree": True, "verify_split": True, "verify_threads": 2}
+    config = {"lean_tree": True, "verify_split": True}
     staged = [_SgdWorker._stage_work(stage_worker(rank, 2, config), plan)[1]
               for rank in range(2)]
     sent: list = []

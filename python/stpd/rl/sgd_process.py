@@ -55,13 +55,14 @@ OPTION_KEYS = frozenset((
     "memory_headroom_fraction", "memory_budget",
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
-    "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split", "sgd_verify_threads",
-    "sgd_switch_interval_seconds", "sgd_step_probe", "sgd_gc_freeze",
+    "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
+    "sgd_step_probe", "sgd_gc_freeze",
 ))
 # `sgd_gc_freeze`: freeze again at a dataset boundary once this many unfrozen
 # objects sit in the oldest generation (graphs compiled lazily, caches).
 GC_REFREEZE_OBJECTS = 200_000
-# `sgd_gc_freeze`: third threshold that keeps automatic full collections off.
+# `sgd_gc_freeze`: third threshold that keeps automatic full collections off
+# (CPython <= 3.13 generational semantics; the nodes run 3.11).
 GC_AUTOMATIC_FULL_OFF = 1_000_000_000
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
@@ -124,10 +125,6 @@ class SgdOptions:
     # Data parallel: each rank hashes ~1/world of the prepared file's chunks and
     # rank 0 combines them into the same whole-file digest before `staged`.
     verify_split: bool = False
-    verify_threads: int = VERIFY_THREADS
-    # `sys.setswitchinterval` in every SGD rank (None = Python's default, 5 ms):
-    # the stepping thread gets the GIL back sooner from the stage thread.
-    switch_interval: float | None = None
     # Per step: Python GC time/collections and CUDA allocator deltas in `sgd_timing`.
     step_probe: bool = False
     # Every SGD rank: no automatic full collection (they landed inside steps,
@@ -140,8 +137,7 @@ class SgdOptions:
     def stage_init(self) -> dict[str, Any]:
         """The SGD child's staging options (part of its init message)."""
         return {"stream_reuse": self.stage_stream_reuse, "lean_tree": self.stage_lean_tree,
-                "verify_split": self.verify_split, "verify_threads": self.verify_threads,
-                "switch_interval": self.switch_interval,
+                "verify_split": self.verify_split,
                 "step_probe": self.step_probe, "gc_freeze": self.gc_freeze}
 
 
@@ -234,13 +230,6 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         flags[key] = dataplane.get(key, False)
         if type(flags[key]) is not bool:
             raise ValueError("invalid_" + key)
-    verify_threads = dataplane.get("sgd_verify_threads", VERIFY_THREADS)
-    if type(verify_threads) is not int or not 1 <= verify_threads <= 32:
-        raise ValueError("invalid_sgd_verify_threads")
-    switch = dataplane.get("sgd_switch_interval_seconds")
-    if switch is not None and (type(switch) not in (int, float) or not math.isfinite(switch)
-                               or not 1e-5 <= switch <= 0.1):
-        raise ValueError("invalid_sgd_switch_interval_seconds")
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -258,8 +247,6 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         stage_stream_reuse=flags["sgd_stage_stream_reuse"],
         stage_lean_tree=flags["sgd_stage_lean_tree"],
         verify_split=flags["sgd_verify_split"],
-        verify_threads=verify_threads,
-        switch_interval=float(switch) if switch is not None else None,
         step_probe=flags["sgd_step_probe"],
         gc_freeze=flags["sgd_gc_freeze"],
     )
@@ -438,8 +425,6 @@ class _StageConfig:
     stream_reuse: bool = False
     lean_tree: bool = False
     verify_split: bool = False
-    verify_threads: int = VERIFY_THREADS
-    switch_interval: float | None = None
     step_probe: bool = False
     gc_freeze: bool = False
 
@@ -448,8 +433,7 @@ class _StageConfig:
         if value is None:
             return cls()
         if not isinstance(value, dict) or set(value) != {
-                "stream_reuse", "lean_tree", "verify_split", "verify_threads",
-                "switch_interval", "step_probe", "gc_freeze"}:
+                "stream_reuse", "lean_tree", "verify_split", "step_probe", "gc_freeze"}:
             raise _ChildViolation("sgd_stage_options_changed")
         return cls(**value)
 
@@ -1349,8 +1333,6 @@ class _SgdWorker:
                 initializer=(lambda: torch.cuda.set_device(index))
                 if index is not None else None)
         self.staging_config = _StageConfig.from_init(init.get("stage_options"))
-        if self.staging_config.switch_interval is not None:
-            sys.setswitchinterval(self.staging_config.switch_interval)
         self.copy_stream: Any = None  # `stream_reuse`: created on first use
         # `gc_freeze`: facts of the last boundary collection, reported with the
         # next step (the next dataset's first).
@@ -1517,6 +1499,10 @@ class _SgdWorker:
             elif kind == "checkpoint":
                 if self.rank == 0:  # followers hold the same theta; rank 0 answers
                     self.capture_state(message)
+                    if self.staging_config.gc_freeze:
+                        # Its safetensors encoding leaves the CPU copies in a
+                        # cycle; automatic full collections are off.
+                        gc.collect()
             else:
                 raise _ChildViolation("sgd_unexpected_message_" + str(kind))
 
@@ -1593,12 +1579,11 @@ class _SgdWorker:
                 assert self.parallel is not None
                 world = self.parallel.world
                 digest = _Digest(memoryview(mapping)[:plan["used_bytes"]],
-                                 config.verify_threads,
+                                 VERIFY_THREADS,
                                  range(self.rank, prepared_chunk_count(plan["used_bytes"]),
                                        world))
             elif self.rank == 0:
-                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]],
-                                 config.verify_threads)
+                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]], VERIFY_THREADS)
             tree = pickle.loads(plan["tree"])
             arrays = mapped_arrays(mapping, plan["arrays"])
             if self.shard is not None:
@@ -1823,9 +1808,9 @@ class _SgdWorker:
         later is never reclaimed (bounded by what was alive at a freeze)."""
         self.state["stage"] = "gc_boundary"
         began = time.perf_counter()
-        objects = len(gc.get_objects(2))
-        refreeze = self.gc_frozen == 0 or objects >= GC_REFREEZE_OBJECTS
         collected = gc.collect()
+        objects = len(gc.get_objects(2))  # survivors only: garbage is never frozen
+        refreeze = self.gc_frozen == 0 or objects >= GC_REFREEZE_OBJECTS
         if refreeze:
             gc.freeze()
             self.gc_frozen += 1

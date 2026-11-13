@@ -250,7 +250,7 @@ def _long_lived_heap(objects: int) -> list[Any]:
 
 
 def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, mode: str,
-            results: Any) -> None:
+            garbage: int, results: Any) -> None:
     import gc
     import resource
 
@@ -292,16 +292,25 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, mode: str,
             pauses.append((info["generation"], time.perf_counter() - started.pop()))
 
     gc.callbacks.append(callback)
-    tracked, rss, boundaries = [], [], []
+    tracked, rss, boundaries, freezes = [], [], [], 1 if freeze else 0
     for index in range(datasets):
         held = sp._SgdWorker._stage_work(cast(Any, worker), plan)
         encode_checkpoint({"weights": snapshot_weights(weights)})  # rank 0's snapshot
-        if boundary:
+        # `--gc-garbage`: cycles that live through the dataset (old by the
+        # boundary), then die just before it, as the dataset's own garbage.
+        cycles: list[Any] = []
+        for _ in range(garbage // 2):
+            pair: list[Any] = [None]
+            pair[0] = {"cycle": pair}
+            cycles.append(pair)
+        del cycles
+        if boundary:  # what `SgdWorker.collect_boundary` does
             gc.callbacks.remove(callback)
             began = time.perf_counter()
             gc.collect()
             if len(gc.get_objects(2)) >= sp.GC_REFREEZE_OBJECTS:
                 gc.freeze()
+                freezes += 1
             boundaries.append(time.perf_counter() - began)
             gc.callbacks.append(callback)
         if index % max(1, datasets // 10) == 0 or index == datasets - 1:
@@ -310,7 +319,8 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, mode: str,
     gc.callbacks.remove(callback)
     del held
     full = [s for g, s in pauses if g == 2]
-    results.put({"mode": mode, "heap_objects": heap_objects,
+    results.put({"mode": mode, "heap_objects": heap_objects, "garbage_per_dataset": garbage,
+                 "freezes": freezes,
                  "frozen": gc.get_freeze_count(),
                  "full_collect_seconds_before_freeze": round(full_before, 4),
                  "full_collect_seconds_after": round(full_after, 4),
@@ -325,12 +335,13 @@ def gc_rank(plan: dict[str, Any], heap_objects: int, datasets: int, mode: str,
     del heap  # alive until here: the long-lived heap the collections had to scan
 
 
-def gc_main(plan: dict[str, Any], heap_objects: int, datasets: int) -> None:
+def gc_main(plan: dict[str, Any], heap_objects: int, datasets: int, garbage: int) -> None:
     context = multiprocessing.get_context("spawn")
     for mode in ("automatic", "freeze", "freeze+boundary"):
         results = context.Queue()
         process = context.Process(target=gc_rank,
-                                  args=(plan, heap_objects, datasets, mode, results))
+                                  args=(plan, heap_objects, datasets, mode, garbage,
+                                        results))
         process.start()
         report = results.get(timeout=3600)
         process.join()
@@ -347,6 +358,7 @@ def main() -> None:
     parser.add_argument("--worlds", default="1,2")
     parser.add_argument("--gc-datasets", type=int, default=0)
     parser.add_argument("--gc-heap", type=int, default=6_000_000)
+    parser.add_argument("--gc-garbage", type=int, default=0)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rl-stage-bench-") as directory:
         began = time.perf_counter()
@@ -354,7 +366,7 @@ def main() -> None:
         print(json.dumps({"file_bytes": plan["used_bytes"], "tree_pickle_bytes": len(plan["tree"]),
                           "build_seconds": round(time.perf_counter() - began, 1)}), flush=True)
         if args.gc_datasets:
-            gc_main(plan, args.gc_heap, args.gc_datasets)
+            gc_main(plan, args.gc_heap, args.gc_datasets, args.gc_garbage)
             return
         for world in (int(w) for w in args.worlds.split(",")):
             for name, config in CONFIGS.items():
