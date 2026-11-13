@@ -16,19 +16,25 @@ PROFILE = FASTCHAIN / 'rl5-fastchain.toml'
 SITE = FASTCHAIN / 'site.example.toml'
 
 
-def module_file(name):
-    # The launcher's modules import each other by plain name (launch.py does the same
-    # sys.path insert), so they are loaded as one set from their own directory.
-    if str(FASTCHAIN) not in sys.path:
-        sys.path.insert(0, str(FASTCHAIN))
-    return importlib.import_module(name)
+def load_fastchain():
+    """The launcher's modules import each other by plain name (as launch.py does from its
+    own directory). Load them as one set, then take the plain names back out of
+    sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
+    names = ('run_profile', 'layout', 'preflight', 'launch', 'readout')
+    saved_path = list(sys.path)
+    saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    sys.path.insert(0, str(FASTCHAIN))
+    try:
+        loaded = [importlib.import_module(name) for name in names]
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        sys.path[:] = saved_path
+    return loaded
 
 
-layout = module_file('layout')
-run_profile = module_file('run_profile')
-preflight = module_file('preflight')
-launch = module_file('launch')
-readout = module_file('readout')
+run_profile, layout, preflight, launch, readout = load_fastchain()
 
 
 def probe_row(node='gpu-a', gpus=3, free=3, cores=128, mem_g=500):
@@ -51,7 +57,8 @@ def plan_for(cards=3, layout_spec=None, smoke=False, probe=None, **changes):
 def good_facts(plan):
     k = plan['knobs']
     return {'src_rev': f'int {k["env_pkg_build"]}', 'src_features': {'shards': True},
-            'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)', 'prep_test_start_seconds': 0.0,
+            'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
+            'prep_test_start_seconds': 0.0,
             'env_candidate_sha256': k['env_candidate_artifact_sha256'] + '0' * 48,
             'secret_files': {'/x/auth.hex': 0o600, '/x/prep-auth.hex': 0o600}}
 

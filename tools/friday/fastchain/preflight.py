@@ -24,6 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_profile  # noqa: E402
+
 GIB = 1024**3
 NETWORK_FS = ("nfs", "nfs4", "lustre", "gpfs", "cifs", "smb", "smb2", "beegfs", "ceph",
               "fuse", "autofs")
@@ -125,8 +128,6 @@ def check_prep_schedulable(plan: dict[str, Any], facts: dict[str, Any]) -> Resul
 
 
 def check_switches(plan: dict[str, Any]) -> Result:
-    import run_profile
-
     k = plan["knobs"]
     allowed = set(k["allow_switch_off"])
     off = [n for n in run_profile.REQUIRED_ON if not k[n] and n not in allowed]
@@ -325,6 +326,7 @@ def _env_sha() -> str:
     import bz2  # noqa: F401 - F6: inductor needs libbz2
 
     import lz4.frame  # noqa: F401 - remote prepare codec
+
     from stpd.p1.inference_service import python_env_sha256
 
     return python_env_sha256()

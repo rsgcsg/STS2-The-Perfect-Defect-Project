@@ -334,6 +334,7 @@ def service() -> None:
     import multiprocessing.connection as mpc
 
     import torch
+
     from stpd.p1.fast_mu_follower import FastMuFollower
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.p1.inference_service import FastInferenceService, NodeMuSource, python_env_sha256
