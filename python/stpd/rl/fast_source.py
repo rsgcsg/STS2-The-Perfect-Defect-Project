@@ -658,7 +658,9 @@ class FastSegmentIntake:
             if instance.assembler_id not in (None, message["assembler_id"]):
                 raise _identity_fence("fast_instance_from_two_assemblers", instance_id,
                                       message["assembler_id"], instance.assembler_id)
-            instance.assembler_id = message["assembler_id"]
+            if instance.assembler_id is None:
+                instance.assembler_id = message["assembler_id"]
+                self._bound(instance_id)
             instance.received += 1
             if instance.facts is not None:
                 if (header["segment_index"] != len(instance.segments)
@@ -681,6 +683,11 @@ class FastSegmentIntake:
                 return IntakeDecision()
             return IntakeDecision(admit=[(segment, self._envelope(segment,
                                                                   instance.attestation))])
+
+    def _bound(self, instance_id: str) -> None:
+        """Called under the lock when a hand-off first binds an instance to its
+        assembler (the only place a binding is made). Nothing to do here; the
+        data-plane shard's intake reports it learner-wide."""
 
     def labels(self, message: dict[str, Any], data: bytes,
                checked: VerifiedRead | None = None) -> IntakeDecision:

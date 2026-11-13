@@ -745,19 +745,30 @@ class _ShardIntake(FastSegmentIntake):
     def __init__(self, **options: Any) -> None:
         super().__init__(**options)
         self.claimed: set[str] = set()
+        self.unclaimed: list[str] = []  # bound here, not yet reported (under `lock`)
         self.elsewhere: collections.OrderedDict[str, None] = collections.OrderedDict()
 
+    def _bound(self, instance_id: str) -> None:
+        # Under the intake lock, once per instance: O(1) per segment, never a scan
+        # of the open instances (every shard holds every attested open game).
+        if self.notify is not None and instance_id not in self.claimed:
+            self.claimed.add(instance_id)
+            self.unclaimed.append(instance_id)
+
     def offer(self, message: dict[str, Any], data: bytes, checked: Any = None) -> Any:
-        decision = super().offer(message, data, checked)
-        if self.notify is not None:
-            with self.lock:
-                new = [instance_id for instance_id, instance in self.instances.items()
-                       if instance.assembler_id is not None
-                       and instance_id not in self.claimed]
-                self.claimed.update(new)
-            if new:
-                self.notify({"kind": "claims", "instances": new})
-        return decision
+        try:
+            return super().offer(message, data, checked)
+        finally:
+            # The offering thread reports what its own offer bound. Claims stay
+            # asynchronous: a duplicate on a second shard is fenced when the
+            # learner sees both claims, possibly after that shard admitted it
+            # (it can sit in a prepared batch there). The fence stops training
+            # before the next CP, so nothing of it is ever committed.
+            if self.unclaimed:
+                with self.lock:
+                    new, self.unclaimed = self.unclaimed, []
+                if new:
+                    self.notify({"kind": "claims", "instances": new})
 
     def _finish(self, instance_id: str, instance: Any) -> None:
         super()._finish(instance_id, instance)

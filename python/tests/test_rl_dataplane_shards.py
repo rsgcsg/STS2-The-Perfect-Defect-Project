@@ -742,3 +742,35 @@ def test_invalid_shard_configuration_is_refused_before_anything_starts(
     with pytest.raises(BoundaryError, match="dataplane_shards"):
         learner(tmp_path, monkeypatch, extra["shards"],
                 **{key: value for key, value in extra.items() if key != "shards"})
+
+
+class _NoScan(dict):
+    """An instance ledger that fails any walk over it (lookups stay allowed)."""
+
+    def _walk(self, *args: Any) -> Any:
+        raise AssertionError("the open instances were walked during an offer")
+
+    __iter__ = items = keys = values = _walk  # type: ignore[assignment]
+
+
+def test_a_shard_offer_claims_only_its_own_instance_without_walking_the_open_ones():
+    """With several shards every shard holds every attested open game (control is
+    broadcast). An offer reports only the instance it bound: O(1), not O(open)."""
+    from test_rl_fast_source import attest, bootstrap_and_terminal, message, mu, published
+
+    from stpd.rl.dataplane_shards import _ShardIntake
+    from stpd.rl.fast_source import _Instance
+
+    intake = _ShardIntake(run="run-1", generation="gen-1")
+    intake.publish_mu(published(mu(1)))
+    sent: list[dict[str, Any]] = []
+    intake.notify = sent.append
+    for index in range(3000):  # open games attested here, bound on other shards
+        intake.attest(attest(f"other-{index}"))
+    first, second = bootstrap_and_terminal("g1")
+    intake.instances = _NoScan(intake.instances)
+    assert not intake.offer(message(first), first.data).admit  # buffered, bound, claimed
+    intake.attest(attest("g1"))
+    intake.offer(message(second, 2), second.data)
+    assert sent == [{"kind": "claims", "instances": ["g1"]}]  # once, only its own
+    assert isinstance(intake.instances.get("other-1"), _Instance)
