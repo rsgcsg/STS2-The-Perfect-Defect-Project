@@ -216,6 +216,35 @@ class SnapshotFlights:
             return len(self._entries)
 
 
+class FastApplyClosed(RuntimeError):
+    """The batched fast applier stopped (learner close): a hand-off reader ends."""
+
+
+class _FastHandled(Exception):
+    """Raised to a reader for a failure the applier already fenced (or, for an ack
+    while stopping, recorded): the reader ends without fencing again."""
+
+
+class _FastStream:
+    """One hand-off connection as the batched applier sees it."""
+
+    __slots__ = ("connection", "pending", "failure")
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+        self.pending = 0  # submitted, not yet applied (or skipped) by the applier
+        self.failure: BaseException | None = None  # first apply/ack error: no more acks
+
+
+@dataclass
+class _FastTicket:
+    """One intake decision of one connection, in that connection's arrival order."""
+
+    stream: _FastStream
+    decision: IntakeDecision
+    ack: dict[str, Any] | None  # the hand-off message to ack once applied (None: closed)
+
+
 @dataclass
 class _BeginWait:
     request: dict[str, Any]
@@ -648,6 +677,17 @@ class SegmentLearner:
         self.fast_receivers: list[threading.Thread] = []
         # `dataplane.fast_verify_workers` > 0: hand-off reads in verify processes.
         self.fast_verifier: FastVerifyPool | None = None
+        # `dataplane.fast_batched_apply`: readers hand decisions to one applier
+        # thread that applies all ready ones under one condition hold.
+        self.fast_batched_apply = False
+        self.fast_apply_capacity = 0
+        self.fast_apply_items: deque[_FastTicket] = deque()
+        self.fast_apply_lock = threading.Condition()  # never held with `condition`
+        self.fast_apply_stopping = False
+        self.fast_apply_failure: BaseException | None = None
+        self.fast_apply_thread: threading.Thread | None = None
+        self.fast_apply_stats = {"batches": 0, "items": 0, "max_batch": 0,
+                                 "submit_waits": 0, "peak_queue": 0}
         self.input_sequence = 0
         self.input_head: str | None = None
         self.input_anchor = config.resume_checkpoint
@@ -896,6 +936,14 @@ class SegmentLearner:
                         workers=verify_workers,
                         slots=self.dataplane.get("fast_verify_arena_slots", 64),
                         slot_bytes=self.dataplane.get("fast_verify_slot_bytes", 2 * 1024**2))
+                batched = self.dataplane.get("fast_batched_apply", False)
+                if type(batched) is not bool:
+                    raise BoundaryError("rl_learner",
+                                        "fast_batched_apply_must_be_explicit_bool")
+                capacity = self.dataplane.get("fast_apply_queue", 64)
+                if type(capacity) is not int or not 1 <= capacity <= 4096:
+                    raise BoundaryError("rl_learner", "fast_apply_queue_must_be_int_1_to_4096")
+                self.fast_batched_apply, self.fast_apply_capacity = batched, capacity
                 self.fast_counters = {key: 0 for key in (
                     "admitted", "admitted_rows", "capacity_dropped", "capacity_dropped_rows",
                     # capacity_dropped = capacity_evicted (an older queued segment
@@ -2063,6 +2111,12 @@ class SegmentLearner:
         """
         if self.fast_intake is None:
             raise BoundaryError("rl_learner", "fast_chain_not_enabled_on_this_learner")
+        if self.fast_batched_apply:
+            with self.fast_apply_lock:
+                if self.fast_apply_thread is None:
+                    self.fast_apply_thread = threading.Thread(
+                        target=self._fast_applier, name="rl-fast-apply", daemon=True)
+                    self.fast_apply_thread.start()
         thread = threading.Thread(target=self._fast_receive, args=(connection,),
                                   name="rl-fast-handoff", daemon=True)
         self.fast_receivers.append(thread)
@@ -2072,6 +2126,9 @@ class SegmentLearner:
     def _fast_receive(self, connection: Any) -> None:
         assert self.fast_intake is not None
         last_sequence, assembler = 0, None  # what this connection carried so far
+        # Batched: this reader only reads, verifies and decides; the applier
+        # applies and acks. None: the reader applies and acks itself.
+        stream = _FastStream(connection) if self.fast_batched_apply else None
         try:
             while True:
                 try:
@@ -2087,9 +2144,11 @@ class SegmentLearner:
                 except (EOFError, ConnectionResetError):
                     # A sender process that dies with our ack unread resets the socket
                     # instead of a clean EOF: the same lost assembler.
+                    self._fast_drain(stream)
                     self._fast_lost()
                     return
                 if kind == "end":  # orderly: every hand-off of this assembler was acked
+                    self._fast_drain(stream)
                     if (message["handed_off"] != last_sequence
                             or assembler not in (None, message["assembler_id"])):
                         raise HandoffError("handoff_end_mismatch")
@@ -2106,15 +2165,29 @@ class SegmentLearner:
                     assert data is not None
                     intake = (self.fast_intake.offer if kind == "segment"
                               else self.fast_intake.labels)
-                    self._fast_apply(intake(message, data) if checked is None
-                                     else intake(message, data, checked))
+                    decision = (intake(message, data) if checked is None
+                                else intake(message, data, checked))
+                    if stream is not None:
+                        # Acked by the applier after the hold that applied it.
+                        self._fast_submit(stream, decision, message)
+                        continue
+                    self._fast_apply(decision)
                     # Ack after the bytes are owned here: the sender's in-flight
                     # bound is the only back-pressure on the assembler.
                     ack(connection, message)
+                elif stream is not None:
+                    self._fast_submit(stream, self.fast_intake.closed(message), None)
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
         except BaseException as error:
-            if isinstance(error, FastVerifyClosed):
+            # This connection's earlier decisions are applied first, as when the
+            # reader applied each one itself before reading the next.
+            self._fast_drain(stream)
+            if isinstance(error, _FastHandled):
+                if self.input_fenced:
+                    raise
+                return  # an ack that failed while stopping: recorded, not a fence
+            if isinstance(error, (FastVerifyClosed, FastApplyClosed)):
                 # The learner closed the verify pool: a stopping learner just
                 # ends this reader (its telemetry may already be shut down);
                 # otherwise it is a loud fence like any hand-off error.
@@ -2150,10 +2223,41 @@ class SegmentLearner:
                 for record in active["segments"]}
 
     def _fast_apply(self, decision: IntakeDecision) -> None:
+        prepared = self._fast_prepare(decision)
+        if prepared is None:
+            return  # buffered / counted-drop decisions change nothing here
+        with self.condition:
+            # One wake-up per decision, not per segment: every admission and
+            # capacity eviction runs under this one condition hold, so no
+            # waiter can run (or start waiting) in between; the single
+            # `notify_all` after them wakes exactly the waiters each per-segment
+            # notify would have. `finally`: an admission that raises after an
+            # earlier one changed the queue still wakes them, as before.
+            changed: list[str] = []
+            # The prepared-batch referenced set, computed at most once per hold
+            # (only if some admission overflows): admissions, evictions,
+            # exclusions and aux rows never change `pending_batch` /
+            # `ahead_batches`, and no other thread can while this is held.
+            referenced: list[set[str]] = []
+            try:
+                self._fast_apply_held(decision, prepared, changed, referenced)
+            finally:
+                self._fast_wake(changed)
+
+    def _fast_wake(self, changed: list[str]) -> None:
+        """Under `condition`, once per hold: wake waiters / the source prefetch."""
+        if changed:
+            self.condition.notify_all()
+        if "admitted" in changed:
+            self.source_prefetch_changed.set()
+
+    def _fast_prepare(self, decision: IntakeDecision) -> tuple[Any, list[Any]] | None:
+        """What `_fast_apply_held` needs, built without the condition; None: a
+        decision that changes nothing here."""
         assert self.fast_intake is not None and self.fast_sources is not None
         if (decision.exclude_instance is None and not decision.admit
                 and not decision.auxiliary):
-            return  # buffered / counted-drop decisions change nothing here
+            return None
         # Aux row records are pure functions of the verified groups (the learner's
         # generation is fixed for its lifetime): built before the condition.
         auxiliary = (self._fast_auxiliary(decision.auxiliary) if decision.auxiliary
@@ -2166,32 +2270,163 @@ class SegmentLearner:
         # socket / verify arena before this call).
         admits = [(segment, envelope, self._fast_record(segment, envelope))
                   for segment, envelope in decision.admit]
+        return auxiliary, admits
+
+    def _fast_apply_held(self, decision: IntakeDecision, prepared: tuple[Any, list[Any]],
+                         changed: list[str], referenced: list[set[str]]) -> None:
+        """One decision under `condition` (the caller wakes waiters via `_fast_wake`)."""
+        auxiliary, admits = prepared
+        if decision.exclude_instance is not None:
+            self._fast_exclude(decision.exclude_instance)
+        for segment, envelope, record in admits:
+            self._fast_admit(segment, envelope, changed, prepared=record,
+                             referenced=referenced)
+        if auxiliary:
+            self._add_auxiliary(auxiliary)
+
+    # -- batched apply (`dataplane.fast_batched_apply`) ------------------------------
+    def _fast_submit(self, stream: _FastStream, decision: IntakeDecision,
+                     message: dict[str, Any] | None) -> None:
+        """Queue one decision for the applier; waits while the bounded queue is full
+        (the reader then stops reading: the sender's in-flight bound holds)."""
+        with self.fast_apply_lock:
+            waited = False
+            while True:
+                if stream.failure is not None:
+                    # This connection's apply/ack broke: its reader stops here.
+                    raise _FastHandled("fast_handoff_apply_failed") from stream.failure
+                if self.fast_apply_failure is not None:
+                    raise _FastHandled("fast_applier_failed") from self.fast_apply_failure
+                if self.fast_apply_stopping:
+                    raise FastApplyClosed("fast_apply_closed")
+                if len(self.fast_apply_items) < self.fast_apply_capacity:
+                    break
+                if not waited:
+                    waited = True
+                    self.fast_apply_stats["submit_waits"] += 1
+                self.fast_apply_lock.wait()
+            self.fast_apply_items.append(_FastTicket(stream, decision, message))
+            stream.pending += 1
+            self.fast_apply_stats["peak_queue"] = max(self.fast_apply_stats["peak_queue"],
+                                                      len(self.fast_apply_items))
+            self.fast_apply_lock.notify_all()
+
+    def _fast_drain(self, stream: _FastStream | None) -> None:
+        """Wait until the applier has applied (or skipped) every decision this
+        connection submitted; returns at once if the applier is gone."""
+        if stream is None:
+            return
+        with self.fast_apply_lock:
+            while stream.pending and self.fast_apply_failure is None:
+                thread = self.fast_apply_thread
+                if thread is None or not thread.is_alive():
+                    return
+                self.fast_apply_lock.wait(1.0)
+
+    def _fast_applier(self) -> None:
+        """Drain every ready decision and apply them under one condition hold, then
+        ack. Any error outside one decision fences input loudly and stops."""
+        try:
+            while True:
+                with self.fast_apply_lock:
+                    while not self.fast_apply_items and not self.fast_apply_stopping:
+                        self.fast_apply_lock.wait()
+                    if not self.fast_apply_items:
+                        return  # stopping, everything submitted was applied
+                    batch = list(self.fast_apply_items)
+                    self.fast_apply_items.clear()
+                    stats = self.fast_apply_stats
+                    stats["batches"] += 1
+                    stats["items"] += len(batch)
+                    stats["max_batch"] = max(stats["max_batch"], len(batch))
+                    self.fast_apply_lock.notify_all()  # room for blocked readers
+                try:
+                    self._fast_apply_tickets(batch)
+                finally:
+                    with self.fast_apply_lock:
+                        for ticket in batch:
+                            ticket.stream.pending -= 1
+                        self.fast_apply_lock.notify_all()
+        except BaseException as error:
+            with self.fast_apply_lock:
+                self.fast_apply_failure = error
+                for ticket in self.fast_apply_items:
+                    ticket.stream.pending -= 1
+                self.fast_apply_items.clear()
+                self.fast_apply_lock.notify_all()
+            self._event("fast_applier_failed", error_type=type(error).__name__,
+                        error=str(error)[:400])
+            self._fast_fence("fast_apply", error)
+
+    def _fast_stream_failed(self, stream: _FastStream, error: BaseException, *,
+                            acking: bool = False) -> None:
+        """A decision (or its ack) of this connection failed: as when its reader
+        raised, input is fenced and the connection gets no further ack. An ack
+        that fails while the learner is already stopping only records it."""
+        if stream.failure is None:
+            stream.failure = error
+        if acking:
+            with self.condition:
+                stopping = self.newlease_stopped
+            if stopping:
+                self._event("fast_ack_failed_while_stopping",
+                            error_type=type(error).__name__)
+                return
+        self._fast_fence("fast_handoff", error)
+
+    def _fast_apply_tickets(self, batch: list[_FastTicket]) -> None:
+        prepared: list[tuple[Any, list[Any]] | None] = []
+        for ticket in batch:
+            value = None
+            if ticket.stream.failure is None:
+                try:
+                    value = self._fast_prepare(ticket.decision)
+                except BaseException as error:
+                    self._fast_stream_failed(ticket.stream, error)
+            prepared.append(value)
+        applied: list[_FastTicket] = []
         with self.condition:
-            if decision.exclude_instance is not None:
-                self._fast_exclude(decision.exclude_instance)
-            # One wake-up per decision, not per segment: every admission and
-            # capacity eviction below runs under this one condition hold, so no
-            # waiter can run (or start waiting) in between; the single
-            # `notify_all` after them wakes exactly the waiters each per-segment
-            # notify would have. `finally`: an admission that raises after an
-            # earlier one changed the queue still wakes them, as before.
             changed: list[str] = []
-            # The prepared-batch referenced set, computed at most once per hold
-            # (only if some admission overflows): admissions and evictions never
-            # change `pending_batch` / `ahead_batches`, and no other thread can
-            # while this condition is held.
             referenced: list[set[str]] = []
             try:
-                for segment, envelope, prepared in admits:
-                    self._fast_admit(segment, envelope, changed, prepared=prepared,
-                                     referenced=referenced)
+                for ticket, value in zip(batch, prepared, strict=True):
+                    # A connection whose earlier decision failed applies nothing
+                    # more (its reader would have stopped at that failure).
+                    if ticket.stream.failure is not None:
+                        continue
+                    if value is not None:
+                        try:
+                            self._fast_apply_held(ticket.decision, value, changed,
+                                                  referenced)
+                        except BaseException as error:
+                            self._fast_stream_failed(ticket.stream, error)
+                            continue
+                    applied.append(ticket)
             finally:
-                if changed:
-                    self.condition.notify_all()
-                if "admitted" in changed:
-                    self.source_prefetch_changed.set()
-            if auxiliary:
-                self._add_auxiliary(auxiliary)
+                self._fast_wake(changed)
+        # Every decision applied above is acked, in order, even if a later one of
+        # the same connection failed in this hold (its reader acked each one
+        # before reading the next); after a failed ack that connection gets none.
+        broken: set[int] = set()
+        for ticket in applied:
+            if ticket.ack is None or id(ticket.stream) in broken:
+                continue
+            try:
+                ack(ticket.stream.connection, ticket.ack)
+            except BaseException as error:
+                broken.add(id(ticket.stream))
+                self._fast_stream_failed(ticket.stream, error, acking=True)
+
+    def _fast_apply_stop(self) -> None:
+        """Learner close: apply what is queued, then end the applier."""
+        thread = self.fast_apply_thread
+        with self.fast_apply_lock:
+            self.fast_apply_stopping = True
+            self.fast_apply_lock.notify_all()
+        if thread is not None:
+            thread.join(60)
+            if thread.is_alive():
+                self._event("fast_applier_stop_timeout")
 
     def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
                         ) -> list[tuple[str, str, list[dict[str, Any]]]]:
@@ -2360,6 +2595,11 @@ class SegmentLearner:
             counters = dict(self.fast_counters)
         verify = ({"verify": self.fast_verifier.status()} if self.fast_verifier is not None
                   else {})
+        if self.fast_batched_apply:
+            with self.fast_apply_lock:
+                verify["apply"] = {**self.fast_apply_stats,
+                                   "queue": len(self.fast_apply_items),
+                                   "capacity": self.fast_apply_capacity}
         return {"fast_chain": {"learner": counters, "intake": self.fast_intake.report(),
                                **self.fast_sources.status(), **verify}}
 
@@ -3655,6 +3895,10 @@ class SegmentLearner:
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
             if self.archive is not None:
                 cleanup.callback(self.archive.stop_capacity_monitor)
+            if getattr(self, "fast_apply_thread", None) is not None:
+                # Runs after the verify pool closed (callbacks run last-first):
+                # readers stop submitting, then what is queued is applied.
+                cleanup.callback(self._fast_apply_stop)
             verifier = getattr(self, "fast_verifier", None)
             if verifier is not None:
                 # Refuses new reads and drains in-flight ones before the workers
