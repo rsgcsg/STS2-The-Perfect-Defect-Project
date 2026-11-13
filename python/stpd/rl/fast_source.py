@@ -364,19 +364,15 @@ def _read_shm(name: str, size: int) -> bytes:
         os.close(fd)
 
 
-def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | None]:
-    """One hand-off message: ("segment" | "labels", message, verified bytes),
-    ("closed", message, None) or ("end", message, None) (the sender's orderly end).
-
-    A segment is acked by the caller (`ack`) only after it has been taken over, so the
-    sender's in-flight bound stays the one back-pressure point.
-    """
+def receive_handoff(connection: Connection) -> tuple[str, dict[str, Any]]:
+    """The message half of `read_handoff`: schema and size checks, no shared memory
+    read ("segment" / "labels" messages still name a block to read)."""
     message = connection.recv()
     schema = message.get("schema") if isinstance(message, dict) else None
     if schema == HANDOFF_END_SCHEMA:
-        return "end", check_handoff_end(message), None
+        return "end", check_handoff_end(message)
     if schema == CLOSED_SCHEMA:
-        return "closed", check_instance_closed(message), None
+        return "closed", check_instance_closed(message)
     kind = "segment"
     if schema == LABELS_SCHEMA and set(message) == LABELS_KEYS:
         kind = "labels"
@@ -385,6 +381,21 @@ def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | N
     size = message["size"]
     if type(size) is not int or size < 0:
         raise HandoffError("handoff_size")
+    return kind, message
+
+
+def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | None]:
+    """One hand-off message: ("segment" | "labels", message, verified bytes),
+    ("closed", message, None) or ("end", message, None) (the sender's orderly end).
+
+    A segment is acked by the caller (`ack`) only after it has been taken over, so the
+    sender's in-flight bound stays the one back-pressure point. (`fast_verify` does
+    the same read, digest and header parse in a verify worker process instead.)
+    """
+    kind, message = receive_handoff(connection)
+    if kind in ("end", "closed"):
+        return kind, message, None
+    size = message["size"]
     data = _read_shm(message["shm_name"], size)
     if sha256(data) != message["sha256"]:
         raise HandoffError("handoff_digest")
@@ -393,6 +404,37 @@ def read_handoff(connection: Connection) -> tuple[str, dict[str, Any], bytes | N
 
 def ack(connection: Connection, message: dict[str, Any]) -> None:
     connection.send({"schema": HANDOFF_SCHEMA, "ack": message["handoff_sequence"]})
+
+
+@dataclass
+class VerifiedRead:
+    """A verify worker's result for one hand-off's exact bytes (`fast_verify`).
+
+    Segment: the `decode_segment(header_only=True)` header and its `row_facts`,
+    or the exception that parse raised. Labels: per carried entry (in message
+    order) the sha256 of `data[offset:offset + size]` and, when asked, that
+    body's header parse or its exception; None where the entry's offset/size
+    do not name bytes inside `data` (the learner refuses such an entry first).
+    """
+
+    header: dict[str, Any] | None = None
+    facts: list[dict[str, Any]] | None = None
+    header_error: BaseException | None = None
+    entries: list[tuple[str | None, dict[str, Any] | None, BaseException | None]] = field(
+        default_factory=list)
+
+    def segment_header(self) -> dict[str, Any]:
+        if self.header_error is not None:
+            raise self.header_error
+        assert self.header is not None
+        return self.header
+
+    def entry_header(self, index: int) -> dict[str, Any]:
+        _digest, header, error = self.entries[index]
+        if error is not None:
+            raise error
+        assert header is not None
+        return header
 
 
 @dataclass
@@ -571,13 +613,19 @@ class FastSegmentIntake:
             return self._exclude(instance_id, "actor:" + values["reason"], reply)
 
     # -- hand-off ---------------------------------------------------------------------
-    def offer(self, message: dict[str, Any], data: bytes) -> IntakeDecision:
+    def offer(self, message: dict[str, Any], data: bytes,
+              checked: VerifiedRead | None = None) -> IntakeDecision:
         """One verified hand-off segment (bytes already match message sha256).
 
         `read_handoff` hashed these bytes once; the header is parsed without a
         second whole-segment or per-row hash (the decode worker binds every row
-        to its digest before any training use)."""
-        header, _rows = decode_segment(data, header_only=True)
+        to its digest before any training use). `checked` (a verify worker's
+        result for these exact bytes) carries that same header parse and its row
+        facts, or the parse's own exception, raised here at the same point."""
+        if checked is None:
+            header, _rows = decode_segment(data, header_only=True)
+        else:
+            header = checked.segment_header()
         if (header["segment_id"] != message["segment_id"] or not header["trainable"]
                 or len(header["rows"]) != message["rows"]
                 or header["assembler_instance"] != message["assembler_id"]
@@ -586,7 +634,7 @@ class FastSegmentIntake:
             raise HandoffError("handoff_segment_binding")
         segment = FastSegment(dict(message), header, data)
         # Pure functions of this header: built before the lock (readers stay parallel).
-        facts = row_facts(header)
+        facts = row_facts(header) if checked is None or checked.facts is None else checked.facts
         terminal = (copy.deepcopy(header["seal"]["terminal"])
                     if header["seal"]["kind"] == "terminal" else None)
         with self.lock:
@@ -634,7 +682,8 @@ class FastSegmentIntake:
             return IntakeDecision(admit=[(segment, self._envelope(segment,
                                                                   instance.attestation))])
 
-    def labels(self, message: dict[str, Any], data: bytes) -> IntakeDecision:
+    def labels(self, message: dict[str, Any], data: bytes,
+               checked: VerifiedRead | None = None) -> IntakeDecision:
         """One verified labels hand-off (`data` already matches message sha256).
 
         Every label is recomputed here from the headers this intake received; the
@@ -647,6 +696,10 @@ class FastSegmentIntake:
         digest received with its segment and decode its header; (3) under the
         lock, use the result only if the same instance object is still current
         in the same generation (else counted as an old-generation drop).
+
+        `checked` (a verify worker's result for these exact bytes) supplies each
+        carried entry's body digest and header parse; every comparison, its
+        order and its error stay here.
         """
         if set(message) != LABELS_KEYS or message["schema"] != LABELS_SCHEMA:
             raise HandoffError("handoff_schema")
@@ -687,9 +740,9 @@ class FastSegmentIntake:
         if (not isinstance(entries, list) or len(data) != message["size"]
                 or [entry.get("segment_id") for entry in entries] != order):
             raise FastIntakeError("fast_labels_segments_changed")
-        bodies: dict[str, tuple[str, bytes]] = {}
+        bodies: dict[str, tuple[str, bytes, int]] = {}
         cursor = 0
-        for entry in entries:
+        for index, entry in enumerate(entries):
             _index, digest, size = received[entry["segment_id"]]
             pad = -size % 8
             if (set(entry) != {"segment_id", "sha256", "offset", "size"}
@@ -698,21 +751,25 @@ class FastSegmentIntake:
                     or any(data[cursor + size:cursor + size + pad])):
                 raise FastIntakeError("fast_labels_segments_changed")
             body = data[cursor:cursor + size]
-            if sha256(body) != digest:
+            actual = sha256(body) if checked is None else checked.entries[index][0]
+            if actual != digest:
                 raise FastIntakeError("fast_labels_segment_bytes_changed")
-            bodies[entry["segment_id"]] = digest, body
+            bodies[entry["segment_id"]] = digest, body, index
             cursor += size + pad
         if cursor != len(data):
             raise FastIntakeError("fast_labels_segments_changed")
         headers: dict[str, dict[str, Any]] = {}
         if self.aux_labels:
-            for sid, (_digest, body) in bodies.items():
+            for sid, (_digest, body, index) in bodies.items():
                 # Header, layout, padding and length checks only, outside the
                 # lock. The whole body was bound to `digest` (the digest offer()
                 # received) just above, and the decode worker binds every row to
                 # its own sha256 when the source is prepared, so no row is
                 # copied or hashed here.
-                header, _rows = decode_segment(body, header_only=True)
+                if checked is None:
+                    header, _rows = decode_segment(body, header_only=True)
+                else:
+                    header = checked.entry_header(index)
                 headers[sid] = header
         with self.lock:
             if self.generation != generation or self.instances.get(instance_id) is not instance:
@@ -726,7 +783,7 @@ class FastSegmentIntake:
                 self.counters["labels_disabled"] += 1
                 return IntakeDecision()
             segments = {}
-            for sid, (digest, body) in bodies.items():
+            for sid, (digest, body, _index) in bodies.items():
                 segment = FastSegment({"segment_id": sid, "sha256": digest}, headers[sid], body)
                 segments[sid] = segment, self._envelope(segment, instance.attestation)
             groups = []
