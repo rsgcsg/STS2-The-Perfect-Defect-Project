@@ -323,7 +323,7 @@ def test_bridge_phase_is_retained_after_class_cleanup_without_changing_build_cap
     assert phases[:2] == ["sdk-probe-started", "bridge-build-started"]
     assert ("bridge-build-timeout" if outcome == "timeout" else "bridge-build-exited") in phases
     assert calls[1][1] == 60
-    assert not any("-bl" in arg for arg in calls[1][0])
+    assert not any(arg == "-bl" or arg.startswith("-bl:") for arg in calls[1][0])
     if outcome == "timeout":
         assert records[-1]["stdout_original"] == repr(b"Restore\r\nCoreCompile\n")
         assert records[-1]["child_exit_observation"] == "unconfirmed"
