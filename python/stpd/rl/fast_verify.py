@@ -34,6 +34,10 @@ length in the first) followed by `slots` fixed slots of `slot_bytes`. Here a
 slot is full only while one hand-off is in flight: the thread copies the bytes
 out before `_fast_apply`. When no run of free slots fits, the thread blocks
 (the back-pressure of a slow apply today); nothing is dropped or skipped.
+A message larger than the whole arena is `fast_verify_arena_too_small` (the
+in-process path has no such limit). Closing the pool refuses new reads with
+`fast_verify_pool_closed` and drains in-flight ones first; a stopping learner's
+hand-off threads end on it without fencing.
 """
 
 from __future__ import annotations
@@ -62,12 +66,23 @@ CHANNELS_PER_WORKER = 8
 # Reply room after the data in the same slots: the pickled `VerifiedRead` goes
 # there, so the reply on the pipe is a few bytes (a ~66 KB header pickle sent
 # over an 8 KB socket buffer costs one GIL hand-back per chunk on this thread).
+# A reply larger than this room (e.g. labels with many carried headers) goes
+# inline on the pipe instead: the same pickle, only slower to receive.
 REPLY_BYTES = 256 * 1024
-LABELS_HEADER_REPLY_BYTES = 128 * 1024
 
 
 class FastVerifyError(RuntimeError):
-    """A verify pool failure (worker gone, arena too small): fences input, never retried."""
+    """A verify pool failure (worker gone, arena too small): fences input, never retried.
+
+    `fast_verify_arena_too_small` (a message larger than the whole arena) has no
+    in-process counterpart: the in-process path reads any size. Size the arena
+    (`fast_verify_arena_slots` x `fast_verify_slot_bytes`) above the largest
+    labels message."""
+
+
+class FastVerifyClosed(FastVerifyError):
+    """The learner is closing the pool (`fast_verify_pool_closed`): a stopping
+    learner only records it; a learner that is not stopping fences on it."""
 
 
 def _page(size: int) -> int:
@@ -118,7 +133,7 @@ class VerifyArena:
             waited = False
             while (first := self._run(count)) is None:
                 if self.closed:
-                    raise FastVerifyError("fast_verify_pool_closed")
+                    raise FastVerifyClosed("fast_verify_pool_closed")
                 waited = True
                 self.condition.wait()
             self.waits += waited
@@ -140,13 +155,19 @@ class VerifyArena:
             self.in_use -= count
             self.condition.notify_all()
 
-    def close(self) -> None:
+    def stop(self) -> None:
+        """Waiting acquirers raise `fast_verify_pool_closed`; held slots stay valid."""
         with self.condition:
             self.closed = True
             self.condition.notify_all()
+
+    def close(self) -> None:
+        self.stop()
         del self.buf
-        self.block.close()
-        self.block.unlink()
+        try:
+            self.block.close()
+        finally:
+            self.block.unlink()
 
 
 # -- worker process ------------------------------------------------------------------
@@ -282,6 +303,9 @@ class FastVerifyPool:
         self.lock = threading.Lock()
         self.requests = [0] * workers
         self.dead: set[int] = set()
+        self.closing = self.torn_down = False
+        self.inflight = 0
+        self.idle = threading.Condition(self.lock)
         pairs = []
         try:
             for worker in range(workers):
@@ -307,6 +331,8 @@ class FastVerifyPool:
         process = self.processes[worker]
         process.join(0.5)
         with self.lock:
+            if self.closing:  # torn down under a request that outlived the drain
+                return FastVerifyClosed(f"fast_verify_pool_closed worker={worker}")
             self.dead.add(worker)
         return FastVerifyError(f"fast_verify_worker_died worker={worker} pid={process.pid} "
                                f"exitcode={process.exitcode} error={type(error).__name__}")
@@ -314,10 +340,22 @@ class FastVerifyPool:
     def verify(self, kind: str, message: dict[str, Any], *,
                decode_headers: bool) -> tuple[bytes, VerifiedRead]:
         """One checked segment / labels message (`receive_handoff` already ran)."""
+        with self.lock:
+            if self.closing:
+                raise FastVerifyClosed("fast_verify_pool_closed")
+            self.inflight += 1
+        try:
+            return self._verify(kind, message, decode_headers=decode_headers)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+                self.idle.notify_all()
+
+    def _verify(self, kind: str, message: dict[str, Any], *,
+                decode_headers: bool) -> tuple[bytes, VerifiedRead]:
         size = message["size"]
         entries = message.get("segments") if kind == "labels" else None
-        reserve = REPLY_BYTES + (LABELS_HEADER_REPLY_BYTES * len(entries)
-                                 if decode_headers and isinstance(entries, list) else 0)
+        reserve = REPLY_BYTES
         first, count = self.arena.acquire(size, reserve=reserve)
         offset = self.arena.offset(first)
         room = offset + size + (-size % 8)
@@ -365,7 +403,17 @@ class FastVerifyPool:
         return {"workers": len(self.processes), "requests": requests, "dead": dead,
                 "arena": arena}
 
-    def close(self) -> None:
+    def close(self, drain_seconds: float = 30.0) -> None:
+        """Refuse new requests (`fast_verify_pool_closed`), let in-flight ones finish
+        (a thread waiting for arena slots is refused), then stop workers and free
+        the arena. Idempotent."""
+        with self.lock:
+            if self.torn_down:
+                return
+            self.closing = self.torn_down = True
+        self.arena.stop()
+        with self.lock:
+            self.idle.wait_for(lambda: self.inflight == 0, timeout=drain_seconds)
         for connection in self.connections:
             connection.close()  # workers see EOF on every channel and exit
         for process in self.processes:

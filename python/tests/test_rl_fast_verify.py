@@ -31,7 +31,13 @@ from stpd.rl.fast_source import (
     build_instance_labels,
     read_handoff,
 )
-from stpd.rl.fast_verify import REPLY_BYTES, FastVerifyError, FastVerifyPool, VerifyArena
+from stpd.rl.fast_verify import (
+    REPLY_BYTES,
+    FastVerifyClosed,
+    FastVerifyError,
+    FastVerifyPool,
+    VerifyArena,
+)
 
 AUX = frozenset({"terminal", "hp"})
 
@@ -314,3 +320,76 @@ def test_learner_fences_when_its_verify_worker_dies(tmp_path, monkeypatch):
         assert not owner.queue.pending
     finally:
         owner.close()
+
+
+def test_close_refuses_new_reads_and_waiting_ones_without_a_died_report():
+    segment = bootstrap_and_terminal()[0]
+    block = shared_memory.SharedMemory(create=True, size=len(segment.data))
+    assert block.buf is not None
+    block.buf[:len(segment.data)] = segment.data
+    verifier = pool(workers=1, slots=1, slot_bytes=len(segment.data) + REPLY_BYTES)
+    value = {**message(segment), "shm_name": block.name}
+    try:
+        held = verifier.arena.acquire(1)  # the only slot: the next read waits
+        errors: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                verifier.verify("segment", value, decode_headers=False)
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+
+        waiter = threading.Thread(target=read)
+        waiter.start()
+        time.sleep(0.2)
+        assert waiter.is_alive()
+        closer = threading.Thread(target=verifier.close)
+        closer.start()
+        waiter.join(10)
+        assert [type(e) for e in errors] == [FastVerifyClosed]
+        assert str(errors[0]) == "fast_verify_pool_closed"
+        verifier.arena.release(*held)
+        closer.join(30)
+        assert not closer.is_alive() and verifier.status()["dead"] == []
+        with pytest.raises(FastVerifyClosed, match="fast_verify_pool_closed"):
+            verifier.verify("segment", value, decode_headers=False)
+        verifier.close()  # idempotent
+    finally:
+        block.close()
+        block.unlink()
+
+
+def test_closing_the_learner_while_a_read_is_in_flight_does_not_fence(tmp_path, monkeypatch):
+    owner = fast_learner(tmp_path, monkeypatch, dataplane_extra={"fast_verify_workers": 1})
+    verifier = owner.fast_verifier
+    assert verifier is not None
+    entered, go = threading.Event(), threading.Event()
+    real = verifier.verify
+
+    def gated(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        go.wait(30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "verify", gated)
+    sealed = combat_game(handoff=learner_mu(owner),
+                         compiler=FrameCompiler(owner.model.vocabulary),
+                         assembler_id="node-g1")
+    admission(owner, "g1", 1)
+    ours, theirs = multiprocessing.Pipe()
+    process = multiprocessing.Process(target=_sender,
+                                      args=(theirs, sealed, closed_for(sealed), True))
+    process.start()
+    theirs.close()
+    reader = owner.attach_fast_handoff(ours)
+    try:
+        assert entered.wait(30)  # a segment message is in this reader's hands
+        owner.close()  # a normal stop with the read still in flight
+        go.set()
+        reader.join(30)
+        assert not reader.is_alive()
+        assert not owner.input_fenced and owner.input_failure is None
+    finally:
+        go.set()
+        process.kill()
+        process.join(10)

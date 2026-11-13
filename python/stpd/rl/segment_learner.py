@@ -100,6 +100,7 @@ from .fast_source import (
     ack,
     read_handoff,
 )
+from .fast_verify import FastVerifyClosed, FastVerifyPool
 from .learner import ROOT, LearnerConfig, _device
 from .loss import prepared_update
 from .performance import PerformanceConfig
@@ -644,7 +645,7 @@ class SegmentLearner:
         self.fast_counters: dict[str, int] = {}
         self.fast_receivers: list[threading.Thread] = []
         # `dataplane.fast_verify_workers` > 0: hand-off reads in verify processes.
-        self.fast_verifier: Any = None
+        self.fast_verifier: FastVerifyPool | None = None
         self.input_sequence = 0
         self.input_head: str | None = None
         self.input_anchor = config.resume_checkpoint
@@ -879,8 +880,6 @@ class SegmentLearner:
                 if type(verify_workers) is not int or not 0 <= verify_workers <= 8:
                     raise BoundaryError("rl_learner", "fast_verify_workers_must_be_int_0_to_8")
                 if verify_workers:
-                    from stpd.rl.fast_verify import FastVerifyPool
-
                     # Default arena: 64 x 2 MiB (a 64-row segment is ~1.25 MB; a
                     # labels message spans several contiguous slots).
                     self.fast_verifier = FastVerifyPool(
@@ -2101,6 +2100,14 @@ class SegmentLearner:
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
         except BaseException as error:
+            if isinstance(error, FastVerifyClosed):
+                # The learner closed the verify pool: a stopping learner just
+                # ends this reader (its telemetry may already be shut down);
+                # otherwise it is a loud fence like any hand-off error.
+                with self.condition:
+                    stopping = self.newlease_stopped
+                if stopping:
+                    return
             self._fast_fence("fast_handoff", error)
             raise
 
@@ -3556,8 +3563,12 @@ class SegmentLearner:
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
             if self.archive is not None:
                 cleanup.callback(self.archive.stop_capacity_monitor)
-            if self.fast_verifier is not None:
-                cleanup.callback(self.fast_verifier.close)
+            verifier = getattr(self, "fast_verifier", None)
+            if verifier is not None:
+                # Refuses new reads and drains in-flight ones before the workers
+                # and arena go; hand-off threads then stop on
+                # `fast_verify_pool_closed` without fencing (newlease_stopped).
+                cleanup.callback(verifier.close)
             try:
                 self.pool.close()
             finally:
