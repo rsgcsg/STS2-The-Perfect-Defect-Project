@@ -135,7 +135,8 @@ def test_card_scores_each_game_on_its_bound_service(vocabulary, model):
                   "input_spec": AGENT_SPEC})
         games = _games(2, 2)
         for game in games:
-            env.send({"type": "episode_open", "game_instance_id": game, "actor_id": "actor-1",
+            env.send({"type": "episode_open",
+                      "ascension": 0, "game_instance_id": game, "actor_id": "actor-1",
                       "sampling": SAMPLING, "single_choice": "score",
                       "start": {"kind": "new_run"}})
         row_id = 0

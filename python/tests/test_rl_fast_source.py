@@ -88,7 +88,8 @@ class Game:
 
     def open(self, game: str) -> None:
         self.assembler.open_episode({
-            "schema": "stpd/rl-inference-3", "kind": "episode_open", "request_id": 1,
+            "schema": "stpd/rl-inference-3", "kind": "episode_open",
+            "ascension": 0, "request_id": 1,
             "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
             "single_choice": "score", "start": {"kind": "new_run"}})
         self.steps[game] = 0

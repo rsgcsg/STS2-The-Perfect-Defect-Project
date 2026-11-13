@@ -116,10 +116,14 @@
     "episode_open": {
       "type": "object", "additionalProperties": false,
       "required": ["schema", "kind", "request_id", "game_instance_id", "actor_id",
-                   "sampling", "single_choice", "start"],
+                   "sampling", "single_choice", "start", "ascension"],
       "properties": {
         "schema": {"const": "stpd/rl-inference-3"},
         "kind": {"const": "episode_open"},
+        "ascension": {
+          "description": "The game's ascension level (public: the observation carries run.ascension), the one the Host requested and checked against the native run at mount. Required, never defaulted: the learner labels and values the game with this level's reward table. The service refuses (episode never opened) a level its reward table does not support.",
+          "type": "integer", "minimum": 0, "maximum": 10
+        },
         "request_id": {"$ref": "#/$defs/request_id"},
         "game_instance_id": {"$ref": "#/$defs/game_instance_id"},
         "actor_id": {"$ref": "#/$defs/id"},

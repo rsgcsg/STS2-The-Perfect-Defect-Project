@@ -395,7 +395,8 @@ def test_rows_after_the_swap_carry_the_new_mu(vocabulary, model):  # noqa: F811
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
                   "input_spec": AGENT_SPEC})
-        env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
+        env.send({"type": "episode_open",
+                  "ascension": 0, "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         observations = _observations(2)
         env.socket.sendall(_decision_line(1, "g1", 0, observations[0]))

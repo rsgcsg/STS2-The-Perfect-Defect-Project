@@ -95,7 +95,8 @@ def connect(address: Any, authkey: bytes, encoder: dict[str, Any], compiler: dic
     rid = 1
     for name in names:
         rid += 1
-        c.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "episode_open", "request_id": rid,
+        c.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "episode_open",
+                                   "ascension": 0, "request_id": rid,
                                    "game_instance_id": name, "actor_id": "a",
                                    "sampling": SAMPLING, "single_choice": "score",
                                    "start": {"kind": "new_run"}}))

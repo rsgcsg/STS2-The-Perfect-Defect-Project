@@ -3072,6 +3072,11 @@ export class ManagedPlayerEnvironmentSession {
       this.#publicEntityAliases.clear();
       this.#memo?.reset();
       const snapshot = await this.#setState(state, timeoutMs);
+      // The run the native started must be at the requested level: the learner labels
+      // and values the game with this session's ascension (never a default).
+      const actualAscension = state?.context?.ascension;
+      if (actualAscension !== this.#ascension)
+        throw new Error(actualAscension == null ? "managed_ascension_unverified" : "managed_ascension_mismatch");
       if (initialProgress != null) {
         const identity = await this.#request({ cmd: "run_identity" }, timeoutMs);
         const proof = identity?.initial_progress;
@@ -3106,6 +3111,9 @@ export class ManagedPlayerEnvironmentSession {
       if (state?.type !== "decision" || state.decision !== "map_select") {
         throw new Error("managed_map_restore_not_map");
       }
+      // A save of another level would be labelled at this session's ascension.
+      if (state.context?.ascension !== this.#ascension)
+        throw new Error(state.context?.ascension == null ? "managed_ascension_unverified" : "managed_ascension_mismatch");
       return await this.#setState(state, timeoutMs);
     } catch (cause) {
       if (cause instanceof CompactStateDivergence) { this.#taintCompact(); throw cause; }

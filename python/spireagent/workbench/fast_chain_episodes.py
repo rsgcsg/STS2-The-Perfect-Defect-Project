@@ -24,7 +24,10 @@ and one execution kernel. This module is the Python owner of that process:
 - inference liveness: an explicit probe, or a streak of ``inference_timeout`` closes,
   refuses admission before any world offer; without a probe the streak lock lifts
   after ``inference_retry_seconds`` for one trial game (one more timeout relocks);
-- only ascension 0 is admitted (terminal labels use the A0 table).
+- a game is admitted only at the env process's own ``host.ascension`` (one level per
+  process; its ``episode_open`` names that level, the Host checks it against the native
+  run at mount and the learner labels with that level's table; the service refuses a
+  level its table does not support).
 
 Failure semantics follow ``stpd/rl-inference-3`` and design v2 §2.6: nothing is resent;
 an inference timeout is ``not_started`` (here: a censored game, never unknown).
@@ -928,13 +931,14 @@ class FastChainEpisodeExecutor:
         row.update(host_kind="managed", chain="fast_chain", status="preparing", reason=None,
                    world_mutation_offered=False, cleanup_accepted=True)
         row["scenario"] = {"character": manifest["character"], "ascension": manifest["ascension"]}
-        if manifest["ascension"] != 0:
-            # The fast chain's terminal labels use the A0 table only, and the encoder /
-            # assembler never see the ascension: the actor is the only place to refuse.
+        served = self.manager.config["host"].get("ascension")
+        if type(served) is not int or manifest["ascension"] != served:
+            # One level per env process (its Host session): another level would run at
+            # the process's level while the row says otherwise. Never a default.
             row.update(status="not_started",
                        reason=f"fast_chain_ascension_unsupported:{manifest['ascension']}")
-            print(f"fast_chain refuses ascension {manifest['ascension']} (A0 only)",
-                  file=sys.stderr, flush=True)
+            print(f"fast_chain refuses ascension {manifest['ascension']} "
+                  f"(this env process serves {served})", file=sys.stderr, flush=True)
             return
         try:
             start = (self.episode_starts.get(row["seed"])

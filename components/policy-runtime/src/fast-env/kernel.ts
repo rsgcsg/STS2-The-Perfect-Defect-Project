@@ -652,8 +652,10 @@ export class SlotKernel {
     ctx.stats.games += 1;
     ctx.emit("opened", { command_id: command.command_id, slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
       start, native: nativeTag, mount_ms: Math.round(performance.now() - mountStarted) });
+    // ascension: the session's level, which the Host checked against the native run at mount.
     ctx.link.send({ type: "episode_open", game_instance_id: gameInstanceId, actor_id: ctx.config.inference.actor_id,
-      sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart });
+      sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart,
+      ascension: ctx.config.host.ascension });
     const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
       start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: true });
     // Always attached: compact off, the native's divergence report (#433 S3) is still an original.

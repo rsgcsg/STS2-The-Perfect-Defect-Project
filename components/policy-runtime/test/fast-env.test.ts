@@ -327,7 +327,7 @@ describe("fast-env K-game process", () => {
       public_facts: { act: 1, floor: 4, hp: 0, max_hp: 75 } });
     const gid = opened.game_instance_id;
     expect(h.linkMessages[0]).toMatchObject({ type: "hello", env_process_id: "env-test", slots: 1 });
-    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", start: { kind: "new_run" }, sampling: SAMPLING });
+    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", ascension: 0, start: { kind: "new_run" }, sampling: SAMPLING });
     const decision = linkOf(h.linkMessages, "decision", gid)[0];
     expect(decision).toMatchObject({ row_id: 1, step_index: 0, catalog_len: 6, in_combat: true, floor: 1 });
     expect(decision.input.observation).toBeTypeOf("object");

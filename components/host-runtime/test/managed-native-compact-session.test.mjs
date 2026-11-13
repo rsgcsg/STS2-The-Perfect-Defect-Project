@@ -29,7 +29,7 @@ function player(hp = 80) {
 
 function eventState(name = "Neow", hp = 80) {
   return {
-    type: "decision", decision: "event_choice", context: { act: 1, floor: 1, room_type: "Event" },
+    type: "decision", decision: "event_choice", context: { ascension: 0, act: 1, floor: 1, room_type: "Event" },
     room_ref: "native-1", event_ref: "native-2", event_name: name, event_id: "NEOW", ancient: true,
     in_dialogue: false, event_public_complete: true, description: "Choose.",
     options: [

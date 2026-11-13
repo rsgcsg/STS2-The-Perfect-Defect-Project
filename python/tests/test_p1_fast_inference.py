@@ -219,7 +219,8 @@ def test_node_aggregator_scores_rows_end_to_end(vocabulary, model):
                   "input_spec": AGENT_SPEC})
         observations = _observations(3)
         for game in ("g1", "g2"):
-            env.send({"type": "episode_open", "game_instance_id": game, "actor_id": "actor-1",
+            env.send({"type": "episode_open",
+                      "ascension": 0, "game_instance_id": game, "actor_id": "actor-1",
                       "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         replies = {}
         row_id = 0
@@ -288,7 +289,8 @@ def test_binding_difference_is_refused_before_the_service(vocabulary, model):
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
                   "input_spec": AGENT_SPEC})
-        env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
+        env.send({"type": "episode_open",
+                  "ascension": 0, "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         observation = _observations(1)[0]
         env.socket.sendall(_decision_line(1, "g1", 0, observation, catalog_len=9))
@@ -354,7 +356,7 @@ def test_many_connections_share_batches_without_starvation(vocabulary, model):
             assert unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0]["kind"] == "attached"
             game = f"g{index}"
             client.send_bytes(pack_message({
-                "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2,
+                "schema": V3_SCHEMA, "kind": "episode_open", "ascension": 0, "request_id": 2,
                 "game_instance_id": game, "actor_id": "a", "sampling": SAMPLING,
                 "single_choice": "score", "start": {"kind": "new_run"}}))
             clients.append((client, game))
@@ -387,7 +389,7 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
     try:
         unpack_message(client.recv_bytes(V3_MAX_MESSAGE))
         client.send_bytes(pack_message({
-            "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2,
+            "schema": V3_SCHEMA, "kind": "episode_open", "ascension": 0, "request_id": 2,
             "game_instance_id": "g1", "actor_id": "a", "sampling": SAMPLING,
             "single_choice": "score", "start": {"kind": "new_run"}}))
         garbage = b"\x00" * 40
@@ -424,7 +426,8 @@ def _open_client(service: FastInferenceService, encoder: RowsEncoder, game: str)
     client = _attach(service, encoder.identity["encoder"])
     assert unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0]["kind"] == "attached"
     client.send_bytes(pack_message({
-        "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 2, "game_instance_id": game,
+        "schema": V3_SCHEMA, "kind": "episode_open",
+        "ascension": 0, "request_id": 2, "game_instance_id": game,
         "actor_id": "a", "sampling": SAMPLING, "single_choice": "score",
         "start": {"kind": "new_run"}}))
     return client
@@ -751,7 +754,7 @@ def test_episode_open_sampling_is_checked_and_a_bad_one_is_refused(vocabulary, m
         bad = {**SAMPLING, "classes": {**SAMPLING["classes"],
                                        "combat": {"temperature": 0, "uniform_mix": 0.0}}}
         client.send_bytes(pack_message({
-            "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 3,
+            "schema": V3_SCHEMA, "kind": "episode_open", "ascension": 0, "request_id": 3,
             "game_instance_id": "bad", "actor_id": "a", "sampling": bad,
             "single_choice": "score", "start": {"kind": "new_run"}}))
         assert _score(client, encoded, 4, "bad")["error_code"] == "EPISODE_NOT_OPEN"
@@ -762,6 +765,32 @@ def test_episode_open_sampling_is_checked_and_a_bad_one_is_refused(vocabulary, m
         report = service.close()
     assert report["episodes_refused"] == 1
     assert "rl_inference_3_episode_refused" in capfd.readouterr().err
+
+
+def test_episode_open_without_a_supported_ascension_is_refused(vocabulary, model, capfd):
+    """The level is required (never a default A0) and must be one the table supports."""
+    from stpd.p1.inference_service import check_episode_ascension
+
+    assert [check_episode_ascension(level) for level in range(10)] == [None] * 10
+    assert check_episode_ascension(None) == "ascension_missing_or_not_an_integer"
+    assert check_episode_ascension(True) == "ascension_missing_or_not_an_integer"
+    assert check_episode_ascension(10) == "ascension_unsupported"  # until S-2
+    encoder = RowsEncoder(vocabulary)
+    encoded = encoder.encode(json.dumps(_observations(1)[0]).encode())
+    service = _service(vocabulary, model, FakeAssembler())
+    client = _open_client(service, encoder, "good")
+    try:
+        client.send_bytes(pack_message({
+            "schema": V3_SCHEMA, "kind": "episode_open", "request_id": 3,
+            "game_instance_id": "bad", "actor_id": "a", "sampling": SAMPLING,
+            "single_choice": "score", "start": {"kind": "new_run"}}))
+        assert _score(client, encoded, 4, "bad")["error_code"] == "EPISODE_NOT_OPEN"
+        assert _score(client, encoded, 5, "good")["status"] == "scored"
+    finally:
+        client.close()
+        report = service.close()
+    assert report["episodes_refused"] == 1
+    assert "ascension_missing_or_not_an_integer" in capfd.readouterr().err
 
 
 def test_a_results_thread_failure_stops_and_refuses_the_rows_in_flight(vocabulary, model,
@@ -910,7 +939,8 @@ def test_a_broken_encoder_pool_fails_the_aggregator(vocabulary, model, capfd):
         env = FakeEnv(path)
         env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
                   "input_spec": AGENT_SPEC})
-        env.send({"type": "episode_open", "game_instance_id": "g1", "actor_id": "actor-1",
+        env.send({"type": "episode_open",
+                  "ascension": 0, "game_instance_id": "g1", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         aggregator.pool._break(RuntimeError("worker gone"))
         env.socket.sendall(_decision_line(1, "g1", 0, _observations(1)[0]))
@@ -931,7 +961,8 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
     path = os.path.join(tempfile.mkdtemp(), "link.sock")
     aggregator = _aggregator(vocabulary, service, path)
     try:
-        for bad in ({"type": "episode_open", "game_instance_id": "g1"},  # before hello
+        for bad in ({"type": "episode_open",
+                     "ascension": 0, "game_instance_id": "g1"},  # before hello
                     {"type": "unknown_kind"}):
             env = FakeEnv(path)
             if bad["type"] != "episode_open":
@@ -943,7 +974,8 @@ def test_a_bad_link_message_closes_only_that_env_connection(vocabulary, model, c
         env = FakeEnv(path)  # a fresh connection is still served
         env.send({"type": "hello", "env_process_id": "env-2", "slots": 1, "p1_revision": "x",
                   "input_spec": AGENT_SPEC})
-        env.send({"type": "episode_open", "game_instance_id": "g2", "actor_id": "actor-1",
+        env.send({"type": "episode_open",
+                  "ascension": 0, "game_instance_id": "g2", "actor_id": "actor-1",
                   "sampling": SAMPLING, "single_choice": "score", "start": {"kind": "new_run"}})
         env.socket.sendall(_decision_line(1, "g2", 0, _observations(1)[0]))
         assert env.reply()["type"] == "scored"

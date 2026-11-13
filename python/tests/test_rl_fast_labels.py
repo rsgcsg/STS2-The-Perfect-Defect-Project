@@ -27,7 +27,8 @@ CASES = [
 @pytest.mark.parametrize(("case", "expected"), CASES)
 def test_public_terminal_label_is_the_old_chain_label(case, expected):
     acts, result, floor = case
-    label = public_terminal_label({"result": result, "max_floor": floor, "acts": acts})
+    label = public_terminal_label({"ascension": 0, "result": result, "max_floor": floor,
+                                   "acts": acts})
     assert label["class"] == expected[0]
     assert label["reward"] == pytest.approx(expected[1], abs=1e-12)
 
@@ -35,13 +36,16 @@ def test_public_terminal_label_is_the_old_chain_label(case, expected):
 def test_public_terminal_label_refuses_what_the_old_chain_refuses():
     # From a save in act 2 nothing public shows Boss 1; the old chain refuses the class.
     with pytest.raises(ValueError, match="terminal_class_reward_mismatch"):
-        public_terminal_label({"result": "defeat", "max_floor": 30, "acts": [2, 2, 2]})
+        public_terminal_label({"ascension": 0, "result": "defeat", "max_floor": 30,
+                               "acts": [2, 2, 2]})
     # a skipped act is no witness: [1, 3, 4] clears one Boss, floor 40 needs two
     with pytest.raises(ValueError, match="terminal_class_reward_mismatch"):
-        public_terminal_label({"result": "defeat", "max_floor": 40, "acts": [1, 3, 4]})
-    for context in ({"result": "abandoned", "max_floor": 5, "acts": [1]},
-                    {"result": "defeat", "max_floor": "5", "acts": [1]},
-                    {"result": "defeat", "max_floor": 5}):
+        public_terminal_label({"ascension": 0, "result": "defeat", "max_floor": 40,
+                               "acts": [1, 3, 4]})
+    for context in ({"ascension": 0, "result": "abandoned", "max_floor": 5, "acts": [1]},
+                    {"ascension": 0, "result": "defeat", "max_floor": "5", "acts": [1]},
+                    {"ascension": 0, "result": "defeat", "max_floor": 5},
+                    {"result": "defeat", "max_floor": 5, "acts": [1]}):  # level is required
         with pytest.raises(ValueError, match="terminal_label_context"):
             public_terminal_label(context)
 
@@ -80,7 +84,7 @@ def test_default_labeler_seals_terminal_from_public_act_advances():
     assert two.kind == "terminal" and two.header["seal"]["terminal"]["class"] == 35
     assert two.header["seal"]["terminal"] == {
         "result": "defeat", **public_terminal_label(
-            {"result": "defeat", "max_floor": 35, "acts": [1, 2, 3, 3]})}
+            {"ascension": 0, "result": "defeat", "max_floor": 35, "acts": [1, 2, 3, 3]})}
     # The old chain refuses this class too; kept as original, counted, never trained.
     assert save.kind == "truncated"
     assert save.header["seal"]["truncation"]["reason"] == "terminal_label_refused"

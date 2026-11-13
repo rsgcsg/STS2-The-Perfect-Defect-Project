@@ -75,11 +75,12 @@ def test_reward_win_beats_every_loss_and_unknown_is_excluded():
     assert episode_reward(_episode("loss", floor=None))[0] is None
 
 
-@pytest.mark.parametrize("ascension,finish,bosses", [(0, 48, 3), (10, 49, 4)])
+@pytest.mark.parametrize("ascension,finish,bosses",
+                         [(0, 48, 3), (1, 48, 3), (5, 48, 3), (9, 48, 3), (10, 49, 4)])
 def test_reward_v2_fixed_progress_quadratic_boss_totals_and_final_win(ascension, finish, bosses):
     from stpd.rl.reward import REWARD_SPEC
 
-    assert REWARD_SPEC["version"] == "2"
+    assert REWARD_SPEC["version"] == "2.1"
     assert REWARD_SPEC["finish_floors"][str(ascension)] == finish
     assert REWARD_SPEC["boss_totals"][str(ascension)] == bosses
     episode = _episode("loss", floor=finish // 2, bosses=bosses - 1)
@@ -502,3 +503,23 @@ def test_segments_keep_unknown_prefix_policy_without_an_implicit_actor_stop():
     actor.config = {}
     actor.segment_mode = False
     assert actor._unknown_limit()
+
+
+def test_class_values_follow_the_game_ascension_a1_to_a9():
+    from stpd.rl.heads import (
+        SUPPORTED_ASCENSIONS,
+        checked_terminal_class,
+        class_reward_values,
+        finish_floor,
+    )
+
+    a0 = class_reward_values()
+    assert torch.equal(class_reward_values(ascension=0), a0)
+    for level in range(1, 10):  # A1-A9: same floors and bosses as A0 (game enum, 11-13)
+        assert torch.equal(class_reward_values(ascension=level), a0)
+        assert finish_floor(level) == 48
+    assert tuple(range(10)) == SUPPORTED_ASCENSIONS
+    with pytest.raises(ValueError, match="unsupported_ascension"):
+        class_reward_values(ascension=10)
+    assert checked_terminal_class(result="loss", floor=20, reward=float(a0[20]),
+                                  ascension=5) == 20

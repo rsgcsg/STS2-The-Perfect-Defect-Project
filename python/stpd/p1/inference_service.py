@@ -457,6 +457,21 @@ def check_sampling(sampling: Any) -> str | None:
     return None
 
 
+def check_episode_ascension(ascension: Any) -> str | None:
+    """The episode_open `ascension` (required, rl-inference-3); None if valid.
+
+    An integer level the learner's reward table supports
+    (`heads.SUPPORTED_ASCENSIONS`). Never defaulted: a game without its level
+    would be labelled with another level's table.
+    """
+    from stpd.rl.heads import SUPPORTED_ASCENSIONS
+    if type(ascension) is not int:
+        return "ascension_missing_or_not_an_integer"
+    if ascension not in SUPPORTED_ASCENSIONS:
+        return "ascension_unsupported"
+    return None
+
+
 class _ArenaPart(NamedTuple):
     """A prepared part written in the shared arena: where it is, and its rows."""
 
@@ -1379,7 +1394,8 @@ class FastInferenceService:
                 elif not link.attached:
                     raise BoundaryError("rl_inference_3", "attach_required")
                 elif kind == "episode_open":
-                    problem = check_sampling(envelope.get("sampling"))
+                    problem = (check_sampling(envelope.get("sampling"))
+                               or check_episode_ascension(envelope.get("ascension")))
                     if problem is not None:
                         # Refused loudly: the game is never opened, so its rows
                         # come back EPISODE_NOT_OPEN; other games are untouched.

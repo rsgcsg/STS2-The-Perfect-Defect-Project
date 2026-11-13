@@ -72,7 +72,8 @@ class Harness:
         self.assembler.open_episode({
             "schema": "stpd/rl-inference-3", "kind": "episode_open", "request_id": 1,
             "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
-            "single_choice": single_choice, "start": start or {"kind": "new_run"}, **extra})
+            "single_choice": single_choice, "start": start or {"kind": "new_run"},
+            "ascension": 0, **extra})
         self.steps[game] = 0
 
     def row(self, game: str, *, floor: int = 1, combat: bool = True) -> tuple[dict, bytes]:
@@ -1023,6 +1024,54 @@ def test_columnar_segments_hold_the_same_segment_for_every_seal_kind():
     assert hashlib.sha256(b"".join(s.data for s in old.sealed)).hexdigest() == FORMAT_1_GOLDEN
 
 
+def test_format_3_is_format_2_plus_the_game_ascension():
+    """A0 under format 3: the same logical segment as format 2 plus `ascension: 0`."""
+    from stpd.rl.fast_segment import FORMAT_3, segment_ascension
+    two, three = _mixed_games(FORMAT_2, verify_every=1), _mixed_games(FORMAT_3, verify_every=1)
+    for left, right in zip(two.sealed, three.sealed, strict=True):
+        assert right.data[:8] == b"STPDFS03"
+        old_header, old_rows = decode_segment(left.data)
+        new_header, new_rows = decode_segment(right.data)
+        assert new_header == {**old_header, "format": FORMAT_3, "ascension": 0}
+        assert new_rows == old_rows
+        assert segment_ascension(old_header) == segment_ascension(new_header) == 0
+    assert three.assembler.report()["segments_verified"] == 4
+    assert three.assembler.report()["by_ascension"]["0"]["episodes"] == 3
+
+
+def test_ascension_is_required_and_above_a0_needs_format_3():
+    from stpd.rl.fast_segment import FORMAT_3, segment_ascension
+    h = Harness(segment_format=FORMAT_2)
+    h.assembler.offer_mu(mu(1))
+    for bad in ({"ascension": None}, {"ascension": "5"}, {"ascension": 11}):
+        with pytest.raises(AssemblyError, match="invalid_episode_open"):
+            h.open("g", **bad)
+    with pytest.raises(AssemblyError, match="ascension_needs_segment_format_3"):
+        h.open("g", ascension=5)
+    labels: list[dict] = []
+
+    def labeler(summary: Any) -> dict:
+        labels.append(summary)
+        return {"class": 5, "reward": 0.1}
+
+    h = Harness(labeler, segment_format=FORMAT_3, verify_every=1)
+    h.assembler.offer_mu(mu(1))
+    h.open("t", ascension=5)
+    h.step("t")
+    _, row = h.step("t", outcome=False, floor=5)
+    h.outcome(row, terminal={"result": "defeat"})
+    h.close("t", "terminal", row["step_index"])
+    assert labels[0]["ascension"] == 5
+    header, _ = decode_segment(h.sealed[-1].data)
+    assert header["ascension"] == 5 and segment_ascension(header) == 5
+    assert h.assembler.report()["by_ascension"]["5"]["segments"] == {"terminal": 1}
+    # Formats 1/2 are A0 history, never a level of their own; format 3 must name one.
+    for bad in ({"format": FORMAT_2, "ascension": 3}, {"format": FORMAT_3},
+                {"format": FORMAT_3, "ascension": 11}, {"format": FORMAT_3, "ascension": True}):
+        with pytest.raises(SegmentFormatError, match="segment_ascension"):
+            segment_ascension(bad)
+
+
 def test_columnar_verify_difference_keeps_the_original_and_fails_loudly(monkeypatch):
     import stpd.rl.fast_assembly as assembly
 
@@ -1118,10 +1167,10 @@ def test_columnar_segment_rejects_tampering():
         with pytest.raises(SegmentFormatError):
             decode_segment(data)
     with pytest.raises(SegmentFormatError, match="segment_magic_or_size"):
-        decode_segment(b"STPDFS03" + segment.data[8:])
+        decode_segment(b"STPDFS04" + segment.data[8:])
 
 
-@pytest.mark.parametrize("options", [{"segment_format": "stpd/rl-fast-segment-3"},
+@pytest.mark.parametrize("options", [{"segment_format": "stpd/rl-fast-segment-4"},
                                      {"verify_every": 0}, {"verify_every": True}])
 def test_segment_format_switch_values_are_checked(options: dict):
     with pytest.raises(AssemblyError, match="invalid_segment_format"):
