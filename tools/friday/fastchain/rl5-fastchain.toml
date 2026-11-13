@@ -44,7 +44,13 @@ sgd_verify_threads = { value = 4, default = 4, why = "threads hashing one prepar
 sgd_switch_interval_seconds = { value = 0.0005, default = 0, why = "sys.setswitchinterval in the SGD process (#525); 0 = interpreter default 5 ms", measured = "PR #525 (11-13)" }
 diagnostics_every = { value = 512, default = 8, why = "learner diagnostics every N steps; 8 cost step time in the chain", measured = "lead 11-13" }
 shards_adopt_unsharded_checkpoint = { value = false, default = false, why = "true only for a first sharded start from an unsharded CP (#523 a437612d: shard 0 continues it); --set it for that one start", measured = "#523 a437612d" }
-producer_identity = { value = "placeholder", default = "checkout", why = "placeholder = a scratch producer for a git-archive source (CPs void, probe only); refused outside --smoke unless --probe-only is passed. checkout = the real source_identity, needs a clean git checkout as src_dir", measured = "review of #524 (S4)" }
+producer_identity = { value = "checkout", default = "checkout", why = "long-run default: the real source identity (src_dir must be a clean git checkout). placeholder = a scratch producer for a git-archive source (CPs void), allowed only with --smoke or --probe-only", measured = "review of #524 (S4); LONG-RUN-CHECK A4" }
+max_versions = { value = 900000, default = 100000, why = "frozen rl5.json value; the gate's 100000 could cap a 20 h run", measured = "python/configs/rl5.json; A9 diff of the gate base 11-13" }
+frozen_learner_config = { value = "python/configs/rl5.json", default = "python/configs/rl5.json", why = "frozen long-run parameters (relative to src_dir); preflight refuses any drift of the effective learner config outside learner_config.ALLOWED_DRIFT", measured = "LONG-RUN-CHECK A9" }
+compile_warmup = { value = true, default = false, why = "sgd_compile.warmup = the dumps in the site file (chosen by python -m stpd.rl.offline_step warmup-cover): every graph compiles before the first online step", measured = "#526 warmup-cover; V3-ren2" }
+compile_recompile_limit = { value = 16, default = 16, why = "sgd_process COMPILED_RECOMPILE_LIMIT", measured = "V3 T6 probes 1458888/1458938" }
+sgd_gc_freeze = { value = true, default = false, why = "#525: one gc.collect + gc.freeze after the first dataset (fewer gen-2 pauses in the SGD child)", measured = "PR #525 b40d31db" }
+sgd_step_probe = { value = false, default = false, why = "#525: gc seconds/collections per step; readout reports them when on (diagnostics)", measured = "PR #525" }
 # --- remote prepare ---
 remote_prepare = { value = true, default = false, why = "prepare on CPU hosts (#491/#496); lead default on", measured = "h100g onward, PLAN-TABLE §9" }
 remote_prepare_connections = { value = 36, default = 6, why = "connections over all prep hosts; must divide evenly over shards", measured = "c2j" }
@@ -77,6 +83,7 @@ mem_guard_gb = { value = 220, default = 220, why = "non-reclaimable memory (anon
 mem_hard_gb = { value = 224, default = 224, why = "above this the job scancels itself", measured = "c3c5" }
 core_cap = { value = { "1" = 300, "2" = 300, "3" = 450 }, default = { "1" = 300, "2" = 300, "3" = 450 }, why = "total cores (GPU job + env); 3 cards within the user's <=500 approval", measured = "coordinator 2026-11-12" }
 wall_seconds = { value = 3000, default = 3300, why = "GPU wall per test run (long runs set their own)", measured = "c2j" }
+long_wall_seconds = { value = 72000, default = 72000, why = "first RL5 long run: 20 h in one GPU job, no successor (user 11-13 C4); 72000 s is the product operating-budget cap", measured = "LONG-RUN-CHECK §五 C4" }
 smoke_wall_seconds = { value = 300, default = 300, why = "5 min smoke first (playbook §11.4 item 5)", measured = "s2c-smoke" }
 # --- environment nodes ---
 env_node_cores = { value = 16, default = 20, why = "a size every fast type holds", measured = "c2j" }

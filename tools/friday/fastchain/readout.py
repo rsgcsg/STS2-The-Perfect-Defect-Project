@@ -106,6 +106,40 @@ def training_edge(events: list[dict[str, Any]], status: list[dict[str, Any]],
     return out
 
 
+def _find(record: Any, key: str) -> list[Any]:
+    """Every value of `key` anywhere inside one event (the step probe nests it)."""
+    if isinstance(record, dict):
+        return [v for k, v in record.items() if k == key] + [
+            x for v in record.values() for x in _find(v, key)]
+    if isinstance(record, list):
+        return [x for v in record for x in _find(v, key)]
+    return []
+
+
+def compile_edge(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compile warm-up: the dynamo graph count after warm-up is the first stepped value;
+    any rise later is an online recompile (alarm). gc seconds when the probe is on."""
+    started = [e for e in events if e.get("kind") == "sgd_process_started"]
+    warm = (started[0].get("compile") or {}).get("warmup") if started else None
+    graphs = [(e["t"], e["rows_forward"]["dynamo_unique_graphs"]) for e in events
+              if e.get("kind") == "progress" and e.get("stepped")
+              and isinstance(e.get("rows_forward"), dict)
+              and "dynamo_unique_graphs" in e["rows_forward"]]
+    out: dict[str, Any] = {"warmup_dumps": len(warm) if isinstance(warm, list) else None,
+                           "graphs_after_warmup": graphs[0][1] if graphs else None,
+                           "graphs_now": graphs[-1][1] if graphs else None, "alarm": None}
+    if graphs and graphs[-1][1] > graphs[0][1]:
+        first = next(t for t, g in graphs if g > graphs[0][1])
+        out["alarm"] = (f"dynamo_unique_graphs rose {graphs[0][1]} -> {graphs[-1][1]} after "
+                        f"warm-up (first at +{first - graphs[0][0]:.0f} s): online recompiles")
+    gc = [x for e in events if e.get("kind") == "progress" for x in _find(e, "gc_seconds")
+          if isinstance(x, (int, float))]
+    out["gc_seconds"] = sum(gc) if gc else None
+    out["gc_freeze"] = any(_find(e, "gc_freeze") for e in events
+                           if e.get("kind") == "progress")
+    return out
+
+
 def service_edges(run: Path, window: tuple[float, float] | None) -> list[dict[str, Any]]:
     out = []
     for path in sorted(glob.glob(str(run / "service-status-*.jsonl"))):
@@ -223,13 +257,13 @@ def verdict(rows_h: float | None, target: dict[str, Any]) -> str | None:
 
 def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, Any]:
     plan = json.loads((plan_path or run / "plan.json").read_text())
-    train = training_edge(jsonl(run / "learner-events.jsonl"),
-                          jsonl(run / "learner-status.jsonl"), window)
+    events = jsonl(run / "learner-events.jsonl")
+    train = training_edge(events, jsonl(run / "learner-status.jsonl"), window)
     span = train.get("window")
     target = plan["target"]
     return {"name": plan["name"], "target": target, "training": train,
             "services": service_edges(run, span), "gpu": gpu_cards(run, span),
-            "env": env_edge(run, span),
+            "env": env_edge(run, span), "compile": compile_edge(events),
             "verdict": verdict(train.get("rows_h"), target),
             "loss_table": loss_table(plan, train)}
 
@@ -271,6 +305,13 @@ def render(r: dict[str, Any]) -> str:
     for card, g in sorted(r["gpu"].items()):
         out.append(f"{'gpu ' + card:<12}{'-':>10}{fmt(g['busy_pct']):>8}  mem max "
                    f"{fmt(g['mem_mib_max'])} MiB")
+    c = r.get("compile") or {}
+    out.append(f"compile: warm-up dumps {fmt(c.get('warmup_dumps'))}, graphs after warm-up "
+               f"{fmt(c.get('graphs_after_warmup'))}, now {fmt(c.get('graphs_now'))}"
+               + (f", gc {fmt(c['gc_seconds'], 1)} s" if c.get("gc_seconds") is not None else "")
+               + (", gc frozen" if c.get("gc_freeze") else ""))
+    if c.get("alarm"):
+        out.append("ALARM " + c["alarm"])
     if r["loss_table"]:
         out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:

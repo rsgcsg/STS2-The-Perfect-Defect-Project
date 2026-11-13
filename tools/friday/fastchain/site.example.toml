@@ -6,7 +6,7 @@ schema = "spireagent/friday-fastchain-site-1"
 
 [site]
 work_root = "/scratch/USER/fastchain"            # runs are written to work_root/run-<tag>
-src_dir = "/scratch/USER/fastchain/src"          # git-archive copy of the build; REV inside names it
+src_dir = "/scratch/USER/fastchain/src"          # clean git checkout of the build (producer_identity = checkout)
 python = "/scratch/USER/releases/RELEASE/env-gpu/bin/python"
 module_load = "python/3.11.5-gcccore-13.2.0"     # gives libbz2 for inductor (F6)
 lib_path = "/scratch/USER/lib"
@@ -34,8 +34,13 @@ prep_partition = "PREP-PARTITION"
 excluded_prep_hosts = []                         # e.g. a host whose scratch is too small
 prep_scratch = { r640 = "/tmp", fc430 = "/dev/shm" }   # scratch per prep host type
 run_name = "fastchain-run"
-# Max job minutes per partition (sinfo -o "%P %l"); omit a partition that has no limit.
-partition_max_minutes = { "PREP-PARTITION" = 60 }
+# Max job minutes of EVERY partition used above (sinfo -o "%P %l"); 0 = no limit. A used
+# partition missing here is refused (an unknown limit). A long run needs prep and env on
+# partitions without a 60 min limit.
+partition_max_minutes = { "PREP-PARTITION" = 0, "CPU-PARTITION" = 0, "GPU-PARTITION" = 0 }
+# sgd_compile.warmup (<= 8 offline-step dumps), chosen by
+#   python -m stpd.rl.offline_step warmup-cover --bucket-rows <prepared_bucket_rows> DUMPS...
+compile_warmup_dumps = ["/PATH/TO/dumps/step-000123.pt"]
 
 [site.gpu_types."A100-40"]
 gres = "a100"

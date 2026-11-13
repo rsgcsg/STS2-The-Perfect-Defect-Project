@@ -20,7 +20,7 @@ def load_fastchain():
     """The launcher's modules import each other by plain name (as launch.py does from its
     own directory). Load them as one set, then take the plain names back out of
     sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
-    names = ('run_profile', 'layout', 'preflight', 'launch', 'readout')
+    names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout')
     saved_path = list(sys.path)
     saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
     sys.path.insert(0, str(FASTCHAIN))
@@ -34,7 +34,7 @@ def load_fastchain():
     return loaded
 
 
-run_profile, layout, preflight, launch, readout = load_fastchain()
+run_profile, learner_config, layout, preflight, launch, readout = load_fastchain()
 
 
 def probe_row(node='gpu-a', gpus=3, free=3, cores=128, mem_g=500):
@@ -49,17 +49,33 @@ def knobs(**changes):
 
 
 def plan_for(cards=3, layout_spec=None, smoke=False, probe=None, env_cores=None,
-             probe_only=True, **changes):
+             probe_only=True, long_run=False, **changes):
     return launch.build_plan('t1', knobs(**changes), run_profile.load_site(SITE), cards=cards,
                              card_type='A100-40', layout_spec=layout_spec, env_cores=env_cores,
                              smoke=smoke, probe_rows=probe or [probe_row()],
-                             probe_only=probe_only)
+                             probe_only=probe_only, long_run=long_run)
+
+
+FROZEN = json.loads((Path(__file__).resolve().parents[1] / 'configs/rl5.json').read_text())
+
+
+def gate_base():
+    """A gate learner-base.json as the cluster has it: the frozen recipe, levers off."""
+    base = copy.deepcopy(FROZEN)
+    for key in ('prepared_compile', 'prepared_kernels', 'prepared_bucket_rows'):
+        base['performance'].pop(key)
+    base.update({'max_versions': 100000, 'peer': {'kind': 'archive'}})
+    base['segments']['warmup_artifact_id'] = 'f' * 64
+    return base
 
 
 def good_facts(plan):
     k = plan['knobs']
     return {'src_rev': f'int {k["env_pkg_build"]}',
-            'src_features': {name: True for name in launch.FEATURES}, 'src_checkout': False,
+            'src_features': {name: True for name in launch.FEATURES},
+            'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
+            'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
+            'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'prep_test_start_seconds': 0.0,
             'env_candidate_sha256': k['env_candidate_artifact_sha256'] + '0' * 48,
@@ -237,7 +253,16 @@ def test_preflight_passes_a_consistent_plan():
         name: name != 'adopt_unsharded' for name in launch.FEATURES}}, 'source_features'),
     ({'env_candidate_artifact_sha256': ''}, {}, 'env_package'),
     ({'env_candidate_artifact_sha256': 'b77f5139'}, {}, 'env_package'),
-    ({'producer_identity': 'checkout'}, {}, 'producer_identity'),
+    ({}, {'src_checkout': {'git': False}}, 'producer_identity'),
+    ({}, {'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': True}}, 'producer_identity'),
+    ({'max_versions': 100000}, {}, 'frozen_recipe'),
+    ({}, {'gate_learner_base': None}, 'frozen_recipe'),
+    ({}, {'frozen_recipe': {
+        **FROZEN, 'lr': 0.0002}}, 'frozen_recipe'),
+    ({}, {'compile_warmup_dumps': {'/x/missing.pt': False}}, 'compile_warmup'),
+    ({}, {'compile_warmup_dumps': {}}, 'compile_warmup'),
+    ({}, {'src_features': {name: name != 'gc_freeze' for name in launch.FEATURES}},
+     'source_features'),
     ({'remote_prepare_connections': 35}, {}, 'shards'),
     ({}, {'prep_test_start_seconds': None}, 'prep_schedulable'),
     ({}, {'prep_test_start_seconds': 99_999.0}, 'prep_schedulable'),
@@ -299,15 +324,17 @@ def test_zero_or_too_few_env_nodes_refuse():
 
 
 def test_placeholder_producer_needs_smoke_or_probe_only():
-    plan = plan_for(cards=3, wall_seconds=2400, probe_only=False)
+    fake = {'producer_identity': 'placeholder'}
+    plan = plan_for(cards=3, wall_seconds=2400, probe_only=False, **fake)
     assert plan['checkpoints_void'] and not plan['probe_only']
     assert not preflight.check_producer(plan, good_facts(plan)).ok
-    assert preflight.check_producer(plan_for(cards=3, smoke=True, probe_only=False),
+    assert preflight.check_producer(plan_for(cards=3, smoke=True, probe_only=False, **fake),
                                     good_facts(plan)).ok
-    assert preflight.check_producer(plan_for(cards=3, probe_only=True), good_facts(plan)).ok
-    real = plan_for(cards=3, producer_identity='checkout', probe_only=False)
-    assert not real['checkpoints_void']
-    assert preflight.check_producer(real, {**good_facts(real), 'src_checkout': True}).ok
+    assert preflight.check_producer(plan_for(cards=3, probe_only=True, **fake),
+                                    good_facts(plan)).ok
+    real = plan_for(cards=3, probe_only=False)  # the profile default: checkout
+    assert not real['checkpoints_void'] and real['producer_identity'] == 'checkout'
+    assert preflight.check_producer(real, good_facts(real)).ok
 
 
 def test_table_knobs_and_nan_are_validated():
@@ -367,10 +394,21 @@ def test_prep_min_free_bytes_and_new_switches_reach_the_jobs():
 
 def test_time_limits_refuse_a_prep_job_longer_than_its_partition_allows():
     plan = plan_for(cards=3)
-    assert plan['partition_max_minutes'] == {'gpu': None, 'env': None, 'prep': 60}
-    assert not preflight.check_time_limits(plan).ok  # 50 min wall + margins > 60
-    short = plan_for(cards=3, wall_seconds=2400)
-    assert preflight.check_time_limits(short).ok
+    assert plan['partition_max_minutes'] == {'gpu': 0, 'env': 0, 'prep': 0}
+    assert preflight.check_time_limits(plan).ok
+    capped = copy.deepcopy(plan)
+    capped['partition_max_minutes']['prep'] = 60
+    assert not preflight.check_time_limits(capped).ok  # 50 min wall + margins > 60
+    unknown = copy.deepcopy(plan)
+    unknown['partition_max_minutes']['env'] = None
+    assert 'no entry' in preflight.check_time_limits(unknown).detail
+    long = plan_for(cards=2, long_run=True)
+    assert long['wall_seconds'] == 72000 and long['gpu_minutes'] > 1200
+    assert preflight.check_time_limits(long).ok
+    long['partition_max_minutes']['gpu'] = 48 * 60
+    assert preflight.check_time_limits(long).ok  # 20 h fits a 48 h partition
+    nojoin = plan_for(cards=2, env_min_join_seconds=3000)
+    assert 'join window' in preflight.check_time_limits(nojoin).detail
 
 
 def test_memory_budget_does_not_count_idle_local_pools():
@@ -471,3 +509,37 @@ def test_readout_single_card_has_no_loss_table(tmp_path):
     assert result['loss_table'] is None
     assert result['target']['target_rows_h'] == 14_000_000
     assert 'perfect_packing_rows_h' not in plan['target']  # shared card: not an upper bound
+
+
+def test_readout_alarms_on_recompiles_after_warmup_and_sums_gc():
+    events = [{'kind': 'sgd_process_started', 'compile': {'warmup': ['a.pt', 'b.pt']}},
+              {'kind': 'progress', 'stepped': True, 't': 10.0,
+               'rows_forward': {'dynamo_unique_graphs': 6}, 'step': {'gc_seconds': 0.5}},
+              {'kind': 'progress', 'stepped': True, 't': 70.0,
+               'rows_forward': {'dynamo_unique_graphs': 6}, 'step': {'gc_seconds': 0.25}}]
+    calm = readout.compile_edge(events)
+    assert calm['warmup_dumps'] == 2 and calm['graphs_after_warmup'] == 6
+    assert calm['alarm'] is None and calm['gc_seconds'] == 0.75
+    events.append({'kind': 'progress', 'stepped': True, 't': 130.0,
+                   'rows_forward': {'dynamo_unique_graphs': 7}})
+    assert 'rose 6 -> 7' in readout.compile_edge(events)['alarm']
+    assert readout.compile_edge([])['gc_seconds'] is None
+
+
+def test_learner_config_matches_the_frozen_recipe_except_allowed_levers():
+    knobs = run_profile.values(run_profile.load_profile(PROFILE))
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    built = learner_config.build(gate_base(), knobs, run)
+    assert 'archive' not in json.dumps(built['peer']) and built['max_versions'] == 900000
+    assert learner_config.recipe_drift(built, FROZEN) == []
+    assert learner_config.recipe_drift({**built, 'max_versions': 100000}, FROZEN) == [
+        'max_versions: frozen 900000, effective 100000']
+    resumed = learner_config.build(gate_base(), knobs, {**run, 'resume_checkpoint': 'cp-1'})
+    assert resumed['resume_checkpoint'] == 'cp-1'
+
+
+def test_long_run_and_smoke_are_exclusive():
+    with pytest.raises(SystemExit):
+        plan_for(cards=2, smoke=True, long_run=True)

@@ -8,7 +8,8 @@
 Options: --layout L (default: the profile's default layout for N cards; "shared",
 "1i+1t", "1i+2t" or an explicit per-card list, see layout.py), --env-cores C (cap on
 environment cores), --set knob=value (repeatable, recorded as an override), --smoke
-(5 min, the smallest balanced env), --probe-only (allow the placeholder producer
+(5 min, the smallest balanced env), --long-run (wall = long_wall_seconds, 20 h in
+one GPU job), --probe-only (allow the placeholder producer
 identity outside --smoke: CPs void, recorded in plan.json), --fallback (fewer cards
 with their default layouts when N do not fit), --probe-json F (a recorded sinfo probe
 instead of sinfo).
@@ -44,6 +45,7 @@ import preflight  # noqa: E402
 import run_profile  # noqa: E402
 
 HARNESS = ("roles.py", "preflight.py", "run_profile.py", "layout.py", "readout.py",
+           "learner_config.py",
            "gpu.sh", "env.sh", "prep.sh", "env_driver.mjs", "env_aggregator.py",
            "env_admission.py", "proc_cpu.py", "proc_sampler.py", "native_nice.sh",
            "elu_preload.mjs")
@@ -97,7 +99,7 @@ def split_slow(env_nodes: int, slow_opt_in: int) -> tuple[int, int]:
 def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, cards: int,
                card_type: str, layout_spec: str | None, env_cores: int | None, smoke: bool,
                probe_rows: list[dict[str, Any]], fallback: bool = False,
-               probe_only: bool = False) -> dict[str, Any]:
+               probe_only: bool = False, long_run: bool = False) -> dict[str, Any]:
     if card_type not in site["gpu_types"]:
         raise SystemExit(f"card type {card_type} not in the site profile")
     gpu = site["gpu_types"][card_type]
@@ -137,7 +139,10 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
     if smoke:  # the smallest env that still spreads evenly over the services
         step_nodes = knobs["services"] // math.gcd(knobs["env_aggregators"], knobs["services"])
     fast, slow = split_slow(step_nodes, 0 if smoke else knobs["env_slow_type_nodes"])
-    wall = knobs["smoke_wall_seconds"] if smoke else knobs["wall_seconds"]
+    if smoke and long_run:
+        raise SystemExit("--smoke and --long-run exclude each other")
+    wall = (knobs["smoke_wall_seconds"] if smoke else
+            knobs["long_wall_seconds"] if long_run else knobs["wall_seconds"])
     limit = mem * preflight.GIB
     target = layouts.target(count, knobs["targets_rows_h"], knobs["ready_rows_h"])
     cap_rows = knobs["card_capacity_rows_h"].get(card_type)
@@ -152,7 +157,7 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "run": str(Path(site["work_root"]) / f"run-{runtag}"),
         "requested": {"cards": cards, "card_type": card_type, "layout": layout_spec,
                       "env_cores": env_cores, "fallback": fallback},
-        "why": tried, "smoke": smoke, "wall_seconds": wall,
+        "why": tried, "smoke": smoke, "long_run": long_run, "wall_seconds": wall,
         "producer_identity": knobs["producer_identity"], "probe_only": probe_only,
         "checkpoints_void": knobs["producer_identity"] == "placeholder",
         "placement": place.as_dict(), "layout_spec": spec, "name": place.name,
@@ -268,9 +273,16 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     site = plan["site"]
     facts: dict[str, Any] = {}
     src = Path(site["src_dir"])
-    facts["src_rev"] = (src / "REV").read_text().strip() if (src / "REV").exists() else None
+    facts["src_checkout"] = checkout_facts(src)
+    facts["src_rev"] = ((src / "REV").read_text().strip() if (src / "REV").exists()
+                        else facts["src_checkout"].get("head"))
     facts["src_features"] = source_features(src)
-    facts["src_checkout"] = (src / ".git").exists()
+    frozen = src / plan["knobs"]["frozen_learner_config"]
+    facts["frozen_recipe"] = json.loads(frozen.read_text()) if frozen.exists() else None
+    gate = Path(site["gate_dir"]) / "learner-base.json"
+    facts["gate_learner_base"] = json.loads(gate.read_text()) if gate.exists() else None
+    facts["compile_warmup_dumps"] = {path: os.path.isfile(path)
+                                     for path in site["compile_warmup_dumps"]}
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL
@@ -292,7 +304,23 @@ FEATURES = {
                         "shards_adopt_unsharded_checkpoint"),
     "stage_options": ("python/stpd/rl/sgd_process.py", "sgd_stage_stream_reuse"),  # #525
     "residual": ("python/stpd/p1/rows_forward.py", "def residual_stream"),  # #526
+    "gc_freeze": ("python/stpd/rl/sgd_process.py", '"sgd_gc_freeze"'),  # #525 b40d31db
+    "step_probe": ("python/stpd/rl/sgd_process.py", '"sgd_step_probe"'),  # #525
+    "compile_warmup": ("python/stpd/rl/sgd_process.py", '"warmup"'),  # WP8 sgd_compile
 }
+
+
+def checkout_facts(src: Path) -> dict[str, Any]:
+    """Is src_dir a clean git checkout (what source_identity needs), and at which commit."""
+    if not (src / ".git").exists():
+        return {"git": False}
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(src), *args], capture_output=True,
+                              text=True).stdout.strip()
+
+    return {"git": True, "head": git("rev-parse", "HEAD"),
+            "dirty": bool(git("status", "--porcelain"))}
 
 
 def source_features(src: Path) -> dict[str, bool]:
@@ -416,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set", action="append", default=[], dest="overrides")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--fallback", action="store_true")
+    parser.add_argument("--long-run", action="store_true",
+                        help="wall = long_wall_seconds (20 h, one GPU job)")
     parser.add_argument("--probe-only", action="store_true",
                         help="allow producer_identity=placeholder outside --smoke (CPs void)")
     parser.add_argument("--probe-json", type=Path)
@@ -436,7 +466,8 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_plan(args.runtag, knobs, site, cards=args.cards,
                           card_type=args.card_type, layout_spec=args.layout,
                           env_cores=args.env_cores, smoke=args.smoke, probe_rows=rows,
-                          fallback=args.fallback, probe_only=args.probe_only)
+                          fallback=args.fallback, probe_only=args.probe_only,
+                          long_run=args.long_run)
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2

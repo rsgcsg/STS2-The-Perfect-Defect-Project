@@ -37,9 +37,22 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--scratch-min-free-bytes`、#525 暂存选项、#526 `residual`；源码没有就拒绝，旧源码只能
   用 `--set` 退回 2/2 等旧值）、只计实际运行部分的内存预算、跨节点身份、热路径不在共享盘
   （作业侧文件系统必须在本地白名单内，未知类型拒绝）、核数上限。
-- 生产者身份：`producer_identity = "placeholder"` 时 CP 带占位身份，一律作废，只作探测；
-  预检只在 `--smoke` 或显式 `--probe-only` 下放行，`plan.json` 记 `checkpoints_void`。
-  要产出有效 CP 须改用 `checkout`（源码目录为干净 git checkout）。
+- 生产者身份：默认 `producer_identity = "checkout"`，站点 `src_dir` 须是干净 git checkout
+  （不是 checkout 或有改动就拒绝），CP 带真实源码身份。`placeholder` 时 CP 带占位身份，一律
+  作废，只作探测；预检只在 `--smoke` 或显式 `--probe-only` 下放行，`plan.json` 记
+  `checkpoints_void`。
+- 长跑：`--long-run` 用 `long_wall_seconds`（20 h = 72000 s，一个 GPU 作业、无后继）；
+  与 `--smoke` 互斥。分区时限表 `partition_max_minutes` 必须列出用到的每个分区（0 = 不限，
+  漏写即拒绝）；每个作业须 ≥ 运行时长 + 余量，env 节点可加入的窗口（时长 − 排空 − 最短加入）
+  须 > 0。长跑的备料放在不限时分区（不放 60 分钟的 debug）。
+- 冻结参数核对（A9）：`learner_config.build` 是 roles.py 与预检共用的同一函数；预检用闸门
+  `learner-base.json` 算出生效学习者配置，与源码里的 `frozen_learner_config`（`rl5.json`）逐键
+  比较，除 `ALLOWED_DRIFT`（设备、提速开关、诊断频率、预热件、内存预算）外有差异即拒绝；
+  `max_versions` 由运行配置给（900000，同冻结值）。
+- 编译预热：`compile_warmup = true` 时 `sgd_compile.warmup` 取站点 `compile_warmup_dumps`
+  （1–8 个 dump，由 `python -m stpd.rl.offline_step warmup-cover` 选，文件须存在），另有
+  `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
+  首值时报警，探针开时报 gc 秒数。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交备料、等全部就绪才交 GPU，再交 env 数组。中途任一提交失败、备料拒绝
   或 Ctrl-C，已交的作业全部取消再报错（`submit-failed.txt`），不自动重试。
@@ -50,7 +63,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   hp_rows`），目标只用这个口径判；td-only 并列显示；缺 aux 字段时显示未知、不判。
   分卡布局附损失表骨架（完美装箱理想值、实测、按原因一行）；1卡共用时 MPS 重叠，完美装箱
   不是上界，不算。
-- 尚未包含：自动续跑、5% 段保留与磁盘水位、每小时读数排程、每 2 h 评估排程（`fast_eval.py`）。
+- 尚未包含：自动续跑、段删除开关与磁盘水位、每小时读数排程、每 2 h 评估排程（`fast_eval.py`）。
 
 ## 以下为旧部署操作史
 

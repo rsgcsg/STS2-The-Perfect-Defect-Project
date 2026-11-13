@@ -190,6 +190,12 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "diagnostics_every": _int(1),
     "shards_adopt_unsharded_checkpoint": _bool,
     "producer_identity": _choice("checkout", "placeholder"),
+    "max_versions": _int(1),
+    "frozen_learner_config": _str,
+    "compile_warmup": _bool,
+    "compile_recompile_limit": _int(8, 64),
+    "sgd_gc_freeze": _bool,
+    "sgd_step_probe": _bool,
     # remote prepare
     "remote_prepare": _bool,
     "remote_prepare_connections": _int(1, 1024),
@@ -223,6 +229,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "core_cap": _per_cards(_int(1)),
     "wall_seconds": _int(60),
     "smoke_wall_seconds": _int(60),
+    "long_wall_seconds": _int(60, 72000),
     # environment nodes
     "env_node_cores": _int(1, 512),
     "env_node_mem_g": _int(1),
@@ -275,7 +282,8 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "env_partition": _str, "prep_partition": _str, "excluded_prep_hosts": _strs,
     "prep_scratch": _table_of(_str, what="paths"), "run_name": _str,
     "gpu_types": _table_of(_table_of(lambda v: None), what="gpu types"),
-    "partition_max_minutes": _table_of(_int(1), what="minutes (int)"),
+    "partition_max_minutes": _table_of(_int(0), what="minutes (int, 0 = no limit)"),
+    "compile_warmup_dumps": _strs,
 }
 GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list}
 

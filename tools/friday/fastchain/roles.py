@@ -30,6 +30,9 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import learner_config  # noqa: E402
+
 MODE, RUN = sys.argv[1], Path(sys.argv[2])
 STOP = RUN / "STOP"
 K = {name: knob["value"] for name, knob in
@@ -101,36 +104,15 @@ def learner() -> None:
                                          "checkpoints_void": K["producer_identity"]
                                          == "placeholder"})
     gate = Path(site("gate_dir"))
-    base = json.loads((gate / "learner-base.json").read_bytes())
-    base.pop("peer")  # never carry the gate's archive subtree
-    base.update({"run": site("run_name"), "deadline_at": None, "operating_budget": None,
-                 "operating_budget_parent": None, "resume_checkpoint": None,
-                 "peer": {"kind": "local", "directory": site("peer_dir")},
-                 "start_package": site("start_package"), "start_artifact_id": None,
-                 "start_model_sha256": None, "wall_seconds": float(os.environ["FC_WALL"]),
-                 "device": os.environ["FC_LEARNER_DEVICE"]})
-    # h100i: the offline 1,866-1,934 wan/h step ran with compile, cross+embed+heads+nodes
-    # and one bucket per group; the gate base had them off.
-    if K["levers"]:
-        base["performance"].update({
-            "prepared_compile": True, "prepared_kernels": K["prepared_kernels"],
-            "prepared_bucket_rows": K["prepared_bucket_rows"]})
+    base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
+        "run_name": site("run_name"), "peer_dir": site("peer_dir"),
+        "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
+        "device": os.environ["FC_LEARNER_DEVICE"], "generation": os.environ["FC_GENERATION"],
+        "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
+        "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
+        # A resumed generation (supervisor): the newest valid CP of the previous one.
+        "resume_checkpoint": os.environ.get("FC_RESUME_CHECKPOINT") or None})
     ranks = int(os.environ["FC_RANKS"])
-    base["threads"] = K["sgd_threads_per_rank"] if ranks > 1 else K["sgd_threads_single"]
-    segments = base["segments"]
-    segments.update({"training_generation": os.environ["FC_GENERATION"],
-                     "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
-                     "rendezvous_path": str(RUN / "inference.json"),
-                     "archive_min_free_bytes": 0, "archive_min_free_inodes": 0,
-                     "capacity_rows": K["capacity_rows"], "capacity_limit_rows": K["capacity_rows"],
-                     "prepared_bytes": int(K["prepared_gib"] * 1024**3),
-                     # s1d: the gate pins the compiler digest of the code it was built
-                     # with; this run's code has its own, which the
-                     # services and aggregators use too: let the learner derive it.
-                     "input_compiler_identity": None,
-                     "diagnostics_every": K["diagnostics_every"],
-                     **({"checkpoint_seconds": float(K["checkpoint_seconds"])}
-                        if K["checkpoint_seconds"] else {})})
     work = RUN / "learner"
     work.mkdir(parents=True)
     (work / "learner.json").write_text(json.dumps(base))
@@ -175,6 +157,16 @@ def learner() -> None:
         dataplane["sgd_verify_threads"] = K["sgd_verify_threads"]
     if K["sgd_switch_interval_seconds"]:
         dataplane["sgd_switch_interval_seconds"] = float(K["sgd_switch_interval_seconds"])
+    # Compile warm-up (#526 warmup-cover picks the dumps; preflight checked they exist):
+    # every graph the run will need compiles before the first online step.
+    if K["levers"] and K["compile_warmup"]:
+        dataplane["sgd_compile"] = {
+            "warmup": json.loads(site("compile_warmup_dumps")),
+            "recompile_limit": K["compile_recompile_limit"]}
+    if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
+        dataplane["sgd_gc_freeze"] = True
+    if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
+        dataplane["sgd_step_probe"] = True
     if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only
         dataplane["shards_adopt_unsharded_checkpoint"] = True
     if ranks > 1:
@@ -216,7 +208,8 @@ def learner() -> None:
                "fast_batched_apply", "source_bytes", "ahead_while_waiting",
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
-               "shards_adopt_unsharded_checkpoint")},
+               "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
+               "sgd_step_probe")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import learner_config  # noqa: E402
 import run_profile  # noqa: E402
 
 GIB = 1024**3
@@ -221,6 +222,12 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["stage_options"] = "sgd staging options (#525)"
     if k["levers"] and "residual" in k["prepared_kernels"].split("+"):
         need["residual"] = "prepared_kernels residual lever (#526)"
+    if k["sgd_gc_freeze"]:
+        need["gc_freeze"] = "sgd_gc_freeze (#525 b40d31db)"
+    if k["sgd_step_probe"]:
+        need["step_probe"] = "sgd_step_probe (#525)"
+    if k["levers"] and k["compile_warmup"]:
+        need["compile_warmup"] = "sgd_compile.warmup (WP8)"
     return need
 
 
@@ -236,9 +243,14 @@ def check_features(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
 def check_producer(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     mode = plan["knobs"]["producer_identity"]
     if mode == "checkout":
-        ok = bool(facts.get("src_checkout"))
-        return Result("producer_identity", ok, "real source identity" if ok else
-                      "producer_identity=checkout needs src_dir to be a git checkout")
+        co = facts.get("src_checkout") or {}
+        if not co.get("git"):
+            return Result("producer_identity", False, "producer_identity=checkout needs "
+                          "src_dir to be a git checkout (source_identity reads HEAD)")
+        if co.get("dirty"):
+            return Result("producer_identity", False, f"src_dir checkout {co['head'][:12]} "
+                          "is dirty (source_identity requires a clean checkout)")
+        return Result("producer_identity", True, f"real source identity {co['head'][:12]}")
     ok = plan["smoke"] or plan.get("probe_only", False)
     return Result("producer_identity", ok,
                   "placeholder producer: CPs void (" +
@@ -246,6 +258,40 @@ def check_producer(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   "placeholder producer identity outside --smoke: its CPs would look valid "
                   "but carry a fake producer; use producer_identity=checkout, or pass "
                   "--probe-only for a measurement run whose CPs are void")
+
+
+def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """A9: the learner config this run will write equals the frozen long-run parameters,
+    except the operational/speed keys in learner_config.ALLOWED_DRIFT."""
+    frozen, base = facts.get("frozen_recipe"), facts.get("gate_learner_base")
+    if frozen is None or base is None:
+        missing = [name for name, value in (
+            ("frozen config " + plan["knobs"]["frozen_learner_config"], frozen),
+            ("gate learner-base.json", base)) if value is None]
+        return Result("frozen_recipe", False, "missing " + " and ".join(missing))
+    effective = learner_config.build(base, plan["knobs"], {
+        "run_name": "preflight", "peer_dir": "-", "start_package": "-",
+        "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
+        "generation": "-", "warmup_artifact_id": base["segments"].get("warmup_artifact_id"),
+        "rendezvous_path": "-", "ranks": plan["placement"]["ranks"],
+        "resume_checkpoint": None})
+    drift = learner_config.recipe_drift(effective, frozen)
+    return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
+                  + "; ".join(drift)) if drift else
+                  f"effective learner config = {plan['knobs']['frozen_learner_config']} "
+                  f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})")
+
+
+def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    k = plan["knobs"]
+    if not (k["levers"] and k["compile_warmup"]):
+        return Result("compile_warmup", True, "off (graphs compile on first online use)")
+    dumps = facts.get("compile_warmup_dumps") or {}
+    missing = [Path(p).name for p, ok in dumps.items() if not ok]
+    ok = 1 <= len(dumps) <= 8 and not missing
+    return Result("compile_warmup", ok, f"{len(dumps)} warm-up dumps" if ok else
+                  f"sgd_compile.warmup needs 1-8 existing dumps (site compile_warmup_dumps; "
+                  f"{len(dumps)} listed, missing {missing})")
 
 
 def memory_estimate(plan: dict[str, Any]) -> dict[str, Any]:
@@ -333,14 +379,27 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
     Found by the first dry run: the prep partition caps jobs at 1 h, so a 50 min wall
     plus start margins was refused by Slurm itself (and a long run cannot use it)."""
     limits = plan["partition_max_minutes"]
+    k = plan["knobs"]
     problems, shown = [], []
     for role in ("gpu", "env", "prep"):
         if role == "prep" and not plan["prep_hosts"]:
             continue
         need, cap = plan[f"{role}_minutes"], limits.get(role)
-        shown.append(f"{role} {need} min (limit {cap if cap is not None else 'none'})")
-        if cap is not None and need > cap:
+        shown.append(f"{role} {need} min (limit {cap or 'none'})")
+        if cap is None:
+            problems.append(f"{role} partition has no entry in partition_max_minutes "
+                            "(unknown limit; 0 = no limit)")
+        elif cap and need > cap:
             problems.append(f"{role} job needs {need} min > partition limit {cap} min")
+    # Elastic join: an env node may start any time before the drain minus the minimum
+    # join time; that window must exist, and the env job must outlive the GPU wall.
+    window = plan["wall_seconds"] - k["env_drain_seconds"] - k["env_min_join_seconds"]
+    if not plan["smoke"] and window <= 0:
+        problems.append(f"no env join window: wall {plan['wall_seconds']} s - drain "
+                        f"{k['env_drain_seconds']} s - min join {k['env_min_join_seconds']} s")
+    if plan["env_minutes"] * 60 < plan["wall_seconds"] + k["env_wait_seconds"]:
+        problems.append("env job shorter than the GPU wall plus the env wait")
+    shown.append(f"env nodes may join for {max(window, 0) // 60} min")
     if problems:
         problems.append("shorten wall_seconds (--set) or use a partition without that limit")
     return Result("time_limits", not problems, "; ".join(problems or shown))
@@ -357,6 +416,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_node(plan), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
+            check_frozen_recipe(plan, facts), check_compile_warmup(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan)]
