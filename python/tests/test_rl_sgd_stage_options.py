@@ -196,3 +196,30 @@ def test_a_changed_byte_fails_loudly_before_any_update_with_split_verify(tmp_pat
 def test_stage_batch_and_pinned_slabs_accept_a_fixed_stream_on_cpu():
     batch = bp.unpack_transport(bp.pack_transport({"x": torch.arange(4)}))
     assert bp.stage_batch(batch, torch.device("cpu"), stream=None, lean=True) == (batch, 0)
+
+
+def test_prestart_with_every_stage_option_still_equals_lockstep(tmp_path, monkeypatch):
+    """Single rank: the options change only staging, so prestart stays bitwise equal
+    to lockstep, including a mid-run CP."""
+    from test_rl_sgd_prestart import assert_same, run
+
+    lockstep = run(tmp_path / "lockstep", monkeypatch, prestart=False, dataplane=FAST,
+                   checkpoint_at=2)
+    prestart = run(tmp_path / "prestart", monkeypatch, prestart=True, dataplane=FAST,
+                   checkpoint_at=2)
+    assert prestart["prestarted"] >= 1 and lockstep["prestarted"] == 0
+    assert lockstep["captured"] == prestart["captured"]
+    assert_same(lockstep, prestart)
+    assert prestart["owner"].sgd.exit["exitcode"] == 0
+
+
+def test_prestart_two_ranks_with_every_stage_option_match_lockstep(tmp_path, monkeypatch):
+    from test_rl_sgd_prestart import assert_same, run
+
+    lockstep = run(tmp_path / "lockstep", monkeypatch, prestart=False,
+                   dataplane={**PARALLEL, **FAST})
+    prestart = run(tmp_path / "prestart", monkeypatch, prestart=True,
+                   dataplane={**PARALLEL, **FAST})
+    assert prestart["prestarted"] >= 1
+    assert_same(lockstep, prestart, exact=False)
+    assert prestart["owner"].sgd.exit["exitcode"] == 0
