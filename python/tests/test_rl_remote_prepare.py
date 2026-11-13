@@ -468,3 +468,47 @@ def test_a_reader_failure_stops_the_live_client_before_failing_its_tasks(monkeyp
     finally:
         monkeypatch.undo()
         client.close()
+
+
+def test_a_full_scratch_is_refused_at_start_and_named_instead_of_a_dead_pool(
+        tmp_path, monkeypatch):
+    import shutil
+    import types
+
+    usage = types.SimpleNamespace(free=10 * 1024**2)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: usage)
+    monkeypatch.setenv(remote_prepare.AUTH_ENV, "ab" * 32)
+    # Start: less free scratch than the configured in-flight budget -> never listens.
+    with pytest.raises(SystemExit, match="remote_prepare_scratch_full"):
+        remote_prepare.serve(["--scratch", str(tmp_path / "s"), "--decode-workers", "1",
+                              "--assembly-workers", "1", "--scratch-min-free-bytes",
+                              str(64 * 1024**2), "--ready-file", str(tmp_path / "ready")])
+    assert not (tmp_path / "ready").exists()
+    # A task whose output cannot fit is refused by name before any worker maps it.
+    state = remote_prepare._Host(tmp_path / "host", 1, 1, 1024**3)
+    state.scratch.mkdir()
+    state.assembly = object()  # never reached
+    request = types.SimpleNamespace(max_output_bytes=11 * 1024**2)
+    with pytest.raises(remote_prepare.ScratchFull, match="remote_prepare_scratch_full: free"):
+        state.run((), (request, None, None, None, None))
+    assert list(state.scratch.iterdir()) == []
+    usage.free = 1024**3
+    assert state.scratch_full(11 * 1024**2) is None
+    # A failed task is labelled scratch-full only for an ENOSPC-class error or a
+    # dead pool with less free space than the task needs, never for any dead
+    # worker while the free space is under the reserve.
+    import errno
+    from concurrent.futures.process import BrokenProcessPool
+
+    label = remote_prepare._scratch_label
+    state.scratch_reserve = 64 * 1024**2
+    usage.free = 32 * 1024**2  # under the reserve, above what the task needs
+    assert label(state, BrokenProcessPool("killed"), 11 * 1024**2) is None
+    assert label(state, BrokenProcessPool("killed"), 0) is None
+    assert label(state, RuntimeError("other"), 11 * 1024**2) is None
+    assert label(state, OSError(errno.ENOSPC, "full"), 0).startswith(
+        "remote_prepare_scratch_full: free_bytes=33554432 errno=ENOSPC")
+    usage.free = 10 * 1024**2  # less than the task needs
+    assert "needed_bytes=11534336" in label(state, BrokenProcessPool("killed"), 11 * 1024**2)
+    refused = remote_prepare.ScratchFull("remote_prepare_scratch_full: x")
+    assert label(state, refused, 0) == "remote_prepare_scratch_full: x"
