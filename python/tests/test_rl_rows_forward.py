@@ -392,7 +392,7 @@ def test_concatenated_subgroups_equal_one_prepared_group_bitwise(model, varied, 
 
 
 def test_concatenated_deduplicated_subgroups_score_like_their_parts(model, varied):
-    """rl-inference-3 parts (`rows_scorer.prepare`, deduplicated per part): one merged
+    """rl-inference-4 parts (`rows_scorer.prepare`, deduplicated per part): one merged
     forward gives each part's own outputs bit for bit (CPU fp32 eager)."""
     from stpd.rl.batch_preparation import concatenate_groups, prepare_group
 

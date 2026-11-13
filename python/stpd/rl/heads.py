@@ -1,8 +1,17 @@
 """RL4 public-scene outcome and absolute post-combat HP readouts.
 
 The two heads read the shared scene, never each other's predictions. Reward
-values describe the selected standard A0 configuration; observed terminal reward
-must match before a class label is admitted. Missing Boss witnesses are not filled.
+values describe the standard configuration of one ascension; observed terminal
+reward must match before a class label is admitted. Missing Boss witnesses are
+not filled.
+
+Ascension (2026-11-13, owner: every level enters the fast chain): the 51 classes
+and the head are the same for every level (the model sees the public ascension in
+its input); only the reward each class stands for depends on the level. A0-A9
+share the A0 table (48 floors, 3 Bosses: reward v2.1); A10 has 49 floors and 4
+Bosses, so its table divides by 49, and an A10 natural loss on floor 49 or later
+(the second Boss of the last act) has no class here: it is refused
+(`terminal_a10_floor49_loss_unsupported`), never mapped onto class 48.
 """
 from __future__ import annotations
 
@@ -22,6 +31,16 @@ OUTCOME_CLASSES = 51
 CLASS_FLOORS = tuple(range(49)) + (49, 35)
 WIN_CLASS = 49
 HEAD_PREFIX = "rl4_heads."
+# Ascensions whose class rewards this module describes (the fast chain refuses others).
+SUPPORTED_ASCENSIONS = tuple(range(10))
+_BOSS_FLOORS = (17, 33, 48)
+
+
+def finish_floor(ascension: int) -> int:
+    """Reward v2.1 finish floor of a supported ascension; ValueError otherwise."""
+    if type(ascension) is not int or ascension not in SUPPORTED_ASCENSIONS:
+        raise ValueError("unsupported_ascension")
+    return 49 if ascension == 10 else 48
 
 
 class Rl4Heads(nn.Module):
@@ -79,26 +98,37 @@ def outcome_cross_entropy(logits: Tensor, targets: Tensor) -> Tensor:
     return -(target * logp).sum(-1)
 
 
-def class_reward_values(*, device: torch.device | None = None) -> Tensor:
-    """Selected A0 class representation, checked against actual reward at admission.
+def class_reward_values(*, ascension: int = 0,
+                        device: torch.device | None = None) -> Tensor:
+    """Class representation of one ascension, checked against actual reward at admission.
 
     A natural loss at a Boss floor has not cleared that Boss. A higher floor has
     passed it in this fixed native layout. This table is not evidence of clearance.
+    `ascension` defaults to 0 for the old chain, which opens A0 only; the fast
+    chain always passes the game's own (Host-checked) ascension.
     """
-    return torch.tensor([0.5 * (floor / 48) ** 2
-                         + 0.1 * sum(boss < floor for boss in (17, 33, 48))
-                         for floor in range(49)] + [1.0, 0.5 * (35 / 48) ** 2 + 0.1], device=device)
+    finish = finish_floor(ascension)
+    return torch.tensor([0.5 * (floor / finish) ** 2
+                         + 0.1 * sum(boss < floor for boss in _BOSS_FLOORS)
+                         for floor in range(49)] + [1.0, 0.5 * (35 / finish) ** 2 + 0.1],
+                        device=device)
 
 
-def checked_terminal_class(*, result: str, floor: int, reward: float) -> int:
+def checked_terminal_class(*, result: str, floor: int, reward: float,
+                           ascension: int = 0) -> int:
     if type(floor) is not int or floor < 0 or result not in {"win", "loss"}:
         raise ValueError("invalid_natural_terminal_class")
+    if result == "loss" and floor >= finish_floor(ascension) > 48:
+        # A10 floor-49 loss: its reward (floor term saturated, Boss3 possibly
+        # cleared) is not class 48's; refused loudly, never relabelled.
+        raise ValueError("terminal_a10_floor49_loss_unsupported")
     floor = min(floor, 48)
     candidates = [WIN_CLASS] if result == "win" else [
         index for index, value in enumerate(CLASS_FLOORS)
         if value == floor and index != WIN_CLASS]
+    values = class_reward_values(ascension=ascension)
     matched = [label for label in candidates if math.isfinite(reward)
-        and math.isclose(reward, float(class_reward_values()[label]), abs_tol=1e-6)]
+        and math.isclose(reward, float(values[label]), abs_tol=1e-6)]
     if len(matched) != 1:
         raise ValueError("terminal_class_reward_mismatch")
     return matched[0]
@@ -106,7 +136,8 @@ def checked_terminal_class(*, result: str, floor: int, reward: float) -> int:
 
 def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *,
                                terminal_class: int | None = None,
-                               gae_lambda: float = 0.99) -> tuple[Tensor, Tensor]:
+                               gae_lambda: float = 0.99,
+                               ascension: int = 0) -> tuple[Tensor, Tensor]:
     """Frozen gamma=1 segment targets and scalar advantages, without extra rho.
 
     probabilities contains only the T current states. A nonterminal segment also
@@ -138,5 +169,5 @@ def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *
     targets[-1] = tail
     for index in range(len(p) - 2, -1, -1):
         targets[index] = (1 - gae_lambda) * p[index + 1] + gae_lambda * targets[index + 1]
-    advantages = (targets - p) @ class_reward_values(device=p.device)
+    advantages = (targets - p) @ class_reward_values(ascension=ascension, device=p.device)
     return targets, advantages

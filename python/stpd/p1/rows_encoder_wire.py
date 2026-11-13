@@ -31,7 +31,7 @@ decode to int64; `numbers` and `text_number_values` are f4. Text is ragged:
 numbers whose float32 bits are nonzero are stored (`text_number_index` into the
 ragged stream). Padding to `text_width` is rebuilt as zeros, exactly as
 `compile_frame` pads. The sha256 of these bytes is the payload binding in
-`stpd/rl-inference-3` rows; encoding is deterministic.
+`stpd/rl-inference-4` rows; encoding is deterministic.
 
 Canonical form (what `encode_row` writes): every integer array uses the smallest
 of u1/u2/i4/i8 holding its values; the header is `json.dumps(sort_keys=True,

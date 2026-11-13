@@ -279,8 +279,8 @@ describe("fast-env contracts", () => {
     expect(() => parseSampling({ ...SAMPLING, classes: { ...SAMPLING.classes, combat: { temperature: 0.5, uniform_mix: 0 } } })).toThrow();
   });
 
-  it("binding matches every WP0 rl-inference-3 scenario (request_id = row_id)", async () => {
-    const scenarios = JSON.parse(readFileSync(new URL("../../../python/tests/fixtures/rl_inference_3/binding-scenarios.json", import.meta.url), "utf8"));
+  it("binding matches every WP0 rl-inference-4 scenario (request_id = row_id)", async () => {
+    const scenarios = JSON.parse(readFileSync(new URL("../../../python/tests/fixtures/rl_inference_4/binding-scenarios.json", import.meta.url), "utf8"));
     expect(new Set(scenarios.map((item: any) => item.verdict))).toEqual(new Set(["accept", "discard_late", "not_started"]));
     for (const item of scenarios) {
       const fromEnv = new PassThrough(), toEnv = new PassThrough();
@@ -327,7 +327,7 @@ describe("fast-env K-game process", () => {
       public_facts: { act: 1, floor: 4, hp: 0, max_hp: 75 } });
     const gid = opened.game_instance_id;
     expect(h.linkMessages[0]).toMatchObject({ type: "hello", env_process_id: "env-test", slots: 1 });
-    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", start: { kind: "new_run" }, sampling: SAMPLING });
+    expect(linkOf(h.linkMessages, "episode_open", gid)[0]).toMatchObject({ actor_id: "actor-7", ascension: 0, start: { kind: "new_run" }, sampling: SAMPLING });
     const decision = linkOf(h.linkMessages, "decision", gid)[0];
     expect(decision).toMatchObject({ row_id: 1, step_index: 0, catalog_len: 6, in_combat: true, floor: 1 });
     expect(decision.input.observation).toBeTypeOf("object");

@@ -11,7 +11,7 @@ export type BindingVerdict =
 
 /**
  * Environment-side check before a catalog position becomes a BoundAction
- * (rl-inference-3 binding rules, mirrored from the WP0 reference). Any failure =
+ * (rl-inference-4 binding rules, mirrored from the WP0 reference). Any failure =
  * no native action, the game is closed, never retried. Late replies for closed
  * rows never reach here (the link discards and counts them).
  */

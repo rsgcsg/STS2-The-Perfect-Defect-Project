@@ -74,14 +74,14 @@ def test_new_run_is_todays_seeded_reset_and_wire_starts_match_both_contracts():
         "new_run", False, {"kind": "new_run", "seed": "seed"})
     loaded = EpisodeStart.decode(_save_start(), seed="seed")
     assert loaded.fresh_native_required  # U1 (in-process load) is not in this batch
-    inference = _definition(ROOT / "python/schemas/rl-inference-3.schema.json", "start")
+    inference = _definition(ROOT / "python/schemas/rl-inference-4.schema.json", "start")
     native = _definition(ROOT / "contracts/managed-native/managed-native-compact-1.schema.json",
                          "start")
     for value in (start, loaded):
         inference.validate(value.inference_start())
         native.validate(value.native_start())
     inference.validate(loaded.inference_start("g-origin"))
-    # Nothing seed-derived reaches the inference side (rl-inference-3 rule).
+    # Nothing seed-derived reaches the inference side (rl-inference-4 rule).
     assert "seed" not in json.dumps(loaded.inference_start("g-origin"))
     assert loaded.native_start() == {"kind": "from_save", "save_sha256": SAVE_SHA}
     assert loaded.record()["lineage"]["initial_progress_sha256"] == "progress"

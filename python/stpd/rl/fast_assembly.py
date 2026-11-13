@@ -20,7 +20,7 @@ and forwards `episode_open`, `step_outcome` and `episode_close` unchanged. Seale
 segments go to `emit` (normally `fast_handoff.SegmentHandoff.submit`), which
 writes them to local disk with fsync before any hand-off to SGD.
 
-Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
+Rules (design v2 §2.4–§2.6, `stpd/rl-inference-4` README):
 - a segment holds <= 64 rows of one game instance; it binds the latest resident
   mu when it opens and keeps it for every row; a newer mu applies from the next
   segment on;
@@ -91,6 +91,7 @@ from stpd.p1.trajectory import boss_clearance
 from .fast_segment import (
     FORMAT,
     FORMAT_2,
+    FORMAT_3,
     FORMATS,
     MAX_ROWS,
     ROW_FORMAT,
@@ -106,7 +107,7 @@ from .fast_segment import (
     sha256,
     unit_numbers,
 )
-from .heads import checked_terminal_class
+from .heads import SUPPORTED_ASCENSIONS, checked_terminal_class
 from .reward import episode_reward
 
 OUTCOME_FIELDS = ("status", "reason", "receipt_sha256", "public_facts", "forced_steps",
@@ -135,35 +136,40 @@ def _owned(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-# The fast chain serves A0 only (lead decision 2026-11-09); the gate is WP7's
-# (actor side, ascension != 0 refused at game open). The inference side does not
-# know the ascension, and the old chain's class table is the A0 one.
-LABEL_ASCENSION = 0
+# Every ascension enters the fast chain (owner 2026-11-13). The level of a game is
+# the one its `episode_open` names (required, rl-inference-4), which the Host
+# checked against the native run at mount; it is public (the observation carries
+# `run.ascension`). The label and the learner's class values use that level's
+# reward table (`reward.REWARD_SPEC` v2.1, `heads.class_reward_values`).
 
 
 def public_terminal_label(context: Mapping[str, Any]) -> dict[str, Any]:
     """The old chain's label path, called directly, on public facts only.
 
     `trajectory.boss_clearance` over the public act sequence (its act-advance
-    witness) -> `reward.episode_reward` for an A0 natural terminal ->
-    `heads.checked_terminal_class`. No combat_end, no Store. Raises ValueError
-    when the old chain gives no reward or its class check refuses it.
+    witness) -> `reward.episode_reward` for a natural terminal at the game's
+    ascension -> `heads.checked_terminal_class`. No combat_end, no Store. Raises
+    ValueError when the old chain gives no reward or its class check refuses it
+    (an A10 loss at floor 49 is refused: `terminal_a10_floor49_loss_unsupported`).
     """
     result = TERMINAL_RESULTS.get(str(context.get("result")))
     floor, acts = context.get("max_floor"), context.get("acts")
-    if result is None or type(floor) is not int or not isinstance(acts, list):
+    ascension = context.get("ascension")
+    if (result is None or type(floor) is not int or not isinstance(acts, list)
+            or type(ascension) is not int):
         raise ValueError("terminal_label_context")
     observations = [{"index": index, "observation": {"run": {"content": {"act": act}}}}
                     for index, act in enumerate(acts)]
     reward, disposition = episode_reward({
-        "identity": {"ascension": LABEL_ASCENSION},
+        "identity": {"ascension": ascension},
         "outcome": {"status": "finished", "unknown": False,
                     "terminal": {"status": "observed", "result": result},
                     "max_observed_floor": floor,
                     "boss_clearance": boss_clearance(observations)}})
     if reward is None or disposition != result:
         raise ValueError(f"terminal_reward_{disposition}")
-    return {"class": checked_terminal_class(result=disposition, floor=floor, reward=reward),
+    return {"class": checked_terminal_class(result=disposition, floor=floor, reward=reward,
+                                            ascension=ascension),
             "reward": float(reward)}
 
 
@@ -356,6 +362,7 @@ class _Game:
     single_choice: str
     start: dict[str, Any]
     audit_retain_mu: bool = False
+    ascension: int = 0
     segments: list[_Segment] = field(default_factory=list)
     inflight: RowPlan | None = None
     last_step: int = -1
@@ -391,6 +398,8 @@ class FastSegmentAssembler:
         # logical segment columnar. Every `verify_every`-th format-2 segment (1 = every
         # one) is decoded again and compared in full with the format-1 logical content;
         # a difference keeps the original as rejected and raises (never a fallback).
+        # `stpd/rl-fast-segment-3` is format 2 plus the game's `ascension`; formats 1
+        # and 2 carry none, so a game above A0 is refused at open under them.
         if segment_format not in FORMATS or type(verify_every) is not int or verify_every < 1:
             raise AssemblyError("invalid_segment_format")
         self.segment_format, self.verify_every = segment_format, verify_every
@@ -423,7 +432,13 @@ class FastSegmentAssembler:
                                                     "truncated": 0, "rejected": 0},
             "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
             "terminal_label_refused": 0, "mu_archived": 0, "instances_closed": 0,
-            "segments_verified": 0}
+            "segments_verified": 0,
+            # Flat, for the run readout (service-status `assembler`): A10 losses at
+            # floor 49, refused by the label table and kept only as originals.
+            "a10_floor49_loss_refused": 0,
+            # per ascension (str level): episodes opened, sealed segments by kind,
+            # label refusals by reason (an A10 floor-49 loss among them).
+            "by_ascension": {}}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -471,7 +486,7 @@ class FastSegmentAssembler:
 
     # ------------------------------------------------------------ episodes
     def open_episode(self, message: Mapping[str, Any]) -> None:
-        """`episode_open` exactly as received (rl-inference-3)."""
+        """`episode_open` exactly as received (rl-inference-4)."""
         audit = message.get("audit_retain_mu", False)
         if type(audit) is not bool:
             raise AssemblyError("invalid_episode_open")
@@ -485,9 +500,15 @@ class FastSegmentAssembler:
                     or not isinstance(message.get("actor_id"), str)
                     or set(sampling.get("classes") or {}) != {"combat", "noncombat"}):
                 raise AssemblyError("invalid_episode_open")
+            # Required, never a default: a missing level would label at the wrong table.
+            ascension = message.get("ascension")
+            if type(ascension) is not int or ascension not in SUPPORTED_ASCENSIONS:
+                raise AssemblyError("invalid_episode_open")
+            if ascension != 0 and self.segment_format != FORMAT_3:
+                raise AssemblyError("ascension_needs_segment_format_3")
             start = copy.deepcopy(dict(message["start"]))
             if start.get("kind") == "from_save":
-                # rl-inference-3 requires both: never a default act (a made-up Boss witness).
+                # rl-inference-4 requires both: never a default act (a made-up Boss witness).
                 first_act, first_floor = start.get("act"), start.get("floor")
                 if (type(first_act) is not int or first_act < 1
                         or type(first_floor) is not int or first_floor < 0):
@@ -499,9 +520,11 @@ class FastSegmentAssembler:
             if audit and self.mu_archive is None:
                 raise AssemblyError("audit_mu_archive_unconfigured")
             game = _Game(instance, str(message["actor_id"]), copy.deepcopy(dict(sampling)),
-                         str(message["single_choice"]), start, audit, acts=[first_act])
+                         str(message["single_choice"]), start, audit, ascension,
+                         acts=[first_act])
             game.max_floor = first_floor
             self.games[instance] = game
+            self._by_ascension(ascension)["episodes"] += 1
         if not audit:
             return
         # A mu offered from now on is archived by offer_mu before it can be bound;
@@ -785,6 +808,10 @@ class FastSegmentAssembler:
                     segment.doomed = ("terminal_label_invalid", str(error))
                 except ValueError as error:  # the old chain refused the label
                     self.counters["terminal_label_refused"] += 1
+                    refused = self._by_ascension(game.ascension)["label_refused"]
+                    refused[str(error)] = refused.get(str(error), 0) + 1
+                    if str(error) == "terminal_a10_floor49_loss_unsupported":
+                        self.counters["a10_floor49_loss_refused"] += 1
                     segment.doomed = ("terminal_label_refused", str(error))
                 except Exception as error:  # noqa: BLE001 - original kept, then raised
                     broken = broken or error
@@ -856,7 +883,7 @@ class FastSegmentAssembler:
         label = self.terminal_labeler({
             "game_instance_id": game.game_instance_id, "result": segment.terminal,
             "start": copy.deepcopy(game.start), "max_floor": game.max_floor,
-            "acts": list(game.acts)})
+            "acts": list(game.acts), "ascension": game.ascension})
         if label is None:
             return None
         if (set(label) != {"class", "reward"} or type(label["class"]) is not int
@@ -900,9 +927,11 @@ class FastSegmentAssembler:
             "trainable": kind != "truncated",
             "forced_steps": sum((r["outcome"] or {}).get("forced_steps", 0)
                                 for r in segment.rows)}
+        if self.segment_format == FORMAT_3:
+            header["ascension"] = game.ascension
         result: SealedSegment | RejectedSegment
         try:
-            if self.segment_format == FORMAT_2:
+            if self.segment_format in (FORMAT_2, FORMAT_3):
                 result = encode_segment_columns(header, segment.data, bound=True)
                 self._verify(result, header, segment.data)
             else:
@@ -922,6 +951,8 @@ class FastSegmentAssembler:
         self.ledger.release(segment.mu.snapshot_sha256)
         self.counters["segments"][kind] += 1
         game.sealed[kind] += 1
+        segments = self._by_ascension(game.ascension)["segments"]
+        segments[kind] = segments.get(kind, 0) + 1
         if truncation is not None and kind == "truncated":
             by_reason = self.counters["truncated_by_reason"]
             by_reason[truncation["reason"]] = by_reason.get(truncation["reason"], 0) + 1
@@ -938,8 +969,11 @@ class FastSegmentAssembler:
         if self.columns_sealed % self.verify_every:
             return
         decoded, decoded_rows = decode_segment(sealed.data)
-        reference = encode_segment({**header, "format": FORMAT}, rows).header
-        reference["format"] = FORMAT_2
+        format_1 = {key: value for key, value in header.items() if key != "ascension"}
+        reference = encode_segment({**format_1, "format": FORMAT}, rows).header
+        reference["format"] = self.segment_format
+        if self.segment_format == FORMAT_3:
+            reference["ascension"] = header["ascension"]
         for row in reference["rows"]:  # format 2 stores these as f8 (int q 1 -> 1.0)
             row["behavior_q"] = list(map(float, row["behavior_q"]))
             row["selected_q"] = float(row["selected_q"])
@@ -949,6 +983,12 @@ class FastSegmentAssembler:
                 or decoded_rows != [bytes(row) for row in rows]):
             raise SegmentFormatError("segment_columns_verify_mismatch")
         self.counters["segments_verified"] += 1
+
+    def _by_ascension(self, ascension: int) -> dict[str, Any]:
+        """Per-level counters; caller holds `self.lock`."""
+        levels: dict[str, dict[str, Any]] = self.counters["by_ascension"]
+        return levels.setdefault(str(ascension),
+                                 {"episodes": 0, "segments": {}, "label_refused": {}})
 
     def _archive(self, handoff: MuHandoff) -> None:
         """Durably keep one mu's weights; outside `self.lock`, before it is bound."""

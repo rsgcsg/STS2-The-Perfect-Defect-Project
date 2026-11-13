@@ -50,7 +50,7 @@ function eventState() {
   return {
     type: "decision",
     decision: "event_choice",
-    context: { act: 1, floor: 1, room_type: "Event" },
+    context: { ascension: 0, act: 1, floor: 1, room_type: "Event" },
     room_ref: "event-room-a",
     event_ref: "event-a",
     event_name: "Neow",
@@ -462,7 +462,7 @@ test("the exact deck-enchant callback is presented as the native enchant selecti
 
 test("multi-select opens an exact preview before confirmation and preserves native cancellation", async () => {
   const state = (selected = [], preview = false) => ({
-    type: "decision", decision: "deck_card_select", context: { act: 1, floor: 3, room_type: "Event" }, player: player(),
+    type: "decision", decision: "deck_card_select", context: { ascension: 0, act: 1, floor: 3, room_type: "Event" }, player: player(),
     selector_ref: "selector-multi", origin: "deck_generic", stage: preview ? "preview" : "selecting",
     prompt: "Choose one or two cards.", min_select: 1, max_select: 2, cancelable: true,
     require_manual_confirmation: true, selected_refs: selected,
@@ -1499,10 +1499,17 @@ test("manager A10 setup reaches the native initializer while defaults remain A0"
   for (const ascension of [0, 10]) {
     const requests = [];
     const session = new ManagedPlayerEnvironmentSession({ process: { async request(input) {
-      requests.push(input); return eventState();
+      requests.push(input); const state = eventState(); state.context.ascension = ascension; return state;
     } }, runtimeInstanceId: "ascension-test", environmentFingerprint: "fixture", ascension });
     await session.mount({ seed: "ASCENSIONFIXTURE" });
     assert.equal(requests[0].ascension, ascension);
+  }
+  // The run the native started must be the requested level, and must say so.
+  for (const [actual, error] of [[3, /managed_ascension_mismatch/u], [undefined, /managed_ascension_unverified/u]]) {
+    const session = new ManagedPlayerEnvironmentSession({ process: { async request() {
+      const state = eventState(); state.context.ascension = actual; return state;
+    } }, runtimeInstanceId: "ascension-mismatch", environmentFingerprint: "fixture", ascension: 5 });
+    await assert.rejects(session.mount({ seed: "ASCENSIONFIXTURE" }), error);
   }
   for (const ascension of [-1, 11, 1.5, "10", NaN])
     assert.throws(() => new ManagedPlayerEnvironmentSession({ process: { request() {} }, ascension }), /managed_ascension_invalid/u);
