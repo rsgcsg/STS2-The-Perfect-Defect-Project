@@ -88,14 +88,25 @@ def _check_encoder(encoder: torch.nn.TransformerEncoder) -> None:
         raise ValueError("rows_forward_requires_encoder_without_final_norm")
 
 
-def _layer_tail(layer: Any, x: Tensor, attended: Tensor) -> Tensor:
-    x = layer.norm1(x + attended)
-    return cast(Tensor, layer.norm2(x + layer.linear2(F.relu(layer.linear1(x)))))
+def _norm(norm: Any, x: Tensor, stream: torch.dtype | None) -> Tensor:
+    """`norm(x)`; with `stream` (the `residual` lever) the statistics and affine run
+    in FP32 and the result is stored in `stream` (the trunk's BF16 residual)."""
+    if stream is None:
+        return cast(Tensor, norm(x))
+    return F.layer_norm(x.float(), norm.normalized_shape, norm.weight, norm.bias,
+                        norm.eps).to(stream)
 
 
-def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor) -> Tensor:
+def _layer_tail(layer: Any, x: Tensor, attended: Tensor,
+                stream: torch.dtype | None = None) -> Tensor:
+    x = _norm(layer.norm1, x + attended, stream)
+    return _norm(layer.norm2, x + layer.linear2(F.relu(layer.linear1(x))), stream)
+
+
+def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor,
+                  stream: torch.dtype | None = None) -> Tensor:
     for layer in encoder.layers:
-        x = _layer_tail(layer, x, attention(layer.self_attn, x, x, mask))
+        x = _layer_tail(layer, x, attention(layer.self_attn, x, x, mask), stream)
     return x
 
 
@@ -137,20 +148,32 @@ def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Ten
 
 
 def encode_varlen(encoder: torch.nn.TransformerEncoder, tokens: Tensor, offsets: Tensor,
-                  longest: int) -> Tensor:
+                  longest: int, stream: torch.dtype | None = None) -> Tensor:
     """Self-attention over ragged rows packed as (tokens, embed); no padding anywhere."""
     for layer in encoder.layers:
         attended = packed_attention(layer.self_attn, tokens, tokens, offsets, offsets,
                                     longest, longest)
-        tokens = _layer_tail(layer, tokens, attended)
+        tokens = _layer_tail(layer, tokens, attended, stream)
     return tokens
 
 
-def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any) -> Tensor:
+def residual_stream(levers: tuple[str, ...], reference: Tensor) -> torch.dtype | None:
+    """The `residual` lever: the trunk's autocast dtype (BF16 on the GPU step); None
+    keeps the original FP32 residual stream. Without autocast it is the input dtype."""
+    if "residual" not in levers:
+        return None
+    from .rows_kernels import _compute_dtype
+
+    return _compute_dtype(reference)
+
+
+def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any,
+                levers: tuple[str, ...] = ()) -> Tensor:
     """`model._encode_text` for every unique text at once, real tokens only.
 
     Same embeddings, positions, encoder, mean over real tokens and projection;
-    output in unique-text order (no bucket inverse needed)."""
+    output in unique-text order (no bucket inverse needed). With the `residual`
+    lever the encoder's residual stream is BF16; the mean still sums in FP32."""
     tokens = move(layout.text_tokens)
     offsets = move(layout.text_offsets)
     width = ids.shape[1]
@@ -160,7 +183,12 @@ def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any
              + model.text_numbers(numbers.reshape(-1, numbers.shape[-1]).index_select(0, tokens))
              + positions(tokens - owner * width, model.text_ids.embedding_dim))
     _check_encoder(model.text_blocks)
-    encoded = encode_varlen(model.text_blocks, value, offsets, layout.text_longest)
+    stream = residual_stream(levers, value)
+    if stream is not None:
+        value = value.to(stream)
+    encoded = encode_varlen(model.text_blocks, value, offsets, layout.text_longest, stream)
+    if stream is not None:
+        encoded = encoded.float()
     lengths = (offsets[1:] - offsets[:-1]).to(encoded.dtype)
     mean = encoded.new_zeros((texts, encoded.shape[1])).index_add(0, owner, encoded)
     return cast(Tensor, model.text_projection(mean / lengths[:, None]))
@@ -199,10 +227,15 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
     """Scene encoder + heads + action readout for one length bucket of rows
     (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
     embed = tokens.shape[1]
+    stream = residual_stream(kernels, tokens)
+    if stream is not None:
+        tokens = tokens.to(stream)
     mask = torch.arange(width, device=tokens.device)[None, :] >= lengths[:, None]
     packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions.long(), tokens)
-    scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
+    scene = encode_masked(model.scene, packed.view(rows, width, embed), mask, stream)
     scene = scene.view(rows, width, -1)
+    if stream is not None:
+        scene = scene.float()  # heads, roles and the mean read the FP32 encoding as before
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
     padded = scene.to(_kernel_dtype(scene)) if kernels else scene
     if "heads" in kernels:
@@ -248,9 +281,14 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
 
     Same function: the mean, both heads and the cross-attention read exactly the
     real slots of their own row; role terms map bucket slots to packed tokens."""
-    encoded = encode_varlen(model.scene, tokens, offsets, longest)
+    stream = residual_stream(kernels, tokens)
+    if stream is not None:
+        tokens = tokens.to(stream)
+    encoded = encode_varlen(model.scene, tokens, offsets, longest, stream)
     owner = torch.div(positions, width, rounding_mode="floor")
-    current = encoded.new_zeros((rows, encoded.shape[1])).index_add(0, owner, encoded)
+    # With `residual` the encoding is BF16; sums (mean, role terms) still accumulate in FP32.
+    summed = encoded.float()
+    current = summed.new_zeros((rows, encoded.shape[1])).index_add(0, owner, summed)
     current = current / lengths[:, None].to(current.dtype)
     one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
 
@@ -278,8 +316,8 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     for index, (candidate, slot, weight, present) in enumerate(roles):
         row = torch.div(slot, width, rounding_mode="floor")
         token = starts.index_select(0, row) + slot - row * width
-        values = encoded.index_select(0, token) * weight.unsqueeze(-1).to(encoded.dtype)
-        mean = encoded.new_zeros((rows * catalog, encoded.shape[1])).index_add(
+        values = summed.index_select(0, token) * weight.unsqueeze(-1).to(summed.dtype)
+        mean = summed.new_zeros((rows * catalog, encoded.shape[1])).index_add(
             0, candidate, values)
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
@@ -327,6 +365,26 @@ def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     block.__code__ = _BLOCK_CODES.setdefault(
         name, block.__code__.replace(co_name=name, co_qualname=name))
     return block
+
+
+def owned(value: Any) -> Any:
+    """Each tensor in `value` as its own storage (one small device copy each).
+
+    Compiled-function inputs only. Batch tensors arrive as views into staging
+    slabs whose layout differs between a live prepared file and a reloaded dump
+    (the compile warm-up); dynamo guards a view's base size and storage offset
+    (duck-sized against other sizes, 0 specialized), so the first live step after
+    a warm-up compiled again (V3 壬2: chain run c2o, CPU test). Owned copies make
+    the guards independent of how the batch was staged. Values are unchanged."""
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: owned(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(owned(item) for item in value)
+    if isinstance(value, list):
+        return [owned(item) for item in value]
+    return value
 
 
 def _at_least_two_terms(role: tuple[Tensor, Tensor, Tensor, Tensor]
@@ -394,7 +452,8 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     if packed is None:
         packed = varlen_supported(device)
     if packed and layout.text_buckets and layout.text_tokens is not None:
-        vectors = packed_text(model, t["text_ids"], t["text_numbers"], layout, move).float()
+        vectors = packed_text(model, t["text_ids"], t["text_numbers"], layout, move,
+                              levers).float()
     elif layout.text_buckets:
         order = move(layout.text_order)
         parts, cursor = [], 0
@@ -417,14 +476,18 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
         from .rows_kernels import owner_nodes, permute_rows
 
         nodes = owner_nodes(model, {key: move(value) for key, value in joint.tensors.items()},
-                            flat, vectors, compile=compile, private="embed" in levers)
+                            flat, vectors, compile=compile, private="embed" in levers,
+                            out_dtype=residual_stream(levers, vectors))
     else:
         nodes = model.tensor_nodes(joint, vectors, flat=flat)
+        stream = residual_stream(levers, nodes)
+        if stream is not None:
+            nodes = nodes.to(stream)
     _check_encoder(model.scene)
     from .rows_kernels import FOLD_CATALOG_LIMIT
 
     # The fold is chosen per group outside the compiled block (no catalog guard inside).
-    block_levers = tuple(lever for lever in levers if lever == "heads" or (
+    block_levers = tuple(lever for lever in levers if lever in ("heads", "residual") or (
         lever == "cross" and group.policy
         and int(group.tensors["action_types"].shape[1]) <= FOLD_CATALOG_LIMIT))
     block = (_compiled_block(model, packed, block_levers, bool(group.policy)) if compile
@@ -459,12 +522,15 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     scores, logits, hp = [], [], []
     for index, (count, width, longest, _slots) in enumerate(buckets):
         member = members[index]
+        bucket = (positions[index], lengths[index], offsets[index], role_parts[index])
+        if compile:
+            bucket = owned(bucket)
         score, logit, value = block(
-            model, tokens[index], positions[index], lengths[index], offsets[index], count, width,
+            model, tokens[index], bucket[0], bucket[1], bucket[2], count, width,
             longest, t["outcome_valid"].index_select(0, member),
             t["action_types"].index_select(0, member) if group.policy else None,
             t["catalog_mask"].index_select(0, member) if group.policy else None,
-            role_parts[index])
+            bucket[3])
         logits.append(logit)
         hp.append(value)
         if score is not None:

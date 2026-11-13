@@ -139,40 +139,53 @@ def test_historical_P5_snapshot_shape_still_loads(tmp_path, model):
         offline_step.write(tmp_path / "p5", {"schema": offline_step.SCHEMA}, {})
 
 
-def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, monkeypatch):
-    """WP8: bz2 preflight, recompile limit, cache dir and warm-up on a real dump."""
+@pytest.mark.parametrize("kernels", ["", "cross+embed+heads+nodes+residual"])
+def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, monkeypatch,
+                                                                     kernels):
+    """WP8: bz2 preflight, recompile limit, cache dir and warm-up on real dumps.
+
+    The warm-up compiles with the run's own `performance`, levers included (e.g. the
+    `residual` BF16 trunk), on the live storage layout (shared slabs): warmed on the
+    dumps of the same minibatches, the run's compiled update adds no dynamo graph."""
     dumps = tmp_path / "dumps"
     split, owner = _owner(tmp_path / "dump", monkeypatch, "rows-v2", {
-        "sgd_offline_dump_every": 1, "sgd_offline_dump_limit": 1,
+        "sgd_offline_dump_every": 1, "sgd_offline_dump_limit": 2,
         "sgd_offline_dump_directory": str(dumps)})
     try:
         split.train(owner, 2)
     finally:
         owner.close()
-    (root,) = sorted(dumps.iterdir())
+    roots = sorted(dumps.iterdir())
+    assert len(roots) == 2
     original = split.configuration
 
     def compiled(path, patch, **kwargs):
         config, io = original(path, patch, **kwargs)
         return dc.replace(config, performance=dc.replace(
-            config.performance, prepared_compile=True)), io
+            config.performance, prepared_compile=True, prepared_kernels=kernels)), io
 
     monkeypatch.setattr(split, "configuration", compiled)
     cache = tmp_path / "inductor"
+    warmup = [str(root) for root in roots]
     owner = split.terminal_owner(tmp_path / "warm", monkeypatch, dataplane={"sgd_compile": {
-        "cache_dir": str(cache), "recompile_limit": 16, "warmup": [str(root)]}})[0]
+        "cache_dir": str(cache), "recompile_limit": 16, "warmup": warmup}})[0]
     try:
         # The controller already refused a ready whose theta differs from init.
         facts = owner.sgd_compile
-        assert facts["bz2"] and facts["recompile_limit"] == 16
+        assert facts["bz2"] and facts["recompile_limit"] == 16 and facts["size_guard"] is False
         assert facts["cache_dir"] == str(cache) and cache.exists()
-        (warm,) = facts["warmup"]
-        assert warm["path"] == str(root) and warm["rows"] > 0
+        assert [warm["path"] for warm in facts["warmup"]] == warmup
+        warm = facts["warmup"][-1]
+        assert warm["rows"] > 0
         assert warm["rows_forward"]["compiled"] and warm["rows_forward"]["dynamo_frames_ok"] > 0
+        assert warm["rows_forward"].get("kernels", "") == kernels
         events = split.train(owner, 1)
         assert owner.updates == 2
         # Diagnostics attempts (update 0 here) run eager by design; the rest compile.
         assert [event["rows_forward"]["compiled"] for event in events] == [False, True]
+        assert events[1]["rows_forward"].get("kernels", "") == kernels
+        graphs = warm["rows_forward"]["dynamo_unique_graphs"]
+        assert events[1]["rows_forward"]["dynamo_unique_graphs"] == graphs > 0
     finally:
         owner.close()
 
@@ -180,6 +193,7 @@ def test_compile_warmup_on_a_dumped_minibatch_leaves_theta_and_trains(tmp_path, 
 def test_compile_options_need_prepared_compile_and_are_explicit():
     base = {"sgd_process": True}
     assert sgd_options(base).compile is None
-    for bad in ({"recompile_limit": 4}, {"warmup": "x"}, {"cache_dir": ""}, {"other": 1}):
+    for bad in ({"recompile_limit": 4}, {"warmup": "x"}, {"cache_dir": ""}, {"other": 1},
+                {"size_guard": 1}):
         with pytest.raises(ValueError, match="invalid_sgd_compile"):
             sgd_options({**base, "sgd_compile": bad})
