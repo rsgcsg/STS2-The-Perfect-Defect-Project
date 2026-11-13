@@ -1,0 +1,835 @@
+"""Fast-chain launcher: layout -> placement, run profile, preflight decisions, readout."""
+from __future__ import annotations
+
+import copy
+import importlib
+import json
+import math
+import sys
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip('fcntl', reason='Friday tools target POSIX Slurm')
+FASTCHAIN = Path(__file__).resolve().parents[2] / 'tools/friday/fastchain'
+PROFILE = FASTCHAIN / 'rl5-fastchain.toml'
+SITE = FASTCHAIN / 'site.example.toml'
+
+
+def load_fastchain():
+    """The launcher's modules import each other by plain name (as launch.py does from its
+    own directory). Load them as one set, then take the plain names back out of
+    sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
+    names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout',
+             'supervise')
+    saved_path = list(sys.path)
+    saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    sys.path.insert(0, str(FASTCHAIN))
+    try:
+        loaded = [importlib.import_module(name) for name in names]
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        sys.path[:] = saved_path
+    return loaded
+
+
+run_profile, learner_config, layout, preflight, launch, readout, supervise = \
+    load_fastchain()
+
+
+def probe_row(node='gpu-a', gpus=3, free=3, cores=128, mem_g=500):
+    return {'node': node, 'state': 'mixed', 'gpus': gpus, 'gpus_free': free,
+            'cores_idle': cores, 'mem_free_g': mem_g}
+
+
+def knobs(**changes):
+    values = run_profile.values(run_profile.load_profile(PROFILE))
+    values.update(changes)
+    return values
+
+
+def plan_for(cards=3, layout_spec=None, smoke=False, probe=None, env_cores=None,
+             probe_only=True, long_run=False, **changes):
+    return launch.build_plan('t1', knobs(**changes), run_profile.load_site(SITE), cards=cards,
+                             card_type='A100-40', layout_spec=layout_spec, env_cores=env_cores,
+                             smoke=smoke, probe_rows=probe or [probe_row()],
+                             probe_only=probe_only, long_run=long_run)
+
+
+FROZEN = json.loads((Path(__file__).resolve().parents[1] / 'configs/rl5.json').read_text())
+
+
+def gate_base():
+    """A gate learner-base.json as the cluster has it: the frozen recipe, levers off."""
+    base = copy.deepcopy(FROZEN)
+    for key in ('prepared_compile', 'prepared_kernels', 'prepared_bucket_rows'):
+        base['performance'].pop(key)
+    base.update({'max_versions': 100000, 'peer': {'kind': 'archive'}})
+    base['segments']['warmup_artifact_id'] = 'f' * 64
+    return base
+
+
+def good_facts(plan):
+    k = plan['knobs']
+    return {'src_rev': f'{k["env_pkg_build"]}{"0" * 32}',
+            'src_features': {name: True for name in launch.FEATURES},
+            'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
+            'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
+            'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
+            'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
+            'prep_test_start_seconds': 0.0,
+            'env_candidate_sha256': k['env_candidate_artifact_sha256'] + '0' * 48,
+            'secret_files': {'/x/auth.hex': 0o600, '/x/prep-auth.hex': 0o600}}
+
+
+def by_name(results):
+    return {r.name: r for r in results}
+
+
+# ---------------- layout ----------------
+
+def test_three_current_layouts_place_roles_on_the_planned_cards():
+    one = layout.place('shared', 1, 'A100-40', service_cores=40, rank_cores=8)
+    assert (one.service_card, one.train_cards, one.learner_visible, one.learner_device) == \
+        (0, (0,), (0,), 'cuda')
+    assert one.shared_inference_card and one.name == '1卡 · 推理训练共用 · A100-40'
+    two = layout.place('1i+1t', 2, 'A100-40', service_cores=40, rank_cores=8)
+    # single rank sees only its own card (c2b refused "cuda:1"; c2a landed on card 0)
+    assert (two.service_card, two.learner_visible, two.learner_device, two.ranks) == \
+        (0, (1,), 'cuda', 1)
+    assert not two.shared_inference_card and two.gpu_cores == 48
+    three = layout.place('1i+2t', 3, 'A100-80', service_cores=40, rank_cores=8)
+    assert (three.train_cards, three.learner_visible, three.learner_device, three.ranks) == \
+        ((1, 2), (0, 1, 2), 'cuda:1', 2)
+    assert three.name == '3卡 · 1推理+2训练 · A100-80' and three.gpu_cores == 56
+    explicit = layout.place('inference,train,train', 3, 'A100-40', service_cores=40,
+                            rank_cores=8)
+    assert explicit.learner_device == 'cuda:1'
+
+
+@pytest.mark.parametrize('spec,cards,message', [
+    ('shared', 2, "is one card"),
+    ('1i+1t', 3, 'names 2 cards'),
+    ('2i+1t', 3, 'exactly one inference'),
+    ('inference', 1, 'no training card'),
+    ('train,inference,train', 3, 'contiguous'),
+    ('inference+train,train', 2, 'data-parallel rank on the inference card'),
+    ('gpu,train', 2, 'each card is a'),
+])
+def test_invalid_layouts_are_refused(spec, cards, message):
+    with pytest.raises(layout.LayoutError, match=message):
+        layout.place(spec, cards, 'A100-40', service_cores=40, rank_cores=8)
+
+
+def test_targets_attach_to_card_count_and_perfect_packing():
+    assert layout.target(1, {'1': 14_000_000, '3': 30_000_000}, {})['target_rows_h'] == 14_000_000
+    two = layout.target(2, {'1': 14_000_000, '3': 30_000_000}, {})
+    assert two['target_rows_h'] is None and 'loss table' in two['note']
+    assert round(layout.perfect_packing(3, 42_500_000, 18_500_000)) == 38_668_033
+
+
+# ---------------- run profile ----------------
+
+def test_repository_profile_and_example_site_validate():
+    profile = run_profile.load_profile(PROFILE)
+    assert set(profile) == set(run_profile.KNOBS)
+    assert all(k['why'].strip() and k['measured'].strip() for k in profile.values())
+    site = run_profile.load_site(SITE)
+    assert set(site['gpu_types']) == {'A100-40', 'A100-80'}
+
+
+def test_overrides_are_validated_and_recorded():
+    profile = run_profile.load_profile(PROFILE, ['services=4'])
+    assert profile['services']['value'] == 4 and profile['services']['overridden_from'] == 6
+    with pytest.raises(run_profile.ProfileError, match='unknown knob'):
+        run_profile.load_profile(PROFILE, ['no_such=1'])
+    with pytest.raises(run_profile.ProfileError, match='--set services'):
+        run_profile.load_profile(PROFILE, ['services=many'])
+
+
+def test_profile_refuses_unknown_missing_and_undocumented_knobs(tmp_path):
+    text = PROFILE.read_text()
+    bad = tmp_path / 'p.toml'
+    bad.write_text(text + '\n[knobs.extra]\nvalue = 1\ndefault = 1\nwhy = "x"\nmeasured = "x"\n')
+    with pytest.raises(run_profile.ProfileError, match='extra: unknown knob'):
+        run_profile.load_profile(bad)
+    line = next(x for x in text.splitlines() if x.startswith('services = '))
+    bad.write_text(text.replace(line + '\n', ''))
+    with pytest.raises(run_profile.ProfileError, match='services: missing'):
+        run_profile.load_profile(bad)
+    why = line[line.index('why = '):line.index(', measured')]
+    bad.write_text(text.replace(line, line.replace(why, 'why = ""')))
+    with pytest.raises(run_profile.ProfileError, match='services: why'):
+        run_profile.load_profile(bad)
+    bad.write_text(text.replace(line, line.replace('value = 6', 'value = "six"')))
+    with pytest.raises(run_profile.ProfileError, match='services.value'):
+        run_profile.load_profile(bad)
+
+
+def test_env_lines_quote_and_encode():
+    lines = run_profile.env_lines({'levers': True, 'service_kwargs': {'a': 1}, 'run': 'x y'})
+    assert "export FC_LEVERS=1" in lines
+    assert "export FC_SERVICE_KWARGS='{\"a\":1}'" in lines
+    assert "export FC_RUN='x y'" in lines
+
+
+# ---------------- launcher plan ----------------
+
+def test_parse_probe_and_test_only():
+    text = ('gpu-a mixed gpu:a100:3(S:0-1) gpu:a100:1(IDX:0) 20/108/0/128 515000 115000\n'
+            'gpu-a mixed gpu:a100:3(S:0-1) gpu:a100:1(IDX:0) 20/108/0/128 515000 115000\n'
+            'gpu-b drained gpu:a100:2 gpu:a100:0 0/64/0/64 250000 0\n')
+    rows = launch.parse_probe(text, 'a100')
+    assert rows[0] == {'node': 'gpu-a', 'state': 'mixed', 'gpus': 3, 'gpus_free': 2,
+                       'cores_idle': 108, 'mem_free_g': 390}
+    assert len(rows) == 2 and rows[1]['gpus_free'] == 0
+    import time
+    now = time.mktime(time.strptime('2026-11-13T10:00:00', '%Y-%m-%dT%H:%M:%S'))
+    msg = 'sbatch: Job 1 to start at 2026-11-13T10:05:00 using 8 processors'
+    assert launch.parse_test_only(msg, now) == 300
+    assert launch.parse_test_only('sbatch: error: no', now) is None
+
+
+def test_env_nodes_spread_evenly_and_slow_nodes_count_half():
+    assert launch.balanced_env_nodes(19, 2, 6) == 18
+    assert launch.balanced_env_nodes(19, 3, 6) == 18
+    assert launch.balanced_env_nodes(5, 4, 6) == 3
+    assert launch.split_slow(10, 0) == (10, 0)
+    assert launch.split_slow(10, 4) == (8, 4)
+
+
+def test_build_plan_caps_memory_guard_below_job_limit_and_falls_back():
+    two = plan_for(cards=2)
+    limit = two['job_mem_g'] * preflight.GIB
+    assert two['mem_guard_bytes'] < two['mem_hard_bytes'] <= limit  # 220 GB guard > 214.7 GB
+    assert two['placement']['learner_device'] == 'cuda'
+    assert (two['env_nodes_max'] * two['knobs']['env_aggregators']) % two['knobs']['services'] == 0
+    none = plan_for(cards=3, probe=[probe_row(free=1)])
+    assert none['gpu_node'] is None
+    fell = launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=3,
+                             card_type='A100-40', layout_spec=None, env_cores=None, smoke=False,
+                             probe_rows=[probe_row(free=1)], fallback=True)
+    assert fell['placement']['cards'] == 1 and fell['name'].startswith('1卡')
+    smoke = plan_for(cards=3, smoke=True)
+    assert smoke['wall_seconds'] == smoke['knobs']['smoke_wall_seconds']
+    k = smoke['knobs']
+    assert smoke['env_nodes_max'] == k['services'] // math.gcd(k['env_aggregators'],
+                                                                k['services'])
+
+
+def test_commands_and_job_env_carry_layout_without_secrets():
+    plan = plan_for(cards=3)
+    cmds = launch.commands(plan)
+    assert set(cmds) >= {'gpu', 'env', 'prep'}
+    assert '--gres=gpu:a100:3' in cmds['gpu']
+    assert any(c == f'--export=ALL,FC_RUN={plan["run"]}' for c in cmds['gpu'])
+    prep = ' '.join(cmds['prep'])
+    assert ' : ' in prep and 'c8220' not in prep  # heterogeneous, no slow prep host types
+    env = launch.job_env(plan)
+    assert 'export FC_LEARNER_DEVICE=cuda:1' in env and 'export FC_RANKS=2' in env
+    assert 'STPD_' not in env
+
+
+# ---------------- preflight (login side) ----------------
+
+def test_preflight_passes_a_consistent_plan():
+    plan = plan_for(cards=3, wall_seconds=2400)
+    results = preflight.checks(plan, good_facts(plan))
+    assert all(r.ok for r in results), preflight.report(results)
+    assert preflight.report(results).endswith('preflight: ok')
+
+
+@pytest.mark.parametrize('change,facts_change,failing', [
+    ({'levers': False}, {}, 'speed_switches'),
+    ({'remote_prepare_codec': 'none'}, {}, 'speed_switches'),
+    ({'env_machine_types': ['fc430', 'c6220']}, {}, 'machine_types'),
+    ({'env_memo': {}}, {}, 'env_package'),
+    ({}, {'env_pkg_rev': 'deadbeef built'}, 'env_package'),
+    ({}, {'env_candidate_sha256': 'ffff'}, 'env_package'),
+    ({}, {'src_features': {'shards': False}}, 'shards'),
+    ({'env_candidate_artifact_sha256': ''}, {}, 'env_package'),
+    ({'env_candidate_artifact_sha256': 'b77f5139'}, {}, 'env_package'),
+    ({}, {'src_checkout': {'git': False}}, 'producer_identity'),
+    ({}, {'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': True}}, 'producer_identity'),
+    ({'max_versions': 100000}, {}, 'frozen_recipe'),
+    ({}, {'gate_learner_base': None}, 'frozen_recipe'),
+    ({}, {'frozen_recipe': {
+        **FROZEN, 'lr': 0.0002}}, 'frozen_recipe'),
+    ({}, {'compile_warmup_dumps': {'/x/missing.pt': False}}, 'compile_warmup'),
+    ({}, {'compile_warmup_dumps': {}}, 'compile_warmup'),
+    ({'remote_prepare_connections': 35}, {}, 'shards'),
+    ({}, {'src_rev': 'feedface' * 5}, 'env_package'),
+    ({}, {'secret_files': {'/x/auth.hex': 0o644}}, 'secret_files'),
+    ({}, {'secret_files': {'/x/auth.hex': None}}, 'secret_files'),
+])
+def test_preflight_refuses_each_failure(change, facts_change, failing):
+    plan = plan_for(cards=3, wall_seconds=2400, **change)
+    facts = {**good_facts(plan), **facts_change}
+    results = by_name(preflight.checks(plan, facts))
+    assert not results[failing].ok
+    assert 'REFUSED' in preflight.report(list(results.values()))
+
+
+def test_preflight_refuses_bad_site_and_plan_edits():
+    plan = plan_for(cards=3)
+    shared = copy.deepcopy(plan)
+    shared['site']['gpu_local_tmp'] = '/scratch/x'
+    assert not preflight.check_hot_path(shared).ok
+    prep = copy.deepcopy(plan)
+    prep['site']['prep_scratch'] = {'r640': '/data/x'}
+    assert not preflight.check_prep_scratch(prep).ok  # fc430 missing, r640 shared
+    overlap = copy.deepcopy(plan)
+    overlap['env_node_index_ranges'] = {'fast': [0, 10], 'c8220': [5, 4]}
+    assert not preflight.check_identity(overlap).ok
+    guard = copy.deepcopy(plan)
+    guard['mem_guard_bytes'] = guard['job_mem_g'] * preflight.GIB + 1
+    assert not preflight.check_memory(guard).ok
+    cores = copy.deepcopy(plan)
+    cores['env_cores_max'] = cores['core_cap']
+    assert not preflight.check_cores(cores).ok
+    uneven = copy.deepcopy(plan)
+    uneven['env_nodes_max'] += 1
+    assert not preflight.check_shards(uneven, good_facts(plan)).ok
+    nonode = plan_for(cards=3, probe=[probe_row(free=0)])
+    assert not preflight.check_gpu_node(nonode).ok
+
+
+def test_old_build_keeps_the_two_worker_workaround_only():
+    """Without #523 a437612d the SGD budget counts idle local pools: gate workers refuse,
+    the 2/2 workaround (and no scratch flag) passes; with the commit the gate values pass."""
+    plan = plan_for(cards=3, wall_seconds=2400)
+    old = {**good_facts(plan), 'src_features': {
+        name: name != 'budget_counts_remote' for name in launch.FEATURES}}
+    assert plan['knobs']['preparation_workers'] == 12
+    assert preflight.check_features(plan, old).warn  # owner 11-14: a warning only
+    workaround = plan_for(cards=3, wall_seconds=2400, preparation_workers=2,
+                          assembly_workers=2, prep_scratch_min_free=False)
+    assert not preflight.check_features(workaround, old).warn
+    assert preflight.check_features(plan, good_facts(plan)).ok
+
+
+def test_zero_or_too_few_env_nodes_refuse():
+    plan = plan_for(cards=3, wall_seconds=2400, env_cores=20)  # < one balanced step
+    assert plan['env_nodes_max'] == 0
+    shards = preflight.check_shards(plan, good_facts(plan))
+    assert not shards.ok and 'env nodes' in shards.detail
+    assert 'env' not in launch.commands(plan)
+
+
+def test_placeholder_producer_needs_smoke_or_probe_only():
+    fake = {'producer_identity': 'placeholder'}
+    plan = plan_for(cards=3, wall_seconds=2400, probe_only=False, **fake)
+    assert plan['checkpoints_void'] and not plan['probe_only']
+    assert not preflight.check_producer(plan, good_facts(plan)).ok
+    assert preflight.check_producer(plan_for(cards=3, smoke=True, probe_only=False, **fake),
+                                    good_facts(plan)).ok
+    assert preflight.check_producer(plan_for(cards=3, probe_only=True, **fake),
+                                    good_facts(plan)).ok
+    real = plan_for(cards=3, probe_only=False)  # the profile default: checkout
+    assert not real['checkpoints_void'] and real['producer_identity'] == 'checkout'
+    assert preflight.check_producer(real, good_facts(real)).ok
+
+
+def test_table_knobs_and_nan_are_validated():
+    with pytest.raises(run_profile.ProfileError, match='prepared_gib'):
+        run_profile.load_profile(PROFILE, ['prepared_gib=nan'])
+    with pytest.raises(run_profile.ProfileError, match='service_kwargs'):
+        run_profile.load_profile(PROFILE, ['service_kwargs={ no_such = 1 }'])
+    with pytest.raises(run_profile.ProfileError, match='env_memo'):
+        run_profile.load_profile(PROFILE, ['env_memo={ projection = "x" }'])
+    with pytest.raises(run_profile.ProfileError, match='sgd_switch_interval_seconds'):
+        run_profile.load_profile(PROFILE, ['sgd_switch_interval_seconds=1.0'])
+    check = run_profile.SITE_KEYS['partition_max_minutes']
+    assert check({'debug': 60}) is None and check({'debug': '60'}) is not None
+    assert run_profile.SITE_KEYS['prep_scratch']({'r640': 1}) is not None
+    twice = run_profile.load_profile(PROFILE, ['services=4', 'services=3'])
+    assert twice['services']['value'] == 3 and twice['services']['overridden_from'] == 6
+
+
+def test_submit_cancels_every_submitted_job_on_a_later_failure(tmp_path, monkeypatch):
+    plan = plan_for(cards=3, wall_seconds=2400)
+    cmds = launch.commands(plan)
+    cancelled = []
+    monkeypatch.setattr(launch.subprocess, 'run',
+                        lambda cmd, **kw: cancelled.append(cmd[1:]) if cmd[0] == 'scancel'
+                        else None)
+    ids = iter(['11', '12'])
+
+    def run_cmd(cmd):
+        if cmd[-1].endswith('env.sh'):
+            raise launch.subprocess.CalledProcessError(1, cmd)
+        return next(ids)
+
+    with pytest.raises(launch.subprocess.CalledProcessError):
+        launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd, wait=lambda *a: None)
+    assert cancelled == [['11', '12']]  # prep and GPU, no retry
+    assert 'cancelled' in (tmp_path / 'submit-failed.txt').read_text()
+
+    cancelled.clear()
+
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: '21', wait=interrupted)
+    assert cancelled == [['21']]
+
+
+def test_prep_min_free_bytes_and_new_switches_reach_the_jobs():
+    plan = plan_for(cards=3, wall_seconds=2400)
+    env = launch.job_env(plan)
+    assert 'export FC_PREP_MIN_FREE_BYTES=15000000000' in env
+    assert plan['knobs']['prepared_kernels'].endswith('+residual')
+    assert plan['knobs']['diagnostics_every'] == 512
+    off = launch.job_env(plan_for(cards=3, prep_scratch_min_free=False))
+    assert 'export FC_PREP_MIN_FREE_BYTES=0' in off
+
+
+def test_time_limits_refuse_a_prep_job_longer_than_its_partition_allows():
+    plan = plan_for(cards=3)
+    assert plan['partition_max_minutes'] == {'gpu': 0, 'env': 0, 'prep': 0}
+    assert preflight.check_time_limits(plan).ok
+    capped = copy.deepcopy(plan)
+    capped['partition_max_minutes']['prep'] = 60
+    assert not preflight.check_time_limits(capped).ok  # 50 min wall + margins > 60
+    unknown = copy.deepcopy(plan)
+    unknown['partition_max_minutes']['env'] = None
+    assert 'no entry' in preflight.check_time_limits(unknown).detail
+    long = plan_for(cards=2, long_run=True)
+    assert long['wall_seconds'] == 72000 and long['gpu_minutes'] > 1200
+    assert preflight.check_time_limits(long).ok
+    long['partition_max_minutes']['gpu'] = 48 * 60
+    assert preflight.check_time_limits(long).ok  # 20 h fits a 48 h partition
+    nojoin = plan_for(cards=2, env_min_join_seconds=3000)
+    assert 'join window' in preflight.check_time_limits(nojoin).detail
+
+
+def test_memory_budget_does_not_count_idle_local_pools():
+    remote = plan_for(cards=3)
+    local = plan_for(cards=3, remote_prepare=False, preparation_workers=24,
+                     assembly_workers=24)
+    est_remote, est_local = preflight.memory_estimate(remote), preflight.memory_estimate(local)
+    assert est_remote['workers'] == 4 * remote['knobs']['shards']
+    assert est_local['workers'] > est_remote['workers']
+    assert preflight.check_memory(remote).ok
+
+
+# ---------------- preflight (job side) ----------------
+
+def test_job_side_pure_helpers():
+    assert preflight.scratch_ok(31 * 10**9, 15)[0]
+    assert not preflight.scratch_ok(29 * 10**9, 15)[0]
+    assert preflight.local_fs('tmpfs') and preflight.local_fs('xfs')
+    assert preflight.local_fs('ext2/ext3') and preflight.local_fs('btrfs')
+    for other in ('nfs4', 'lustre', 'unknown', 'UNKNOWN (0x19830326)', 'beegfs', ''):
+        assert not preflight.local_fs(other)
+
+
+# ---------------- readout ----------------
+
+def write_run(run, cards=3):
+    plan = plan_for(cards=cards)
+    run.mkdir()
+    (run / 'plan.json').write_text(json.dumps(plan))
+    t0 = 1000.0
+    events = [{'t': t0, 'kind': 'training_started'}]
+    events += [{'t': t0 + i, 'kind': 'progress', 'stepped': True, 'rows': 8000,
+                'terminal_rows': 600, 'hp_rows': 400, 'seconds': 1.0} for i in range(1, 1300)]
+    (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+    status = [{'t': t0 + i, 'queued_rows': 50_000, 'timing': {
+        'preparation_wait_seconds': 0.1 * i, 'sgd_stage_wait_seconds': 0.05 * i,
+        'optimizer_attempt_seconds': 0.8 * i},
+        'fast_chain': {'learner': {'admitted_rows': 8100 * i, 'capacity_dropped_rows': 10 * i}}}
+        for i in range(0, 1300, 10)]
+    (run / 'learner-status.jsonl').write_text('\n'.join(map(json.dumps, status)))
+    service = [{'t': t0 + i, 'handoff_q': 3, 'service': {'rows': 2000 * i,
+                'device_seconds': 0.7 * i}, 'handoff': {'written': i, 'dropped': 0}}
+               for i in range(0, 1300, 5)]
+    (run / 'service-status-0.jsonl').write_text('\n'.join(map(json.dumps, service)))
+    (run / 'gpu.csv').write_text('\n'.join(
+        f'{int((t0 + i) * 1000)}, {c}, {90 if c else 70}, 30000'
+        for i in range(0, 1300, 2) for c in range(cards)))
+    return plan
+
+
+def test_readout_edge_table_target_and_loss_table(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    result = readout.build(run, 1200)
+    assert result['name'] == '3卡 · 1推理+2训练 · A100-40'
+    # incl. aux = td + terminal + hp (9,000/s); td only shown beside it
+    assert result['training']['rows_h'] == pytest.approx(9000 * 3600, rel=0.01)
+    assert result['training']['td_rows_h'] == pytest.approx(8000 * 3600, rel=0.01)
+    assert result['training']['aux_share'] == pytest.approx(1000 / 9000, rel=0.01)
+    assert result['verdict'] == 'meets target'  # 3,240万 > 3,000万 (td only would fail)
+    assert result['training']['prepare_wait_pct'] == pytest.approx(10, abs=0.5)
+    assert result['services'][0]['rows_s'] == pytest.approx(2000)
+    assert result['gpu']['1']['busy_pct'] == 90
+    table = result['loss_table']
+    assert table[0]['cause'].startswith('ideal') and table[1]['cause'] == 'measured'
+    text = readout.render(result)
+    assert 'target: 3,000万' in text and 'loss table' in text and 'infer 0' in text
+    assert 'incl. aux' in text and 'td only' in text
+
+
+def test_readout_refuses_to_guess_missing_aux(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    events = [json.loads(line) for line in (run / 'learner-events.jsonl').read_text().split('\n')]
+    for event in events[5:]:
+        event.pop('hp_rows', None)
+    (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+    result = readout.build(run, 1200)
+    assert result['training']['rows_h'] is None and result['training']['aux_missing']
+    assert result['verdict'] is None
+    assert 'aux fields missing' in readout.render(result)
+
+
+def test_verdict_strict_for_three_cards_and_ready():
+    three = {'cards': 3, 'target_rows_h': 30_000_000, 'ready_rows_h': 35_000_000}
+    assert readout.verdict(30_000_000, three) == 'below target'
+    assert readout.verdict(30_000_001, three) == 'meets target'
+    assert readout.verdict(35_000_000, three) == 'ready'
+    assert readout.verdict(14_000_000, {'cards': 1, 'target_rows_h': 14_000_000}) == \
+        'meets target'
+
+
+def test_readout_single_card_has_no_loss_table(tmp_path):
+    run = tmp_path / 'run-t1'
+    plan = write_run(run, cards=1)
+    assert plan['placement']['cards'] == 1
+    result = readout.build(run, 1200)
+    assert result['loss_table'] is None
+    assert result['target']['target_rows_h'] == 14_000_000
+    assert 'perfect_packing_rows_h' not in plan['target']  # shared card: not an upper bound
+
+
+def test_readout_alarms_on_recompiles_after_warmup_and_sums_gc():
+    events = [{'kind': 'sgd_process_started', 'compile': {'warmup': ['a.pt', 'b.pt']}},
+              {'kind': 'progress', 'stepped': True, 't': 10.0,
+               'rows_forward': {'dynamo_unique_graphs': 6}, 'step': {'gc_seconds': 0.5}},
+              {'kind': 'progress', 'stepped': True, 't': 70.0,
+               'rows_forward': {'dynamo_unique_graphs': 6}, 'step': {'gc_seconds': 0.25}}]
+    calm = readout.compile_edge(events)
+    assert calm['warmup_dumps'] == 2 and calm['graphs_after_warmup'] == 6
+    assert calm['alarm'] is None and calm['gc_seconds'] == 0.75
+    events.append({'kind': 'progress', 'stepped': True, 't': 130.0,
+                   'rows_forward': {'dynamo_unique_graphs': 7}})
+    assert 'rose 6 -> 7' in readout.compile_edge(events)['alarm']
+    assert readout.compile_edge([])['gc_seconds'] is None
+
+
+def test_learner_config_matches_the_frozen_recipe_except_allowed_levers():
+    knobs = run_profile.values(run_profile.load_profile(PROFILE))
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    built = learner_config.build(gate_base(), knobs, run)
+    assert 'archive' not in json.dumps(built['peer']) and built['max_versions'] == 900000
+    assert learner_config.recipe_drift(built, FROZEN) == []
+    assert learner_config.recipe_drift({**built, 'max_versions': 100000}, FROZEN) == [
+        'max_versions: frozen 900000, effective 100000']
+    resumed = learner_config.build(gate_base(), knobs, {**run, 'resume_checkpoint': 'cp-1'})
+    assert resumed['resume_checkpoint'] == 'cp-1'
+
+
+def test_long_run_and_smoke_are_exclusive():
+    with pytest.raises(SystemExit):
+        plan_for(cards=2, smoke=True, long_run=True)
+
+
+def test_learner_window_follows_the_learner_restore_rules():
+    fresh = learner_config.window('c-x', 72000, 1e9, None, None)
+    assert fresh['operating_budget'] == {'id': 'c-x', 'total_seconds': 72000,
+                                         'consumed_seconds': 0}
+    assert fresh['deadline_at'] == 1e9 and fresh['operating_budget_parent'] is None
+    own = {'operating_budget': {'id': 'c-x', 'total_seconds': 72000, 'consumed_seconds': 9},
+           'deadline_at': 1e9}
+    assert learner_config.window('c-x', 72000, 1e9, 'cp1', own) == {
+        'operating_budget': None, 'operating_budget_parent': None, 'deadline_at': None}
+    other = {'operating_budget': {'id': 'old', 'total_seconds': 3600, 'consumed_seconds': 3600},
+             'deadline_at': 5.0}
+    parent = learner_config.window('c-x', 72000, 1e9, 'cp0', other)['operating_budget_parent']
+    assert parent == {'checkpoint_artifact_id': 'cp0', 'operating_budget': other[
+        'operating_budget'], 'deadline_at': 5.0}
+    assert learner_config.window('c-x', 72000, 1e9, 'cp0', {'operating_budget': None,
+                                 'deadline_at': None})['deadline_at'] == 1e9
+    with pytest.raises(ValueError, match='no operating budget'):
+        learner_config.window('c-x', 72000, 1e9, 'cp0', {'operating_budget': None,
+                                                         'deadline_at': 5.0})
+    with pytest.raises(ValueError):
+        learner_config.window('c-x', 80000, 1e9, None, None)
+
+
+def test_chain_generation_plan_and_resume_preflight():
+    chain = {'id': 'c-t1', 'deadline_at': 10**10, 'total_seconds': 72000, 'generation': 1}
+    plan = launch.build_plan('t1-r1', knobs(), run_profile.load_site(SITE), cards=2,
+                             card_type='A100-40', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()], long_run=True,
+                             resume_checkpoint='cp-0123456789', chain=chain)
+    assert plan['wall_seconds'] == 72000 and plan['resume_checkpoint'] == 'cp-0123456789'
+    env = launch.job_env(plan)
+    assert 'FC_RESUME_CHECKPOINT=cp-0123456789' in env and 'FC_CHAIN_ID=c-t1' in env
+    assert preflight.check_resume(plan).ok
+    late = launch.build_plan('t1-r2', knobs(), run_profile.load_site(SITE), cards=2,
+                             card_type='A100-40', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()], long_run=True,
+                             chain={**chain, 'deadline_at': __import__('time').time() + 600})
+    assert late['wall_seconds'] <= 600
+    assert 'min_generation_seconds' in preflight.check_resume(late).detail
+    with pytest.raises(SystemExit):
+        launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=2,
+                          card_type='A100-40', layout_spec=None, env_cores=None, smoke=True,
+                          probe_rows=[probe_row()], chain=chain)
+
+
+def write_outcome(run, failure=None, report=True, disk=False, window_end='deadline',
+                  stop=None, rc='auto'):
+    run.mkdir(parents=True, exist_ok=True)
+    if rc == 'auto':  # gpu.sh: 0 clean, 6 learner failure, none when the node died
+        rc = None if not report else 6 if failure else 0
+    if rc is not None:
+        (run / 'gpu-rc').write_text(f'{rc}\n')
+    if report:
+        (run / 'learner-report.json').write_text(json.dumps(
+            {'failure': failure, 'summary': None if failure else {'window_end': window_end}}))
+    (run / 'STOP').write_text(stop or ('learner failure x' if failure else 'learner ended'))
+    if disk:
+        (run / 'disk-stop').write_text('DISK STOP /x free 9%')
+
+
+def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
+    fence = "BoundaryError: input_owner_fenced_restore_last_checkpoint ..."
+    cases = [({}, 'normal'), ({'failure': fence}, 'resumable'),
+             ({'failure': 'BoundaryError: unresolved_worlds_after_drain'}, 'failure'),
+             # review D2: a "service failure" STOP alone would repeat (gpu preflight, MPS...)
+             ({'failure': 'BoundaryError: unresolved_worlds_after_drain',
+               'stop': 'service failure 2 exited'}, 'failure'),
+             ({'report': False}, 'resumable'), ({'report': False, 'rc': 9}, 'failure'),
+             # review D1: the learner stopped cleanly on a service STOP, the job exits 5
+             ({'stop': 'service failure handoff EOF', 'rc': 5}, 'failure'),
+             ({'stop': 'service failure handoff EOF', 'rc': 0}, 'failure'),
+             ({'rc': 5}, 'failure'), ({'window_end': None}, 'failure'),
+             ({'disk': True}, 'disk_stop'), ({'failure': fence, 'disk': True}, 'disk_stop')]
+    for i, (kw, kind) in enumerate(cases):
+        write_outcome(tmp_path / str(i), **kw)
+        assert supervise.outcome(tmp_path / str(i))['kind'] == kind, kw
+
+
+class FakeCluster:
+    """launch.main / squeue / scancel / CP records for one chain, all in memory."""
+
+    def __init__(self, root, endings):
+        self.root, self.endings, self.argvs, self.alive = root, list(endings), [], set()
+        self.now = 1000.0
+        self.records = []
+
+    def launch_main(self, argv):
+        self.argvs.append(argv)
+        tag = argv[1]
+        run = self.root / f'run-{tag}'
+        run.mkdir(parents=True)
+        number = len(self.argvs)
+        jobs = {'gpu': f'{number}00', 'env': f'{number}01'}
+        (run / 'jobs.json').write_text(json.dumps(jobs))
+        self.alive = set(jobs.values())
+        ending = self.endings.pop(0)
+        write_outcome(run, **ending)
+        self.records.append({'training_generation': f'g-fc-{tag}', 'published_at': self.now,
+                             'checkpoint_artifact_id': f'cp-{tag}'})
+        return 0
+
+    def squeue(self, ids):
+        self.alive.discard(next(i for i in ids if i.endswith('00')))  # GPU job ends
+        return {i for i in self.alive if i in ids}
+
+    def scancel(self, ids):
+        self.alive -= set(ids)
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def chain_for(tmp_path, endings, **sets):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    site = tmp_path / 'site.toml'
+    text = SITE.read_text().replace('/scratch/USER/fastchain"', f'{tmp_path}"', 1)
+    site.write_text(text)
+    cluster = FakeCluster(tmp_path, endings)
+    args = __import__('argparse').Namespace(
+        chain='lr1', profile=PROFILE, site=site, cards=2, card_type='A100-40', layout=None,
+        set=[f'{k}={v}' for k, v in sets.items()], resume_checkpoint=None,
+        eval_execution=None, eval_manifest=None, eval_baseline_plan=None,
+        eval_a10_manifest=None, eval_slot_registered=False, dry_run=False)
+    chain = supervise.Chain(args, clock=lambda: cluster.now, sleep=cluster.sleep,
+                            launch_main=cluster.launch_main, squeue=cluster.squeue,
+                            scancel=cluster.scancel, checkpoints=lambda g: cluster.records)
+    return chain, cluster
+
+
+FENCE = {'failure': 'BoundaryError: input_owner_fenced_restore_last_checkpoint'}
+
+
+def test_chain_resumes_a_fence_from_the_newest_cp_in_a_new_run_and_generation(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    assert chain.run() == 0
+    first, second = cluster.argvs
+    assert first[1] == 'lr1' and '--resume-checkpoint' not in first
+    assert second[1] == 'lr1-r1'
+    assert second[second.index('--resume-checkpoint') + 1] == 'cp-lr1'
+    assert '--long-run' in second and '--chain-json' in second
+    facts = json.loads((tmp_path / 'chain-lr1' / 'chain-1.json').read_text())
+    assert facts['id'] == 'c-lr1' and facts['generation'] == 1
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['ok'] and final['resumes'] == 1
+    assert 'restore_last_checkpoint' in final['first_cause']['failure']
+
+
+def test_chain_stops_loudly_when_resumes_run_out_and_keeps_the_first_cause(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, FENCE], resume_max_total=1)
+    assert chain.run() == 1
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert 'resume budget exhausted' in final['cause'] and len(cluster.argvs) == 2
+    assert final['first_cause']['kind'] == 'resumable'
+
+
+def test_chain_never_resumes_other_failures_and_allows_three_resumes(tmp_path):
+    chain, cluster = chain_for(tmp_path / 'a', [{'failure': 'ValueError: boom'}])
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    chain, cluster = chain_for(tmp_path / 'b', [FENCE, {'report': False},
+                                                FENCE, FENCE])
+    assert chain.run() == 1 and len(cluster.argvs) == 4
+    assert 'resume budget exhausted (3 of 3)' in chain.state['final']['cause']
+    assert 'restore_last_checkpoint' in chain.state['final']['first_cause']['failure']
+
+
+def test_chain_never_resumes_across_a_code_or_profile_change(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    original = supervise.identity
+    calls = []
+
+    def changing(*a):
+        calls.append(1)
+        value = original(*a)
+        return {**value, 'profile': 'changed'} if len(calls) > 1 else value
+    supervise.identity = changing
+    try:
+        assert chain.run() == 1
+    finally:
+        supervise.identity = original
+    assert 'never resumed across a change' in chain.state['final']['cause']
+    assert len(cluster.argvs) == 1
+
+
+def test_chain_ends_on_a_submit_failure_without_repeating_it(tmp_path):
+    chain, cluster = chain_for(tmp_path, [])
+
+    def broken(argv):
+        cluster.argvs.append(argv)
+        raise SystemExit('refused after prep submission')
+    chain.launch_main = broken
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'not repeated' in chain.state['final']['cause']
+
+
+def test_readout_reports_disk_watermarks(tmp_path):
+    (tmp_path / 'disk.txt').write_text('1 /run free_pct=15 avail=15 size=100\n'
+                                       '2 /tmp free_pct=40 avail=40 size=100\n')
+    (tmp_path / 'disk-watermark.txt').write_text('DISK WARN /run free 15% < 20% now\n')
+    disk = readout.disk_edge(tmp_path)
+    assert disk['free_pct'] == {'/run': 15.0, '/tmp': 40.0} and len(disk['events']) == 1
+
+
+def test_prep_estimate_is_only_a_warning():
+    plan = plan_for(cards=3)
+    for start in (None, 99_999.0):
+        result = preflight.check_prep_schedulable(plan, {**good_facts(plan),
+                                                         'prep_test_start_seconds': start})
+        assert result.ok and result.warn
+    assert 'WARN prep_schedulable' in preflight.report([result])
+
+
+def test_missing_source_features_only_warn():
+    plan = plan_for(cards=3, shards_adopt_unsharded_checkpoint=True)
+    facts = {**good_facts(plan), 'src_features': {
+        name: name != 'adopt_unsharded' for name in launch.FEATURES}}
+    result = preflight.check_features(plan, facts)
+    assert result.ok and result.warn and 'adopt_unsharded' in result.detail
+
+
+def test_new_knobs_name_their_source_features():
+    need = preflight.required_features(plan_for(cards=3))
+    assert {'retention', 'mu_archive', 'r7_max_games', 'r7_audit_mu',
+            'segment_format_3'} <= set(need)
+    off = preflight.required_features(plan_for(
+        cards=3, release_trained_segments=False, r7_games_per_hour=0,
+        service_kwargs={**knobs()['service_kwargs'], 'segment_format': 'stpd/rl-fast-segment-2'}))
+    assert not {'retention', 'mu_archive', 'r7_audit_mu', 'segment_format_3'} & set(off)
+    a10 = preflight.required_features(plan_for(cards=3, ascension_mix={'0': 0.5, '10': 0.5}))
+    assert 'ascension' in a10
+
+
+def test_profile_relations_are_refused_at_load():
+    with pytest.raises(run_profile.ProfileError, match='disk_stop_free_pct'):
+        run_profile.load_profile(PROFILE, ['disk_stop_free_pct=30'])
+    with pytest.raises(run_profile.ProfileError, match='segment_format'):
+        run_profile.load_profile(PROFILE, [
+            'ascension_mix={ 0 = 0.5, 10 = 0.5 }',
+            'service_kwargs={ segment_format = "stpd/rl-fast-segment-2" }'])
+    with pytest.raises(run_profile.ProfileError, match='summing to 1'):
+        run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
+    with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):
+        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true'])
+    assert run_profile.values(run_profile.load_profile(PROFILE))['ascension_mix'] == {'0': 1.0}
+
+
+def test_ascension_plan_is_largest_remainder():
+    assert run_profile.ascension_plan({'0': 1.0}, 10) == [0] * 10
+    assert run_profile.ascension_plan({'0': 0.5, '10': 0.5}, 10) == [0] * 5 + [10] * 5
+    assert run_profile.ascension_plan({'0': 0.9, '10': 0.1}, 12) == [0] * 11 + [10]
+    plan = run_profile.ascension_plan({'0': 0.34, '5': 0.33, '10': 0.33}, 10)
+    assert len(plan) == 10 and plan.count(0) == 4 and plan.count(5) == 3
+
+
+def test_job_env_carries_r7_and_ascension_knobs():
+    env = launch.job_env(plan_for(cards=3))
+    assert 'FC_ENV_NODES=' in env and 'FC_R7_GAMES_PER_HOUR=10' in env
+    assert """FC_ASCENSION_MIX='{"0":1.0}'""" in env and 'FC_RELEASE_TRAINED_SEGMENTS=1' in env
+
+
+def test_chain_name_must_not_look_like_a_generation(tmp_path):
+    site = tmp_path / 'site.toml'
+    site.write_text(SITE.read_text())
+    with pytest.raises(SystemExit):
+        supervise.main(['start', 'a-r1', '--site', str(site), '--cards', '2',
+                        '--card-type', 'A100-40'])
+
+
+def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
+    chain, _ = chain_for(tmp_path, [], eval_suite='rl3-a0-100', eval_a10_enabled='true',
+                         eval_a10_suite='a10-50')
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}, 'storage_mode': 'remote',
+                                    'store': 's3', 'peer': {'kind': 's3'}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.args.eval_baseline_plan = tmp_path / 'base' / 'plan.json'
+    chain.dir.mkdir(parents=True)
+    chain.state = {'deadline_at': 1e10, 'log': []}
+    started = []
+    chain.spawn = lambda cmd, log: started.append(cmd) or type(
+        'P', (), {'pid': 7, 'poll': lambda self: None})()
+    chain.persist = lambda: None
+    chain.start_eval()
+    a0, a10 = started
+    for cmd in started:
+        assert '--once' not in cmd and '--checkpoint' not in cmd and '--deadline-at' not in cmd
+    assert a0[a0.index('--suite') + 1] == 'rl3-a0-100' and '--baseline-plan' in a0
+    assert a10[a10.index('--suite') + 1] == 'a10-50' and a10[a10.index('--seeds') + 1] == '50'
+    assert '--baseline-plan' not in a10 and '--dry-run' in a0
+    execution = json.loads((chain.dir / 'eval-execution.json').read_text())
+    assert execution['storage_mode'] == 'shared_local' and execution['peer'] == {
+        'kind': 'local', 'directory': chain.site['peer_dir']}
+    assert execution['store'] == chain.site['peer_dir'] and execution['models'] == {}
