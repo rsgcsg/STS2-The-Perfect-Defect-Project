@@ -1356,7 +1356,7 @@ class _SgdWorker:
                 else:
                     batch = bp.unpack_transport((tree, tuple(a.copy() for a in arrays)))
                 arrays = None
-                if (batch.request.identity.sequence != dataset
+                if (batch.request.identity.sequence != plan.get("bound", dataset)
                         or len(batch.minibatches) != plan["minibatch_count"]):
                     raise _ChildViolation("sgd_prepared_batch_binding_changed")
                 pinned = time.perf_counter()
@@ -1384,7 +1384,9 @@ class _SgdWorker:
                        began: float, pinned: float, staged_at: float,
                        digest: _Digest | None,
                        identity: tuple[int, ...]) -> tuple[Any, dict[str, Any]]:
-        if (device_batch.request.identity.sequence != plan["dataset"]
+        # `bound`: the number the preparing data-plane shard gave this dataset and
+        # wrote into its file (`dataplane.shards`); absent = the plan's own number.
+        if (device_batch.request.identity.sequence != plan.get("bound", plan["dataset"])
                 or len(device_batch.minibatches) != plan["minibatch_count"]):
             raise _ChildViolation("sgd_prepared_batch_binding_changed")
         done = time.perf_counter()

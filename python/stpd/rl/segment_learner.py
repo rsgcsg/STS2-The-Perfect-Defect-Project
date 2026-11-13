@@ -510,6 +510,26 @@ def bind_dataplane_capacity(config: LearnerConfig, lanes: int) -> LearnerConfig:
         capacity_rows=max(capacity, settings.capacity_rows)))
 
 
+def binary_preparer_arguments(dataplane: dict[str, Any], settings: Any,
+                              prepared_batches: int) -> dict[str, Any]:
+    """`BinaryBatchPreparer` sizes of one data plane (the learner's own, or one
+    shard's with its share of the same `dataplane` keys)."""
+    return dict(
+        workers=dataplane.get("preparation_workers", settings.preparation_workers),
+        threads=dataplane.get("preparation_threads", settings.preparation_threads),
+        assembly_workers=dataplane.get("assembly_workers", 2),
+        prepared_batches=prepared_batches,
+        label_workers=dataplane.get("label_workers", 1),
+        max_prepared_bytes=settings.prepared_bytes,
+        max_pinned_bytes=settings.prepared_bytes,
+        source_slots=dataplane.get("prepare_slots", 2 * (prepared_batches + 2)),
+        max_source_bytes=dataplane.get("prepare_source_bytes",
+            dataplane.get("source_bytes", 20 * 1024**3) * (prepared_batches + 2) // 4),
+        source_wait_seconds=dataplane.get("source_wait_seconds", 60),
+        persistent_pools=dataplane.get("persistent_pools", False),
+        remote_prepare=dataplane.get("remote_prepare"))
+
+
 class SegmentLearner:
     memory_sample: tuple[float, dict[str, Any]] | None
     policy_mask_cache: tuple[Any, list[bool]] | None  # (batch, mask list): per dataset
@@ -518,6 +538,17 @@ class SegmentLearner:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
         settings = config.segments
         self.dataplane = copy.deepcopy(io.dataplane)
+        # `dataplane.shards` > 0: the fast data plane (hand-off receive, intake,
+        # queue, eviction, selection, source copy, prepare dispatch, aux pools)
+        # runs in that many shard processes (`dataplane_shards.py`); 0 = here.
+        self.shards: Any = None
+        self.shard_count = (self.dataplane or {}).get("shards", 0)
+        if type(self.shard_count) is not int or not 0 <= self.shard_count <= 8:
+            raise BoundaryError("rl_learner", "dataplane_shards_must_be_int_0_to_8")
+        if self.shard_count and config.resume_checkpoint:
+            # First slice: a CP records every shard's selection RNG, but restoring
+            # them is not written yet. Refused here, never a silent RNG reset.
+            raise BoundaryError("rl_learner", "dataplane_shards_restore_not_supported_yet")
         # Threads that copy batch sources into preparer arenas concurrently.
         self.dispatch_workers = (self.dataplane.get("prepare_dispatch_workers", 4)
                                  if self.dataplane is not None else 1)
@@ -868,7 +899,19 @@ class SegmentLearner:
                 # with a different trace length would mis-bind every segment.
                 if settings.steps != MAX_ROWS or settings.capacity_rows < MAX_ROWS:
                     raise BoundaryError("rl_learner", "fast_chain_requires_steps_equal_max_rows")
-                self.fast_sources = FastSources()
+                if self.shard_count:
+                    if self.sgd_options is None:
+                        # A prepared dataset reaches this process as a file hand-off
+                        # only (never its tensors through a pipe).
+                        raise BoundaryError("rl_learner", "dataplane_shards_require_sgd_process")
+                    if (self.dataplane.get("fast_verify_workers", 0) != 0
+                            or not settings.prepare_ahead):
+                        # A shard reads hand-offs in its own process (no verify
+                        # pool) and selects by read-ahead only.
+                        raise BoundaryError(
+                            "rl_learner", "dataplane_shards_need_prepare_ahead_and_no_verify_pool")
+                else:
+                    self.fast_sources = FastSources()
                 # Every aux pool the loss weights (coef > 0) takes the fast labels
                 # by default (lead ruling 11-10); an explicit list that leaves out
                 # such a pool is refused, so its loss never silently becomes 0.
@@ -881,11 +924,13 @@ class SegmentLearner:
                 if not set(weighted) <= set(aux_labels):
                     raise BoundaryError("rl_learner",
                                         "fast_aux_labels_omit_a_pool_with_positive_coef")
-                self.fast_intake = FastSegmentIntake(
-                    run=config.run, generation=self.generation,
-                    excluded_seeds=frozenset(settings.excluded_seeds),
-                    buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
-                    gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
+                self.fast_aux_labels = sorted(aux_labels)
+                if not self.shard_count:
+                    self.fast_intake = FastSegmentIntake(
+                        run=config.run, generation=self.generation,
+                        excluded_seeds=frozenset(settings.excluded_seeds),
+                        buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
+                        gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
                 verify_workers = self.dataplane.get("fast_verify_workers", 0)
                 if type(verify_workers) is not int or not 0 <= verify_workers <= 8:
                     raise BoundaryError("rl_learner", "fast_verify_workers_must_be_int_0_to_8")
@@ -906,26 +951,25 @@ class SegmentLearner:
                     "excluded_trained_rows", "excluded_prefetched_rows",
                     "excluded_admit_raced", "excluded_admit_raced_rows",
                     "excluded_aux_rows")}
-                provider = RoutedSources(self.binary_sources, self.fast_sources)
+                if self.fast_sources is not None:
+                    provider = RoutedSources(self.binary_sources, self.fast_sources)
+            if self.shard_count and not fast_chain:
+                raise BoundaryError("rl_learner", "dataplane_shards_require_fast_chain")
+            self.preparation_options = preparation_options
+            if self.shard_count:
+                # The shards own every preparation; this process keeps one small
+                # idle preparer (no remote hosts, no warm pools) because status,
+                # the SGD memory budget and close still read it.
+                arguments = binary_preparer_arguments(
+                    {**self.dataplane, "persistent_pools": False, "remote_prepare": None,
+                     "preparation_workers": 1, "assembly_workers": 1, "label_workers": 1},
+                    settings, self.prepared_batches)
+            else:
+                arguments = binary_preparer_arguments(self.dataplane, settings,
+                                                      self.prepared_batches)
             self.input_preparer = BinaryBatchPreparer(provider=provider,
-                vocabulary=self.model.vocabulary,
-                workers=self.dataplane.get("preparation_workers", settings.preparation_workers),
-                threads=self.dataplane.get("preparation_threads", settings.preparation_threads),
-                assembly_workers=self.dataplane.get("assembly_workers", 2),
-                prepared_batches=self.prepared_batches,
-                label_workers=self.dataplane.get("label_workers", 1),
-                max_prepared_bytes=settings.prepared_bytes,
-                max_pinned_bytes=settings.prepared_bytes,
-                scratch=self.live_work,
-                source_slots=self.dataplane.get("prepare_slots", 2 * (self.prepared_batches + 2)),
-                max_source_bytes=self.dataplane.get("prepare_source_bytes",
-                    self.dataplane.get("source_bytes", 20 * 1024**3)
-                    * (self.prepared_batches + 2) // 4),
-                source_wait_seconds=self.dataplane.get("source_wait_seconds", 60),
-                handoff=self.sgd_options is not None,
-                persistent_pools=self.dataplane.get("persistent_pools", False),
-                remote_prepare=self.dataplane.get("remote_prepare"),
-                **preparation_options)
+                vocabulary=self.model.vocabulary, scratch=self.live_work,
+                handoff=self.sgd_options is not None, **arguments, **preparation_options)
         else:
             self.input_preparer = BatchPreparer(
             self.model.vocabulary,
@@ -1009,6 +1053,12 @@ class SegmentLearner:
                 self._abort_before_listener(error)
                 raise
         try:
+            if self.shard_count:
+                from .dataplane_shards import ShardSet
+
+                # Before any listener or attachment, like the SGD process: a shard
+                # that fails to start means this learner accepts no connection.
+                self.shards = ShardSet.start(self)
             self.pool = create_segment_inference_pool(
                 self.model.vocabulary,
                 initial["identity"],
@@ -1028,6 +1078,8 @@ class SegmentLearner:
                 # Known limit: mu published by an earlier process is not carried
                 # across a resume, so its in-flight segments are refused loudly.
                 self.fast_intake.publish_mu(initial["identity"])
+            if self.shards is not None:
+                self.shards.publish_mu(initial["identity"])
             if self.dataplane is not None:
                 recipe = _resume_config(asdict(self.config))
                 cast(SegmentInferencePool, self.pool).binary_profile = {"binary_recipe": {
@@ -1083,7 +1135,89 @@ class SegmentLearner:
             if self.sgd is not None:
                 self.sgd.kill()
                 self.sgd.close()
+            if self.shards is not None:
+                self.shards.kill()
             raise
+
+    # `input_fenced` / `newlease_stopped` stay plain attributes for every reader
+    # and writer; the setters only add one thing: a False -> True change is passed
+    # on to the data-plane shards (`dataplane.shards` > 0), which hold their own
+    # copy of both flags. Without shards the hook does nothing.
+    @property
+    def input_fenced(self) -> bool:
+        return self._input_fenced
+
+    @input_fenced.setter
+    def input_fenced(self, value: bool) -> None:
+        changed = bool(value) and not getattr(self, "_input_fenced", False)
+        self._input_fenced = value
+        if changed:
+            self._flags_changed()
+
+    @property
+    def newlease_stopped(self) -> bool:
+        return self._newlease_stopped
+
+    @newlease_stopped.setter
+    def newlease_stopped(self, value: bool) -> None:
+        changed = bool(value) and not getattr(self, "_newlease_stopped", False)
+        self._newlease_stopped = value
+        if changed:
+            self._flags_changed()
+
+    def _flags_changed(self) -> None:
+        shards = getattr(self, "shards", None)
+        if shards is not None:
+            shards.flags(stopped=bool(getattr(self, "_newlease_stopped", False)),
+                         fenced=bool(getattr(self, "_input_fenced", False)))
+
+    def _shard_fenced(self, index: int, failure: dict[str, Any]) -> None:
+        """A data-plane shard fenced itself, failed an operation or died: all input
+        is fenced (every other shard too). Nothing is restarted or re-routed."""
+        with self.condition:
+            if not self.input_fenced:
+                self.input_failure = {"operation": "dataplane_shard", "shard": index,
+                                      "failure": failure}
+            self.input_fenced = self.newlease_stopped = True
+            self.condition.notify_all()
+            self._notify_capacity(force=True)
+
+    def _shard_ready(self) -> None:
+        """Main thread: ask every shard to keep its read-ahead filled, and queue
+        the datasets they announced as prepared, in arrival order. The dataset
+        number is given here (the same count `_select` uses), so numbers stay
+        gapless in take order over all shards."""
+        assert self.shards is not None
+        stopping = (self.newlease_stopped or self.input_fenced
+                    or (self.selection_deadline is not None
+                        and time.monotonic() >= self.selection_deadline))
+        if not stopping:
+            self.shards.ahead()
+        for shard, local, batch in self.shards.drain_ready():
+            with self.condition:
+                number = (self.datasets + int(self.active is not None)
+                          + int(self.next_active is not None)
+                          + len(self._pending_batches()) + 1)
+                if self.shards.count == 1 and number != local:
+                    raise ValueError("dataplane_shard_dataset_number_changed")
+                request = replace(batch.request, identity=RunSequence(
+                    self.config.run, self.generation, number))
+                self.shards.numbered(number, shard, local)
+                future: Future[PreparedBatch] = Future()
+                future.set_result(replace(batch, request=request))
+                active = {"request": request, "segments": [], "terminal": [], "hp": [],
+                          "used": [], "minibatch": 0, "epoch": 0,
+                          "start_updates": self.updates, "taken": False,
+                          "shard": shard, "shard_sequence": local}
+                pending = active, future
+                if self.pending_batch is None:
+                    self.pending_batch = pending
+                else:
+                    self.ahead_batches.append(pending)
+            if self.sgd is not None and self.sgd.options.stage_thread:
+                pending[1].add_done_callback(self._sgd_prepared)
+        if self.sgd is not None and not self.newlease_stopped and not self.input_fenced:
+            self._sgd_plan_ahead()
 
     def _start_sgd_process(self, restored: SelfContainedCheckpoint | None) -> None:
         assert self.sgd_options is not None and self.wal is not None and self.dataplane
@@ -1094,13 +1228,22 @@ class SegmentLearner:
         # per-dtype buffers across two slots); counted in full by the budget.
         pinned_bytes = settings.prepared_bytes
         preparer = cast("BinaryBatchPreparer", self.input_preparer)
+        prepare_source_bytes, prepared_bytes = preparer.maximum, settings.prepared_bytes
+        workers = preparer.workers + preparer.assembly_workers + preparer.label_workers + 4
+        if self.shard_count:
+            # The shards' preparers and processes, not this process's idle one.
+            from .dataplane_shards import shard_budget
+
+            prepare_source_bytes, prepared_bytes, shard_workers = shard_budget(
+                self.dataplane, settings, self.prepared_batches, self.shard_count)
+            workers += shard_workers
         budget = memory_budget(
             options=options, device=self.config.device, model_bytes=model_bytes,
             source_bytes=self.binary_sources.max_bytes,
-            prepare_source_bytes=preparer.maximum, prepared_bytes=settings.prepared_bytes,
+            prepare_source_bytes=prepare_source_bytes, prepared_bytes=prepared_bytes,
             pinned_bytes=pinned_bytes,
             wal_bytes=self.dataplane.get("wal_max_bytes", 4 * 1024**3),
-            workers=(preparer.workers + preparer.assembly_workers + preparer.label_workers + 4),
+            workers=workers,
             paths={"sources": self.live_work / "sources", "arenas": self.live_work,
                    "wal": self.live_work / "control.sqlite"})
         (self.work / "sgd-memory-budget.json").write_bytes(json_bytes(budget))
@@ -1216,9 +1359,14 @@ class SegmentLearner:
         # The SGD process owns pinned/device copies; the derived file goes now, on
         # the releaser thread (the preparer lock is contended; the unlink is IO).
         handoff = self.sgd_planned.pop(message["dataset"])
-        release = cast("BinaryBatchPreparer", self.input_preparer).release_handoff
-        with self.handoff_release_lock:
-            self.handoff_releases.append(self.handoff_releaser.submit(release, handoff))
+        if self.shards is not None:
+            # The owning shard's preparer holds the derived file; it releases it
+            # on its own releaser thread and reports a failure as a fence.
+            self.shards.release(message["dataset"])
+        else:
+            release = cast("BinaryBatchPreparer", self.input_preparer).release_handoff
+            with self.handoff_release_lock:
+                self.handoff_releases.append(self.handoff_releaser.submit(release, handoff))
         self.timing["input_transfer_host_seconds"] += message["host_seconds"]
         self.timing["input_transfer_copies"] += message["copies"]
 
@@ -1263,7 +1411,11 @@ class SegmentLearner:
                           arrays=[(a.offset, a.count, a.dtype) for a in handoff.arrays],
                           used_bytes=handoff.used_bytes, sha256=handoff.sha256,
                           minibatch_count=handoff.minibatch_count,
-                          epochs=handoff.request.epochs)
+                          epochs=handoff.request.epochs,
+                          # The number its shard wrote into the file (the learner
+                          # numbers datasets over all shards).
+                          **({"bound": self.shards.numbers[sequence][1]}
+                             if self.shards is not None else {}))
 
     def _sgd_plan_ahead(self) -> None:
         """At most one dataset beyond the started one is staged ahead in the SGD process."""
@@ -1401,6 +1553,18 @@ class SegmentLearner:
         self.training_discarded_rows += sum(record["rows"] for record in records)
         self.queue.pending.clear()
         self.queue.rows = 0
+
+    def _discard_stopped_shards(self) -> None:
+        """The same terminal training discard for what the shards still queue: one
+        durable disposition here (the shards journal nothing), bytes released there."""
+        records = self.shards.discard_stopped()
+        if not records:
+            return
+        disposition = {"run": self.config.run, "training_generation": self.generation,
+            "operation": "training_discard", "reason": "STOPPED", "segments": records}
+        self._append_durable("discard-stop:" + hashlib.sha256(json_bytes(disposition)).hexdigest(),
+                        disposition, {"discarded_rows": sum(r["rows"] for r in records)},
+                        kind="disposition")
 
     def _model_files(self, key: str | None, node: str, cached: list[str]) -> tuple[
             dict[str, Any], list[tuple[str, Path]], dict[str, Any]]:
@@ -1621,6 +1785,10 @@ class SegmentLearner:
                     # Before any service can hold it: a fast segment trains only
                     # under a mu recorded here (fast_segment_mu_not_published).
                     self.fast_intake.publish_mu(publication["identity"])
+                if self.shards is not None:
+                    # Every shard has recorded it (acknowledged) before any
+                    # service can hold it.
+                    self.shards.publish_mu(publication["identity"])
                 if isinstance(self.pool, CentralInferencePool):
                     self.pool.publish(publication["model"], publication["identity"])
                 else:
@@ -1915,7 +2083,8 @@ class SegmentLearner:
                 **({**self.wal.status(), **self.binary_sources.status(),
                     **self.wal_replication.status(),
                     "preparation": cast("BinaryBatchPreparer", self.input_preparer).summary(),
-                    "training_discarded_rows": self.training_discarded_rows,
+                    "training_discarded_rows": self.training_discarded_rows + (
+                        self.shards.discarded_rows() if self.shards is not None else 0),
                     "stop_epoch": self.stop_epoch, "owner": self.pool.pool_id,
                     "control_lock_timing": (self.control_lock.snapshot()
                         if hasattr(self.control_lock, "snapshot") else [])}
@@ -2038,6 +2207,8 @@ class SegmentLearner:
     # -- fast_chain (WP8): sealed segments from the assembler, no actor lease -------------
     def _fast_control(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
         """Non-mutation actor requests: never journaled, never replayed by the client."""
+        if self.shards is not None:
+            return cast(dict[str, Any], self.shards.control(operation, request))
         if self.fast_intake is None:
             raise BoundaryError("rl_learner", "fast_chain_not_enabled_on_this_learner")
         self.fast_intake.set_generation(self.generation)
@@ -2061,6 +2232,10 @@ class SegmentLearner:
         Any broken message, digest or contract fences new input loudly; nothing
         falls back to the old chain and no segment is re-requested.
         """
+        if self.shards is not None:
+            # One shard owns this Connection for its whole life (round-robin in
+            # attach order); the returned thread ends when its reader ends.
+            return cast(threading.Thread, self.shards.attach(connection))
         if self.fast_intake is None:
             raise BoundaryError("rl_learner", "fast_chain_not_enabled_on_this_learner")
         thread = threading.Thread(target=self._fast_receive, args=(connection,),
@@ -2354,6 +2529,8 @@ class SegmentLearner:
             self._notify_capacity()
 
     def fast_status(self) -> dict[str, Any]:
+        if self.shards is not None:
+            return cast(dict[str, Any], self.shards.status())
         if self.fast_intake is None or self.fast_sources is None:
             return {}
         with self.condition:
@@ -2988,6 +3165,9 @@ class SegmentLearner:
         return self._dispatch_preparation(prefetch, submit)
 
     def _prepare_ahead(self) -> None:
+        if self.shards is not None:
+            self._shard_ready()
+            return
         while (self.settings.prepare_ahead
                and not self.newlease_stopped and not self.input_fenced
                and (self.selection_deadline is None
@@ -3019,11 +3199,16 @@ class SegmentLearner:
         if self.active_batch is not None:
             return True
         self._collect_labels()
-        if self.pending_batch is None:
+        if self.pending_batch is None and self.shards is not None:
+            self._shard_ready()  # the shards select and prepare; this only collects
+            if self.pending_batch is None:
+                return False
+        elif self.pending_batch is None:
             active = self._select()
             if active is None:
                 return False
             self.pending_batch = active, self._submit_batch(active)
+        assert self.pending_batch is not None
         active, future = self.pending_batch
         began = time.perf_counter()
         while self.ahead_while_waiting and not future.done():
@@ -3054,7 +3239,13 @@ class SegmentLearner:
         timing_key = "binary_ipc_wall_seconds" if self.wal is not None else "request_wall_seconds"
         self.timing["preparation_seconds"] += batch.timings[timing_key]
         self.timing["prepared_batches"] += 1
-        if not active["taken"]:
+        if not active["taken"] and self.shards is not None:
+            # The same stop check, membership check and queue removal, in the
+            # owning shard under its own lock; False = stopped, nothing taken.
+            if not self.shards.take(active):
+                return False
+            active["taken"] = True
+        elif not active["taken"]:
             with self.condition:
                 if self.wal is not None and self.newlease_stopped:
                     return False
@@ -3088,18 +3279,17 @@ class SegmentLearner:
             self.device_batch, copies = stage_batch(batch, self.device)
             self.timing["input_transfer_host_seconds"] += time.perf_counter() - transfer_started
             self.timing["input_transfer_copies"] += copies
-        self._ready_labels(batch)
-        # Complete batch owns its tensors now. Release preparation and PPO bytes;
-        # delayed-label/aux owners independently protect their own future reads.
-        # One `condition` hold for all of them (same releases, same order): each
-        # separate acquisition waited behind the receive/prefetch threads.
-        with self.condition:
-            for member in batch.request.members:
-                self._release(
-                    member.payload, f"prepare:{self.generation}:{batch.request.identity.sequence}"
-                )
-            for member in batch.request.members:
-                self._release(member.payload, "ppo:" + member.segment_id)
+        if self.shards is not None:
+            # Same point, same work (`_ready_labels`, then both releases), done
+            # by the owning shard: the bytes and the aux pools live there.
+            self.shards.staged(active)
+        else:
+            self._ready_labels(batch)
+            # Complete batch owns its tensors now. Release preparation and PPO bytes;
+            # delayed-label/aux owners independently protect their own future reads.
+            # One `condition` hold for all of them (same releases, same order): each
+            # separate acquisition waited behind the receive/prefetch threads.
+            self._release_taken(batch.request)
         self._event(
             "batch_ready",
             dataset=batch.request.identity.sequence,
@@ -3115,6 +3305,14 @@ class SegmentLearner:
             if not self.newlease_stopped and not self.input_fenced:
                 self._sgd_plan_ahead()
         return True
+
+    def _release_taken(self, request: PrepareRequest) -> None:
+        with self.condition:
+            for member in request.members:
+                self._release(
+                    member.payload, f"prepare:{self.generation}:{request.identity.sequence}")
+            for member in request.members:
+                self._release(member.payload, "ppo:" + member.segment_id)
 
     def _sgd_prestart(self) -> None:
         """Authorize the next dataset before the current one's answers are all
@@ -3238,27 +3436,10 @@ class SegmentLearner:
             policy_mask = self.policy_mask_cache[1]
             self.first_use_multi += sum(policy_mask[i] for i in newly_used)
             active["used"].extend(newly_used)
-            with self.condition:
-                for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
-                    offset = 0 if kind == "terminal" else len(active["terminal"])
-                    rows = [
-                        row
-                        for local, row in enumerate(active[kind])
-                        if batch.request.auxiliary_minibatches[offset + local] == index
-                        and row["uses"] < pool.max_uses
-                    ]
-                    pool.used(rows, batch.request.identity.sequence, epochs=1)
-                    # Only rows just charged can newly reach the limit.
-                    for identity, retired in pool.retire_exhausted(rows).items():
-                        remaining = {
-                            row["member"].segment_id for row in pool.groups.get(identity, [])
-                        }
-                        for member in {
-                            row["member"].segment_id: row["member"] for row in retired
-                        }.values():
-                            if (member.segment_id not in remaining
-                                    and not isinstance(member.payload, BinaryRef)):
-                                self._release(member.payload, f"aux:{kind}:{identity}")
+            if self.shards is not None:
+                self.shards.stepped(active, index)  # the owning shard charges its pools
+            else:
+                self._charge_auxiliary(active, batch.request, index)
             if self.sgd is None:
                 self._update_ema()
             self.updates += 1
@@ -3298,6 +3479,10 @@ class SegmentLearner:
             if self.wal is not None:
                 self.committed_selection_rng = batch.request.selection_rng_state
             self.datasets += 1
+            if self.shards is not None:
+                # Its shard commits that selection RNG, forgets the dataset and
+                # promotes its own next one, in the same order as here.
+                self.shards.finished(active)
             self.active = self.active_batch = None
             self.device_batch = None
             self.policy_mask_cache = None  # never retain a finished batch
@@ -3330,6 +3515,31 @@ class SegmentLearner:
                 self.updates,
             )
         return result
+
+    def _charge_auxiliary(self, active: dict[str, Any], request: PrepareRequest,
+                          index: int) -> None:
+        """Aux uses of one successful minibatch (never for discarded KL work)."""
+        with self.condition:
+            for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
+                offset = 0 if kind == "terminal" else len(active["terminal"])
+                rows = [
+                    row
+                    for local, row in enumerate(active[kind])
+                    if request.auxiliary_minibatches[offset + local] == index
+                    and row["uses"] < pool.max_uses
+                ]
+                pool.used(rows, request.identity.sequence, epochs=1)
+                # Only rows just charged can newly reach the limit.
+                for identity, retired in pool.retire_exhausted(rows).items():
+                    remaining = {
+                        row["member"].segment_id for row in pool.groups.get(identity, [])
+                    }
+                    for member in {
+                        row["member"].segment_id: row["member"] for row in retired
+                    }.values():
+                        if (member.segment_id not in remaining
+                                and not isinstance(member.payload, BinaryRef)):
+                            self._release(member.payload, f"aux:{kind}:{identity}")
 
     def _update_ema(self) -> None:
         decay = self.settings.ema_decay
@@ -3530,7 +3740,12 @@ class SegmentLearner:
                      "pending_requests": [_pending_receipt(active["request"])
                                           for active, _ in self._pending_batches()],
                      "pending_labels": copy.deepcopy(self.pending_label_requests),
-                     "restore_disposition": "discard_hot_inputs_resume_committed_rng"}
+                     "restore_disposition": "discard_hot_inputs_resume_committed_rng",
+                     # Shard count and each shard's committed/speculative selection
+                     # RNG and in-flight receipts. A restore into shards is refused
+                     # at start in this slice (never a silent RNG reset).
+                     **({"dataplane_shards": self.shards.snapshot()}
+                        if self.shards is not None else {})}
                     if self.wal is not None else None)
 
         def finish() -> SelfContainedCheckpoint:
@@ -3661,6 +3876,11 @@ class SegmentLearner:
                 # and arena go; hand-off threads then stop on
                 # `fast_verify_pool_closed` without fencing (newlease_stopped).
                 cleanup.callback(verifier.close)
+            shards = getattr(self, "shards", None)
+            if shards is not None:
+                # Stops each shard's readers, prefetch and preparer and joins the
+                # process; a shard that does not answer is killed and reported.
+                cleanup.callback(shards.close)
             try:
                 self.pool.close()
             finally:
@@ -3792,6 +4012,8 @@ class SegmentLearner:
                         on_tick()
                     self._event("heartbeat", active_seconds=time.monotonic() - began,
                                 updates=self.updates, archive_capacity=self.archive_capacity())
+                    if self.shards is not None:
+                        self.shards.health()
                     if self.exchange.stop_request(training_generation=self.generation) is not None:
                         break
                 self._collect_publication()
@@ -3825,6 +4047,8 @@ class SegmentLearner:
                 if self.wal is not None:
                     if not self.input_fenced:
                         self._discard_stopped_queue()
+                        if self.shards is not None:
+                            self._discard_stopped_shards()
                     self.binary_sources.stop()
                     self._notify_capacity(force=True)
             # Finish only the frozen dataset within the original compute and
