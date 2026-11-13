@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/rsgcsg/STS2-The-Perfect-Defect/schemas/rl-inference-3.schema.json",
+  "$id": "https://github.com/rsgcsg/STS2-The-Perfect-Defect/schemas/rl-inference-4.schema.json",
   "title": "STPD RL inference wire v3 (fast_chain)",
   "description": "Node aggregator <-> GPU inference service messages for the fast_chain. Each message is one JSON envelope; score_request rows point into the packet's binary section. The service scores and draws a catalog position only; it never decides legality, never holds a World and never resends a score. Rules a schema cannot express (identity triple match, not_started, timeout, late replies, Stop, mu eviction) are in python/schemas/README.md and executable in python/tests/test_prewrite_wp0_contracts.py. Replaces stpd/rl-inference-2 only on fast_chain; the old chain keeps v2.",
   "oneOf": [
@@ -80,7 +80,7 @@
       "required": ["schema", "kind", "request_id", "aggregator_id", "chain", "python_env_sha256",
                    "compiler_identity", "encoder", "row_format"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "attach"},
         "request_id": {"$ref": "#/$defs/request_id"},
         "aggregator_id": {"$ref": "#/$defs/id"},
@@ -105,7 +105,7 @@
       "required": ["schema", "kind", "request_id", "service_instance", "training_generation",
                    "max_rows_per_packet"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "attached"},
         "request_id": {"$ref": "#/$defs/request_id"},
         "service_instance": {"$ref": "#/$defs/id"},
@@ -118,7 +118,7 @@
       "required": ["schema", "kind", "request_id", "game_instance_id", "actor_id",
                    "sampling", "single_choice", "start", "ascension"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "episode_open"},
         "ascension": {
           "description": "The game's ascension level (public: the observation carries run.ascension), the one the Host requested and checked against the native run at mount. Required, never defaulted: the learner labels and values the game with this level's reward table. The service refuses (episode never opened) a level its reward table does not support.",
@@ -172,7 +172,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema", "kind", "packet_id", "rows"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "score_request"},
         "packet_id": {"type": "integer", "minimum": 1},
         "rows": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/row"}}
@@ -228,7 +228,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema", "kind", "packet_id", "results"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "score_response"},
         "packet_id": {"type": "integer", "minimum": 1},
         "results": {"type": "array", "minItems": 1,
@@ -250,7 +250,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema", "kind", "row_request_id", "game_instance_id", "step_index", "status"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "step_outcome"},
         "row_request_id": {
           "description": "The request_id of the row this outcome resolves.",
@@ -295,7 +295,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["schema", "kind", "request_id", "game_instance_id", "reason", "last_step_index"],
       "properties": {
-        "schema": {"const": "stpd/rl-inference-3"},
+        "schema": {"const": "stpd/rl-inference-4"},
         "kind": {"const": "episode_close"},
         "request_id": {"$ref": "#/$defs/request_id"},
         "game_instance_id": {"$ref": "#/$defs/game_instance_id"},

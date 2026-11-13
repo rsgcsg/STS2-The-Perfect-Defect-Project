@@ -203,7 +203,7 @@ def test_encoder_identity_binds_codec_and_reference_compiler():
     encoder = RowsEncoder(vocabulary)
     identity = encoder.identity
     assert identity["row_format"] == "stpd/rows-v2-row-1"
-    assert identity["encoder"] == {"implementation": "python",  # rl-inference-3 enum
+    assert identity["encoder"] == {"implementation": "python",  # rl-inference-4 enum
                                    "sha256": rows_encoder.encoder_digest()}
     assert identity["compiler_sha256"] == FrameCompiler(vocabulary).identity["compiler_sha256"]
     assert len(identity["encoder"]["sha256"]) == 64

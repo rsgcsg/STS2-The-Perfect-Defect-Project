@@ -1,4 +1,4 @@
-"""One card's K rl-inference-3 services: per-game binding, MPS daemon, loud failure (CPU)."""
+"""One card's K rl-inference-4 services: per-game binding, MPS daemon, loud failure (CPU)."""
 from __future__ import annotations
 
 import io

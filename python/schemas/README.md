@@ -18,9 +18,11 @@ is closed and versioned.
   cache bound to exact corpus, serializer, input profile, and Qwen identity;
 - `training-input-manifest-v1.schema.json`: one content-addressed training-host handoff that
   separates canonical research data from derived model views and caches.
-- `rl-inference-3.schema.json`: the P-REWRITE `fast_chain` wire between a node
-  aggregator and the GPU inference service (`stpd/rl-inference-3`; the old chain keeps
-  `stpd/rl-inference-2`). Rules beyond the schema, executable in
+- `rl-inference-4.schema.json`: the P-REWRITE `fast_chain` wire between a node
+  aggregator and the GPU inference service (`stpd/rl-inference-4`; the old chain keeps
+  `stpd/rl-inference-2`; `stpd/rl-inference-3` is retired: -4 adds the required
+  `episode_open.ascension`, so a -3 peer that would label every game with the A0
+  table is refused at attach instead of mislabelling). Rules beyond the schema, executable in
   `tests/test_prewrite_wp0_contracts.py`:
   - the service scores and draws a catalog position only; legality stays with the game
     and Connector, and a score is never resent;

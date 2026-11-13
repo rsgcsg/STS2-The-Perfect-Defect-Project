@@ -20,7 +20,7 @@ and forwards `episode_open`, `step_outcome` and `episode_close` unchanged. Seale
 segments go to `emit` (normally `fast_handoff.SegmentHandoff.submit`), which
 writes them to local disk with fsync before any hand-off to SGD.
 
-Rules (design v2 §2.4–§2.6, `stpd/rl-inference-3` README):
+Rules (design v2 §2.4–§2.6, `stpd/rl-inference-4` README):
 - a segment holds <= 64 rows of one game instance; it binds the latest resident
   mu when it opens and keeps it for every row; a newer mu applies from the next
   segment on;
@@ -137,7 +137,7 @@ def _owned(value: Any) -> Any:
 
 
 # Every ascension enters the fast chain (owner 2026-11-13). The level of a game is
-# the one its `episode_open` names (required, rl-inference-3), which the Host
+# the one its `episode_open` names (required, rl-inference-4), which the Host
 # checked against the native run at mount; it is public (the observation carries
 # `run.ascension`). The label and the learner's class values use that level's
 # reward table (`reward.REWARD_SPEC` v2.1, `heads.class_reward_values`).
@@ -433,6 +433,9 @@ class FastSegmentAssembler:
             "truncated_by_reason": {}, "mu_declined": 0, "generations_discarded": 0,
             "terminal_label_refused": 0, "mu_archived": 0, "instances_closed": 0,
             "segments_verified": 0,
+            # Flat, for the run readout (service-status `assembler`): A10 losses at
+            # floor 49, refused by the label table and kept only as originals.
+            "a10_floor49_loss_refused": 0,
             # per ascension (str level): episodes opened, sealed segments by kind,
             # label refusals by reason (an A10 floor-49 loss among them).
             "by_ascension": {}}
@@ -483,7 +486,7 @@ class FastSegmentAssembler:
 
     # ------------------------------------------------------------ episodes
     def open_episode(self, message: Mapping[str, Any]) -> None:
-        """`episode_open` exactly as received (rl-inference-3)."""
+        """`episode_open` exactly as received (rl-inference-4)."""
         audit = message.get("audit_retain_mu", False)
         if type(audit) is not bool:
             raise AssemblyError("invalid_episode_open")
@@ -505,7 +508,7 @@ class FastSegmentAssembler:
                 raise AssemblyError("ascension_needs_segment_format_3")
             start = copy.deepcopy(dict(message["start"]))
             if start.get("kind") == "from_save":
-                # rl-inference-3 requires both: never a default act (a made-up Boss witness).
+                # rl-inference-4 requires both: never a default act (a made-up Boss witness).
                 first_act, first_floor = start.get("act"), start.get("floor")
                 if (type(first_act) is not int or first_act < 1
                         or type(first_floor) is not int or first_floor < 0):
@@ -807,6 +810,8 @@ class FastSegmentAssembler:
                     self.counters["terminal_label_refused"] += 1
                     refused = self._by_ascension(game.ascension)["label_refused"]
                     refused[str(error)] = refused.get(str(error), 0) + 1
+                    if str(error) == "terminal_a10_floor49_loss_unsupported":
+                        self.counters["a10_floor49_loss_refused"] += 1
                     segment.doomed = ("terminal_label_refused", str(error))
                 except Exception as error:  # noqa: BLE001 - original kept, then raised
                     broken = broken or error

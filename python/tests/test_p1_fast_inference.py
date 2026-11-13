@@ -1,4 +1,4 @@
-"""rl-inference-3 service + node aggregator, end to end on CPU (P-REWRITE WP4)."""
+"""rl-inference-4 service + node aggregator, end to end on CPU (P-REWRITE WP4)."""
 from __future__ import annotations
 
 import contextlib
@@ -204,8 +204,11 @@ def test_message_codec_round_trip_and_truncation():
     for bad in (data[:3], data[:8]):
         with pytest.raises(BoundaryError, match="message_truncated"):
             unpack_message(bad)
-    with pytest.raises(BoundaryError, match="envelope_schema"):
-        unpack_message(pack_message({"schema": "other"}))
+    # -4 carries the game ascension; a -3 peer (A0-only labels) is refused, never mixed.
+    assert V3_SCHEMA == "stpd/rl-inference-4"
+    for other in ("other", "stpd/rl-inference-3"):
+        with pytest.raises(BoundaryError, match="envelope_schema"):
+            unpack_message(pack_message({"schema": other}))
 
 
 def test_node_aggregator_scores_rows_end_to_end(vocabulary, model):

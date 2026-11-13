@@ -1,4 +1,4 @@
-"""Node aggregator: environment decision links -> one rl-inference-3 connection (WP4).
+"""Node aggregator: environment decision links -> one rl-inference-4 connection (WP4).
 
 fast_chain only. One aggregator runs per environment node. Environment processes
 connect to its Unix socket and speak `sts2.policy-runtime/fast-env-link-1`
@@ -9,7 +9,7 @@ connect to its Unix socket and speak `sts2.policy-runtime/fast-env-link-1`
   checks the line's own bindings (catalog digest, catalog length, combat,
   floor, input_spec) against what it encoded;
 * forwards `episode_open` / `step_outcome` / `episode_close` unchanged in
-  meaning (rl-inference-3 field names), in each connection's order;
+  meaning (rl-inference-4 field names), in each connection's order;
 * packs rows from every connection into `score_request` packets, flushed after
   `window_ms` or at `max_rows_per_packet`, on one TCP connection with
   TCP_NODELAY per service;

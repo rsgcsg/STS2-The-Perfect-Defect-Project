@@ -762,12 +762,12 @@ def concatenate_groups(groups: Sequence[PreparedGroup], *,
     """One PreparedGroup from already prepared sub-groups, rows in sub-group order.
 
     The C-SCALE merge for a forward over several prepared parts (lead 11-09 (a);
-    rl-inference-3 `_forward_parts`). Only real rows, texts, nodes and role terms
+    rl-inference-4 `_forward_parts`). Only real rows, texts, nodes and role terms
     are copied and re-offset; every padded size is re-bucketed over the union, so
     the result equals `prepare_group` of all frames at once, except that a text
     repeated in two sub-groups keeps one row per sub-group (an encoded duplicate,
     same function). A rows-v2 result gets its layout from `row_layout`. `rows`
-    defaults to the sub-groups' rows in order (rl-inference-3 parts each count
+    defaults to the sub-groups' rows in order (rl-inference-4 parts each count
     from 0, so pass `range(total)`). Output row i is part row i in order.
     """
     if not groups:

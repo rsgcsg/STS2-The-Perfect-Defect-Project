@@ -96,7 +96,7 @@ def test_an_unhandled_background_thread_error_stops_the_service(vocabulary, mode
         def broken() -> None:
             raise RuntimeError("batcher_bug")
 
-        thread = threading.Thread(target=service._guarded(broken), name="rl-inference-3-x")
+        thread = threading.Thread(target=service._guarded(broken), name="rl-inference-4-x")
         thread.start()
         thread.join(10)
         assert service.stop_reason == "thread_failed" and service.stopping.is_set()

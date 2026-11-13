@@ -1,4 +1,4 @@
-"""One GPU card's rl-inference-3 services: K independent services, optionally under MPS.
+"""One GPU card's rl-inference-4 services: K independent services, optionally under MPS.
 
 `InferenceCard` starts `services` (K, default 1) host processes. Each builds one
 `FastInferenceService` through an importable ``module:function`` factory, so each

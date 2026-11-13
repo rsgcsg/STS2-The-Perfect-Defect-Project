@@ -1,4 +1,4 @@
-"""Bench of the rl-inference-3 service under a production-shaped load (no game, no CP).
+"""Bench of the rl-inference-4 service under a production-shaped load (no game, no CP).
 
 Diagnostic only: it never trains, publishes a checkpoint or touches a game. The
 model is a random-init production-shape M-std; rows are real encoded observations
@@ -58,7 +58,7 @@ import time
 from typing import Any
 
 SAMPLING: dict[str, Any] = {
-    "mode": "temperature_uniform", "seed": "bench-rl-inference-3", "arm_id": "control",
+    "mode": "temperature_uniform", "seed": "bench-rl-inference-4", "arm_id": "control",
     "classes": {"combat": {"temperature": 1.0, "uniform_mix": 0.0},
                 "noncombat": {"temperature": 1.0, "uniform_mix": 0.0}}}
 ENV_SHA = "e" * 64
@@ -468,7 +468,7 @@ def thread_report(rows: int, dump: str, top: int = 25) -> dict[str, Any]:
     roles: dict[str, list[Any]] = {}
     for entry in THREAD_PROFILES:
         name = entry[0]
-        role = name.rstrip("0123456789").rstrip("-") if "rl-inference-3" in name else "other"
+        role = name.rstrip("0123456789").rstrip("-") if "rl-inference-4" in name else "other"
         roles.setdefault(role, []).append(entry)
     report: dict[str, Any] = {}
     per_row = 1e6 / max(rows, 1)

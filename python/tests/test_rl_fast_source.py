@@ -88,7 +88,7 @@ class Game:
 
     def open(self, game: str) -> None:
         self.assembler.open_episode({
-            "schema": "stpd/rl-inference-3", "kind": "episode_open",
+            "schema": "stpd/rl-inference-4", "kind": "episode_open",
             "ascension": 0, "request_id": 1,
             "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
             "single_choice": "score", "start": {"kind": "new_run"}})
@@ -122,7 +122,7 @@ class Game:
         shift = 0.01 * (step % 7)
         self.assembler.finish_row(plan, scored, values(1, shift),
                                   values(1, 0.2) if plan.tail is not None else None)
-        message = {"schema": "stpd/rl-inference-3", "kind": "step_outcome",
+        message = {"schema": "stpd/rl-inference-4", "kind": "step_outcome",
                    "row_request_id": row["request_id"], "game_instance_id": game,
                    "step_index": step, "status": status}
         if status == "completed":
@@ -134,7 +134,7 @@ class Game:
         self.assembler.step_outcome(message)
 
     def close(self, game: str, reason: str) -> None:
-        self.assembler.close_episode({"schema": "stpd/rl-inference-3", "kind": "episode_close",
+        self.assembler.close_episode({"schema": "stpd/rl-inference-4", "kind": "episode_close",
                                       "request_id": 1, "game_instance_id": game,
                                       "reason": reason, "last_step_index": None})
 
