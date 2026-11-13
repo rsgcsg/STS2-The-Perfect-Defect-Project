@@ -137,6 +137,7 @@ def test_a10_terminals_seal_on_the_49_table_and_a_floor_49_loss_is_refused():
     assert boss4.kind == "truncated"
     assert assembler.report()["by_ascension"]["10"]["label_refused"] == {
         "terminal_a10_floor49_loss_unsupported": 1}
+    assert assembler.report()["a10_floor49_loss_refused"] == 1  # the run readout field
 
 
 def weighted(index: int, payload: bytes | None = None, generation: str = "gen-1") -> MuHandoff:
