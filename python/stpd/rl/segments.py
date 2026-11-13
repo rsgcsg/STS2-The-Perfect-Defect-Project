@@ -9,10 +9,13 @@ from __future__ import annotations
 import collections
 import copy
 import math
+import operator
 import random
 import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+_SEGMENT_ID = operator.itemgetter("segment_id")
 
 OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
                       "archive_min_free_inodes",
@@ -171,12 +174,15 @@ class SegmentQueue:
             self.rows += size
             self.condition.notify_all()
 
-    def admit(self, segment: dict[str, Any], *, notify: bool = True) -> None:
+    def admit(self, segment: dict[str, Any], *, notify: bool = True,
+              owned: bool = False) -> None:
         """fast_chain only: a sealed segment that never had an actor lease.
 
         The caller has made room first (`discard`); capacity is never exceeded.
         `notify=False`: the caller holds `condition` and notifies it itself
-        before releasing it.
+        before releasing it. `owned=True`: `segment` is already a private deep
+        copy the caller never touches again (made before taking `condition`),
+        so it is queued as is instead of being copied under the lock.
         """
         with self.condition:
             size = segment.get("rows")
@@ -184,11 +190,13 @@ class SegmentQueue:
                     or not isinstance(segment.get("run_id"), str)
                     or not isinstance(segment.get("segment_id"), str)
                     or segment["segment_id"] in self.leases
-                    or any(s["segment_id"] == segment["segment_id"] for s in self.pending)):
+                    # The same full scan as `any(...)`, iterated in C: this runs
+                    # under the learner condition for every fast admission.
+                    or segment["segment_id"] in map(_SEGMENT_ID, self.pending)):
                 raise ValueError("fast_segment_admission_binding_mismatch")
             if self.occupied + size > self.config.capacity_rows:
                 raise ValueError("fast_segment_admission_over_capacity")
-            self.pending.append(copy.deepcopy(segment))
+            self.pending.append(segment if owned else copy.deepcopy(segment))
             self.rows += size
             if notify:
                 self.condition.notify_all()
@@ -198,10 +206,33 @@ class SegmentQueue:
 
         `notify=False`: as in `admit`."""
         with self.condition:
-            removed = [s for s in self.pending if s["segment_id"] in segment_ids]
+            # Every occurrence of every listed id, found by C-level list scans (a
+            # full queue is ~4k records and this runs under the learner condition
+            # on each capacity eviction); removed in queue order: exactly what
+            # the former two whole-queue Python passes removed.
+            ids = list(map(_SEGMENT_ID, self.pending))
+            positions: list[int] = []
+            for segment_id in segment_ids:
+                start = 0
+                while True:
+                    try:
+                        start = ids.index(segment_id, start)
+                    except ValueError:
+                        break
+                    positions.append(start)
+                    start += 1
+            positions.sort()
+            if positions:
+                items = list(self.pending)
+                removed = [items[i] for i in positions]
+                for i in reversed(positions):
+                    del items[i]
+                # A new deque, as before: a reader that iterates the previous
+                # object is never mutated under.
+                self.pending = collections.deque(items)
+            else:
+                removed = []
             if removed:
-                self.pending = collections.deque(
-                    s for s in self.pending if s["segment_id"] not in segment_ids)
                 self.rows -= sum(s["rows"] for s in removed)
                 if notify:
                     self.condition.notify_all()
