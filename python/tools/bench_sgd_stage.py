@@ -143,13 +143,12 @@ def _stepper(stop: threading.Event, samples: list[tuple[float, float]]) -> None:
         samples.append((began, time.perf_counter() - began))
 
 
-def rank_main(rank: int, world: int, plan: dict[str, Any], config: dict[str, Any],
-              batches: int, results: Any) -> None:
+def stage_worker(rank: int, world: int, config: dict[str, Any]) -> Any:
+    """The parts of a CPU `_SgdWorker` that `_stage_work` reads (no process group)."""
     import torch
 
     from stpd.rl import sgd_process as sp
 
-    torch.set_num_threads(4)
     worker = SimpleNamespace(
         device=torch.device("cpu"), rank=rank, torch=torch, stage_executor=None, pinned=None,
         shard=(rank, world) if world > 1 else None, copy_stream=None,
@@ -157,6 +156,17 @@ def rank_main(rank: int, world: int, plan: dict[str, Any], config: dict[str, Any
         staging_config=sp._StageConfig(**{**sp._StageConfig().__dict__, **config}))
     worker._staged_fields = sp._SgdWorker._staged_fields.__get__(worker)
     worker._copy_stream = sp._SgdWorker._copy_stream.__get__(worker)
+    return worker
+
+
+def rank_main(rank: int, world: int, plan: dict[str, Any], config: dict[str, Any],
+              batches: int, results: Any) -> None:
+    import torch
+
+    from stpd.rl import sgd_process as sp
+
+    torch.set_num_threads(4)
+    worker = stage_worker(rank, world, config)
     stop, samples = threading.Event(), cast(list[tuple[float, float]], [])
     stepper = threading.Thread(target=_stepper, args=(stop, samples), daemon=True)
     stepper.start()

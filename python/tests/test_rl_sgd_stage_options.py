@@ -3,9 +3,11 @@ child switch interval. Every option is opt-in; defaults keep the earlier path.""
 
 from __future__ import annotations
 
+import dataclasses
 import mmap
 import os
 import pickle
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,13 @@ from stpd.rl.binary_preparation import (
     prepared_digest_combine,
 )
 from stpd.rl.data_parallel import shard_transport
-from stpd.rl.sgd_process import _DataParallel, _StageConfig, mapped_arrays, sgd_options
+from stpd.rl.sgd_process import (
+    _DataParallel,
+    _SgdWorker,
+    _StageConfig,
+    mapped_arrays,
+    sgd_options,
+)
 
 FAST = {"sgd_stage_stream_reuse": True, "sgd_stage_lean_tree": True,
         "sgd_verify_split": True, "sgd_verify_threads": 2,
@@ -94,6 +102,7 @@ def test_split_verification_refuses_a_changed_or_missing_chunk(monkeypatch):
                             ({1: {"length": length, "parts": {}}},
                              "sgd_verify_split_chunks_missing"),
                             ({1: None}, "sgd_verify_split_chunks_missing"),
+                            ({1: {"length": length}}, "sgd_verify_split_chunks_missing"),
                             ({1: {"length": length, "parts": own["parts"]}},
                              "sgd_verify_split_chunks_missing")):
         sent.clear()
@@ -101,6 +110,37 @@ def test_split_verification_refuses_a_changed_or_missing_chunk(monkeypatch):
             _combiner(sent)._verify_split(1, expected, own, followers)
         assert [kind for kind, _ in sent] == ["failed"]
         assert sent[0][1]["error_code"] == code
+
+
+def test_a_changed_follower_chunk_fails_through_stage_work_and_flush(tmp_path, monkeypatch):
+    """End to end on a multi-chunk file: rank 1 hashes chunk 1 of the file it
+    mapped through `_stage_work`; rank 0's `_flush` refuses before `staged`."""
+    from tools.bench_sgd_stage import build_batch, stage_worker, write_handoff
+
+    def exit_(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(os, "_exit", exit_)
+    plan = write_handoff(build_batch(40, 1031, 2, 2), tmp_path)
+    assert prepared_chunk_count(plan["used_bytes"]) >= 3
+    with open(plan["path"], "r+b") as stream:  # a byte of chunk 1: rank 1's share
+        stream.seek(PREPARED_DIGEST_CHUNK + 11)
+        byte = stream.read(1)
+        stream.seek(PREPARED_DIGEST_CHUNK + 11)
+        stream.write(bytes([byte[0] ^ 1]))
+    config = {"lean_tree": True, "verify_split": True, "verify_threads": 2}
+    staged = [_SgdWorker._stage_work(stage_worker(rank, 2, config), plan)[1]
+              for rank in range(2)]
+    sent: list = []
+    leader = _DataParallel.__new__(_DataParallel)
+    leader.world, leader.send = 2, lambda kind, **fields: sent.append((kind, fields))
+    leader.staged_lock, leader.deferred, leader.follower_ready = threading.Lock(), {}, {}
+    leader.follower_staged(1, plan["dataset"], tuple(staged[1]["file_identity"]),
+                           staged[1]["verify_parts"])
+    with pytest.raises(SystemExit):
+        leader.staged(plan["dataset"], staged[0])
+    assert [kind for kind, _ in sent] == ["failed"]
+    assert sent[0][1]["error_code"] == "sgd_prepared_file_integrity_changed"
 
 
 def _lean_free(node):
@@ -145,6 +185,67 @@ def test_lean_tree_on_a_chain_sized_batch_tree():
         lean = shard_transport(pickle.loads(raw), arrays, rank, 2, lean=True)
         equal_tree(bp.unpack_transport((full[0], tuple(a.copy() for a in full[1]))),
                    bp.unpack_transport((lean[0], tuple(a.copy() for a in lean[1])), lean=True))
+
+
+def _tensor_paths(node, path=()):
+    """Every tensor (or packed view) by path, walking every field regardless of hints."""
+    if isinstance(node, (torch.Tensor, bp._TensorView)):
+        yield path, node
+    elif dataclasses.is_dataclass(node) and not isinstance(node, type):
+        for field in dataclasses.fields(node):
+            yield from _tensor_paths(getattr(node, field.name), (*path, field.name))
+    elif isinstance(node, dict):
+        for key, item in node.items():
+            yield from _tensor_paths(item, (*path, key))
+    elif isinstance(node, (tuple, list)):
+        for index, item in enumerate(node):
+            yield from _tensor_paths(item, (*path, index))
+
+
+def _assert_lean_reaches_every_tensor(tree):
+    expected = {id(node): path for path, node in _tensor_paths(tree)}
+    assert expected
+    reached: set[int] = set()
+
+    def record(node):
+        if isinstance(node, (torch.Tensor, bp._TensorView)):
+            reached.add(id(node))
+        return node
+
+    bp._map_structure(tree, record, lean=True)
+    missing = sorted(map(str, (path for key, path in expected.items() if key not in reached)))
+    assert not missing, f"lean walk skips tensors (a field hint lies): {missing[:5]}"
+
+
+def test_lean_walk_reaches_every_tensor_path_of_production_shaped_batches(tmp_path,
+                                                                          monkeypatch):
+    """Guard for hint-based skipping: a field declared tensor-free that holds a
+    tensor (incl. 0-dim CPU tensors on the stage_batch path) fails here."""
+    from tools.bench_sgd_stage import build_batch
+
+    sources = [build_batch(1, 1031, 4, 2)]
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=3)
+    try:
+        handoff = _first_handoff(owner)
+        with open(handoff.path, "rb") as stream:
+            mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        arrays = mapped_arrays(mapping, [(a.offset, a.count, a.dtype) for a in handoff.arrays])
+        packed = pickle.loads(handoff.tree)
+        _assert_lean_reaches_every_tensor(packed)  # the stage_pinned_slabs/shard path
+        sources.append(bp.unpack_transport((packed, tuple(a.copy() for a in arrays))))
+        del arrays
+    finally:
+        owner.close()
+    for batch in sources:
+        _assert_lean_reaches_every_tensor(batch)  # the stage_batch path
+        _assert_lean_reaches_every_tensor(bp.pack_transport(batch)[0])
+    with pytest.raises(AssertionError, match="hint lies"):
+        _assert_lean_reaches_every_tensor(_lying_batch(sources[0]))
+
+
+def _lying_batch(batch):
+    """A 0-dim tensor in a field declared tensor-free (here `prepared_at`)."""
+    return dataclasses.replace(batch, prepared_at=torch.tensor(1.0))
 
 
 def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monkeypatch):

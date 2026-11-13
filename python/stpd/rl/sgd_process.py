@@ -983,7 +983,8 @@ class _DataParallel:
         overlap = False
         for rank in sorted(followers):
             chunks = followers[rank]
-            if not isinstance(chunks, dict) or chunks.get("length") != length:
+            if (not isinstance(chunks, dict) or chunks.get("length") != length
+                    or not isinstance(chunks.get("parts"), dict)):
                 self._refuse(dataset, "sgd_verify_split_chunks_missing", rank=rank)
             for index, part in chunks["parts"].items():
                 overlap = overlap or index in parts
