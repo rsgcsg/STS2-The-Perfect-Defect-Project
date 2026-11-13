@@ -514,7 +514,10 @@ class FastSegmentAssembler:
         """Bind a request row to its segment and mu before the forward pass.
 
         An R7 game that opens a segment on a mu not yet archived archives that mu
-        first, outside the lock, then plans again (nothing changed before)."""
+        first, outside the lock, then plans again (nothing changed before). A full
+        archive (`mu_archive_full`) ends the game's audit from here on: it keeps
+        what it archived, plays on as a training game, counted
+        (`audit_archive_full`) and logged once; it never fails the game."""
         while True:
             plan_or_mu = self._begin_row(row, row_bytes)
             if isinstance(plan_or_mu, RowPlan):
@@ -526,6 +529,18 @@ class FastSegmentAssembler:
             except Exception as error:  # noqa: BLE001 - refused loudly, typed
                 code = getattr(error, "code", None) or (error.args[0] if error.args
                                                         else type(error).__name__)
+                if code == "mu_archive_full":
+                    with self.lock:
+                        game = self.games.get(str(row.get("game_instance_id")))
+                        if game is not None:
+                            game.audit_retain_mu = False
+                        first = "audit_archive_full" not in self.counters
+                        self.counters["audit_archive_full"] = (
+                            self.counters.get("audit_archive_full", 0) + 1)
+                    if first:
+                        print("fast_assembly R7 mu archive full: audit games continue as "
+                              "training games from here", file=sys.stderr, flush=True)
+                    continue
                 with self.lock:
                     self.counters["mu_archive_failed"] = (
                         self.counters.get("mu_archive_failed", 0) + 1)

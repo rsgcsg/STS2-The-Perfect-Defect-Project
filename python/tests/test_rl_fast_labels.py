@@ -225,24 +225,40 @@ def test_mu_that_arrives_while_an_audit_segment_archives_is_archived_and_bound(t
 
 def test_audit_game_never_scores_with_an_unarchived_mu(tmp_path):
     archive = archive_at(tmp_path)
-    full = {"on": True}
+    broken = {"on": True}
 
-    def bounded(handoff: MuHandoff) -> None:
-        if full["on"]:
-            raise HandoffError("mu_archive_full")
+    def failing(handoff: MuHandoff) -> None:
+        if broken["on"]:
+            raise HandoffError("mu_archive_write_failed")
         archive(handoff)
 
-    h = Harness(mu_archive=bounded)
+    h = Harness(mu_archive=failing)
     h.assembler.offer_mu(weighted(1))
     h.open("r7", audit_retain_mu=True)
     row, data = h.row("r7")
-    with pytest.raises(AssemblyError, match="audit_mu_archive_failed:mu_archive_full"):
+    with pytest.raises(AssemblyError, match="audit_mu_archive_failed:mu_archive_write_failed"):
         h.assembler.begin_row(row, data)  # refused loudly, nothing planned
     assert h.assembler.games["r7"].inflight is None and not h.assembler.games["r7"].segments
     assert h.assembler.report()["mu_archive_failed"] == 1
-    full["on"] = False
+    broken["on"] = False
     h.assembler.begin_row(row, data)  # an archive record lost is written again first
     assert archive.read(mu(1).snapshot_sha256, "gen-1")[0] == mu(1).identity()
+
+
+def test_a_full_archive_ends_the_audit_and_the_game_plays_on(tmp_path, capsys):
+    def full(handoff: MuHandoff) -> None:
+        raise HandoffError("mu_archive_full")
+
+    h = Harness(mu_archive=full)
+    h.assembler.offer_mu(weighted(1))
+    h.open("r7", audit_retain_mu=True)
+    row, data = h.row("r7")
+    plan = h.assembler.begin_row(row, data)  # planned as a training row, not refused
+    assert plan.mu == weighted(1)
+    assert h.assembler.games["r7"].audit_retain_mu is False
+    report = h.assembler.report()
+    assert report["audit_archive_full"] == 1 and "mu_archive_failed" not in report
+    assert "mu archive full" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("start", [

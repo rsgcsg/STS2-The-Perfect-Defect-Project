@@ -94,6 +94,10 @@ def test_held_segments_wait_and_open_games_are_never_marked(tmp_path):
     {"failure": "failed:host_receipt_mismatch"},
     {"segments": {"bootstrap": 1, "terminal": 1, "truncated": 0, "rejected": 1}},
     {"segments": {"bootstrap": 2, "terminal": 1, "truncated": 0, "rejected": 0}},  # short
+    # Censored (stop/budget, a truncated tail) keeps everything too.
+    {"close_reason": "stop", "segments": {"bootstrap": 1, "terminal": 1, "truncated": 1,
+                                          "rejected": 0}},
+    {"close_reason": "budget"},
 ])
 def test_abnormal_games_keep_every_original(tmp_path, change):
     plane = Plane(tmp_path)
@@ -120,6 +124,20 @@ def test_r7_games_and_exclusions_keep_every_original(tmp_path):
     assert all(path.exists() for path in audit + late)
     assert status["kept_r7_segments"] == 2 and status["kept_abnormal_segments"] == 1
     assert status.get("excluded_after_release", 0) == 0
+
+
+def test_an_exclusion_after_partial_marking_is_reported(tmp_path):
+    plane = Plane(tmp_path)
+    plane.segment("g1", 0)
+    held = plane.segment("g1", 1)
+    plane.close("g1", 2)
+    plane.holding = {"g1-asm.1"}
+    plane.release.capture(1)
+    plane.release.capture(2)  # g1-asm.0 marked, g1-asm.1 still held
+    plane.release.excluded("g1")
+    status = plane.drain()
+    assert held.exists()
+    assert status["excluded_after_release"] == 1 and status["kept_abnormal_segments"] == 1
 
 
 def test_nothing_is_deleted_after_a_fence(tmp_path):

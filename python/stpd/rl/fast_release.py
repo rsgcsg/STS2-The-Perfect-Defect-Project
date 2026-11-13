@@ -11,9 +11,10 @@ is deleted only when all of these hold:
 1. it is done here: at a checkpoint capture it is neither in the owner's
    `FastSources` (queued, prepared or training) nor in the intake's
    pre-attestation buffer, i.e. it was trained or dropped;
-2. its game instance closed clean (`close_reason` not unknown/env_crash,
-   `failure` null, no rejected segment, every sealed trainable segment received,
-   not excluded), and that close was seen here before the previous capture
+2. its game instance closed clean and whole (`close_reason` terminal, so not
+   censored by stop/budget nor unknown/env_crash; `failure` null; no truncated
+   or rejected segment; every sealed trainable segment received; not
+   excluded), and that close was seen here before the previous capture
    (one capture of grace: an actor's `fast_instance_excluded` follows the close
    by seconds, and an admission in flight finishes long before);
 3. the game is not an R7 audit game (`audit_retain_mu` in the header: kept
@@ -45,7 +46,6 @@ from pathlib import Path
 from typing import Any
 
 from .fast_handoff import SUFFIX
-from .fast_source import EXCLUDING_CLOSE_REASONS
 
 RELEASE_OPTION = "release_trained_segments"
 
@@ -63,6 +63,7 @@ class _Game:
     received: int = 0
     r7: bool = False
     closed_at: int | None = None  # capture epoch the clean close was seen in
+    marked: int = 0  # originals already marked for deletion
 
 
 class SegmentRelease:
@@ -111,8 +112,10 @@ class SegmentRelease:
     def closed(self, message: dict[str, Any], *, excluded: bool) -> None:
         instance = str(message["game_instance_id"])
         sealed = message["segments"]["bootstrap"] + message["segments"]["terminal"]
+        # Censored (stop/budget) and abnormal games keep everything.
         clean = (not excluded and message["failure"] is None
-                 and message["close_reason"] not in EXCLUDING_CLOSE_REASONS
+                 and message["close_reason"] == "terminal"
+                 and message["segments"]["truncated"] == 0
                  and message["segments"]["rejected"] == 0)
         with self.lock:
             game = self.games.get(instance)
@@ -131,7 +134,8 @@ class SegmentRelease:
             game = self.games.get(instance)
             if game is not None:
                 self._keep(instance, game, "kept_abnormal")
-            elif instance in self.released:
+            if (game is not None and game.marked) or (game is None
+                                                      and instance in self.released):
                 # Later than one capture after its close: some originals may be gone.
                 self.counters["excluded_after_release"] += 1
                 self._loud("excluded_after_release", instance=instance)
@@ -148,6 +152,7 @@ class SegmentRelease:
                     continue
                 for segment_id in [s for s in game.segments if s not in held]:
                     marked.append(game.segments.pop(segment_id))
+                    game.marked += 1
                 if not game.segments:
                     del self.games[instance]
                     self.released[instance] = None
