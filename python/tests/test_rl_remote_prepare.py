@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import mmap
+import pickletools
 import threading
 import time
 from multiprocessing import AuthenticationError
@@ -337,3 +338,100 @@ def test_lz4_codec_hands_off_the_same_bytes_and_hello_binds_the_codec(model, tmp
     with pytest.raises(ValueError, match="codec_unknown"):
         remote_prepare.RemoteAssembly(endpoints=[endpoint], vocabulary=model.vocabulary,
                                       threads=1, codec="zstd")
+
+
+# ------------------------------------------------- client processes (client_processes: N)
+
+
+def _tree_shape(tree):
+    """The pickled tree minus its float values (wall-clock timings differ per run)."""
+    return [(op.name, arg) for op, arg, _ in pickletools.genops(tree)
+            if not isinstance(arg, float)]
+
+
+def _batch_view(handoff):
+    return (handoff.sha256, handoff.used_bytes, _digest(handoff), _tree_shape(handoff.tree),
+            [(a.offset, a.count, a.dtype) for a in handoff.arrays], handoff.metadata,
+            handoff.label_updates, handoff.payload_bytes, handoff.minibatch_count)
+
+
+def test_client_processes_hand_off_the_same_batches_and_labels(model, tmp_path, host):
+    _state, endpoint = host
+    late = segment(model, name="late/0", run_id="late-episode", terminal=True)
+    out = {}
+    for clients in (0, 2):
+        name = f"c{clients}"
+        provider = BytesProvider()
+        preparer = prepare(model, tmp_path / name, provider, handoff=True, remote_prepare={
+            "endpoints": [endpoint], "connections": 2, "client_processes": clients})
+        enc = encoder(model, tmp_path / f"{name}-spool")
+        try:
+            assert isinstance(preparer.remote, remote_prepare.RemoteClients) == bool(clients)
+            member, encoded = admit(enc, preparer, provider, late, "late")
+            labels = labels_for(late, encoded)
+            labels["segments"] = [
+                {"segment_id": member.segment_id, "payload": dc.asdict(member.payload)}]
+            groups = preparer.verify_labels(labels, (member,)).result(timeout=120)
+            req = dc.replace(request([late]), members=(member,))
+            batches = []
+            for _ in range(2):
+                handoff = preparer.submit(req).result(timeout=120)
+                batches.append(_batch_view(handoff))
+                if clients:
+                    assert preparer.remote.served_by(handoff.path)  # host fingerprint
+                preparer.release_handoff(handoff)
+            stats = dict(preparer.remote.stats)
+            stats.pop("client_restarts", None)
+            out[clients] = groups, batches, stats
+        finally:
+            preparer.shutdown(wait=True, cancel_futures=True)
+    assert out[2][0] == out[0][0]  # AuxiliaryInput equality includes body
+    assert out[2][1] == out[0][1]
+    assert all(view[0] == view[2] for view in out[2][1])  # file == worker digest
+    # Stats come back from the client processes and are summed here. The second
+    # run finds its source in the host cache (the first run sent it).
+    assert out[2][2]["tasks"] == 2 and out[2][2]["label_tasks"] == 1
+    assert out[2][2]["received_bytes"] == out[0][2]["received_bytes"]
+
+
+def test_client_process_errors_pass_through_and_a_dead_client_fails_its_batch(
+        model, tmp_path, host, monkeypatch):
+    _state, endpoint = host
+    provider = BytesProvider()
+    preparer = prepare(model, tmp_path / "p", provider, handoff=True, remote_prepare={
+        "endpoints": [endpoint], "connections": 1, "client_processes": 1})
+    enc = encoder(model, tmp_path / "spool")
+    value = segment(model)
+    try:
+        member, _ = admit(enc, preparer, provider, value, "current")
+        req = dc.replace(request([value]), members=(member,))
+        with pytest.raises(RuntimeError, match="binary_remote_assembly_failed.*byte"):
+            preparer.submit(dc.replace(req, max_output_bytes=64)).result(timeout=120)
+        handoff = preparer.submit(req).result(timeout=120)
+        assert handoff.sha256 == _digest(handoff)
+        preparer.release_handoff(handoff)
+        # Kill the client process while its task is in flight: that batch fails
+        # (no local fallback, no re-send); a later batch starts a new client.
+        client = preparer.remote.clients[0]
+        original = client.submit
+
+        def submit_then_kill(task_id, task):
+            future = original(task_id, task)
+            client.process.kill()
+            return future
+
+        monkeypatch.setattr(client, "submit", submit_then_kill)
+        with pytest.raises(RuntimeError, match=remote_prepare.DIED):
+            preparer.submit(req).result(timeout=120)
+        assert preparer.summary()["failed_tasks_without_timing"]["remote_assembly"] == 2
+        handoff = preparer.submit(req).result(timeout=120)
+        assert handoff.sha256 == _digest(handoff)
+        assert preparer.remote.stats["client_restarts"] == 1
+        preparer.release_handoff(handoff)
+    finally:
+        preparer.shutdown(wait=True, cancel_futures=True)
+
+
+def test_client_processes_bound():
+    with pytest.raises(ValueError, match="client_processes_bound"):
+        remote_prepare.RemoteClients(processes=0, endpoints=["h:1"], vocabulary={}, threads=1)
