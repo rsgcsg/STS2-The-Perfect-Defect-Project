@@ -111,7 +111,8 @@ def _thread_cpu() -> dict[str, float]:
     import threading
 
     names = {t.native_id: t.name for t in threading.enumerate()}
-    tick, out = os.sysconf("SC_CLK_TCK"), {}
+    tick = os.sysconf("SC_CLK_TCK")
+    out: dict[str, float] = {}
     for tid in os.listdir("/proc/self/task"):
         with contextlib.suppress(OSError):
             with open(f"/proc/self/task/{tid}/stat") as stream:
