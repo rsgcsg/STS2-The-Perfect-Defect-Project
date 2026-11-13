@@ -218,7 +218,8 @@ class ShardSet:
         self.deferred: queue.Queue[tuple[_Shard, dict[str, Any]] | None] = queue.Queue()
         self.numbers: dict[int, tuple[int, int]] = {}
         self.attached = 0
-        self.receivers: dict[int, threading.Event] = {}
+        # attach token -> (the event its returned thread waits on, shard index)
+        self.receivers: dict[int, tuple[threading.Event, int]] = {}
         self.unowned_exclusions: dict[str, int] = {}
         # Which shard's connections carry each game instance (bounded, FIFO): the
         # learner-wide "one instance, one assembler, no segment after its close"
@@ -363,6 +364,12 @@ class ShardSet:
         shard.started.set()
         for slot in waiting:
             slot.event.set()  # value None: the caller raises `dataplane_shard_died`
+        with self.lock:
+            # Its hand-off threads are gone with it: the threads `attach` returned
+            # end too (no `receiver_done` will come for them).
+            for done, index in self.receivers.values():
+                if index == shard.index:
+                    done.set()
         if not orderly:
             self.deferred.put((shard, {"kind": "died", "facts": facts}))
 
@@ -422,7 +429,7 @@ class ShardSet:
                             self._cast(other, "closed_elsewhere",
                                        instances=message["instances"])
                 elif kind == "receiver_done":
-                    self.receivers[message["token"]].set()
+                    self.receivers[message["token"]][0].set()
             except BaseException as error:  # never lose the dispatcher silently
                 owner._shard_fenced(shard.index, {
                     "operation": "dataplane_shard_message", "message": kind,
@@ -460,21 +467,25 @@ class ShardSet:
                 "shard": shard.index, "request": kind, **slot.value["failure"]})
         return slot.value["value"]
 
-    def _call(self, shard: _Shard, kind: str, *, seconds: float = REPLY_SECONDS,
+    def _call(self, shard: _Shard, kind: str, *, seconds: float | None = None,
               **fields: Any) -> Any:
-        return self._wait(shard, kind, self._send(shard, kind, **fields), seconds)
+        return self._wait(shard, kind, self._send(shard, kind, **fields),
+                          REPLY_SECONDS if seconds is None else seconds)
 
-    def _call_all(self, kind: str, *, seconds: float = REPLY_SECONDS, **fields: Any) -> list[Any]:
+    def _call_all(self, kind: str, *, seconds: float | None = None,
+                  **fields: Any) -> list[Any]:
         slots = [(shard, self._send(shard, kind, **fields)) for shard in self.shards]
-        return [self._wait(shard, kind, slot, seconds) for shard, slot in slots]
+        return [self._wait(shard, kind, slot, REPLY_SECONDS if seconds is None else seconds)
+                for shard, slot in slots]
 
     # -- input --------------------------------------------------------------------
     def attach(self, connection: Any) -> threading.Thread:
         with self.lock:
             token = self.attached
             self.attached += 1
-            done = self.receivers[token] = threading.Event()
-        shard = self.shards[token % self.count]
+            shard = self.shards[token % self.count]
+            done = threading.Event()
+            self.receivers[token] = done, shard.index
         shard.connections += 1
         # The shard reads its own duplicate of the descriptor. The caller's object
         # is left as it is (the caller may still hold and close it); nothing in

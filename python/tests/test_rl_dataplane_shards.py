@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import torch
 from test_rl41_w1 import assert_tree, configuration
-from test_rl_fast_learner import admission, eventually, learner_mu
+from test_rl_fast_learner import admission, eventually, exclude, learner_mu
 from test_rl_fast_source import Game, _sender, closed_for
 from test_rl_pipeline_checkpoint import SGD_PROCESS
 from test_rl_segment_learner import read_cp
@@ -36,7 +36,8 @@ STEP_FACTS = ("update", "dataset", "minibatch", "epoch", "stepped", "kl_stopped"
 
 
 def parts(tmp_path, monkeypatch, shards: int, *, wall_seconds: float | None = None,
-          prestart: bool = False, **dataplane_extra: Any) -> tuple[Any, Any]:
+          prestart: bool = False, epochs: int = 1,
+          **dataplane_extra: Any) -> tuple[Any, Any]:
     """`prestart` False (not the SGD default): the learner then takes a dataset only
     after the previous one finished, so the order of selections against aux
     charges does not depend on timing and two arms can be compared value by
@@ -51,7 +52,7 @@ def parts(tmp_path, monkeypatch, shards: int, *, wall_seconds: float | None = No
     monkeypatch.setenv(AUTH_ENV, "ab" * 32)
     config = dataclasses.replace(config, segments=dataclasses.replace(
         config.segments, steps=64, dataset_rows=64, minibatches=2, episode_rows=128,
-        capacity_rows=1024,
+        capacity_rows=1024, epochs=epochs,
         target_kl=0.9))  # the fixture's behaviour q is far from theta: let it step
     if wall_seconds is not None:
         config = dataclasses.replace(config, wall_seconds=wall_seconds)
@@ -65,9 +66,10 @@ def parts(tmp_path, monkeypatch, shards: int, *, wall_seconds: float | None = No
     return config, dataclasses.replace(io, dataplane=dataplane)
 
 
-def learner(tmp_path, monkeypatch, shards: int, *, prestart: bool = False,
+def learner(tmp_path, monkeypatch, shards: int, *, prestart: bool = False, epochs: int = 1,
             **dataplane_extra: Any) -> SegmentLearner:
-    config, io = parts(tmp_path, monkeypatch, shards, prestart=prestart, **dataplane_extra)
+    config, io = parts(tmp_path, monkeypatch, shards, prestart=prestart, epochs=epochs,
+                       **dataplane_extra)
     return SegmentLearner(config, tmp_path / "owner", io)
 
 
@@ -164,8 +166,9 @@ def train(owner: SegmentLearner, datasets: int) -> tuple[list[Any], list[dict[st
     return requests, steps
 
 
-def run_arm(tmp_path, monkeypatch, shards: int) -> dict[str, Any]:
-    owner = learner(tmp_path, monkeypatch, shards)
+def run_arm(tmp_path, monkeypatch, shards: int, *, prestart: bool = False,
+            epochs: int = 1) -> dict[str, Any]:
+    owner = learner(tmp_path, monkeypatch, shards, prestart=prestart, epochs=epochs)
     try:
         for index in (1, 2, 3):
             hand_off(owner, game(owner, index))
@@ -176,7 +179,8 @@ def run_arm(tmp_path, monkeypatch, shards: int) -> dict[str, Any]:
         return {"requests": requests, "steps": steps, "learner": status["learner"],
                 "intake": status["intake"], "updates": owner.updates,
                 "datasets": owner.datasets, "first_use": owner.first_use,
-                "version": owner.version, "fenced": owner.input_fenced}
+                "version": owner.version, "fenced": owner.input_fenced,
+                "prestarted": owner.timing["sgd_prestarted_batches"]}
     finally:
         owner.close()
 
@@ -187,6 +191,24 @@ def test_one_shard_selects_and_trains_exactly_as_the_in_process_data_plane(
     shard = run_arm(tmp_path / "shard", monkeypatch, 1)
     assert len(inline["requests"]) == 3 and inline["updates"] > 0
     assert any(request.auxiliary for request, _ in inline["requests"])
+    assert inline["prestarted"] == 0
+    assert shard == inline
+
+
+def test_with_prestart_one_shard_still_trains_exactly_as_the_in_process_data_plane(
+        tmp_path, monkeypatch):
+    """`sgd_prestart` (the chain default) on in both arms: a next dataset is taken
+    while its predecessor trains and promoted without a new `_prepare`. Four
+    epochs (8 steps a dataset) leave the staged answer time to arrive, so the
+    prestart fires. All three datasets are selected before the first step
+    (two ahead), so when it fires cannot change a selection: the shard path
+    trains the same datasets with the same members, aux selections, RNG
+    states, losses and counters. The prestart count itself depends on timing."""
+    inline = run_arm(tmp_path / "inline", monkeypatch, 0, prestart=True, epochs=4)
+    shard = run_arm(tmp_path / "shard", monkeypatch, 1, prestart=True, epochs=4)
+    assert inline["datasets"] == 3 and inline["prestarted"] >= 1 and shard["prestarted"] >= 1
+    assert [r.identity.sequence for r, _ in inline["requests"]] == [1, 2, 3]
+    inline.pop("prestarted"), shard.pop("prestarted")
     assert shard == inline
 
 
@@ -202,8 +224,16 @@ def test_a_dead_shard_fences_the_learner_and_nothing_is_rerouted(tmp_path, monke
         assert [s["connections"] for s in before["shards"]["per_shard"]] == [1, 0]
         assert before["learner"]["admitted"] == len(sealed)
         victim, other = owner.shards.shards
+        # A connection still open on the shard that will die (token 2 -> shard 0).
+        owner.shards.attached = 2
+        ours, theirs = multiprocessing.Pipe()
+        receiver = owner.attach_fast_handoff(ours)
         os.kill(victim.process.pid, signal.SIGKILL)
         assert eventually(lambda: owner.input_fenced, 30)
+        # The thread `attach` returned ends with its shard (no receiver_done comes).
+        receiver.join(30)
+        assert not receiver.is_alive()
+        theirs.close()
         assert owner.newlease_stopped
         assert owner.input_failure["operation"] == "dataplane_shard"
         assert owner.input_failure["shard"] == 0
@@ -386,6 +416,200 @@ def test_a_message_without_a_known_kind_fences_at_once(tmp_path, monkeypatch):
     finally:
         with pytest.raises(BoundaryError, match="dataplane_shard"):
             owner.close()
+
+
+def _send_then_vanish(connection: Any, segments: list[Any], go: Any) -> None:
+    """Hand a still-open game off, then (on `go`) end without the orderly end:
+    the service's EOF, as when it stops right after the learner's stop reply."""
+    sender = ShmSegmentSender(connection, assembler_id=segments[0].header["assembler_instance"])
+    for segment in segments:
+        sender.send(segment, Path(__file__))
+    sender._drain(block=True)
+    go.wait(120)
+    sender.close()  # release only: never the orderly end
+    connection.close()
+
+
+def test_a_normal_stop_is_not_a_fence_when_services_end_before_the_shards_hear_of_it(
+        tmp_path, monkeypatch):
+    """S2: the stop flag reaches a shard by message. A service that ends right
+    after the stop reply may reach its shard first; the shard reports the lost
+    hand-off, the stopping learner records it, and nothing admitted is lost."""
+    owner = learner(tmp_path, monkeypatch, 2)
+    go = multiprocessing.Event()
+    senders: list[Any] = []
+    events: list[tuple[str, dict[str, Any]]] = []
+    try:
+        admitted = 0
+        for index in (1, 2):  # one open game on a connection of each shard
+            sealed = game(owner, index, terminal=False)
+            admitted += sum(len(segment.header["rows"]) for segment in sealed)
+            ours, theirs = multiprocessing.Pipe()
+            process = multiprocessing.Process(target=_send_then_vanish,
+                                              args=(theirs, sealed, go))
+            process.start()
+            theirs.close()
+            owner.attach_fast_handoff(ours)
+            senders.append(process)
+        assert eventually(lambda: owner.fast_status()["fast_chain"]["learner"][
+            "admitted_rows"] == admitted, 60)
+        # The stop flags are held back: the shards hear of the stop only after
+        # the services ended (the widest form of the race).
+        held = owner.shards.flags
+        owner.shards.flags = lambda **_: None
+        record = owner._event
+        owner._event = lambda kind, **fields: (events.append((kind, fields)),
+                                               record(kind, **fields))[1]
+        reply = owner.control({"operation": "stop", "run": owner.config.run,
+                               "training_generation": owner.generation, "epoch": 1,
+                               "reason": "window_end"})
+        assert reply["stopped"] is True
+        go.set()
+        for process in senders:
+            process.join(60)
+            assert process.exitcode == 0
+        # Each shard saw an EOF before the stop and fenced itself ...
+        for shard in owner.shards.shards:
+            assert eventually(lambda shard=shard: owner.shards._call(
+                shard, "status")["input_fenced"], 30)
+        assert eventually(lambda: sorted(fields["shard"] for kind, fields in events
+                                         if kind == "fast_handoff_lost"
+                                         and fields.get("learner_stopping")) == [0, 1], 30)
+        # ... and the learner, already stopping, only recorded it.
+        assert not owner.input_fenced and owner.input_failure is None
+        assert not any(shard.failed for shard in owner.shards.shards)
+        owner.shards.flags = held
+        with owner.input_gate, owner.condition:
+            owner._discard_stopped_shards()  # as `_run` does at the stop
+        assert not owner.input_fenced
+        # Everything admitted is accounted: discarded at the stop, nothing dropped.
+        status = owner.fast_status()["fast_chain"]["shards"]["per_shard"]
+        assert sum(s["training_discarded_rows"] for s in status) == admitted
+        assert sum(s["queue_rows"] for s in status) == 0
+    finally:
+        go.set()
+        for process in senders:
+            if process.is_alive():
+                process.kill()
+        owner.close()  # both shards end cleanly: no fence was raised
+    assert [shard.exit["exitcode"] for shard in owner.shards.shards] == [0, 0]
+
+
+@pytest.mark.parametrize("failure", ["dead", "hung"])
+def test_a_shard_lost_at_the_stop_fences_and_everything_is_still_closed(
+        tmp_path, monkeypatch, failure):
+    """S1: the stop discard asks every shard. A dead or a hung one fences the
+    learner (no disposition for what it held, no final CP: restore the last
+    one), and the close still ends the shards, the pool and the SGD process."""
+    monkeypatch.setattr(dataplane_shards, "REPLY_SECONDS", 10.0)
+    monkeypatch.setattr(dataplane_shards, "FAILED_CLOSE_SECONDS", 2.0)
+    owner = learner(tmp_path, monkeypatch, 2)
+    shards = owner.shards
+    victim = shards.shards[0 if failure == "dead" else 1]
+    try:
+        hand_off(owner, game(owner, 1))  # queued on shard 0
+        hand_off(owner, game(owner, 2))  # queued on shard 1
+        discard = shards.discard_stopped
+
+        def at_the_stop() -> list[dict[str, Any]]:
+            if failure == "dead":
+                os.kill(victim.process.pid, signal.SIGKILL)
+                assert eventually(lambda: victim.dead is not None, 60)
+            else:
+                os.kill(victim.process.pid, signal.SIGSTOP)
+            return discard()
+
+        shards.discard_stopped = at_the_stop
+        sequence = owner.checkpoint_sequence
+        (owner.work / "STOP").touch()  # stop at once: the loop never starts
+        began = time.monotonic()
+        with pytest.raises(BoundaryError, match="dataplane_shard"):
+            owner.run()
+        assert time.monotonic() - began < 120
+    finally:
+        if victim.process.is_alive():  # only if the close did not run
+            victim.process.kill()
+    assert owner.input_fenced
+    assert owner.input_failure["shard"] == victim.index
+    assert owner.input_failure["failure"]["operation"] == "dataplane_shard_discard_at_stop"
+    assert owner.checkpoint_sequence == sequence  # no final CP from a fenced stop
+    # The close ran to its end: every shard reaped, the SGD process shut down,
+    # no child process of this learner left.
+    assert all(shard.exit is not None and not shard.process.is_alive()
+               for shard in shards.shards)
+    assert owner.sgd.exit is not None and not owner.sgd.process.is_alive()
+    assert eventually(lambda: not multiprocessing.active_children(), 30), (
+        multiprocessing.active_children())
+
+
+def test_a_prepared_dataset_keeps_an_instance_excluded_after_it_with_two_shards(
+        tmp_path, monkeypatch):
+    """D1 = A per shard: segments a read-ahead dataset already holds count as
+    used and train; the owning shard counts the exclusion, the other only marks
+    the instance foreign, and the learner reports it once."""
+    owner = learner(tmp_path, monkeypatch, 2)
+    senders: list[Any] = []
+    try:
+        sealed = {}
+        for index in (1, 2):  # open games, so an exclusion is still allowed
+            sealed[index] = game(owner, index, terminal=False)
+            ours, theirs = multiprocessing.Pipe()
+            process = multiprocessing.Process(target=_send_open, args=(theirs, sealed[index]))
+            process.start()
+            theirs.close()
+            owner.attach_fast_handoff(ours).join(60)
+            senders.append(process)
+        rows = sum(len(segment.header["rows"]) for segment in sealed[1])
+        # Both shards prepare one dataset ahead (not taken: still queued there).
+        assert eventually(lambda: (owner._prepare_ahead(),
+                                   len(owner._pending_batches()))[1] == 2, 120)
+        assert sorted(active["shard"] for active, _ in owner._pending_batches()) == [0, 1]
+        assert exclude(owner, "g1") == {"excluded": True, "game_instance_id": "g1"}
+        status = owner.fast_status()["fast_chain"]
+        assert status["learner"]["excluded_instances"] == 1
+        assert status["learner"]["excluded_prefetched_rows"] == rows
+        assert status["learner"]["excluded_dropped_rows"] == 0
+        assert status["intake"]["excluded_by_reason"] == {"actor:evidence_failed": 1}
+        per_shard = status["shards"]["per_shard"]
+        assert [s["learner"]["excluded_prefetched_rows"] for s in per_shard] == [rows, 0]
+        assert [s["foreign_exclusions"] for s in per_shard] == [0, 1]
+        # The prepared dataset is trained as it was frozen, the excluded game in it.
+        requests, _ = train(owner, 2)
+        members = {member.segment_id for member in requests[0][0].members}
+        assert {segment.segment_id for segment in sealed[1]} <= members
+        assert sorted(owner.seen_shards) == [(0, 1), (1, 1)]
+        assert not owner.input_fenced
+    finally:
+        for process in senders:
+            process.join(30)
+        owner.close()
+
+
+def test_every_shard_records_a_new_mu_before_any_service_can_hold_it(tmp_path, monkeypatch):
+    owner = learner(tmp_path, monkeypatch, 2)
+    order: list[str] = []
+    try:
+        hand_off(owner, game(owner, 1))
+        hand_off(owner, game(owner, 2))
+        before = owner.pool.latest
+        record_shards, record_pool = owner.shards.publish_mu, owner.pool.publish
+        owner.shards.publish_mu = lambda identity: (record_shards(identity),
+                                                    order.append("shards"))[0]
+        owner.pool.publish = lambda *args: (order.append("pool"), record_pool(*args))[1]
+        train(owner, 2)
+        owner._collect_publication(wait=True)
+        assert owner.pool.latest != before and order and order[0] == "shards"
+        assert order == ["shards", "pool"] * (len(order) // 2)
+        # A segment under the new mu is admitted on either shard (each recorded it).
+        admitted = owner.fast_status()["fast_chain"]["learner"]["admitted"]
+        third, fourth = game(owner, 3), game(owner, 4)
+        hand_off(owner, third)   # shard 0
+        hand_off(owner, fourth)  # shard 1
+        status = owner.fast_status()["fast_chain"]
+        assert status["learner"]["admitted"] == admitted + len(third) + len(fourth)
+        assert not owner.input_fenced
+    finally:
+        owner.close()
 
 
 def test_a_restore_keeps_every_shards_selection_rng_and_refuses_another_count(
