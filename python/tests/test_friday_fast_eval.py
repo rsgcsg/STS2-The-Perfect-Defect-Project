@@ -130,6 +130,9 @@ def test_busy_failed_and_deadline_skip_without_stopping(fast_eval, tmp_path):
     runner.tick()
     item = runner.state['evaluations'][0]
     finish_prepare(world, item, plan=False)  # job died without a plan
+    runner.tick()  # shared-disk grace: the plan may still appear (#403)
+    assert item['stage'] == 'preparing'
+    world.now += fast_eval.PLAN_GRACE_SECONDS
     runner.tick()
     assert item['stage'] == 'prepare_failed'
     world.record('cp-b', 20)
@@ -323,3 +326,115 @@ def test_one_loop_per_output(tmp_path):
         other.wait()
     with instance_lock(lock):  # released on process death
         pass
+
+
+def test_one_given_cp_without_R2_is_prepared_once(fast_eval, tmp_path):
+    """--checkpoint: exactly that CP, once; shared_local preparation reads no R2 environment."""
+    world = World()
+    runner = fast_eval.Loop({**SETTINGS, 'checkpoint': 'cp-given', 'r2': False}, tmp_path,
+                            dry_run=False, clock=lambda: world.now, run_command=world.run,
+                            jobs=lambda ids: {i for i in ids if i in world.live},
+                            submit=world.submit)
+    runner.tick()
+    [item] = runner.state['evaluations']
+    script = (tmp_path / 'evaluation-0001/prepare.sh').read_text()
+    assert item['checkpoint'] == 'cp-given' and '--checkpoint cp-given' in script
+    assert 'friday-r2.env' not in script and '--workers 4' in script
+    finish_prepare(world, item)
+    runner.tick()
+    world.now += 7200
+    runner.tick()
+    assert runner.state['log'][-1]['reason'] == 'no_new_checkpoint'
+    assert fast_eval.check_storage({'storage_mode': 'shared_local'},
+                                   {'kind': 'local', 'directory': '/p'}) is False
+    assert fast_eval.check_storage({}, {'kind': 's3'}) is True
+    with pytest.raises(ValueError, match='local_peer_without_archive'):
+        fast_eval.check_storage({'storage_mode': 'shared_local'},
+                                {'kind': 'local', 'directory': '/p', 'archive': {'kind': 's3'}})
+
+
+def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval, tmp_path):
+    world = World()
+    world.record('cp-a', 10)
+    runner = loop(fast_eval, world, tmp_path, baseline_plan='/base/plan.json')
+    calls = []
+
+    def report(root, baseline, previous):
+        calls.append((root, baseline, previous))
+        return {'report_directory': str(root / 'report'), 'cohorts': {'current': {
+            'scored': 99, 'wins': 1, 'mean_floor': 37.5, 'reward_mean': 0.48,
+            'conservative': 0.48}}}
+
+    runner_report = patch.object(fast_eval, 'write_evaluation_report', report)
+    with runner_report:
+        runner.tick()
+        first = runner.state['evaluations'][0]
+        finish_prepare(world, first)
+        runner.tick()
+        assert first['stage'] == 'submitted'
+        world.live.discard(first['evaluation_job'])
+        runner.tick()  # ended, result not visible yet: grace
+        assert first['stage'] == 'submitted' and not calls
+        result = Path(first['root']) / 'round/evaluation/result.json'
+        result.write_text('{}')
+        runner.tick()
+        assert first['stage'] == 'reported' and calls == [
+            (Path(first['root']), '/base/plan.json', None)]
+        assert runner.state['log'][-1]['kind'] == 'evaluation_reported'
+        world.record('cp-b', 20)
+        world.now += 7200
+        runner.tick()
+        second = runner.state['evaluations'][1]
+        finish_prepare(world, second)
+        runner.tick()
+        world.live.discard(second['evaluation_job'])
+        runner.tick()
+        world.now += fast_eval.RESULT_GRACE_SECONDS
+        runner.tick()
+        assert second['stage'] == 'evaluation_ended_without_result' and len(calls) == 1
+
+
+def cohort(tmp_path, name, rows, protocol='rc.64'):
+    from stpd.evaluation.rl_observation import load_cohort
+
+    slots = [{'step': 'checkpoint', 'seed': seed, 'run_id': f'{name}-{seed}',
+              'character': 'Defect', 'ascension': 0, 'status': status,
+              'max_observed_floor': floor, 'natural_result': result}
+             for seed, status, floor, result in rows]
+    path = tmp_path / f'{name}.json'
+    path.write_text(json.dumps({'ledger_report': {'slots': slots, 'planned': len(slots),
+                                                  'host_kind': 'managed', 'score_admitted': True}}))
+    value = load_cohort(path)
+    value['protocol_observed'] = {'host_pin': protocol}
+    return value
+
+
+def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_path):
+    base = cohort(tmp_path, 'base', [('s1', 'finished', 17, 'loss'),
+                                     ('s2', 'finished', 33, 'loss'),
+                                     ('s3', 'finished', 20, 'loss')])
+    current = cohort(tmp_path, 'cur', [('s1', 'finished', 33, 'loss'),
+                                       ('s2', 'finished', 48, 'win'),
+                                       ('s3', 'unknown', 44, None)])
+    other = cohort(tmp_path, 'old', [('s1', 'finished', 9, 'loss')], protocol='rc.63')
+    plans = {str(tmp_path / 'eval/round/evaluation/plan.json'): current,
+             '/base/plan.json': base, '/old/plan.json': other}
+
+    def read(result, plan):
+        value = plans[str(plan)]
+        return {'manifest': {'sha256': 'm'}}, {}, {'cohort': value}
+
+    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', '/base/plan.json',
+                                                    '/old/plan.json')
+    assert summary['skipped_references'] == {
+        'previous': {'plan': '/old/plan.json', 'differing': ['host_pin']}}
+    now = summary['cohorts']['current']
+    assert now['planned'] == 3 and now['scored'] == 2 and now['wins'] == 1
+    assert [row['seed'] for row in now['excluded']] == ['s3']  # unknown: excluded, not void
+    paired = summary['paired']['baseline']
+    assert paired['floor_pairs'] == 2 and paired['counts']['farther'] == 2
+    readme = (tmp_path / 'eval/report/README.md').read_text()
+    assert 'Act1 Boss cleared' in readme and 'Farther / same / nearer' in readme
+    assert json.loads((tmp_path / 'eval/report/summary.json').read_text()) == json.loads(
+        json.dumps(summary))
