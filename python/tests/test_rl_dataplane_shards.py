@@ -17,7 +17,12 @@ from test_rl_segment_learner import read_cp
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.rl.dataplane_shards import shard_dataplane, shard_settings
+from stpd.rl.dataplane_shards import (
+    adopted_rng_state,
+    shard_budget,
+    shard_dataplane,
+    shard_settings,
+)
 from stpd.rl.segment_learner import SegmentLearner
 from stpd.rl.segments import SegmentConfig
 
@@ -245,6 +250,64 @@ def test_a_restore_keeps_every_shards_selection_rng_and_refuses_another_count(
         assert not restored.input_fenced
     finally:
         restored.close()
+
+
+def test_an_unsharded_CP_is_continued_with_shards_only_by_the_explicit_switch(
+        tmp_path, monkeypatch):
+    config, io = parts(tmp_path / "a", monkeypatch, 0)
+    owner = SegmentLearner(config, tmp_path / "a" / "owner", io)
+    try:
+        hand_off(owner, game(owner, 1))
+        train(owner, 1)
+        owner.checkpoint(final=True)
+        record, cp = read_cp(owner)
+    finally:
+        owner.close()
+    assert "dataplane_shards" not in cp.input_pipeline
+
+    def restore(name: str, **extra: Any) -> SegmentLearner:
+        request = dataclasses.replace(
+            config, start_package=None, resume_checkpoint=record["checkpoint_artifact_id"],
+            segments=dataclasses.replace(config.segments, training_generation="g-" + name))
+        dataplane = {**io.dataplane, "root": str(tmp_path / ("live-" + name)), "shards": 2,
+                     **extra}
+        return SegmentLearner(request, tmp_path / name, dataclasses.replace(
+            io, dataplane=dataplane))
+
+    with pytest.raises(BoundaryError, match="checkpoint_dataplane_shard_count_changed"):
+        restore("refused")
+    with pytest.raises(BoundaryError, match="dataplane_shards_adopt_switch"):
+        restore("typed", shards_adopt_unsharded_checkpoint="yes")
+    adopted = restore("adopted", shards_adopt_unsharded_checkpoint=True)
+    try:
+        committed = cp.rng.learner_random
+        now = adopted.shards.snapshot()
+        assert now["count"] == 2
+        for index, shard in enumerate(now["shards"]):
+            expected = adopted_rng_state(committed, index)
+            assert shard["committed_selection_rng"][0] == expected[0]
+            assert list(shard["committed_selection_rng"][1]) == list(expected[1])
+        assert list(now["shards"][0]["committed_selection_rng"][1]) == list(committed[1])
+        assert (now["shards"][1]["committed_selection_rng"]
+                != now["shards"][0]["committed_selection_rng"])
+        # Its next CP names the shards, so a later restore needs no switch.
+        assert adopted._learning_state().input_pipeline["dataplane_shards"]["count"] == 2
+    finally:
+        adopted.close()
+
+
+def test_the_memory_budget_counts_only_processes_that_will_exist():
+    settings = SegmentConfig(preparation_workers=12)
+    local = {"assembly_workers": 8, "label_workers": 1, "source_bytes": 3 * 1024**3}
+    _, _, processes = shard_budget(local, settings, 6, 3)
+    assert processes == 3 * (1 + 12 + 8 + 1)
+    # Remote prepare never starts a local pool worker: the shard and its clients.
+    remote = {**local, "remote_prepare": {"endpoints": ["h:1"], "connections": 36,
+                                          "client_processes": 2}}
+    _, _, processes = shard_budget(remote, settings, 6, 3)
+    assert processes == 3 * (1 + 1)
+    remote["remote_prepare"]["client_processes"] = 0
+    assert shard_budget(remote, settings, 6, 3)[2] == 3
 
 
 def test_switch_is_explicit_and_shares_are_even():

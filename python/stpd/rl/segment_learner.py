@@ -545,6 +545,12 @@ class SegmentLearner:
         self.shard_count = (self.dataplane or {}).get("shards", 0)
         if type(self.shard_count) is not int or not 0 <= self.shard_count <= 8:
             raise BoundaryError("rl_learner", "dataplane_shards_must_be_int_0_to_8")
+        # Explicit, default off: continue a CP written without shards with shards.
+        self.shards_adopt = (self.dataplane or {}).get(
+            "shards_adopt_unsharded_checkpoint", False)
+        if type(self.shards_adopt) is not bool or (self.shards_adopt and not self.shard_count):
+            raise BoundaryError("rl_learner",
+                                "dataplane_shards_adopt_switch_must_be_bool_with_shards")
         # Threads that copy batch sources into preparer arenas concurrently.
         self.dispatch_workers = (self.dataplane.get("prepare_dispatch_workers", 4)
                                  if self.dataplane is not None else 1)
@@ -736,7 +742,16 @@ class SegmentLearner:
         self.shard_rng_states: list[tuple[Any, ...]] | None = None
         if restored is not None:
             recorded = (restored.input_pipeline or {}).get("dataplane_shards")
-            if (recorded["count"] if recorded else 0) != self.shard_count:
+            if not recorded and self.shards_adopt:
+                # The one explicit exception: a CP without shards. Each shard's RNG
+                # follows from the CP's committed RNG and the shard index; the next
+                # CP records the shards like any other.
+                from .dataplane_shards import adopted_rng_state
+
+                self.shard_rng_states = [
+                    adopted_rng_state(restored.rng.learner_random, index)
+                    for index in range(self.shard_count)]
+            elif (recorded["count"] if recorded else 0) != self.shard_count:
                 raise BoundaryError("rl_learner", "checkpoint_dataplane_shard_count_changed")
             if recorded:
                 states = [shard["committed_selection_rng"] for shard in recorded["shards"]]
@@ -1069,6 +1084,11 @@ class SegmentLearner:
                 # Before any listener or attachment, like the SGD process: a shard
                 # that fails to start means this learner accepts no connection.
                 self.shards = ShardSet.start(self)
+                if restored is not None and self.shards_adopt and not (
+                        restored.input_pipeline or {}).get("dataplane_shards"):
+                    self._event("dataplane_shards_adopted_unsharded_checkpoint",
+                                shards=self.shard_count,
+                                checkpoint_artifact_id=config.resume_checkpoint)
             self.pool = create_segment_inference_pool(
                 self.model.vocabulary,
                 initial["identity"],
@@ -3752,8 +3772,8 @@ class SegmentLearner:
                      "pending_labels": copy.deepcopy(self.pending_label_requests),
                      "restore_disposition": "discard_hot_inputs_resume_committed_rng",
                      # Shard count and each shard's committed/speculative selection
-                     # RNG and in-flight receipts. A restore into shards is refused
-                     # at start in this slice (never a silent RNG reset).
+                     # RNG and in-flight receipts; a restore keeps both (another
+                     # count is refused at start, never a silent RNG reset).
                      **({"dataplane_shards": self.shards.snapshot()}
                         if self.shards is not None else {})}
                     if self.wal is not None else None)

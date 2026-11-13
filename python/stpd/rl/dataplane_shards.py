@@ -31,6 +31,7 @@ from __future__ import annotations
 import collections
 import copy
 import faulthandler
+import hashlib
 import itertools
 import multiprocessing
 import os
@@ -128,9 +129,27 @@ def shard_budget(dataplane: dict[str, Any], settings: Any, prepared_batches: int
     together, for the learner's memory budget."""
     share, ahead = shard_settings(settings, prepared_batches, count)
     arguments = binary_preparer_arguments(shard_dataplane(dataplane, count), share, ahead)
+    remote = arguments["remote_prepare"]
+    # Processes that will exist per shard: the shard itself, plus either its
+    # remote-prepare client processes or (no remote prepare) its local pools.
+    # With remote prepare the local pools are never submitted to: no workers.
+    pools = (remote.get("client_processes", 0) if remote is not None
+             else arguments["workers"] + arguments["assembly_workers"]
+             + arguments["label_workers"])
     return (count * arguments["max_source_bytes"], count * share.prepared_bytes,
-            count * (arguments["workers"] + arguments["assembly_workers"]
-                     + arguments["label_workers"] + 1))
+            count * (1 + pools))
+
+
+def adopted_rng_state(committed: tuple[Any, ...], index: int) -> tuple[Any, ...]:
+    """Shard `index`'s selection RNG when a CP written without shards is continued
+    with shards (`dataplane.shards_adopt_unsharded_checkpoint`): shard 0 continues
+    the committed RNG itself; every other shard gets a stream fixed by that
+    committed state and its index."""
+    if index == 0:
+        return committed
+    digest = hashlib.sha256(repr((committed[0], tuple(committed[1]), committed[2],
+                                  "dataplane-shard", index)).encode()).hexdigest()
+    return random.Random(int(digest, 16)).getstate()
 
 
 def _kill_group(process: Any) -> None:
