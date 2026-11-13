@@ -678,3 +678,79 @@ def test_an_admission_that_raises_after_a_queue_change_still_wakes_waiters():
             _stub_segment("n2", "r1", 64, compiler={"compiler": 2})]))
     assert queued(owner) == ["old0", "n1"]
     assert condition.notified == 1 and owner.source_prefetch_changed.is_set()
+
+
+def _ref_learner(tmp_path: Any, monkeypatch: Any, value: Any) -> SegmentLearner:
+    return fast_learner(tmp_path, monkeypatch, dataplane_extra=(
+        {} if value is None else {"prefetch_referenced_only": value}))
+
+
+def _cached(owner: SegmentLearner, segment_id: str) -> bool:
+    record = next(r for r in owner.queue.pending if r["segment_id"] == segment_id)
+    preparer = cast(Any, owner.input_preparer)
+    return owner._member(record).payload in preparer.cached_sources()
+
+
+@pytest.mark.parametrize("referenced_only", [None, False])
+def test_source_prefetch_default_copies_the_whole_fifo_window(
+        tmp_path, monkeypatch, referenced_only):
+    """Flag absent or false: the old window, unreferenced segments included."""
+    owner = _ref_learner(tmp_path, monkeypatch, referenced_only)
+    try:
+        assert owner.prefetch_referenced_only is False
+        ids = []
+        for index in (1, 2):
+            name = f"g{index}"
+            admission(owner, name, index)
+            segment = game(owner, name, terminal=False)[0]
+            offer(owner, segment)
+            ids.append(segment.segment_id)
+        assert eventually(lambda: all(_cached(owner, sid) for sid in ids))
+    finally:
+        owner.close()
+
+
+def test_referenced_only_prefetch_never_copies_a_capacity_victim(tmp_path, monkeypatch):
+    """Flag on, full queue: the evicted segment was never pre-copied, and the
+    read-ahead batch is still copied (by its own dispatch) and prepared."""
+    owner = _ref_learner(tmp_path, monkeypatch, True)
+    try:
+        capacity = owner.settings.capacity_rows
+        ids = []
+        for index in range(1, capacity // 64 + 1):
+            name = f"g{index}"
+            admission(owner, name, index)
+            segment = game(owner, name, terminal=False)[0]
+            offer(owner, segment)
+            ids.append(segment.segment_id)
+        assert owner.queue.occupied == capacity
+        time.sleep(1.0)  # every chance for the prefetch thread to (wrongly) copy
+        assert not any(_cached(owner, sid) for sid in ids)
+        with owner.condition:  # one read-ahead selection, as `_prepare_ahead` makes it
+            active = owner._select(take=False)
+            assert active is not None
+            owner.pending_batch = active, owner._submit_batch(active)
+        selected = owner.pending_batch[0]["segments"][0]["segment_id"]
+        assert selected == ids[0]
+        name = f"g{capacity // 64 + 1}"
+        admission(owner, name, capacity // 64 + 1)
+        late = game(owner, name, terminal=False)[0]
+        offer(owner, late)  # evicts the oldest unreferenced segment
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        assert counters["capacity_evicted"] == 1 and counters["capacity_refused"] == 0
+        victims = [sid for sid in ids[1:] if sid not in queued(owner)]
+        assert len(victims) == 1
+        cached = cast(Any, owner.input_preparer).cached_sources()
+        assert not any(ref.slot.endswith("/" + victims[0]) for ref in cached)
+        time.sleep(0.5)
+        assert not _cached(owner, late.segment_id)
+        assert owner._prepare()  # the dispatch's own prefetch copied the batch
+        assert owner.active is not None
+        assert [r["segment_id"] for r in owner.active["segments"]] == [selected]
+    finally:
+        owner.close()
+
+
+def test_prefetch_referenced_only_must_be_a_bool(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="prefetch_referenced_only_must_be_explicit"):
+        _ref_learner(tmp_path, monkeypatch, "yes")
