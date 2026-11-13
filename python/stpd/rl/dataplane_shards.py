@@ -66,6 +66,11 @@ from .sgd_process import _parent_death_signal
 START_SECONDS = 600.0
 REPLY_SECONDS = 120.0
 CLOSE_SECONDS = 300.0
+FAILED_CLOSE_SECONDS = 20.0  # a shard already known as failed gets no long wait
+OWNER_MEMORY = 262144
+# What a shard may send; anything else is an unreadable message (fence at once).
+SHARD_MESSAGES = frozenset({"reply", "started", "ready", "fenced", "event", "claims",
+                            "finished_instances", "receiver_done"})
 # Intake counters driven by the broadcast actor control stream: every shard
 # counts the same request once, so the learner-wide value is the largest, not
 # the sum. Everything else is driven by a shard's own hand-off connections.
@@ -100,11 +105,21 @@ def shard_settings(settings: Any, prepared_batches: int, count: int) -> tuple[An
                                    else per_dataset * (ahead + 1))), ahead
 
 
-def shard_dataplane(dataplane: dict[str, Any], count: int) -> dict[str, Any]:
-    """Byte and slot budgets a shard takes its even share of (explicit keys only;
-    defaults are derived from the shard's own read-ahead count)."""
+def shard_dataplane(dataplane: dict[str, Any], count: int,
+                    settings: Any = None) -> dict[str, Any]:
+    """Byte, slot, worker and connection budgets a shard takes its even share of
+    (defaults are derived from the shard's own read-ahead count). Local
+    preparation workers are split too (rounded up, at least one each), so N
+    shards never start N times the configured local workers."""
     shared = dict(dataplane)
     if count > 1:
+        workers = {"preparation_workers": (settings.preparation_workers
+                                           if settings is not None else None),
+                   "assembly_workers": 2, "label_workers": 1}
+        for key, default in workers.items():
+            value = shared.get(key, default)
+            if type(value) is int and value > 0:
+                shared[key] = -(-value // count)
         for key in ("source_bytes", "prepare_source_bytes"):
             if key in shared:
                 shared[key] = shared[key] // count
@@ -128,7 +143,8 @@ def shard_budget(dataplane: dict[str, Any], settings: Any, prepared_batches: int
     """(prepare source bytes, prepared bytes, preparation processes) of all shards
     together, for the learner's memory budget."""
     share, ahead = shard_settings(settings, prepared_batches, count)
-    arguments = binary_preparer_arguments(shard_dataplane(dataplane, count), share, ahead)
+    arguments = binary_preparer_arguments(shard_dataplane(dataplane, count, settings),
+                                          share, ahead)
     remote = arguments["remote_prepare"]
     # Processes that will exist per shard: the shard itself, plus either its
     # remote-prepare client processes or (no remote prepare) its local pools.
@@ -183,6 +199,8 @@ class _Shard:
         self.dead: dict[str, Any] | None = None
         self.closing = False
         self.connections = 0
+        self.failed = False  # fenced, failed an operation or missed a reply
+        self.joining = False  # its pipe ended: the reader alone ends and reaps it
         self.exit: dict[str, Any] | None = None
         # The only thread that ever waits on the process (two concurrent waits on
         # one child lose its exit status); everyone else joins this thread.
@@ -202,6 +220,10 @@ class ShardSet:
         self.attached = 0
         self.receivers: dict[int, threading.Event] = {}
         self.unowned_exclusions: dict[str, int] = {}
+        # Which shard's connections carry each game instance (bounded, FIFO): the
+        # learner-wide "one instance, one assembler, no segment after its close"
+        # rule across shards. A second shard naming the same instance is a fence.
+        self.owners: collections.OrderedDict[str, int] = collections.OrderedDict()
         self.balance_reported: Any = None
         self.final: list[dict[str, Any]] | None = None
         self.threads = [threading.Thread(target=self._dispatch, name="rl-shard-dispatch",
@@ -233,7 +255,7 @@ class ShardSet:
                     "generation": owner.generation,
                     "compiler_identity": owner.compiler_identity,
                     "vocabulary": owner.model.vocabulary,
-                    "dataplane": shard_dataplane(dataplane, count),
+                    "dataplane": shard_dataplane(dataplane, count, owner.settings),
                     "prepared_batches": ahead,
                     "preparation_options": owner.preparation_options,
                     "aux_labels": owner.fast_aux_labels,
@@ -245,11 +267,12 @@ class ShardSet:
                     # A restore: the state this shard committed in the CP. A fresh
                     # start: shard 0 continues the learner's own selection RNG (with
                     # one shard: the same draws as without shards); the others get
-                    # a fixed stream of their own from the configured seed.
+                    # a stream of their own from the configured seed and the generation.
                     "rng": (owner.shard_rng_states[index]
                             if owner.shard_rng_states is not None
                             else owner.rng.getstate() if index == 0 else random.Random(
-                                f"{owner.config.seed}/dataplane-shard/{index}").getstate()),
+                                f"{owner.config.seed}/{owner.generation}/dataplane-shard/"
+                                f"{index}").getstate()),
                 }
                 process = context.Process(target=_shard_main, args=(theirs, init),
                                           name=f"rl-dataplane-shard-{index}", daemon=False)
@@ -298,14 +321,16 @@ class ShardSet:
             except (EOFError, OSError):
                 break
             try:
-                message = pickle.loads(data)
+                message = self._decode(data)
+                kind = message["kind"]
+                if kind not in SHARD_MESSAGES:
+                    raise ValueError(f"unknown_shard_message_kind: {kind!r}")
             except BaseException as error:
-                # Nothing after an unreadable message can be trusted: the shard
-                # is treated as lost (fence), never skipped past.
+                # Nothing after an unreadable or unknown message can be trusted:
+                # the shard is treated as lost (fence now), never skipped past.
                 unreadable = {"operation": "dataplane_shard_message_unreadable",
                               "error_type": type(error).__name__, "error": str(error)[:400]}
                 break
-            kind = message["kind"]
             if kind == "reply":
                 with shard.lock:
                     slot = shard.replies.pop(message["id"], None)
@@ -320,6 +345,7 @@ class ShardSet:
                 self.deferred.put((shard, message))
         with shard.lock:
             orderly = shard.closing and not unreadable
+            shard.joining = True
         if not orderly:
             # Before the join reaps it (its pid, the group id, is still its own):
             # whatever the lost shard's group still runs goes with it.
@@ -340,6 +366,27 @@ class ShardSet:
         if not orderly:
             self.deferred.put((shard, {"kind": "died", "facts": facts}))
 
+    @staticmethod
+    def _decode(data: bytes) -> dict[str, Any]:
+        return cast(dict[str, Any], pickle.loads(data))
+
+    def _kill(self, shard: _Shard) -> None:
+        """Kill a shard and its group, unless its pipe already ended: the reader
+        then ends and reaps it itself (killing whatever lingers), and after that
+        its pid, the group id, could belong to someone else."""
+        with shard.lock:
+            if not shard.joining:
+                _kill_group(shard.process)
+
+    def _own(self, shard: _Shard, instance: str) -> None:
+        previous = self.owners.get(instance)
+        if previous is not None and previous != shard.index:
+            raise ValueError(f"fast_instance_on_two_shards instance={instance} "
+                             f"shards={previous},{shard.index}")
+        self.owners[instance] = shard.index
+        while len(self.owners) > OWNER_MEMORY:
+            self.owners.popitem(last=False)
+
     def _dispatch(self) -> None:
         """Everything a shard sends unasked. Runs apart from the readers because it
         takes the learner's condition, which a caller waiting for a reply may hold."""
@@ -357,16 +404,23 @@ class ShardSet:
                     with owner.condition:
                         owner.condition.notify_all()
                 elif kind == "fenced":
-                    owner._shard_fenced(shard.index, message["failure"])
+                    if owner._shard_fenced(shard.index, message["failure"]):
+                        shard.failed = True
                 elif kind == "died":
                     owner._shard_fenced(shard.index, {
                         "operation": "dataplane_shard_died", **message["facts"]})
                 elif kind == "event":
                     owner._event(message["event"], shard=shard.index, **message["fields"])
+                elif kind == "claims":
+                    for instance in message["instances"]:
+                        self._own(shard, instance)
                 elif kind == "finished_instances":
+                    for instance, _reason, _assembler in message["instances"]:
+                        self._own(shard, instance)
                     for other in self.shards:
                         if other is not shard:
-                            self._cast(other, "forget", instances=message["instances"])
+                            self._cast(other, "closed_elsewhere",
+                                       instances=message["instances"])
                 elif kind == "receiver_done":
                     self.receivers[message["token"]].set()
             except BaseException as error:  # never lose the dispatcher silently
@@ -393,6 +447,7 @@ class ShardSet:
         if not slot.event.wait(seconds):
             failure = {"operation": "dataplane_shard_reply_timeout", "request": kind,
                        "seconds": seconds}
+            shard.failed = True
             self.deferred.put((shard, {"kind": "fenced", "failure": failure}))
             raise DataplaneShardFailed("dataplane_shard_reply_timeout",
                                        {"shard": shard.index, **failure})
@@ -400,6 +455,7 @@ class ShardSet:
             raise DataplaneShardFailed("dataplane_shard_died",
                                        {"shard": shard.index, **(shard.dead or {})})
         if "failure" in slot.value:
+            shard.failed = True
             raise DataplaneShardFailed("dataplane_shard_operation_failed", {
                 "shard": shard.index, "request": kind, **slot.value["failure"]})
         return slot.value["value"]
@@ -612,16 +668,21 @@ class ShardSet:
                 slots.append((shard, None))
                 failures.append(error)
         for shard, slot in slots:
+            # A shard already known as failed (the learner is fenced) is not waited
+            # for at length: the stop reserve belongs to the rest of the close.
+            failed = shard.failed
             try:
                 if slot is not None:
-                    final.append(self._wait(shard, "close", slot, CLOSE_SECONDS))
+                    final.append(self._wait(shard, "close", slot,
+                                            FAILED_CLOSE_SECONDS if failed else CLOSE_SECONDS))
             except DataplaneShardFailed as error:
                 failures.append(error)
+                failed = True
             shard.outbox.put(None)
             assert shard.reader is not None
-            shard.reader.join(60 if slot is not None else 0)
+            shard.reader.join(0 if slot is None else 5 if failed else 60)
             if shard.reader.is_alive():
-                _kill_group(shard.process)  # the reader then sees the end and reaps it
+                self._kill(shard)  # the reader then sees the end and reaps it
                 shard.reader.join(90)
                 failures.append(DataplaneShardFailed(
                     "dataplane_shard_killed_at_close", {"shard": shard.index}))
@@ -640,7 +701,7 @@ class ShardSet:
             with shard.lock:
                 shard.closing = True
             shard.outbox.put(None)
-            _kill_group(shard.process)
+            self._kill(shard)
         for shard in self.shards:
             if shard.reader is not None:
                 shard.reader.join(90)
@@ -662,19 +723,44 @@ class _Absent:
 
 
 class _ShardIntake(FastSegmentIntake):
-    """The same ledger; additionally tells the shard which instances closed here,
-    so the other shards can drop their inert control records of them."""
+    """The same ledger, plus what keeps its identity rules learner-wide when there
+    are several shards: it reports each instance its connections bind (`claims`)
+    and close (`finished_instances`), and records instances closed on another
+    shard as finished here, so a late or repeated segment of them is the same
+    `fast_segment_after_instance_closed` fence as on one ledger."""
 
-    closed_here: deque[str]
+    notify: Any = None  # the shard's send, set only with more than one shard
+
+    def __init__(self, **options: Any) -> None:
+        super().__init__(**options)
+        self.claimed: set[str] = set()
+        self.elsewhere: collections.OrderedDict[str, None] = collections.OrderedDict()
+
+    def offer(self, message: dict[str, Any], data: bytes, checked: Any = None) -> Any:
+        decision = super().offer(message, data, checked)
+        if self.notify is not None:
+            with self.lock:
+                new = [instance_id for instance_id, instance in self.instances.items()
+                       if instance.assembler_id is not None
+                       and instance_id not in self.claimed]
+                self.claimed.update(new)
+            if new:
+                self.notify({"kind": "claims", "instances": new})
+        return decision
 
     def _finish(self, instance_id: str, instance: Any) -> None:
         super()._finish(instance_id, instance)
         if instance.closed is not None:
-            self.closed_here.append(instance_id)
+            self.claimed.discard(instance_id)
+            if self.notify is not None:
+                self.notify({"kind": "finished_instances", "instances": [
+                    (instance_id, instance.excluded, instance.closed["assembler_id"])]})
 
     def owns(self, instance_id: Any) -> bool:
         """Whether a hand-off on this shard's connections ever named the instance."""
         with self.lock:
+            if instance_id in self.elsewhere:
+                return False
             if instance_id in self.finished:
                 return True
             instance = self.instances.get(instance_id)
@@ -682,11 +768,22 @@ class _ShardIntake(FastSegmentIntake):
                 instance.assembler_id is not None or instance.received > 0
                 or bool(instance.buffered) or instance.closed is not None)
 
-    def forget(self, instances: list[str]) -> None:
+    def closed_elsewhere(self, records: list[tuple[str, str | None, str]]) -> None:
         with self.lock:
-            for instance_id in instances:
-                if instance_id in self.instances and not self.owns(instance_id):
-                    del self.instances[instance_id]
+            for instance_id, reason, assembler in records:
+                if self.owns(instance_id):
+                    raise FastIntakeError(
+                        f"fast_instance_on_two_shards instance={instance_id} "
+                        f"assembler_elsewhere={assembler}")
+                self.instances.pop(instance_id, None)  # at most an inert control record
+                self.finished[instance_id] = reason
+                self.finished.move_to_end(instance_id)
+                self.finished_by[instance_id] = assembler
+                self.elsewhere[instance_id] = None
+                while len(self.finished) > self.closed_memory:
+                    self.finished_by.pop(self.finished.popitem(last=False)[0], None)
+                while len(self.elsewhere) > self.closed_memory:
+                    self.elsewhere.popitem(last=False)
 
 
 class _ShardLearner(SegmentLearner):
@@ -760,7 +857,8 @@ class _ShardLearner(SegmentLearner):
             excluded_seeds=frozenset(settings.excluded_seeds),
             buffer_segments=dataplane.get("fast_buffer_segments", 512),
             gae_lambda=settings.gae_lambda, aux_labels=frozenset(init["aux_labels"]))
-        intake.closed_here = deque()
+        if self.shard_count > 1:
+            intake.notify = send
         self.fast_intake = self.shard_intake = intake
         self.fast_verifier = None
         self.fast_admitted_rows = collections.OrderedDict()
@@ -914,19 +1012,10 @@ class _ShardLearner(SegmentLearner):
             if not owned:
                 self.foreign_exclusions += 1
                 self.foreign_by_reason[counted] = self.foreign_by_reason.get(counted, 0) + 1
-        self._closed_instances()
         return {"reply": decision.reply, "owned": owned, "counted": counted}
 
-    def _closed_instances(self) -> None:
-        closed = self.shard_intake.closed_here
-        instances = []
-        while closed:
-            instances.append(closed.popleft())
-        if instances and self.shard_count > 1:
-            self.send({"kind": "finished_instances", "instances": instances})
-
-    def _on_forget(self, message: dict[str, Any]) -> None:
-        self.shard_intake.forget(message["instances"])
+    def _on_closed_elsewhere(self, message: dict[str, Any]) -> None:
+        self.shard_intake.closed_elsewhere(message["instances"])
 
     def _on_publish_mu(self, message: dict[str, Any]) -> None:
         self.shard_intake.publish_mu(message["identity"])
@@ -935,7 +1024,6 @@ class _ShardLearner(SegmentLearner):
         """The learner loop's own order: releases, labels, then read-ahead."""
         self._check_releases()
         self._collect_labels()
-        self._closed_instances()
         self._prepare_ahead()
         for active, future in self._pending_batches():
             if not active.get("announcing"):
@@ -1035,6 +1123,11 @@ class _ShardLearner(SegmentLearner):
                     self._release(payload, owner)
                 for member in self.hp_binary_members.pop(record["segment_id"], ()):
                     self._release(member.payload, "labels:" + record["segment_id"])
+            # As `_discard_stopped_queue`: counted, and the queue is empty after
+            # (a second call reports nothing).
+            self.training_discarded_rows += sum(record["rows"] for record in records)
+            self.queue.pending.clear()
+            self.queue.rows = 0
             return [{"segment_id": r["segment_id"], "rows": r["rows"]} for r in records]
 
     def _on_snapshot(self, message: dict[str, Any]) -> dict[str, Any]:

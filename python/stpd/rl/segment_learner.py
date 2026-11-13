@@ -1201,9 +1201,20 @@ class SegmentLearner:
             shards.flags(stopped=bool(getattr(self, "_newlease_stopped", False)),
                          fenced=bool(getattr(self, "_input_fenced", False)))
 
-    def _shard_fenced(self, index: int, failure: dict[str, Any]) -> None:
+    def _shard_fenced(self, index: int, failure: dict[str, Any]) -> bool:
         """A data-plane shard fenced itself, failed an operation or died: all input
-        is fenced (every other shard too). Nothing is restarted or re-routed."""
+        is fenced (every other shard too). Nothing is restarted or re-routed.
+
+        One case is not a fence, as on one ledger (`_fast_lost`): a hand-off
+        connection that ended after this learner stopped taking input. The stop
+        flag reaches a shard by message, so the shard may see the service's EOF
+        first and report it as lost; the learner, which is already stopping,
+        only records it. Returns whether the learner is fenced by this."""
+        with self.condition:
+            stopping = self.newlease_stopped and not self.input_fenced
+        if failure.get("operation") == "fast_handoff_lost" and stopping:
+            self._event("fast_handoff_lost", shard=index, learner_stopping=True)
+            return False
         with self.condition:
             if not self.input_fenced:
                 self.input_failure = {"operation": "dataplane_shard", "shard": index,
@@ -1211,6 +1222,7 @@ class SegmentLearner:
             self.input_fenced = self.newlease_stopped = True
             self.condition.notify_all()
             self._notify_capacity(force=True)
+        return True
 
     def _shard_ready(self) -> None:
         """Main thread: ask every shard to keep its read-ahead filled, and queue
@@ -1587,7 +1599,16 @@ class SegmentLearner:
     def _discard_stopped_shards(self) -> None:
         """The same terminal training discard for what the shards still queue: one
         durable disposition here (the shards journal nothing), bytes released there."""
-        records = self.shards.discard_stopped()
+        try:
+            records = self.shards.discard_stopped()
+        except BoundaryError as error:
+            # A shard that is dead or does not answer at stop: fence (no
+            # disposition is written for what it held) and go on to the close,
+            # which ends the shards, the pool and the SGD process.
+            facts = getattr(error, "facts", {})
+            self._shard_fenced(facts.get("shard", -1), {
+                "operation": "dataplane_shard_discard_at_stop", "error": str(error)[:400]})
+            return
         if not records:
             return
         disposition = {"run": self.config.run, "training_generation": self.generation,
