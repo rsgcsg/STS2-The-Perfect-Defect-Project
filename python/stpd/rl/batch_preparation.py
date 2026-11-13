@@ -1946,7 +1946,10 @@ class _TensorView:
     shape: tuple[int, ...]
 
 
-def _map_structure(value: Any, transform: Callable[[Any], Any]) -> Any:
+def _map_structure(value: Any, transform: Callable[[Any], Any], *,
+                   lean: bool = False) -> Any:
+    if lean:
+        return _map_lean(value, transform)
     mapped = transform(value)
     if mapped is not value:
         return mapped
@@ -1964,6 +1967,90 @@ def _map_structure(value: Any, transform: Callable[[Any], Any]) -> Any:
         return tuple(_map_structure(item, transform) for item in value)
     if isinstance(value, list):
         return [_map_structure(item, transform) for item in value]
+    return value
+
+
+_SCALAR_TYPES = (int, str, float, bool, bytes, type(None))
+
+
+def _may_hold_tensor(declared: Any, seen: frozenset[type]) -> bool:
+    """False only when the declared type cannot reach a tensor (or `_TensorView`)."""
+    import types
+    import typing
+
+    if declared in _SCALAR_TYPES:
+        return False
+    origin = typing.get_origin(declared)
+    if origin is Literal:
+        return False
+    if origin in (typing.Union, types.UnionType, tuple, list, frozenset, set, dict):
+        return any(_may_hold_tensor(arg, seen) for arg in typing.get_args(declared)
+                   if arg is not Ellipsis)
+    if (isinstance(declared, type) and dataclasses.is_dataclass(declared)
+            and declared not in seen):
+        return any(may for _, may in _lean_fields(declared, seen | {declared}))
+    if typing.is_typeddict(declared) and declared not in seen:
+        try:
+            hints = typing.get_type_hints(declared)
+        except Exception:
+            return True
+        return any(_may_hold_tensor(hint, seen | {declared}) for hint in hints.values())
+    return True  # Tensor, Any, TypeVars, unknown or recursive classes: descend
+
+
+def _lean_fields(cls: type, seen: frozenset[type] = frozenset()) -> tuple[tuple[str, bool], ...]:
+    """(field name, may hold a tensor) of one dataclass, from its declared types."""
+    cached = _LEAN_FIELDS.get(cls)
+    if cached is not None:
+        return cached
+    import typing
+
+    names = tuple(field.name for field in dataclasses.fields(cls))
+    try:
+        hints = typing.get_type_hints(cls)
+    except Exception:  # unresolvable annotations: descend into every field
+        result = tuple((name, True) for name in names)
+    else:
+        result = tuple((name, _may_hold_tensor(hints.get(name, Any), seen | {cls}))
+                       for name in names)
+    _LEAN_FIELDS[cls] = result
+    return result
+
+
+_LEAN_FIELDS: dict[type, tuple[tuple[str, bool], ...]] = {}
+
+
+def _map_lean(value: Any, transform: Callable[[Any], Any]) -> Any:
+    """`_map_structure` that skips fields whose declared type holds no tensor and
+    returns unchanged containers as they are (V3 `sgd_stage_lean_tree`).
+
+    The packed trees hold thousands of row refs, frame layouts, members and
+    group row indices; the full walk rebuilds every one of them while it holds
+    the GIL. Same mapped values; only untouched, tensor-free parts are shared.
+    """
+    mapped = transform(value)
+    if mapped is not value:
+        return mapped
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        changes = {}
+        for name, may in _lean_fields(type(value)):
+            if may:
+                old = getattr(value, name)
+                new = _map_lean(old, transform)
+                if new is not old:
+                    changes[name] = new
+        return dataclasses.replace(value, **changes) if changes else value
+    if isinstance(value, dict):
+        items = {key: _map_lean(item, transform) for key, item in value.items()}
+        return items if any(items[key] is not value[key] for key in value) else value
+    if isinstance(value, (tuple, list)):
+        if not value or type(value[0]) in _SCALAR_TYPES and all(
+                type(item) in _SCALAR_TYPES for item in value):
+            return value
+        mapped_items = [_map_lean(item, transform) for item in value]
+        if all(new is old for new, old in zip(mapped_items, value, strict=True)):
+            return value
+        return tuple(mapped_items) if isinstance(value, tuple) else mapped_items
     return value
 
 
@@ -1996,7 +2083,7 @@ def pack_transport(value: Any) -> Any:
     return tree, tuple(slabs)
 
 
-def unpack_transport(packed: Any) -> Any:
+def unpack_transport(packed: Any, *, lean: bool = False) -> Any:
     tree, arrays = packed
     slabs = [torch.from_numpy(array) for array in arrays]
 
@@ -2006,17 +2093,21 @@ def unpack_transport(packed: Any) -> Any:
         count = math.prod(node.shape)
         return slabs[node.slab][node.offset : node.offset + count].view(node.shape)
 
-    return _map_structure(tree, replace)
+    return _map_structure(tree, replace, lean=lean)
 
 
 def stage_pinned_slabs(tree: Any, slabs: list[Tensor], lease: Any,
-                       device: torch.device) -> tuple[PreparedBatch, int]:
+                       device: torch.device, *, stream: Any = None,
+                       lean: bool = False) -> tuple[PreparedBatch, int]:
     """CUDA: H2D each pinned slab once and map the packed tree onto device views.
 
     Same tensors as `unpack_transport` + pin + `stage_batch`, with one tree walk.
     The pinned lease is released only after this copy's event completes.
+    `stream`: a persistent copy stream (`sgd_stage_stream_reuse`); None = a new
+    pool stream per call (default).
     """
-    stream = torch.cuda.Stream(device=device)
+    if stream is None:
+        stream = torch.cuda.Stream(device=device)
     with torch.cuda.stream(stream):
         moved = [slab.to(device, non_blocking=True) for slab in slabs]
         ready = torch.cuda.Event()
@@ -2033,10 +2124,11 @@ def stage_pinned_slabs(tree: Any, slabs: list[Tensor], lease: Any,
         count = math.prod(node.shape)
         return moved[node.slab][node.offset : node.offset + count].view(node.shape)
 
-    return cast(PreparedBatch, _map_structure(tree, replace)), len(moved)
+    return cast(PreparedBatch, _map_structure(tree, replace, lean=lean)), len(moved)
 
 
-def stage_batch(batch: PreparedBatch, device: torch.device) -> tuple[PreparedBatch, int]:
+def stage_batch(batch: PreparedBatch, device: torch.device, *, stream: Any = None,
+                lean: bool = False) -> tuple[PreparedBatch, int]:
     """One H2D copy per dtype slab, reused by all four optimizer minibatches.
 
     The immutable CPU owner remains alive until the dataset finishes. Copies and
@@ -2067,9 +2159,10 @@ def stage_batch(batch: PreparedBatch, device: torch.device) -> tuple[PreparedBat
     if device.type == "cuda":
         # A dedicated copy stream overlaps the preceding dataset's SGD. Each
         # pinned lease remains unavailable until its own H2D event completes.
-        stream = torch.cuda.Stream(device=device)
+        if stream is None:
+            stream = torch.cuda.Stream(device=device)
         with torch.cuda.stream(stream):
-            result = cast(PreparedBatch, _map_structure(batch, move))
+            result = cast(PreparedBatch, _map_structure(batch, move, lean=lean))
             ready = torch.cuda.Event()
             ready.record(stream)
         consumer = torch.cuda.current_stream(device)
@@ -2079,7 +2172,7 @@ def stage_batch(batch: PreparedBatch, device: torch.device) -> tuple[PreparedBat
         for owner in pinned_owners.values():
             owner.copied(ready)
         return result, len(slabs)
-    return cast(PreparedBatch, _map_structure(batch, move)), len(slabs)
+    return cast(PreparedBatch, _map_structure(batch, move, lean=lean)), len(slabs)
 
 
 def _decode_auxiliary_inputs(inputs: tuple[AuxiliaryInput, ...], identity: dict[str, Any]) -> Any:

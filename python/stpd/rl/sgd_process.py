@@ -36,7 +36,7 @@ from collections import OrderedDict, deque
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -55,6 +55,8 @@ OPTION_KEYS = frozenset((
     "memory_headroom_fraction", "memory_budget",
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
+    "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split", "sgd_verify_threads",
+    "sgd_switch_interval_seconds",
 ))
 # Threads that hash one prepared file's chunks (see `prepared_digest`).
 VERIFY_THREADS = 4
@@ -107,6 +109,26 @@ class SgdOptions:
     # authorized one). Theta/KL/PPO match lockstep; aux selection timing may
     # differ. Default on; False is the rollback to the lockstep start.
     prestart: bool = True
+    # V3 酉 staging levers; every default is the earlier behaviour.
+    # One persistent H2D copy stream per rank instead of a new pool stream per
+    # batch, so the caching allocator reuses the previous batch's device blocks.
+    stage_stream_reuse: bool = False
+    # Tree walks during staging skip fields whose declared type holds no tensor
+    # (row refs, frames, members, group row indices); same staged values.
+    stage_lean_tree: bool = False
+    # Data parallel: each rank hashes ~1/world of the prepared file's chunks and
+    # rank 0 combines them into the same whole-file digest before `staged`.
+    verify_split: bool = False
+    verify_threads: int = VERIFY_THREADS
+    # `sys.setswitchinterval` in every SGD rank (None = Python's default, 5 ms):
+    # the stepping thread gets the GIL back sooner from the stage thread.
+    switch_interval: float | None = None
+
+    def stage_init(self) -> dict[str, Any]:
+        """The SGD child's staging options (part of its init message)."""
+        return {"stream_reuse": self.stage_stream_reuse, "lean_tree": self.stage_lean_tree,
+                "verify_split": self.verify_split, "verify_threads": self.verify_threads,
+                "switch_interval": self.switch_interval}
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -192,6 +214,18 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
     prestart = dataplane.get("sgd_prestart", True)
     if type(prestart) is not bool:
         raise ValueError("invalid_sgd_prestart")
+    flags = {}
+    for key in ("sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split"):
+        flags[key] = dataplane.get(key, False)
+        if type(flags[key]) is not bool:
+            raise ValueError("invalid_" + key)
+    verify_threads = dataplane.get("sgd_verify_threads", VERIFY_THREADS)
+    if type(verify_threads) is not int or not 1 <= verify_threads <= 32:
+        raise ValueError("invalid_sgd_verify_threads")
+    switch = dataplane.get("sgd_switch_interval_seconds")
+    if switch is not None and (type(switch) not in (int, float) or not math.isfinite(switch)
+                               or not 1e-5 <= switch <= 0.1):
+        raise ValueError("invalid_sgd_switch_interval_seconds")
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -206,6 +240,11 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         compile=compiled,
         stage_thread=stage_thread,
         prestart=prestart,
+        stage_stream_reuse=flags["sgd_stage_stream_reuse"],
+        stage_lean_tree=flags["sgd_stage_lean_tree"],
+        verify_split=flags["sgd_verify_split"],
+        verify_threads=verify_threads,
+        switch_interval=float(switch) if switch is not None else None,
     )
 
 
@@ -375,6 +414,27 @@ def _file_identity(stat: os.stat_result) -> tuple[int, ...]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
+@dataclass(frozen=True)
+class _StageConfig:
+    """`SgdOptions.stage_init()` as the SGD child reads it (defaults = earlier path)."""
+
+    stream_reuse: bool = False
+    lean_tree: bool = False
+    verify_split: bool = False
+    verify_threads: int = VERIFY_THREADS
+    switch_interval: float | None = None
+
+    @classmethod
+    def from_init(cls, value: Any) -> _StageConfig:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict) or set(value) != {
+                "stream_reuse", "lean_tree", "verify_split", "verify_threads",
+                "switch_interval"}:
+            raise _ChildViolation("sgd_stage_options_changed")
+        return cls(**value)
+
+
 class _Digest(threading.Thread):
     """`prepared_digest` of one mapped prepared file, off the staging thread.
 
@@ -382,10 +442,12 @@ class _Digest(threading.Thread):
     pin/H2D of the same file.
     """
 
-    def __init__(self, view: memoryview, threads: int) -> None:
+    def __init__(self, view: memoryview, threads: int, indices: Any = None) -> None:
         super().__init__(name="rl-sgd-verify", daemon=True)
-        self.view, self.threads = view, threads
+        self.view, self.threads, self.indices = view, threads, indices
         self.value: str | None = None
+        # `sgd_verify_split`: only these chunks' sha256 (rank 0 combines them).
+        self.parts: dict[int, bytes] | None = None
         self.error: BaseException | None = None
         self.seconds = 0.0
         self.start()
@@ -393,9 +455,12 @@ class _Digest(threading.Thread):
     def run(self) -> None:
         began = time.perf_counter()
         try:
-            from .binary_preparation import prepared_digest
+            from .binary_preparation import prepared_chunk_digests, prepared_digest
 
-            self.value = prepared_digest(self.view, self.threads)
+            if self.indices is None:
+                self.value = prepared_digest(self.view, self.threads)
+            else:
+                self.parts = prepared_chunk_digests(self.view, self.indices, self.threads)
         except BaseException as error:  # re-raised by the staging caller
             self.error = error
         finally:
@@ -801,8 +866,9 @@ class _Follower:
                 report = self.connection.recv()
             except (EOFError, OSError):
                 report = None
-            if isinstance(report, dict) and set(report) == {"staged", "file"}:
-                self.on_staged(self.rank, report["staged"], tuple(report["file"]))
+            if isinstance(report, dict) and set(report) == {"staged", "file", "chunks"}:
+                self.on_staged(self.rank, report["staged"], tuple(report["file"]),
+                               report["chunks"])
                 continue
             break
         if self.state.get("closing"):
@@ -841,7 +907,7 @@ class _DataParallel:
         self.send: Any = None
         self.staged_lock = threading.Lock()
         self.deferred: dict[int, dict[str, Any]] = {}
-        self.follower_ready: dict[int, dict[int, tuple[int, ...]]] = {}
+        self.follower_ready: dict[int, dict[int, tuple[tuple[int, ...], Any]]] = {}
         device = init["device"]
         if device.startswith("cuda"):
             base = int(device.split(":", 1)[1]) if ":" in device else 0
@@ -871,7 +937,7 @@ class _DataParallel:
         holder: list[_DataParallel] = []
         for rank in range(1, config["world"]):
             followers.append(_Follower(context, init, rank, send, state,
-                                       lambda r, d, f: holder[0].follower_staged(r, d, f)))
+                                       lambda r, d, f, c: holder[0].follower_staged(r, d, f, c)))
         leader = cls(init, 0)
         leader.send = send
         holder.append(leader)
@@ -882,27 +948,61 @@ class _DataParallel:
             self.deferred[dataset] = fields
             self._flush(dataset)
 
-    def follower_staged(self, rank: int, dataset: int, identity: tuple[int, ...]) -> None:
+    def follower_staged(self, rank: int, dataset: int, identity: tuple[int, ...],
+                        chunks: Any = None) -> None:
         with self.staged_lock:
-            self.follower_ready.setdefault(dataset, {})[rank] = identity
+            self.follower_ready.setdefault(dataset, {})[rank] = (identity, chunks)
             self._flush(dataset)
 
     def _flush(self, dataset: int) -> None:
         if (dataset in self.deferred
                 and len(self.follower_ready.get(dataset, ())) == self.world - 1):
             fields = self.deferred.pop(dataset)
-            identities = self.follower_ready.pop(dataset)
+            ready = self.follower_ready.pop(dataset)
+            identities = {rank: identity for rank, (identity, _) in ready.items()}
             verified = tuple(fields["file_identity"])
             if any(identity != verified for identity in identities.values()):
                 # Only rank 0 hashed: a rank that mapped another file never trains.
-                with suppress(BaseException):
-                    self.send("failed", stage="data_parallel_stage",
-                              error_type="_ChildViolation",
-                              error_code="sgd_data_parallel_file_identity_changed",
-                              dataset=dataset, verified=list(verified),
-                              ranks={str(r): list(i) for r, i in identities.items()})
-                os._exit(1)
+                self._refuse(dataset, "sgd_data_parallel_file_identity_changed",
+                             verified=list(verified),
+                             ranks={str(r): list(i) for r, i in identities.items()})
+            split = fields.pop("verify_parts", None)
+            if split is not None:
+                # `sgd_verify_split`: every rank hashed its own chunks of the file
+                # it mapped; the whole-file digest must match before `staged`.
+                self._verify_split(dataset, fields["sha256"], split,
+                                   {rank: chunks for rank, (_, chunks) in ready.items()})
             self.send("staged", dataset=dataset, **fields)
+
+    def _verify_split(self, dataset: int, expected: str, own: dict[str, Any],
+                      followers: dict[int, Any]) -> None:
+        from .binary_preparation import prepared_chunk_count, prepared_digest_combine
+
+        length = own["length"]
+        parts: dict[int, bytes] = dict(own["parts"])
+        overlap = False
+        for rank in sorted(followers):
+            chunks = followers[rank]
+            if not isinstance(chunks, dict) or chunks.get("length") != length:
+                self._refuse(dataset, "sgd_verify_split_chunks_missing", rank=rank)
+            for index, part in chunks["parts"].items():
+                overlap = overlap or index in parts
+                parts[index] = part
+        if overlap or sorted(parts) != list(range(prepared_chunk_count(length))):
+            self._refuse(dataset, "sgd_verify_split_chunks_missing")
+        try:
+            digest = prepared_digest_combine(length, [parts[i] for i in sorted(parts)])
+        except ValueError:
+            self._refuse(dataset, "sgd_verify_split_chunks_missing")
+        if digest != expected:
+            self._refuse(dataset, "sgd_prepared_file_integrity_changed")
+
+    def _refuse(self, dataset: int, code: str, **facts: Any) -> NoReturn:
+        """No rank trains on this dataset: the child fails loudly, no `staged`."""
+        with suppress(BaseException):
+            self.send("failed", stage="data_parallel_stage", error_type="_ChildViolation",
+                      error_code=code, dataset=dataset, **facts)
+        os._exit(1)
 
     def gather(self, value: Any) -> list[Any] | None:
         parts: list[Any] | None = [None] * self.world if self.rank == 0 else None
@@ -959,7 +1059,8 @@ def _follower_main(connection: Any, init: dict[str, Any], rank: int, leader: int
             if kind == "staged":
                 with answer_lock:
                     connection.send({"staged": fields["dataset"],
-                                     "file": fields["file_identity"]})
+                                     "file": fields["file_identity"],
+                                     "chunks": fields.get("verify_parts")})
 
         worker = _SgdWorker(init, answer, state, parallel=parallel)
         worker.loop(next_message)
@@ -1112,6 +1213,10 @@ class _SgdWorker:
                 1, thread_name_prefix="rl-sgd-stage",
                 initializer=(lambda: torch.cuda.set_device(index))
                 if index is not None else None)
+        self.staging_config = _StageConfig.from_init(init.get("stage_options"))
+        if self.staging_config.switch_interval is not None:
+            sys.setswitchinterval(self.staging_config.switch_interval)
+        self.copy_stream: Any = None  # `stream_reuse`: created on first use
         self.idle_since = time.perf_counter()
         self.last_step_end: float | None = None
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
@@ -1319,12 +1424,19 @@ class _SgdWorker:
         no step ever starts on unverified bytes. A follower rank does not hash: it
         reports the fstat identity of the file it mapped, and rank 0 answers
         `staged` only when every rank mapped the file rank 0 verified.
+
+        `sgd_verify_split`: every rank hashes its own chunks (index % world ==
+        rank) of the file it mapped, and rank 0 combines all chunk hashes into the
+        same whole-file digest before it answers `staged` (`_DataParallel`).
         """
         from . import batch_preparation as bp
 
+        config = self.staging_config
         began = time.perf_counter()
         dataset = plan["dataset"]
         direct = self.stage_executor is not None and self.device.type == "cuda"
+        split = (config.verify_split and self.parallel is not None
+                 and self.parallel.world > 1)
         with open(plan["path"], "rb") as stream:
             identity = _file_identity(os.fstat(stream.fileno()))
             mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
@@ -1333,41 +1445,57 @@ class _SgdWorker:
         try:
             if len(mapping) < plan["used_bytes"]:
                 raise _ChildViolation("sgd_prepared_file_integrity_changed")
-            if self.rank == 0:
-                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]], VERIFY_THREADS)
+            if split:
+                from .binary_preparation import prepared_chunk_count
+
+                assert self.parallel is not None
+                world = self.parallel.world
+                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]],
+                                 config.verify_threads,
+                                 range(self.rank, prepared_chunk_count(plan["used_bytes"]),
+                                       world))
+            elif self.rank == 0:
+                digest = _Digest(memoryview(mapping)[:plan["used_bytes"]],
+                                 config.verify_threads)
             tree = pickle.loads(plan["tree"])
             arrays = mapped_arrays(mapping, plan["arrays"])
             if self.shard is not None:
                 from .data_parallel import shard_transport
 
-                tree, arrays = shard_transport(tree, arrays, *self.shard)
+                tree, arrays = shard_transport(tree, arrays, *self.shard,
+                                               lean=config.lean_tree)
+            stream_ = self._copy_stream() if config.stream_reuse else None
             if direct:
                 # Stage thread: one tree walk (pin the file's slabs, H2D, map the
                 # tree once); the walks hold the GIL the stepping thread needs.
                 slabs, lease = self.pinned.pin_slabs(arrays, self.pinned.epoch)
                 arrays = None
                 pinned = time.perf_counter()
-                device_batch, copies = bp.stage_pinned_slabs(tree, slabs, lease, self.device)
+                device_batch, copies = bp.stage_pinned_slabs(
+                    tree, slabs, lease, self.device, stream=stream_, lean=config.lean_tree)
                 del slabs, lease
             else:
                 if self.device.type == "cuda":
-                    batch = self.pinned.pin(bp.unpack_transport((tree, arrays)),
+                    batch = self.pinned.pin(bp.unpack_transport((tree, arrays),
+                                                                lean=config.lean_tree),
                                             self.pinned.epoch)
                 else:
-                    batch = bp.unpack_transport((tree, tuple(a.copy() for a in arrays)))
+                    batch = bp.unpack_transport((tree, tuple(a.copy() for a in arrays)),
+                                                lean=config.lean_tree)
                 arrays = None
                 if (batch.request.identity.sequence != dataset
                         or len(batch.minibatches) != plan["minibatch_count"]):
                     raise _ChildViolation("sgd_prepared_batch_binding_changed")
                 pinned = time.perf_counter()
-                device_batch, copies = bp.stage_batch(batch, self.device)
+                device_batch, copies = bp.stage_batch(batch, self.device, stream=stream_,
+                                                      lean=config.lean_tree)
                 del batch  # pinned slot returns once its H2D event completes
             staged_at = time.perf_counter()
             if digest is not None:
                 digest.join()
                 if digest.error is not None:
                     raise digest.error
-                if digest.value != plan["sha256"]:
+                if not split and digest.value != plan["sha256"]:
                     raise _ChildViolation("sgd_prepared_file_integrity_changed")
         finally:
             if digest is not None:
@@ -1377,8 +1505,21 @@ class _SgdWorker:
                 gc.collect()
             with suppress(BufferError):
                 mapping.close()
-        return self._staged_fields(plan, device_batch, copies, began, pinned, staged_at,
-                                   digest, identity)
+        device_batch, fields = self._staged_fields(plan, device_batch, copies, began, pinned,
+                                                   staged_at, digest, identity)
+        if split:
+            assert digest is not None and digest.parts is not None
+            # Rank 0 combines every rank's chunks before `staged` (never sent on).
+            fields["verify_parts"] = {"length": plan["used_bytes"], "parts": digest.parts}
+        return device_batch, fields
+
+    def _copy_stream(self) -> Any:
+        """`sgd_stage_stream_reuse`: one H2D stream for every batch of this rank."""
+        if self.device.type != "cuda":
+            return None
+        if self.copy_stream is None:
+            self.copy_stream = self.torch.cuda.Stream(device=self.device)
+        return self.copy_stream
 
     def _staged_fields(self, plan: dict[str, Any], device_batch: Any, copies: int,
                        began: float, pinned: float, staged_at: float,

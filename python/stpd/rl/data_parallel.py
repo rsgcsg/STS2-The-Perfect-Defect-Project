@@ -120,7 +120,7 @@ class RemoteGroup:
 
 
 def shard_transport(tree: Any, arrays: tuple[Any, ...], rank: int,
-                    world: int) -> tuple[Any, tuple[Any, ...]]:
+                    world: int, *, lean: bool = False) -> tuple[Any, tuple[Any, ...]]:
     """This rank's part of one packed PreparedBatch (`pack_transport` form).
 
     Every group `shard_groups` gives another rank becomes a `RemoteGroup`; every
@@ -148,7 +148,7 @@ def shard_transport(tree: Any, arrays: tuple[Any, ...], rank: int,
             (node.offset, node.offset + math.prod(node.shape)))
         return _TensorView(node.slab, node.offset, node.shape)  # stop descending
 
-    _map_structure(tree, collect)
+    _map_structure(tree, collect, lean=lean)
     parts: list[Any] = []
     starts: dict[int, list[int]] = {}
     indices: dict[int, list[int]] = {}
@@ -173,7 +173,7 @@ def shard_transport(tree: Any, arrays: tuple[Any, ...], rank: int,
         return _TensorView(indices[node.slab][position],
                            node.offset - starts[node.slab][position], node.shape)
 
-    return _map_structure(tree, remap), tuple(parts)
+    return _map_structure(tree, remap, lean=lean), tuple(parts)
 
 
 def replica_check(model: torch.nn.Module, group: Any = None) -> None:
