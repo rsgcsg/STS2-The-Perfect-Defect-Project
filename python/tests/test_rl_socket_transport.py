@@ -1581,7 +1581,7 @@ def test_checkpoint_keeps_background_source_copy_and_pending_work_live(tmp_path,
     owner.checkpoint_sequence = 0
     owner._memory = lambda: {}
     # checkpoint() captures on this thread and builds the CP on the encoder thread.
-    owner._capture_learning_state = lambda: (lambda: {})
+    owner._capture_learning_state = lambda **_: (lambda: {})
     owner._event = lambda *_, **__: None
     owner.checkpoint_encoder = ThreadPoolExecutor(max_workers=1)
     monkeypatch.setattr(module, "_encode_snapshot", lambda state: state)
