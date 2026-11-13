@@ -111,21 +111,11 @@ def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor,
 
 
 def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, max_q: int,
-                 max_k: int, scale: float | None = None, memeff: bool = False) -> Tensor:
+                 max_k: int, scale: float | None = None) -> Tensor:
     """Ragged attention over packed (tokens, heads, width) sequences, no mask.
 
-    CUDA: the flash varlen kernel (`memeff`: the memory-efficient varlen kernel,
-    which takes the head width as is instead of flash's padded template width).
-    Elsewhere: the same math one sequence at a time (a reference for CPU tests;
-    never selected by the GPU step)."""
-    if q.is_cuda and memeff:
-        # Default scale only (1/sqrt(width)): passing `scale` trips torch's meta
-        # function of the backward under compile (Friday 1470161).
-        if scale is not None and scale != 1.0 / math.sqrt(q.shape[-1]):
-            raise ValueError("memeff_lever_requires_default_scale")
-        return cast(Tensor, torch.ops.aten._efficient_attention_forward(
-            q.contiguous().unsqueeze(0), k.contiguous().unsqueeze(0),
-            v.contiguous().unsqueeze(0), None, cu_q, cu_k, max_q, max_k, 0.0, 0, True)[0][0])
+    CUDA: the flash varlen kernel. Elsewhere: the same math one sequence at a
+    time (a reference for CPU tests; never selected by the GPU step)."""
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
     if q.is_cuda:
@@ -142,8 +132,7 @@ def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, ma
 
 
 def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Tensor,
-                     cu_q: Tensor, cu_k: Tensor, max_q: int, max_k: int,
-                     memeff: bool = False) -> Tensor:
+                     cu_q: Tensor, cu_k: Tensor, max_q: int, max_k: int) -> Tensor:
     """nn.MultiheadAttention (eval, need_weights=False) over packed rows: query
     tokens of sequence i attend exactly to kv tokens of sequence i."""
     embed, heads = module.embed_dim, module.num_heads
@@ -154,17 +143,16 @@ def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Ten
     else:
         q = F.linear(query, weight[:embed], bias[:embed]).view(-1, heads, width)
         k, v = F.linear(kv, weight[embed:], bias[embed:]).view(-1, 2, heads, width).unbind(1)
-    out = flash_varlen(q, k, v, cu_q, cu_k, max_q, max_k, memeff=memeff)
+    out = flash_varlen(q, k, v, cu_q, cu_k, max_q, max_k)
     return F.linear(out.reshape(-1, embed), module.out_proj.weight, module.out_proj.bias)
 
 
 def encode_varlen(encoder: torch.nn.TransformerEncoder, tokens: Tensor, offsets: Tensor,
-                  longest: int, stream: torch.dtype | None = None,
-                  memeff: bool = False) -> Tensor:
+                  longest: int, stream: torch.dtype | None = None) -> Tensor:
     """Self-attention over ragged rows packed as (tokens, embed); no padding anywhere."""
     for layer in encoder.layers:
         attended = packed_attention(layer.self_attn, tokens, tokens, offsets, offsets,
-                                    longest, longest, memeff=memeff)
+                                    longest, longest)
         tokens = _layer_tail(layer, tokens, attended, stream)
     return tokens
 
@@ -296,8 +284,7 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     stream = residual_stream(kernels, tokens)
     if stream is not None:
         tokens = tokens.to(stream)
-    encoded = encode_varlen(model.scene, tokens, offsets, longest, stream,
-                            memeff="memeff" in kernels)
+    encoded = encode_varlen(model.scene, tokens, offsets, longest, stream)
     owner = torch.div(positions, width, rounding_mode="floor")
     # With `residual` the encoding is BF16; sums (mean, role terms) still accumulate in FP32.
     summed = encoded.float()
@@ -480,7 +467,7 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     from .rows_kernels import FOLD_CATALOG_LIMIT
 
     # The fold is chosen per group outside the compiled block (no catalog guard inside).
-    block_levers = tuple(lever for lever in levers if lever in ("heads", "memeff", "residual") or (
+    block_levers = tuple(lever for lever in levers if lever in ("heads", "residual") or (
         lever == "cross" and group.policy
         and int(group.tensors["action_types"].shape[1]) <= FOLD_CATALOG_LIMIT))
     block = (_compiled_block(model, packed, block_levers, bool(group.policy)) if compile

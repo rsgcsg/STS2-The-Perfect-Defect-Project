@@ -42,9 +42,6 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            scene mean, role terms, text mean) still accumulate in FP32. Halves the
            trunk's activation traffic; numerics change (BF16 residual and its
            gradient), measured against FP32 and the FP32-residual path.
-``memeff`` (V3 壬2) The scene encoder's self-attention (head width 48) runs the
-           memory-efficient varlen kernel, which takes width 48 as is, instead of
-           flash, whose template pads it to 64. Same function (kernel tolerance).
 
 Packed (CUDA): the folded queries are one-head, full-width (embed) sequences for
 flash varlen: query sequence i (heads, or catalog x heads, positions) attends to
@@ -65,7 +62,7 @@ from torch.nn import functional as F
 
 from .model import positions
 
-LEVERS = ("cross", "embed", "heads", "memeff", "nodes", "residual")
+LEVERS = ("cross", "embed", "heads", "nodes", "residual")
 # Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
 PARTITION_REDUCTIONS = ("ids", "numbers", "text")
 # Folding costs ~4*C*H*E per key and saves 4*E*E of key/value projection:

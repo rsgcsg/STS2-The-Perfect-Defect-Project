@@ -572,8 +572,8 @@ def test_forward_arena_fails_loudly(model, varied):
 
 
 @pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "embed+nodes",
-                                     "cross+embed+heads+nodes", "memeff", "residual",
-                                     "cross+embed+heads+memeff+nodes+residual"])
+                                     "cross+embed+heads+nodes", "residual",
+                                     "cross+embed+heads+nodes+residual"])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
@@ -617,9 +617,9 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
         PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="embed+nodes")
     PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True,
                       prepared_kernels="cross+embed+heads+nodes")
-    assert parse_kernels("cross+embed+heads+memeff+nodes+residual") == (
-        "cross", "embed", "heads", "memeff", "nodes", "residual")
-    for bad in ("residual+nodes", "memeff+heads"):
+    assert parse_kernels("cross+embed+heads+nodes+residual") == (
+        "cross", "embed", "heads", "nodes", "residual")
+    for bad in ("residual+nodes", "residual+residual", "memeff"):
         with pytest.raises(ValueError, match="invalid_prepared_kernels"):
             parse_kernels(bad)
 
