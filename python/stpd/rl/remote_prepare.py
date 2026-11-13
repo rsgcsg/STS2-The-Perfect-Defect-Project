@@ -843,7 +843,15 @@ def _client_main(connection: Connection, options: dict[str, Any]) -> None:
         except BaseException as error:  # reported to the learner as it was raised
             message = (task_id, False, _portable(error))
         with send_lock:
-            connection.send(message)
+            try:
+                connection.send(message)
+            except BaseException as error:  # e.g. an unpicklable reply: report that
+                try:
+                    connection.send((task_id, False, _portable(error)))
+                except BaseException:
+                    # The learner must never wait on an answer that cannot come:
+                    # exit, and its reader fails every in-flight task as died.
+                    os._exit(70)
 
     try:
         while True:
@@ -877,10 +885,14 @@ class _Client:
         self.reader.start()
 
     def _read(self) -> None:
+        closed = False
         while True:
             try:
                 task_id, ok, body = self.connection.recv()
-            except Exception:
+            except (EOFError, OSError):  # the process closed its end
+                closed = True
+                break
+            except BaseException:  # a reply this side cannot take: stop the process
                 break
             with self.lock:
                 future = self.pending.pop(task_id, None)
@@ -889,23 +901,33 @@ class _Client:
                     future.set_result(body)
                 else:
                     future.set_exception(body)
+        # DIED means the process is gone: it must not still read an arena the
+        # learner releases or reuses for the restarted client.
+        if closed:
+            self.process.join(timeout=5)
+        if self.process.is_alive():
+            self.process.kill()
+            self.process.join()
         with self.lock:
             self.dead = True
             pending, self.pending = self.pending, {}
         for future in pending.values():
-            future.set_exception(RuntimeError(DIED))
+            future.set_exception(RuntimeError(self.died()))
+
+    def died(self) -> str:
+        return f"{DIED}: exitcode={self.process.exitcode}"
 
     def submit(self, task_id: int, task: tuple[Any, ...]) -> Future:
         future: Future = Future()
         with self.lock:
             if self.dead:
-                raise RuntimeError(DIED)
+                raise RuntimeError(self.died())
             self.pending[task_id] = future
             try:
                 self.connection.send((task_id, *task))
             except (OSError, ValueError) as error:
                 self.pending.pop(task_id, None)
-                raise RuntimeError(DIED) from error
+                raise RuntimeError(self.died()) from error
         return future
 
     def close(self) -> None:

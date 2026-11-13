@@ -435,3 +435,36 @@ def test_client_process_errors_pass_through_and_a_dead_client_fails_its_batch(
 def test_client_processes_bound():
     with pytest.raises(ValueError, match="client_processes_bound"):
         remote_prepare.RemoteClients(processes=0, endpoints=["h:1"], vocabulary={}, threads=1)
+
+
+def test_a_reader_failure_stops_the_live_client_before_failing_its_tasks(monkeypatch):
+    from concurrent.futures import Future
+    from multiprocessing.connection import Connection
+
+    monkeypatch.setenv(remote_prepare.AUTH_ENV, "ab" * 16)
+    client = remote_prepare._Client({
+        "endpoints": ["127.0.0.1:1"], "vocabulary": {}, "threads": 1, "connections": 1,
+        "auth_env": remote_prepare.AUTH_ENV, "timeout_seconds": 5.0, "codec": "none",
+        "slots": ["127.0.0.1:1"]})
+    try:
+        seen = []
+        waiting: Future = Future()
+        waiting.add_done_callback(lambda _: seen.append(client.process.is_alive()))
+        client.pending[999] = waiting  # an in-flight task the child never answers
+
+        def unreadable(self):
+            raise MemoryError("reply")
+
+        monkeypatch.setattr(Connection, "recv", unreadable)
+        # The reader's current recv takes this reply; its next recv fails.
+        first = client.submit(1, ("labels", (), (), None))
+        with pytest.raises(Exception):  # noqa: B017 - refused connect, as raised
+            first.result(timeout=120)
+        with pytest.raises(RuntimeError, match=remote_prepare.DIED + ": exitcode=-9"):
+            waiting.result(timeout=30)
+        assert seen == [False] and client.dead and not client.process.is_alive()
+        with pytest.raises(RuntimeError, match=remote_prepare.DIED):
+            client.submit(2, ("labels", (), (), None))
+    finally:
+        monkeypatch.undo()
+        client.close()
