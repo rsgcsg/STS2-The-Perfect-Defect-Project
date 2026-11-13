@@ -118,13 +118,16 @@ def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, ma
     which takes the head width as is instead of flash's padded template width).
     Elsewhere: the same math one sequence at a time (a reference for CPU tests;
     never selected by the GPU step)."""
-    if scale is None:
-        scale = 1.0 / math.sqrt(q.shape[-1])
     if q.is_cuda and memeff:
+        # Default scale only (1/sqrt(width)): passing `scale` trips torch's meta
+        # function of the backward under compile (Friday 1470161).
+        if scale is not None and scale != 1.0 / math.sqrt(q.shape[-1]):
+            raise ValueError("memeff_lever_requires_default_scale")
         return cast(Tensor, torch.ops.aten._efficient_attention_forward(
             q.contiguous().unsqueeze(0), k.contiguous().unsqueeze(0),
-            v.contiguous().unsqueeze(0), None, cu_q, cu_k, max_q, max_k, 0.0, 0, True,
-            scale=scale)[0][0])
+            v.contiguous().unsqueeze(0), None, cu_q, cu_k, max_q, max_k, 0.0, 0, True)[0][0])
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
     if q.is_cuda:
         return cast(Tensor, torch.ops.aten._flash_attention_forward(
             q.contiguous(), k.contiguous(), v.contiguous(), cu_q, cu_k, max_q, max_k,
