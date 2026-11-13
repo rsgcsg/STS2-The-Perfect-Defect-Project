@@ -88,25 +88,43 @@ def _check_encoder(encoder: torch.nn.TransformerEncoder) -> None:
         raise ValueError("rows_forward_requires_encoder_without_final_norm")
 
 
-def _layer_tail(layer: Any, x: Tensor, attended: Tensor) -> Tensor:
-    x = layer.norm1(x + attended)
-    return cast(Tensor, layer.norm2(x + layer.linear2(F.relu(layer.linear1(x)))))
+def _norm(norm: Any, x: Tensor, stream: torch.dtype | None) -> Tensor:
+    """`norm(x)`; with `stream` (the `residual` lever) the statistics and affine run
+    in FP32 and the result is stored in `stream` (the trunk's BF16 residual)."""
+    if stream is None:
+        return cast(Tensor, norm(x))
+    return F.layer_norm(x.float(), norm.normalized_shape, norm.weight, norm.bias,
+                        norm.eps).to(stream)
 
 
-def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor) -> Tensor:
+def _layer_tail(layer: Any, x: Tensor, attended: Tensor,
+                stream: torch.dtype | None = None) -> Tensor:
+    x = _norm(layer.norm1, x + attended, stream)
+    return _norm(layer.norm2, x + layer.linear2(F.relu(layer.linear1(x))), stream)
+
+
+def encode_masked(encoder: torch.nn.TransformerEncoder, x: Tensor, mask: Tensor,
+                  stream: torch.dtype | None = None) -> Tensor:
     for layer in encoder.layers:
-        x = _layer_tail(layer, x, attention(layer.self_attn, x, x, mask))
+        x = _layer_tail(layer, x, attention(layer.self_attn, x, x, mask), stream)
     return x
 
 
 def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, max_q: int,
-                 max_k: int, scale: float | None = None) -> Tensor:
+                 max_k: int, scale: float | None = None, memeff: bool = False) -> Tensor:
     """Ragged attention over packed (tokens, heads, width) sequences, no mask.
 
-    CUDA: the flash varlen kernel. Elsewhere: the same math one sequence at a
-    time (a reference for CPU tests; never selected by the GPU step)."""
+    CUDA: the flash varlen kernel (`memeff`: the memory-efficient varlen kernel,
+    which takes the head width as is instead of flash's padded template width).
+    Elsewhere: the same math one sequence at a time (a reference for CPU tests;
+    never selected by the GPU step)."""
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    if q.is_cuda and memeff:
+        return cast(Tensor, torch.ops.aten._efficient_attention_forward(
+            q.contiguous().unsqueeze(0), k.contiguous().unsqueeze(0),
+            v.contiguous().unsqueeze(0), None, cu_q, cu_k, max_q, max_k, 0.0, 0, True,
+            scale=scale)[0][0])
     if q.is_cuda:
         return cast(Tensor, torch.ops.aten._flash_attention_forward(
             q.contiguous(), k.contiguous(), v.contiguous(), cu_q, cu_k, max_q, max_k,
@@ -121,7 +139,8 @@ def flash_varlen(q: Tensor, k: Tensor, v: Tensor, cu_q: Tensor, cu_k: Tensor, ma
 
 
 def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Tensor,
-                     cu_q: Tensor, cu_k: Tensor, max_q: int, max_k: int) -> Tensor:
+                     cu_q: Tensor, cu_k: Tensor, max_q: int, max_k: int,
+                     memeff: bool = False) -> Tensor:
     """nn.MultiheadAttention (eval, need_weights=False) over packed rows: query
     tokens of sequence i attend exactly to kv tokens of sequence i."""
     embed, heads = module.embed_dim, module.num_heads
@@ -132,25 +151,38 @@ def packed_attention(module: torch.nn.MultiheadAttention, query: Tensor, kv: Ten
     else:
         q = F.linear(query, weight[:embed], bias[:embed]).view(-1, heads, width)
         k, v = F.linear(kv, weight[embed:], bias[embed:]).view(-1, 2, heads, width).unbind(1)
-    out = flash_varlen(q, k, v, cu_q, cu_k, max_q, max_k)
+    out = flash_varlen(q, k, v, cu_q, cu_k, max_q, max_k, memeff=memeff)
     return F.linear(out.reshape(-1, embed), module.out_proj.weight, module.out_proj.bias)
 
 
 def encode_varlen(encoder: torch.nn.TransformerEncoder, tokens: Tensor, offsets: Tensor,
-                  longest: int) -> Tensor:
+                  longest: int, stream: torch.dtype | None = None,
+                  memeff: bool = False) -> Tensor:
     """Self-attention over ragged rows packed as (tokens, embed); no padding anywhere."""
     for layer in encoder.layers:
         attended = packed_attention(layer.self_attn, tokens, tokens, offsets, offsets,
-                                    longest, longest)
-        tokens = _layer_tail(layer, tokens, attended)
+                                    longest, longest, memeff=memeff)
+        tokens = _layer_tail(layer, tokens, attended, stream)
     return tokens
 
 
-def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any) -> Tensor:
+def residual_stream(levers: tuple[str, ...], reference: Tensor) -> torch.dtype | None:
+    """The `residual` lever: the trunk's autocast dtype (BF16 on the GPU step); None
+    keeps the original FP32 residual stream. Without autocast it is the input dtype."""
+    if "residual" not in levers:
+        return None
+    from .rows_kernels import _compute_dtype
+
+    return _compute_dtype(reference)
+
+
+def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any,
+                levers: tuple[str, ...] = ()) -> Tensor:
     """`model._encode_text` for every unique text at once, real tokens only.
 
     Same embeddings, positions, encoder, mean over real tokens and projection;
-    output in unique-text order (no bucket inverse needed)."""
+    output in unique-text order (no bucket inverse needed). With the `residual`
+    lever the encoder's residual stream is BF16; the mean still sums in FP32."""
     tokens = move(layout.text_tokens)
     offsets = move(layout.text_offsets)
     width = ids.shape[1]
@@ -160,7 +192,12 @@ def packed_text(model: Any, ids: Tensor, numbers: Tensor, layout: Any, move: Any
              + model.text_numbers(numbers.reshape(-1, numbers.shape[-1]).index_select(0, tokens))
              + positions(tokens - owner * width, model.text_ids.embedding_dim))
     _check_encoder(model.text_blocks)
-    encoded = encode_varlen(model.text_blocks, value, offsets, layout.text_longest)
+    stream = residual_stream(levers, value)
+    if stream is not None:
+        value = value.to(stream)
+    encoded = encode_varlen(model.text_blocks, value, offsets, layout.text_longest, stream)
+    if stream is not None:
+        encoded = encoded.float()
     lengths = (offsets[1:] - offsets[:-1]).to(encoded.dtype)
     mean = encoded.new_zeros((texts, encoded.shape[1])).index_add(0, owner, encoded)
     return cast(Tensor, model.text_projection(mean / lengths[:, None]))
@@ -199,10 +236,15 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
     """Scene encoder + heads + action readout for one length bucket of rows
     (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
     embed = tokens.shape[1]
+    stream = residual_stream(kernels, tokens)
+    if stream is not None:
+        tokens = tokens.to(stream)
     mask = torch.arange(width, device=tokens.device)[None, :] >= lengths[:, None]
     packed = tokens.new_zeros((rows * width, embed)).index_copy(0, positions.long(), tokens)
-    scene = encode_masked(model.scene, packed.view(rows, width, embed), mask)
+    scene = encode_masked(model.scene, packed.view(rows, width, embed), mask, stream)
     scene = scene.view(rows, width, -1)
+    if stream is not None:
+        scene = scene.float()  # heads, roles and the mean read the FP32 encoding as before
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
     padded = scene.to(_kernel_dtype(scene)) if kernels else scene
     if "heads" in kernels:
@@ -248,9 +290,15 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
 
     Same function: the mean, both heads and the cross-attention read exactly the
     real slots of their own row; role terms map bucket slots to packed tokens."""
-    encoded = encode_varlen(model.scene, tokens, offsets, longest)
+    stream = residual_stream(kernels, tokens)
+    if stream is not None:
+        tokens = tokens.to(stream)
+    encoded = encode_varlen(model.scene, tokens, offsets, longest, stream,
+                            memeff="memeff" in kernels)
     owner = torch.div(positions, width, rounding_mode="floor")
-    current = encoded.new_zeros((rows, encoded.shape[1])).index_add(0, owner, encoded)
+    # With `residual` the encoding is BF16; sums (mean, role terms) still accumulate in FP32.
+    summed = encoded.float()
+    current = summed.new_zeros((rows, encoded.shape[1])).index_add(0, owner, summed)
     current = current / lengths[:, None].to(current.dtype)
     one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
 
@@ -278,8 +326,8 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     for index, (candidate, slot, weight, present) in enumerate(roles):
         row = torch.div(slot, width, rounding_mode="floor")
         token = starts.index_select(0, row) + slot - row * width
-        values = encoded.index_select(0, token) * weight.unsqueeze(-1).to(encoded.dtype)
-        mean = encoded.new_zeros((rows * catalog, encoded.shape[1])).index_add(
+        values = summed.index_select(0, token) * weight.unsqueeze(-1).to(summed.dtype)
+        mean = summed.new_zeros((rows * catalog, encoded.shape[1])).index_add(
             0, candidate, values)
         mean = torch.where(present[:, None], mean, model.absent_roles[index])
         means.append(mean.reshape(action.shape))
@@ -394,7 +442,8 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     if packed is None:
         packed = varlen_supported(device)
     if packed and layout.text_buckets and layout.text_tokens is not None:
-        vectors = packed_text(model, t["text_ids"], t["text_numbers"], layout, move).float()
+        vectors = packed_text(model, t["text_ids"], t["text_numbers"], layout, move,
+                              levers).float()
     elif layout.text_buckets:
         order = move(layout.text_order)
         parts, cursor = [], 0
@@ -417,14 +466,18 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
         from .rows_kernels import owner_nodes, permute_rows
 
         nodes = owner_nodes(model, {key: move(value) for key, value in joint.tensors.items()},
-                            flat, vectors, compile=compile, private="embed" in levers)
+                            flat, vectors, compile=compile, private="embed" in levers,
+                            out_dtype=residual_stream(levers, vectors))
     else:
         nodes = model.tensor_nodes(joint, vectors, flat=flat)
+        stream = residual_stream(levers, nodes)
+        if stream is not None:
+            nodes = nodes.to(stream)
     _check_encoder(model.scene)
     from .rows_kernels import FOLD_CATALOG_LIMIT
 
     # The fold is chosen per group outside the compiled block (no catalog guard inside).
-    block_levers = tuple(lever for lever in levers if lever == "heads" or (
+    block_levers = tuple(lever for lever in levers if lever in ("heads", "memeff", "residual") or (
         lever == "cross" and group.policy
         and int(group.tensors["action_types"].shape[1]) <= FOLD_CATALOG_LIMIT))
     block = (_compiled_block(model, packed, block_levers, bool(group.policy)) if compile

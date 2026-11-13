@@ -572,7 +572,8 @@ def test_forward_arena_fails_loudly(model, varied):
 
 
 @pytest.mark.parametrize("kernels", ["heads", "cross", "nodes", "embed+nodes",
-                                     "cross+embed+heads+nodes"])
+                                     "cross+embed+heads+nodes", "memeff", "residual",
+                                     "cross+embed+heads+memeff+nodes+residual"])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("bucket_rows,width_multiple", [(256, 64), (3, 8)])
 def test_kernel_levers_are_the_same_function_on_cpu(model, varied, kernels, packed, bucket_rows,
@@ -616,6 +617,45 @@ def test_kernel_lever_selection_is_explicit_and_needs_rows_v2():
         PerformanceConfig(prepared_forward="rows-v2", prepared_kernels="embed+nodes")
     PerformanceConfig(prepared_forward="rows-v2", prepared_compile=True,
                       prepared_kernels="cross+embed+heads+nodes")
+    assert parse_kernels("cross+embed+heads+memeff+nodes+residual") == (
+        "cross", "embed", "heads", "memeff", "nodes", "residual")
+    for bad in ("residual+nodes", "memeff+heads"):
+        with pytest.raises(ValueError, match="invalid_prepared_kernels"):
+            parse_kernels(bad)
+
+
+@pytest.mark.parametrize("kernels", ["residual", "cross+embed+heads+nodes+residual"])
+@pytest.mark.parametrize("packed", [False, True])
+def test_residual_lever_keeps_a_bf16_trunk_close_to_the_fp32_trunk(model, varied, kernels,
+                                                                   packed):
+    """`residual` stores the trunk (node builder output, text and scene encoder
+    residual stream) in the autocast dtype; LayerNorm statistics and the mean/role
+    sums stay FP32. Under a BF16 autocast it is the same function within BF16
+    rounding of the FP32-residual path (Friday measures the GPU step)."""
+    from stpd.p1.rows_forward import residual_stream
+
+    reference = torch.zeros(1)
+    assert residual_stream((), reference) is None
+    assert residual_stream(("residual",), reference) is torch.float32
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert residual_stream(("residual",), reference) is torch.bfloat16
+    batch = prepared(model)
+    base = "+".join(k for k in kernels.split("+") if k != "residual")
+    for group in (g for mb in batch.minibatches for g in mb.groups):
+        rows = dc.replace(group, layout=row_layout(group, bucket_rows=256, width_multiple=64))
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            (s0, l0, h0), g0 = forward_and_gradients(model, rows, packed=packed, kernels=base)
+            (s1, l1, h1), g1 = forward_and_gradients(model, rows, packed=packed,
+                                                     kernels=kernels)
+        for left, right in ((s0, s1), (l0, l1), (h0, h1)):
+            assert left.dtype == right.dtype
+            assert torch.equal(left.isneginf(), right.isneginf())
+            finite = left.isfinite()
+            torch.testing.assert_close(left[finite], right[finite], rtol=0.1, atol=0.1)
+        assert set(g0) == set(g1)
+        flat0 = torch.cat([g0[name].reshape(-1).float() for name in sorted(g0)])
+        flat1 = torch.cat([g1[name].reshape(-1).float() for name in sorted(g1)])
+        assert float((flat0 - flat1).norm() / flat0.norm()) < 0.1
 
 
 def test_embed_lever_private_copies_give_the_embedding_gradient():

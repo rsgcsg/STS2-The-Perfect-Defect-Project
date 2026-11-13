@@ -35,6 +35,16 @@ how the attention readouts are computed changes (BF16 tolerance, not bitwise).
            compile (eager CUDA embedding backward already sorts), so the
            training config requires `prepared_compile` with it. Plain tables
            only (no padding_idx/max_norm/scale_grad_by_freq/sparse): refused.
+``residual`` (V3 壬2) The trunk between blocks is stored in the autocast dtype (BF16
+           on the GPU step) instead of FP32: the node builder's output, and the
+           text/scene encoders' residual stream (each LayerNorm computes its
+           statistics and affine in FP32 and stores BF16). Sums over tokens (the
+           scene mean, role terms, text mean) still accumulate in FP32. Halves the
+           trunk's activation traffic; numerics change (BF16 residual and its
+           gradient), measured against FP32 and the FP32-residual path.
+``memeff`` (V3 壬2) The scene encoder's self-attention (head width 48) runs the
+           memory-efficient varlen kernel, which takes width 48 as is, instead of
+           flash, whose template pads it to 64. Same function (kernel tolerance).
 
 Packed (CUDA): the folded queries are one-head, full-width (embed) sequences for
 flash varlen: query sequence i (heads, or catalog x heads, positions) attends to
@@ -55,7 +65,7 @@ from torch.nn import functional as F
 
 from .model import positions
 
-LEVERS = ("cross", "embed", "heads", "nodes")
+LEVERS = ("cross", "embed", "heads", "memeff", "nodes", "residual")
 # Reductions whose terms each have exactly one owner (`tensor_input.frame_tensors`).
 PARTITION_REDUCTIONS = ("ids", "numbers", "text")
 # Folding costs ~4*C*H*E per key and saves 4*E*E of key/value projection:
@@ -307,7 +317,7 @@ def lookup(table: Any, indices: Tensor, *, private: bool) -> Tensor:
 
 def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
                   owners: dict[str, tuple[Tensor, Tensor, Tensor]], refs: Tensor,
-                  private: bool = False) -> Tensor:
+                  private: bool = False, out_dtype: torch.dtype | None = None) -> Tensor:
     """`MStd.tensor_nodes` (eval) from owner maps; same parameters and function."""
     rows = t["kinds"].shape[0]
     embed = model.ids.embedding_dim
@@ -334,11 +344,13 @@ def _node_builder(model: Any, t: dict[str, Tensor], vectors: Tensor,
     features = mean("text", terms, None)
     nodes = nodes + (features + number_features)
     linked = mean("refs", nodes.index_select(0, refs), None)
-    return cast(Tensor, model.node_norm(nodes + model.relations(linked)))
+    out = cast(Tensor, model.node_norm(nodes + model.relations(linked)))
+    return out if out_dtype is None else out.to(out_dtype)
 
 
 def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors: Tensor, *,
-                compile: bool, private: bool = False) -> Tensor:
+                compile: bool, private: bool = False,
+                out_dtype: torch.dtype | None = None) -> Tensor:
     """Node vectors of a rows-v2 group through the owner-map builder."""
     rows = t["kinds"].shape[0]
     terms = {"ids": t["identities"].numel(),
@@ -352,5 +364,6 @@ def owner_nodes(model: Any, t: dict[str, Tensor], flat: dict[str, Any], vectors:
         if builder is None:
             builder = torch.compile(_node_builder, dynamic=True)
             model.__dict__["_rows_nodes_compiled"] = builder  # learner-process runtime only
-    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0], private)
+    nodes: Tensor = builder(model, t, vectors.float(), owners, flat["refs"][0], private,
+                            out_dtype)
     return nodes
