@@ -680,6 +680,159 @@ def test_an_admission_that_raises_after_a_queue_change_still_wakes_waiters():
     assert condition.notified == 1 and owner.source_prefetch_changed.is_set()
 
 
+# --- Short `_fast_apply` hold (V3 午) -----------------------------------------
+
+def _old_discard(pending: list[dict[str, Any]], ids: set[str]) -> tuple[list[str], list[str]]:
+    """Reference: `SegmentQueue.discard` before the C-level scan."""
+    removed = [s["segment_id"] for s in pending if s["segment_id"] in ids]
+    return removed, [s["segment_id"] for s in pending if s["segment_id"] not in ids]
+
+
+def test_queue_discard_removes_exactly_what_the_old_passes_removed():
+    """Every occurrence, in queue order, ids absent from the queue ignored, rows
+    adjusted; also for duplicate ids (a restored state is not re-validated)."""
+    from stpd.rl.segments import SegmentQueue
+
+    rng = random.Random(1113)
+    for case in range(300):
+        queue = SegmentQueue(cast(Any, types.SimpleNamespace(
+            steps=64, capacity_rows=10**9, episode_rows=10**9, dataset_rows=64)))
+        names = [f"s{rng.randint(0, 40)}" for _ in range(rng.randint(0, 60))]
+        for name in names:
+            queue.pending.append({"segment_id": name, "rows": 1 + len(name), "run_id": "r"})
+            queue.rows += 1 + len(name)
+        ids = {f"s{rng.randint(0, 50)}" for _ in range(rng.randint(0, 6))}
+        before = list(queue.pending)
+        expected_removed, expected_kept = _old_discard(before, ids)
+        removed = queue.discard(ids, notify=False)
+        assert [s["segment_id"] for s in removed] == expected_removed, case
+        assert [s["segment_id"] for s in queue.pending] == expected_kept, case
+        assert all(any(r is b for b in before) for r in removed), case
+        assert queue.rows == sum(s["rows"] for s in queue.pending), case
+
+
+def test_queue_admit_still_refuses_a_pending_duplicate_and_owned_skips_the_copy():
+    from stpd.rl.segments import SegmentQueue
+
+    queue = SegmentQueue(cast(Any, types.SimpleNamespace(
+        steps=64, capacity_rows=1000, episode_rows=10**9, dataset_rows=64)))
+    record = {"segment_id": "a", "rows": 8, "run_id": "r"}
+    queue.admit(record)
+    assert queue.pending[0] is not record and queue.pending[0] == record
+    with pytest.raises(ValueError, match="fast_segment_admission_binding_mismatch"):
+        queue.admit({"segment_id": "a", "rows": 8, "run_id": "r"})
+    owned = {"segment_id": "b", "rows": 8, "run_id": "r"}
+    queue.admit(owned, owned=True)
+    assert queue.pending[1] is owned and queue.rows == 16
+
+
+def test_fast_record_and_its_copy_are_built_outside_the_condition_and_put_keeps_the_bytes():
+    """The hold only decides and publishes: each admission's queue record (and
+    its deep copy) is made before `condition` is taken, and the source store
+    keeps the hand-off's own bytes object (no payload copy under the lock)."""
+    from stpd.rl.fast_source import FastSources
+
+    owner = _stub_owner(256, set())
+    sources = owner.fast_sources = FastSources()
+    built: list[bool] = []
+    original = owner._fast_record
+
+    def record(segment: Any, envelope: Any) -> Any:
+        # `_is_owned` on a Condition: whether this thread holds its lock.
+        built.append(cast(Any, owner.condition)._is_owned())
+        return original(segment, envelope)
+
+    owner._fast_record = record  # type: ignore[method-assign]
+    put_owned: list[bool] = []
+    real_put = sources.put
+
+    def put(*args: Any) -> None:
+        put_owned.append(cast(Any, owner.condition)._is_owned())
+        real_put(*args)
+
+    sources.put = put  # type: ignore[method-assign, assignment]
+    admits = [_stub_segment(f"n{i}", "r1", 64) for i in range(3)]
+    for segment, envelope in admits:
+        envelope["packet_size"] = len(segment.data)  # a real store checks it
+    owner._fast_apply(IntakeDecision(admit=admits))
+    assert built == [False, False, False]
+    # Publishing into the store stays under the condition (as before).
+    assert put_owned == [True, True, True]
+    for (segment, envelope), queued_record in zip(admits, owner.queue.pending, strict=True):
+        ref = owner.hot_references[queued_record["payload"]["slot"],
+                                   "ppo:" + segment.segment_id]
+        assert sources.entries[ref]["data"] is segment.data
+        # The queued record is a private copy: not the envelope object handed in.
+        assert queued_record["envelope"] is not envelope
+        assert queued_record["envelope"] == envelope
+    assert queued(owner) == ["n0", "n1", "n2"]
+
+
+def test_a_segment_not_admitted_never_enters_the_source_store():
+    """Stopped, raced exclusion, capacity refusal and a compiler change: the
+    pre-built record is just dropped; nothing reaches `fast_sources`, counters
+    exactly as before, and the compiler change still raises."""
+    from stpd.rl.fast_source import FastSources
+
+    def fresh(capacity: int, excluded: set[str]) -> tuple[SegmentLearner, FastSources]:
+        owner = _stub_owner(capacity, excluded)
+        sources = owner.fast_sources = FastSources()
+        return owner, sources
+
+    owner, sources = fresh(256, set())
+    owner.newlease_stopped = True
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("n1", "r1", 64)]))
+    assert owner.training_discarded_rows == 64 and not sources.entries
+
+    owner, sources = fresh(256, {"r1"})
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("n1", "r1", 64)]))
+    assert owner.fast_counters["excluded_admit_raced_rows"] == 64
+    assert not sources.entries and not queued(owner)
+
+    owner, sources = fresh(128, set())
+    _stub_queue(owner, [{"segment_id": "old0", "fast": True, "rows": 64, "run_id": "r0"},
+                        {"segment_id": "old1", "rows": 64, "run_id": "r0",
+                         "actor": "a", "episode": "e"}])
+    owner.ahead_batches.append(({"segments": [{"segment_id": "old0"}]}, cast(Any, None)))
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("n1", "r1", 64)]))
+    assert owner.fast_counters["capacity_refused"] == 1
+    assert owner.fast_counters["capacity_refused_rows"] == 64
+    assert not sources.entries and queued(owner) == ["old0", "old1"]
+
+    owner, sources = fresh(256, set())
+    with pytest.raises(ValueError, match="fast_segment_compiler_identity_changed"):
+        owner._fast_apply(IntakeDecision(admit=[
+            _stub_segment("n1", "r1", 64, compiler={"compiler": 2})]))
+    assert not sources.entries and not queued(owner)
+
+
+def test_one_hold_computes_the_referenced_set_at_most_once():
+    owner = _stub_owner(256, set())
+    _stub_queue(owner, [{"segment_id": f"old{i}", "fast": True, "rows": 64,
+                         "run_id": "r0"} for i in range(4)])
+    owner.ahead_batches.append(({"segments": [{"segment_id": "old0"}]}, cast(Any, None)))
+    calls = [0]
+    original = owner._fast_referenced
+
+    def referenced() -> set[str]:
+        calls[0] += 1
+        return original()
+
+    owner._fast_referenced = referenced  # type: ignore[method-assign]
+    # Room for nothing: three overflowing admissions in one decision.
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment(f"n{i}", "r1", 64)
+                                            for i in range(3)]))
+    assert calls[0] == 1
+    assert queued(owner) == ["old0", "n0", "n1", "n2"]
+    assert owner.fast_counters["capacity_evicted"] == 3
+    # A decision that never overflows never builds it.
+    owner = _stub_owner(1024, set())
+    owner._fast_referenced = referenced  # type: ignore[method-assign]  # counts only
+    calls[0] = 0
+    owner._fast_apply(IntakeDecision(admit=[_stub_segment("m0", "r1", 64)]))
+    assert calls[0] == 0
+
+
 def _ref_learner(tmp_path: Any, monkeypatch: Any, value: Any) -> SegmentLearner:
     return fast_learner(tmp_path, monkeypatch, dataplane_extra=(
         {} if value is None else {"prefetch_referenced_only": value}))

@@ -12,9 +12,11 @@ import bisect
 import copy
 import hashlib
 import io as byte_io
+import itertools
 import json
 import math
 import multiprocessing
+import operator
 import os
 import random
 import resource
@@ -2156,6 +2158,14 @@ class SegmentLearner:
         # generation is fixed for its lifetime): built before the condition.
         auxiliary = (self._fast_auxiliary(decision.auxiliary) if decision.auxiliary
                      else None)
+        # Each admission's queue record (and its private deep copy) is likewise a
+        # pure function of the segment, its envelope, the run and the generation:
+        # built before the condition, so the hold only decides and publishes.
+        # The payload bytes are not copied anywhere here: `FastSources.put`
+        # stores the hand-off's own `bytes` object (already copied off the
+        # socket / verify arena before this call).
+        admits = [(segment, envelope, self._fast_record(segment, envelope))
+                  for segment, envelope in decision.admit]
         with self.condition:
             if decision.exclude_instance is not None:
                 self._fast_exclude(decision.exclude_instance)
@@ -2166,9 +2176,15 @@ class SegmentLearner:
             # notify would have. `finally`: an admission that raises after an
             # earlier one changed the queue still wakes them, as before.
             changed: list[str] = []
+            # The prepared-batch referenced set, computed at most once per hold
+            # (only if some admission overflows): admissions and evictions never
+            # change `pending_batch` / `ahead_batches`, and no other thread can
+            # while this condition is held.
+            referenced: list[set[str]] = []
             try:
-                for segment, envelope in decision.admit:
-                    self._fast_admit(segment, envelope, changed)
+                for segment, envelope, prepared in admits:
+                    self._fast_admit(segment, envelope, changed, prepared=prepared,
+                                     referenced=referenced)
             finally:
                 if changed:
                     self.condition.notify_all()
@@ -2204,12 +2220,34 @@ class SegmentLearner:
             result.append((kind, identity, values))
         return result
 
+    def _fast_record(self, segment: FastSegment, envelope: dict[str, Any]
+                     ) -> tuple[BinaryRef, str, dict[str, Any]]:
+        """(source ref, owner, private queue record) of one admission; no learner
+        state is read beyond the fixed run/generation, so callers build it
+        without the condition."""
+        ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
+                        f"{segment.segment_id}", envelope["packet_sha256"],
+                        envelope["packet_size"])
+        record = {"segment_id": segment.segment_id, "fast": True,
+                  "payload": {"format": ref.format, "slot": ref.slot, "sha256": ref.sha256,
+                              "size": ref.size},
+                  "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
+                  "episode": envelope["episode"], "actor": envelope["actor"],
+                  "envelope": envelope}
+        # The copy `SegmentQueue.admit` would make under the lock, made here.
+        return ref, "ppo:" + segment.segment_id, copy.deepcopy(record)
+
     def _fast_admit(self, segment: FastSegment, envelope: dict[str, Any],
-                    changed: list[str]) -> None:
+                    changed: list[str], *,
+                    prepared: tuple[BinaryRef, str, dict[str, Any]] | None = None,
+                    referenced: list[set[str]] | None = None) -> None:
         """Admit one segment under `condition`. Each queue change is appended to
         `changed` as it happens ("evicted", "admitted"); the caller
         (`_fast_apply`) notifies the condition (and, after an admission, the
-        source prefetch) once for its whole decision, even if this raises."""
+        source prefetch) once for its whole decision, even if this raises.
+
+        `prepared`: `_fast_record(segment, envelope)`, built before the hold.
+        `referenced`: a per-hold cache cell for `_fast_referenced()`."""
         assert self.fast_sources is not None
         if self.newlease_stopped or self.input_fenced:
             self.training_discarded_rows += segment.rows
@@ -2228,16 +2266,26 @@ class SegmentLearner:
         # no trace crosses them), counted; decision of 11-09.
         overflow = self.queue.occupied + segment.rows - self.settings.capacity_rows
         victims: set[str] = set()
-        # Only a full queue needs the (prepared-batch) referenced set.
-        referenced = self._fast_referenced() if overflow > 0 else frozenset()
-        for record in self.queue.pending:
-            if overflow <= 0:
-                break
-            # Only fast records: an old-chain lease's segment has its own episode
-            # accounting and is never a fast capacity drop (review S4).
-            if record.get("fast") and record["segment_id"] not in referenced:
-                victims.add(record["segment_id"])
-                overflow -= record["rows"]
+        if overflow > 0:
+            # Only a full queue needs the (prepared-batch) referenced set.
+            if referenced is None:
+                referenced = []
+            if not referenced:
+                referenced.append(self._fast_referenced())
+            held = referenced[0]
+            pending = self.queue.pending
+            # The same oldest-first walk, with the records a prepared batch
+            # holds skipped in C (they are usually the queue's head).
+            unheld = itertools.compress(pending, map(operator.not_, map(
+                held.__contains__, map(operator.itemgetter("segment_id"), pending))))
+            for record in unheld:
+                if overflow <= 0:
+                    break
+                # Only fast records: an old-chain lease's segment has its own
+                # episode accounting and is never a fast capacity drop (review S4).
+                if record.get("fast"):
+                    victims.add(record["segment_id"])
+                    overflow -= record["rows"]
         if overflow > 0:
             for counter in ("capacity_dropped", "capacity_refused"):
                 self.fast_counters[counter] += 1
@@ -2248,19 +2296,11 @@ class SegmentLearner:
             changed.append("evicted")
         for record in evicted:
             self._fast_forget(record, counters=("capacity_dropped", "capacity_evicted"))
-        ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
-                        f"{segment.segment_id}", envelope["packet_sha256"],
-                        envelope["packet_size"])
-        owner = "ppo:" + segment.segment_id
+        ref, owner, record = (prepared if prepared is not None
+                              else self._fast_record(segment, envelope))
         self.fast_sources.put(ref, envelope, segment.data, owner)
         self.hot_references[ref.slot, owner] = ref
-        record = {"segment_id": segment.segment_id, "fast": True,
-                  "payload": {"format": ref.format, "slot": ref.slot, "sha256": ref.sha256,
-                              "size": ref.size},
-                  "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
-                  "episode": envelope["episode"], "actor": envelope["actor"],
-                  "envelope": envelope}
-        self.queue.admit(record, notify=False)
+        self.queue.admit(record, notify=False, owned=True)
         changed.append("admitted")
         self.fast_admitted_rows[envelope["run_id"]] = (
             self.fast_admitted_rows.pop(envelope["run_id"], 0) + envelope["rows"])
