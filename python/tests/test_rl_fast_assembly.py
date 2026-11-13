@@ -70,7 +70,7 @@ class Harness:
     def open(self, game: str, single_choice: str = "score", *,
              start: dict | None = None, **extra: Any) -> None:
         self.assembler.open_episode({
-            "schema": "stpd/rl-inference-3", "kind": "episode_open", "request_id": 1,
+            "schema": "stpd/rl-inference-4", "kind": "episode_open", "request_id": 1,
             "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
             "single_choice": single_choice, "start": start or {"kind": "new_run"},
             "ascension": 0, **extra})
@@ -102,7 +102,7 @@ class Harness:
         return value
 
     def outcome(self, row: dict, status: str = "completed", **extra: Any) -> None:
-        message = {"schema": "stpd/rl-inference-3", "kind": "step_outcome",
+        message = {"schema": "stpd/rl-inference-4", "kind": "step_outcome",
                    "row_request_id": row["request_id"], "game_instance_id": row["game_instance_id"],
                    "step_index": row["step_index"], "status": status}
         if status == "completed":
@@ -124,7 +124,7 @@ class Harness:
         return plan, row
 
     def close(self, game: str, reason: str, last: int | None = None) -> None:
-        self.assembler.close_episode({"schema": "stpd/rl-inference-3", "kind": "episode_close",
+        self.assembler.close_episode({"schema": "stpd/rl-inference-4", "kind": "episode_close",
                                       "request_id": 1, "game_instance_id": game,
                                       "reason": reason, "last_step_index": last})
 
@@ -1037,6 +1037,7 @@ def test_format_3_is_format_2_plus_the_game_ascension():
         assert segment_ascension(old_header) == segment_ascension(new_header) == 0
     assert three.assembler.report()["segments_verified"] == 4
     assert three.assembler.report()["by_ascension"]["0"]["episodes"] == 3
+    assert three.assembler.report()["a10_floor49_loss_refused"] == 0
 
 
 def test_ascension_is_required_and_above_a0_needs_format_3():

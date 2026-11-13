@@ -29,7 +29,7 @@ and one execution kernel. This module is the Python owner of that process:
   run at mount and the learner labels with that level's table; the service refuses a
   level its table does not support).
 
-Failure semantics follow ``stpd/rl-inference-3`` and design v2 §2.6: nothing is resent;
+Failure semantics follow ``stpd/rl-inference-4`` and design v2 §2.6: nothing is resent;
 an inference timeout is ``not_started`` (here: a censored game, never unknown).
 """
 

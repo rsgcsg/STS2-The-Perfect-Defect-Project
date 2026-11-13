@@ -279,8 +279,8 @@ describe("fast-env contracts", () => {
     expect(() => parseSampling({ ...SAMPLING, classes: { ...SAMPLING.classes, combat: { temperature: 0.5, uniform_mix: 0 } } })).toThrow();
   });
 
-  it("binding matches every WP0 rl-inference-3 scenario (request_id = row_id)", async () => {
-    const scenarios = JSON.parse(readFileSync(new URL("../../../python/tests/fixtures/rl_inference_3/binding-scenarios.json", import.meta.url), "utf8"));
+  it("binding matches every WP0 rl-inference-4 scenario (request_id = row_id)", async () => {
+    const scenarios = JSON.parse(readFileSync(new URL("../../../python/tests/fixtures/rl_inference_4/binding-scenarios.json", import.meta.url), "utf8"));
     expect(new Set(scenarios.map((item: any) => item.verdict))).toEqual(new Set(["accept", "discard_late", "not_started"]));
     for (const item of scenarios) {
       const fromEnv = new PassThrough(), toEnv = new PassThrough();

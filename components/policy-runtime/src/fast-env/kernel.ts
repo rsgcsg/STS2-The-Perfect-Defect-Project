@@ -72,7 +72,7 @@ export interface KernelContext {
 /** A game ends here; nothing is ever retried. */
 /** Session divergences: the game ends unknown (never retried), is counted apart and stops this build's output.
  * The Host's memo divergence keeps its own close detail, build stop and counter; its pending outcome uses the
- * frozen rl-inference-3 divergence reason (the outcome enum has no separate memo value). */
+ * frozen rl-inference-4 divergence reason (the outcome enum has no separate memo value). */
 type SessionDivergence = "compact_state_divergence" | "projection_memo_divergence";
 const sessionDivergence = (value: unknown): SessionDivergence | null =>
   value === "compact_state_divergence" || value === "projection_memo_divergence" ? value : null;
@@ -120,7 +120,7 @@ export function captureOverCapacity(full: Pick<FullPublicBasis, "capture" | "ser
 const errorText = (error: unknown) => (error instanceof Error ? `${error.name}:${error.message}` : String(error)).replace(/\s+/gu, " ").slice(0, 240);
 const isObj = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Player-visible run facts of one public observation (rl-inference-3 public_facts). */
+/** Player-visible run facts of one public observation (rl-inference-4 public_facts). */
 export function publicFacts(observation: Reduction["observation"]): PublicFacts | null {
   const run = isObj(observation.run?.content) ? observation.run.content : null;
   const player = isObj(observation.player?.content) ? observation.player.content : null;
@@ -148,7 +148,7 @@ interface PendingOutcome {
   combat_end: Record<string, unknown>[];
   resolved: PublicFacts | null;
 }
-/** rl-inference-3 step_outcome.combat_end maxItems. */
+/** rl-inference-4 step_outcome.combat_end maxItems. */
 const COMBAT_END_PER_OUTCOME = 4;
 
 /** One game on one slot: the receive/act loop of today's Runtime (receiveGlobal /
