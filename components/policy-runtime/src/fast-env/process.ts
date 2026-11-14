@@ -167,6 +167,8 @@ export class FastEnvProcess {
       node_cpu_ms: round((cpu.user + cpu.system) / 1000),
       sync_ms: { capture: round(s.capture_ms), reduce: round(s.reduce_ms), input: round(s.input_ms), step: round(s.step_ms), receipt: round(s.receipt_ms) },
       link_wait_ms: round(s.link_wait_ms), cold_starts: s.cold_starts, cold_start_wait_ms: round(s.cold_start_wait_ms),
+      // Save tickets: only once a save was tried (no save points: the counters are exactly today's).
+      ...(s.saves.written + s.saves.refused + s.saves.failed + s.saves.unknown > 0 ? { saves: { ...s.saves, ms: round(s.saves.ms) } } : {}),
       ...this.#memoCounters() };
   }
 
