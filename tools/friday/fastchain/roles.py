@@ -432,8 +432,6 @@ def service() -> None:
     first = source.latest()
     holder: dict = {}
     kwargs = dict(K["service_kwargs"])
-    formats = ({"segment_format": kwargs.pop("segment_format")}
-               if "segment_format" in kwargs else {})
     # #529 R7 audit games: every mu such a game's segments bind is archived by sha256
     # (run dir, `mu_archive_gb` split over the services; full = that row refused loudly),
     # read from this node's mu cache under its reader lock.
@@ -445,7 +443,8 @@ def service() -> None:
             RUN / f"mu-archive{tag}",
             max_bytes=int(K["mu_archive_gb"] * 1e9 / K["services"]))
     assembler = FastSegmentAssembler(
-        assembler_id=f"fc{tag}", compiler_identity=compiler.identity, **formats, **audit,
+        assembler_id=f"fc{tag}", compiler_identity=compiler.identity,
+        segment_format=K["segment_format"], **audit,
         emit=lambda segment: holder["h"].submit(segment),
         on_closed=lambda item: holder["h"].submit_closed(item))
     auth = bytes.fromhex(os.environ["STPD_P1_LOCAL_INFERENCE_AUTH"])

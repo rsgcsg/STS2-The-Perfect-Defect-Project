@@ -336,6 +336,7 @@ FEATURES = {
     # R7 games' episode_open must ask the assembler to archive their mu (not yet in #529)
     "r7_audit_mu": ("components/policy-runtime/src/fast-env/kernel.ts", "audit_retain_mu"),
     "segment_format_3": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-3"),  # #530
+    "segment_format_4": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-4"),  # W2
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),
     "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528

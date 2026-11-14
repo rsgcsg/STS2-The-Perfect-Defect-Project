@@ -63,6 +63,27 @@ header carries `ascension`; formats 1 and 2 carry none and were only ever
 produced for A0 (the actor refused any other level), so `segment_ascension`
 reads them as A0. That is the history of those bytes, not a default: the
 encoders refuse a format 1/2 header that names an ascension.
+
+`stpd/rl-fast-segment-4` (2026-11-14, RL5 new methods W2, the one 3 -> 4 step):
+format 3 with magic b"STPDFS04", two more stored header keys and one more
+column:
+- `group_id`: the game's group (the K replays of one start share it); a game
+  without one is its own group (`game_instance_id`);
+- `ticket`: `{"start": "new_run" | "from_save", "end": "game" | "combat"}`, the
+  start kind of `start` and where the episode ends (a whole game, or one combat:
+  a single-combat episode);
+- column `hp_adv` (`<f8`, one per row, after `outcome_probabilities`): the
+  per-combat HP score A_hp of the row, in HP points, computed by the assembler
+  from public facts only (`fast_assembly.hp_advantages`); NaN on the wire, None
+  in the logical header, for a row without one (every non-combat row, and the
+  rows of a combat whose end or facts the game never showed). The learner
+  multiplies it by its `hp_advantage_coef` and adds it to the row's advantage
+  before the one normalisation; it never fills a missing one.
+A format-4 `bootstrap` seal may hold fewer than 64 rows only when
+`ticket.end` is `combat`: the episode ended with its combat, and the tail is the
+segment mu's value on the post-combat row (a truncation, no new terminal class).
+Formats 1-3 are read as before and never converted; a learner that needs
+`hp_adv` refuses them.
 """
 from __future__ import annotations
 
@@ -81,14 +102,19 @@ from .segment_validation import _probabilities as learner_distribution_check
 FORMAT = "stpd/rl-fast-segment-1"
 FORMAT_2 = "stpd/rl-fast-segment-2"
 FORMAT_3 = "stpd/rl-fast-segment-3"
-FORMATS = (FORMAT, FORMAT_2, FORMAT_3)
-COLUMNAR_FORMATS = (FORMAT_2, FORMAT_3)
+FORMAT_4 = "stpd/rl-fast-segment-4"
+FORMATS = (FORMAT, FORMAT_2, FORMAT_3, FORMAT_4)
+COLUMNAR_FORMATS = (FORMAT_2, FORMAT_3, FORMAT_4)
+ASCENSION_FORMATS = (FORMAT_3, FORMAT_4)
 ROW_FORMAT = "stpd/rows-v2-row-1"
 MAGIC = b"STPDFS01"
 MAGIC_2 = b"STPDFS02"
 MAGIC_3 = b"STPDFS03"
-_MAGIC_OF = {FORMAT_2: MAGIC_2, FORMAT_3: MAGIC_3}
-_FORMAT_OF = {MAGIC_2: FORMAT_2, MAGIC_3: FORMAT_3}
+MAGIC_4 = b"STPDFS04"
+_MAGIC_OF = {FORMAT_2: MAGIC_2, FORMAT_3: MAGIC_3, FORMAT_4: MAGIC_4}
+_FORMAT_OF = {MAGIC_2: FORMAT_2, MAGIC_3: FORMAT_3, MAGIC_4: FORMAT_4}
+TICKET_STARTS = ("new_run", "from_save")
+TICKET_ENDS = ("game", "combat")
 MAX_ROWS = 64
 MAX_HEADER_BYTES = 16 * 1024 * 1024
 MAX_SEGMENT_BYTES = 256 * 1024 * 1024
@@ -105,12 +131,17 @@ MU_KEYS = frozenset({"snapshot_sha256", "training_generation", "version", "updat
 HEADER_KEYS_2 = (HEADER_KEYS - {"rows"}) | {"row_count", "text", "outcomes", "columns"}
 HEADER_KEYS_3 = HEADER_KEYS | {"ascension"}
 STORED_KEYS_3 = HEADER_KEYS_2 | {"ascension"}
+HEADER_KEYS_4 = HEADER_KEYS_3 | {"group_id", "ticket", "hp_adv"}
+STORED_KEYS_4 = STORED_KEYS_3 | {"group_id", "ticket"}
+_LOGICAL_KEYS = {FORMAT_3: HEADER_KEYS_3, FORMAT_4: HEADER_KEYS_4}
+_STORED_KEYS = {FORMAT_2: HEADER_KEYS_2, FORMAT_3: STORED_KEYS_3, FORMAT_4: STORED_KEYS_4}
 MAX_ASCENSION = 10
 TEXT_COLUMNS_2 = ("consumption_id", "catalog_sha256", "observation_sha256", "row_sha256")
 INT_COLUMNS_2 = ("request_id", "step_index", "catalog_len", "floor", "selected_index",
                  "payload_length")
 COLUMNS_2 = (*((name, "<i8") for name in INT_COLUMNS_2), ("in_combat", "|u1"),
              ("selected_q", "<f8"), ("behavior_q", "<f8"), ("outcome_probabilities", "<f8"))
+COLUMNS_4 = (*COLUMNS_2, ("hp_adv", "<f8"))
 _INT64 = (-(1 << 63), (1 << 63) - 1)
 BOOTSTRAP_KEYS = frozenset({"mu_snapshot_sha256", "successor_request_id", "successor_step_index",
                             "successor_row_sha256", "floor", "outcome_probabilities"})
@@ -232,14 +263,23 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
     checks on these exact values (the assembler, at finish_row and step_outcome);
     every other rule still runs.
     """
-    if not isinstance(header, dict) or set(header) != (
-            HEADER_KEYS_3 if byte_format == FORMAT_3 else HEADER_KEYS):
+    if not isinstance(header, dict) or set(header) != _LOGICAL_KEYS.get(byte_format,
+                                                                         HEADER_KEYS):
         _reject("segment_header_keys")
     if header["format"] != byte_format or header["row_format"] != ROW_FORMAT:
         _reject("segment_format")
-    if byte_format == FORMAT_3 and (type(header["ascension"]) is not int
-                                    or not 0 <= header["ascension"] <= MAX_ASCENSION):
+    if byte_format in ASCENSION_FORMATS and (type(header["ascension"]) is not int
+                                             or not 0 <= header["ascension"] <= MAX_ASCENSION):
         _reject("segment_ascension")
+    # Format 4: a single-combat episode's last segment may bootstrap short (I3).
+    short_bootstrap = False
+    if byte_format == FORMAT_4:
+        ticket = header["ticket"]
+        if (type(header["group_id"]) is not str or not header["group_id"]
+                or not isinstance(ticket, dict) or set(ticket) != {"start", "end"}
+                or ticket["start"] not in TICKET_STARTS or ticket["end"] not in TICKET_ENDS):
+            _reject("segment_ticket")
+        short_bootstrap = ticket["end"] == "combat"
     if not isinstance(header["mu"], dict) or set(header["mu"]) != MU_KEYS:
         _reject("segment_mu_identity")
     if type(header["audit_retain_mu"]) is not bool:
@@ -259,6 +299,13 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
         if row["applied"].get("decision_class") != ("combat" if row["in_combat"]
                                                      else "noncombat"):
             _reject("segment_decision_class")
+    if byte_format == FORMAT_4:
+        scores = header["hp_adv"]
+        if not isinstance(scores, list) or len(scores) != len(rows) or any(
+                value is not None and (type(value) is not float or not math.isfinite(value)
+                                       or not row["in_combat"])
+                for value, row in zip(scores, rows, strict=True)):
+            _reject("segment_hp_adv")
     seal = header["seal"]
     kind = seal.get("kind") if isinstance(seal, dict) else None
     if kind not in SEAL_KINDS or set(seal) != {"kind", "bootstrap", "terminal", "truncation"}:
@@ -266,7 +313,8 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
     completed = all((row["outcome"] or {}).get("status") == "completed" for row in rows)
     if kind == "bootstrap":
         tail = seal["bootstrap"]
-        if (len(rows) != MAX_ROWS or not completed or seal["terminal"] is not None
+        if ((len(rows) != MAX_ROWS and not short_bootstrap)
+                or not completed or seal["terminal"] is not None
                 or seal["truncation"] is not None or not isinstance(tail, dict)
                 or set(tail) != BOOTSTRAP_KEYS
                 or type(tail["successor_request_id"]) is not int
@@ -303,11 +351,11 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
 def segment_ascension(header: dict[str, Any]) -> int:
     """The ascension of a decoded (logical) segment header.
 
-    Format 3 names it; formats 1 and 2 were produced only for A0 (see the module
-    docstring), so they are A0. Anything else is refused.
+    Formats 3 and 4 name it; formats 1 and 2 were produced only for A0 (see the
+    module docstring), so they are A0. Anything else is refused.
     """
     byte_format = header.get("format")
-    if byte_format == FORMAT_3:
+    if byte_format in ASCENSION_FORMATS:
         value = header.get("ascension")
         if type(value) is not int or not 0 <= value <= MAX_ASCENSION:
             raise SegmentFormatError("segment_ascension")
@@ -371,8 +419,8 @@ class InstanceClosed:
     segments: dict[str, int]
 
 
-def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
-    """Seal `header` (whose rows carry no payload yet) with the exact row bytes."""
+def laid_out(header: dict[str, Any], rows: list[bytes]) -> dict[str, Any]:
+    """An owned JSON copy of `header` with format 1's row payload offsets (not validated)."""
     header = json.loads(canonical_json(header))  # owned copy, JSON-only values
     if len(rows) != len(header.get("rows", ())):
         _reject("segment_row_bytes_count")
@@ -383,6 +431,12 @@ def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
             _reject("segment_row_digest_mismatch")
         meta["payload"] = {"offset": offset, "length": len(raw), "row_sha256": digest}
         offset += len(raw) + _pad(len(raw))
+    return header
+
+
+def encode_segment(header: dict[str, Any], rows: list[bytes]) -> SealedSegment:
+    """Seal `header` (whose rows carry no payload yet) with the exact row bytes."""
+    header = laid_out(header, rows)
     validate_header(header)
     encoded = canonical_json(header)
     if len(encoded) > MAX_HEADER_BYTES:
@@ -424,10 +478,11 @@ def _int_column(name: str, values: list[Any]) -> bytes:
 
 def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
                            bound: bool = False) -> SealedSegment:
-    """Seal `header` (format-1 shape, rows without payload offsets) as format 2 or 3.
+    """Seal `header` (format-1 shape, rows without payload offsets) as format 2, 3 or 4.
 
-    The header's own `format` picks the byte format (`FORMAT_2`, or `FORMAT_3`
-    with its `ascension`).
+    The header's own `format` picks the byte format (`FORMAT_2`, `FORMAT_3` with
+    its `ascension`, or `FORMAT_4` with `ascension`, `group_id`, `ticket` and the
+    per-row `hp_adv`).
 
     Checks what `encode_segment` checks (the logical header goes through
     `validate_header`, every row is bound by its sha256), plus the column types:
@@ -510,11 +565,17 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
                    dtype="<f8").tobytes()]
     counts = [len(owned_rows)] * (len(INT_COLUMNS_2) + 2) + [
         len(q), len(owned_rows) * OUTCOME_CLASSES]
-    stored = {key: value for key, value in logical.items() if key != "rows"}
+    layout = COLUMNS_2
+    if byte_format == FORMAT_4:  # None (no HP score) is NaN on the wire
+        layout = COLUMNS_4
+        columns.append(np.asarray([math.nan if value is None else value
+                                   for value in logical["hp_adv"]], dtype="<f8").tobytes())
+        counts.append(len(owned_rows))
+    stored = {key: value for key, value in logical.items() if key not in ("rows", "hp_adv")}
     stored.update(row_count=len(owned_rows), text=text,
                   outcomes=[row["outcome"] for row in owned_rows],
                   columns=[[name, dtype, count]
-                           for (name, dtype), count in zip(COLUMNS_2, counts, strict=True)])
+                           for (name, dtype), count in zip(layout, counts, strict=True)])
     encoded = canonical_json(stored)
     if len(encoded) > MAX_HEADER_BYTES:
         _reject("segment_header_byte_limit")
@@ -572,11 +633,11 @@ def _header_json(raw: memoryview, length: int) -> Any:
 def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format: str
                     ) -> tuple[dict[str, Any], list[bytes]]:
     stored = _header_json(raw, length)
-    if not isinstance(stored, dict) or set(stored) != (
-            STORED_KEYS_3 if byte_format == FORMAT_3 else HEADER_KEYS_2):
+    if not isinstance(stored, dict) or set(stored) != _STORED_KEYS[byte_format]:
         _reject("segment_header_keys")
     if stored["format"] != byte_format:
         _reject("segment_format")
+    layout = COLUMNS_4 if byte_format == FORMAT_4 else COLUMNS_2
     count = stored["row_count"]
     text, outcomes = stored["text"], stored["outcomes"]
     if (type(count) is not int or not 1 <= count <= MAX_ROWS
@@ -585,13 +646,13 @@ def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format
                    or any(type(v) is not str for v in text[name]) for name in TEXT_COLUMNS_2)
             or not isinstance(outcomes, list) or len(outcomes) != count
             or not isinstance(stored["columns"], list)
-            or len(stored["columns"]) != len(COLUMNS_2)):
+            or len(stored["columns"]) != len(layout)):
         _reject("segment_columns")
     cursor = 16 + length + _pad(length)
     if any(raw[16 + length:cursor]):
         _reject("segment_padding_nonzero")
     arrays: dict[str, Any] = {}
-    for (name, dtype), described in zip(COLUMNS_2, stored["columns"], strict=True):
+    for (name, dtype), described in zip(layout, stored["columns"], strict=True):
         if name == "behavior_q":
             widths = arrays["catalog_len"].tolist()
             expected = sum(widths) if min(widths) >= 1 else -1
@@ -642,6 +703,9 @@ def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format
         start += width
         offset += size + _pad(size)
     header["rows"] = rows_meta
+    if byte_format == FORMAT_4:  # NaN = no HP score (any NaN; +-inf is refused below)
+        header["hp_adv"] = [None if math.isnan(value) else value
+                            for value in arrays["hp_adv"].tolist()]
     validate_header(header, byte_format)
     return header, _rows_section(raw, base, header["rows"], header_only)
 
@@ -683,7 +747,7 @@ def decode_segment(data: bytes | bytearray | memoryview, *,
     """
     raw = memoryview(data)
     if (len(raw) > MAX_SEGMENT_BYTES or len(raw) < 16
-            or bytes(raw[:8]) not in (MAGIC, MAGIC_2, MAGIC_3)):
+            or bytes(raw[:8]) not in (MAGIC, *_FORMAT_OF)):
         _reject("segment_magic_or_size")
     if expected_sha256 is not None and sha256(raw) != expected_sha256:
         _reject("segment_digest_mismatch")
