@@ -198,14 +198,20 @@ def learner() -> None:
         dataplane["sgd_data_parallel"] = {"world": ranks, "backend": "nccl",
                                           "timeout_seconds": K["data_parallel_timeout_seconds"]}
         dataplane["sgd_cpus"] = sorted(os.sched_getaffinity(0))[:K["sgd_cpus"]]
-    # Remote preparation hosts (PR #491/#496): the launcher submitted this GPU job only
-    # after every host wrote RUN/prep-ready/ready-<n>; all of them, never fewer.
+    # Remote preparation hosts (PR #491/#496): the prep jobs start only after this GPU job
+    # started (--dependency=after), so wait here for every host's RUN/prep-ready/ready-<n>
+    # (their queue time + start), all of them, never fewer; a refusing host ends the wait.
     if K["remote_prepare"]:
         from stpd.p1.inference_service import python_env_sha256
 
         want, ready = int(os.environ["FC_PREP_HOSTS"]), RUN / "prep-ready"
         deadline = time.time() + float(K["remote_prepare_wait_seconds"])
         while len(list(ready.glob("ready-*"))) < want:
+            refused = sorted(f for f in (RUN / "prep-refused").glob("*")
+                             if not f.name.endswith(".tmp"))
+            if refused:
+                raise SystemExit("remote prepare host refused: "
+                                 + "; ".join(f.read_text().strip() for f in refused))
             if time.time() > deadline:
                 raise SystemExit("remote prepare hosts not ready: "
                                  f"{len(list(ready.glob('ready-*')))}/{want}")

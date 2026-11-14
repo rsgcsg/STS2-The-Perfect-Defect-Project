@@ -29,7 +29,19 @@ echo "array=${SLURM_ARRAY_JOB_ID:-none}_${SLURM_ARRAY_TASK_ID:-none} nodeidx=$NO
 echo "node=$(hostname -s) start=$(date -Is) model=$(lscpu | grep 'Model name' | sed 's/.*: *//') cpus=$(taskset -pc $$ | sed 's/.*: //') procs=$P slots=$K"
 svc_of() { echo $(( (NODEIDX * AGGS + $1) % NSVC )); }
 have() { for a in $(seq 0 $((AGGS - 1))); do [ -s $RUN/service-$(svc_of $a).json ] || return 1; done; [ -s $RUN/inference.json ] && [ -s $RUN/env-sha.txt ]; }
-for i in $(seq 1 $FC_WAIT_N); do have && break; [ -e $RUN/STOP ] && break; sleep 5; done
+# --- join wait: ---
+# A job started without a live GPU job (a cancelled run, or a submit whose outcome was
+# unknown) leaves within a minute instead of holding the node for the whole wait (#540).
+source $H/gpu_job.sh
+for i in $(seq 1 $FC_WAIT_N); do
+  have && break; [ -e $RUN/STOP ] && break
+  if [ $(( i % 12 )) = 1 ]; then
+    read -r V D <<< "$(gpu_job_state "$(cat $RUN/gpu-job.txt 2>/dev/null)")"
+    [ "$V" = gone ] && { echo "GPU job gone before this node joined: $D $(date -Is)"; exit 0; }
+  fi
+  sleep 5
+done
+# --- end join wait ---
 # A node that arrives after the GPU side ended (or while it drains) has nothing to join.
 if [ -e $RUN/STOP ] || [ -e $RUN/DRAIN ]; then
   echo "gpu side ended or draining before this node joined: $(cat $RUN/STOP 2>/dev/null) $(date -Is)"; exit 0

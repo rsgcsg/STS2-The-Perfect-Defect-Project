@@ -3,7 +3,8 @@
 
     launch.py plan      RUNTAG --profile P --site S --cards N --card-type T [options]
     launch.py preflight RUNTAG ... (plan + every start check; submits nothing)
-    launch.py submit    RUNTAG ... (preflight, then prep -> wait ready -> GPU + env)
+    launch.py submit    RUNTAG ... (preflight, then GPU -> prep + env with
+                        --dependency=after:GPU -> wait until gpu.sh confirms its start)
 
 Options: --layout L (default: the profile's default layout for N cards; "shared",
 "1i+1t", "1i+2t" or an explicit per-card list, see layout.py), --env-cores C (cap on
@@ -11,8 +12,10 @@ environment cores), --set knob=value (repeatable, recorded as an override), --sm
 (5 min, the smallest balanced env), --long-run (wall = long_wall_seconds, 20 h in
 one GPU job), --probe-only (allow the placeholder producer
 identity outside --smoke: CPs void, recorded in plan.json), --fallback (fewer cards
-with their default layouts when N do not fit), --probe-json F (a recorded sinfo probe
-instead of sinfo).
+with their default layouts when the sinfo snapshot shows no node with N free), --probe-json
+F (a recorded sinfo probe instead of sinfo). The snapshot never pins a node; without
+--fallback it is, like `sbatch --test-only`, only printed (CLUSTER-QUEUE-DIAG 11-14: a node
+free in the snapshot is no promise that the job starts).
 
 What this replaces: the private fc-launch.py tiers (1/2/3/h100) and the hand-edited
 fc_gpu.py / fc-gpu3.sh / fc-env2.sh / fc-prep3w.sh. A layout is data; every knob comes
@@ -32,8 +35,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -47,11 +52,15 @@ import run_profile  # noqa: E402
 
 HARNESS = ("roles.py", "preflight.py", "run_profile.py", "layout.py", "readout.py",
            "learner_config.py",
-           "gpu.sh", "env.sh", "prep.sh", "env_driver.mjs", "env_aggregator.py",
+           "gpu.sh", "env.sh", "prep.sh", "gpu_job.sh", "env_driver.mjs", "env_aggregator.py",
            "env_admission.py", "proc_cpu.py", "proc_sampler.py", "native_nice.sh",
            "elu_preload.mjs")
 CANDIDATE_DLL = "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
 TAG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+HEARTBEAT_SECONDS = 10.0  # launcher-alive; gpu.sh refuses past launcher_stale_seconds
+# RUNNING without gpu.sh's gpu-started this long = it hung before its launcher check
+# (profile/module load, one 30 s heartbeat re-read): cancel the run (review #540 S2).
+GPU_ACK_MAX_SECONDS = 300.0
 
 
 def sh(*cmd: str) -> str:
@@ -123,18 +132,18 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         fits = [r["node"] for r in probe_rows if r["gpus_free"] >= count
                 and r["cores_idle"] >= place.gpu_cores and r["mem_free_g"] >= mem]
         if fits:
-            chosen = (count, spec, place, mem, fits[0])
-            tried.append(f"{place.name}: {fits[0]} fits ({count} free {card_type}, "
-                         f"{place.gpu_cores} cores, {mem}G)")
+            chosen = (count, spec, place, mem, fits)
+            tried.append(f"{place.name}: sinfo now shows room on {', '.join(fits)} ({count} "
+                         f"free {card_type}, {place.gpu_cores} cores, {mem}G)")
             break
-        tried.append(f"{place.name}: no node with {count} free {card_type}, "
+        tried.append(f"{place.name}: sinfo now shows no node with {count} free {card_type}, "
                      f"{place.gpu_cores} idle cores, {mem}G")
-    if chosen is None:  # report the requested layout with no node
+    if chosen is None:  # the requested layout; the job pends until Slurm starts it
         spec = layout_spec or knobs["default_layouts"][str(cards)]
         place = layouts.place(spec, cards, card_type, service_cores=knobs["service_cores"],
                               rank_cores=knobs["rank_cores"])
-        chosen = (cards, spec, place, knobs["job_mem_g"][str(cards)], None)
-    count, spec, place, mem, node = chosen
+        chosen = (cards, spec, place, knobs["job_mem_g"][str(cards)], [])
+    count, spec, place, mem, free_now = chosen
     key = str(count)
     cap = knobs["core_cap"][key]
     budget = min(knobs["env_core_budget"][key], cap - place.gpu_cores,
@@ -161,6 +170,13 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         target["perfect_packing_rows_h"] = round(layouts.perfect_packing(
             count, cap_rows["inference"], cap_rows["training"]))
     prep_hosts = sum(g["nodes"] for g in knobs["prep_groups"]) if knobs["remote_prepare"] else 0
+    # Start-up order: GPU job first; prep and env jobs start only after it started
+    # (--dependency=after). The learner then waits up to remote_prepare_wait_seconds for the
+    # prep hosts (their queue time + start) before its wall begins, and the services and
+    # env nodes wait for the learner: that wait is added to the GPU job's time and to the
+    # env wait. A prep job never runs before the GPU job, so it needs no longer than it.
+    prep_wait = int(math.ceil(knobs["remote_prepare_wait_seconds"])) if prep_hosts else 0
+    gpu_minutes = (wall + 240 + prep_wait) // 60 + 1
     return {
         "schema": "spireagent/friday-fastchain-plan-1", "runtag": runtag, "t": time.time(),
         "run": str(Path(site["work_root"]) / f"run-{runtag}"),
@@ -171,8 +187,11 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "resume_checkpoint": resume_checkpoint, "chain": chain,
         "checkpoints_void": knobs["producer_identity"] == "placeholder",
         "placement": place.as_dict(), "layout_spec": spec, "name": place.name,
-        "target": target, "gpu_node": node, "gpu_node_why": "; ".join(tried),
+        "target": target, "gpu_nodes_free_now": free_now,
         "gpu_partition": gpu["partition"], "gpu_gres": gpu["gres"],
+        "gpu_constraint": gpu["constraint"], "gpu_nodelist": gpu.get("nodelist"),
+        "gpu_pending_max_seconds": knobs["smoke_gpu_pending_max_seconds"] if smoke
+        else knobs["gpu_pending_max_seconds"],
         "job_mem_g": mem, "core_cap": cap,
         # Fractions of the job's cgroup limit (--mem), so they always sit below it.
         "mem_guard_bytes": int(knobs["mem_guard_fraction"] * limit),
@@ -181,10 +200,11 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "env_cores_max": fast * knobs["env_node_cores"]
         + (slow + 1) // 2 * knobs["env_node_cores"],
         "env_node_index_ranges": {"fast": [0, fast], "c8220": [fast, slow]},
-        "prep_hosts": prep_hosts,
-        "gpu_minutes": (wall + 240) // 60 + 1,
-        "env_minutes": (knobs["env_wait_seconds"] + wall + 600) // 60,
-        "prep_minutes": (wall + 240 + int(knobs["prep_start_timeout_seconds"])) // 60 + 1,
+        "prep_hosts": prep_hosts, "prep_wait_seconds": prep_wait,
+        "env_wait_seconds": knobs["env_wait_seconds"] + prep_wait,
+        "gpu_minutes": gpu_minutes,
+        "env_minutes": (knobs["env_wait_seconds"] + prep_wait + wall + 600) // 60,
+        "prep_minutes": gpu_minutes,
         "partition_max_minutes": {
             role: site["partition_max_minutes"].get(part) for role, part in (
                 ("gpu", gpu["partition"]), ("env", site["env_partition"]),
@@ -198,13 +218,17 @@ def _time(minutes: int) -> str:
 
 
 def commands(plan: dict[str, Any]) -> dict[str, list[str]]:
+    """sbatch commands: "gpu" first, then plain jobs that `submit` gives
+    --dependency=after:<GPU job> (one "prep-<i>" per prep group, never a heterogeneous job:
+    Slurm starts those only from backfill; "env", "env_c8220")."""
     run, k, site = plan["run"], plan["knobs"], plan["site"]
     harness = f"{run}/harness"
     export = f"--export=ALL,FC_RUN={run}"
     p = plan["placement"]
     gpu = ["sbatch", "--parsable", f"--job-name=fc-gpu-{plan['runtag']}",
            f"--partition={plan['gpu_partition']}",
-           *([f"--nodelist={plan['gpu_node']}"] if plan["gpu_node"] else []),
+           *([f"--constraint={plan['gpu_constraint']}"] if plan["gpu_constraint"] else []),
+           *([f"--nodelist={plan['gpu_nodelist']}"] if plan["gpu_nodelist"] else []),
            f"--gres=gpu:{plan['gpu_gres']}:{p['cards']}", "--nodes=1",
            f"--cpus-per-task={p['gpu_cores']}", f"--mem={plan['job_mem_g']}G",
            f"--time={_time(plan['gpu_minutes'])}", "--no-requeue",
@@ -220,28 +244,23 @@ def commands(plan: dict[str, Any]) -> dict[str, list[str]]:
                 f"{export},FC_NODEIDX_BASE={base}", f"{harness}/env.sh"]
 
     out: dict[str, list[str]] = {"gpu": gpu}
+    if plan["prep_hosts"]:  # group i = FC_PREP_GROUPS_JSON[i] (job_env keeps the same order)
+        for i, g in enumerate(g for g in k["prep_groups"] if g["nodes"]):
+            out[f"prep-{i}"] = [
+                "sbatch", "--parsable", f"--job-name=fc-prep-{plan['runtag']}-{i}",
+                f"--partition={site['prep_partition']}", f"--time={_time(plan['prep_minutes'])}",
+                f"--constraint={g['type']}", f"--nodes={g['nodes']}", "--ntasks-per-node=1",
+                f"--cpus-per-task={g['cpus']}", f"--mem={g['mem_g']}G",
+                *(["--exclude=" + ",".join(site["excluded_prep_hosts"])]
+                  if site["excluded_prep_hosts"] else []),
+                "--no-requeue", f"--output={run}/slurm-prep-{i}-%j.out",
+                f"{export},FC_PREP_GROUP={i}", f"{harness}/prep.sh"]
     if plan["env_fast_nodes"]:
         out["env"] = env_array(plan["env_fast_nodes"], "|".join(k["env_machine_types"]), 0,
                                "fast")
     if plan["env_slow_nodes"]:
         out["env_c8220"] = env_array(plan["env_slow_nodes"], "c8220", plan["env_fast_nodes"],
                                      "c8220")
-    if plan["prep_hosts"]:
-        prep = ["sbatch", "--parsable", f"--job-name=fc-prep-{plan['runtag']}",
-                "--no-requeue", f"--output={run}/slurm-prep-%j.out"]
-        groups = [g for g in k["prep_groups"] if g["nodes"]]
-        for i, g in enumerate(groups):
-            if i:
-                prep.append(":")
-            prep += [f"--partition={site['prep_partition']}",
-                     f"--time={_time(plan['prep_minutes'])}", f"--constraint={g['type']}",
-                     f"--nodes={g['nodes']}", "--ntasks-per-node=1",
-                     f"--cpus-per-task={g['cpus']}", f"--mem={g['mem_g']}G"]
-            if site["excluded_prep_hosts"]:
-                prep.append("--exclude=" + ",".join(site["excluded_prep_hosts"]))
-            if i == 0:
-                prep.append(export)
-        out["prep"] = prep + [f"{harness}/prep.sh"]
     return out
 
 
@@ -266,7 +285,7 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_LEARNER_CORES": p["learner_cores"], "FC_SHARED_CARD": int(p["shared_inference_card"]),
         "FC_WALL": plan["wall_seconds"], "FC_SMOKE": int(plan["smoke"]),
         "FC_MIN_JOIN_S": 60 if plan["smoke"] else k["env_min_join_seconds"],
-        "FC_WAIT_N": k["env_wait_seconds"] // 5, "FC_PREP_HOSTS": plan["prep_hosts"],
+        "FC_WAIT_N": plan["env_wait_seconds"] // 5, "FC_PREP_HOSTS": plan["prep_hosts"],
         "FC_PREP_GROUPS_JSON": json.dumps(groups, separators=(",", ":")),
         "FC_MEM_GUARD_BYTES": plan["mem_guard_bytes"], "FC_MEM_HARD_BYTES": plan["mem_hard_bytes"],
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
@@ -309,7 +328,10 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["secret_files"] = {
         site[key]: (os.stat(site[key]).st_mode & 0o777 if os.path.exists(site[key]) else None)
         for key in ("inference_auth_file", "prepare_auth_file")}
-    facts["prep_test_start_seconds"] = (test_start(cmds["prep"]) if "prep" in cmds else 0.0)
+    facts["gpu_test_start_seconds"] = test_start(cmds["gpu"])
+    facts["queue"] = queue_facts({"gpu": plan["gpu_partition"],
+                                  **({"prep": site["prep_partition"]}
+                                     if plan["prep_hosts"] else {})})
     return facts
 
 
@@ -361,7 +383,9 @@ def source_features(src: Path) -> dict[str, bool]:
 
 
 def test_start(cmd: list[str]) -> float | None:
-    """Seconds until Slurm expects the prep job to start (`sbatch --test-only`)."""
+    """Seconds until `sbatch --test-only` expects the job to start. Printed only: it ignores
+    higher-priority jobs and partition locks (CLUSTER-QUEUE-DIAG 11-14: "now" while the
+    job could not start at all)."""
     # The run's harness copy does not exist before submit: test with the source script.
     trial = [cmd[0], "--test-only", *[c for c in cmd[1:-1] if c != "--parsable"],
              str(HERE / Path(cmd[-1]).name)]
@@ -397,67 +421,214 @@ def freeze(plan: dict[str, Any], profile: dict[str, Any], cmds: dict[str, list[s
     return run
 
 
-def wait_prep(run: Path, job: str, hosts: int, timeout: float) -> str | None:
-    """None when every prep host is ready; else the refusal."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        refused = sorted((run / "prep-refused").glob("*")) if (run / "prep-refused").exists() \
-            else []
-        if refused:
-            return "prep host refused: " + "; ".join(f.read_text().strip() for f in refused)
-        ready = list((run / "prep-ready").glob("ready-*")) if (run / "prep-ready").exists() \
-            else []
-        if len(ready) >= hosts:
-            return None
-        state = subprocess.run(["squeue", "-h", "-j", job, "-o", "%T"], capture_output=True,
-                               text=True).stdout.strip()
-        if not state:
-            return f"prep job {job} ended before every host was ready"
-        time.sleep(5)
-    return f"prep hosts not ready within {timeout:.0f} s"
+def _stdout(cmd: list[str]) -> str | None:
+    """stdout of a Slurm query; None when it failed."""
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    return out.stdout if out.returncode == 0 else None
+
+
+def parse_pending(text: str) -> list[tuple[str, int, str, str]]:
+    """`squeue -h -r -t PD -o %i|%Q|%r|%P` -> (job id, priority, reason, partition)."""
+    rows = []
+    for line in text.splitlines():
+        parts = [part.strip() for part in line.split("|", 3)]
+        if len(parts) == 4 and parts[1].isdigit():
+            rows.append((parts[0], int(parts[1]), parts[2], parts[3]))
+    return rows
+
+
+def pending_jobs() -> list[tuple[str, int, str, str]] | None:
+    """Every pending job of the cluster, array elements one by one; None if unreadable."""
+    text = _stdout(["squeue", "-h", "-r", "-t", "PD", "-o", "%i|%Q|%r|%P"])
+    return None if text is None else parse_pending(text)
+
+
+def in_partition(row: tuple[str, int, str, str], partition: str) -> bool:
+    return partition in row[3].split(",")
+
+
+def queue_position(job: str, rows: list[tuple[str, int, str, str]] | None) -> str:
+    """Where a pending job stands among the pending jobs of its own partition."""
+    if rows is None:
+        return f"job {job}: squeue unreadable"
+    mine = next((row for row in rows if row[0] == job), None)
+    if mine is None:
+        return f"job {job} is not pending"
+    peers = [row for row in rows if in_partition(row, mine[3].split(",")[0])]
+    above = sum(1 for row in peers if row[1] > mine[1])
+    return (f"job {job} PENDING, Reason={mine[2]}, priority {mine[1]}, {above} of "
+            f"{len(peers)} pending jobs in {mine[3]} rank above it")
+
+
+def parse_fairshare(text: str | None) -> float | None:
+    """`sshare -n -P -U -o FairShare`: this user's fair-share factor (first association)."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    try:
+        return float(lines[0]) if lines else None
+    except ValueError:
+        return None
+
+
+def parse_sprio_weights(text: str | None) -> tuple[int, int] | None:
+    """`sprio -w -h -o %i|%F|%P`: (fair-share weight, partition weight) of the Weights row."""
+    for line in (text or "").splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) == 3 and parts[0] == "Weights" and parts[1].isdigit() \
+                and parts[2].isdigit():
+            return int(parts[1]), int(parts[2])
+    return None
+
+
+def queue_facts(partitions: dict[str, str]) -> dict[str, Any]:
+    """For preflight to print (never to decide): this user's fair-share factor and, per role
+    ({"gpu": partition, "prep": partition}), how many pending jobs of that partition rank
+    above a job submitted now. Its priority is estimated as partition weight + fair-share
+    weight x factor (age 0; job size and QOS left out)."""
+    fair = parse_fairshare(_stdout(["sshare", "-n", "-P", "-U", "-o", "FairShare"]))
+    weights = parse_sprio_weights(_stdout(["sprio", "-w", "-h", "-o", "%i|%F|%P"]))
+    rows = pending_jobs()
+    estimate = (round(weights[1] + weights[0] * fair)
+                if weights is not None and fair is not None else None)
+    out: dict[str, Any] = {"fairshare": fair, "priority_estimate": estimate, "partitions": {}}
+    for role, partition in partitions.items():
+        peers = None if rows is None else [r for r in rows if in_partition(r, partition)]
+        out["partitions"][role] = {
+            "name": partition, "pending": None if peers is None else len(peers),
+            "above": (sum(1 for r in peers if r[1] > estimate)
+                      if peers is not None and estimate is not None else None)}
+    return out
+
+
+def gpu_state(job: str) -> str | None:
+    """The job's squeue state; "" once it is no longer listed; None if squeue failed."""
+    out = subprocess.run(["squeue", "-h", "-j", job, "-o", "%T"], capture_output=True,
+                         text=True)
+    if out.returncode != 0 and "Invalid job id" not in out.stderr:
+        return None
+    return out.stdout.strip()
+
+
+def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0,
+                   ack_limit: float = GPU_ACK_MAX_SECONDS) -> None:
+    """Until gpu.sh confirms its start (`gpu-started`, written once its launcher check
+    passed). PENDING after `limit` s (CLUSTER-QUEUE-DIAG 11-14), RUNNING for `ack_limit` s
+    without that confirmation (gpu.sh hung before its check, or the shared file system
+    hides the file), or ended without it (FAILED, TIMEOUT, NODE_FAIL, CANCELLED, purged
+    ...): SystemExit with the reason; the caller cancels every job of the run. A failed
+    squeue is read again at the next poll, never taken as an answer; CONFIGURING waits."""
+    deadline, shown, started = time.monotonic() + limit, False, run / "gpu-started"
+    running_since: float | None = None  # first RUNNING since the last PENDING
+    left_pending = False  # CONFIGURING/RUNNING seen: a failed squeue is no longer "PENDING"
+    stop = run / "STOP"
+
+    def why() -> str:
+        return ((f"; STOP: {stop.read_text().strip()}" if stop.exists() else "")
+                + f"); see {run}/slurm-gpu-{job}.out")
+    while True:
+        if started.exists():
+            return
+        state = gpu_state(job)
+        if state not in (None, "PENDING", "CONFIGURING", "RUNNING"):
+            if started.exists():  # confirmed between the two reads
+                return
+            raise SystemExit(f"GPU job {job} ended before gpu.sh started the run "
+                             f"({state or 'no longer listed'}" + why())
+        if state == "PENDING":  # also after a requeue: both bounds as before the start
+            running_since, left_pending = None, False
+        elif state in ("CONFIGURING", "RUNNING"):
+            left_pending = True
+            if state == "RUNNING":
+                running_since = running_since or time.monotonic()
+        if running_since is not None and time.monotonic() - running_since >= ack_limit:
+            if started.exists():
+                return
+            raise SystemExit(f"GPU job {job} RUNNING for {ack_limit:.0f} s but gpu.sh never "
+                             f"confirmed its start ({started.name} missing: hung before its "
+                             "launcher check, or the shared file system hides the file"
+                             + why())
+        if state == "PENDING" and not shown:
+            print(f"GPU {queue_position(job, pending_jobs())}; waiting at most {limit:.0f} s",
+                  flush=True)
+            shown = True
+        if (state == "PENDING" or (state is None and not left_pending)) \
+                and time.monotonic() >= deadline:
+            where = (queue_position(job, pending_jobs()) if state else
+                     "squeue unreadable at the deadline (the job may be starting)")
+            raise SystemExit(f"GPU job still PENDING after {limit:.0f} s: {where}; "
+                             "not resubmitted")
+        time.sleep(poll)
 
 
 def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
-           *, run_cmd: Any = None, wait: Any = None) -> dict[str, Any]:
-    """prep -> wait every host ready -> GPU -> env arrays. Any failure or interrupt on the
-    way (a later sbatch failing, a prep refusal, Ctrl-C during the wait) cancels every job
-    already submitted, then re-raises. Nothing is retried."""
+           *, run_cmd: Any = None, wait: Any = None, run_scancel: Any = None) -> dict[str, Any]:
+    """GPU job first; every other job with --dependency=after:<GPU job>, so no CPU node is
+    held (or charged) while the GPU job pends; then wait until gpu.sh confirms its start, at
+    most plan["gpu_pending_max_seconds"] in PENDING. Any failure on the way (a later sbatch
+    failing, the pending bound, Ctrl-C, SIGTERM, SIGHUP) cancels every job already submitted,
+    then re-raises. Nothing is retried or resubmitted. For what no handler sees (SIGKILL, a
+    crash, a lost login node) a thread touches launcher-alive every HEARTBEAT_SECONDS from
+    before the GPU submit until gpu.sh confirmed: gpu.sh refuses to run on a stale one."""
     run_cmd = run_cmd or (lambda cmd: sh(*cmd))
-    wait = wait or wait_prep
+    wait = wait or wait_gpu_start
     jobs: dict[str, Any] = {}
+    beat, done = run / "launcher-alive", threading.Event()
 
-    def go(name: str) -> str:
-        job = run_cmd(cmds[name]).strip().split(";")[0]
+    def heartbeat() -> None:
+        while not done.wait(HEARTBEAT_SECONDS):
+            beat.touch()
+
+    def interrupted(signum: int, frame: Any) -> None:
+        raise SystemExit(f"launcher got {signal.Signals(signum).name}")
+
+    def go(name: str, cmd: list[str]) -> str:
+        job = run_cmd(cmd).strip().split(";")[0]
         jobs[name] = job
         (run / "jobs.json").write_text(json.dumps(jobs, indent=1))
         return job
 
+    beat.touch()
+    thread = threading.Thread(target=heartbeat, name="launcher-alive", daemon=True)
+    thread.start()
+    handlers = {s: signal.signal(s, interrupted) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        if "prep" in cmds:
-            prep = go("prep")
-            why = wait(run, prep, plan["prep_hosts"],
-                       plan["knobs"]["prep_start_timeout_seconds"] + 300)
-            if why:
-                raise SystemExit(f"refused after prep submission: {why}; GPU job not "
-                                 "submitted")
-        gpu = go("gpu")
-        (run / "gpu-job.txt").write_text(gpu + "\n")
-        for name in ("env", "env_c8220"):
-            if name in cmds:
-                go(name)
+        gpu = go("gpu", cmds["gpu"])
+        (run / "gpu-job.txt").write_text(gpu + "\n")  # prep.sh/env.sh: is it still alive
+        for name, cmd in cmds.items():
+            if name != "gpu":
+                go(name, [*cmd[:-1], f"--dependency=after:{gpu}", cmd[-1]])
+        wait(gpu, plan["gpu_pending_max_seconds"], run)
     except BaseException as error:
-        cancelled = cancel_all(jobs)
-        (run / "submit-failed.txt").write_text(f"{error!r}\ncancelled {cancelled}\n")
-        print(f"submit failed ({error!r}); cancelled {cancelled}", file=sys.stderr)
+        result = cancel_all(jobs, run_scancel=run_scancel)
+        (run / "submit-failed.txt").write_text(f"{error!r}\n{result}\n")
+        print(f"submit failed ({error!r}); {result}", file=sys.stderr)
         raise
+    finally:
+        done.set()
+        thread.join()
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
     return jobs
 
 
-def cancel_all(jobs: dict[str, Any]) -> list[str]:
-    ids = [str(job) for job in jobs.values()]
-    if ids:
-        subprocess.run(["scancel", *ids], check=False)
-    return ids
+def cancel_all(jobs: dict[str, Any], *, run_scancel: Any = None) -> str:
+    """Dependents first, the GPU job last: `after:` holds once the GPU job began OR was
+    cancelled, so a dependent still queued behind a cancelled GPU job would start. Every
+    scancel's return code counts: a failed one says which jobs may still be alive."""
+    run_scancel = run_scancel or (lambda ids: subprocess.run(["scancel", *ids],
+                                                             capture_output=True, text=True))
+    dependents = [str(job) for name, job in jobs.items() if name != "gpu"]
+    gpu = [str(jobs["gpu"])] if "gpu" in jobs else []
+    failed = []
+    for ids in (dependents, gpu):
+        if ids:
+            out = run_scancel(ids)
+            if out.returncode != 0:
+                failed.append(f"scancel {' '.join(ids)}: rc {out.returncode} "
+                              f"{(out.stderr or '').strip()}")
+    if failed:
+        return (f"SCANCEL FAILED ({'; '.join(failed)}), jobs may still be alive: "
+                f"{dependents + gpu}")
+    return f"cancelled {dependents + gpu}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -506,9 +677,10 @@ def main(argv: list[str] | None = None) -> int:
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2
-    cmds = commands(plan)  # without a free GPU node: shown, refused by check_gpu_node
-    summary = {k: plan[k] for k in ("name", "target", "gpu_node", "why", "env_nodes_max",
-                                     "env_cores_max", "prep_hosts", "wall_seconds",
+    cmds = commands(plan)
+    summary = {k: plan[k] for k in ("name", "target", "gpu_nodes_free_now", "why",
+                                     "env_nodes_max", "env_cores_max", "prep_hosts",
+                                     "wall_seconds", "gpu_pending_max_seconds",
                                      "producer_identity", "checkpoints_void")}
     summary["placement"] = plan["placement"]
     summary["commands"] = cmds

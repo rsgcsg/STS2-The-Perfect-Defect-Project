@@ -313,7 +313,6 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "prep_groups": _prep_groups,
     "prep_host_inflight_gb": _num(0),
     "prep_scratch_min_free": _bool,
-    "prep_start_timeout_seconds": _num(0),
     # inference services
     "services": _int(1, 64),
     "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
@@ -339,6 +338,11 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "wall_seconds": _int(60),
     "smoke_wall_seconds": _int(60),
     "long_wall_seconds": _int(60, 72000),
+    # the launcher cancels the run when the GPU job is still PENDING after this long
+    "gpu_pending_max_seconds": _int(60),
+    "smoke_gpu_pending_max_seconds": _int(60),
+    # gpu.sh refuses to start when the launcher's heartbeat is older than this
+    "launcher_stale_seconds": _int(30, 3600),
     # resume chain (supervise.py) and its schedules
     "resume_max_total": _int(0, 20),
     "min_generation_seconds": _int(300),
@@ -418,7 +422,12 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "partition_max_minutes": _table_of(_int(0), what="minutes (int, 0 = no limit)"),
     "compile_warmup_dumps": _strs,
 }
-GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list}
+# A card type is partition + gres + constraint (a node feature; "" = partition and gres
+# already decide it). `nodes` only feeds the printed sinfo snapshot (and --fallback); an
+# explicit --nodelist pin exists only when the site sets `nodelist` (CLUSTER-QUEUE-DIAG
+# 11-14: a pin taken from a snapshot was wrong).
+GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list, "constraint": str}
+GPU_TYPE_OPTIONAL = {"nodelist": str}
 
 
 class ProfileError(ValueError):
@@ -496,10 +505,29 @@ def load_site(path: Path) -> dict[str, Any]:
     for key, check in SITE_KEYS.items():
         if key in site and check(site[key]):
             problems.append(f"{key}: expected {check(site[key])}")
-    for name, spec in (site.get("gpu_types") or {}).items():
-        if (not isinstance(spec, dict) or set(spec) != set(GPU_TYPE_KEYS)
-                or any(not isinstance(spec[k], t) for k, t in GPU_TYPE_KEYS.items())):
-            problems.append(f"gpu_types.{name}: needs exactly {sorted(GPU_TYPE_KEYS)}")
+    types = {**GPU_TYPE_KEYS, **GPU_TYPE_OPTIONAL}
+    gpu_types = site.get("gpu_types") or {}
+    for name, spec in gpu_types.items():
+        if not isinstance(spec, dict):
+            problems.append(f"gpu_types.{name}: expected a table")
+            continue
+        problems += [f"gpu_types.{name}: missing {key}"
+                     for key in sorted(set(GPU_TYPE_KEYS) - set(spec))]
+        problems += [f"gpu_types.{name}: unknown key {key}"
+                     for key in sorted(set(spec) - set(types))]
+        problems += [f"gpu_types.{name}.{key}: expected {types[key].__name__}"
+                     for key in sorted(set(spec) & set(types))
+                     if not isinstance(spec[key], types[key])]
+    # An empty constraint is enough only when partition + gres already decide the card: with
+    # a second type on the same partition and gres the job could land on either (40 vs 80 GB).
+    for name, spec in gpu_types.items():
+        if isinstance(spec, dict) and spec.get("constraint") == "":
+            twins = sorted(other for other, o in gpu_types.items() if other != name
+                           and isinstance(o, dict) and (o.get("partition"), o.get("gres"))
+                           == (spec.get("partition"), spec.get("gres")))
+            if twins:
+                problems.append(f"gpu_types.{name}: empty constraint, but {', '.join(twins)} "
+                                "has the same partition and gres")
     if problems:
         raise ProfileError("site profile refused:\n  " + "\n  ".join(problems))
     return site
