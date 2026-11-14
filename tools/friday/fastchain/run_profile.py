@@ -174,7 +174,10 @@ def exploration_plan(ladder: dict[str, Any], first: int, count: int) -> list[str
     return out[first:]
 
 
+# The assembler's segment format (#530 S-1: 3 carries the ascension level; W2: 4 adds
+# group_id, ticket and the per-combat HP score column). Both carry the level.
 SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
+SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
 
 
 def cross_problems(values: dict[str, Any]) -> list[str]:
@@ -183,10 +186,6 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["disk_stop_free_pct"] >= values["disk_warn_free_pct"]:
         out.append(f"disk_stop_free_pct {values['disk_stop_free_pct']} must be below "
                    f"disk_warn_free_pct {values['disk_warn_free_pct']}")
-    if (any(int(level) > 0 and weight > 0 for level, weight in values["ascension_mix"].items())
-            and values["service_kwargs"].get("segment_format") != SEGMENT_FORMAT_3):
-        out.append(f"ascension_mix above 0 needs service_kwargs.segment_format = "
-                   f"{SEGMENT_FORMAT_3!r} (#530: format 2 cannot carry the level)")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if values["replay_k"] > values["env_slots"]:
@@ -213,9 +212,9 @@ def _service_kwarg(value: Any) -> str | None:
     return None if type(value) is float and math.isfinite(value) else "bool/int/finite/str"
 
 
-# FastInferenceService keywords a profile may pass (the rest are set by roles.py), plus
-# `segment_format`, which roles.py hands to the FastSegmentAssembler instead.
-SERVICE_KWARGS = frozenset(("segment_format",
+# FastInferenceService keywords a profile may pass (the rest are set by roles.py; the
+# assembler's format is the `segment_format` knob).
+SERVICE_KWARGS = frozenset((
     "in_flight", "job_parts", "join_workers", "arena_row_bytes", "device_threads", "bf16",
     "part_rows", "device_rows", "trace", "audit_fraction", "kernels", "exit_grace_seconds"))
 # env_driver.mjs memo layers: int = check interval, bool = layer on.
@@ -317,6 +316,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # inference services
     "services": _int(1, 64),
     "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
+    # c_hp > 0 (the gate's loss.hp_advantage_coef) needs 4: preflight check_hp_score
+    "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4),
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),

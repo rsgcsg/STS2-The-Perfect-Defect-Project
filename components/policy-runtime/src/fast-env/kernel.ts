@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { decodePublicSourceReceipt, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
 import { createSession, reduce, ReduceStrictSampleFailure, modelView, applyCommitment, resolveFollowBasis, P1G_LIMITS,
@@ -7,13 +8,13 @@ import { canonicalJson } from "../evidence.js";
 import { GlobalNoProgressWindow } from "../global-no-progress.js";
 import { supportsProfileValue, type AgentManifest } from "../agent-session-contracts.js";
 import { ResponseBinding } from "./binding.js";
-import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts } from "./contracts.js";
+import type { CloseReason, FastEnvCommand, FastEnvConfig, OutcomeReason, PublicFacts, SavePoints } from "./contracts.js";
 import { FAST_ENV_LINK_SCHEMA } from "./contracts.js";
 import { CanonicalTextMemoDivergence, globalDigestFast, jsonWithPySha256, pyJsonSha256, type CanonicalTextMemo } from "./json-bytes.js";
 import type { ColdStartGate } from "./cold-start.js";
 import type { DecisionLinkPort } from "./link.js";
 import type { FastEvidenceSink, FastGameEvidence, FastGameMeta, FastStepRecord } from "./evidence-sink.js";
-import { SampledCheckFailure, type SampledCheckMismatch, type SlotNative, type SlotNativeFactory } from "./host.js";
+import { SampledCheckFailure, SaveMapFailure, type SampledCheckMismatch, type SlotNative, type SlotNativeFactory } from "./host.js";
 
 type Reduction = ReturnType<typeof reduce>;
 type OpenCommand = Extract<FastEnvCommand, { cmd: "open" }>;
@@ -38,11 +39,14 @@ export interface KernelStats {
   memo_divergences: number;
   /** E5: the Host projection memo counters of every finished game (summed per native session). */
   projection_memo: { hits: number; misses: number; checks: number };
+  /** Save tickets: Host map saves written, refused before any native write (game kept), failed or unknown
+   * (game ended, native replaced), and the time spent in them. */
+  saves: { written: number; refused: number; failed: number; unknown: number; ms: number };
 }
 export const emptyStats = (): KernelStats => ({ games: 0, decisions: 0, forced: 0, native_steps: 0, settle_waits: 0, full_checks: 0,
   combat_end_unattributed: 0, compact_divergences: 0, projection_memo_divergences: 0, forced_chain_limit: 0,
   capture_ms: 0, reduce_ms: 0, input_ms: 0, link_wait_ms: 0, step_ms: 0, receipt_ms: 0, cold_starts: 0, cold_start_wait_ms: 0,
-  memo_divergences: 0, projection_memo: { hits: 0, misses: 0, checks: 0 } });
+  memo_divergences: 0, projection_memo: { hits: 0, misses: 0, checks: 0 }, saves: { written: 0, refused: 0, failed: 0, unknown: 0, ms: 0 } });
 
 /** What every slot of one environment process shares. */
 export interface KernelContext {
@@ -171,9 +175,13 @@ class GameRun {
   /** L1 omit: one-option steps executed since the last model row (S1 bound). */
   #forcedInARow = 0;
   readonly #started = performance.now();
+  /** Save points of this game: floors already tried (one attempt each) and the mu of the last scored row. */
+  #saveTried = new Set<number>();
+  #lastMu: string | null = null;
 
   constructor(private readonly ctx: KernelContext, private readonly slot: SlotKernel, private readonly native: SlotNative,
-              readonly gameInstanceId: string, private readonly evidence: FastGameEvidence) {
+              readonly gameInstanceId: string, private readonly evidence: FastGameEvidence,
+              private readonly gameRef: string, private readonly savePoints: SavePoints | null) {
     this.state = createSession(`fast-${randomUUID()}`, "managed", ctx.manifest.input.global!.revision);
     const progress = ctx.config.no_progress;
     this.#noProgress = progress ? new GlobalNoProgressWindow({ windowDecisions: progress.window_decisions, maxRepeats: progress.max_repeats }) : null;
@@ -371,6 +379,14 @@ class GameRun {
       if (this.nativeSteps >= config.budget.max_native_steps_per_game) throw new GameEnd("budget", "max_native_steps_per_game");
       if (performance.now() - this.#started >= config.budget.game_wall_ms) throw new GameEnd("budget", "game_wall_ms");
 
+      if (this.savePoints && facts !== null && observation.scene.native_kind === "map_navigation"
+          && this.savePoints.floors.includes(facts.floor) && !this.#saveTried.has(facts.floor)) {
+        this.#saveTried.add(facts.floor);
+        await this.#save(this.savePoints.directory, facts);
+        // A fresh capture of the same state: the Host revalidates it and the same-occurrence check holds it equal.
+        continue;
+      }
+
       if (forcedState) {
         // S1: the old chain's bound on one-option steps in a row (P1G_LIMITS.forced_steps_in_a_row);
         // past it the game closes as a budget end, never an endless loop.
@@ -430,6 +446,7 @@ class GameRun {
       if (result.kind !== "reply") throw new GameEnd("not_started", "link_result");
       const verdict = this.ctx.binding.check(row, result.reply, config.inference.sampling);
       if (verdict.verdict !== "accept") notStarted(verdict.reason, "not_started", `${verdict.reason}:${verdict.detail}`);
+      if (result.reply.type === "scored") this.#lastMu = result.reply.mu_snapshot_sha256;
       if (this.ctx.stopping() || this.slot.closeRequested) notStarted("stop_before_send", "stop", "stop_before_send");
       const index = (verdict as { index: number }).index, choice = catalog[index]!;
       if (this.#noProgress?.check(observation, choice).exhausted) notStarted("stop_before_send", "budget", "no_progress");
@@ -442,6 +459,38 @@ class GameRun {
         throw new GameEnd("unknown", this.#unknownDetail(), { replaceNative: true });
       }
     }
+  }
+
+  /** One Host map save at a settled map state (save tickets). A save is side work: the game goes on after a
+   * save or a refusal before any native write; a failed or unknown save ends the game (the Host cleared the
+   * episode) and is never retried. */
+  async #save(directory: string, facts: PublicFacts): Promise<void> {
+    const { config, stats } = this.ctx;
+    const name = `${config.env_process_id}.${this.gameRef}.f${facts.floor}.${randomUUID().slice(0, 8)}.json`.replaceAll(":", "_");
+    const path = join(directory, name);
+    const started = performance.now();
+    let result;
+    try { result = await this.native.saveMap(path); }
+    catch (error) {
+      stats.saves.ms += performance.now() - started;
+      const unknown = error instanceof SaveMapFailure && error.outcome === "unknown";
+      if (unknown) stats.saves.unknown += 1; else stats.saves.failed += 1;
+      // The Host keeps whatever it reserved or wrote at this path for diagnosis: the close names it.
+      const code = error instanceof SaveMapFailure ? error.message : `save_failed:${errorText(error)}`;
+      throw new GameEnd("env_crash", `${code} floor=${facts.floor} path=${path}`, { replaceNative: true });
+    }
+    const ms = performance.now() - started;
+    stats.saves.ms += ms;
+    const where = { slot: this.slot.index, game_ref: this.gameRef, game_instance_id: this.gameInstanceId, floor: facts.floor };
+    if (result.kind === "refused") {
+      stats.saves.refused += 1;
+      this.ctx.emit("save_refused", { ...where, reason: result.reason });
+      return;
+    }
+    stats.saves.written += 1;
+    // The producing model is the mu of the last scored row (null before the first one).
+    this.ctx.emit("saved", { ...where, save: result.save, public_facts: facts, ascension: config.host.ascension,
+      character: config.host.character, mu_snapshot_sha256: this.#lastMu, decisions: this.decisions, save_ms: Math.round(ms) });
   }
 
   #newPending(row: { rowId: number; stepIndex: number }, receiptSha: string): PendingOutcome {
@@ -662,7 +711,7 @@ export class SlotKernel {
       seed: command.seed, start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: true });
     // Always attached: compact off, the native's divergence report (#433 S3) is still an original.
     native.attachLines(line => evidence.nativeLine(line));
-    const game = new GameRun(ctx, this, native, gameInstanceId, evidence);
+    const game = new GameRun(ctx, this, native, gameInstanceId, evidence, command.game_ref, command.save_points);
     this.#game = game;
     let reason: CloseReason, detail: string, terminal: { result: "victory" | "defeat" } | null = null, replace = false;
     // Any evidence failure of this game: its `closed` event says so, so the manager never counts or trains on it.

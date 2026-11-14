@@ -248,8 +248,10 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["r7_max_games"] = "R7Selection max_games (#529)"
         need["r7_audit_mu"] = ("episode_open.audit_retain_mu from the fast env (product "
                                "gap: without it R7 games keep originals but no mu)")
-    if k["service_kwargs"].get("segment_format") == "stpd/rl-fast-segment-3":
+    if k["segment_format"] == run_profile.SEGMENT_FORMAT_3:
         need["segment_format_3"] = "segment format 3 (#530 S-1)"
+    if k["segment_format"] == run_profile.SEGMENT_FORMAT_4:
+        need["segment_format_4"] = "segment format 4 + per-combat HP score (W2)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
         need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
     if k["eval_suite"] or k["eval_a10_enabled"]:
@@ -308,6 +310,25 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   + "; ".join(drift)) if drift else
                   f"effective learner config = {plan['knobs']['frozen_learner_config']} "
                   f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})")
+
+
+def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """c_hp (the gate's `loss.hp_advantage_coef`, equal to the frozen config's by A9) > 0
+    needs segment format 4: the learner refuses every older segment
+    (`fast_segment_without_hp_score`), so refuse the run before it starts. Its scope
+    (`loss.hp_advantage_scope`) comes from the gate the same way."""
+    base, fmt = facts.get("gate_learner_base"), plan["knobs"]["segment_format"]
+    loss = (base or {}).get("loss") or {}
+    coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
+    if base is None:
+        return Result("hp_score", False, "no gate learner-base.json")
+    if type(coef) not in (int, float) or scope not in ("combat_ticket", "all_combats"):
+        return Result("hp_score", False, "gate learner-base.json lacks loss.hp_advantage_coef "
+                      "/ loss.hp_advantage_scope: patch it once (RL_LONG_RUN.zh-CN.md, c_hp)")
+    if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
+        return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
+                      f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
+    return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}")
 
 
 def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
@@ -483,7 +504,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_request(plan, facts), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
-            check_frozen_recipe(plan, facts), check_compile_warmup(plan, facts),
+            check_frozen_recipe(plan, facts), check_hp_score(plan, facts),
+            check_compile_warmup(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),

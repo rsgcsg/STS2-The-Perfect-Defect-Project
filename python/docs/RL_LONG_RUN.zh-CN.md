@@ -138,9 +138,38 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
   之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
-  分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）；任一级别 > 0 要求
-  `service_kwargs.segment_format = "stpd/rl-fast-segment-3"`（现默认即 3）。是混合比例、不是
-  损失系数（I5）；无自动课程。
+  分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
+  `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合
+  比例、不是损失系数（I5）；无自动课程。
+- 单战斗血点分（W2，卡 §6.5）：系数 c_hp = 学习者配置 `loss.hp_advantage_coef`，作用范围
+  `loss.hp_advantage_scope`；两者和其它配方键一样来自闸门 `learner-base.json`，经
+  `learner_config.build` 原样进 learner.json，由 A9 与 `rl5.json` 逐键比较（不在
+  `ALLOWED_DRIFT`，无默认值），续训锁定。默认 c_hp 0 = 关，训练与以前数值相同。
+  - 单位：A_hp（段里的 `hp_adv`）是 HP 点（几十），A_outcome 是 0..1 奖励单位，c_hp 预期在
+    0.001–0.01。
+  - 范围（owner：血点分用于单战斗练习）：`"combat_ticket"`（默认）只给 `ticket.end ==
+    "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
+    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
+  - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
+    对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值
+    并同步闸门（下面的命令），再 `--set segment_format=stpd/rl-fast-segment-4`。
+  - 闸门须补一次：本改动之前生成的 `learner-base.json` 没有这两个键，预检 `frozen_recipe`
+    报 `effective '<missing>'`、`hp_score` 报缺键，一律拒绝。
+  - **还有旧代码（本改动之前）的链要再开一代时，不要补闸门**：旧代码的学习者
+    `LossConfig(**loss)` 遇到未知键直接 TypeError，起不来；旧预检只比较 frozen 里有的键，
+    多出的键不算漂移，拦不住，要到 GPU 作业提交后学习者才崩。supervise 每代都重读闸门。
+  - 命令在运行所用源码 checkout 根目录执行（`GATE` = 站点文件的 `gate_dir`）。值取自同一份
+    `rl5.json`，不是默认值；只在 `.pre-c_hp` 不存在时备份，所以换值再跑不会覆盖真正的旧闸门。
+    回滚 = 还原 `.pre-c_hp`（旧代码只能用它）。
+
+```sh
+GATE=/path/of/site/gate_dir
+[ -e "$GATE/learner-base.json.pre-c_hp" ] || cp -p "$GATE/learner-base.json" "$GATE/learner-base.json.pre-c_hp"
+python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = json.load(open(f))["loss"]; b["loss"].update({k: l[k] for k in ("hp_advantage_coef", "hp_advantage_scope")}); open(g + ".new", "w").write(json.dumps(b, indent=2) + "\n")' "$GATE/learner-base.json" python/configs/rl5.json && mv "$GATE/learner-base.json.new" "$GATE/learner-base.json"
+```
+
+  之后 `launch.py preflight ...` 应见 `PASS frozen_recipe` 与 `PASS hp_score`。实验换值时先改
+  源码 `rl5.json`，再跑同一命令。
 - env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
   - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
     `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，

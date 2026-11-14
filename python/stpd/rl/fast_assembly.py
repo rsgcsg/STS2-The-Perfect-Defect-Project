@@ -74,6 +74,23 @@ an encoder refusal becomes a `RejectedSegment` original (written to
 `rejected/`, counted, raised), and every public method hands what it sealed to
 `emit` even when it raises.
 
+Per-combat HP score (`stpd/rl-fast-segment-4` only; RL5 new methods W2, card
+§6.5): with `segment_format` format 4 the service also passes each row's HP-head
+prediction (`hp`, the existing RL4 head: post-combat public HP / 100) and
+whether the selected choice is `potion.use` (`potion`). A combat is a maximal
+run of `in_combat` rows; it ends at the first later non-combat row or at the
+natural terminal (the public `in_combat` flip, the HP-label rule of
+`r7_audit.public_battle_hp`). Once it has ended and every outcome it needs is
+in, `hp_advantages` gives each of its rows A_hp from public facts only, and a
+full segment is held until every combat row in it has its score (or the game
+closes: a combat the game never finished gets none, nothing is made up). The
+mu reference of a held segment is released as soon as its tail value is read,
+so holding never pins mu. `episode_open` may name `group_id` and
+`ticket.end` (`game` | `combat`); both need format 4. A `combat` ticket closed
+`ticket_end` right after its post-combat row was scored seals its last
+segment `bootstrap` on that row's value (I3: a truncation, no new class); the
+post-combat row itself is no training row.
+
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
 identity is the snapshot digest plus training generation, version and update
@@ -98,12 +115,14 @@ from typing import Any
 from stpd.p1.trajectory import boss_clearance
 
 from .fast_segment import (
+    ASCENSION_FORMATS,
+    COLUMNAR_FORMATS,
     FORMAT,
-    FORMAT_2,
-    FORMAT_3,
+    FORMAT_4,
     FORMATS,
     MAX_ROWS,
     ROW_FORMAT,
+    TICKET_ENDS,
     InstanceClosed,
     RejectedSegment,
     SealedSegment,
@@ -113,6 +132,7 @@ from .fast_segment import (
     decode_segment,
     encode_segment,
     encode_segment_columns,
+    laid_out,
     sha256,
     unit_numbers,
 )
@@ -180,6 +200,44 @@ def public_terminal_label(context: Mapping[str, Any]) -> dict[str, Any]:
     return {"class": checked_terminal_class(result=disposition, floor=floor, reward=reward,
                                             ascension=ascension),
             "reward": float(reward)}
+
+
+POTION_POINTS = 5
+DEATH_POINTS = 30
+
+
+def hp_advantages(start: Mapping[str, Any] | None,
+                  steps: list[tuple[Mapping[str, Any], float, bool]]) -> list[float] | None:
+    """A_hp (HP points) of every decision of one ended combat, from public facts only.
+
+    `start`: the public facts of the combat's first decision state (the step
+    outcome of the decision before it). `steps`, in order: (the decision's step
+    outcome, 100 x the HP head's prediction on its state, whether its selected
+    choice was `potion.use`). The last step's outcome is the end of the combat
+    (its public facts are the post-combat state; a `defeat` terminal is death).
+
+    Card §6.5, with H = public hp and M = max hp at each decision state,
+    q_t = (H_{t+1} - H_t) + (M_{t+1} - M_t) - 5 p_t; death sets H_T = 0 and adds
+    -30 - (M_T - M_0) on the last step; D_t = sum_{j >= t} q_j;
+    A_hp_t = D_t - (100 HP(s_t) - H_t). None when a fact it needs is missing.
+    """
+    facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
+    checked = [fact for fact in facts if isinstance(fact, Mapping)
+               and type(fact.get("hp")) is int and type(fact.get("max_hp")) is int]
+    if len(checked) != len(facts):
+        return None
+    hp = [fact["hp"] for fact in checked]
+    max_hp = [fact["max_hp"] for fact in checked]
+    death = ((steps[-1][0] or {}).get("terminal") or {}).get("result") == "defeat"
+    end_hp = 0 if death else hp[-1]
+    extra = -DEATH_POINTS - (max_hp[-1] - max_hp[0]) if death else 0
+    scores: list[float] = []
+    potions = sum(potion for _, _, potion in steps)
+    for t, (_, predicted, potion) in enumerate(steps):
+        returned = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - POTION_POINTS * potions + extra
+        scores.append(float(returned - (predicted - hp[t])))
+        potions -= potion
+    return scores
 
 
 class AssemblyError(ValueError):
@@ -354,6 +412,11 @@ class _Segment:
     bootstrap: dict[str, Any] | None = None
     terminal: str | None = None
     doomed: tuple[str, str] | None = None
+    # Format 4: A_hp per row (None = none, or not yet) and the combat rows still
+    # waiting for their combat's score; `released`: the mu reference is given back.
+    hp_adv: list[float | None] = field(default_factory=list)
+    hp_open: int = 0
+    released: bool = False
 
     def resolved(self) -> bool:
         return not self.inflight and all(row["outcome"] is not None for row in self.rows)
@@ -385,6 +448,23 @@ class _Game:
     by_request: dict[Any, list[tuple[_Segment, dict[str, Any]]]] = field(default_factory=dict)
     sealed: dict[str, int] = field(default_factory=lambda: dict.fromkeys(
         ("bootstrap", "terminal", "truncated", "rejected"), 0))
+    # Format 4 (HP score): the game's group, where its episode ends, its combats
+    # not yet scored (in order) and the latest finished row.
+    group_id: str = ""
+    ticket_end: str = "game"
+    battles: list[_Battle] = field(default_factory=list)
+    last_row: dict[str, Any] | None = None
+
+
+@dataclass
+class _Battle:
+    """One combat of a game (format 4): its rows and the row before it."""
+
+    # The row whose step outcome is the combat's first state (None: the game began in it).
+    before: dict[str, Any] | None
+    # (segment, row index, row meta, 100 x HP prediction, potion used), in order.
+    rows: list[tuple[_Segment, int, dict[str, Any], float, bool]] = field(default_factory=list)
+    ended: bool = False
 
 
 def _archive_key(handoff: MuHandoff) -> tuple[str, str]:
@@ -409,9 +489,11 @@ class FastSegmentAssembler:
         # a difference keeps the original as rejected and raises (never a fallback).
         # `stpd/rl-fast-segment-3` is format 2 plus the game's `ascension`; formats 1
         # and 2 carry none, so a game above A0 is refused at open under them.
+        # `stpd/rl-fast-segment-4` adds group, ticket and the per-combat HP score.
         if segment_format not in FORMATS or type(verify_every) is not int or verify_every < 1:
             raise AssemblyError("invalid_segment_format")
         self.segment_format, self.verify_every = segment_format, verify_every
+        self.hp_score = segment_format == FORMAT_4
         self.columns_sealed = 0
         self.assembler_id, self.steps = assembler_id, MAX_ROWS
         self.instance_id = f"{assembler_id}.{secrets.token_hex(6)}"
@@ -448,6 +530,12 @@ class FastSegmentAssembler:
             # per ascension (str level): episodes opened, sealed segments by kind,
             # label refusals by reason (an A10 floor-49 loss among them).
             "by_ascension": {}}
+        if self.hp_score:
+            # combats scored / without a needed fact, potions and deaths in scored
+            # combats, combat rows sealed trainable without a score (game ended first),
+            # single-combat episodes sealed on their post-combat row.
+            self.counters["hp_score"] = {"battles": 0, "battles_unscored": 0, "potions": 0,
+                                         "deaths": 0, "rows_unscored": 0, "ticket_ends": 0}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -510,8 +598,17 @@ class FastSegmentAssembler:
             ascension = message.get("ascension")
             if type(ascension) is not int or ascension not in SUPPORTED_ASCENSIONS:
                 raise AssemblyError("invalid_episode_open")
-            if ascension != 0 and self.segment_format != FORMAT_3:
+            if ascension != 0 and self.segment_format not in ASCENSION_FORMATS:
                 raise AssemblyError("ascension_needs_segment_format_3")
+            # Optional (absent = the game is its own group and ends as a whole game);
+            # only format 4 records them, so naming either under 1-3 is refused.
+            group_id = message.get("group_id", instance)
+            ticket = message.get("ticket", {"end": "game"})
+            if (not isinstance(group_id, str) or not group_id or not isinstance(ticket, Mapping)
+                    or set(ticket) != {"end"} or ticket["end"] not in TICKET_ENDS):
+                raise AssemblyError("invalid_episode_open")
+            if ("group_id" in message or "ticket" in message) and not self.hp_score:
+                raise AssemblyError("ticket_needs_segment_format_4")
             start = copy.deepcopy(dict(message["start"]))
             if start.get("kind") == "from_save":
                 # rl-inference-4 requires both: never a default act (a made-up Boss witness).
@@ -527,7 +624,7 @@ class FastSegmentAssembler:
                 raise AssemblyError("audit_mu_archive_unconfigured")
             game = _Game(instance, str(message["actor_id"]), copy.deepcopy(dict(sampling)),
                          str(message["single_choice"]), start, audit, ascension,
-                         acts=[first_act])
+                         acts=[first_act], group_id=group_id, ticket_end=str(ticket["end"]))
             game.max_floor = first_floor
             self.games[instance] = game
             self._by_ascension(ascension)["episodes"] += 1
@@ -626,26 +723,34 @@ class FastSegmentAssembler:
 
     def finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
                    outcome_probabilities: list[float],
-                   tail_outcome_probabilities: list[float] | None = None) -> None:
+                   tail_outcome_probabilities: list[float] | None = None, *,
+                   hp: float | None = None, potion: bool = False) -> None:
+        """`hp` (the segment mu's HP-head output on this row) and `potion` (the
+        selected choice is `potion.use`) are read under format 4 only, where `hp`
+        is required."""
         sealed: list[SealedSegment | RejectedSegment] = []
         with self.emit_lock:
             try:
                 with self.lock:
                     self._finish_row(plan, scored, outcome_probabilities,
-                                     tail_outcome_probabilities, sealed)
+                                     tail_outcome_probabilities, sealed, hp, potion)
             finally:
                 self._emit(sealed)
 
     def _finish_row(self, plan: RowPlan, scored: Mapping[str, Any],
                     outcome_probabilities: list[float],
                     tail_outcome_probabilities: list[float] | None,
-                    sealed: list[SealedSegment | RejectedSegment]) -> None:
+                    sealed: list[SealedSegment | RejectedSegment],
+                    hp: float | None = None, potion: bool = False) -> None:
         game = self.games.get(plan.game_instance_id)
         if game is None or game.inflight != plan or game.pending is None:
             raise AssemblyError("row_plan_not_in_flight")
         row, raw = game.pending
         segment = game.segments[-1]
         self._check_scored(game, plan, row, scored)
+        if self.hp_score and (type(hp) is not float or not math.isfinite(hp)
+                              or type(potion) is not bool):
+            raise AssemblyError("hp_prediction_required")
         values = self._values(outcome_probabilities, row["floor"])
         tail_values = None
         if plan.tail is not None:
@@ -673,6 +778,9 @@ class FastSegmentAssembler:
         game.max_floor = max(game.max_floor, row["floor"])
         game.pending = None
         self.counters["rows"] += 1
+        if self.hp_score:
+            segment.hp_adv.append(None)
+            self._battle_row(game, segment, meta, 100.0 * hp, potion)  # type: ignore[operator]
         if plan.tail is not None:
             previous = next((s for s in game.segments
                              if s.segment_id == plan.tail.segment_id), None)
@@ -683,8 +791,15 @@ class FastSegmentAssembler:
                     "successor_step_index": plan.step_index,
                     "successor_row_sha256": meta["payload"]["row_sha256"],
                     "floor": plan.tail.floor, "outcome_probabilities": tail_values}
-                sealed.extend(self._try_seal(game, previous))
-        sealed.extend(self._try_seal(game, segment))
+                if self.hp_score:  # every value of its mu is read: a held segment pins none
+                    self._release_mu(previous)
+                else:
+                    sealed.extend(self._try_seal(game, previous))
+        if self.hp_score:  # a combat that ended here may free held segments: in order
+            for item in list(game.segments):
+                sealed.extend(self._try_seal(game, item))
+        else:
+            sealed.extend(self._try_seal(game, segment))
 
     def abort_row(self, plan: RowPlan, error_code: str) -> None:
         """The service refused this row; nothing enters a segment, the game will close."""
@@ -709,8 +824,11 @@ class FastSegmentAssembler:
         self.counters["aborted_rows"] += 1
         if not segment.rows:
             game.segments.pop()
-            self.ledger.release(segment.mu.snapshot_sha256)
+            self._release_mu(segment)
         for item in list(game.segments):
+            if self._held(item):  # sealed before the failure under format 3
+                sealed.append(self._seal(game, item, "bootstrap"))
+                continue
             item.doomed = item.doomed or ("not_started", "refused")
             sealed.extend(self._try_seal(game, item))
 
@@ -772,9 +890,16 @@ class FastSegmentAssembler:
                     game.acts.append(facts["act"])
             if terminal is not None:
                 segment.terminal = str(terminal["result"])
+                if self.hp_score and game.battles:  # the natural terminal ends a combat
+                    game.battles[-1].ended = True
         if status != "completed":
             for item in list(game.segments):
+                if self._held(item):  # sealed before the failure under format 3
+                    sealed.append(self._seal(game, item, "bootstrap"))
+                    continue
                 item.doomed = item.doomed or (str(status), str(message.get("reason")))
+        if self.hp_score:
+            self._resolve_battles(game)
         for item in list(game.segments):
             sealed.extend(self._try_seal(game, item))
 
@@ -822,12 +947,25 @@ class FastSegmentAssembler:
             game.segments[-1].inflight = False
             game.inflight, game.pending = None, None
         broken: BaseException | None = None
+        if self.hp_score:
+            self._resolve_battles(game)
         for segment in list(game.segments):
             if not segment.rows:
                 game.segments.remove(segment)
-                self.ledger.release(segment.mu.snapshot_sha256)
+                self._release_mu(segment)
                 continue
             last = segment is game.segments[-1]
+            if self._held(segment):
+                # Held only for a combat the game never finished: sealed as format 3
+                # would have, its rows of that combat without a score.
+                sealed.append(self._seal(game, segment, "bootstrap"))
+                continue
+            if (last and reason == "ticket_end" and game.ticket_end == "combat"
+                    and segment.doomed is None and game.failure is None):
+                ticket_end = self._ticket_end(game, segment)
+                if ticket_end is not None:
+                    sealed.extend(ticket_end)
+                    continue
             if (last and reason == "terminal" and segment.doomed is None
                     and segment.terminal is not None and segment.completed()):
                 try:
@@ -922,6 +1060,93 @@ class FastSegmentAssembler:
         return {"result": segment.terminal, "class": label["class"],
                 "reward": float(label["reward"])}
 
+    def _release_mu(self, segment: _Segment) -> None:
+        """Give the segment's mu reference back once (format 4 may do it before the seal)."""
+        if not segment.released:
+            segment.released = True
+            self.ledger.release(segment.mu.snapshot_sha256)
+
+    # ------------------------------------------------- HP score (format 4)
+    def _held(self, segment: _Segment) -> bool:
+        """A segment format 3 would already have sealed `bootstrap`, held only for
+        its combat's score. A game that fails or closes first seals it as it is."""
+        return (self.hp_score and segment.doomed is None and segment.bootstrap is not None
+                and len(segment.rows) == MAX_ROWS and segment.completed())
+
+    def _battle_row(self, game: _Game, segment: _Segment, meta: dict[str, Any],
+                    predicted: float, potion: bool) -> None:
+        """Track the finished row's combat; a non-combat row ends the open one."""
+        if meta["in_combat"]:
+            if not game.battles or game.battles[-1].ended:
+                game.battles.append(_Battle(game.last_row))
+            game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
+                                          potion))
+            segment.hp_open += 1
+        elif game.battles:
+            game.battles[-1].ended = True
+        game.last_row = meta
+        self._resolve_battles(game)
+
+    def _resolve_battles(self, game: _Game) -> None:
+        """Score every ended combat, oldest first, once all its outcomes are in."""
+        while game.battles and game.battles[0].ended:
+            battle = game.battles[0]
+            if any(meta["outcome"] is None for meta in (
+                    *(() if battle.before is None else (battle.before,)),
+                    *(row[2] for row in battle.rows))):
+                return
+            game.battles.pop(0)
+            start = None if battle.before is None else battle.before["outcome"].get(
+                "public_facts")
+            scores = hp_advantages(start, [(meta["outcome"], predicted, potion)
+                                           for _, _, meta, predicted, potion in battle.rows])
+            counters = self.counters["hp_score"]
+            if scores is None:
+                counters["battles_unscored"] += 1
+            else:
+                counters["battles"] += 1
+                counters["potions"] += sum(row[4] for row in battle.rows)
+                counters["deaths"] += ((battle.rows[-1][2]["outcome"].get("terminal") or {})
+                                       .get("result") == "defeat")
+            for index, (segment, row, *_rest) in enumerate(battle.rows):
+                segment.hp_adv[row] = None if scores is None else scores[index]
+                segment.hp_open -= 1
+
+    def _ticket_end(self, game: _Game,
+                    segment: _Segment) -> list[SealedSegment | RejectedSegment] | None:
+        """A single-combat episode closed after its post-combat row was scored (I3).
+
+        That last row (not in combat, no outcome: never played) is no training
+        row; the segment mu's value on it is the tail of the rows before it, as a
+        full segment's successor row is. None when the episode did not end so.
+        """
+        rows = segment.rows
+        post = rows[-1]
+        if (post["in_combat"] or post["outcome"] is not None or segment.hp_open
+                or any((row["outcome"] or {}).get("status") != "completed"
+                       for row in rows[:-1])):
+            return None
+        rows.pop()
+        segment.data.pop()
+        segment.hp_adv.pop()
+        holders = game.by_request.get(post["request_id"], [])
+        holders[:] = [held for held in holders if held[1] is not post]
+        if not holders:
+            game.by_request.pop(post["request_id"], None)
+        self.counters["hp_score"]["ticket_ends"] += 1
+        if not rows:  # it opened this segment: the previous one took its tail from it
+            game.segments.remove(segment)
+            self._release_mu(segment)
+            return []
+        segment.bootstrap = {
+            "mu_snapshot_sha256": segment.mu.snapshot_sha256,
+            "successor_request_id": post["request_id"],
+            "successor_step_index": post["step_index"],
+            "successor_row_sha256": post["payload"]["row_sha256"],
+            "floor": max(post["floor"], *(row["floor"] for row in rows)),
+            "outcome_probabilities": post["outcome_probabilities"]}
+        return [self._seal(game, segment, "bootstrap")]
+
     def _try_seal(self, game: _Game,
                   segment: _Segment) -> list[SealedSegment | RejectedSegment]:
         if segment not in game.segments:
@@ -929,12 +1154,13 @@ class FastSegmentAssembler:
         if segment.doomed is not None and segment.resolved():
             if not segment.rows:
                 game.segments.remove(segment)
-                self.ledger.release(segment.mu.snapshot_sha256)
+                self._release_mu(segment)
                 return []
             return [self._seal(game, segment, "truncated", truncation={
                 "reason": segment.doomed[0], "detail": segment.doomed[1]})]
         if (segment.doomed is None and segment.bootstrap is not None
-                and len(segment.rows) == MAX_ROWS and segment.completed()):
+                and len(segment.rows) == MAX_ROWS and segment.completed()
+                and not segment.hp_open):
             return [self._seal(game, segment, "bootstrap")]
         return []
 
@@ -956,11 +1182,19 @@ class FastSegmentAssembler:
             "trainable": kind != "truncated",
             "forced_steps": sum((r["outcome"] or {}).get("forced_steps", 0)
                                 for r in segment.rows)}
-        if self.segment_format == FORMAT_3:
+        if self.segment_format in ASCENSION_FORMATS:
             header["ascension"] = game.ascension
+        if self.hp_score:
+            header.update(group_id=game.group_id,
+                          ticket={"start": game.start["kind"], "end": game.ticket_end},
+                          hp_adv=list(segment.hp_adv))
+            if kind != "truncated":
+                self.counters["hp_score"]["rows_unscored"] += sum(
+                    row["in_combat"] and value is None
+                    for row, value in zip(segment.rows, segment.hp_adv, strict=True))
         result: SealedSegment | RejectedSegment
         try:
-            if self.segment_format in (FORMAT_2, FORMAT_3):
+            if self.segment_format in COLUMNAR_FORMATS:
                 result = encode_segment_columns(header, segment.data, bound=True)
                 self._verify(result, header, segment.data)
             else:
@@ -977,7 +1211,7 @@ class FastSegmentAssembler:
             holders[:] = [held for held in holders if held[0] is not segment]
             if not holders:
                 game.by_request.pop(row["request_id"], None)
-        self.ledger.release(segment.mu.snapshot_sha256)
+        self._release_mu(segment)
         self.counters["segments"][kind] += 1
         game.sealed[kind] += 1
         segments = self._by_ascension(game.ascension)["segments"]
@@ -988,21 +1222,19 @@ class FastSegmentAssembler:
         return result
 
     def _verify(self, sealed: SealedSegment, header: dict[str, Any], rows: list[bytes]) -> None:
-        """Every `verify_every`-th format-2 seal: decode it and compare with format 1.
+        """Every `verify_every`-th columnar (2-4) seal: decode it and compare in full.
 
-        The reference is what `encode_segment` would have sealed (its JSON-owned
-        logical header with format-1 offsets), re-laid out for format 2; the decoded
-        header, the returned header and the row bytes must all equal it.
+        The reference is the JSON-owned logical header with format-1 offsets
+        (`laid_out`, what `encode_segment` lays out); the decoded header, the
+        returned header and the row bytes must all equal it.
         """
         self.columns_sealed += 1
         if self.columns_sealed % self.verify_every:
             return
         decoded, decoded_rows = decode_segment(sealed.data)
-        format_1 = {key: value for key, value in header.items() if key != "ascension"}
-        reference = encode_segment({**format_1, "format": FORMAT}, rows).header
-        reference["format"] = self.segment_format
-        if self.segment_format == FORMAT_3:
-            reference["ascension"] = header["ascension"]
+        # Format 1's layout of the same header (the decoder checks it under its own
+        # format; a format-4 single-combat bootstrap is no valid format-1 seal).
+        reference = laid_out({**header, "format": self.segment_format}, rows)
         for row in reference["rows"]:  # format 2 stores these as f8 (int q 1 -> 1.0)
             row["behavior_q"] = list(map(float, row["behavior_q"]))
             row["selected_q"] = float(row["selected_q"])

@@ -28,7 +28,7 @@ import struct
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Connection
@@ -540,6 +540,8 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
     from .rows_scorer import prepare
 
     compiler = FrameCompiler(vocabulary)
+    # The HP score's potion count (format 4): which choices of a row are `potion.use`.
+    potion_use = vocabulary["actions"].index("potion.use")
     jobs.send_bytes(b"ready")
     while True:
         try:
@@ -553,6 +555,7 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
         if stamp:  # trace (default off): [dispatched, received here]
             stamp = [stamp[0], time.monotonic()]
         frames, floors, kept, failed, audit = [], [], [], {}, []
+        potions: dict[int, list[int]] = {}  # row index -> its `potion.use` choice positions
         tails: dict[str, list[tuple[int, Any, int]]] = {}
         for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
             frame, code, detail = _audited_decode(raw, audit_sha, compiler)
@@ -568,6 +571,10 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
             frames.append(frame)
             floors.append(floor)
             kept.append(index)
+            positions = [position for position, action
+                         in enumerate(frame.tensors["actions"].tolist()) if action == potion_use]
+            if positions:
+                potions[index] = positions
             if tail is not None:
                 tails.setdefault(tail[0], []).append((index, frame, tail[1]))
         group: Any = None
@@ -609,7 +616,7 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
         prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts,
-                    "overflow": overflow}
+                    "overflow": overflow, "potions": potions}
         if stamp:
             prepared["trace"] = [*stamp, time.monotonic()]
         # every part of one job goes to the same joiner (or the device itself)
@@ -937,7 +944,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
                   "lengths": part["lengths"], "failed": part["failed"],
                   "audit": part["audit"], "tails": tails, "error": error,
                   "overflow": part.get("overflow") or overflow, "fatal": fatal,
-                  "outputs": part_outputs}
+                  "outputs": part_outputs, "potions": part["potions"]}
         if "trace" in part:
             result["trace"] = part["trace"]
         if device_rows and part_outputs is not None:
@@ -1700,7 +1707,7 @@ class FastInferenceService:
                 elif isinstance(tail, str):
                     self._refuse(item, tail)
                 else:
-                    self._scored(item, output, tail)
+                    self._scored(item, output, tail, part["potions"].get(index, ()))
         with self.jobs_lock:
             job[0] -= 1
             self.outstanding[job[2][part["part"]]] -= 1
@@ -1748,7 +1755,14 @@ class FastInferenceService:
                      "game_full_checks": self.audits.get(str(item.row.get("game_instance_id")),
                                                          0)}))
 
-    def _scored(self, item: _V3Row, output: Any, tail: list[float] | None) -> None:
+    def _scored(self, item: _V3Row, output: Any, tail: list[float] | None,
+                potions: Sequence[int] = ()) -> None:
+        """Sample, then hand the row to the assembler.
+
+        `output.hp` (the RL4 HP head's post-combat HP / 100) and whether the
+        selected choice is `potion.use` go to the assembler for the format-4 HP
+        score; the reply to the aggregator is unchanged (rl-inference-4).
+        """
         from .sampling import distribution, draw
 
         row, plan, sampling = item.row, item.plan, item.sampling
@@ -1772,7 +1786,8 @@ class FastInferenceService:
                               "temperature": policy["temperature"],
                               "uniform_mix": policy["uniform_mix"]}}
         try:
-            self.assembler.finish_row(plan, scored, output.outcome_probabilities, tail)
+            self.assembler.finish_row(plan, scored, output.outcome_probabilities, tail,
+                                      hp=output.hp, potion=selected in potions)
         except ValueError:
             self._refuse(item, "IDENTITY_MISMATCH")
             return

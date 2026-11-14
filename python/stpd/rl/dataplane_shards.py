@@ -935,7 +935,9 @@ class _ShardLearner(SegmentLearner):
             run=config.run, generation=self.generation,
             excluded_seeds=frozenset(settings.excluded_seeds),
             buffer_segments=dataplane.get("fast_buffer_segments", 512),
-            gae_lambda=settings.gae_lambda, aux_labels=frozenset(init["aux_labels"]))
+            gae_lambda=settings.gae_lambda, aux_labels=frozenset(init["aux_labels"]),
+            hp_advantage_coef=config.loss.hp_advantage_coef,
+            hp_advantage_scope=config.loss.hp_advantage_scope)
         if self.shard_count > 1:
             intake.notify = send
         self.fast_intake = self.shard_intake = intake
