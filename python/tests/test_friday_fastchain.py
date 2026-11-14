@@ -292,6 +292,8 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'compile_warmup_dumps': {'/x/missing.pt': False}}, 'compile_warmup'),
     ({}, {'compile_warmup_dumps': {}}, 'compile_warmup'),
     ({}, {'warmup_artifact': {'id': 'f' * 64, 'present': False}}, 'warmup_artifact'),
+    ({'prepared_batches': 40}, {}, 'prepared_batch_cap'),  # V4 smoke-h1c
+    ({'service_cores': 4}, {}, 'service_cpus'),
     ({'remote_prepare_connections': 35}, {}, 'shards'),
     ({}, {'src_rev': 'feedface' * 5}, 'env_package'),
     ({}, {'secret_files': {'/x/auth.hex': 0o644}}, 'secret_files'),
@@ -327,6 +329,44 @@ def test_preflight_refuses_bad_site_and_plan_edits():
     assert not preflight.check_shards(uneven, good_facts(plan)).ok
     nonode = plan_for(cards=3, probe=[probe_row(free=0)])
     assert not preflight.check_gpu_node(nonode).ok
+
+
+def test_prepared_batch_cap_is_printed_and_keeps_its_headroom():
+    plan = plan_for(cards=1)
+    result = preflight.check_prepared_batch_cap(plan)
+    assert result.ok and 'per-batch cap 1.249 GB' in result.detail  # 38.4 GiB / 33
+    tight = preflight.check_prepared_batch_cap(plan_for(cards=1, prepared_batches=40))
+    assert not tight.ok and 'per-batch cap 1.006 GB' in tight.detail
+    assert not preflight.check_prepared_batch_cap(
+        plan_for(cards=1, prepared_batch_expected_max_gb=1.1)).ok
+
+
+def test_service_cpus_never_short_and_sharing_is_a_warning():
+    for workers in range(1, 17):
+        for cores in range(workers, 65):
+            cpus = list(range(cores))
+            for index in range(8):
+                assert len(layout.service_cpus(cpus, workers, index)) == workers
+    distinct = preflight.check_service_cpus(plan_for(cards=1, service_cores=48))
+    assert distinct.ok and not distinct.warn
+    for cores in (14, 16, 30):  # h1b, h1c, the profile value
+        shared = preflight.check_service_cpus(plan_for(cards=1, service_cores=cores))
+        assert shared.ok and shared.warn and 'of 6 services share CPUs' in shared.detail
+    assert not preflight.check_service_cpus(plan_for(cards=1, service_cores=7)).ok
+
+
+def test_input_cause_names_the_innermost_error():
+    h1c = {'operation': 'dataplane_shard', 'shard': 0, 'failure': {
+        'operation': 'prepare', 'code': 'INVALID_PACKET', 'producer_error_type': 'RuntimeError',
+        'error': 'binary_remote_assembly_failed: ValueError: '
+                 'prepared_batch_exceeds_current_plus_next_byte_budget'}}
+    assert learner_config.input_cause(h1c) == (
+        'dataplane_shard 0 / prepare INVALID_PACKET: binary_remote_assembly_failed: '
+        'ValueError: prepared_batch_exceeds_current_plus_next_byte_budget')
+    assert learner_config.input_cause({'operation': 'source_prefetch', 'code': 'INVALID_PACKET',
+                                       'error_type': 'OSError'}) == \
+        'source_prefetch INVALID_PACKET: OSError'
+    assert learner_config.input_cause(None) is None
 
 
 def test_old_build_keeps_the_two_worker_workaround_only():

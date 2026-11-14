@@ -8,8 +8,9 @@ schema = "spireagent/friday-fastchain-profile-1"
 # --- learner data plane ---
 source_gb = { value = 36, default = 10, why = "prepare source budget must hold in-flight batches: ~0.85 GB x ~20 s remote x batch rate (Little); 10 GB fills at 0.6 batch/s", measured = "c3c31 (collapse at 10), c3c27/32 (30 stable), c2d-c3s2 (36)" }
 source_slots = { value = 4096, default = 4096, why = "fast segments live in FastSources, not slots; slot count is not the cap", measured = "c3c31 + wu review (12288 slots did not prevent the collapse)" }
-prepared_batches = { value = 40, default = 8, why = "remote prepare keeps ~40 batches in flight; fewer starves the learner", measured = "c2j (40, prepwait 0)" }
+prepared_batches = { value = 32, default = 8, why = "remote prepare keeps the read-ahead in flight; 32 keeps the per-batch cap prepared_gib / (32 + 1) = 1.25 GB above 1.15 x the largest batch (40 gave 1.006 GB and a 0.956 GB batch is close: V4 smoke-h1c died on it at 32 min)", measured = "c2j (40, prepwait 0); V4 smoke-h1c (40 too tight)" }
 prepared_gib = { value = 38.4, default = 10, why = "prepared-output budget sized with prepared_batches", measured = "c2j (41231686041 bytes)" }
+prepared_batch_expected_max_gb = { value = 0.96, default = 0.96, why = "largest prepared batch measured, in 1e9 bytes; preflight refuses a per-batch cap prepared_gib / (prepared_batches + 1) below 1.15 x this, so the headroom is a recorded number", measured = "V4 smoke-h1c (int 4155c5f2, 1xH100 shared, 4096-row batches: 284 batches, median 0.816 GB, max 0.956 GB)" }
 preparation_workers = { value = 12, default = 12, why = "gate value; under remote prepare the local pools are idle and #523 a437612d no longer counts them in the SGD budget (preflight refuses > 2 on an older build with shards + remote prepare)", measured = "c3s1 refused at 12/8 before a437612d (73 counted workers = 110 GB); c3s2 ran the 2/2 workaround" }
 assembly_workers = { value = 8, default = 8, why = "same as preparation_workers", measured = "c3s1/c3s2; a437612d budget fix" }
 dispatch_workers = { value = 4, default = 4, why = "prepare dispatch threads (#509)", measured = "c3c10 onward" }

@@ -5,7 +5,8 @@ Two halves, both decided by the pure functions below:
 - login side (`checks(plan, facts)`), before anything is submitted: layout placement,
   machine types, prep scratch, prep schedulability, speed switches, source features
   the knobs need, producer identity, env package identity and memo, env nodes and
-  shard balance, memory budget, cross-node identity, hot path, secret files, time
+  shard balance, memory budget, per-batch prepared cap, service CPUs, cross-node
+  identity, hot path, secret files, time
   limits, core cap;
 - job side (`preflight.py job-gpu | prep-host | env-node`), when a role starts on its
   node: dependencies + python_env_sha256, node-local hot path, prep scratch free space,
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import layout  # noqa: E402
 import learner_config  # noqa: E402
 import run_profile  # noqa: E402
 
@@ -40,6 +42,7 @@ HEX12 = re.compile(r"^[0-9a-f]{12,64}$")
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
 SEED_STRIDE_PROCS = 32  # env.sh seed offset = (node * 32 + p) * 600
+PREPARED_BATCH_HEADROOM = 1.15  # per-batch cap >= 1.15 x the largest measured batch
 
 
 @dataclass(frozen=True)
@@ -346,6 +349,40 @@ def check_warmup_artifact(facts: dict[str, Any]) -> Result:
                   "(copy its manifest, payload index and chunks there)")
 
 
+def check_prepared_batch_cap(plan: dict[str, Any]) -> Result:
+    """Per-batch prepared-output cap = prepared_bytes // (prepared_batches + 1), the same
+    in the learner and every shard; one bigger batch kills its shard (V4 smoke-h1c: cap
+    1.006 GB, batches up to 0.956 GB, died at 32 min). Refused below PREPARED_BATCH_HEADROOM
+    x the profile's measured largest batch."""
+    k = plan["knobs"]
+    cap = int(k["prepared_gib"] * GIB) // (k["prepared_batches"] + 1)
+    need = PREPARED_BATCH_HEADROOM * k["prepared_batch_expected_max_gb"] * 1e9
+    ok = cap >= need
+    return Result("prepared_batch_cap", ok,
+                  f"per-batch cap {cap / 1e9:.3f} GB = prepared_gib {k['prepared_gib']} / "
+                  f"(prepared_batches {k['prepared_batches']} + 1) {'>=' if ok else '<'} "
+                  f"{PREPARED_BATCH_HEADROOM} x prepared_batch_expected_max_gb "
+                  f"{k['prepared_batch_expected_max_gb']} = {need / 1e9:.3f} GB")
+
+
+def check_service_cpus(plan: dict[str, Any]) -> Result:
+    """Service prepare CPUs as roles.service assigns them (layout.service_cpus). Too few
+    service cores make services share CPUs: a warning, they still run. A service short of
+    `workers` CPUs is refused: FastInferenceService raises (V4 smoke-h1b)."""
+    k = plan["knobs"]
+    cores, services, workers = k["service_cores"], k["services"], k["service_prepare_workers"]
+    slices = [set(layout.service_cpus(list(range(cores)), workers, i)) for i in range(services)]
+    head = f"{services} services x {workers} prepare workers on {cores} service cores"
+    if any(len(cpus) != workers for cpus in slices):
+        return Result("service_cpus", False, f"{head}: a service gets fewer than {workers} CPUs")
+    shared = sum(any(mine & other for j, other in enumerate(slices) if j != i)
+                 for i, mine in enumerate(slices))
+    if shared:
+        return Result("service_cpus", True, f"{head} ({services * workers} for distinct CPUs): "
+                      f"{shared} of {services} services share CPUs with another", warn=True)
+    return Result("service_cpus", True, f"{head}, distinct CPUs")
+
+
 def memory_estimate(plan: dict[str, Any]) -> dict[str, Any]:
     """Resident memory of the GPU job's learner side, counting only what runs.
 
@@ -489,7 +526,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_frozen_recipe(plan, facts), check_hp_score(plan, facts),
             check_compile_warmup(plan, facts), check_warmup_artifact(facts),
             check_env_package(plan, facts), check_shards(plan, facts),
-            check_memory(plan), check_identity(plan), check_hot_path(plan),
+            check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
+            check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),
             check_resume(plan)]
 
