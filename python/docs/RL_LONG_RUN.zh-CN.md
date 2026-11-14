@@ -99,9 +99,34 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
   之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
-  分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）；任一级别 > 0 要求
-  `service_kwargs.segment_format = "stpd/rl-fast-segment-3"`（现默认即 3）。是混合比例、不是
-  损失系数（I5）；无自动课程。
+  分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
+  `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合
+  比例、不是损失系数（I5）；无自动课程。
+- 单战斗血点分（W2，卡 §6.5）：系数 c_hp = 学习者配置 `loss.hp_advantage_coef`，和其它配方键
+  一样来自闸门 `learner-base.json`，经 `learner_config.build` 原样进 learner.json，由 A9 与
+  `rl5.json` 逐键比较（不在 `ALLOWED_DRIFT`，无默认值）。默认 0 = 关，训练与以前数值相同。
+  c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
+  对旧格式段会 `fast_segment_without_hp_score` 拒收）。做 c_hp 实验 = 改源码 `rl5.json` 的值
+  并同步闸门（下面的命令），再 `--set segment_format=stpd/rl-fast-segment-4`。
+  - 闸门须补一次：本改动之前生成的 `learner-base.json` 没有这个键，预检 `frozen_recipe`
+    报 `loss.hp_advantage_coef: frozen 0.0, effective '<missing>'`、`hp_score` 报缺键，一律拒绝。
+    在运行所用源码 checkout 根目录执行一次（`GATE` = 站点文件的 `gate_dir`；旧文件留作
+    `.pre-c_hp`；值取自同一份 `rl5.json`，不是默认值）：
+
+    ```sh
+    GATE=/path/of/site/gate_dir
+    cp -p "$GATE/learner-base.json" "$GATE/learner-base.json.pre-c_hp" &&
+    python3 -c 'import json, sys
+    gate, frozen = sys.argv[1:]
+    base = json.load(open(gate))
+    base["loss"]["hp_advantage_coef"] = json.load(open(frozen))["loss"]["hp_advantage_coef"]
+    open(gate + ".new", "w").write(json.dumps(base, indent=2) + "\n")' \
+      "$GATE/learner-base.json" python/configs/rl5.json &&
+    mv "$GATE/learner-base.json.new" "$GATE/learner-base.json"
+    ```
+
+    之后 `launch.py preflight ...` 应见 `PASS frozen_recipe` 与 `PASS hp_score`。c_hp 实验换值时
+    同一命令再跑一次（源码 `rl5.json` 先改好）。
 - env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
   - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
     `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，

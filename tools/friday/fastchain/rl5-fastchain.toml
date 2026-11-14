@@ -64,7 +64,8 @@ prep_scratch_min_free = { value = true, default = false, why = "remote_prepare -
 prep_start_timeout_seconds = { value = 600, default = 0, why = "the prep job must be running and every host ready before the GPU job is submitted", measured = "c2g void (prep pended 16 min, GPU gave up)" }
 # --- inference services ---
 services = { value = 6, default = 1, why = "K services on the inference card under MPS", measured = "s1d onward, c3c series" }
-service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, segment_format = "stpd/rl-fast-segment-3", device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
+service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
+segment_format = { value = "stpd/rl-fast-segment-3", default = "stpd/rl-fast-segment-3", why = "the assembler's segment format: 3 carries the ascension level (#530); 4 adds group_id, ticket and the per-combat HP score (W2), required when the gate's loss.hp_advantage_coef > 0", measured = "3: #530 onward; 4: unit tests only" }
 service_window_ms = { value = 3, default = 3, why = "batching window", measured = "s1d onward" }
 service_compile = { value = true, default = true, why = "compiled inference", measured = "s1d onward" }
 service_prepare_workers = { value = 8, default = 8, why = "prepare workers per service", measured = "c3c series" }
