@@ -69,12 +69,14 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印
   Slurm Reason、优先级和同分区排在前面的排队作业数，取消本 run 全部作业，非零退出，不自动重交。
   GPU 作业没确认就结束（FAILED、TIMEOUT、NODE_FAIL、BOOT_FAIL、OUT_OF_MEMORY、CANCELLED、已清除）
-  一样算失败；squeue 读不到不算回答，下一拍再读。中途任一提交失败、Ctrl-C、SIGTERM、SIGHUP
+  一样算失败；RUNNING 满 300 s 仍没有 `gpu-started`（gpu.sh 卡在检查之前，或共享盘看不到该
+  文件）也算失败；squeue 读不到不算回答，下一拍再读。中途任一提交失败、Ctrl-C、SIGTERM、SIGHUP
   （ssh 断开）都全部取消再报错（`submit-failed.txt`），不自动重试。取消顺序：先依赖作业、最后
   GPU 作业（`after:` 在 GPU 作业开始或被取消时都成立，先取消 GPU 会放出依赖作业）；scancel
   失败时写明 `SCANCEL FAILED ... jobs may still be alive: [作业号]`，要手动 `scancel`。
   launcher 是 GPU 作业开工前的存活负责人：从交 GPU 作业前到 gpu.sh 确认，每 10 s 摸一次
-  `launcher-alive`；gpu.sh 开工时它比 `launcher_stale_seconds`（120 s）旧就拒绝（launcher 被
+  `launcher-alive`；gpu.sh 开工时它比 `launcher_stale_seconds`（120 s）旧（或不存在），先等 30 s
+  打开文件再读一次（NFS 属性缓存可让它看着旧约 60 s，误拒会白等整段排队），仍旧才拒绝（launcher 被
   SIGKILL、崩溃或登录节点没了），写 STOP 并以 3 退出，不会无人看管地跑 20 h。supervise 在自己
   进程里调 launcher，每一代（含自动续跑）都是同一个检查。
 - 启动握手（GPU 先开始）：备料组作业在 GPU 开始后才排队；学习者从开始起最多等

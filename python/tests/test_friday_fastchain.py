@@ -555,6 +555,63 @@ def test_gpu_pending_bound_reports_the_queue_and_never_resubmits(tmp_path, monke
     assert 'still PENDING' in (tmp_path / 'submit-failed.txt').read_text()
 
 
+def test_gpu_running_without_gpu_sh_confirmation_is_bounded(tmp_path, monkeypatch):
+    """Review #540 S2: RUNNING for ack_limit s without gpu-started cancels the run loudly;
+    a requeue starts that bound again; a started job is never read as still PENDING."""
+    now = [0.0]
+
+    def clock():
+        return now[0]
+
+    def answers(*seq):
+        it = iter(seq)
+
+        def state(job):
+            now[0] += 100
+            s = next(it)
+            if s == 'confirm':
+                (tmp_path / 'gpu-started').write_text('11 now\n')
+                return 'RUNNING'
+            return s
+        return state, it
+    monkeypatch.setattr(launch.time, 'monotonic', clock)
+    monkeypatch.setattr(launch, 'pending_jobs', lambda: launch.parse_pending(PENDING))
+    state, it = answers(*['RUNNING'] * 4, 'never read')
+    monkeypatch.setattr(launch, 'gpu_state', state)
+    (tmp_path / 'STOP').write_text('learner exited\n')
+    with pytest.raises(SystemExit, match='RUNNING for 250 s but gpu.sh never confirmed its '
+                       r'start \(gpu-started missing.*; STOP: learner exited\); see '):
+        launch.wait_gpu_start('11', 10_000, tmp_path, poll=0, ack_limit=250)
+    assert next(it) == 'never read'
+    (tmp_path / 'STOP').unlink()
+    # requeued after 200 s RUNNING: the bound counts from the next RUNNING (7 reads, not 4)
+    state, it = answers('RUNNING', 'RUNNING', 'PENDING', *['RUNNING'] * 4, 'never read')
+    monkeypatch.setattr(launch, 'gpu_state', state)
+    with pytest.raises(SystemExit, match='RUNNING for 250 s'):
+        launch.wait_gpu_start('11', 10_000, tmp_path, poll=0, ack_limit=250)
+    assert next(it) == 'never read'
+    # the pending bound has passed, then the job runs and squeue fails: still waiting
+    state, it = answers('CONFIGURING', None, 'RUNNING', None, None, 'confirm')
+    monkeypatch.setattr(launch, 'gpu_state', state)
+    launch.wait_gpu_start('11', 0, tmp_path, poll=0, ack_limit=10_000)
+    assert next(it, 'all read') == 'all read'
+    (tmp_path / 'gpu-started').unlink()
+    # through submit: every job of the run is cancelled, dependents first
+    plan = plan_for(cards=3, wall_seconds=2400, smoke=True)
+    cancelled, run_scancel = scancel_log()
+    state, _ = answers(*['RUNNING'] * 4)  # the fake clock moves on each read
+    monkeypatch.setattr(launch, 'gpu_state', state)
+    cmds = launch.commands(plan)
+    ids = iter(str(n) for n in range(41, 50))
+    with pytest.raises(SystemExit, match='never confirmed its start'):
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids),
+                      wait=lambda job, limit, run: launch.wait_gpu_start(
+                          job, limit, run, poll=0, ack_limit=250),
+                      run_scancel=run_scancel)
+    assert cancelled == [[str(42 + i) for i in range(len(cmds) - 1)], ['41']]
+    assert 'never confirmed' in (tmp_path / 'submit-failed.txt').read_text()
+
+
 def test_gpu_state_decides_on_stdout_only(monkeypatch):
     answers = {'noise': (0, 'RUNNING\n', 'slurm_receive_msg: Socket timed out, retrying\n'),
                'purged': (1, '', 'slurm_load_jobs error: Invalid job id specified\n'),
@@ -724,24 +781,35 @@ def test_env_node_leaves_within_a_minute_when_the_gpu_job_is_gone(tmp_path):
 
 
 def test_gpu_sh_refuses_to_start_when_the_launcher_heartbeat_is_stale(tmp_path):
-    def check(root, age):
+    """A stale (or missing) heartbeat is read once more after `sleep 30` (S1, NFS attribute
+    cache) and refused only if still stale; `sleep` here records the call instead."""
+    def check(root, age, during_sleep=''):
         run = root / 'run'
         run.mkdir(parents=True)
         if age is not None:
             (run / 'launcher-alive').touch()
             os.utime(run / 'launcher-alive', (time.time() - age,) * 2)
         out, _ = run_block(root, 'gpu.sh', 'stop_once() {', '# --- end launcher check ---',
-                           [], env={'FC_LAUNCHER_STALE_SECONDS': '120'})
+                           [], env={'FC_LAUNCHER_STALE_SECONDS': '120'},
+                           prefix=f'sleep() {{ echo "slept $1"; {during_sleep} :; }}\n')
         return out, run
 
     out, run = check(tmp_path / 'fresh', 5)
-    assert out.returncode == 0 and 'block done' in out.stdout
-    assert 'launcher heartbeat' in (run / 'gpu-started').read_text()
+    assert out.returncode == 0 and 'block done' in out.stdout and 'slept' not in out.stdout
+    assert 'launcher heartbeat 5 s old' in (run / 'gpu-started').read_text()
     assert not (run / 'STOP').exists()
-    for name, age in (('stale', 300), ('missing', None)):
+    for name, age, said in (('stale', 300, 'heartbeat 30'), ('missing', None,
+                                                              'heartbeat missing')):
         out, run = check(tmp_path / name, age)
         assert out.returncode == 3 and not (run / 'gpu-started').exists(), name
-        assert (run / 'STOP').read_text().startswith('launcher gone before GPU start'), name
+        assert 'reading it again in 30 s' in out.stdout and 'slept 30' in out.stdout, name
+        assert (run / 'STOP').read_text().startswith(
+            f'launcher gone before GPU start: {said}'), name
+    # the second reading sees the launcher's latest touch (a cached mtime refreshed)
+    out, run = check(tmp_path / 'cached', 300, 'touch "$RUN/launcher-alive";')
+    assert out.returncode == 0 and 'slept 30' in out.stdout, out.stdout + out.stderr
+    assert 'launcher heartbeat 0 s old' in (run / 'gpu-started').read_text()
+    assert not (run / 'STOP').exists()
 
 
 def test_prep_min_free_bytes_and_new_switches_reach_the_jobs():

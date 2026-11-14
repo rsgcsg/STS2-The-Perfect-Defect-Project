@@ -18,13 +18,23 @@ stop_once() { ( set -o noclobber; echo "$1" > "$RUN/STOP" ) 2>/dev/null; }  # ne
 # touches launcher-alive every 10 s until this job confirms its start with gpu-started
 # (review #540 M1). Older than launcher_stale_seconds = the launcher died while this job
 # pended (SIGKILL, crash, lost login node): refuse, never run unsupervised; STOP makes the
-# prep and env jobs that start after this one exit at once.
-AGE=$(( $(date +%s) - $(date -r "$RUN/launcher-alive" +%s 2>/dev/null || echo 0) ))
-if [ $AGE -gt $FC_LAUNCHER_STALE_SECONDS ]; then
-  echo "launcher gone before GPU start: heartbeat ${AGE} s old (> $FC_LAUNCHER_STALE_SECONDS s); refusing $(date -Is)"
-  stop_once "launcher gone before GPU start: heartbeat ${AGE} s old"; exit 3
+# prep and env jobs that start after this one exit at once. A stale first reading is read
+# once more after 30 s, after opening the file (NFS close-to-open revalidates its cached
+# attributes, which can lag up to acregmax 60 s): a false refusal costs the whole queue wait.
+beat() {  # "<age> s old", or "missing"
+  local m; m=$(date -r "$RUN/launcher-alive" +%s 2>/dev/null) && echo "$(( $(date +%s) - m )) s old" || echo missing
+}
+stale() { [ "$1" = missing ] || [ "${1%% *}" -gt $FC_LAUNCHER_STALE_SECONDS ]; }
+AGE=$(beat)
+if stale "$AGE"; then
+  echo "launcher heartbeat $AGE (> $FC_LAUNCHER_STALE_SECONDS s); reading it again in 30 s $(date -Is)"
+  sleep 30; cat "$RUN/launcher-alive" >/dev/null 2>&1; AGE=$(beat)
 fi
-echo "${SLURM_JOB_ID:-} $(date -Is) launcher heartbeat ${AGE} s old" > "$RUN/gpu-started"
+if stale "$AGE"; then
+  echo "launcher gone before GPU start: heartbeat $AGE (> $FC_LAUNCHER_STALE_SECONDS s); refusing $(date -Is)"
+  stop_once "launcher gone before GPU start: heartbeat $AGE"; exit 3
+fi
+echo "${SLURM_JOB_ID:-} $(date -Is) launcher heartbeat $AGE" > "$RUN/gpu-started"
 # --- end launcher check ---
 export PYTHONPATH=$FC_SITE_SRC_DIR/python:$FC_SITE_LZ4_PATH PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
 export LD_LIBRARY_PATH=$FC_SITE_LIB_PATH:${LD_LIBRARY_PATH:-}

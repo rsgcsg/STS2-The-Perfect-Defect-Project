@@ -58,6 +58,9 @@ HARNESS = ("roles.py", "preflight.py", "run_profile.py", "layout.py", "readout.p
 CANDIDATE_DLL = "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
 TAG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 HEARTBEAT_SECONDS = 10.0  # launcher-alive; gpu.sh refuses past launcher_stale_seconds
+# RUNNING without gpu.sh's gpu-started this long = it hung before its launcher check
+# (profile/module load, one 30 s heartbeat re-read): cancel the run (review #540 S2).
+GPU_ACK_MAX_SECONDS = 300.0
 
 
 def sh(*cmd: str) -> str:
@@ -505,13 +508,22 @@ def gpu_state(job: str) -> str | None:
     return out.stdout.strip()
 
 
-def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0) -> None:
+def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0,
+                   ack_limit: float = GPU_ACK_MAX_SECONDS) -> None:
     """Until gpu.sh confirms its start (`gpu-started`, written once its launcher check
-    passed). PENDING after `limit` s (CLUSTER-QUEUE-DIAG 11-14), or ended without that
-    confirmation (FAILED, TIMEOUT, NODE_FAIL, CANCELLED, purged ...): SystemExit with the
-    reason; the caller cancels every job of the run. A failed squeue is read again at the
-    next poll, never taken as an answer; CONFIGURING/RUNNING wait for the confirmation."""
+    passed). PENDING after `limit` s (CLUSTER-QUEUE-DIAG 11-14), RUNNING for `ack_limit` s
+    without that confirmation (gpu.sh hung before its check, or the shared file system
+    hides the file), or ended without it (FAILED, TIMEOUT, NODE_FAIL, CANCELLED, purged
+    ...): SystemExit with the reason; the caller cancels every job of the run. A failed
+    squeue is read again at the next poll, never taken as an answer; CONFIGURING waits."""
     deadline, shown, started = time.monotonic() + limit, False, run / "gpu-started"
+    running_since: float | None = None  # first RUNNING since the last PENDING
+    left_pending = False  # CONFIGURING/RUNNING seen: a failed squeue is no longer "PENDING"
+    stop = run / "STOP"
+
+    def why() -> str:
+        return ((f"; STOP: {stop.read_text().strip()}" if stop.exists() else "")
+                + f"); see {run}/slurm-gpu-{job}.out")
     while True:
         if started.exists():
             return
@@ -519,16 +531,27 @@ def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0) -> 
         if state not in (None, "PENDING", "CONFIGURING", "RUNNING"):
             if started.exists():  # confirmed between the two reads
                 return
-            stop = run / "STOP"
             raise SystemExit(f"GPU job {job} ended before gpu.sh started the run "
-                             f"({state or 'no longer listed'}"
-                             + (f"; STOP: {stop.read_text().strip()}" if stop.exists() else "")
-                             + f"); see {run}/slurm-gpu-{job}.out")
+                             f"({state or 'no longer listed'}" + why())
+        if state == "PENDING":  # also after a requeue: both bounds as before the start
+            running_since, left_pending = None, False
+        elif state in ("CONFIGURING", "RUNNING"):
+            left_pending = True
+            if state == "RUNNING":
+                running_since = running_since or time.monotonic()
+        if running_since is not None and time.monotonic() - running_since >= ack_limit:
+            if started.exists():
+                return
+            raise SystemExit(f"GPU job {job} RUNNING for {ack_limit:.0f} s but gpu.sh never "
+                             f"confirmed its start ({started.name} missing: hung before its "
+                             "launcher check, or the shared file system hides the file"
+                             + why())
         if state == "PENDING" and not shown:
             print(f"GPU {queue_position(job, pending_jobs())}; waiting at most {limit:.0f} s",
                   flush=True)
             shown = True
-        if state in (None, "PENDING") and time.monotonic() >= deadline:
+        if (state == "PENDING" or (state is None and not left_pending)) \
+                and time.monotonic() >= deadline:
             where = (queue_position(job, pending_jobs()) if state else
                      "squeue unreadable at the deadline (the job may be starting)")
             raise SystemExit(f"GPU job still PENDING after {limit:.0f} s: {where}; "
