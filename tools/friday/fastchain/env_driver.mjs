@@ -59,7 +59,8 @@ const SEEDS = readFileSync(arg("seeds"), "utf8").trim().split("\n");
 let seedIndex = Number(arg("seed-offset", "0"));
 // Start tickets (hook for W3 `from_save` tickets): `--tickets M.mjs` exports
 // `nextTicket({ tag })` -> { seed, start } (or a promise of it), `start` a fast-env GameStart.
-// Without it every ticket is the next seed of the list as a new run.
+// Without it every ticket is the next seed of the list as a new run. A hook ticket that
+// throws or that the fast env refuses at open stops this driver (exit 3, see ticketFailed).
 const TICKETS = arg("tickets");
 const nextTicket = TICKETS ? (await import(pathToFileURL(TICKETS).href)).nextTicket
   : () => ({ seed: SEEDS[seedIndex++ % SEEDS.length], start: { kind: "new_run" } });
@@ -69,7 +70,7 @@ if (typeof nextTicket !== "function") { process.stderr.write(`--tickets ${TICKET
 let group = null, groupCount = 0;
 const nextStart = () => {
   if (group === null || group.member >= REPLAY_K)
-    group = { id: `${arg("tag")}-k${++groupCount}`, member: 0, ticket: Promise.resolve(nextTicket({ tag: arg("tag") })) };
+    group = { id: `${arg("tag")}-k${++groupCount}`, member: 0, ticket: Promise.resolve().then(() => nextTicket({ tag: arg("tag") })) };
   const current = group, member = current.member++;
   return current.ticket.then(ticket => ({ ...ticket, group: current.id, member }));
 };
@@ -130,9 +131,21 @@ const openWith = (slot, r7) => {
   nextStart().then(({ seed, start, group: groupId, member }) => {
     if (stopping) return;
     opened += 1;
-    games.set(`g${opened}`, { seed, group: groupId, member, start: start.kind });
+    games.set(`g${opened}`, { seed, group: groupId, member, start: start?.kind ?? null });
     send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start, r7, retain_originals: false });
-  });
+  }, error => ticketFailed({ slot, reason: "ticket_hook_failed", detail: String(error?.message ?? error) }));
+};
+// A hook ticket that fails or that the fast env refuses could come back again and again: the
+// driver stops (no backoff, no retry) and exits 3. A malformed command is the fast env's own
+// fatal error (`command_invalid`). Seed-list tickets keep reopening as before.
+let ticketFailure = null;
+const ticketFailed = (detail) => {
+  if (ticketFailure) return;
+  ticketFailure = detail; summary.ticket_failure = detail;
+  log({ event: "ticket_failed", tickets: TICKETS, ...detail });
+  process.stderr.write(`ticket from --tickets ${TICKETS} failed, driver stops: ${JSON.stringify(detail)}\n`);
+  stopping = true; summary.final_status = true;
+  if (!stopSent) { stopSent = true; send({ cmd: "stop" }); }
 };
 // The R7 choice comes before the game (never from its seed or content). A failed choice
 // opens nothing: logged and counted, the slot tries again after 1 s (never a default).
@@ -188,7 +201,12 @@ createInterface({ input: env.stdout }).on("line", line => {
       const n = (notStartedRun.get(event.slot) ?? 0) + 1; notStartedRun.set(event.slot, n);
       const slot = event.slot; setTimeout(() => open(slot), reopenDelayMs(n));
     } else { notStartedRun.delete(event.slot); open(event.slot); }
-  } else if (event.event === "open_refused") { summary.refused.push(event); if (event.reason !== "build_output_stopped") open(event.slot); }
+  } else if (event.event === "open_refused") {
+    summary.refused.push(event);
+    if (TICKETS && !["build_output_stopped", "stopping"].includes(event.reason))
+      ticketFailed({ slot: event.slot, reason: "open_refused", detail: event.reason, ...gameFacts(event.game_ref) });
+    else if (event.reason !== "build_output_stopped") open(event.slot);
+  }
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);
   else if (event.event === "status") {
     summary.statuses.push({ t: Date.now(), counters: event.counters, slots: event.slots });
@@ -215,4 +233,4 @@ if (a && b) {
     games_closed_in_window: summary.closed.filter(c => c.t > a.t && c.t <= b.t).length };
 }
 writeFileSync(join(OUT, "summary.json"), JSON.stringify(summary, null, 1));
-process.exit(code === 0 ? 0 : 1);
+process.exit(ticketFailure ? 3 : code === 0 ? 0 : 1);

@@ -920,10 +920,15 @@ createInterface({ input: process.stdin }).on("line", line => {
     n += 1;
     const id = `inst${n}`, floor = 3 + (n % 5);
     appendFileSync(join(dirname(path), "opens.jsonl"), JSON.stringify(c) + "\\n");
-    emit({ event: "opened", slot: c.slot, game_ref: c.game_ref, game_instance_id: id, start: c.start });
-    setTimeout(() => emit({ event: "closed", slot: c.slot, game_ref: c.game_ref, game_instance_id: id,
-      reason: "terminal", decisions: 10, public_facts: { floor },
-      terminal: { result: floor === 7 ? "victory" : "defeat" }, evidence_failed: false }), 30);
+    if (c.seed.startsWith("bad")) {  // a start the native cannot mount
+      emit({ event: "open_refused", slot: c.slot, game_ref: c.game_ref, reason: "reset_failed:x" });
+      return;
+    }
+    const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
+    emit({ event: "opened", ...game, start: c.start });
+    setTimeout(() => emit({ event: "closed", ...game, reason: "terminal", decisions: 10,
+      public_facts: { floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
+      evidence_failed: false }), 30);
   } else if (c.cmd === "status") {
     emit({ event: "status", counters: { decisions: 10 * n, forced_steps: 0, native_steps: 0,
       node_cpu_ms: 0, link_wait_ms: 0 }, slots: [] });
@@ -1066,6 +1071,34 @@ def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
             (('--arm', 'hot', '--replay-k', '1'), '--exploration-ladder')):
         refused = run_driver(world, tmp_path / 'refused', tmp_path / 'none.sock', *flags)
         assert refused.returncode == 2 and message in refused.stderr, flags
+
+
+
+def test_env_driver_stops_loudly_on_a_refused_or_failing_hook_ticket(tmp_path):
+    """Review L1: a hook ticket that comes back refused never hot-loops open/refuse."""
+    import time
+    world = fake_driver_world(tmp_path)
+    for name, body in (
+            ('refused', 'export function nextTicket() { return { seed: "bad-save", '
+                        'start: { kind: "new_run" } }; }\n'),
+            ('throws', 'export function nextTicket() { throw new Error("no save left"); }\n')):
+        tickets = tmp_path / f'{name}.mjs'
+        tickets.write_text(body)
+        admit, out, began = AdmitAll(), tmp_path / name, time.monotonic()
+        try:
+            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                              '--arm', 'hot', '--replay-k', '1', '--tickets', str(tickets),
+                              steady=40)
+        finally:
+            admit.close()
+        assert done.returncode == 3 and 'driver stops' in done.stderr, done.stderr
+        assert time.monotonic() - began < 20  # stopped at once, not at the end of steady
+        [failed] = [r for r in readout.jsonl(out / 'driver.jsonl')
+                    if r['event'] == 'ticket_failed']
+        assert failed['reason'] == ('open_refused' if name == 'refused'
+                                    else 'ticket_hook_failed')
+        opens = out / 'opens.jsonl'
+        assert len(opens.read_text().splitlines() if opens.exists() else []) <= 4  # one/slot
 
 
 def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
