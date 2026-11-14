@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import pickle
@@ -80,6 +81,7 @@ class FakeAssembler:
         self.calls: list[tuple[str, Any]] = []
         self.mu: Handoff | None = None
         self.lock = threading.Lock()
+        self.hp: list[tuple[int, Any, Any]] = []  # (request id, hp, potion) per finish_row
 
     def offer_mu(self, handoff: Handoff) -> Offer:
         self.mu = handoff
@@ -100,9 +102,11 @@ class FakeAssembler:
         return plan
 
     def finish_row(self, plan: Plan, scored: dict[str, Any], values: list[float],
-                   tail: list[float] | None = None) -> None:
+                   tail: list[float] | None = None, *, hp: Any = None,
+                   potion: Any = None) -> None:
         with self.lock:
             self.calls.append(("finish", (plan.request_id, scored, values)))
+            self.hp.append((plan.request_id, hp, potion))
 
     def abort_row(self, plan: Plan, code: str) -> None:
         with self.lock:
@@ -524,7 +528,7 @@ class TailAssembler(FakeAssembler):
                     plan.row_in_segment, plan.mu, Tail("seg-old", self.tail_mu, 5))
 
     def finish_row(self, plan: Plan, scored: dict[str, Any], values: list[float],
-                   tail: list[float] | None = None) -> None:
+                   tail: list[float] | None = None, **_hp: Any) -> None:
         with self.lock:
             self.calls.append(("finish", (plan.request_id, scored, values, tail)))
 
@@ -570,6 +574,39 @@ def test_tail_value_uses_the_previous_mu_at_the_tail_floor(vocabulary, model):
         service.close()
     assert [body for kind, body in assembler.calls if kind == "abort"] == [
         (3, "MU_NOT_RESIDENT")]
+
+
+@pytest.mark.parametrize("device_rows", [False, True])
+def test_assembler_gets_the_hp_head_output_and_the_potion_use_flag(vocabulary, model,
+                                                                  device_rows):
+    """RL5 W2: the HP score's inputs go to the assembler; the reply is unchanged."""
+    encoder = RowsEncoder(vocabulary)
+    plain = _observations(1)[0]
+    first = copy.deepcopy(plain)
+    first["catalog"][0]["kind"] = "potion.use"  # only the first choice uses a potion
+    every = copy.deepcopy(first)
+    every["catalog"][1]["kind"] = "potion.use"
+    observations = (plain, first, every)
+    rows = [encoder.encode(json.dumps(value).encode()) for value in observations]
+    assembler = FakeAssembler()
+    service = _service(vocabulary, model, assembler, device_rows=device_rows)
+    client = _open_client(service, encoder, "g1")
+    try:
+        replies = [_score(client, encoded, 3 + index, "g1")
+                   for index, encoded in enumerate(rows)]
+    finally:
+        client.close()
+        service.close()
+    compiler = FrameCompiler(vocabulary)
+    expected = RowsScorer(model, bf16=False).score(
+        [compiler.compile(value) for value in observations], [2] * 3)
+    assert [reply["status"] for reply in replies] == ["scored"] * 3
+    assert all("hp" not in reply for reply in replies)  # rl-inference-4 reply unchanged
+    by_request = {request: (hp, flag) for request, hp, flag in assembler.hp}
+    for index, reply in enumerate(replies):
+        hp, flag = by_request[3 + index]
+        assert type(hp) is float and hp == pytest.approx(expected[index].hp, abs=1e-5)
+        assert flag is (index == 2 or (index == 1 and reply["selected_index"] == 0))
 
 
 @pytest.mark.parametrize(("arena_row_bytes", "join_workers"),

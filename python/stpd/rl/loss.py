@@ -437,12 +437,17 @@ class LossConfig:
     policy_coef: float = 1.0
     terminal_coef: float = 0.1
     hp_coef: float = 0.1
+    # c_hp: weight of the per-combat HP score A_hp (format-4 segments), added to the
+    # outcome advantage before the one normalisation (fast_source.decode_fast_packet).
+    # 0 = off; frozen for a run like every loss key.
+    hp_advantage_coef: float = 0.0
 
     def __post_init__(self) -> None:
         if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef, self.policy_coef,
-                                 self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef))
+                                 self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef,
+                                 self.hp_advantage_coef))
                 or type(self.clip) not in (int, float) or not 0 < self.clip <= 1
                 or type(self.max_grad_norm) not in (int, float)
                 or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0

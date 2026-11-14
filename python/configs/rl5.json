@@ -14,7 +14,8 @@
     "max_grad_norm": 1.0,
     "policy_coef": 1.0,
     "terminal_coef": 0.1,
-    "hp_coef": 0.1
+    "hp_coef": 0.1,
+    "hp_advantage_coef": 0.0
   },
   "segments": {
     "steps": 64,
