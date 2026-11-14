@@ -100,7 +100,25 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）；任一级别 > 0 要求
-  `service_kwargs.segment_format = "stpd/rl-fast-segment-3"`（现默认即 3）。无课程、无系数。
+  `service_kwargs.segment_format = "stpd/rl-fast-segment-3"`（现默认即 3）。是混合比例、不是
+  损失系数（I5）；无自动课程。
+- env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
+  - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
+    `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，
+    即原行为）。一个驱动一个臂（fast env 一进程一个 `inference.sampling`，`open` 不带每局
+    采样），按全 run 驱动号 `节点号 × P + p` 平滑加权轮转，任意前缀各臂份额误差 ≤ 1 个驱动；
+    `env_driver.mjs --exploration-ladder --arm` 必填。fast env、服务、组装逐行核 applied 与
+    该臂一致，behavior_q 即实际采样分布（I4）。
+  - 同起点 K 局 `replay_k`（1–16，≤ `env_slots`，默认 1）：同一驱动的 K 个槽开同一 ticket，
+    组号 `TAG-kN`、成员号记在 driver.jsonl；中途被拒或早停的成员不补（不重试）。种子消耗变 1/K。
+    `env_driver.mjs --replay-k` 必填。
+  - 起点 ticket 钩子：`env_driver.mjs --tickets M.mjs`（导出 `nextTicket({tag})` →
+    `{seed, start}`，W3 的「从存档起」接这里）；不给 = 种子表的下一个新局。
+  - 读数「recipe」表：按臂、难度、起点种类、K 给局数（完整 = 终局、已录取、证据完好）、平均层数、
+    胜场、行数（已录取且证据完好局的模型行）；K > 1 另给组数、满组数、组内层数极差均值。
+  - 链内换配方只在代际边界：`chain-CHAIN/env-recipe.txt`，每行一个 `name=value`（同
+    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
+    可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
 
 ## 以下为旧部署操作史
 

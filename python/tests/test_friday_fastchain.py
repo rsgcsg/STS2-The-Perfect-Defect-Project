@@ -734,6 +734,43 @@ def test_chain_ends_on_a_submit_failure_without_repeating_it(tmp_path):
     assert 'not repeated' in chain.state['final']['cause']
 
 
+def chain_with_recipe(tmp_path, text, endings):
+    """A chain whose env-recipe.txt appears while generation 0 runs (the chain dir exists
+    only once the chain started)."""
+    chain, cluster = chain_for(tmp_path, endings)
+    launch_main = cluster.launch_main
+
+    def launch_then_edit(argv):
+        (tmp_path / 'chain-lr1' / 'env-recipe.txt').write_text(text)
+        return launch_main(argv)
+    chain.launch_main = launch_then_edit
+    return chain, cluster
+
+
+def test_chain_takes_the_env_recipe_at_a_generation_boundary(tmp_path):
+    chain, cluster = chain_with_recipe(
+        tmp_path, '# I8\nascension_mix={ 0 = 0.5, 10 = 0.5 }\n\n replay_k = 4\n', [FENCE, {}])
+    assert chain.run() == 0
+    first, second = cluster.argvs
+    assert [a for a in first if a.startswith(('ascension_mix', 'replay_k'))] == []
+    assert [second[i + 1] for i, a in enumerate(second) if a == '--set'][-2:] == \
+        ['ascension_mix={ 0 = 0.5, 10 = 0.5 }', 'replay_k=4']
+    generations = chain.state['generations']
+    assert generations[0]['env_recipe'] == [] and generations[1]['env_recipe'][-1] == \
+        'replay_k=4'
+    assert json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())['ok']
+
+
+def test_chain_ends_on_an_env_recipe_outside_the_env_knobs_or_refused(tmp_path):
+    for name, text, message in (('learner', 'env_slots=8\n', 'only'),
+                                ('value', 'replay_k=40\n', 'replay_k'),
+                                ('bare', 'replay_k\n', 'only')):
+        chain, cluster = chain_with_recipe(tmp_path / name, text, [FENCE, {}])
+        assert chain.run() == 1 and len(cluster.argvs) == 1, name
+        cause = chain.state['final']['cause']
+        assert cause.startswith('generation 1 not submitted') and message in cause, cause
+
+
 def test_readout_reports_disk_watermarks(tmp_path):
     (tmp_path / 'disk.txt').write_text('1 /run free_pct=15 avail=15 size=100\n'
                                        '2 /tmp free_pct=40 avail=40 size=100\n')
@@ -800,6 +837,295 @@ def test_job_env_carries_r7_and_ascension_knobs():
     env = launch.job_env(plan_for(cards=3))
     assert 'FC_ENV_NODES=' in env and 'FC_R7_GAMES_PER_HOUR=10' in env
     assert """FC_ASCENSION_MIX='{"0":1.0}'""" in env and 'FC_RELEASE_TRAINED_SEGMENTS=1' in env
+    # default env recipe = the RL4.2 behaviour: one control arm at T 1 / mix 0, K = 1
+    assert 'FC_REPLAY_K=1' in env and 'FC_EXPLORATION_LADDER=\'{"control":{"combat":{' \
+        '"temperature":1.0,"uniform_mix":0.0},"noncombat":{"temperature":1.0,' \
+        '"uniform_mix":0.0},"share":1.0}}\'' in env
+
+
+# ---------------- environment-side recipe (exploration ladder, K replay) ----------------
+
+THREE_ARMS = ('exploration_ladder={ control = { share = 0.34, combat = { temperature = 1.0, '
+              'uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }, '
+              'mid = { share = 0.33, combat = { temperature = 1.15, uniform_mix = 0.005 }, '
+              'noncombat = { temperature = 1.6, uniform_mix = 0.01 } }, '
+              'high = { share = 0.33, combat = { temperature = 1.4, uniform_mix = 0.005 }, '
+              'noncombat = { temperature = 2.5, uniform_mix = 0.01 } } }')
+
+
+def test_exploration_ladder_and_replay_k_are_validated():
+    values = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS, 'replay_k=8']))
+    assert sorted(values['exploration_ladder']) == ['control', 'high', 'mid']
+    assert values['replay_k'] == 8
+    arm = '{ share = 1.0, combat = %s, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }'
+    for bad, match in (
+            ('{ "bad arm" = ' + arm % '{ temperature = 1.0, uniform_mix = 0.0 }' + ' }',
+             'bad arm'),
+            ('{ a = ' + arm % '{ temperature = 0.5, uniform_mix = 0.0 }' + ' }',
+             r'temperature in \[1, 3\]'),
+            ('{ a = ' + arm % '{ temperature = 1.0, uniform_mix = 0.2 }' + ' }',
+             r'uniform_mix in \[0, 0.1\]'),
+            ('{ a = ' + arm % '{ temperature = 1.0 }' + ' }', 'exactly'),
+            ('{ a = ' + (arm % '{ temperature = 1.0, uniform_mix = 0.0 }').replace(
+                '1.0, combat', '0.5, combat') + ' }', 'summing to 1')):
+        with pytest.raises(run_profile.ProfileError, match=match):
+            run_profile.load_profile(PROFILE, [f'exploration_ladder={bad}'])
+    with pytest.raises(run_profile.ProfileError, match='replay_k 13 must not exceed env_slots'):
+        run_profile.load_profile(PROFILE, ['replay_k=13'])
+    with pytest.raises(run_profile.ProfileError, match='replay_k'):
+        run_profile.load_profile(PROFILE, ['replay_k=0'])
+
+
+def test_exploration_plan_interleaves_arms_over_the_run_drivers():
+    ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
+        'exploration_ladder']
+    run = run_profile.exploration_plan(ladder, 0, 300)
+    assert [run.count(a) for a in ('control', 'mid', 'high')] == [102, 99, 99]
+    for n in range(1, 301):  # any prefix (nodes that never join) keeps each share +-1
+        assert all(abs(run[:n].count(a) - ladder[a]['share'] * n) <= 1 for a in ladder)
+    # node slices (env.sh: NODEIDX x P, P drivers) put together are the run's plan
+    assert sum((run_profile.exploration_plan(ladder, i * 10, 10) for i in range(30)), []) == run
+    assert run_profile.exploration_plan(knobs()['exploration_ladder'], 40, 10) == \
+        ['control'] * 10
+
+
+def test_env_sh_gives_each_driver_its_level_and_arm(tmp_path):
+    """The ASC= / ARM= lines of env.sh as they run (bash quoting of the JSON knobs)."""
+    import subprocess
+    lines = [line for line in (FASTCHAIN / 'env.sh').read_text().splitlines()
+             if line.startswith(('ASC=', 'ARM='))]
+    assert len(lines) == 2
+    ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
+        'exploration_ladder']
+    env = {'PY': sys.executable, 'H': str(FASTCHAIN), 'P': '10', 'NODEIDX': '1',
+           'FC_ASCENSION_MIX': '{"0":0.4,"10":0.6}',
+           'FC_EXPLORATION_LADDER': json.dumps(ladder, separators=(',', ':'), sort_keys=True),
+           'PATH': '/usr/bin:/bin'}
+    out = subprocess.run(['bash', '-c', '\n'.join(lines) + '\necho "${ASC[*]}|${ARM[*]}"'],
+                         env=env, capture_output=True, text=True, check=True).stdout.strip()
+    asc, arms = out.split('|')
+    assert asc.split() == ['0'] * 4 + ['10'] * 6
+    assert arms.split() == run_profile.exploration_plan(ladder, 10, 10)
+
+
+FAKE_FAST_ENV = '''
+import { appendFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
+const path = process.argv[process.argv.indexOf("--config") + 1];
+const config = JSON.parse(readFileSync(path, "utf8"));
+const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
+let n = 0;
+emit({ event: "ready" });
+createInterface({ input: process.stdin }).on("line", line => {
+  const c = JSON.parse(line);
+  if (c.cmd === "open") {
+    n += 1;
+    const id = `inst${n}`, floor = 3 + (n % 5);
+    appendFileSync(join(dirname(path), "opens.jsonl"), JSON.stringify(c) + "\\n");
+    if (c.seed.startsWith("bad")) {  // a start the native cannot mount
+      emit({ event: "open_refused", slot: c.slot, game_ref: c.game_ref, reason: "reset_failed:x" });
+      return;
+    }
+    const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
+    emit({ event: "opened", ...game, start: c.start });
+    setTimeout(() => emit({ event: "closed", ...game, reason: "terminal", decisions: 10,
+      public_facts: { floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
+      evidence_failed: false }), 30);
+  } else if (c.cmd === "status") {
+    emit({ event: "status", counters: { decisions: 10 * n, forced_steps: 0, native_steps: 0,
+      node_cpu_ms: 0, link_wait_ms: 0 }, slots: [] });
+  } else if (c.cmd === "stop") { emit({ event: "stopped" }); process.exit(0); }
+});
+'''
+
+
+def fake_driver_world(root):
+    """A package whose fast env answers open/status/stop at once, plus the driver inputs."""
+    dist = root / 'pkg/components/policy-runtime/dist'
+    (dist / 'fast-env').mkdir(parents=True)
+    (dist / 'global-program.js').write_text(
+        'export function createGlobalProgramManifest() { return { input: {} }; }\n')
+    (dist / 'fast-env/process.js').write_text(FAKE_FAST_ENV)
+    (root / 'seeds.txt').write_text('\n'.join(f'S{i}' for i in range(2000)) + '\n')
+    (root / 'progress.json').write_text('{}')
+    (root / 'spec.json').write_text('{}')
+    return root
+
+
+def run_driver(world, out, admit, *flags, steady=1):
+    import subprocess
+    node = __import__('shutil').which('node')
+    assert node, 'development Node is required for the env driver regression'
+    argv = [node, str(FASTCHAIN / 'env_driver.mjs'), '--pkg', str(world / 'pkg'),
+            '--out', str(out), '--tag', 'n0-p1', '--slots', '4', '--ascension', '0',
+            '--seeds', str(world / 'seeds.txt'), '--seed-offset', '0',
+            '--initial-progress', str(world / 'progress.json'),
+            '--input-spec', str(world / 'spec.json'), '--link', '/nonexistent.sock',
+            '--admit', str(admit), '--candidate', str(world), '--single-choice', 'omit',
+            '--warm-s', '0', '--steady-s', str(steady), '--status-s', '1', *flags]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                          env={'PATH': '/usr/bin:/bin', 'REL': str(world)})
+
+
+class AdmitAll:
+    """The node admission sidecar's socket: every admit/exclude answered ok."""
+
+    def __init__(self):
+        import socket
+        import tempfile
+        import threading
+        self.dir = Path(tempfile.mkdtemp(prefix='fc', dir='/tmp'))
+        self.path = self.dir / 'admit.sock'
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.path))
+        self.server.listen(4)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        import threading
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.answer, args=(client,), daemon=True).start()
+
+    @staticmethod
+    def answer(client):
+        for _line in client.makefile('rb'):
+            client.sendall(b'{"ok": true}\n')
+
+    def close(self):
+        import shutil
+        self.server.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+LADDER_JSON = json.dumps({'hot': {'share': 1.0,
+                                  'combat': {'temperature': 1.4, 'uniform_mix': 0.005},
+                                  'noncombat': {'temperature': 2.5, 'uniform_mix': 0.01}}})
+
+
+def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    run = tmp_path / 'run-t1'
+    write_run(run, cards=1)
+    out = run / 'env-n0-1' / 'p1'
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                          '--arm', 'hot', '--replay-k', '3')
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    sampling = json.loads((out / 'config.json').read_text())['inference']['sampling']
+    assert sampling == {'mode': 'temperature_uniform', 'seed': 'wp8-n0-p1', 'arm_id': 'hot',
+                        'classes': {'combat': {'temperature': 1.4, 'uniform_mix': 0.005},
+                                    'noncombat': {'temperature': 2.5, 'uniform_mix': 0.01}}}
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert len(opens) > 12
+    # K = 3: every seed of the list opens three times in a row, then the next seed
+    assert [o['seed'] for o in opens] == [f'S{i // 3}' for i in range(len(opens))]
+    assert all(o['start'] == {'kind': 'new_run'} for o in opens)
+    closed = [r for r in readout.jsonl(out / 'driver.jsonl') if r['event'] == 'closed']
+    assert closed and all(r['arm'] == 'hot' and r['ascension'] == 0 and r['replay_k'] == 3
+                          for r in closed)
+    for r in closed:
+        i = int(r['game_ref'][1:]) - 1
+        assert (r['group'], r['member'], r['seed']) == (f'n0-p1-k{i // 3 + 1}', i % 3,
+                                                         f'S{i // 3}')
+    recipe = readout.recipe_edge(run)
+    admitted = {r['game_ref'] for r in readout.jsonl(out / 'driver.jsonl')
+                if r['event'] == 'admission' and r['ok']}
+    complete = [r for r in closed if r['game_ref'] in admitted]
+    hot = recipe['arm']['hot']
+    assert hot['games'] == len(complete) and hot['rows'] == 10 * len(complete)
+    assert hot['wins'] == sum(r['terminal'] == 'victory' for r in complete)
+    assert hot['mean_floor'] == pytest.approx(sum(r['floor'] for r in complete) / len(complete))
+    assert recipe['ascension']['0']['games'] == len(complete)
+    k3 = recipe['k']['3']
+    assert k3['groups'] == len({r['group'] for r in closed}) and k3['full_groups'] >= 3
+    assert k3['mean_floor_range'] is not None
+    built = readout.build(run, 1200)
+    assert built['recipe'] == recipe
+    text = readout.render(built)
+    assert 'arm hot' in text and 'ascension A0' in text and 'k 3' in text
+
+
+def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    tickets = tmp_path / 'tickets.mjs'
+    tickets.write_text('let n = 0;\nexport function nextTicket({ tag }) { n += 1; '
+                       'return { seed: `${tag}-t${n}`, start: { kind: "new_run" } }; }\n')
+    out = tmp_path / 'hook'
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                          '--arm', 'hot', '--replay-k', '2', '--tickets', str(tickets))
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert [o['seed'] for o in opens] == [f'n0-p1-t{i // 2 + 1}' for i in range(len(opens))]
+    for flags, message in (
+            (('--exploration-ladder', LADDER_JSON, '--arm', 'cold', '--replay-k', '1'), '--arm'),
+            (('--exploration-ladder', LADDER_JSON, '--arm', 'hot'), '--replay-k'),
+            (('--exploration-ladder', LADDER_JSON, '--arm', 'hot', '--replay-k', '5'),
+             'at most --slots 4'),
+            (('--arm', 'hot', '--replay-k', '1'), '--exploration-ladder')):
+        refused = run_driver(world, tmp_path / 'refused', tmp_path / 'none.sock', *flags)
+        assert refused.returncode == 2 and message in refused.stderr, flags
+
+
+
+def test_env_driver_stops_loudly_on_a_refused_or_failing_hook_ticket(tmp_path):
+    """Review L1: a hook ticket that comes back refused never hot-loops open/refuse."""
+    import time
+    world = fake_driver_world(tmp_path)
+    for name, body in (
+            ('refused', 'export function nextTicket() { return { seed: "bad-save", '
+                        'start: { kind: "new_run" } }; }\n'),
+            ('throws', 'export function nextTicket() { throw new Error("no save left"); }\n')):
+        tickets = tmp_path / f'{name}.mjs'
+        tickets.write_text(body)
+        admit, out, began = AdmitAll(), tmp_path / name, time.monotonic()
+        try:
+            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                              '--arm', 'hot', '--replay-k', '1', '--tickets', str(tickets),
+                              steady=40)
+        finally:
+            admit.close()
+        assert done.returncode == 3 and 'driver stops' in done.stderr, done.stderr
+        assert time.monotonic() - began < 20  # stopped at once, not at the end of steady
+        [failed] = [r for r in readout.jsonl(out / 'driver.jsonl')
+                    if r['event'] == 'ticket_failed']
+        assert failed['reason'] == ('open_refused' if name == 'refused'
+                                    else 'ticket_hook_failed')
+        opens = out / 'opens.jsonl'
+        assert len(opens.read_text().splitlines() if opens.exists() else []) <= 4  # one/slot
+
+
+def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
+    driver = tmp_path / 'env-n0-1' / 'p1'
+    driver.mkdir(parents=True)
+
+    def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid'):
+        return {'event': 'closed', 'game_ref': ref, 'reason': reason, 'arm': arm,
+                'ascension': 10, 'replay_k': 2, 'group': group, 'member': 0, 'seed': 's',
+                'start': 'new_run', 'decisions': 100, 'floor': floor, 'terminal': result,
+                'evidence_failed': failed}
+    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': i != 4} for i in range(1, 7)]
+    records += [closed('g1', 'k1', 10), closed('g2', 'k1', 16, result='victory'),
+                closed('g3', 'k2', 12), closed('g4', 'k2', 30),  # g4 refused admission
+                closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True)]
+    (driver / 'driver.jsonl').write_text('\n'.join(map(json.dumps, records)))
+    recipe = readout.recipe_edge(tmp_path)
+    mid = recipe['arm']['mid']
+    assert (mid['games'], mid['other'], mid['wins'], mid['rows']) == (3, 3, 1, 400)
+    assert mid['mean_floor'] == pytest.approx((10 + 16 + 12) / 3)
+    k2 = recipe['k']['2']
+    assert (k2['groups'], k2['full_groups'], k2['mean_floor_range']) == (3, 1, 6)
+    assert recipe['ascension']['10']['games'] == 3 and recipe['start']['new_run']['rows'] == 400
+    assert readout.recipe_edge(tmp_path / 'nothing') == {}
 
 
 def test_chain_name_must_not_look_like_a_generation(tmp_path):
