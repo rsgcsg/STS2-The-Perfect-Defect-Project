@@ -4,7 +4,10 @@
 // node's admission sidecar (a refused or failed admission closes that game with close_slot,
 // never resent); a game whose evidence failed is excluded. Status at warm end, then every
 // --status-s until warm+steady, then stop. Never retries a game; the slot that closes opens
-// the next seed. Every setting is a flag set from the run profile (env.sh).
+// the next start. Every setting is a flag set from the run profile (env.sh).
+// Environment-side recipe (NEW-METHODS-PLAN I4/I6): this driver's exploration arm (one
+// `inference.sampling` per fast-env process) and K games per start in its own slots (one
+// assembler), each game logged in driver.jsonl with arm, ascension, group and outcome.
 import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -20,6 +23,21 @@ if (!/^(10|[0-9])$/.test(ASCENSION_RAW ?? "")) {
   process.stderr.write(`--ascension is required: an integer 0-10 (got ${ASCENSION_RAW})\n`); process.exit(2);
 }
 const ASCENSION = Number(ASCENSION_RAW);
+// I4: this driver's arm of the exploration ladder; required, never a default. The fast env,
+// the service and the assembler check every row's applied T/mix against this sampling,
+// and behavior_q is the distribution actually sampled from.
+const LADDER = JSON.parse(arg("exploration-ladder") ?? "null"), ARM = arg("arm");
+if (!LADDER || typeof LADDER !== "object" || !Object.hasOwn(LADDER, ARM ?? "")) {
+  process.stderr.write(`--exploration-ladder and --arm (one of its arms) are required (got ${ARM})\n`); process.exit(2);
+}
+const SAMPLING = { mode: "temperature_uniform", seed: `wp8-${arg("tag")}`, arm_id: ARM,
+  classes: { combat: LADDER[ARM].combat, noncombat: LADDER[ARM].noncombat } };
+// I6: games per start (1-16, at most this driver's slots); required, never a default.
+const REPLAY_K_RAW = arg("replay-k");
+if (!/^([1-9]|1[0-6])$/.test(REPLAY_K_RAW ?? "") || Number(REPLAY_K_RAW) > K) {
+  process.stderr.write(`--replay-k is required: an integer 1-16, at most --slots ${K} (got ${REPLAY_K_RAW})\n`); process.exit(2);
+}
+const REPLAY_K = Number(REPLAY_K_RAW);
 // #529 R7 audit games: before each open the node sidecar's R7Selection decides `open.r7`.
 const R7 = arg("r7", "off") === "on";
 const WARM_S = Number(arg("warm-s", "90")), STEADY_S = Number(arg("steady-s", "240"));
@@ -36,9 +54,27 @@ const ADMIT = createConnection(arg("admit"));
 const admitQueue = [];
 createInterface({ input: ADMIT }).on("line", line => { const done = admitQueue.shift(); done(JSON.parse(line)); });
 const admitCall = (request) => new Promise(resolve => { admitQueue.push(resolve); ADMIT.write(`${JSON.stringify(request)}\n`); });
-const seedOf = new Map(), admission = { sent: 0, admitted: 0, refused: {}, closed_after_refusal: 0, excluded: 0, exclusion_failed: {} };
+const games = new Map(), admission = { sent: 0, admitted: 0, refused: {}, closed_after_refusal: 0, excluded: 0, exclusion_failed: {} };
 const SEEDS = readFileSync(arg("seeds"), "utf8").trim().split("\n");
 let seedIndex = Number(arg("seed-offset", "0"));
+// Start tickets (hook for W3 `from_save` tickets): `--tickets M.mjs` exports
+// `nextTicket({ tag })` -> { seed, start } (or a promise of it), `start` a fast-env GameStart.
+// Without it every ticket is the next seed of the list as a new run. A hook ticket that
+// throws or that the fast env refuses at open stops this driver (exit 3, see ticketFailed).
+const TICKETS = arg("tickets");
+const nextTicket = TICKETS ? (await import(pathToFileURL(TICKETS).href)).nextTicket
+  : () => ({ seed: SEEDS[seedIndex++ % SEEDS.length], start: { kind: "new_run" } });
+if (typeof nextTicket !== "function") { process.stderr.write(`--tickets ${TICKETS} exports no nextTicket\n`); process.exit(2); }
+// I6 K replay: each ticket opens REPLAY_K times in this driver's slots as group `TAG-kN`;
+// a member that is refused or ends early is never replaced (no game is retried).
+let group = null, groupCount = 0;
+const nextStart = () => {
+  if (group === null || group.member >= REPLAY_K)
+    group = { id: `${arg("tag")}-k${++groupCount}`, member: 0, ticket: Promise.resolve().then(() => nextTicket({ tag: arg("tag") })) };
+  const current = group, member = current.member++;
+  return current.ticket.then(ticket => ({ ...ticket, group: current.id, member }));
+};
+const gameFacts = (ref) => { const g = games.get(ref); return { game_ref: ref, ...(g ?? {}) }; };
 const initialProgress = JSON.parse(readFileSync(arg("initial-progress"), "utf8"));
 mkdirSync(OUT, { recursive: true, mode: 0o700 });
 const log = (record) => appendFileSync(join(OUT, "driver.jsonl"), `${JSON.stringify({ t: Date.now(), ...record })}\n`);
@@ -66,9 +102,7 @@ const config = { schema: "sts2.policy-runtime/fast-env-config-1", env_process_id
     // C1 (V3-wu/V3-shen): --reduce-light-interval N > 0 sets reduce_light.strict_interval
     ...(Number(arg("reduce-light-interval", "0")) > 0 ? { reduce_light: { strict_interval: Number(arg("reduce-light-interval")) } } : {}) },
   decision_link: { kind: "unix", path: SOCK },
-  inference: { timeout_ms: INFERENCE_TIMEOUT_MS, actor_id: `v3g-${arg("tag")}`, single_choice: SINGLE,
-    sampling: { mode: "temperature_uniform", seed: `wp8-${arg("tag")}`, arm_id: "control",
-      classes: { combat: { temperature: 1, uniform_mix: 0 }, noncombat: { temperature: 1, uniform_mix: 0 } } } },
+  inference: { timeout_ms: INFERENCE_TIMEOUT_MS, actor_id: `v3g-${arg("tag")}`, single_choice: SINGLE, sampling: SAMPLING },
   budget: { max_decisions_per_game: 4000, max_native_steps_per_game: 8000, game_wall_ms: 3_600_000 },
   no_progress: null, settling_timeout_ms: 30000,
   ...(arg("cold-start") ? { cold_start: { max_concurrent: Number(arg("cold-start")), directory: null } } : {}),
@@ -81,7 +115,7 @@ writeFileSync(join(OUT, "config.json"), JSON.stringify(config, null, 1), { mode:
 const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-gc (V3-shen)
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
   single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
-  ascension: ASCENSION, r7: R7 };
+  ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, replay_k: REPLAY_K, tickets: TICKETS ?? null };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 
@@ -94,10 +128,24 @@ const send = (command) => (stopSent && command.cmd !== "stop") ? false : env.std
 const r7Counts = { selected: 0, not_selected: 0, failed: {} };
 const openWith = (slot, r7) => {
   if (stopping) return;
-  const seed = SEEDS[seedIndex++ % SEEDS.length];
-  opened += 1;
-  seedOf.set(`g${opened}`, seed);
-  send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start: { kind: "new_run" }, r7, retain_originals: false });
+  nextStart().then(({ seed, start, group: groupId, member }) => {
+    if (stopping) return;
+    opened += 1;
+    games.set(`g${opened}`, { seed, group: groupId, member, start: start?.kind ?? null });
+    send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start, r7, retain_originals: false });
+  }, error => ticketFailed({ slot, reason: "ticket_hook_failed", detail: String(error?.message ?? error) }));
+};
+// A hook ticket that fails or that the fast env refuses could come back again and again: the
+// driver stops (no backoff, no retry) and exits 3. A malformed command is the fast env's own
+// fatal error (`command_invalid`). Seed-list tickets keep reopening as before.
+let ticketFailure = null;
+const ticketFailed = (detail) => {
+  if (ticketFailure) return;
+  ticketFailure = detail; summary.ticket_failure = detail;
+  log({ event: "ticket_failed", tickets: TICKETS, ...detail });
+  process.stderr.write(`ticket from --tickets ${TICKETS} failed, driver stops: ${JSON.stringify(detail)}\n`);
+  stopping = true; summary.final_status = true;
+  if (!stopSent) { stopSent = true; send({ cmd: "stop" }); }
 };
 // The R7 choice comes before the game (never from its seed or content). A failed choice
 // opens nothing: logged and counted, the slot tries again after 1 s (never a default).
@@ -117,10 +165,14 @@ const open = (slot) => {
 const exclude = (gameInstanceId, reason) => admitCall({ op: "exclude", actor: `v3g-${arg("tag")}`, intent_id: "-", seed: "-", game_instance_id: gameInstanceId, reason })
   .then(r => { if (r.ok) admission.excluded += 1; else admission.exclusion_failed[r.code] = (admission.exclusion_failed[r.code] ?? 0) + 1; });
 const excludedSent = new Set();
-const summary = { tag: arg("tag"), slots: K, admission, ascension: ASCENSION, r7: r7Counts, single_choice: SINGLE, warm_s: WARM_S, steady_s: STEADY_S, closed: [], refused: [], failures: [], statuses: [] };
+const summary = { tag: arg("tag"), slots: K, admission, ascension: ASCENSION, arm: ARM, replay_k: REPLAY_K, r7: r7Counts, single_choice: SINGLE, warm_s: WARM_S, steady_s: STEADY_S, closed: [], refused: [], failures: [], statuses: [] };
 createInterface({ input: env.stdout }).on("line", line => {
   const event = JSON.parse(line);
-  log({ event: event.event, slot: event.slot ?? null, reason: event.reason ?? null, detail: event.detail ?? null });
+  // A game's lines carry its start; its `closed` line is the readout's per-arm/level/group record.
+  log({ event: event.event, slot: event.slot ?? null, reason: event.reason ?? null, detail: event.detail ?? null,
+    ...(event.game_ref ? gameFacts(event.game_ref) : {}),
+    ...(event.event === "closed" ? { arm: ARM, ascension: ASCENSION, replay_k: REPLAY_K, decisions: event.decisions ?? null,
+      floor: event.public_facts?.floor ?? null, terminal: event.terminal?.result ?? null, evidence_failed: event.evidence_failed ?? null } : {}) });
   if (event.event === "ready") {
     summary.ready_at = Date.now(); isReady = true;
     if (stopping) { stopSent = true; send({ cmd: "stop" }); return; }  // drained before ready
@@ -130,7 +182,7 @@ createInterface({ input: env.stdout }).on("line", line => {
   } else if (event.event === "opened") {
     const tag = arg("tag"), ref = event.game_ref, instance = event.game_instance_id;
     admission.sent += 1;
-    admitCall({ op: "admit", actor: `v3g-${tag}`, intent_id: `v3g-${tag}-${ref}`, seed: seedOf.get(ref), game_instance_id: instance }).then(r => {
+    admitCall({ op: "admit", actor: `v3g-${tag}`, intent_id: `v3g-${tag}-${ref}`, seed: games.get(ref).seed, game_instance_id: instance }).then(r => {
       log({ event: "admission", game_ref: ref, game_instance_id: instance, ok: r.ok, code: r.code ?? null });
       if (r.ok) { admission.admitted += 1; return; }
       admission.refused[r.code] = (admission.refused[r.code] ?? 0) + 1;
@@ -142,14 +194,19 @@ createInterface({ input: env.stdout }).on("line", line => {
     if (!excludedSent.has(event.game_instance_id)) { excludedSent.add(event.game_instance_id); exclude(event.game_instance_id, "evidence_failed"); }
   } else if (event.event === "closed") {
     if (event.evidence_failed && !excludedSent.has(event.game_instance_id)) { excludedSent.add(event.game_instance_id); exclude(event.game_instance_id, "evidence_failed"); }
-    summary.closed.push({ t: Date.now(), slot: event.slot, reason: event.reason, detail: event.detail, decisions: event.decisions,
+    summary.closed.push({ t: Date.now(), ...gameFacts(event.game_ref), slot: event.slot, reason: event.reason, detail: event.detail, decisions: event.decisions,
       game_instance_id: event.game_instance_id, evidence_failed: event.evidence_failed ?? null,
       native_steps: event.native_steps, floor: event.public_facts?.floor ?? null, terminal: event.terminal?.result ?? null });
     if (event.reason === "not_started") {
       const n = (notStartedRun.get(event.slot) ?? 0) + 1; notStartedRun.set(event.slot, n);
       const slot = event.slot; setTimeout(() => open(slot), reopenDelayMs(n));
     } else { notStartedRun.delete(event.slot); open(event.slot); }
-  } else if (event.event === "open_refused") { summary.refused.push(event); if (event.reason !== "build_output_stopped") open(event.slot); }
+  } else if (event.event === "open_refused") {
+    summary.refused.push(event);
+    if (TICKETS && !["build_output_stopped", "stopping"].includes(event.reason))
+      ticketFailed({ slot: event.slot, reason: "open_refused", detail: event.reason, ...gameFacts(event.game_ref) });
+    else if (event.reason !== "build_output_stopped") open(event.slot);
+  }
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);
   else if (event.event === "status") {
     summary.statuses.push({ t: Date.now(), counters: event.counters, slots: event.slots });
@@ -176,4 +233,4 @@ if (a && b) {
     games_closed_in_window: summary.closed.filter(c => c.t > a.t && c.t <= b.t).length };
 }
 writeFileSync(join(OUT, "summary.json"), JSON.stringify(summary, null, 1));
-process.exit(code === 0 ? 0 : 1);
+process.exit(ticketFailure ? 3 : code === 0 ? 0 : 1);
