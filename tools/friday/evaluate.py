@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -41,9 +42,16 @@ RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
 SHARED_LOCAL = "shared_local"
 # The evidence kept next to a finished evaluation (`keep_evidence`): one tar of
 # every scratch file not already held in the peer, plus the observation files.
+SNAPSHOT_V1_SCHEMA = "spireagent/friday-local-snapshot-v1"  # batch.snapshot
 EVIDENCE_SCHEMA = "spireagent/friday-evaluation-evidence-v2"
 EVIDENCE_ARCHIVE = "evidence.tar"
 REPORT_FILES = ("report-source.json", "report-details.json", "report-cohort.json")
+# Wall kept free after the last admitted game ends: its save tail, the observation
+# report (548 s for 100 games, job 1471903) and the evidence tar (8 s).
+CLOSE_RESERVE_SECONDS = 900
+# The in-job report starts only with this much wall left (else `project-report` later),
+# so the evidence is always kept before the Slurm end (USR1 at wall end, kill 300 s on).
+REPORT_MIN_SECONDS = 600
 
 
 def validate_execution(execution: dict[str, Any], selections: dict[str, str]) -> None:
@@ -542,12 +550,18 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
 
 
 def read_observation_report(result_path: Path, plan_path: Path, *,
-                            projection: dict[str, str] | None = None) -> tuple[
+                            projection: dict[str, str] | None = None,
+                            validate_plan: bool = True) -> tuple[
         dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Read the normal saved report, preserving its original ledger qualification."""
+    """Read the normal saved report, preserving its original ledger qualification.
+
+    `validate_plan=False`: a reference round copied elsewhere (its plan pinned by
+    sha256 by the caller); the absolute execution/manifest/model paths it names are
+    not reopened, everything read here is bound by result.json and the plan sha256.
+    """
     from spireagent.json_boundary import json_bytes
 
-    plan = load_plan(plan_path)
+    plan = load_plan(plan_path) if validate_plan else json.loads(plan_path.read_bytes())
     original = json.loads(result_path.read_bytes())
     metadata = read_pinned(projection) if projection is not None else original.get('observation_report')
     root = Path(projection['path']).parent if projection is not None else result_path.parent / 'evidence'
@@ -678,13 +692,13 @@ def peer_held(slot: dict[str, Any], scratch: Path) -> dict[str, Any] | None:
     A `trajectory_and_full_peer` game was saved to the peer twice, each read back in
     full when saved (managed_pipeline): its sealed run directory as global evidence
     (typed verification) and its trajectory in a shard. Receipts are read by their
-    pinned sha256; any mismatch or read error keeps every file of that game.
+    pinned sha256; any mismatch or error (a malformed attempt included) keeps every file
+    of that game.
     """
-    if (slot.get('status') != 'finished' or not slot.get('report')
-            or slot.get('preservation_route') != 'trajectory_and_full_peer'):
+    if not peer_eligible(slot):
         return None
-    attempt = Path(slot['report']['path']).parent
     try:
+        attempt = Path(slot['report']['path']).parent
         row = read_pinned(slot['report'])['episodes'][0]
 
         def receipt(name: str) -> Any:
@@ -705,16 +719,20 @@ def peer_held(slot: dict[str, Any], scratch: Path) -> dict[str, Any] | None:
                 and shard['original_content_id'] == readback['content_id']
                 and (attempt / 'runs' / row['run_id']).is_dir()):
             return None
-    except (OSError, ValueError, KeyError, TypeError):
+        return {'attempt': attempt.relative_to(scratch).as_posix(), 'run_id': row['run_id'],
+                'stored_evidence_id': full['artifact_id'], 'content_id': readback['content_id'],
+                'trajectory_shard_id': shard['artifact_id'],
+                'episode_sha256': shard['episode_sha256'],
+                'trajectory': row['trajectory']['path'], 'preservation': row['preservation'],
+                'trajectory_preservation': row['trajectory_preservation']}
+    except Exception:  # noqa: BLE001 -- any malformed attempt is kept whole, never fatal
         return None
-    return {'attempt': attempt.relative_to(scratch).as_posix(), 'run_id': row['run_id'],
-            'stored_evidence_id': full['artifact_id'], 'content_id': readback['content_id'],
-            'trajectory_shard_id': shard['artifact_id'],
-            'episode_sha256': shard['episode_sha256'], 'trajectory': row['trajectory']['path'],
-            'preservation': row['preservation'],
-            'trajectory_preservation': row['trajectory_preservation'],
-            'full_readback': True, 'typed_verification': 'pass',
-            'trajectory_verification': 'pass'}
+
+
+def peer_eligible(slot: dict[str, Any]) -> bool:
+    """A finished game saved by the trajectory-and-full-peer route (may be peer-held)."""
+    return (slot.get('status') == 'finished' and bool(slot.get('report'))
+            and slot.get('preservation_route') == 'trajectory_and_full_peer')
 
 
 class _HashingWriter:
@@ -742,22 +760,34 @@ def _durable_replace(temporary: Path, path: Path) -> None:
 
 
 def keep_evidence(scratch: Path, root: Path, summary: dict[str, Any],
-                  execution: dict[str, Any]) -> dict[str, Any]:
+                  execution: dict[str, Any], *, interrupted: bool = False) -> dict[str, Any]:
     """Keep every original of this evaluation once (replaces the per-file snapshot).
 
     Not copied again: the run directory and trajectory of each `peer_held` game (in
     the peer, each with its full readback receipt named here), and each attempt's
     copy of the evaluated model when it is byte-identical to the model package the
     plan already keeps. Everything else under the scratch, including every file of
-    any other game (unknown, failed, abnormal), goes into `evidence/evidence.tar`:
+    any other game (unknown, failed, abnormal, or a finished game whose receipts do
+    not check out: counted in `kept_in_full`), goes into `evidence/evidence.tar`:
     written once, its sha256 taken while writing and again from the shared disk.
     The observation files stay plain in `evidence/` (read by name and bound by
     sha256 in result.json). `tar -xf evidence/evidence.tar -C evidence` restores the
-    old copy minus the peer-held files.
+    old copy minus the peer-held files, which live only in the named `peer`
+    (`self_contained: false`: that peer is part of this evaluation's evidence).
+
+    `interrupted`: the job's end signal came while games still ran. Files are read
+    whole before being added and a file that vanishes or cannot be read is skipped and
+    named (`unreadable`); the receipt is marked interrupted and never counts as
+    retained.
     """
     evidence = private_root(root / 'evidence')
-    held = [h for h in (peer_held(slot, scratch) for slot in summary['ledger_report']['slots'])
-            if h is not None]
+    held, kept_in_full = [], []
+    for slot in summary['ledger_report']['slots']:
+        entry = peer_held(slot, scratch)
+        if entry is not None:
+            held.append(entry)
+        elif peer_eligible(slot):
+            kept_in_full.append(slot.get('slot_id'))
     skipped = {scratch / h['attempt'] / 'runs' / h['run_id'] for h in held}
     skipped |= {scratch / h['attempt'] / h['trajectory'] for h in held}
     models = {hashed(path) for model in execution['models'].values()
@@ -777,6 +807,8 @@ def keep_evidence(scratch: Path, root: Path, summary: dict[str, Any],
             if hashed(evidence / name) != plain[name]:
                 raise ValueError('persistent_snapshot_readback_failed')
     copies = files = 0
+    unreadable: list[str] = []
+    not_regular: list[str] = []  # sockets/fifos: tar would skip or mangle them silently
     temporary = evidence / (EVIDENCE_ARCHIVE + '.tmp')
     with temporary.open('wb') as raw:
         writer = _HashingWriter(raw)
@@ -789,14 +821,34 @@ def keep_evidence(scratch: Path, root: Path, summary: dict[str, Any],
                 folders[:] = sorted(f for f in folders if base / f not in skipped)
                 for name in sorted(names):
                     path = base / name
+                    relative = path.relative_to(scratch).as_posix()
                     if path in skipped or base == scratch and name in REPORT_FILES:
                         continue
-                    if (name == 'model.tensor-tree' and base.name == 'registration'
-                            and hashed(path) in models):
-                        copies += 1
+                    if not path.is_file():
+                        if path.exists():
+                            not_regular.append(relative)
+                        elif not interrupted:
+                            raise FileNotFoundError(path)
+                        else:
+                            unreadable.append(relative)
                         continue
-                    archive.add(path, arcname=path.relative_to(scratch).as_posix(),
-                                recursive=False)
+                    try:
+                        if (name == 'model.tensor-tree' and base.name == 'registration'
+                                and hashed(path) in models):
+                            copies += 1
+                            continue
+                        if not interrupted:
+                            archive.add(path, arcname=relative, recursive=False)
+                        else:  # live games may still write: whole bytes, then the header
+                            data = path.read_bytes()
+                            info = archive.gettarinfo(path, arcname=relative)
+                            info.size = len(data)
+                            archive.addfile(info, io.BytesIO(data))
+                    except OSError:
+                        if not interrupted:
+                            raise
+                        unreadable.append(relative)
+                        continue
                     files += 1
         raw.flush()
         os.fsync(raw.fileno())
@@ -804,28 +856,31 @@ def keep_evidence(scratch: Path, root: Path, summary: dict[str, Any],
     written = writer.digest.hexdigest()
     if hashed(evidence / EVIDENCE_ARCHIVE) != written:
         raise ValueError('persistent_snapshot_readback_failed')
-    return {'schema': EVIDENCE_SCHEMA,
-            'archive': {'path': EVIDENCE_ARCHIVE, 'sha256': written, 'bytes': writer.size,
-                        'files': files},
-            'plain': plain, 'peer_held': held,
-            'model_copies': {'package_sha256': sorted(models), 'not_copied': copies},
-            'bytes': writer.size + sum((evidence / name).stat().st_size for name in plain),
-            'full_readback': True}
+    receipt = {'schema': EVIDENCE_SCHEMA,
+               'archive': {'path': EVIDENCE_ARCHIVE, 'sha256': written, 'bytes': writer.size,
+                           'files': files},
+               'plain': plain, 'peer_held': held, 'kept_in_full': kept_in_full,
+               'not_regular': not_regular,
+               'peer': execution.get('peer'), 'self_contained': False,
+               'model_copies': {'package_sha256': sorted(models), 'not_copied': copies},
+               'bytes': writer.size + sum((evidence / name).stat().st_size for name in plain),
+               'full_readback': True}
+    if interrupted:
+        receipt.update(interrupted=True, unreadable=unreadable)
+    return receipt
 
 
 def originals_retained(receipt: dict[str, Any]) -> bool:
     """Every original of a finished evaluation is kept and was read back in full.
 
     v1 (`batch.snapshot`): every scratch file copied and compared. v2
-    (`keep_evidence`): the tar and observation files read back from the shared disk,
-    and each game left in the peer named with its full typed peer and shard readback.
+    (`keep_evidence`): the tar and observation files read back from the shared disk;
+    each listed game passed `peer_held` (full typed peer and shard readback) when kept.
+    Any other schema, and an interrupted (end-signal) receipt, is not retained.
     """
-    if receipt.get('full_readback') is not True:
-        return False
-    if receipt.get('schema') != EVIDENCE_SCHEMA:
-        return True
-    return all(h.get('full_readback') is True and h.get('typed_verification') == 'pass'
-               and h.get('trajectory_verification') == 'pass' for h in receipt['peer_held'])
+    return (receipt.get('full_readback') is True
+            and receipt.get('schema') in (SNAPSHOT_V1_SCHEMA, EVIDENCE_SCHEMA)
+            and not receipt.get('interrupted'))
 
 
 def retained_original(result_root: Path, scratch_retained: str, path: Path,
@@ -876,15 +931,50 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
     remaining_wall = plan['wall_seconds']
     if plan.get('deadline_at') is not None:
         remaining_wall = min(remaining_wall, plan['deadline_at'] - time.time() - 900)
-        if remaining_wall <= plan['episode_seconds'] + 180:
+        if remaining_wall <= plan['episode_seconds'] + CLOSE_RESERVE_SECONDS:
             ledger_stop.touch()
+    wall_end = process_began + remaining_wall
     world_closed = False
+    # The evidence is written once, by the normal close or (end signal first) by
+    # `keep_interrupted`; the normal close always replaces an interrupted copy.
+    close_lock, closing, signalled = threading.Lock(), threading.Event(), threading.Event()
 
-    def stop(_number=None, _frame=None):
+    def keep_interrupted():
+        """USR1 (wall end, Slurm kill 300 s later) came before the close: keep the ledger
+        and every original not yet held in the peer now, from the live scratch."""
+        with close_lock:
+            if closing.is_set():
+                return
+            try:
+                interim = {'schema': 'spireagent/friday-evaluation-result-v1',
+                    'status': 'interrupted', 'interrupted_at': time.time(),
+                    'plan_sha256': hashed(plan_path), 'job_id': os.environ['SLURM_JOB_ID'],
+                    'elapsed_seconds': time.monotonic() - process_began, 'dispatch': None,
+                    'error_type': None, 'error_code': None, 'stop_requested': True,
+                    'selected_slot_ids': selected, 'scratch_retained': str(scratch),
+                    'full_planned_denominator': plan['planned'], 'retry_unknown': False}
+                try:
+                    interim['ledger_report'] = ledger.report()
+                except Exception as error:  # noqa: BLE001 -- then every scratch file is kept
+                    interim.update(ledger_report={'slots': []},
+                                   ledger_report_error=type(error).__name__)
+                receipt = keep_evidence(scratch, root, interim, read_pinned(plan['execution']),
+                                        interrupted=True)
+                save(root / 'snapshot.json', receipt)
+                save(root / 'result.json', interim)
+            except Exception as error:  # noqa: BLE001 -- the normal close may still finish
+                print(json.dumps({'interrupted_evidence_failed': type(error).__name__}),
+                      file=sys.stderr, flush=True)
+
+    def stop(number=None, _frame=None):
         if not world_closed:
             ledger_stop.touch()
         if on_stop is not None:
             on_stop()
+        if number == signal.SIGUSR1 and not signalled.is_set():
+            signalled.set()
+            if not closing.is_set():
+                threading.Thread(target=keep_interrupted, daemon=True).start()
 
     def observe_stop():
         while not stopping.wait(1):
@@ -909,8 +999,8 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
                                            cleanup_seconds=120)
         save(scratch / 'preparation.json', executor.preparation)
         phases['executor_preparation'] = time.monotonic() - phase_began
-        limits = SuiteLimits(150, plan['episode_seconds'], 120,
-                            max(1, remaining_wall - plan['episode_seconds'] - 180), 1, 30)
+        limits = SuiteLimits(150, plan['episode_seconds'], 120, max(
+            1, remaining_wall - plan['episode_seconds'] - CLOSE_RESERVE_SECONDS), 1, 30)
         phase_began = time.monotonic()
         result = ledger.run_managed(workers=plan['workers'], max_episodes=len(selected),
             limits=limits, executor=StopOnUncertain(executor, ledger_stop,
@@ -947,7 +1037,15 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
         summary['timing'] = {'process_started_at': process_started_at, 'phases': phases}
         save(scratch / 'result.json', summary)
         try:
-            if plan.get('observation_report', False):
+            left = wall_end - time.monotonic()
+            if plan.get('observation_report', False) and (
+                    signalled.is_set() or left < REPORT_MIN_SECONDS):
+                # Evidence first; `evaluate.py project-report` writes the report later.
+                summary['observation_report_skipped'] = {
+                    'reason': 'end_signal' if signalled.is_set() else 'close_reserve_low',
+                    'wall_left_seconds': round(left)}
+                save(scratch / 'result.json', summary)
+            elif plan.get('observation_report', False):
                 phase_began = time.monotonic()
                 try:
                     summary['observation_report'] = prepare_observation_report(plan, summary, scratch)
@@ -956,15 +1054,17 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
                         'error_type': type(error).__name__, 'error_code': getattr(error, 'code', None)}
                 phases['observation_report'] = time.monotonic() - phase_began
                 save(scratch / 'result.json', summary)
-            phase_began = time.monotonic()
-            receipt = keep_evidence(scratch, root, summary, read_pinned(plan['execution']))
-            phases['snapshot'] = time.monotonic() - phase_began
-            save(root / 'snapshot.json', receipt)
-            summary['timing'].update(process_finished_at=time.time(),
-                                     process_wall_seconds=time.monotonic() - process_began)
-            # The original elapsed_seconds remains backward compatible. Full
-            # process time includes ledger/preparation/snapshot; Slurm adds queue.
-            save(root / 'result.json', summary)
+            closing.set()
+            with close_lock:  # waits for an interrupted copy in progress, then replaces it
+                phase_began = time.monotonic()
+                receipt = keep_evidence(scratch, root, summary, read_pinned(plan['execution']))
+                phases['snapshot'] = time.monotonic() - phase_began
+                save(root / 'snapshot.json', receipt)
+                summary['timing'].update(process_finished_at=time.time(),
+                                         process_wall_seconds=time.monotonic() - process_began)
+                # The original elapsed_seconds remains backward compatible. Full
+                # process time includes ledger/preparation/snapshot; Slurm adds queue.
+                save(root / 'result.json', summary)
         finally:
             for number, handler in previous.items():
                 signal.signal(number, handler)

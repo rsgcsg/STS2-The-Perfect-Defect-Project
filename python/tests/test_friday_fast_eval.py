@@ -39,7 +39,8 @@ SETTINGS = {'learner_config': '/w/learner.json', 'peer': {'kind': 'local', 'dire
             'seeds': 100, 'pending_limit': 16, 'save_workers': 4, 'memory_gb': 48,
             'expected_steps': 1200, 'wall_seconds': 10800, 'episode_seconds': 1800,
             'interval': 7200, 'max_live': 2, 'partition': 'general',
-            'prepare_partition': 'debug', 'exclude_nodes': [], 'deadline_at': None}
+            'prepare_partition': 'debug', 'exclude_nodes': [], 'deadline_at': None,
+            'deadline_headroom_seconds': 7388}
 
 
 class World:
@@ -134,16 +135,20 @@ def args_for(tmp_path, **overrides):
                   pending_limit=16, save_workers=4, memory_gb=None, expected_steps=1200,
                   wall_seconds=None, episode_seconds=1800, max_live=2, partition='general',
                   prepare_partition='debug', exclude_node=None, deadline_at=None,
-                  checkpoint=None, baseline_plan=None, no_baseline=True)
+                  checkpoint=None, baseline_plan=None, baseline_sha256=None,
+                  baseline_source='explicit', no_baseline=True)
     return __import__('argparse').Namespace(**{**values, **overrides})
 
 
 def test_job_size_and_wall_are_settings_from_games_and_expected_steps(fast_eval, tmp_path):
-    """Lead 11-14 (a)(e): 16 live games, 4 save threads, 3 GB each; wall from games x steps."""
+    """Lead 11-14 (a)(e): 16 live games, 4 save threads, 4 GB each; wall from games x steps."""
     settings = fast_eval.settings_from(args_for(tmp_path))
     assert (settings['pending_limit'], settings['save_workers']) == (16, 4)
-    assert settings['memory_gb'] == 48 and settings['expected_steps'] == 1200
+    assert settings['memory_gb'] == 64 and settings['expected_steps'] == 1200
     assert settings['wall_seconds'] == 100 * 1200 * 1.25 / 16 + 1800 + 900 == 12075
+    assert fast_eval.CLOSE_SECONDS == fast_eval.evaluate.CLOSE_RESERVE_SECONDS == 900
+    # N7: --deadline-at keeps the expected wall (mean steps, without the planned 2x).
+    assert settings['deadline_headroom_seconds'] == 7388 < settings['wall_seconds']
     a10 = fast_eval.settings_from(args_for(tmp_path, seeds=50))
     assert a10['wall_seconds'] == 7388
     longer = fast_eval.settings_from(args_for(tmp_path, expected_steps=2400))
@@ -152,57 +157,99 @@ def test_job_size_and_wall_are_settings_from_games_and_expected_steps(fast_eval,
     given = fast_eval.settings_from(args_for(tmp_path, wall_seconds=7000, memory_gb=90,
                                              pending_limit=8))
     assert given['wall_seconds'] == 7000 and given['memory_gb'] == 90
-    assert fast_eval.settings_from(args_for(tmp_path, pending_limit=8))['memory_gb'] == 24
+    assert fast_eval.settings_from(args_for(tmp_path, pending_limit=8))['memory_gb'] == 32
 
 
-def round_on(tmp_path, name, host_pin):
-    """A reference round: plan.json binding its execution copy (with `host_pin`) by sha."""
+@pytest.mark.parametrize('option', [['--memory-gb', '0'], ['--wall-seconds', '0'],
+                                    ['--baseline-sha256', 'a' * 64],
+                                    ['--baseline-plan', 'p.json']])
+def test_zero_sizes_and_baseline_choices_are_refused_not_defaulted(fast_eval, tmp_path, option):
+    """N4: 0 is not 'the default'; exactly one of --baseline-plan / --no-baseline."""
+    argv = ['fast_eval.py', '--learner-config', 'l', '--execution', 'e', '--manifest', 'm',
+            '--output', str(tmp_path), '--dry-run', *option, '--no-baseline']
+    with patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as stopped:
+        fast_eval.main()
+    assert stopped.value.code == 2
+
+
+PINS = {'host_pin': {'version': 'rc.66'}, 'runtime_pin': {'bundle': 'r1'},
+        'initial_progress': {'progress_json': '{}'}}
+
+
+def round_on(tmp_path, name, manifest, **pins):
+    """A reference round: plan.json binding its execution copy (with the pins) and its
+    seed manifest by sha256, as evaluate.prepare writes them."""
     import hashlib
 
     execution = tmp_path / name / 'execution.json'
     execution.parent.mkdir(parents=True, exist_ok=True)
-    execution.write_text(json.dumps({'host_pin': host_pin}))
+    execution.write_text(json.dumps({**PINS, **pins}))
     plan = tmp_path / name / 'plan.json'
-    plan.write_text(json.dumps({'execution': {
-        'path': str(execution), 'sha256': hashlib.sha256(execution.read_bytes()).hexdigest()}}))
+    plan.write_text(json.dumps({
+        'execution': {'path': str(execution),
+                      'sha256': hashlib.sha256(execution.read_bytes()).hexdigest()},
+        'manifest': {'path': '/elsewhere/manifest.json',
+                     'sha256': hashlib.sha256(manifest.read_bytes()).hexdigest()}}))
     return plan
 
 
-def test_registered_baseline_is_the_default_and_refused_when_changed(fast_eval, tmp_path):
-    import getpass
+def test_baseline_is_explicit_pinned_and_compared_at_start(fast_eval, tmp_path):
+    """M2/S3: the baseline comes from the caller (supervise: site eval_baselines), is
+    recorded with its sha256 and source, and a round on other pins or seeds is refused
+    at start with the differing keys, never dropped later without a word."""
+    import shutil
 
-    a0 = 'managed-rl3-learning-curve-100-20261030-Defect-a0'
-    entry = fast_eval.BASELINES[a0]
-    assert 'w4-evalspeed/a/eval16' in entry['plan']  # a46afd12 on Host rc.66 (job 1471903)
-    assert all(len(e['sha256']) == 64 for e in fast_eval.BASELINES.values())
-    plan = round_on(tmp_path, getpass.getuser() + '/round', {'version': 'rc.66'})
-    pinned = args_for(tmp_path, no_baseline=False)
-    pinned.execution.write_text(json.dumps({'storage_mode': 'shared_local',
-                                            'host_pin': {'version': 'rc.66'}}))
-    registered = {a0: {'plan': 'round/plan.json', 'sha256': fast_eval.hashed(plan)}}
-    with (patch.object(fast_eval, 'BASELINE_ROOT', tmp_path),
-          patch.object(fast_eval, 'BASELINES', registered)):
-        assert fast_eval.settings_from(pinned)['baseline_plan'] == str(plan)
-        pinned.suite = 'managed-rl5-learning-curve-50-20261114-Defect-a10'  # none registered
-        assert fast_eval.settings_from(pinned)['baseline_plan'] is None
-        pinned.suite, pinned.no_baseline = None, True
-        assert fast_eval.settings_from(pinned)['baseline_plan'] is None
-        pinned.no_baseline = False
-        other = round_on(tmp_path, 'other', {'version': 'rc.66'})
-        pinned.baseline_plan = other
-        assert fast_eval.settings_from(pinned)['baseline_plan'] == str(other.resolve())
-        # Another Host pin is refused at start, explicit or registered, never skipped later.
-        pinned.baseline_plan = round_on(tmp_path, 'old-host', {'version': 'rc.64'})
-        with pytest.raises(ValueError, match='baseline_host_pin_differs_from_execution'):
-            fast_eval.settings_from(pinned)
-        pinned.baseline_plan = None
-        pinned.execution.write_text(json.dumps({'storage_mode': 'shared_local',
-                                                'host_pin': {'version': 'rc.64'}}))
-        with pytest.raises(ValueError, match='baseline_host_pin_differs_from_execution'):
-            fast_eval.settings_from(pinned)
-        plan.write_text('{"plan": "changed"}')
-        with pytest.raises(ValueError, match='registered_baseline_plan_missing_or_changed'):
-            fast_eval.settings_from(pinned)
+    args = args_for(tmp_path, no_baseline=False)
+    args.manifest.write_text('{"seeds": ["s1"]}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local', **PINS}))
+    plan = round_on(tmp_path, 'base', args.manifest)
+    args.baseline_plan, args.baseline_source = plan, 'site'
+    args.baseline_sha256 = fast_eval.hashed(plan)
+    assert fast_eval.settings_from(args)['baseline'] == {
+        'plan': str(plan.resolve()), 'sha256': fast_eval.hashed(plan), 'source': 'site'}
+    # Copied to a stable place: the execution is read beside the plan, by its sha256.
+    stable = tmp_path / 'stable/round'
+    shutil.copytree(plan.parent, stable)
+    shutil.rmtree(plan.parent)
+    args.baseline_plan = stable / 'plan.json'
+    assert fast_eval.settings_from(args)['baseline']['plan'] == str(stable / 'plan.json')
+    args.baseline_sha256 = 'f' * 64
+    with pytest.raises(ValueError, match='baseline_plan_missing_or_changed'):
+        fast_eval.settings_from(args)
+    args.baseline_sha256 = None
+    for key, value in (('host_pin', {'version': 'rc.64'}), ('runtime_pin', {'bundle': 'r0'}),
+                       ('initial_progress', {'progress_json': '[]'})):
+        args.baseline_plan = round_on(tmp_path, key, args.manifest, **{key: value})
+        with pytest.raises(ValueError, match=f'differs_from_this_watcher: {key}$'):
+            fast_eval.settings_from(args)
+    other = tmp_path / 'm10.json'
+    other.write_text('{"seeds": ["a10"]}')
+    args.baseline_plan = round_on(tmp_path, 'a10', other)
+    with pytest.raises(ValueError, match='seed_manifest'):
+        fast_eval.settings_from(args)
+    args.baseline_plan, args.no_baseline = None, True
+    assert fast_eval.settings_from(args)['baseline'] is None
+
+
+def test_check_mode_runs_the_start_checks_and_writes_nothing(fast_eval, tmp_path, capsys):
+    """M1: supervise runs `--check` before generation 0; a refusal exits non-zero."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    base = round_on(tmp_path, 'base', args.manifest, host_pin={'version': 'rc.64'})
+    argv = ['fast_eval.py', '--learner-config', str(args.learner_config),
+            '--execution', str(args.execution), '--manifest', str(args.manifest),
+            '--output', str(tmp_path / 'out'), '--slot-registered', '--check']
+    with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(sys, 'argv', [*argv, '--no-baseline']),
+          pytest.raises(SystemExit) as done):
+        fast_eval.main()
+    assert done.value.code == 0 and json.loads(capsys.readouterr().out)['check'] == 'ok'
+    with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(sys, 'argv', [*argv, '--baseline-plan', str(base)]),
+          pytest.raises(SystemExit) as done):
+        fast_eval.main()
+    assert done.value.code == 2 and 'host_pin' in capsys.readouterr().err
+    assert not (tmp_path / 'out').exists()
 
 
 def test_busy_failed_and_deadline_skip_without_stopping(fast_eval, tmp_path):
@@ -435,17 +482,21 @@ def test_one_given_cp_without_R2_is_prepared_once(fast_eval, tmp_path):
                                 {'kind': 'local', 'directory': '/p', 'archive': {'kind': 's3'}})
 
 
+BASELINE = {'plan': '/base/plan.json', 'sha256': 'b' * 64, 'source': 'site'}
+
+
 def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval, tmp_path):
     world = World()
     world.record('cp-a', 10)
-    runner = loop(fast_eval, world, tmp_path, baseline_plan='/base/plan.json')
+    runner = loop(fast_eval, world, tmp_path, baseline=BASELINE)
     calls = []
 
     def report(root, baseline, previous):
         calls.append((root, baseline, previous))
-        return {'report_directory': str(root / 'report'), 'cohorts': {'current': {
-            'scored': 99, 'wins': 1, 'mean_floor': 37.5, 'reward_mean': 0.48,
-            'conservative': 0.48}}}
+        return {'report_directory': str(root / 'report'), 'baseline': baseline,
+                'paired': {'baseline': {}}, 'skipped_references': {},
+                'cohorts': {'current': {'scored': 99, 'wins': 1, 'mean_floor': 37.5,
+                                        'reward_mean': 0.48, 'conservative': 0.48}}}
 
     runner_report = patch.object(fast_eval, 'write_evaluation_report', report)
     with runner_report:
@@ -458,11 +509,12 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
         runner.tick()  # ended, result not visible yet: grace
         assert first['stage'] == 'submitted' and not calls
         result = Path(first['root']) / 'round/evaluation/result.json'
-        result.write_text('{}')
+        result.write_text('{"observation_report": {}}')
         runner.tick()
-        assert first['stage'] == 'reported' and calls == [
-            (Path(first['root']), '/base/plan.json', None)]
-        assert runner.state['log'][-1]['kind'] == 'evaluation_reported'
+        assert first['stage'] == 'reported' and calls == [(Path(first['root']), BASELINE, None)]
+        reported = runner.state['log'][-1]
+        assert reported['kind'] == 'evaluation_reported' and reported['baseline'] == BASELINE
+        assert reported['paired'] == ['baseline'] and reported['skipped'] == {}
         world.record('cp-b', 20)
         world.now += 7200
         runner.tick()
@@ -474,6 +526,35 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
         world.now += fast_eval.RESULT_GRACE_SECONDS
         runner.tick()
         assert second['stage'] == 'evaluation_ended_without_result' and len(calls) == 1
+
+
+def test_skipped_baseline_and_deferred_report_are_loud(fast_eval, tmp_path, capsys):
+    """M2: an unpaired report is never quiet; S1: a skipped in-job report is deferred."""
+    world = World()
+    runner = loop(fast_eval, world, tmp_path, baseline=BASELINE)
+    root = tmp_path / 'evaluation-0001'
+    (root / 'round/evaluation').mkdir(parents=True)
+    item = {'number': 1, 'checkpoint': 'cp-a', 'root': str(root), 'stage': 'submitted'}
+    runner.state['evaluations'].append(item)
+    result = root / 'round/evaluation/result.json'
+    result.write_text(json.dumps({'status': 'completed', 'observation_report_skipped': {
+        'reason': 'close_reserve_low', 'wall_left_seconds': 420}}))
+    runner.report(item)
+    assert item['stage'] == 'report_deferred'
+    assert runner.state['log'][-1]['kind'] == 'evaluation_report_deferred'
+    assert 'evaluation_report_deferred' in capsys.readouterr().err
+    skipped = {'plan': '/base/plan.json', 'differing': ['input_spec']}
+    result.write_text('{"observation_report": {}}')
+    with patch.object(fast_eval, 'write_evaluation_report', lambda *_: {
+            'report_directory': 'r', 'baseline': BASELINE, 'paired': {},
+            'skipped_references': {'baseline': skipped}, 'cohorts': {'current': {
+                'scored': 50, 'wins': 0, 'mean_floor': 20.0, 'reward_mean': 0.1,
+                'conservative': 0.1}}}):
+        runner.report(item)
+    kinds = [entry['kind'] for entry in runner.state['log'][-2:]]
+    assert kinds == ['evaluation_reported', 'evaluation_baseline_skipped']
+    assert runner.state['log'][-1]['differing'] == ['input_spec']
+    assert 'evaluation_baseline_skipped' in capsys.readouterr().err
 
 
 def cohort(tmp_path, name, rows, protocol='rc.64'):
@@ -499,16 +580,28 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
                                        ('s2', 'finished', 48, 'win'),
                                        ('s3', 'unknown', 44, None)])
     other = cohort(tmp_path, 'old', [('s1', 'finished', 9, 'loss')], protocol='rc.63')
+    pinned = tmp_path / 'stable/plan.json'  # a copied baseline round, pinned by sha256
+    pinned.parent.mkdir()
+    pinned.write_text('{"plan": "base"}')
     plans = {str(tmp_path / 'eval/round/evaluation/plan.json'): current,
-             '/base/plan.json': base, '/old/plan.json': other}
+             str(pinned): base, '/old/plan.json': other}
+    validated = {}
 
-    def read(result, plan):
+    def read(result, plan, validate_plan=True):
+        validated[str(plan)] = validate_plan
         value = plans[str(plan)]
         return {'manifest': {'sha256': 'm'}}, {}, {'cohort': value}
 
+    baseline = {'plan': str(pinned), 'sha256': fast_eval.hashed(pinned), 'source': 'site'}
     with patch.object(fast_eval.evaluate, 'read_observation_report', read):
-        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', '/base/plan.json',
+        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', baseline,
                                                     '/old/plan.json')
+        with pytest.raises(ValueError, match='baseline_plan_changed'):
+            fast_eval.write_evaluation_report(tmp_path / 'eval', {**baseline, 'sha256': 'f' * 64},
+                                              None)
+    assert validated == {str(tmp_path / 'eval/round/evaluation/plan.json'): True,
+                         str(pinned): False, '/old/plan.json': True}
+    assert summary['baseline'] == baseline
     assert summary['skipped_references'] == {
         'previous': {'plan': '/old/plan.json', 'differing': ['host_pin']}}
     now = summary['cohorts']['current']

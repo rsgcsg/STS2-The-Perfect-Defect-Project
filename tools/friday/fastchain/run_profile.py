@@ -420,6 +420,20 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
 GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list}
 
 
+def _baseline(value: Any) -> str | None:
+    ok = (isinstance(value, dict) and set(value) == {"plan", "sha256"}
+          and isinstance(value["plan"], str) and isinstance(value["sha256"], str)
+          and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None)
+    return None if ok else "{plan = path, sha256 = 64 hex}"
+
+
+# Optional site keys. eval_baselines: the registered reference round per evaluation
+# watcher (supervise: a0, a10), its plan.json pinned by sha256 (fast_eval --baseline-*).
+OPTIONAL_SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
+    "eval_baselines": _table_of(_baseline, frozenset({"a0", "a10"}), "baselines"),
+}
+
+
 class ProfileError(ValueError):
     """A profile that is incomplete, mistyped or carries unknown knobs."""
 
@@ -491,8 +505,9 @@ def load_site(path: Path) -> dict[str, Any]:
     if not isinstance(site, dict):
         raise ProfileError("site profile needs a [site] table")
     problems = [f"{key}: missing" for key in sorted(set(SITE_KEYS) - set(site))]
-    problems += [f"{key}: unknown site key" for key in sorted(set(site) - set(SITE_KEYS))]
-    for key, check in SITE_KEYS.items():
+    problems += [f"{key}: unknown site key" for key in sorted(
+        set(site) - set(SITE_KEYS) - set(OPTIONAL_SITE_KEYS))]
+    for key, check in {**SITE_KEYS, **OPTIONAL_SITE_KEYS}.items():
         if key in site and check(site[key]):
             problems.append(f"{key}: expected {check(site[key])}")
     for name, spec in (site.get("gpu_types") or {}).items():

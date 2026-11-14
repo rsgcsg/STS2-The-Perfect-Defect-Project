@@ -420,6 +420,66 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
     assert len(offers) == 1
 
 
+def test_end_signal_during_play_keeps_evidence_at_once_and_the_close_replaces_it(
+        evaluate, execution, tmp_path, monkeypatch):
+    """S1: USR1 (wall end; Slurm kills 300 s later) while a game still runs: the ledger and
+    scratch are kept at once (interrupted), the in-job report waits for project-report,
+    and the normal close, if it gets there, replaces the interim copy."""
+    import signal
+    import time
+
+    from spireagent.workbench import evaluation_ledger as owner
+    from spireagent.workbench import managed_pipeline
+
+    _plan, directory = prepared(evaluate, execution, tmp_path, workers=1, limit=1)
+    planned = evaluate.load_plan  # the report needs one model; here only its skip matters
+    monkeypatch.setattr(evaluate, 'load_plan',
+                        lambda path: {**planned(path), 'observation_report': True})
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(owner.shutil, 'disk_usage', lambda _: usage._replace(free=100 * 1024**3))
+    seen = {}
+
+    class HostReplaced:
+        preparation = {'test_boundary': 'Host and remote IO replaced, no gameplay proof'}
+
+        def __init__(self, configuration, **_keywords):
+            pass
+
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            os.kill(os.getpid(), signal.SIGUSR1)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (directory / 'result.json').exists():
+                time.sleep(0.05)
+            seen['result'] = json.loads((directory / 'result.json').read_bytes())
+            seen['snapshot'] = json.loads((directory / 'snapshot.json').read_bytes())
+            row.update(status='unknown', reason='injected_delivery_uncertainty',
+                       execution_status='unknown', cleanup_accepted=True,
+                       world_mutation_offered=True)
+            checkpoint()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(managed_pipeline, 'PipelinedManagedExecutor', HostReplaced)
+    monkeypatch.setattr(evaluate.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'test-owned-allocation')
+    monkeypatch.setenv('SLURM_CPUS_PER_TASK', '1')
+    monkeypatch.setattr(evaluate, 'prepare_observation_report',
+                        lambda *_: pytest.fail('after the end signal the report waits'))
+    result = evaluate.run(directory / 'plan.json')
+    assert seen['result']['status'] == 'interrupted'
+    assert seen['result']['ledger_report']['slots'][0]['status'] == 'reserved'
+    assert seen['snapshot']['interrupted'] is True and seen['snapshot']['archive']['files'] > 0
+    assert not evaluate.originals_retained(seen['snapshot'])
+    assert result['observation_report_skipped']['reason'] == 'end_signal'
+    final = json.loads((directory / 'snapshot.json').read_bytes())
+    assert 'interrupted' not in final and evaluate.originals_retained(final)
+    assert json.loads((directory / 'result.json').read_bytes())['status'] == result['status']
+    assert result['status'] != 'interrupted' and result['stop_requested'] is True
+    with tarfile.open(directory / 'evidence/evidence.tar') as archive:
+        assert 'ledger/plan.json' in archive.getnames()
+
+
 def test_prepare_cli_accepts_runtime_source_and_freezes_plan(execution, tmp_path):
     runtime = tmp_path / 'frozen-source'
     (runtime / 'tools/friday').mkdir(parents=True)
@@ -535,9 +595,12 @@ def test_evidence_keeps_peer_held_games_by_receipt_and_the_rest_in_one_tar(evalu
     for name in evaluate.REPORT_FILES:
         (scratch / name).write_text(name)
     (scratch / 'result.json').write_text('{}')
+    changed['slot_id'] = 'slot-3'
     summary = {'ledger_report': {'slots': [held, unknown, changed, {'status': 'not_started'}]}}
+    peer = {'kind': 'local', 'directory': '/peer'}
     receipt = evaluate.keep_evidence(scratch, root, summary,
-                                     {'models': {'m': {'package_directory': str(package)}}})
+                                     {'models': {'m': {'package_directory': str(package)}},
+                                      'peer': peer})
     with tarfile.open(root / 'evidence/evidence.tar') as archive:
         names = set(archive.getnames())
     assert {'ledger/attempts/000001/report.json', 'ledger/attempts/000001/0013-preservation.json',
@@ -554,20 +617,76 @@ def test_evidence_keeps_peer_held_games_by_receipt_and_the_rest_in_one_tar(evalu
     assert all((root / 'evidence' / name).read_text() == name for name in evaluate.REPORT_FILES)
     assert receipt['archive']['sha256'] == evaluate.hashed(root / 'evidence/evidence.tar')
     assert receipt['archive']['files'] == len(names)
-    [peer] = receipt['peer_held']
-    assert peer['run_id'] == 'run-1' and peer['stored_evidence_id'] == '1' * 64
-    assert peer['attempt'] == 'ledger/attempts/000001' and peer['content_id'] == 'c' * 64
+    [held_entry] = receipt['peer_held']
+    assert held_entry['run_id'] == 'run-1' and held_entry['stored_evidence_id'] == '1' * 64
+    assert held_entry['attempt'] == 'ledger/attempts/000001'
+    assert held_entry['content_id'] == 'c' * 64
+    # S2: the peer-held files live only in the named peer; S4: counted when kept whole.
+    assert receipt['peer'] == peer and receipt['self_contained'] is False
+    assert receipt['kept_in_full'] == ['slot-3'] and receipt['not_regular'] == []
     assert evaluate.originals_retained(receipt)
-    assert not evaluate.originals_retained(
-        {**receipt, 'peer_held': [{**peer, 'typed_verification': 'fail'}]})
     assert evaluate.originals_retained({'schema': 'spireagent/friday-local-snapshot-v1',
                                         'full_readback': True})
-    assert not evaluate.originals_retained({'full_readback': False})
+    for other in ({'full_readback': False}, {'full_readback': True},  # N1: only v1 or v2
+                  {'schema': 'spireagent/other', 'full_readback': True},
+                  {**receipt, 'interrupted': True}):
+        assert not evaluate.originals_retained(other)
     shutil.rmtree(scratch)  # the node scratch is gone: an attempt comes back from the tar
     path = evaluate.retained_original(root, str(scratch), Path(unknown['report']['path']),
                                       tmp_path / 'work')
     assert evaluate.hashed(path) == unknown['report']['sha256']
     assert (path.parent / 'runs/run-2/events.jsonl').is_file()
+
+
+def test_one_malformed_attempt_is_kept_whole_and_the_rest_proceed(evaluate, tmp_path):
+    """S4: a finished game whose receipts cannot be read never aborts the evidence step."""
+    scratch, root = tmp_path / 'scratch', (tmp_path / 'round').resolve()
+    root.mkdir(mode=0o700)
+    held = write_attempt(evaluate, scratch, 1)
+    empty = write_attempt(evaluate, scratch, 2)
+    (scratch / 'ledger/attempts/000002/report.json').write_text('{"episodes": []}')
+    empty['report']['sha256'] = evaluate.hashed(scratch / 'ledger/attempts/000002/report.json')
+    pathless = write_attempt(evaluate, scratch, 3)
+    del pathless['report']['path']
+    empty['slot_id'], pathless['slot_id'] = 'slot-2', 'slot-3'
+    os.mkfifo(scratch / 'ledger/pipe')  # N2: not a regular file, named, never counted
+    receipt = evaluate.keep_evidence(scratch, root, {'ledger_report': {
+        'slots': [held, empty, pathless]}}, {'models': {}})
+    with tarfile.open(root / 'evidence/evidence.tar') as archive:
+        names = set(archive.getnames())
+    assert [h['run_id'] for h in receipt['peer_held']] == ['run-1']
+    assert receipt['kept_in_full'] == ['slot-2', 'slot-3']
+    assert {'ledger/attempts/000002/runs/run-2/events.jsonl',
+            'ledger/attempts/000003/runs/run-3/events.jsonl'} <= names
+    assert receipt['not_regular'] == ['ledger/pipe'] and 'ledger/pipe' not in names
+    assert receipt['archive']['files'] == len(names)
+
+
+def test_interrupted_evidence_skips_unreadable_files_and_is_never_retained(evaluate, tmp_path):
+    """S1: at the end signal the live scratch is kept as far as it can be read."""
+    scratch, root = tmp_path / 'scratch', (tmp_path / 'round').resolve()
+    root.mkdir(mode=0o700)
+    write_attempt(evaluate, scratch, 1, finished=False)
+    locked = scratch / 'ledger/attempts/000001/private/live.log'
+    locked.write_text('being written')
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip('running as a user that reads mode-0 files')
+        with pytest.raises(PermissionError):
+            evaluate.keep_evidence(scratch, root, {'ledger_report': {'slots': []}},
+                                   {'models': {}})
+        receipt = evaluate.keep_evidence(scratch, root, {'ledger_report': {'slots': []}},
+                                         {'models': {}}, interrupted=True)
+    finally:
+        locked.chmod(0o600)
+    with tarfile.open(root / 'evidence/evidence.tar') as archive:
+        names = set(archive.getnames())
+        assert archive.extractfile('ledger/attempts/000001/private/host.log').read() == b'log'
+    assert receipt['interrupted'] is True
+    assert receipt['unreadable'] == ['ledger/attempts/000001/private/live.log']
+    assert 'ledger/attempts/000001/runs/run-1/events.jsonl' in names
+    assert not evaluate.originals_retained(receipt)
 
 
 def test_unknown_submission_outcome_keeps_intent_and_is_never_automatically_resubmitted(

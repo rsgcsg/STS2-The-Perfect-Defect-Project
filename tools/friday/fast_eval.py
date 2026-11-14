@@ -24,17 +24,27 @@ Rules (RL4.1 long-run lessons, lead 11-12):
   the round;
 - job size (EVAL-SPEED-CHECK 11-14, lead decision a/e): 16 workers, 16 live games
   (`--pending-limit`: playing + saving + waiting for a shard) and 4 save threads, the
-  code maximums; memory 3 GB per live game; job wall from the number of games and
+  code maximums; memory 4 GB per live game; job wall from the number of games and
   the expected mean steps per game (`planned_wall_seconds`, `--expected-steps`), so
   longer games of a stronger CP get a longer wall. All are fast_eval settings,
   frozen in state.json and passed to `evaluate.py prepare-checkpoint`;
 - after the evaluation job ends, the owner's report (`stpd.evaluation.rl_observation`:
   per-floor distribution, max floor, Boss counts, wins, mean reward, paired deltas)
-  is written next to it against the baseline (`--baseline-plan`; default: the suite's
-  registered round, `registered_baseline`) and the previous evaluation when their
+  is written next to it against the baseline and the previous evaluation when their
   observed protocol and seed manifest match; a different protocol is skipped and
-  named, never compared. A baseline on another Host pin than `--execution` is
-  refused at start, so pairing is never dropped silently. `--no-baseline` reports none.
+  named, never compared;
+- the baseline is chosen explicitly: `--baseline-plan` (pinned by `--baseline-sha256`;
+  supervise passes the site's registered round, `eval_baselines`) or `--no-baseline`
+  (e.g. the first evaluation on a new Host pin). Pairing is never dropped silently:
+  at start the baseline round must have this execution's Host and Runtime pins and
+  initial progress and this seed manifest, else the loop refuses to start (`--check`
+  runs exactly these start checks and exits); what is only known after the games
+  (input spec, policy) is compared in the report, and a skipped baseline is a loud
+  `evaluation_baseline_skipped` (state log and stderr). summary.json and the
+  `evaluation_reported` note name the baseline `{plan, sha256, source}`;
+- the job keeps `evaluate.CLOSE_RESERVE_SECONDS` of its wall for the save tail, the
+  report and the evidence; a job that had to skip its in-job report is
+  `report_deferred` here (loud): `evaluate.py project-report` writes it later.
 
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
@@ -54,7 +64,6 @@ published detached model, not the CP.
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import math
 import shlex
@@ -77,23 +86,18 @@ WORKERS = 16  # RL4.2 final eval: 25 games on 8 workers took 1,700-2,450 s of pl
 # Job 1470561 (EVAL-SPEED-CHECK 11-14): 8 live slots held 16 cores to ~4 playing games.
 PENDING_LIMIT = 16  # live games per job: playing + saving + waiting for a shard
 SAVE_WORKERS = 4  # save threads overlap without slowing each other (91 vs 97 ms/step)
-MEMORY_GB_PER_LIVE = 3  # job 1471903: MaxRSS 34.1 GB at 16 live games = 2.1 GB each
+# Job 1471903: MaxRSS 34.1 GB at 16 live games = 2.1 GB each; 4 GB (the old 4 GB per
+# worker) keeps ~1.9x, since an out-of-memory kill loses the whole job.
+MEMORY_GB_PER_LIVE = 4
 EXPECTED_STEPS = 1200  # mean steps per game the wall plans for: 2x the measured 604
 # Live-slot seconds per step incl. its save queue, at 16 live (job 1471903):
 # 4,568 s x 16 / 59,814 = 1.22 (0.92 at 8 live; queued saves hold slots longer).
 STEP_SECONDS = 1.25
-CLOSE_SECONDS = 900  # after play: observation report (548 s for 100 games) + evidence tar
+# After play: save tail, observation report (548 s for 100 games), evidence tar (8 s).
+CLOSE_SECONDS = evaluate.CLOSE_RESERVE_SECONDS
 MAX_WALL_SECONDS = 21600  # evaluate.prepare's bound
-# Registered references per suite (lead 11-14), pinned by sha256 under the user's
-# /data/scratch. A0 100: CP a46afd12b19d323b... on Host rc.66 (job 1471903), per seed
-# identical to the rc.64 round of job 1470561 (100/100), which it replaces: the report
-# pairs only rounds on one Host pin.
-BASELINE_ROOT = Path("/data/scratch")
-BASELINES = {
-    "managed-rl3-learning-curve-100-20261030-Defect-a0": {
-        "plan": "rl41-20261104/rl5-prewrite-20261109/w4-evalspeed/a/eval16/evaluation-0001/"
-                "round/evaluation/plan.json",
-        "sha256": "56a4c3b34e9e2f60e4dc3c613b3fdf5b3850b3230848d078417135f298a37cb1"}}
+# Compared at start: the execution's pins against the baseline round's own execution.
+START_PINS = ("host_pin", "runtime_pin", "initial_progress")
 PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
 RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
@@ -140,30 +144,36 @@ def planned_wall_seconds(seeds: int, expected_steps: int, live: int,
     return min(MAX_WALL_SECONDS, play + episode_seconds + CLOSE_SECONDS)
 
 
-def registered_baseline(suite: str | None) -> str | None:
-    """The registered reference plan of `suite` (default: the fixed A0 100), or None.
-
-    A missing or changed plan is refused, never silently dropped: pass `--baseline-plan`
-    or `--no-baseline`.
-    """
-    from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
-
-    entry = BASELINES.get(suite or RL3_LEARNING_CURVE_SUITE_ID)
-    if entry is None:
-        return None
-    path = BASELINE_ROOT / getpass.getuser() / entry["plan"]
-    if not path.is_file() or hashed(path) != entry["sha256"]:
-        raise ValueError("registered_baseline_plan_missing_or_changed")
-    return str(path)
-
-
-def plan_host_pin(plan: Path) -> Any:
-    """The Host pin a round ran on: from the execution copy its plan binds by sha256."""
-    execution = json.loads(plan.read_bytes())["execution"]
-    path = Path(execution["path"])
-    if hashed(path) != execution["sha256"]:
+def round_execution(plan: Path) -> dict[str, Any]:
+    """A round's execution: the copy beside its plan.json, pinned by the plan's sha256
+    (a reference round copied to a stable place stays readable)."""
+    bound = json.loads(plan.read_bytes())["execution"]
+    path = plan.parent / Path(bound["path"]).name
+    if not path.is_file() or hashed(path) != bound["sha256"]:
         raise ValueError("baseline_execution_changed")
-    return json.loads(path.read_bytes()).get("host_pin")
+    return json.loads(path.read_bytes())
+
+
+def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
+                     execution: dict[str, Any], manifest: Path) -> dict[str, Any] | None:
+    """`{plan, sha256, source}` of the baseline round, or None (`--no-baseline`).
+
+    Refused at start, never dropped later without a word: a plan that is missing or not
+    the pinned sha256, or a round on other Host/Runtime pins, initial progress or seed
+    manifest than this watcher (the differing keys are named).
+    """
+    if plan is None:
+        return None
+    plan = plan.resolve()
+    if not plan.is_file() or sha256 is not None and hashed(plan) != sha256:
+        raise ValueError("baseline_plan_missing_or_changed")
+    theirs = round_execution(plan)
+    differing = [key for key in START_PINS if theirs.get(key) != execution.get(key)]
+    if json.loads(plan.read_bytes())["manifest"]["sha256"] != hashed(manifest):
+        differing.append("seed_manifest")
+    if differing:
+        raise ValueError("baseline_round_differs_from_this_watcher: " + ", ".join(differing))
+    return {"plan": str(plan), "sha256": hashed(plan), "source": source}
 
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
@@ -351,9 +361,18 @@ class Loop:
     def report(self, item: dict[str, Any]) -> None:
         previous = [e for e in self.state["evaluations"]
                     if e["stage"] == "reported" and e["number"] < item["number"]]
+        result = json.loads((Path(item["root"]) / "round/evaluation/result.json").read_bytes())
+        if "observation_report" not in result:  # skipped (end of wall), failed or interrupted
+            item.update(stage="report_deferred", status=result.get("status"))
+            self.loud("evaluation_report_deferred", checkpoint=item["checkpoint"],
+                      status=result.get("status"),
+                      reason=result.get("observation_report_skipped")
+                      or result.get("observation_report_error"),
+                      then="evaluate.py project-report --result/--plan of round/evaluation")
+            return
         try:
             summary = write_evaluation_report(
-                Path(item["root"]), self.settings.get("baseline_plan"),
+                Path(item["root"]), self.settings.get("baseline"),
                 str(Path(previous[-1]["root"]) / "round/evaluation/plan.json")
                 if previous else None)
         except Exception as error:  # noqa: BLE001 -- originals stay; the report is a projection
@@ -366,11 +385,23 @@ class Loop:
         self.note("evaluation_reported", checkpoint=item["checkpoint"],
                   report=summary["report_directory"], scored=current["scored"],
                   wins=current["wins"], mean_floor=current["mean_floor"],
-                  reward=current["reward_mean"], conservative=current["conservative"])
+                  reward=current["reward_mean"], conservative=current["conservative"],
+                  baseline=summary["baseline"], paired=sorted(summary["paired"]),
+                  skipped=summary["skipped_references"])
+        if "baseline" in summary["skipped_references"]:
+            self.loud("evaluation_baseline_skipped", checkpoint=item["checkpoint"],
+                      **summary["skipped_references"]["baseline"])
+
+    def loud(self, kind: str, **fields: Any) -> None:
+        """A note that must not go unseen: the state log and stderr."""
+        self.note(kind, **fields)
+        print(f"*** fast_eval {kind}: {json.dumps(fields, sort_keys=True)}", file=sys.stderr,
+              flush=True)
 
     def start(self) -> None:
         deadline = self.settings.get("deadline_at")
-        if deadline is not None and self.clock() >= deadline - self.settings["wall_seconds"]:
+        headroom = self.settings["deadline_headroom_seconds"]
+        if deadline is not None and self.clock() >= deadline - headroom:
             return self.note("evaluation_skipped", reason="absolute_deadline_headroom")
         evaluations = self.state["evaluations"]
         if any(e["stage"] == "preparing" for e in evaluations):
@@ -427,29 +458,37 @@ class Loop:
         return None
 
 
-def write_evaluation_report(root: Path, baseline_plan: str | None,
+def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
                             previous_plan: str | None) -> dict[str, Any]:
     """The owner's report for one finished evaluation round (`<root>/report`).
 
     Reads only the saved, hash-bound observation files of each round
-    (`evaluate.read_observation_report`). A reference with another observed protocol
+    (`evaluate.read_observation_report`; the baseline by its pinned plan sha256, from
+    wherever its round was copied). A reference with another observed protocol
     (Host/Runtime/input/progress pins, policy) or another seed manifest is skipped
-    and named, never compared. Unknown/failed games stay unscored rows (excluded per
-    pair, listed with the floor they reached); the round is never voided.
+    and named (`skipped_references`), never compared. Unknown/failed games stay
+    unscored rows (excluded per pair, listed with the floor they reached); the round
+    is never voided.
     """
     from stpd.evaluation.rl_observation import write_report
 
-    def cohort(plan: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-        frozen, _, files = evaluate.read_observation_report(plan.parent / "result.json", plan)
+    def cohort(plan: Path, *, pinned: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        if pinned is not None and hashed(plan) != pinned:
+            raise ValueError("baseline_plan_changed")
+        frozen, _, files = evaluate.read_observation_report(
+            plan.parent / "result.json", plan, validate_plan=pinned is None)
         return files["cohort"], frozen
 
     current, plan = cohort(root / "round/evaluation/plan.json")
     cohorts: dict[str, dict[str, Any]] = {}
     skipped: dict[str, Any] = {}
-    for name, reference in (("baseline", baseline_plan), ("previous", previous_plan)):
+    references = (("baseline", baseline["plan"] if baseline else None),
+                  ("previous", previous_plan))
+    for name, reference in references:
         if reference is None:
             continue
-        group, frozen = cohort(Path(reference))
+        group, frozen = cohort(Path(reference), pinned=baseline["sha256"]
+                               if name == "baseline" and baseline else None)
         old, new = group["protocol_observed"], current["protocol_observed"]
         keys = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
         keys += [k for k in ("host_kind", "character", "ascension") if group[k] != current[k]]
@@ -467,7 +506,8 @@ def write_evaluation_report(root: Path, baseline_plan: str | None,
         + (" Skipped references (different protocol or seeds): "
            + json.dumps(skipped, sort_keys=True) if skipped else "")))
     summary: dict[str, Any] = {"schema": SCHEMA + "/report", "report_directory": str(output),
-                               "skipped_references": skipped, "cohorts": {}, "paired": {}}
+                               "baseline": baseline, "skipped_references": skipped,
+                               "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
         reward = report["rewards"][name]
@@ -511,13 +551,8 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     config = json.loads(args.learner_config.read_bytes())
     execution = json.loads(args.execution.read_bytes())
     live = min(args.workers, args.pending_limit)
-    if args.baseline_plan:
-        baseline = str(args.baseline_plan.resolve())
-    else:
-        baseline = None if args.no_baseline else registered_baseline(args.suite)
-    if baseline is not None and plan_host_pin(Path(baseline)) != execution.get("host_pin"):
-        # The report never pairs across Host pins: refuse now instead of a silent skip.
-        raise ValueError("baseline_host_pin_differs_from_execution")
+    baseline = resolve_baseline(args.baseline_plan, args.baseline_sha256, args.baseline_source,
+                                execution, args.manifest.resolve())
     return {"learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation,
@@ -525,16 +560,22 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_source": str(Path(__file__).resolve().parents[2]),
             "workers": args.workers, "seeds": args.seeds,
             "pending_limit": args.pending_limit, "save_workers": args.save_workers,
-            "memory_gb": args.memory_gb or MEMORY_GB_PER_LIVE * live,
+            "memory_gb": args.memory_gb if args.memory_gb is not None
+            else MEMORY_GB_PER_LIVE * live,
             "expected_steps": args.expected_steps,
-            "wall_seconds": args.wall_seconds or planned_wall_seconds(
-                args.seeds, args.expected_steps, live, args.episode_seconds),
+            "wall_seconds": args.wall_seconds if args.wall_seconds is not None
+            else planned_wall_seconds(args.seeds, args.expected_steps, live, args.episode_seconds),
+            # --deadline-at: the last evaluation starts while the expected wall (games at
+            # the mean steps, without the planned 2x) still fits; the job itself stops
+            # admitting games in time for its deadline (evaluate.run).
+            "deadline_headroom_seconds": planned_wall_seconds(
+                args.seeds, max(1, args.expected_steps // 2), live, args.episode_seconds),
             "episode_seconds": args.episode_seconds, "interval": args.interval,
             "max_live": args.max_live, "partition": args.partition,
             "prepare_partition": args.prepare_partition,
             "exclude_nodes": args.exclude_node or [], "deadline_at": args.deadline_at,
             "checkpoint": args.checkpoint, "r2": check_storage(execution, config["peer"]),
-            "baseline_plan": baseline}
+            "baseline": baseline}
 
 
 def main() -> None:
@@ -570,11 +611,16 @@ def main() -> None:
                         help="evaluate exactly this CP artifact id (else the newest CP)")
     parser.add_argument("--baseline-plan", type=Path,
                         help="plan.json of the reference round (e.g. the baseline CP's own "
-                             "fast_eval round, same Host pin) for the paired report; "
-                             "default: the suite's registered round (A0 100: a46afd12 "
-                             "on Host rc.66)")
+                             "fast_eval round) for the paired report: same Host/Runtime "
+                             "pins, initial progress and seed manifest, else refused")
+    parser.add_argument("--baseline-sha256", help="the pinned sha256 of --baseline-plan")
+    parser.add_argument("--baseline-source", choices=("explicit", "site"), default="explicit",
+                        help="how the baseline was chosen (supervise: site eval_baselines)")
     parser.add_argument("--no-baseline", action="store_true",
-                        help="no baseline in the report (not even the registered one)")
+                        help="no baseline in the report (e.g. the first round on a new Host pin)")
+    parser.add_argument("--check", action="store_true",
+                        help="run the start checks (manifest, baseline, settings), print the "
+                             "settings and exit; nothing is written")
     parser.add_argument("--once", action="store_true",
                         help="one evaluation, then exit once its report is written "
                              "(or it ended without one)")
@@ -589,8 +635,22 @@ def main() -> None:
         parser.error("interval 600..86400 s, max-live 1..4")
     if not 1 <= args.save_workers <= 4 or not args.save_workers <= args.pending_limit <= 16:
         parser.error("save-workers 1..4, pending-limit save-workers..16 (pipeline maximums)")
-    if args.baseline_plan and args.no_baseline:
-        parser.error("--baseline-plan or --no-baseline, not both")
+    if bool(args.baseline_plan) == bool(args.no_baseline):
+        parser.error("exactly one of --baseline-plan or --no-baseline")
+    if args.baseline_sha256 and not args.baseline_plan:
+        parser.error("--baseline-sha256 goes with --baseline-plan")
+    if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
+        parser.error("--memory-gb and --wall-seconds are positive (omit for the defaults)")
+    if args.check:  # supervise runs this before generation 0: a refusal stops the chain
+        try:
+            check_manifest(args.manifest.resolve(), args.suite, args.seeds)
+            settings = settings_from(args)
+        except (ValueError, OSError, KeyError) as error:
+            print(f"fast_eval check refused: {type(error).__name__}: {error}", file=sys.stderr,
+                  flush=True)
+            sys.exit(2)
+        print(json.dumps({"check": "ok", "settings": settings}, sort_keys=True), flush=True)
+        sys.exit(0)
     check_manifest(args.manifest.resolve(), args.suite, args.seeds)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)

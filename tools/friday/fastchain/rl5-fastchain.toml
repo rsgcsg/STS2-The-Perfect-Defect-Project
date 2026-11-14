@@ -94,7 +94,7 @@ disk_sample_seconds = { value = 60, default = 60, why = "disk watermark sampling
 disk_warn_free_pct = { value = 20, default = 20, why = "free space below this: loud warning (disk-watermark.txt, readout)", measured = "LONG-RUN-CHECK A2" }
 disk_stop_free_pct = { value = 10, default = 10, why = "free space below this: DRAIN (env nodes stop admitting new games), loud", measured = "LONG-RUN-CHECK A2" }
 eval_suite = { value = "", default = "", why = "fast_eval.py --suite of the standing watcher; empty = the fixed A0 100-seed suite (RL3 registered)", measured = "#528 1c59c87d" }
-eval_a10_enabled = { value = true, default = false, why = "a second standing watcher on the A10 50-game suite; on once #530 S-2 lands", measured = "lead 11-14" }
+eval_a10_enabled = { value = true, default = false, why = "a second standing watcher on the A10 50-game suite (lead 11-14); needs --eval-a10-manifest, or --set eval_a10_enabled=false", measured = "lead 11-14" }
 eval_a10_suite = { value = "managed-rl5-learning-curve-50-20261114-Defect-a10", default = "", why = "the A10 suite id for the second watcher (#530 S-2)", measured = "lead 11-14" }
 eval_a10_seeds = { value = 50, default = 50, why = "A10 suite size", measured = "lead 11-14" }
 release_trained_segments = { value = true, default = true, why = "delete trained fast-chain originals once a durable CP covers them (learner dataplane)", measured = "#529 27ffd49b" }
