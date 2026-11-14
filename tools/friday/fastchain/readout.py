@@ -12,6 +12,14 @@ environment-side recipe (games, mean floor, wins, rows per exploration arm, asce
 level, start kind and K) so short runs with different recipes can be compared.
 
 Missing files give an empty row, never a guessed number.
+
+`--json` prints the run record (`SCHEMA`): the same numbers plus the run's identity
+(source revision, profile digest, `N卡 · 布局 · 卡型`, recipe knobs), throughput in
+training rows/h with and without aux rows, first use and intake, the learner's value/HP
+diagnostics and PPO statistics (latest window and run mean), training-game results of
+the control arm's full games (rolling and whole run, per ascension), the SGD boundary
+sections, stops/refusals/unknowns with cause counts and the checkpoint ids.
+supervise.py writes it as run-record.json at every checkpoint and at the end.
 """
 
 from __future__ import annotations
@@ -19,12 +27,22 @@ from __future__ import annotations
 import argparse
 import contextlib
 import glob
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+SCHEMA = "spireagent/friday-fastchain-run-record-1"
 WAN = 10_000
 AUX = {"rows", "terminal_rows", "hp_rows"}
+# stpd.rl.learning_diagnostics: per bucket and head these sums, in this order.
+VALUE_FIELDS = ("rows", "target_sum", "target_square_sum", "error_sum", "error_square_sum",
+                "abs_error_sum")
+LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
+                    "clip_fraction", "acting_kl_theta_mu", "terminal_loss", "hp_loss",
+                    "gradient_norm")
+ROLLING_GAMES = 100  # the training-game rolling mean: the last N complete games
+BOSS_FLOORS = (17, 33, 48)  # stpd.rl.heads; A10 has a second last-act Boss on 49
 
 
 def jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -329,24 +347,424 @@ def disk_edge(run: Path) -> dict[str, Any]:
             "events": marks.read_text().splitlines() if marks.exists() else []}
 
 
+def _json(path: Path) -> Any:
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def _sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
+    """What this run is: plan/profile digests, source, layout name and recipe knobs.
+
+    Source facts come from facts.json (launch.py, at freeze); the loss keys (c_hp and its
+    scope included) from the learner config the learner actually read."""
+    profile = _json(run / "effective-profile.json") or {}
+    knobs = {name: knob.get("value") for name, knob in (profile.get("knobs") or {}).items()}
+    facts = _json(run / "facts.json") or {}
+    learner = _json(run / "learner" / "learner.json") or {}
+    loss = learner.get("loss") or {}
+    segment_format = knobs.get("segment_format") or (
+        knobs.get("service_kwargs") or {}).get("segment_format")
+    return {
+        "name": plan["name"], "runtag": plan.get("runtag"),
+        "plan_sha256": _sha256(plan_path),
+        "profile_sha256": _sha256(run / "effective-profile.json"),
+        "overridden_knobs": {name: knob.get("value") for name, knob in
+                             (profile.get("knobs") or {}).items() if "overridden_from" in knob},
+        "source_revision": facts.get("src_rev"),
+        "source_dirty": (facts.get("src_checkout") or {}).get("dirty"),
+        "env_package_revision": facts.get("env_pkg_rev"),
+        "env_candidate_sha256": facts.get("env_candidate_sha256"),
+        "resume_checkpoint": plan.get("resume_checkpoint"),
+        "placement": plan.get("placement"),
+        "recipe": {"exploration_ladder": knobs.get("exploration_ladder"),
+                   "ascension_mix": knobs.get("ascension_mix"),
+                   "replay_k": knobs.get("replay_k"), "segment_format": segment_format,
+                   "hp_coef": loss.get("hp_coef"),
+                   "c_hp": loss.get("hp_advantage_coef"),
+                   "c_hp_scope": loss.get("hp_advantage_scope")}}
+
+
+def throughput_edge(events: list[dict[str, Any]], status: list[dict[str, Any]],
+                    train: dict[str, Any], window: float) -> dict[str, Any]:
+    """Training rows/h with and without aux rows (best window, latest window, whole run),
+    first use and intake. First use and admitted rows are deltas over the same span."""
+    starts = [e["t"] for e in events if e.get("kind") == "training_started"]
+    stepped = [e for e in events if e.get("kind") == "progress" and e.get("stepped")]
+    if not starts or not stepped:
+        return {}
+    complete = all(set(e) >= AUX for e in stepped)
+
+    def rates(steps: list[dict[str, Any]], seconds: float) -> tuple[Any, Any]:
+        td = sum(e["rows"] for e in steps)
+        aux = sum(e.get("terminal_rows", 0) + e.get("hp_rows", 0) for e in steps)
+        hours = max(seconds, 1e-9) / 3600
+        return ((td + aux) / hours if complete else None), td / hours
+
+    end = stepped[-1]["t"]
+    run_seconds = end - starts[0]
+    latest = [e for e in stepped if e["t"] >= end - window]
+    run_incl, run_td = rates(stepped, run_seconds)
+    late_incl, late_td = rates(latest, min(window, run_seconds))
+    first, last = stepped[0], stepped[-1]
+    first_use = (last.get("first_use", 0) - first.get("first_use", 0)
+                 if "first_use" in last else None)
+    out: dict[str, Any] = {
+        "best_window_training_rows_per_h_incl_aux": train.get("rows_h"),
+        "best_window_training_rows_per_h_td_only": train.get("td_rows_h"),
+        "latest_window_seconds": window,
+        "latest_training_rows_per_h_incl_aux": late_incl,
+        "latest_training_rows_per_h_td_only": late_td,
+        "run_training_seconds": run_seconds,
+        "run_training_rows_per_h_incl_aux": run_incl,
+        "run_training_rows_per_h_td_only": run_td,
+        "run_training_rows_td_only": sum(e["rows"] for e in stepped),
+        "run_training_rows_aux": sum(e.get("terminal_rows", 0) + e.get("hp_rows", 0)
+                                     for e in stepped) if complete else None,
+        "updates": len(stepped),
+        "kl_stopped_attempts": sum(1 for e in events
+                                   if e.get("kind") == "progress" and e.get("kl_stopped")),
+        "first_use_rows_total": last.get("first_use"),
+        "first_use_multi_rows_total": last.get("first_use_multi"),
+        "first_use_rows": first_use,
+        "first_use_rows_per_h": (first_use / max(last["t"] - first["t"], 1e-9) * 3600
+                                 if first_use is not None else None)}
+    counted = [x for x in status if isinstance((x.get("fast_chain") or {}).get("learner"), dict)]
+    if counted:
+        z = counted[-1]["fast_chain"]["learner"]
+        out.update({key + "_total": z.get(key) for key in (
+            "admitted_rows", "capacity_dropped_rows", "capacity_evicted_rows",
+            "capacity_refused_rows", "excluded_dropped_rows", "excluded_trained_rows")})
+        out["dropped_rows_total"] = (z.get("capacity_dropped_rows", 0)
+                                     + z.get("excluded_dropped_rows", 0))
+        a, b = nearest(counted, first["t"]), nearest(counted, last["t"])
+        admitted = delta(a, b, "fast_chain", "learner", "admitted_rows")
+        out["admitted_rows"] = admitted
+        out["first_use_ratio_of_admitted"] = (first_use / admitted
+                                              if first_use is not None and admitted else None)
+    return out
+
+
+def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
+    """learning_diagnostics.summarize (value_quality._stats keys) in stdlib."""
+    rows, target, square, error, error_square, absolute = sums
+    if rows <= 0:
+        return {"rows": 0, "mean_prediction": None, "mean_target": None,
+                "bias_prediction_minus_target": None, "mse": None, "constant_mse": None,
+                "explained_variance": None, "mae": None}
+    mean_target, mean_error = target / rows, error / rows
+    variance = square / rows - mean_target ** 2  # below 1e-6 of the 2nd moment: rounding
+    variance = variance if variance > 1e-6 * square / rows else 0.0
+    residual = max(error_square / rows - mean_error ** 2, 0.0)
+    return {"rows": round(rows), "mean_prediction": (mean_target + mean_error) * scale,
+            "mean_target": mean_target * scale,
+            "bias_prediction_minus_target": mean_error * scale,
+            "mse": error_square / rows * scale * scale, "constant_mse": variance * scale * scale,
+            "explained_variance": 1 - residual / variance if variance > 0 else None,
+            "mae": absolute / rows * scale}
+
+
+def _learning(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {"attempts": len(steps),
+                           "stepped": sum(1 for e in steps if e.get("stepped"))}
+    for name in LEARNING_SCALARS:
+        values = [e[name] for e in steps if isinstance(e.get(name), (int, float))]
+        out[name] = sum(values) / len(values) if values else None
+    pooled: dict[str, dict[str, list[float]]] = {}
+    for e in steps:
+        for bucket, heads in (e.get("value_statistics") or {}).items():
+            for head, values in heads.items():
+                if len(values) != len(VALUE_FIELDS):
+                    raise ValueError(f"value_statistics {bucket}/{head}: "
+                                     f"{len(values)} fields, expected {len(VALUE_FIELDS)}")
+                row = pooled.setdefault(bucket, {}).setdefault(head, [0.0] * len(VALUE_FIELDS))
+                for i, value in enumerate(values):
+                    row[i] += value
+    # "td" = vs lambda-return, "terminal" = vs final outcome, "hp" in HP points.
+    out["value"] = {bucket: {head: value_summary(values, 100.0 if head == "hp" else 1.0)
+                             for head, values in heads.items()}
+                    for bucket, heads in pooled.items()} or None
+    raw = [e["advantage_raw"] for e in steps if isinstance(e.get("advantage_raw"), dict)]
+    out["advantage_raw"] = {
+        "datasets": len(raw),
+        "mean": sum(x["mean"] for x in raw) / len(raw),
+        "std": sum(x["std"] for x in raw) / len(raw),
+        "last": raw[-1]} if raw else None
+    return out
+
+
+def learning_edge(events: list[dict[str, Any]], window: float) -> dict[str, Any]:
+    """PPO and value/HP diagnostics over every progress attempt (KL-stopped included:
+    their numbers are pre-step): the latest `window` seconds and the whole run."""
+    steps = [e for e in events if e.get("kind") == "progress"]
+    if not steps:
+        return {}
+    end = steps[-1]["t"]
+    return {"latest_window_seconds": window,
+            "latest": _learning([e for e in steps if e["t"] >= end - window]),
+            "run_mean": _learning(steps)}
+
+
+def reward_v21(terminal: str | None, floor: int, ascension: int) -> float | None:
+    """heads.class_reward_values of a natural end from its public final floor; None for an
+    A10 loss on floor 49+ (no class). The Golden-Compass floor-35 alternate (Boss 2 not
+    cleared) is not visible in a closed line; it counts as the normal floor-35 class."""
+    if terminal == "victory":
+        return 1.0
+    finish = 49 if ascension == 10 else 48
+    if ascension == 10 and floor >= 49:
+        return None
+    capped = min(floor, 48)
+    return 0.5 * (capped / finish) ** 2 + 0.1 * sum(boss < capped for boss in BOSS_FLOORS)
+
+
+def _games(games: list[dict[str, Any]]) -> dict[str, Any]:
+    if not games:
+        return {"games": 0}
+    rewards = [g["reward"] for g in games if g["reward"] is not None]
+    out: dict[str, Any] = {
+        "games": len(games), "mean_floor": sum(g["floor"] for g in games) / len(games),
+        "win_rate": sum(g["win"] for g in games) / len(games),
+        "mean_reward_v21": sum(rewards) / len(rewards) if rewards else None,
+        "reward_undefined_games": len(games) - len(rewards), "bosses": {}}
+    names = ("act1_boss", "act2_boss", "act3_boss", "act3_boss2")
+    for index, name in enumerate(names):
+        mine = [g for g in games if index < len(g["bosses"])]
+        if not mine:
+            continue
+        reached = sum(g["bosses"][index][0] for g in mine)
+        cleared = sum(g["bosses"][index][1] for g in mine)
+        out["bosses"][name] = {"games": len(mine), "reached": reached, "cleared": cleared,
+                               "clear_rate": cleared / len(mine),
+                               "clear_rate_given_reached": cleared / reached if reached else None}
+    return out
+
+
+def driver_records(run: Path) -> list[tuple[str, list[dict[str, Any]]]]:
+    return [(path, jsonl(path)) for path in
+            sorted(glob.glob(str(run / "env-n*" / "p*" / "driver.jsonl")))]
+
+
+def training_games_edge(drivers: list[tuple[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+    """Sampled-play results straight from training data: the control arm's full games
+    (start new_run) that are complete (terminal, admitted, evidence ok), per ascension and
+    all together, over the whole run and the last ROLLING_GAMES by close time. A Boss on
+    floor b is cleared iff the game was won or ended above b (natural layout)."""
+    games: list[dict[str, Any]] = []
+    for _, records in drivers:
+        admitted = {r.get("game_ref") for r in records
+                    if r.get("event") == "admission" and r.get("ok")}
+        for r in records:
+            if (r.get("event") != "closed" or r.get("arm") != "control"
+                    or r.get("start") != "new_run" or r.get("reason") != "terminal"
+                    or r.get("game_ref") not in admitted or r.get("evidence_failed")):
+                continue
+            floor, ascension = r.get("floor"), r.get("ascension")
+            if type(floor) is not int or type(ascension) is not int:
+                raise ValueError(f"closed control game without int floor/ascension: {r}")
+            win = r.get("terminal") == "victory"
+            bosses = (*BOSS_FLOORS, 49) if ascension == 10 else BOSS_FLOORS
+            games.append({"t": r["t"], "ascension": ascension, "floor": floor, "win": win,
+                          "reward": reward_v21(r.get("terminal"), floor, ascension),
+                          "bosses": [(win or floor >= b, win or floor > b) for b in bosses]})
+    if not games:
+        return {}
+    games.sort(key=lambda g: g["t"])
+    levels = sorted({g["ascension"] for g in games})
+    hours = max(games[-1]["t"] - games[0]["t"], 1) / 3_600_000
+
+    def table(chosen: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"all": _games(chosen), **{f"A{a}": _games([g for g in chosen
+                                                            if g["ascension"] == a])
+                                          for a in levels}}
+
+    rolling = {f"A{a}": _games([g for g in games if g["ascension"] == a][-ROLLING_GAMES:])
+               for a in levels}
+    return {"filter": "arm control, start new_run, complete (terminal, admitted, evidence ok)",
+            "rolling_games": ROLLING_GAMES,
+            "complete_games_per_h": len(games) / hours if len(games) > 1 else None,
+            "rolling": {"all": _games(games[-ROLLING_GAMES:]), **rolling},
+            "run": table(games)}
+
+
+def incidents_edge(run: Path, events: list[dict[str, Any]],
+                   drivers: list[tuple[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+    """Stops, refusals and unknowns with cause counts: env closes by reason (and detail),
+    admission refusals by code, open refusals and driver failures by kind, the learner's
+    report failure / STOP / disk stop / gpu rc and lost hand-offs."""
+    def count(table: dict[str, int], key: Any) -> None:
+        table[str(key)] = table.get(str(key), 0) + 1
+
+    closed: dict[str, int] = {}
+    details: dict[str, dict[str, int]] = {}
+    refused: dict[str, int] = {}
+    open_refused: dict[str, int] = {}
+    failures: dict[str, int] = {}
+    for _, records in drivers:
+        for r in records:
+            kind = r.get("event")
+            if kind == "closed":
+                count(closed, r.get("reason"))
+                if r.get("reason") != "terminal":
+                    count(details.setdefault(str(r.get("reason")), {}), r.get("detail"))
+                if r.get("evidence_failed"):
+                    count(failures, "evidence_failed_close")
+            elif kind == "admission" and not r.get("ok"):
+                count(refused, r.get("code"))
+            elif kind == "open_refused":
+                count(open_refused, r.get("reason"))
+            elif kind in ("slot_failed", "build_output_stopped", "fatal", "evidence_failed"):
+                count(failures, kind)
+    report = _json(run / "learner-report.json") or {}
+    text = (run / "gpu-rc").read_text().strip() if (run / "gpu-rc").exists() else None
+    return {"env_closed_by_reason": closed, "env_close_details": details,
+            "admission_refused_by_code": refused, "open_refused_by_reason": open_refused,
+            "driver_failures_by_kind": failures,
+            "learner_failure": report.get("failure"),
+            "learner_input_failure": report.get("input_failure"),
+            "stop": (run / "STOP").read_text().strip() if (run / "STOP").exists() else None,
+            "disk_stop": ((run / "disk-stop").read_text().strip()
+                          if (run / "disk-stop").exists() else None),
+            "gpu_rc": int(text) if text and text.lstrip("-").isdigit() else text,
+            "handoff_lost": sum(1 for e in events if e.get("kind") == "fast_handoff_lost")}
+
+
+def boundary_edge(events: list[dict[str, Any]], window: float) -> dict[str, Any]:
+    """SGD boundary sections (#537), once per dataset on its first step: wall and CPU
+    seconds per section, total and mean per dataset, latest window and whole run."""
+    timed = [(e["t"], e["sgd_timing"]) for e in events if e.get("kind") == "progress"
+             and isinstance((e.get("sgd_timing") or {}).get("boundary_sections"), dict)]
+    if not timed:
+        return {}
+
+    def pool(chosen: list[tuple[float, dict[str, Any]]]) -> dict[str, Any]:
+        out: dict[str, Any] = {"datasets": len(chosen)}
+        for key in ("boundary_sections", "boundary_sections_cpu"):
+            total: dict[str, float] = {}
+            for _, timing in chosen:
+                for name, seconds in (timing.get(key) or {}).items():
+                    total[name] = total.get(name, 0.0) + seconds
+            out[key + "_seconds_total"] = total
+            out[key + "_seconds_mean"] = {k: v / len(chosen) for k, v in total.items()}
+        seconds = [t["boundary_seconds"] for _, t in chosen
+                   if isinstance(t.get("boundary_seconds"), (int, float))]
+        out["boundary_seconds_mean"] = sum(seconds) / len(seconds) if seconds else None
+        return out
+
+    end = timed[-1][0]
+    return {"latest_window_seconds": window,
+            "latest": pool([x for x in timed if x[0] >= end - window]), "run": pool(timed)}
+
+
+def checkpoints_edge(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{"checkpoint_artifact_id": e.get("checkpoint_artifact_id"),
+             "sequence": e.get("sequence"), "t": e.get("t")}
+            for e in events if e.get("kind") == "checkpoint_published"]
+
+
 def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, Any]:
-    plan = json.loads((plan_path or run / "plan.json").read_text())
+    plan_path = plan_path or run / "plan.json"
+    plan = json.loads(plan_path.read_text())
     events = jsonl(run / "learner-events.jsonl")
-    train = training_edge(events, jsonl(run / "learner-status.jsonl"), window)
+    status = jsonl(run / "learner-status.jsonl")
+    train = training_edge(events, status, window)
     span = train.get("window")
     target = plan["target"]
-    return {"name": plan["name"], "target": target, "training": train,
+    drivers = driver_records(run)
+    return {"schema": SCHEMA, "name": plan["name"], "target": target, "training": train,
             "services": service_edges(run, span), "gpu": gpu_cards(run, span),
             "env": env_edge(run, span), "compile": compile_edge(events),
             "disk": disk_edge(run), "recipe": recipe_edge(run),
             "verdict": verdict(train.get("rows_h"), target),
-            "loss_table": loss_table(plan, train)}
+            "loss_table": loss_table(plan, train),
+            "identity": identity_edge(run, plan, plan_path),
+            "throughput": throughput_edge(events, status, train, window),
+            "learning": learning_edge(events, window),
+            "training_games": training_games_edge(drivers),
+            "boundary_sections": boundary_edge(events, window),
+            "incidents": incidents_edge(run, events, drivers),
+            "checkpoints": checkpoints_edge(events)}
 
 
 def fmt(value: Any, digits: int = 0) -> str:
     if value is None:
         return "-"
     return f"{value:,.{digits}f}" if isinstance(value, (int, float)) else str(value)
+
+
+def render_record(r: dict[str, Any]) -> list[str]:
+    """The run-record sections as table lines (the JSON carries the same numbers)."""
+    out: list[str] = []
+    i = r.get("identity") or {}
+    if i:
+        recipe = i.get("recipe") or {}
+        out.append(f"identity: src {str(i.get('source_revision'))[:12]}"
+                   + (" DIRTY" if i.get("source_dirty") else "")
+                   + f", profile {str(i.get('profile_sha256'))[:12]}, segment "
+                   f"{recipe.get('segment_format')}, K {recipe.get('replay_k')}, ascension mix "
+                   f"{recipe.get('ascension_mix')}, c_hp {recipe.get('c_hp')} "
+                   f"({recipe.get('c_hp_scope')})")
+    p = r.get("throughput") or {}
+    if p:
+        out.append(f"training rows/h, run mean: {fmt(p['run_training_rows_per_h_incl_aux'])} "
+                   f"incl. aux, {fmt(p['run_training_rows_per_h_td_only'])} td only; latest "
+                   f"{fmt(p['latest_training_rows_per_h_incl_aux'])} / "
+                   f"{fmt(p['latest_training_rows_per_h_td_only'])}")
+        ratio = p.get("first_use_ratio_of_admitted")
+        out.append(f"first use: {fmt(p.get('first_use_rows_per_h'))} rows/h"
+                   + (f", {100 * ratio:.1f}% of admitted" if ratio is not None else "")
+                   + f"; admitted {fmt(p.get('admitted_rows_total'))}, dropped "
+                   f"{fmt(p.get('dropped_rows_total'))} rows; KL-stopped attempts "
+                   f"{p.get('kl_stopped_attempts')}")
+    learning = r.get("learning") or {}
+    for label, key in (("latest", "latest"), ("run mean", "run_mean")):
+        x = learning.get(key)
+        if not x:
+            continue
+        value = (x.get("value") or {}).get("all") or {}
+        adv = x.get("advantage_raw") or {}
+
+        def ev(head: str, part: dict[str, Any] = value) -> str:
+            return fmt((part.get(head) or {}).get("explained_variance"), 3)
+
+        out.append(f"learning {label}: EV vs lambda-return {ev('td')}, vs outcome "
+                   f"{ev('terminal')}, value mse {fmt((value.get('td') or {}).get('mse'), 4)}, "
+                   f"HP MAE {fmt((value.get('hp') or {}).get('mae'), 2)} HP; KL "
+                   f"{fmt(x.get('approx_kl_mu_theta'), 4)}, clip "
+                   f"{fmt(x.get('clip_fraction'), 3)}, entropy {fmt(x.get('entropy'), 3)}; "
+                   f"advantage mean {fmt(adv.get('mean'), 4)} std {fmt(adv.get('std'), 4)}")
+        if key == "latest" and x.get("value"):
+            out.append("  EV vs lambda-return by bucket: " + ", ".join(
+                f"{bucket} {ev('td', heads)}" for bucket, heads in x["value"].items()
+                if bucket != "all"))
+    games = r.get("training_games") or {}
+    for level, g in (games.get("rolling") or {}).items():
+        if not g.get("games"):
+            continue
+        bosses = " ".join(f"{name.replace('_boss', '')} {100 * b['clear_rate']:.0f}%"
+                          for name, b in g["bosses"].items())
+        out.append(f"training games {level} (control, full, last {games['rolling_games']}): "
+                   f"{g['games']} games, floor {g['mean_floor']:.1f}, win "
+                   f"{100 * g['win_rate']:.1f}%, reward {fmt(g['mean_reward_v21'], 3)}; "
+                   f"Boss cleared {bosses}")
+    inc = r.get("incidents") or {}
+    if inc:
+        out.append(f"incidents: closed {inc['env_closed_by_reason']}, non-terminal details "
+                   f"{inc['env_close_details']}, admission refused "
+                   f"{inc['admission_refused_by_code']}, failures "
+                   f"{inc['driver_failures_by_kind']}, hand-offs lost {inc['handoff_lost']}")
+    boundary = ((r.get("boundary_sections") or {}).get("run") or {})
+    mean = boundary.get("boundary_sections_seconds_mean") or {}
+    if mean:
+        top = sorted(mean.items(), key=lambda kv: -kv[1])[:4]
+        out.append(f"boundary per dataset ({boundary['datasets']}): "
+                   + ", ".join(f"{name} {seconds:.2f} s" for name, seconds in top))
+    cps = r.get("checkpoints") or []
+    if cps:
+        out.append(f"checkpoints: {len(cps)}, last {cps[-1]['checkpoint_artifact_id']}")
+    return out
 
 
 def render(r: dict[str, Any]) -> str:
@@ -393,6 +811,7 @@ def render(r: dict[str, Any]) -> str:
                                              for name, pct in sorted(d["free_pct"].items())))
     out += [("ALARM " if line.startswith("DISK STOP") else "") + line
             for line in d.get("events", [])]
+    out += render_record(r)
     if r.get("recipe"):
         out += ["", "recipe, whole run so far (games = complete: terminal, admitted, evidence "
                 "ok; rows = model rows of admitted games):",

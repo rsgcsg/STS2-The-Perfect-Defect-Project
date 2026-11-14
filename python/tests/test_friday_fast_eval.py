@@ -361,6 +361,8 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
 
     def report(root, baseline, previous):
         calls.append((root, baseline, previous))
+        (root / 'eval-record.json').write_text(json.dumps(
+            {'process_started_at': world.now + 5, 'stage_seconds': {'report': 1.0}}))
         return {'report_directory': str(root / 'report'), 'cohorts': {'current': {
             'scored': 99, 'wins': 1, 'mean_floor': 37.5, 'reward_mean': 0.48,
             'conservative': 0.48}}}
@@ -381,6 +383,13 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
         assert first['stage'] == 'reported' and calls == [
             (Path(first['root']), '/base/plan.json', None)]
         assert runner.state['log'][-1]['kind'] == 'evaluation_reported'
+        record = json.loads((Path(first['root']) / 'eval-record.json').read_text())
+        assert record['watcher']['checkpoint'] == 'cp-a'
+        assert record['watcher']['evaluation_job'] == first['evaluation_job']
+        assert record['stage_seconds']['report'] == 1.0
+        assert record['stage_seconds']['evaluation_queue'] == pytest.approx(
+            world.now + 5 - first['submitted_at'])
+        assert record['stage_seconds']['prepare_wall'] is not None
         world.record('cp-b', 20)
         world.now += 7200
         runner.tick()
@@ -438,3 +447,12 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
     assert 'Act1 Boss cleared' in readme and 'Farther / same / nearer' in readme
     assert json.loads((tmp_path / 'eval/report/summary.json').read_text()) == json.loads(
         json.dumps(summary))
+    record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
+    assert record['schema'] == fast_eval.RECORD_SCHEMA
+    assert record['suite']['manifest_sha256'] == 'm'
+    assert [(s['seed'], s['scored'], s['floor']) for s in record['seeds']] == [
+        ('s1', True, 33), ('s2', True, 48), ('s3', False, 44)]
+    assert record['paired'] == json.loads(json.dumps(summary['paired']))
+    assert record['outcome']['wins'] == 1 and record['stage_seconds']['report'] >= 0
+    assert record['value_predictions'] == {
+        'recorded': False, 'reason': 'evaluated_package_strips_auxiliary_heads'}

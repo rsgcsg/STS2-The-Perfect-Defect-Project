@@ -525,6 +525,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     run = freeze(plan, profile, cmds)
     (run / "preflight.txt").write_text(preflight.report(results) + "\n")
+    # The source this run was frozen from: the identity of its run record (readout.py).
+    (run / "facts.json").write_text(json.dumps({key: facts.get(key) for key in (
+        "src_checkout", "src_rev", "src_features", "env_pkg_rev", "env_candidate_sha256")},
+        indent=1))
     jobs = submit(run, plan, cmds)
     print(json.dumps({"run": str(run), "name": plan["name"], "jobs": jobs}, ensure_ascii=False),
           flush=True)
