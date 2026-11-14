@@ -541,14 +541,16 @@ def write_record_inputs(run):
                {'t': t0 + 1303, 'kind': 'fast_handoff_lost'}]
     (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
     (run / 'effective-profile.json').write_text(json.dumps({'knobs': {
-        'replay_k': {'value': 4}, 'segment_format': {'value': 'v2', 'overridden_from': 'v1'},
+        'replay_k': {'value': 4}, 'segment_format': {'value': 'stpd/rl-fast-segment-4',
+                           'overridden_from': 'stpd/rl-fast-segment-3'},
         'ascension_mix': {'value': {'0': 0.5, '10': 0.5}},
         'exploration_ladder': {'value': [0.0, 0.1]}}}))
     (run / 'facts.json').write_text(json.dumps({
         'src_rev': 'abc123def4567890', 'src_checkout': {'git': True, 'dirty': False}}))
     (run / 'learner').mkdir()
     (run / 'learner' / 'learner.json').write_text(json.dumps({'loss': {
-        'hp_coef': 0.1, 'hp_advantage_coef': 0.05, 'hp_advantage_scope': 'multi'}}))
+        'hp_coef': 0.1, 'hp_advantage_coef': 0.005,
+        'hp_advantage_scope': 'combat_ticket'}}))
     driver = run / 'env-n0' / 'p0'
     driver.mkdir(parents=True)
 
@@ -577,10 +579,10 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     i = r['identity']
     assert i['name'] == '3卡 · 1推理+2训练 · A100-40' and i['source_revision'] == 'abc123def4567890'
     assert i['source_dirty'] is False and len(i['profile_sha256']) == 64
-    assert i['overridden_knobs'] == {'segment_format': 'v2'}
+    assert i['overridden_knobs'] == {'segment_format': 'stpd/rl-fast-segment-4'}
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
-        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'v2', 'hp_coef': 0.1,
-        'c_hp': 0.05, 'c_hp_scope': 'multi'}
+        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'stpd/rl-fast-segment-4',
+        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket'}
     p = r['throughput']
     assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
     assert p['run_training_rows_per_h_td_only'] == pytest.approx(8000 * 3600, rel=1e-3)

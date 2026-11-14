@@ -124,3 +124,47 @@ def test_prepared_update_reports_value_sums_in_the_synced_totals(model):
                 "hp_mae_points"):
         assert key in result
     assert result["value_mse"] is not None and result["value_mse"] >= 0
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_diagnostics_leave_loss_gradients_and_step_bit_identical(model, compiled, monkeypatch):
+    """The sums read detached outputs under no_grad: with them replaced by zeros, the
+    loss totals, gradients, Adam state and parameters stay bitwise equal (eager and the
+    compiled rows forward)."""
+    minibatch = prepared(model, "rows-v2").minibatches[0]
+    performance = PerformanceConfig(prepared_forward="rows-v2", prepared_compile=compiled)
+    runs = []
+    for disabled in (False, True):
+        if disabled:
+            monkeypatch.setattr(ld, "value_statistics",
+                                lambda logits, hp, t: logits.new_zeros(ld.SIZE))
+        trained = copy.deepcopy(model)
+        optimizer = torch.optim.AdamW(trained.parameters(), lr=1e-3)
+        seen = {}
+
+        def sync(model, totals, valid, seen=seen):
+            seen["totals"] = totals[:8].clone()
+            seen["gradients"] = {name: p.grad.clone() for name, p in model.named_parameters()
+                                 if p.grad is not None}
+            return totals, valid
+
+        result = prepared_update(trained, optimizer, minibatch,
+                                 config=LossConfig(mode="ppo", value_coef=0.2),
+                                 performance=performance, target_kl=1e9, gradient_sync=sync)
+        assert result["stepped"] and result["rows_forward"]["compiled"] is compiled
+        runs.append((result, seen, trained.state_dict(), optimizer.state_dict()["state"]))
+    (on, on_seen, on_state, on_adam), (off, off_seen, off_state, off_adam) = runs
+    assert on["value_statistics"]["all"]["td"][0] > 0
+    assert off["value_statistics"]["all"]["td"][0] == 0
+    assert torch.equal(on_seen["totals"], off_seen["totals"])
+    assert on_seen["gradients"].keys() == off_seen["gradients"].keys()
+    for name, gradient in on_seen["gradients"].items():
+        assert torch.equal(gradient, off_seen["gradients"][name]), name
+    for name, value in on_state.items():
+        assert torch.equal(value, off_state[name]), name
+    for index, state in on_adam.items():
+        for key, value in state.items():
+            assert torch.equal(value, off_adam[index][key]), (index, key)
+    for key in ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta", "clip_fraction",
+                "terminal_loss", "hp_loss", "gradient_norm"):
+        assert on[key] == off[key], key
