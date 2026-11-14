@@ -57,11 +57,10 @@ remote_prepare_connections = { value = 36, default = 6, why = "connections over 
 remote_prepare_codec = { value = "lz4", default = "none", why = "wire codec for prepared bytes; lead default", measured = "h100g onward" }
 remote_prepare_client_processes = { value = 2, default = 0, why = "client processes (#519)", measured = "c2j" }
 remote_prepare_timeout_seconds = { value = 600, default = 600, why = "per-request timeout", measured = "h100g onward" }
-remote_prepare_wait_seconds = { value = 900, default = 900, why = "the learner waits this long for every prep host, never fewer", measured = "h100g onward" }
+remote_prepare_wait_seconds = { value = 900, default = 900, why = "the learner waits this long for every prep host, never fewer, counted from the GPU job's start: the prep jobs start only after it (--dependency=after), so this covers their queue time + host start (the old prep-first budget: 600 s start + 300 s). Added to the GPU and prep job --time and to the env wait", measured = "h100g onward; c2g (prep pended 16 min)" }
 prep_groups = { value = [{ type = "r640", nodes = 5, cpus = 32, mem_g = 150, workers = 14 }, { type = "fc430", nodes = 3, cpus = 24, mem_g = 100, workers = 10 }], default = [], why = "8 prep hosts; srun must pass --cpus-per-task (c3c25: hosts ran on 1 CPU)", measured = "c2h-c3s2 (8 hosts, prepwait 0); c3c26 cpus fix" }
 prep_host_inflight_gb = { value = 15, default = 0, why = "in-flight prepared output per host; scratch must have >= 2x free or the worker is killed (BrokenProcessPool)", measured = "c2f (8.7 GB free host failed), c2i (~14 GB per host)" }
 prep_scratch_min_free = { value = true, default = false, why = "remote_prepare --scratch-min-free-bytes = the in-flight budget (prep_host_inflight_gb): a host with less free scratch never becomes ready, and later pool failures below it are named remote_prepare_scratch_full", measured = "#523 a437612d; c2f (8.7 GB free host failed)" }
-prep_start_timeout_seconds = { value = 600, default = 0, why = "the prep job must be running and every host ready before the GPU job is submitted", measured = "c2g void (prep pended 16 min, GPU gave up)" }
 # --- inference services ---
 services = { value = 6, default = 1, why = "K services on the inference card under MPS", measured = "s1d onward, c3c series" }
 service_kwargs = { value = { in_flight = 4, join_workers = 4, job_parts = 8, arena_row_bytes = 393216, segment_format = "stpd/rl-fast-segment-3", device_rows = true, trace = true, part_rows = 16, kernels = "cross+heads+nodes" }, default = {}, why = "service balance point (chou §12)", measured = "c3c series" }
@@ -84,6 +83,8 @@ mem_hard_fraction = { value = 0.95, default = 0.95, why = "above this fraction o
 core_cap = { value = { "1" = 300, "2" = 300, "3" = 450 }, default = { "1" = 300, "2" = 300, "3" = 450 }, why = "total cores (GPU job + env); 3 cards within the user's <=500 approval", measured = "coordinator 2026-11-12" }
 wall_seconds = { value = 3000, default = 3300, why = "GPU wall per test run (long runs set their own)", measured = "c2j" }
 long_wall_seconds = { value = 72000, default = 72000, why = "first RL5 long run: 20 h in one GPU job, no successor (user 11-13 C4); 72000 s is the product operating-budget cap", measured = "LONG-RUN-CHECK §五 C4" }
+gpu_pending_max_seconds = { value = 14400, default = 14400, why = "a submitted GPU job still PENDING after this long: the launcher prints the Slurm Reason, its priority and how many pending jobs rank above it, cancels every job of the run and exits non-zero; never resubmitted. Generous: our GPU jobs waited 0-4 min median, 31-64 min at most per day over 14 days", measured = "CLUSTER-QUEUE-DIAG 11-14 (sacct 11-01..11-14)" }
+smoke_gpu_pending_max_seconds = { value = 900, default = 900, why = "the same bound for --smoke (5 min runs someone is watching)", measured = "CLUSTER-QUEUE-DIAG 11-14" }
 resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain (user 11-13 C5: automatic; lead 11-14 default 3); then a loud final stop with the first cause", measured = "LONG-RUN-CHECK §五 C5; RL4.1 long-run log (2 continuations in 36 h)" }
 min_generation_seconds = { value = 1800, default = 1800, why = "a generation shorter than this cannot reach its first CP after warm-up: the chain ends instead", measured = "c2k (warm-up + first CP ~20 min)" }
 supervise_poll_seconds = { value = 60, default = 60, why = "supervisor checks the GPU job and the schedules once per poll", measured = "watcher cadence" }
@@ -115,7 +116,7 @@ env_machine_types = { value = ["fc430", "r640"], default = ["fc430", "r640"], wh
 env_slow_types = { value = ["c8220", "c6220"], default = ["c8220", "c6220"], why = "types that need an explicit opt-in (c6220: user opt-in only)", measured = "h100i, PLAN-TABLE §4" }
 env_slow_type_nodes = { value = 0, default = 0, why = "c8220 opt-in node count, each counted 0.5 node toward the core cap", measured = "h100i" }
 env_core_budget = { value = { "1" = 215, "2" = 290, "3" = 304 }, default = { "1" = 215, "2" = 290, "3" = 380 }, why = "env cores per card count at ~50-58 core-ms/decision", measured = "fc-launch tiers; c3s1/c3s2 304" }
-env_wait_seconds = { value = 1800, default = 1800, why = "an env element may wait this long for the services", measured = "s1f" }
+env_wait_seconds = { value = 1800, default = 1800, why = "an env element may wait this long for the services, plus remote_prepare_wait_seconds when remote prepare is on (env starts only after the GPU job started; the services wait for the learner, which waits for the prep hosts)", measured = "s1f" }
 env_min_join_seconds = { value = 300, default = 300, why = "a node arriving later than this before the env drain does not start", measured = "s2c-smoke" }
 env_procs_fraction = { value = 0.625, default = 0.75, why = "drivers per node = cores x 5/8 (16 -> 10, 20 -> 12); 8x15 was not cheaper", measured = "V3-wu, V3-shen 17:35 rerun" }
 env_slots = { value = 12, default = 8, why = "slots per driver (product cap 16)", measured = "V3-shen" }

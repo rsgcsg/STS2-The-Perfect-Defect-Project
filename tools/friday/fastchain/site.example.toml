@@ -29,6 +29,8 @@ env_candidate = "/scratch/USER/fastchain/candidate-int-COMMIT"  # src/Sts2Headle
 gpu_local_tmp = "/tmp"                           # node-local; hot path lives here
 env_tmp_root = "/scratch/USER/fastchain/tmp"
 shared_fs_prefixes = ["/scratch", "/home", "/data"]
+# env and prep jobs start only after the GPU job started (--dependency=after). Under load
+# put them on nodes outside the GPU partition's node set (CLUSTER-QUEUE-DIAG 11-14).
 env_partition = "CPU-PARTITION"
 prep_partition = "PREP-PARTITION"   # long run: a partition whose limit covers 20 h + margins (e.g. a 24 h one), never a 60 min debug partition
 excluded_prep_hosts = []                         # e.g. a host whose scratch is too small
@@ -42,12 +44,20 @@ partition_max_minutes = { "PREP-PARTITION" = 0, "CPU-PARTITION" = 0, "GPU-PARTIT
 #   python -m stpd.rl.offline_step warmup-cover --bucket-rows <prepared_bucket_rows> DUMPS...
 compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
 
+# A card type = partition + gres + constraint, never a node pinned from an sinfo snapshot.
+# constraint: a node feature (sinfo -o "%N %f") that only nodes with this card have, as
+# sbatch --constraint takes it ("a&b" = both); "" = partition and gres already decide the
+# type. nodes: sinfo is read on these for the printed snapshot (and --fallback) only.
+# nodelist (optional): an explicit --nodelist pin; leave it out unless the site needs one.
 [site.gpu_types."A100-40"]
 gres = "a100"
 partition = "GPU-PARTITION"
+constraint = "A100-40-NODE-FEATURE"
 nodes = ["GPU-NODE-1"]
 
 [site.gpu_types."A100-80"]
 gres = "a100"
 partition = "GPU-PARTITION"
+constraint = "A100-80-NODE-FEATURE"
 nodes = ["GPU-NODE-2"]
+# nodelist = "GPU-NODE-2"

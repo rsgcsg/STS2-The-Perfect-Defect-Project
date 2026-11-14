@@ -79,7 +79,8 @@ def good_facts(plan):
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
-            'prep_test_start_seconds': 0.0,
+            'gpu_test_start_seconds': 0.0,
+            'queue': {'fairshare': 0.5, 'priority_estimate': 15000, 'above': 0, 'pending': 3},
             'env_candidate_sha256': k['env_candidate_artifact_sha256'] + '0' * 48,
             'secret_files': {'/x/auth.hex': 0o600, '/x/prep-auth.hex': 0o600}}
 
@@ -216,7 +217,7 @@ def test_build_plan_derives_memory_guard_from_job_limit_and_falls_back():
     assert two['placement']['learner_device'] == 'cuda'
     assert (two['env_nodes_max'] * two['knobs']['env_aggregators']) % two['knobs']['services'] == 0
     none = plan_for(cards=3, probe=[probe_row(free=1)])
-    assert none['gpu_node'] is None
+    assert none['gpu_nodes_free_now'] == [] and none['placement']['cards'] == 3
     fell = launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=3,
                              card_type='A100-40', layout_spec=None, env_cores=None, smoke=False,
                              probe_rows=[probe_row(free=1)], fallback=True)
@@ -231,11 +232,18 @@ def test_build_plan_derives_memory_guard_from_job_limit_and_falls_back():
 def test_commands_and_job_env_carry_layout_without_secrets():
     plan = plan_for(cards=3)
     cmds = launch.commands(plan)
-    assert set(cmds) >= {'gpu', 'env', 'prep'}
     assert '--gres=gpu:a100:3' in cmds['gpu']
     assert any(c == f'--export=ALL,FC_RUN={plan["run"]}' for c in cmds['gpu'])
-    prep = ' '.join(cmds['prep'])
-    assert ' : ' in prep and 'c8220' not in prep  # heterogeneous, no slow prep host types
+    # The card type is partition + gres + constraint, never a node pinned from sinfo.
+    assert '--constraint=A100-40-NODE-FEATURE' in cmds['gpu']
+    assert not any(c.startswith('--nodelist') for c in cmds['gpu'])
+    # One plain job per prep group (never heterogeneous), GPU first, env last.
+    assert list(cmds) == ['gpu', 'prep-0', 'prep-1', 'env']
+    for i, group in enumerate(plan['knobs']['prep_groups']):
+        prep = cmds[f'prep-{i}']
+        assert ':' not in prep and f'--constraint={group["type"]}' in prep
+        assert prep[-2] == f'--export=ALL,FC_RUN={plan["run"]},FC_PREP_GROUP={i}'
+        assert prep[-1].endswith('/prep.sh') and f'--nodes={group["nodes"]}' in prep
     env = launch.job_env(plan)
     assert 'export FC_LEARNER_DEVICE=cuda:1' in env and 'export FC_RANKS=2' in env
     assert 'STPD_' not in env
@@ -302,7 +310,8 @@ def test_preflight_refuses_bad_site_and_plan_edits():
     uneven['env_nodes_max'] += 1
     assert not preflight.check_shards(uneven, good_facts(plan)).ok
     nonode = plan_for(cards=3, probe=[probe_row(free=0)])
-    assert not preflight.check_gpu_node(nonode).ok
+    request = preflight.check_gpu_request(nonode, good_facts(nonode))
+    assert request.ok and request.warn and 'will pend' in request.detail  # printed only
 
 
 def test_old_build_keeps_the_two_worker_workaround_only():
@@ -357,23 +366,39 @@ def test_table_knobs_and_nan_are_validated():
     assert twice['services']['value'] == 3 and twice['services']['overridden_from'] == 6
 
 
-def test_submit_cancels_every_submitted_job_on_a_later_failure(tmp_path, monkeypatch):
+def test_submit_puts_the_gpu_job_first_and_cancels_everything_on_a_later_failure(
+        tmp_path, monkeypatch):
     plan = plan_for(cards=3, wall_seconds=2400)
     cmds = launch.commands(plan)
-    cancelled = []
+    cancelled, sent, waited = [], [], []
     monkeypatch.setattr(launch.subprocess, 'run',
                         lambda cmd, **kw: cancelled.append(cmd[1:]) if cmd[0] == 'scancel'
                         else None)
-    ids = iter(['11', '12'])
+    ids = iter(['11', '12', '13', '14'])
 
     def run_cmd(cmd):
+        sent.append(cmd)
+        return next(ids)
+
+    jobs = launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd,
+                         wait=lambda job, limit: waited.append((job, limit)))
+    assert jobs == {'gpu': '11', 'prep-0': '12', 'prep-1': '13', 'env': '14'}
+    assert sent[0] == cmds['gpu'] and (tmp_path / 'gpu-job.txt').read_text() == '11\n'
+    for cmd, name in zip(sent[1:], ['prep-0', 'prep-1', 'env'], strict=True):  # after GPU
+        assert cmd == [*cmds[name][:-1], '--dependency=after:11', cmds[name][-1]]
+    assert waited == [('11', plan['gpu_pending_max_seconds'])] and not cancelled
+    assert json.loads((tmp_path / 'jobs.json').read_text()) == jobs
+
+    ids = iter(['21', '22', '23'])
+
+    def env_fails(cmd):
         if cmd[-1].endswith('env.sh'):
             raise launch.subprocess.CalledProcessError(1, cmd)
         return next(ids)
 
     with pytest.raises(launch.subprocess.CalledProcessError):
-        launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd, wait=lambda *a: None)
-    assert cancelled == [['11', '12']]  # prep and GPU, no retry
+        launch.submit(tmp_path, plan, cmds, run_cmd=env_fails, wait=lambda *a: None)
+    assert cancelled == [['21', '22', '23']]  # GPU and both prep jobs, no retry
     assert 'cancelled' in (tmp_path / 'submit-failed.txt').read_text()
 
     cancelled.clear()
@@ -381,9 +406,147 @@ def test_submit_cancels_every_submitted_job_on_a_later_failure(tmp_path, monkeyp
     def interrupted(*args):
         raise KeyboardInterrupt
 
+    ids = iter(['31', '32', '33', '34'])
     with pytest.raises(KeyboardInterrupt):
-        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: '21', wait=interrupted)
-    assert cancelled == [['21']]
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids), wait=interrupted)
+    assert cancelled == [['31', '32', '33', '34']]
+
+
+def test_gpu_pending_bound_reports_the_queue_and_never_resubmits(tmp_path, monkeypatch, capsys):
+    pending = 'x|20000|None\n11|10167|Priority\ny|10300|Priority\nz|9000|Priority\n'
+    monkeypatch.setattr(launch, 'pending_jobs', lambda: launch.parse_pending(pending))
+    states = iter(['PENDING', None, 'PENDING', 'RUNNING'])  # None = squeue failed once
+    monkeypatch.setattr(launch, 'gpu_state', lambda job: next(states))
+    launch.wait_gpu_start('11', 3600, poll=0)  # a failed squeue is read again, not an answer
+    assert 'Reason=Priority, priority 10167, 2 of 4 pending jobs rank above' in \
+        capsys.readouterr().out
+    monkeypatch.setattr(launch, 'gpu_state', lambda job: 'PENDING')
+    with pytest.raises(SystemExit, match='still PENDING after 0 s: job 11 PENDING, '
+                       'Reason=Priority, priority 10167, 2 of 4 .*not resubmitted'):
+        launch.wait_gpu_start('11', 0, poll=0)
+    for gone in ('', 'CANCELLED'):
+        monkeypatch.setattr(launch, 'gpu_state', lambda job, s=gone: s)
+        with pytest.raises(SystemExit, match='left the queue without starting'):
+            launch.wait_gpu_start('11', 3600, poll=0)
+    # Through submit: the bound cancels every job of the run and nothing is sent again.
+    plan = plan_for(cards=3, wall_seconds=2400, smoke=True)
+    assert plan['gpu_pending_max_seconds'] == plan['knobs']['smoke_gpu_pending_max_seconds']
+    assert plan_for(cards=3)['gpu_pending_max_seconds'] == \
+        plan['knobs']['gpu_pending_max_seconds'] > plan['gpu_pending_max_seconds']
+    cancelled, sent = [], []
+    monkeypatch.setattr(launch.subprocess, 'run',
+                        lambda cmd, **kw: cancelled.append(cmd[1:]) if cmd[0] == 'scancel'
+                        else None)
+    monkeypatch.setattr(launch, 'gpu_state', lambda job: 'PENDING')
+    cmds = launch.commands(plan)
+    ids = iter(str(n) for n in range(41, 50))
+    with pytest.raises(SystemExit, match='still PENDING'):
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: sent.append(cmd) or next(ids),
+                      wait=lambda job, limit: launch.wait_gpu_start(job, 0, poll=0))
+    assert len(sent) == len(cmds) and cancelled == [[str(41 + i) for i in range(len(cmds))]]
+    assert 'still PENDING' in (tmp_path / 'submit-failed.txt').read_text()
+
+
+def test_queue_facts_parse_slurm_output(monkeypatch):
+    answers = {'sshare': '0.016700\n', 'sprio': 'Weights|10000|10000\n',
+               'squeue': '1|20000|Priority\n2|10300|Priority\n3|10100|Resources\n'}
+    monkeypatch.setattr(launch, '_stdout', lambda cmd: answers[cmd[0]])
+    assert launch.queue_facts() == {'fairshare': 0.0167, 'priority_estimate': 10167,
+                                    'above': 2, 'pending': 3}
+    answers['sprio'] = 'garbage\n'
+    assert launch.queue_facts()['above'] is None
+    monkeypatch.setattr(launch, '_stdout', lambda cmd: None)  # squeue/sshare failed
+    assert launch.queue_facts() == {'fairshare': None, 'priority_estimate': None,
+                                    'above': None, 'pending': None}
+    assert launch.queue_position('9', None) == 'job 9: squeue unreadable'
+    assert launch.queue_position('9', []) == 'job 9 is not pending'
+    assert launch.parse_fairshare('x\n') is None
+
+
+def test_site_card_type_is_a_constraint_and_a_pin_only_when_set(tmp_path):
+    text = SITE.read_text()
+    site = run_profile.load_site(SITE)
+    assert site['gpu_types']['A100-40']['constraint'] == 'A100-40-NODE-FEATURE'
+    assert 'nodelist' not in site['gpu_types']['A100-40']
+    pinned = tmp_path / 'site.toml'
+    pinned.write_text(text.replace('# nodelist = "GPU-NODE-2"', 'nodelist = "GPU-NODE-2"'))
+    plan = launch.build_plan('t1', knobs(), run_profile.load_site(pinned), cards=3,
+                             card_type='A100-80', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()])
+    assert '--nodelist=GPU-NODE-2' in launch.commands(plan)['gpu']
+    old = tmp_path / 'old.toml'
+    old.write_text(text.replace('constraint = "A100-40-NODE-FEATURE"\n', ''))
+    with pytest.raises(run_profile.ProfileError, match='gpu_types.A100-40: needs exactly'):
+        run_profile.load_site(old)
+    none = tmp_path / 'none.toml'
+    none.write_text(text.replace('"A100-40-NODE-FEATURE"', '""'))
+    plan = launch.build_plan('t1', knobs(), run_profile.load_site(none), cards=3,
+                             card_type='A100-40', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row()])
+    assert not any(c.startswith('--constraint') for c in launch.commands(plan)['gpu'])
+
+
+def test_start_order_adds_the_prep_wait_to_the_gpu_prep_and_env_jobs():
+    """GPU first, prep and env after it started: the learner's prep wait comes before its
+    wall, the services and env nodes wait for the learner."""
+    plan = plan_for(cards=3, wall_seconds=2400)
+    k = plan['knobs']
+    wait = k['remote_prepare_wait_seconds']
+    assert plan['prep_wait_seconds'] == wait
+    assert plan['gpu_minutes'] == (2400 + 240 + wait) // 60 + 1 == plan['prep_minutes']
+    assert plan['env_wait_seconds'] == k['env_wait_seconds'] + wait
+    assert plan['env_minutes'] == (k['env_wait_seconds'] + wait + 2400 + 600) // 60
+    assert f'export FC_WAIT_N={(k["env_wait_seconds"] + wait) // 5}' in launch.job_env(plan)
+    local = plan_for(cards=3, wall_seconds=2400, remote_prepare=False, preparation_workers=24,
+                     assembly_workers=24)
+    assert local['prep_wait_seconds'] == 0 and local['gpu_minutes'] == (2400 + 240) // 60 + 1
+    assert not any(name.startswith('prep') for name in launch.commands(local))
+
+
+PREP_SQUEUE = """#!/bin/bash
+n=$(( $(cat "$SQ_COUNT" 2>/dev/null || echo 0) + 1 )); echo $n > "$SQ_COUNT"
+answer=$(sed -n "${n}p" "$SQ_SCRIPT"); [ -n "$answer" ] || answer=$(tail -1 "$SQ_SCRIPT")
+case $answer in
+  fail) echo "slurm_load_jobs error: Socket timed out on send/recv operation" >&2; exit 1 ;;
+  purged) echo "slurm_load_jobs error: Invalid job id specified" >&2; exit 1 ;;
+  empty) exit 0 ;;
+  *) echo "$answer" ;;
+esac
+"""
+
+
+def run_prep_serve(tmp_path, answers):
+    """The serve loop of prep.sh as it runs, with a scripted squeue and no sleep."""
+    import subprocess
+    text = (FASTCHAIN / 'prep.sh').read_text()
+    loop = text[text.index('# --- serve:'):text.index('# --- end serve ---')]
+    assert 'sleep 15' in loop
+    run = tmp_path / 'run'
+    run.mkdir(parents=True)
+    (run / 'gpu-job.txt').write_text('77\n')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    (bin_dir / 'squeue').write_text(PREP_SQUEUE)
+    (bin_dir / 'squeue').chmod(0o755)
+    (tmp_path / 'answers').write_text('\n'.join(answers) + '\n')
+    env = {'PATH': f'{bin_dir}:/usr/bin:/bin', 'RUN': str(run),
+           'SQ_SCRIPT': str(tmp_path / 'answers'), 'SQ_COUNT': str(tmp_path / 'count')}
+    out = subprocess.run(['bash', '-c', loop.replace('sleep 15', 'true') + 'echo rc=$RC'],
+                         env=env, capture_output=True, text=True, check=True, timeout=60)
+    return out.stdout, int((tmp_path / 'count').read_text())
+
+
+def test_prep_serve_loop_never_reads_a_failed_squeue_as_gone(tmp_path):
+    out, calls = run_prep_serve(tmp_path / 'a', ['RUNNING', 'fail', 'fail', 'RUNNING',
+                                                 'COMPLETED'])
+    assert calls == 5 and 'squeue failed (2 in a row)' in out and 'gone: COMPLETED' in out
+    assert out.strip().endswith('rc=0')
+    out, calls = run_prep_serve(tmp_path / 'b', ['RUNNING', 'purged'])
+    assert calls == 2 and 'Invalid job id' in out and out.strip().endswith('rc=0')
+    out, calls = run_prep_serve(tmp_path / 'c', ['empty'])
+    assert calls == 1 and 'gone: not listed' in out
+    out, calls = run_prep_serve(tmp_path / 'd', ['RUNNING', 'fail'])
+    assert calls == 41 and 'failed 40 times in a row' in out and out.strip().endswith('rc=4')
 
 
 def test_prep_min_free_bytes_and_new_switches_reach_the_jobs():
@@ -788,13 +951,23 @@ def test_readout_reports_disk_watermarks(tmp_path):
     assert disk['free_pct'] == {'/run': 15.0, '/tmp': 40.0} and len(disk['events']) == 1
 
 
-def test_prep_estimate_is_only_a_warning():
+def test_snapshot_test_only_and_queue_are_only_printed():
     plan = plan_for(cards=3)
-    for start in (None, 99_999.0):
-        result = preflight.check_prep_schedulable(plan, {**good_facts(plan),
-                                                         'prep_test_start_seconds': start})
-        assert result.ok and result.warn
-    assert 'WARN prep_schedulable' in preflight.report([result])
+    for start in (None, 99_999.0, 0.0):
+        result = preflight.check_gpu_request(plan, {**good_facts(plan),
+                                                    'gpu_test_start_seconds': start})
+        assert result.ok and not result.warn and 'test-only' in result.detail
+    assert 'PASS gpu_request' in preflight.report([result])
+    for queue, warn in (({'fairshare': 0.0167, 'priority_estimate': 10167, 'above': 829,
+                          'pending': 1000}, True), ({}, True),
+                        (good_facts(plan)['queue'], False)):
+        result = preflight.check_queue({'queue': queue})
+        assert result.ok and result.warn == warn
+    assert '829 of 1000 pending jobs rank above' in preflight.check_queue(
+        {'queue': {'fairshare': 0.0167, 'priority_estimate': 10167, 'above': 829,
+                   'pending': 1000}}).detail
+    prep = preflight.check_prep_schedulable(plan, good_facts(plan))
+    assert prep.ok and '8 prep hosts in 2 plain jobs' in prep.detail
 
 
 def test_missing_source_features_only_warn():

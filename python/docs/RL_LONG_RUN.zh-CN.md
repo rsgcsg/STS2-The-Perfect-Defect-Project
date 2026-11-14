@@ -29,9 +29,16 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
 - 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
   照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
-- 预检任何一项不过就拒绝启动并逐项说明（只打印 WARN 的例外：无时限分区上不可靠的
-  `--test-only` 备料排队估计，以及旋钮所需源码特性——产品自己会对缺失特性响亮拒绝）：卡位、单 rank 设备、备料机型与 scratch（每台开工时
-  再查空闲 ≥ 2×在途）、备料能否按时排上（`sbatch --test-only`）、分区时限、python_env_sha256
+  卡型 = 分区 + gres + `constraint`（只有该卡型节点才有的 feature，`sinfo -o "%N %f"` 查，
+  `""` = 分区和 gres 已能区分）；`nodes` 只用于打印 sinfo 快照和 `--fallback` 选卡数，从不
+  钉节点；只有站点显式写了可选的 `nodelist` 才加 `--nodelist`（CLUSTER-QUEUE-DIAG 11-14：
+  按快照钉节点、把“有空卡”当“能开始”都错过）。旧站点文件缺 `constraint` 会被拒绝，补一行即可。
+- 预检任何一项不过就拒绝启动并逐项说明（只打印、从不拒绝的例外：sinfo 快照与
+  `sbatch --test-only` 的 GPU 开始估计——后者不看排在前面的作业和分区锁，11-14 说“立即”
+  时实际起不来；本用户 fairshare 与“现在交一个作业，前面有多少个更高优先级的排队作业”
+  （优先级按 `sprio -w` 的分区权重 + fairshare 权重 × 因子估计，backfill 每轮只看前
+  bf_max_job_test 个，11-14 时是 500）；以及旋钮所需源码特性——产品自己会对缺失特性响亮
+  拒绝）：卡位、单 rank 设备、备料机型与 scratch（每台开工时再查空闲 ≥ 2×在途）、分区时限、python_env_sha256
   与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
   同一 int 且 memo 开、candidate dll 前缀（≥12 位十六进制）、env 节点数够把聚合器铺满全部
   服务（0 个直接拒绝）、分片均衡、旋钮所需源码特性（#523/#525/#526/#528/#529/#530 的
@@ -54,8 +61,22 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
   首值时报警，探针开时报 gc 秒数。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
-  `plan.json`；先交备料、等全部就绪才交 GPU，再交 env 数组。中途任一提交失败、备料拒绝
-  或 Ctrl-C，已交的作业全部取消再报错（`submit-failed.txt`），不自动重试。
+  `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
+  backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
+  GPU 开始前它们只是 Dependency 排队，不占 CPU 节点、不扣 fairshare（`plan.json` 里的命令不含
+  这一项，作业号见 `jobs.json`）。然后等 GPU 作业离开 PENDING，最多 `gpu_pending_max_seconds`
+  （4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印 Slurm Reason、优先级和
+  排在前面的排队作业数，取消本 run 全部作业，非零退出，不自动重交。等待期间 launcher 要一直
+  活着（真跑放 tmux/nohup 或交给 supervise）。中途任一提交失败、GPU 作业没开始就被取消或
+  Ctrl-C，同样全部取消再报错（`submit-failed.txt`），不自动重试。
+- 启动握手（GPU 先开始）：备料组作业在 GPU 开始后才排队；学习者从开始起最多等
+  `remote_prepare_wait_seconds`（900 s，= 以前“备料先起”的总预算 600 + 300）等全部备料主机
+  `prep-ready/ready-*`，任一台写 `prep-refused/*` 立即失败；服务等学习者 `learner.ready`，env 节点
+  等服务。所以这段等待加进 GPU 作业时长（运行时长 + 240 s + 备料等待）、备料作业时长（= GPU 作业
+  时长，备料不会早于 GPU 开始）和 env 等待（`env_wait_seconds` + 备料等待）。GPU 已结束时才开始
+  的备料作业看到 STOP 直接退出。prep.sh 一次 `squeue` 失败不再当作 GPU 已结束：只有 squeue 正常
+  回答且无活状态，或 `Invalid job id`（已清除）才算结束；连续 40 次（10 min）失败则停掉主机并以 4
+  退出。
 - 失败不被覆盖：STOP 只写第一次原因；任一服务或学习者非零退出、学习者无报告，GPU 作业
   rc ≠ 0；MPS 起不来直接拒绝（不允许无 MPS 共卡）。
 - 读数：`readout.py <run>`（老 run 用 `--plan`）给每个角色的行/s、忙碌%、队列、等待、丢弃，

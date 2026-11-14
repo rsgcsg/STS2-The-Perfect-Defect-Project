@@ -3,10 +3,10 @@
 
 Two halves, both decided by the pure functions below:
 - login side (`checks(plan, facts)`), before anything is submitted: layout placement,
-  machine types, prep scratch, prep schedulability, speed switches, source features
-  the knobs need, producer identity, env package identity and memo, env nodes and
-  shard balance, memory budget, cross-node identity, hot path, secret files, time
-  limits, core cap;
+  the GPU request (sinfo snapshot and --test-only printed only), machine types, prep
+  scratch, prep jobs, speed switches, source features the knobs need, producer identity,
+  env package identity and memo, env nodes and shard balance, memory budget, cross-node
+  identity, hot path, secret files, time limits, core cap, the queue (printed only);
 - job side (`preflight.py job-gpu | prep-host | env-node`), when a role starts on its
   node: dependencies + python_env_sha256, node-local hot path, prep scratch free space,
   env sha equal to the GPU side's.
@@ -77,10 +77,22 @@ def check_placement(plan: dict[str, Any]) -> Result:
     return Result("placement", not problems, "; ".join(problems + [detail]))
 
 
-def check_gpu_node(plan: dict[str, Any]) -> Result:
-    if plan.get("gpu_node"):
-        return Result("gpu_node", True, f"{plan['gpu_node']}: {plan['gpu_node_why']}")
-    return Result("gpu_node", False, "no GPU node fits now: " + plan.get("gpu_node_why", ""))
+def check_gpu_request(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """What the GPU job asks Slurm for, never a node pinned from a snapshot. The sinfo
+    snapshot and `sbatch --test-only` are printed only (CLUSTER-QUEUE-DIAG 11-14: free
+    cards did not mean "can start"; --test-only ignores higher-priority jobs and partition
+    locks); the launcher bounds the real wait (gpu_pending_max_seconds)."""
+    ask = (f"partition {plan['gpu_partition']}, gpu:{plan['gpu_gres']}:"
+           f"{plan['placement']['cards']}"
+           + (f", constraint {plan['gpu_constraint']}" if plan["gpu_constraint"] else "")
+           + (f", nodelist {plan['gpu_nodelist']} (site pin)" if plan["gpu_nodelist"] else ""))
+    free, start = plan["gpu_nodes_free_now"], facts.get("gpu_test_start_seconds")
+    return Result("gpu_request", True, "; ".join([
+        ask, f"sinfo now: room on {', '.join(free)}" if free else
+        "sinfo now: no node with room (the job will pend)",
+        "sbatch --test-only: no estimate" if start is None else
+        f"sbatch --test-only: start in {start:.0f} s (informational)",
+        f"pending bound {plan['gpu_pending_max_seconds']} s"]), warn=not free)
 
 
 def check_machine_types(plan: dict[str, Any]) -> Result:
@@ -121,20 +133,14 @@ def check_prep_schedulable(plan: dict[str, Any], facts: dict[str, Any]) -> Resul
     k = plan["knobs"]
     if not k["remote_prepare"]:
         return Result("prep_schedulable", True, "remote prepare off")
-    hosts = sum(g["nodes"] for g in k["prep_groups"])
+    groups = [g for g in k["prep_groups"] if g["nodes"]]
+    hosts = sum(g["nodes"] for g in groups)
     if hosts < 1:
         return Result("prep_schedulable", False, "remote prepare on but no prep hosts")
-    start = facts.get("prep_test_start_seconds")
-    limit = k["prep_start_timeout_seconds"]
-    # Owner 11-14: the --test-only estimate is unreliable on no-limit partitions (running
-    # jobs have no end time): a warning with the estimate, never a refusal.
-    if start is None:
-        return Result("prep_schedulable", True, f"sbatch --test-only gave no start estimate "
-                      f"for {hosts} prep hosts", warn=True)
     return Result("prep_schedulable", True,
-                  f"{hosts} prep hosts, estimated start in {start:.0f} s (prep wait limit "
-                  f"{limit:.0f} s; the GPU job is submitted only after every host is ready)",
-                  warn=start > limit)
+                  f"{hosts} prep hosts in {len(groups)} plain jobs (no heterogeneous job), "
+                  "each starting after the GPU job started; the learner waits "
+                  f"{plan['prep_wait_seconds']} s for all of them")
 
 
 def check_switches(plan: dict[str, Any]) -> Result:
@@ -418,7 +424,7 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
     if not plan["smoke"] and window <= 0:
         problems.append(f"no env join window: wall {plan['wall_seconds']} s - drain "
                         f"{k['env_drain_seconds']} s - min join {k['env_min_join_seconds']} s")
-    if plan["env_minutes"] * 60 < plan["wall_seconds"] + k["env_wait_seconds"]:
+    if plan["env_minutes"] * 60 < plan["wall_seconds"] + plan["env_wait_seconds"]:
         problems.append("env job shorter than the GPU wall plus the env wait")
     shown.append(f"env nodes may join for {max(window, 0) // 60} min")
     if problems:
@@ -451,15 +457,30 @@ def check_resume(plan: dict[str, Any]) -> Result:
                   f"{cp or 'the start package'}")
 
 
+def check_queue(facts: dict[str, Any]) -> Result:
+    """Printed, never enforced (CLUSTER-QUEUE-DIAG 11-14): this user's fair-share factor and
+    how many pending jobs rank above a job submitted now. Backfill looks at only the first
+    bf_max_job_test of them per cycle (500 there), so a long list means a long wait."""
+    q = facts.get("queue") or {}
+
+    def shown(key: str) -> str:
+        return "unknown" if q.get(key) is None else str(q[key])
+
+    return Result("queue", True, f"fair-share {shown('fairshare')}; a job submitted now "
+                  f"has priority ~{shown('priority_estimate')} (partition + fair-share "
+                  f"weights); {shown('above')} of {shown('pending')} pending jobs rank above "
+                  "it", warn=q.get("above") != 0)
+
+
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
-    return [check_placement(plan), check_gpu_node(plan), check_machine_types(plan),
+    return [check_placement(plan), check_gpu_request(plan, facts), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
             check_frozen_recipe(plan, facts), check_compile_warmup(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),
-            check_resume(plan)]
+            check_resume(plan), check_queue(facts)]
 
 
 def report(results: list[Result]) -> str:
@@ -516,7 +537,7 @@ def job_main(argv: list[str]) -> int:
         sha = _env_sha()
     except Exception as error:  # noqa: BLE001 - reported as the refusal
         detail = f"dependency import failed: {error!r}"
-        if args.role == "prep-host":  # the launcher stops waiting at once
+        if args.role == "prep-host":  # the learner stops waiting at once
             _write(args.run / "prep-refused" / args.index, f"{os.uname().nodename} {detail}\n")
         print(f"preflight {args.role}: {detail}", flush=True)
         return 9

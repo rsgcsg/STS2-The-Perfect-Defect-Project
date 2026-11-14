@@ -314,7 +314,6 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "prep_groups": _prep_groups,
     "prep_host_inflight_gb": _num(0),
     "prep_scratch_min_free": _bool,
-    "prep_start_timeout_seconds": _num(0),
     # inference services
     "services": _int(1, 64),
     "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
@@ -338,6 +337,9 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "wall_seconds": _int(60),
     "smoke_wall_seconds": _int(60),
     "long_wall_seconds": _int(60, 72000),
+    # the launcher cancels the run when the GPU job is still PENDING after this long
+    "gpu_pending_max_seconds": _int(60),
+    "smoke_gpu_pending_max_seconds": _int(60),
     # resume chain (supervise.py) and its schedules
     "resume_max_total": _int(0, 20),
     "min_generation_seconds": _int(300),
@@ -417,7 +419,12 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "partition_max_minutes": _table_of(_int(0), what="minutes (int, 0 = no limit)"),
     "compile_warmup_dumps": _strs,
 }
-GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list}
+# A card type is partition + gres + constraint (a node feature; "" = partition and gres
+# already decide it). `nodes` only feeds the printed sinfo snapshot (and --fallback); an
+# explicit --nodelist pin exists only when the site sets `nodelist` (CLUSTER-QUEUE-DIAG
+# 11-14: a pin taken from a snapshot was wrong).
+GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list, "constraint": str}
+GPU_TYPE_OPTIONAL = {"nodelist": str}
 
 
 class ProfileError(ValueError):
@@ -495,10 +502,12 @@ def load_site(path: Path) -> dict[str, Any]:
     for key, check in SITE_KEYS.items():
         if key in site and check(site[key]):
             problems.append(f"{key}: expected {check(site[key])}")
+    types = {**GPU_TYPE_KEYS, **GPU_TYPE_OPTIONAL}
     for name, spec in (site.get("gpu_types") or {}).items():
-        if (not isinstance(spec, dict) or set(spec) != set(GPU_TYPE_KEYS)
-                or any(not isinstance(spec[k], t) for k, t in GPU_TYPE_KEYS.items())):
-            problems.append(f"gpu_types.{name}: needs exactly {sorted(GPU_TYPE_KEYS)}")
+        if (not isinstance(spec, dict) or not set(GPU_TYPE_KEYS) <= set(spec) <= set(types)
+                or any(not isinstance(spec[k], types[k]) for k in spec)):
+            problems.append(f"gpu_types.{name}: needs exactly {sorted(GPU_TYPE_KEYS)} "
+                            f"(optional {sorted(GPU_TYPE_OPTIONAL)})")
     if problems:
         raise ProfileError("site profile refused:\n  " + "\n  ".join(problems))
     return site
