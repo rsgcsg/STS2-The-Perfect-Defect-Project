@@ -31,10 +31,13 @@ from stpd.rl.fast_source import (
     fast_envelope,
 )
 from stpd.rl.heads import categorical_lambda_targets, class_reward_values
-from stpd.rl.loss import LossConfig, batched_segment_loss
+from stpd.rl.loss import HP_ADVANTAGE_SCOPES, LossConfig, batched_segment_loss
 from stpd.rl.prepared_batch import BatchMember, PrepareRequest
 
 INSTANCE = "node-a.000000000001"
+# `two_segments(FORMAT_3)` sealed on the base before W2 (568da206), same game, same ids.
+GOLDEN_FORMAT_3_BOOTSTRAP = "417a85b68d5572179db468f99a69d2bfba93139e32eabd1998e612af292de8cc"
+GOLDEN_FORMAT_3_TERMINAL = "10639e99bc454f3d41a52ee50de8acf2083e9082a218db16003c63569e42a5cc"
 
 
 def facts(hp: int, max_hp: int = 80) -> dict[str, Any]:
@@ -84,19 +87,20 @@ def test_a_missing_public_fact_gives_no_score(start, last):
 class HpGame:
     """Real assembler, real rows-v2 bytes; `hp` of a step = the public hp it led to."""
 
-    def __init__(self, segment_format: str = FORMAT_4) -> None:
+    def __init__(self, segment_format: str = FORMAT_4, *, compiler: Any = COMPILER,
+                 handoff: Any = None) -> None:
         self.sealed: list[Any] = []
         self.closed: list[Any] = []
-        frame = COMPILER.compile(public_state())
+        frame = compiler.compile(public_state())
         self.raw, self.width = encode_row(frame), len(frame.choices)
         self.hp_score = segment_format == FORMAT_4
         self.assembler = FastSegmentAssembler(
-            assembler_id="node-a", compiler_identity=COMPILER.identity, emit=self.sealed.append,
+            assembler_id="node-a", compiler_identity=compiler.identity, emit=self.sealed.append,
             terminal_labeler=lambda _summary: {
                 "class": 3, "reward": float(class_reward_values()[3])},
             on_closed=self.closed.append, segment_format=segment_format, verify_every=1)
         self.assembler.instance_id = INSTANCE
-        self.assembler.offer_mu(mu(1))
+        self.assembler.offer_mu(handoff or mu(1))
         self.request = 0
         self.steps: dict[str, int] = {}
 
@@ -338,17 +342,37 @@ def test_a_short_segment_is_a_truncation_unless_the_ticket_ended_after_its_comba
 
 
 # -- the learner: c_hp ----------------------------------------------------------------
-def envelope(segment: Any, game: str, coef: float) -> dict[str, Any]:
+def envelope(segment: Any, game: str, coef: float,
+             scope: str = "combat_ticket") -> dict[str, Any]:
     a = attest(game)
     return fast_envelope(segment.header, size=len(segment.data), digest=segment.sha256,
                          run="run-1", attestation={key: a[key] for key in (
                              "actor", "intent_id", "seed", "training_split")},
-                         gae_lambda=0.99, hp_advantage_coef=coef)
+                         gae_lambda=0.99, hp_advantage_coef=coef, hp_advantage_scope=scope)
 
 
-def sources(segments: list[Any], game: str, coef: float) -> list[Any]:
-    return [decode_fast_packet(s.data, envelope=envelope(s, game, coef), compiler=COMPILER)[0]
+def sources(segments: list[Any], game: str, coef: float,
+            scope: str = "combat_ticket") -> list[Any]:
+    return [decode_fast_packet(s.data, envelope=envelope(s, game, coef, scope),
+                               compiler=COMPILER)[0]
             for s in segments]
+
+
+def outcome_advantages(segment: Any) -> torch.Tensor:
+    """The segment's raw outcome advantage, as the learner computes it without c_hp."""
+    header, seal = segment.header, segment.header["seal"]
+    tail = None if seal["terminal"] else torch.tensor(seal["bootstrap"]["outcome_probabilities"])
+    return categorical_lambda_targets(
+        torch.tensor([r["outcome_probabilities"] for r in header["rows"]]), tail,
+        terminal_class=seal["terminal"]["class"] if seal["terminal"] else None)[1]
+
+
+def hp_column(segment: Any) -> torch.Tensor:
+    return torch.tensor([0.0 if v is None else v for v in segment.header["hp_adv"]])
+
+
+def normalised(value: torch.Tensor) -> torch.Tensor:
+    return (value - float(value.mean())) / max(float(value.std(unbiased=False)), 1e-8)
 
 
 def batch(segments: list[Any], prepared: list[Any], game: str) -> Any:
@@ -364,35 +388,38 @@ def batch(segments: list[Any], prepared: list[Any], game: str) -> Any:
                        prepared_layout="rows-v2")
 
 
-def two_segments(segment_format: str) -> list[Any]:
+def full_game(g: HpGame, game: str = "g") -> None:
     """A bootstrap segment (a combat across its end) and a terminal segment (a death)."""
-    g = HpGame(segment_format)
-    g.open("g")
-    g.step("g", combat=False, hp=70)
+    g.open(game)
+    g.step(game, combat=False, hp=70)
     for index in range(70):
-        g.step("g", combat=index % 20 != 19, hp=70 - index // 2, potion=index % 9 == 4,
+        g.step(game, combat=index % 20 != 19, hp=70 - index // 2, potion=index % 9 == 4,
                predicted=0.5 + 0.0078125 * (index % 5))
-    g.step("g", combat=True, hp=0, terminal="defeat")
-    g.close("g", "terminal")
+    g.step(game, combat=True, hp=0, terminal="defeat")
+    g.close(game, "terminal")
+
+
+def two_segments(segment_format: str) -> list[Any]:
+    g = HpGame(segment_format)
+    full_game(g)
     assert [s.kind for s in g.sealed] == ["bootstrap", "terminal"]
     return g.sealed
 
 
+def test_format_3_with_c_hp_off_seals_the_same_bytes_as_before_the_hp_score():
+    # Format 3 (the launcher default) with c_hp off: not one sealed byte changed by W2.
+    assert [hashlib.sha256(s.data).hexdigest() for s in two_segments(FORMAT_3)] == [
+        GOLDEN_FORMAT_3_BOOTSTRAP, GOLDEN_FORMAT_3_TERMINAL]
+
+
 def test_c_hp_is_added_to_the_outcome_advantage_once_before_the_one_normalisation():
-    segments = two_segments(FORMAT_4)
+    segments = two_segments(FORMAT_4)  # a full game: the "all_combats" experiment arm
     coef = 0.003
-    prepared = sources(segments, "g", coef)
+    prepared = sources(segments, "g", coef, "all_combats")
     raw = []
     for segment, source in zip(segments, prepared, strict=True):
-        header = segment.header
-        seal = header["seal"]
-        tail = (None if seal["terminal"]
-                else torch.tensor(seal["bootstrap"]["outcome_probabilities"]))
-        _, outcome_advantage = categorical_lambda_targets(
-            torch.tensor([r["outcome_probabilities"] for r in header["rows"]]), tail,
-            terminal_class=seal["terminal"]["class"] if seal["terminal"] else None)
-        hp = torch.tensor([0.0 if v is None else v for v in header["hp_adv"]])
-        assert any(v is not None for v in header["hp_adv"])
+        outcome_advantage, hp = outcome_advantages(segment), hp_column(segment)
+        assert any(v is not None for v in segment.header["hp_adv"])
         assert torch.equal(source.raw_advantages, outcome_advantage + coef * hp)
         raw.append((outcome_advantage, hp))
     result = batch(segments, prepared, "g")
@@ -401,10 +428,6 @@ def test_c_hp_is_added_to_the_outcome_advantage_once_before_the_one_normalisatio
     assert None in segments[0].header["hp_adv"]  # a non-combat row adds nothing
     mask = result.policy_mask
     assert bool(mask.all())  # every row here has two choices
-
-    def normalised(value: torch.Tensor) -> torch.Tensor:
-        return (value - float(value.mean())) / max(float(value.std(unbiased=False)), 1e-8)
-
     assert torch.allclose(result.advantages, normalised(outcome_all + coef * hp_all), atol=1e-6)
     # not "normalise each, then add", nor "add after the normalisation"
     assert not torch.allclose(result.advantages,
@@ -421,7 +444,7 @@ def test_c_hp_zero_leaves_every_prepared_tensor_and_the_loss_unchanged():
             assert torch.equal(getattr(left, name), getattr(right, name)), name
     first, second = batch(old, a, "g"), batch(new, b, "g")
     assert torch.equal(first.advantages, second.advantages)
-    with_hp = batch(new, sources(new, "g", 0.003), "g")
+    with_hp = batch(new, sources(new, "g", 0.003, "all_combats"), "g")
     assert not torch.equal(with_hp.advantages, second.advantages)
 
     def loss(prepared: Any) -> torch.Tensor:
@@ -449,26 +472,95 @@ def test_c_hp_refuses_an_older_segment_format_loudly():
     assert len(sources(old, "g", 0.0)) == 2  # c_hp = 0: the older formats as before
 
 
-def test_c_hp_is_a_frozen_loss_key_off_by_default_and_reaches_every_envelope():
+def test_c_hp_scores_single_combat_tickets_only_unless_the_arm_is_all_combats():
+    full = two_segments(FORMAT_4)
+    g = HpGame()
+    single_combat(g)
+    ticket = g.sealed
+    assert [s.header["ticket"]["end"] for s in full + ticket] == ["game", "game", "combat"]
+    for scope in HP_ADVANTAGE_SCOPES:
+        for game, segments in (("g", full), ("t", ticket)):
+            scored = game == "t" or scope == "all_combats"
+            for segment, off, on in zip(segments, sources(segments, game, 0.0, scope),
+                                        sources(segments, game, 0.003, scope), strict=True):
+                assert torch.equal(off.raw_advantages, outcome_advantages(segment))
+                assert torch.equal(on.raw_advantages, off.raw_advantages
+                                   + (0.003 * hp_column(segment) if scored else 0.0)), scope
+    # A full-game format-3 segment is still refused under either scope: c_hp > 0 never
+    # reads an older format as A_hp = 0.
+    for scope in HP_ADVANTAGE_SCOPES:
+        with pytest.raises(FastIntakeError, match="fast_segment_without_hp_score"):
+            sources(two_segments(FORMAT_3), "g", 0.003, scope)
+
+
+def test_c_hp_and_its_scope_are_frozen_loss_keys_off_by_default_in_every_envelope():
     assert LossConfig().hp_advantage_coef == 0.0
+    assert LossConfig().hp_advantage_scope == "combat_ticket"
+    assert HP_ADVANTAGE_SCOPES == ("combat_ticket", "all_combats")
     frozen = json.loads((Path(__file__).resolve().parents[1] / "configs/rl5.json").read_text())
     assert frozen["loss"]["hp_advantage_coef"] == 0.0
-    for bad in (-0.1, float("nan"), "0.003"):
+    assert frozen["loss"]["hp_advantage_scope"] == "combat_ticket"
+    for bad in ({"hp_advantage_coef": -0.1}, {"hp_advantage_coef": float("nan")},
+                {"hp_advantage_coef": "0.003"}, {"hp_advantage_scope": "full_game"},
+                {"hp_advantage_scope": None}):
         with pytest.raises(Exception, match="invalid_PPO_configuration"):
-            LossConfig(hp_advantage_coef=bad)  # type: ignore[arg-type]
+            LossConfig(**bad)  # type: ignore[arg-type]
     segment = two_segments(FORMAT_4)[0]
-    intake = FastSegmentIntake(run="run-1", generation="gen-1", hp_advantage_coef=0.003)
+    intake = FastSegmentIntake(run="run-1", generation="gen-1", hp_advantage_coef=0.003,
+                               hp_advantage_scope="all_combats")
     a = attest("g")
     made = intake._envelope(type("S", (), {"header": segment.header, "data": segment.data,
                                            "message": {"sha256": segment.sha256}})(), a)
-    assert made["hp_advantage_coef"] == 0.003
-    # A checkpoint from before c_hp existed resumes as c_hp = 0, and only as that.
+    assert (made["hp_advantage_coef"], made["hp_advantage_scope"]) == (0.003, "all_combats")
+    assert FastSegmentIntake(run="run-1", generation="gen-1")._envelope(
+        type("S", (), {"header": segment.header, "data": segment.data,
+                       "message": {"sha256": segment.sha256}})(), a)[
+        "hp_advantage_scope"] == "combat_ticket"
+    # A checkpoint from before c_hp existed resumes as c_hp = 0 with the default scope,
+    # and only as that.
     from dataclasses import asdict
 
     from stpd.rl.segment_learner import _resume_config
     config = {"loss": asdict(LossConfig()), "segments": {}}
-    before = {"loss": {k: v for k, v in config["loss"].items() if k != "hp_advantage_coef"},
+    before = {"loss": {k: v for k, v in config["loss"].items()
+                       if k not in ("hp_advantage_coef", "hp_advantage_scope")},
               "segments": {}}
     assert _resume_config(before) == _resume_config(config)
-    changed = {"loss": {**config["loss"], "hp_advantage_coef": 0.003}, "segments": {}}
-    assert _resume_config(before) != _resume_config(changed)
+    for change in ({"hp_advantage_coef": 0.003}, {"hp_advantage_scope": "all_combats"}):
+        changed = {"loss": {**config["loss"], **change}, "segments": {}}
+        assert _resume_config(before) != _resume_config(changed)
+
+
+def test_the_learner_admits_prepares_and_steps_a_short_combat_ticket_segment(
+        tmp_path, monkeypatch):
+    from test_rl_fast_learner import admission, fast_learner, learner_mu, offer, queued
+
+    from stpd.p1.frame_compiler import FrameCompiler
+    coef = 0.003  # default scope: only the single-combat ticket gets c_hp * A_hp
+    owner = fast_learner(tmp_path, monkeypatch, hp_advantage_coef=coef)
+    try:
+        g = HpGame(compiler=FrameCompiler(owner.model.vocabulary), handoff=learner_mu(owner))
+        single_combat(g, "t")
+        full_game(g, "g")
+        ticket, bootstrap = g.sealed[0], g.sealed[1]
+        assert ticket.kind == "bootstrap" and len(ticket.header["rows"]) == 3
+        assert len(bootstrap.header["rows"]) == 64
+        for index, name in enumerate(("t", "g"), 1):
+            assert admission(owner, name, index)["admitted"]
+        for segment in (ticket, bootstrap):
+            offer(owner, segment)
+        assert queued(owner) == [ticket.segment_id, bootstrap.segment_id]
+        assert owner._prepare()  # one dataset: the 3-row ticket and the 64-row segment
+        assert owner.active is not None and owner.active_batch is not None
+        assert [r["segment_id"] for r in owner.active["segments"]] == [
+            ticket.segment_id, bootstrap.segment_id]
+        prepared = owner.active_batch
+        ppo = torch.tensor([kind == "ppo" for kind in prepared.kinds])
+        assert int(ppo.sum()) == 67 and bool(prepared.policy_mask[ppo].all())
+        raw = torch.cat([outcome_advantages(ticket) + coef * hp_column(ticket),
+                         outcome_advantages(bootstrap)])
+        assert torch.allclose(prepared.advantages[ppo], normalised(raw), atol=1e-6)
+        result = owner._step()
+        assert result["rows"] > 0 and result["approx_kl_mu_theta"] > 0
+    finally:
+        owner.close()

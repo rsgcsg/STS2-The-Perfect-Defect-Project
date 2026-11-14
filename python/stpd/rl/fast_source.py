@@ -10,6 +10,8 @@ Three pieces, none used by the old chain:
   mu). With the envelope's `hp_advantage_coef` (c_hp, LossConfig) > 0 the per-combat
   HP score is added: advantage = outcome advantage + c_hp * A_hp, with A_hp the
   format-4 `hp_adv` column (computed by the assembler; a row without one adds 0).
+  `hp_advantage_scope` picks the segments: "combat_ticket" only those whose
+  ticket.end == "combat" (single-combat practice), "all_combats" every one.
   The learner's one normalisation then runs on that sum. c_hp > 0 refuses a
   segment of an older format (`fast_segment_without_hp_score`), never reads it as
   A_hp = 0; c_hp = 0 leaves the advantage exactly as before.
@@ -120,7 +122,8 @@ EXCLUDING_CLOSE_REASONS = frozenset({"unknown", "env_crash"})
 ENVELOPE_KEYS = frozenset({"format", "payload_kind", "run", "training_generation", "actor",
                            "episode", "segment_id", "run_id", "rows", "mu", "compiler_identity",
                            "assembler_id", "training_split", "seed", "gae_lambda",
-                           "hp_advantage_coef", "packet_size", "packet_sha256"})
+                           "hp_advantage_coef", "hp_advantage_scope", "packet_size",
+                           "packet_sha256"})
 _REASON = re.compile(r"[a-z0-9_]{1,64}")
 LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
 LABEL_FIELDS = frozenset({"schema", "assembler_id", "game_instance_id", "training_generation",
@@ -145,7 +148,8 @@ def _identity_fence(code: str, instance_id: str, assembler: Any,
 
 def fast_envelope(header: dict[str, Any], *, size: int, digest: str, run: str,
                   attestation: dict[str, Any], gae_lambda: float,
-                  hp_advantage_coef: float = 0.0) -> dict[str, Any]:
+                  hp_advantage_coef: float = 0.0,
+                  hp_advantage_scope: str = "combat_ticket") -> dict[str, Any]:
     """The learner's own record of one admitted segment (never sent anywhere).
 
     `format` here is the fast-chain family key (`FAST_FORMAT`) used for routing, not
@@ -161,7 +165,7 @@ def fast_envelope(header: dict[str, Any], *, size: int, digest: str, run: str,
         "assembler_id": header["assembler_instance"],
         "training_split": attestation["training_split"], "seed": attestation["seed"],
         "gae_lambda": float(gae_lambda), "hp_advantage_coef": float(hp_advantage_coef),
-        "packet_size": size, "packet_sha256": digest,
+        "hp_advantage_scope": hp_advantage_scope, "packet_size": size, "packet_sha256": digest,
     }
 
 
@@ -225,9 +229,11 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     if coef:  # A = A_outcome + c_hp * A_hp, before the learner's one normalisation
         if header["format"] != FORMAT_4:
             raise FastIntakeError("fast_segment_without_hp_score")
-        advantages = advantages + coef * torch.tensor(
-            [0.0 if value is None else value for value in header["hp_adv"]],
-            dtype=advantages.dtype)
+        if (envelope["hp_advantage_scope"] == "all_combats"
+                or header["ticket"]["end"] == "combat"):
+            advantages = advantages + coef * torch.tensor(
+                [0.0 if value is None else value for value in header["hp_adv"]],
+                dtype=advantages.dtype)
     labels = {"segment_id": header["segment_id"], "run_id": header["game_instance_id"],
               "terminal": terminal, "hp_battles": []}
     source = bp.PreparedSource(
@@ -518,7 +524,8 @@ class FastSegmentIntake:
                  buffer_segments: int = 512, closed_memory: int = 65536,
                  gae_lambda: float = 0.99, published_memory: int = 65536,
                  aux_labels: frozenset[str] = frozenset(),
-                 hp_advantage_coef: float = 0.0) -> None:
+                 hp_advantage_coef: float = 0.0,
+                 hp_advantage_scope: str = "combat_ticket") -> None:
         if buffer_segments < 1 or closed_memory < 1 or published_memory < 1:
             raise ValueError("positive_fast_intake_bounds_required")
         if not aux_labels <= AUX_LABEL_KINDS:
@@ -528,7 +535,8 @@ class FastSegmentIntake:
         self.excluded_seeds = excluded_seeds
         self.buffer_segments, self.closed_memory = buffer_segments, closed_memory
         self.gae_lambda = gae_lambda
-        self.hp_advantage_coef = hp_advantage_coef  # c_hp (LossConfig), into every envelope
+        # c_hp and its scope (LossConfig), into every envelope
+        self.hp_advantage_coef, self.hp_advantage_scope = hp_advantage_coef, hp_advantage_scope
         self.lock = threading.RLock()
         self.instances: dict[str, _Instance] = {}
         # Finished instances: id -> excluded reason (None = clean). Bounded, FIFO.
@@ -908,7 +916,8 @@ class FastSegmentIntake:
         return fast_envelope(segment.header, size=len(segment.data),
                              digest=segment.message["sha256"], run=self.run,
                              attestation=attestation, gae_lambda=self.gae_lambda,
-                             hp_advantage_coef=self.hp_advantage_coef)
+                             hp_advantage_coef=self.hp_advantage_coef,
+                             hp_advantage_scope=self.hp_advantage_scope)
 
     def _buffer(self, instance: _Instance, segment: FastSegment) -> None:
         while len(self.buffer) >= self.buffer_segments:

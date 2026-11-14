@@ -5,7 +5,7 @@ the gate supplies the recipe, the run profile the speed levers and the run its
 operational values. `recipe_drift(effective, frozen)` compares it with the frozen
 long-run parameters (python/configs/rl5.json): every frozen key must be equal, except
 the ones in `ALLOWED_DRIFT`, each with the reason the launcher sets it on purpose.
-Recipe keys (the whole `loss` block, c_hp = `loss.hp_advantage_coef` included) pass
+Recipe keys (the whole `loss` block, c_hp and its scope included) pass
 through unchanged from the gate and have no default here: a gate without one shows as
 `<missing>` drift (regenerate the gate, python/docs/RL_LONG_RUN.zh-CN.md).
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).

@@ -71,17 +71,19 @@ def gate_base():
     return base
 
 
-def with_hp(config, coef):
-    """A learner config (gate base or frozen recipe) with c_hp = `coef`."""
+def with_hp(config, coef, scope='combat_ticket'):
+    """A learner config (gate base or frozen recipe) with c_hp = `coef` and its scope."""
     config = copy.deepcopy(config)
     config['loss']['hp_advantage_coef'] = coef
+    config['loss']['hp_advantage_scope'] = scope
     return config
 
 
-def gate_without_hp():
-    """A gate learner-base.json from before the HP score (no loss.hp_advantage_coef)."""
+def gate_without_hp(*keys):
+    """A gate learner-base.json from before the HP score (without c_hp and its scope)."""
     base = gate_base()
-    del base['loss']['hp_advantage_coef']
+    for key in keys or ('hp_advantage_coef', 'hp_advantage_scope'):
+        del base['loss'][key]
     return base
 
 
@@ -271,6 +273,7 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'gate_learner_base': None}, 'frozen_recipe'),
     ({}, {'gate_learner_base': gate_without_hp()}, 'frozen_recipe'),
     ({}, {'gate_learner_base': gate_without_hp()}, 'hp_score'),
+    ({}, {'gate_learner_base': gate_without_hp('hp_advantage_scope')}, 'hp_score'),
     # c_hp > 0 agreed by gate and frozen recipe, but segment format 3
     ({}, {'gate_learner_base': with_hp(gate_base(), 0.003),
           'frozen_recipe': with_hp(FROZEN, 0.003)}, 'hp_score'),
@@ -561,22 +564,31 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
              'frozen_recipe': with_hp(FROZEN, 0.003)}
     results = preflight.checks(plan, facts)
     assert all(r.ok for r in results), preflight.report(results)
-    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, segment format ' \
-        'stpd/rl-fast-segment-4'
+    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope combat_ticket, ' \
+        'segment format stpd/rl-fast-segment-4'
+    # the "all_combats" experiment arm: the same path, gate and frozen recipe agreeing
+    arm = {**facts, 'gate_learner_base': with_hp(gate_base(), 0.003, 'all_combats'),
+           'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
+    results = preflight.checks(plan, arm)
+    assert all(r.ok for r in results), preflight.report(results)
+    assert 'scope all_combats' in by_name(results)['hp_score'].detail
     # build passes the gate's c_hp through; A9 compares it with the frozen value
     run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
            'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
            'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
-    built = learner_config.build(with_hp(gate_base(), 0.003), plan['knobs'], run)
+    built = learner_config.build(with_hp(gate_base(), 0.003, 'all_combats'), plan['knobs'], run)
     assert built['loss']['hp_advantage_coef'] == 0.003
+    assert built['loss']['hp_advantage_scope'] == 'all_combats'
     assert learner_config.recipe_drift(built, FROZEN) == [
-        'loss.hp_advantage_coef: frozen 0.0, effective 0.003']
+        'loss.hp_advantage_coef: frozen 0.0, effective 0.003',
+        "loss.hp_advantage_scope: frozen 'combat_ticket', effective 'all_combats'"]
     # a gate from before the HP score is refused, never read as c_hp = 0
     old = learner_config.build(gate_without_hp(), plan['knobs'], run)
     assert learner_config.recipe_drift(old, FROZEN) == [
-        "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'"]
+        "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
+        "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
     refused = preflight.check_hp_score(plan, {**facts, 'gate_learner_base': gate_without_hp()})
-    assert not refused.ok and 'regenerate it once' in refused.detail
+    assert not refused.ok and 'patch it once' in refused.detail
 
 
 def test_long_run_and_smoke_are_exclusive():
