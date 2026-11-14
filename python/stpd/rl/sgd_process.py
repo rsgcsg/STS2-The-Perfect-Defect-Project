@@ -1828,7 +1828,6 @@ class _SgdWorker:
             self.snapshot()
         if self.staging_config.gc_freeze:
             self.collect_boundary()
-            self.mark("gc")
         self.idle_since = time.perf_counter()
 
     def mark(self, section: str) -> None:
@@ -1845,18 +1844,26 @@ class _SgdWorker:
         collector's view for good, so later collections scan only what came after.
 
         Frozen objects are still freed by refcount; a cycle among them that dies
-        later is never reclaimed (bounded by what was alive at a freeze)."""
+        later is never reclaimed (bounded by what was alive at a freeze).
+
+        Boundary sections `gc_collect`, `gc_freeze` (count, maybe freeze) and
+        `gc_other` (the report). `frozen` only when this boundary froze:
+        `gc.get_freeze_count()` walks every frozen object (14-150 ns each by heap
+        layout; a run freezes ~950k), while `gc.freeze()` is a constant-time splice."""
         self.state["stage"] = "gc_boundary"
         began = time.perf_counter()
         collected = gc.collect()
+        self.mark("gc_collect")
         objects = len(gc.get_objects(2))  # survivors only: garbage is never frozen
         refreeze = self.gc_frozen == 0 or objects >= GC_REFREEZE_OBJECTS
         if refreeze:
             gc.freeze()
             self.gc_frozen += 1
+        self.mark("gc_freeze")
         self.gc_report = {"seconds": time.perf_counter() - began, "objects": objects,
-                          "collected": collected, "froze": refreeze,
-                          "freezes": self.gc_frozen, "frozen": gc.get_freeze_count()}
+                          "collected": collected, "froze": refreeze, "freezes": self.gc_frozen,
+                          **({"frozen": gc.get_freeze_count()} if refreeze else {})}
+        self.mark("gc_other")
 
     def gather_step(self, result: dict[str, Any], diagnostics: bool) -> dict[str, Any]:
         """Rank 0 gets every rank's per-row policy facts (in group order) and timing."""

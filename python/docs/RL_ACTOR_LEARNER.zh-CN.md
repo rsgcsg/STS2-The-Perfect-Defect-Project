@@ -325,8 +325,9 @@ dataplane 对象里显式加 `"sgd_process": true` 才启用，不加时默认�
   配 `sgd_offline_step_seconds` 时另报 `online_offline_ratio`。
   每个 dataset 首步另报 `boundary_sections`（墙钟）与 `boundary_sections_cpu`（SGD 主线程 CPU）：上一 dataset
   末步结束到本 dataset 开始的连续分段 last_step/replica_check/snapshot_capture/snapshot_write/snapshot_send/
-  gc/checkpoint/idle（只列实际发生的段），墙钟各段之和等于 `boundary_seconds`；墙钟远大于 CPU 的段即阻塞处
-  （GIL、IO、同步）。
+  gc_collect/gc_freeze/gc_other/checkpoint/idle（只列实际发生的段），墙钟各段之和等于 `boundary_seconds`；
+  墙钟远大于 CPU 的段即阻塞处（GIL、IO、同步）。`gc_boundary.frozen`（`gc.get_freeze_count()`，逐个走完全部
+  冻结对象）只在该边界冻结时才报。
 
 内存预算（启动前，拒绝而不缩小）：控制进程与 SGD 进程逐项上界写入 `work/sgd-memory-budget.json`。
 匿名内存/pinned 全计；spool、arena、prepared 输出、WAL 只在 tmpfs/ramfs/未知文件系统上计入。
