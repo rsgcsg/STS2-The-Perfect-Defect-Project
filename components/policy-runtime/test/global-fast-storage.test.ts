@@ -16,7 +16,7 @@ async function root(): Promise<string> { const dir = await mkdtemp(join(tmpdir()
 afterEach(async () => { await Promise.all(roots.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
 function meta(over: Partial<FastGameMeta> = {}): FastGameMeta {
-  return { slot: 0, game_ref: "ref-1", game_instance_id: "g/1:a", start: { kind: "new_run" }, r7: false,
+  return { slot: 0, game_ref: "ref-1", game_instance_id: "g/1:a", seed: "seed-1", start: { kind: "new_run" }, r7: false,
     retain_originals: false, native_lines: true, ...over };
 }
 const line = (seq: number) => JSON.stringify({ seq, text: `frame é ${seq}`, objects: [{ id: seq }] });

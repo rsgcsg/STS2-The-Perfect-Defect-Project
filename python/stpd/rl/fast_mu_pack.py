@@ -16,10 +16,14 @@ and heads payload digests plus the numerical settings), so
 read. `unpack` restores the directory for a replay that loads through the
 ordinary `load_behavior_mu` checks; nothing is repaired.
 
-Production use (lead 11-12): the archive root is on the run's local disk
-(never R2), only mu bound by R7-sampled games are written (the assembler
-archives only while an `audit_retain_mu` game is open), and `prune` removes
-entries together with the checkpoints the run prunes.
+Production use (lead 11-12, owner option "d" 11-13): the archive root is on
+the run's local/cluster disk beside the R7 originals (never R2), only mu that
+an R7 game's segments actually bind are written (`FastSegmentAssembler.begin_row`),
+and they are kept for a later replay comparison. `max_bytes` bounds the
+archive: a write that would pass it raises `mu_archive_full` (the R7 row is
+refused loudly, nothing is dropped silently); the actor's `R7Selection`
+`max_games` is the first bound and should keep the archive well below it.
+`prune` removes entries when the run decides to (not used by option "d").
 
 Concurrency: every inference service process archives into the same root and
 the run prunes from another process. One OS file lock (`<root>/mu/.archive.lock`,
@@ -173,16 +177,44 @@ def unpack(raw: bytes, cache_root: Path) -> Path:
 
 
 class LocalMuArchive(DurableMuArchive):
-    """`DurableMuArchive` whose writes hold the archive's cross-process lock."""
+    """`DurableMuArchive` whose writes hold the archive's cross-process lock.
+
+    `max_bytes` (None = unbounded) bounds the bytes of all `*.weights` files in
+    the root, counted under the lock, so every process sharing the root sees
+    one bound. A new weights file that would pass it is refused
+    (`mu_archive_full`) before anything is written; re-binding weights already
+    present (a new generation) is never refused.
+    """
+
+    def __init__(self, root: Path | str, *, snapshot_of: Callable[[bytes], str],
+                 max_bytes: int | None = None) -> None:
+        super().__init__(root, snapshot_of=snapshot_of)
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
+            raise HandoffError("mu_archive_invalid_bound")
+        self.max_bytes = max_bytes
+
+    def used_bytes(self) -> int:
+        return sum(path.stat().st_size for path in self.root.glob("*.weights"))
 
     def __call__(self, handoff: Any) -> None:
         with instance_lock(self.root / LOCK, blocking=True):
+            weights = handoff.weights
+            if (self.max_bytes is not None and isinstance(weights, bytes)
+                    and not (self.root / (handoff.snapshot_sha256 + ".weights")).exists()
+                    and self.used_bytes() + len(weights) > self.max_bytes):
+                raise HandoffError("mu_archive_full")
             super().__call__(handoff)
 
+    def status(self) -> dict[str, Any]:
+        with instance_lock(self.root / LOCK, blocking=True):
+            return {"weights_files": len(list(self.root.glob("*.weights"))),
+                    "manifests": len(list(self.root.glob("*.json"))),
+                    "bytes": self.used_bytes(), "max_bytes": self.max_bytes}
 
-def local_mu_archive(root: Path | str) -> LocalMuArchive:
+
+def local_mu_archive(root: Path | str, *, max_bytes: int | None = None) -> LocalMuArchive:
     """The production R7 `mu_archive`: a local directory, checked by `snapshot_of`."""
-    return LocalMuArchive(root, snapshot_of=snapshot_of)
+    return LocalMuArchive(root, snapshot_of=snapshot_of, max_bytes=max_bytes)
 
 
 def prune(archive: DurableMuArchive, keep: Callable[[dict[str, Any]], bool]) -> list[str]:

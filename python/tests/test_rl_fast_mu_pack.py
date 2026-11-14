@@ -209,9 +209,9 @@ def test_only_the_latest_mu_keeps_its_pack_in_memory_and_r7_still_archives(tmp_p
     h = Harness(mu_archive=archive)
     first, second = snapshot(1), snapshot(2)
     h.assembler.offer_mu(handoff(first[0], pack(*first)))
-    h.open("r7", audit_retain_mu=True)  # archives from latest
-    plans = [h.step("r7")[0]]
-    h.assembler.offer_mu(handoff(second[0], pack(*second)))  # archived on offer
+    h.open("r7", audit_retain_mu=True)
+    plans = [h.step("r7")[0]]  # the first segment binds (and archives) the first mu
+    h.assembler.offer_mu(handoff(second[0], pack(*second)))  # archived when bound
     ledger = h.assembler.ledger
     assert ledger.resident[first[0]["snapshot_sha256"]].weights is None
     assert ledger.latest is not None and ledger.latest.weights == pack(*second)
@@ -225,6 +225,22 @@ def test_only_the_latest_mu_keeps_its_pack_in_memory_and_r7_still_archives(tmp_p
     assert h.sealed
     for item in (first, second):
         assert archive.read(item[0]["snapshot_sha256"], "gen-1")[1] == pack(*item)
+
+
+def test_local_archive_byte_bound_refuses_new_weights_loudly(tmp_path):
+    first, second = snapshot(1), snapshot(2)
+    size = len(pack(*first))
+    archive = local_mu_archive(tmp_path / "r7-mu", max_bytes=size + 1)
+    archive(handoff(first[0], pack(*first)))
+    with pytest.raises(HandoffError, match="mu_archive_full"):
+        archive(handoff(second[0], pack(*second)))
+    assert archive.status() == {"weights_files": 1, "manifests": 1, "bytes": size,
+                                "max_bytes": size + 1}
+    # The same weights under a new generation (CP restore) are never refused.
+    archive(handoff(first[0], pack(*first), generation="gen-2"))
+    assert archive.status()["manifests"] == 2
+    with pytest.raises(HandoffError, match="mu_archive_invalid_bound"):
+        local_mu_archive(tmp_path / "other", max_bytes=0)
 
 
 _HOLD = '''

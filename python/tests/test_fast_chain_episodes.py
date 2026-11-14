@@ -827,30 +827,35 @@ def test_s1_a_slot_closing_while_its_close_slot_is_written_is_not_reused_until_w
     manager.stop()
 
 
-def test_open_carries_retain_originals_by_the_old_chain_rule_and_r7_from_the_sampler(
+def test_open_keeps_originals_only_for_evaluation_and_r7_never_a_training_sample(
         tmp_path):
+    """CARD-RL5 §12.6: no whole-game sample of ordinary fast-chain training games."""
     from spireagent.workbench.fast_chain_episodes import retain_originals
 
     assert retain_originals({"retention": {"purpose": "evaluation"}}) is True
+    # Even a row that carries the old chain's 1/audit_every pick keeps no originals.
     assert retain_originals({"retention": {"purpose": "training"},
-                             "training_audit_selected": True}) is True
+                             "training_audit_selected": True}) is False
     assert retain_originals({"retention": {"purpose": "training"},
                              "training_audit_selected": False}) is False
     manager = _manager(tmp_path, 1, [])
 
-    def sampled(row):
+    def evaluation(row):
+        row.update(retention={"purpose": "evaluation"})
+
+    def training(row):
         row.update(retention={"purpose": "training"}, training_audit_selected=True)
 
-    picks = iter([True, False])
-    executor = FastChainEpisodeExecutor(
-        {"initial_progress": None}, manager=manager, episode_seconds=30,
-        before_world_offer=sampled,
-        r7_select=lambda: {"selected": next(picks)}, reserve_seconds=5)
-    _play(executor, "a")
-    _play(_executor(manager), "b")
+    picks = iter([True, False, False])
+    for name, admission in (("a", training), ("b", evaluation), ("c", training)):
+        executor = FastChainEpisodeExecutor(
+            {"initial_progress": None}, manager=manager, episode_seconds=30,
+            before_world_offer=admission,
+            r7_select=lambda: {"selected": next(picks)}, reserve_seconds=5)
+        _play(executor, name)
     opens = [c for c in _commands(tmp_path) if c["cmd"] == "open"]
-    assert [(c["retain_originals"], c["r7"]) for c in opens] == [(True, True),
-                                                               (False, False)]
+    assert [(c["retain_originals"], c["r7"]) for c in opens] == [
+        (False, True), (True, False), (False, False)]
     manager.stop()
 
 
@@ -998,11 +1003,11 @@ def test_actor_fast_chain_configuration_builds_one_r7_selection(tmp_path):
         Actor._fast_chain_configuration(fake, {**base, "r7": {"key": "k"}})
     assert error.value.code == "fast_chain_r7_configuration_invalid"
 
-    # S1: the user's 5% clean-original sample; any other audit_every is refused, loudly.
-    fake.base = {"retention": {**retention, "audit_every": 100}}
-    with pytest.raises(BoundaryError) as error:
-        Actor._fast_chain_configuration(fake, base)
-    assert error.value.code == "fast_chain_retention_audit_every_must_be_20"
+    # CARD-RL5 §12.6: the fast chain draws no whole-game sample, so the execution's
+    # audit_every (the old chain's rule) is neither required nor refused.
+    for every in (1, 20, 100):
+        fake.base = {"retention": {**retention, "audit_every": every}}
+        assert Actor._fast_chain_configuration(fake, base)["r7"] is None
 
 
 def test_r7_coverage_counts_games_that_ran_not_ordinals_burned_before_admission(tmp_path):
@@ -1139,3 +1144,45 @@ def test_failed_exclusion_is_recorded_counted_and_never_resent(tmp_path, learner
     counters = executor.close()["fast_chain_stop"]["counters"]
     assert counters["fast_instance_excluded_failed"] == 1
     assert counters.get("fast_instance_excluded_sent", 0) == 0
+
+
+def test_learner_admission_samples_whole_games_only_on_the_old_chain():
+    """The fast chain records no 1/audit_every pick; the old chain's 5% is unchanged."""
+    from spireagent.workbench.managed_retention import training_audit_selected
+    from spireagent.workbench.rl_segment_producer import open_learner_episode
+
+    exchange = SimpleNamespace(admission_pause=lambda budget: None)
+    admission = SimpleNamespace(request=lambda *a, **k: {"admitted": True, "run": "r"})
+    base = {"selection_id": "s", "manifest_sha256": "m", "intent_id": "i",
+            "retention": {"purpose": "training", "audit_every": 20}}
+    picked = next(str(n) for n in range(1000) if training_audit_selected(
+        {**base, "seed": str(n)}, audit_every=20))
+    old = {**base, "seed": picked}
+    open_learner_episode(old, exchange=exchange, admission=admission, actor="a",
+                         budget_id=None)
+    assert old["training_audit_selected"] is True
+    fast = {**base, "seed": picked}
+    open_learner_episode(fast, exchange=exchange, admission=admission, actor="a",
+                         budget_id=None, whole_game_sample=False)
+    assert fast["training_audit_selected"] is False
+    assert fast["segment_episode_admitted"] is True
+
+
+def test_r7_max_games_caps_the_run_loudly_and_survives_a_restart(tmp_path, capsys):
+    """The first bound on the local R7 mu archive: no silent drop, a typed record."""
+    clock = _Clock()
+    selection = _r7(tmp_path, clock, quota=10, max_games=2)  # every ordinal is chosen
+    records = [selection() for _ in range(4)]
+    assert [r["selected"] for r in records] == [True, True, False, False]
+    assert [r.get("capped") for r in records] == [None, None, True, True]
+    assert capsys.readouterr().err.count("max_games 2 reached") == 1
+    report = selection.report()
+    assert (report["selected_total"], report["max_games"]) == (2, 2)
+    assert report["r7_games"]["capped"] == 2
+    clock.now += 7200  # a later window of the same run: the cap still holds
+    restarted = _r7(tmp_path, clock, quota=10, max_games=2)
+    assert restarted() == {"selected": False, "window": restarted.sampler.window,
+                           "ordinal": 0, "capped": True}
+    with pytest.raises(BoundaryError) as error:
+        _r7(tmp_path / "bad", clock, max_games=-1)
+    assert error.value.code == "fast_chain_r7_configuration_invalid"

@@ -12,10 +12,14 @@ import type { SampledCheckMismatch } from "./fast-env/host.js";
  * - `actions.jsonl`: the de-handled action prefix. One `open` line, one `step` line per acted-on
  *   P1 choice (the step record without its `input_line`), a `boundary` line per segment boundary
  *   (each boundary is fsynced) and one `close` line, written last, after any originals are durable.
+ *   For an ordinary clean training game this file is its whole long-term record (CARD-RL5 §12.6,
+ *   owner 2026-11-06): the open line names seed / save and start, every step line carries the
+ *   chosen action and the Host receipt digests, and the close line carries the result.
  * - `native-lines.jsonl.gz` / `input-lines.jsonl.gz`: the originals, only for kept games. A game's
- *   originals are kept when the manager chose it before open (R7, the 5% sample, evaluation) or
- *   when the close shows anything other than a clean finish (failure, unknown, truncation, a
- *   non-completed step, a sampled check mismatch, a replaced native). That is decided at close, so
+ *   originals are kept when the manager chose it before open (R7, evaluation; the fast chain draws
+ *   no whole-game sample of ordinary training games, §12.6) or when the close shows anything other
+ *   than a clean finish (failure, unknown, truncation, a non-completed step, a sampled check
+ *   mismatch, a replaced native). That is decided at close, so
  *   every boundary appends the segment's originals to per-game spools and fsyncs them; after a
  *   process crash the spools are that game's originals. At close the spools become the final files
  *   (kept) or are dropped (a clean finish not chosen: the user rule keeps no originals for it).

@@ -672,8 +672,9 @@ class GameManager:
 
 
 # -- R7 selection ------------------------------------------------------------------------
-R7_STATE_SCHEMA = "spireagent/fast-chain-r7-state-1"
-R7_CONFIG_KEYS = frozenset({"key", "quota", "expected_games", "window_seconds", "state_path"})
+R7_STATE_SCHEMA = "spireagent/fast-chain-r7-state-2"
+R7_CONFIG_KEYS = frozenset({"key", "quota", "expected_games", "window_seconds", "state_path",
+                            "max_games"})
 
 
 class R7Selection:
@@ -689,16 +690,30 @@ class R7Selection:
     state file is refused loudly. The key is never written out, only its digest.
 
     One instance per actor: executors are rebuilt per model version and share it.
+
+    Rate (owner 2026-11-06: 10-20 R7 games per hour in total): ``quota`` chosen of
+    ``expected_games`` per ``window_seconds`` (default 3600) for this actor; the
+    launcher divides the total over its actors. ``max_games`` (optional) caps the
+    games this actor ever chooses in the run (persisted with the window state):
+    once reached, every later game is not chosen, the record says ``capped`` and
+    it is reported loudly once. It is the first bound on the local R7 mu archive
+    (each chosen game keeps about one mu per segment it plays, ~19 MB each).
     """
 
     def __init__(self, sampler: Any, *, state_path: Path,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 max_games: int | None = None) -> None:
+        if max_games is not None and (type(max_games) is not int or max_games < 0):
+            reject("fast_chain_r7_configuration_invalid")
         self.sampler, self.state_path, self.clock = sampler, state_path, clock
+        self.max_games = max_games
+        self.selected_total = 0
+        self.capped_reported = False
         self.lock = threading.Lock()
         self.identity = {
             "key_sha256": hashlib.sha256(sampler.key.encode()).hexdigest(),
             "quota": sampler.quota, "expected_games": sampler.expected_games,
-            "window_seconds": sampler.window_seconds}
+            "window_seconds": sampler.window_seconds, "max_games": max_games}
         self.resumed: dict[str, Any] | None = None
         # Coverage from what actually happened to chosen games (the sampler's own report
         # counts ordinals: one chosen before a failed admission never ran).
@@ -723,7 +738,7 @@ class R7Selection:
             reject("fast_chain_r7_configuration_invalid")
         state = Path(value["state_path"]) if "state_path" in value else (
             work / "fast-chain-r7-state.json")
-        return cls(sampler, state_path=state, clock=clock)
+        return cls(sampler, state_path=state, clock=clock, max_games=value.get("max_games"))
 
     def _resume(self) -> None:
         try:
@@ -733,14 +748,17 @@ class R7Selection:
         try:
             state = json.loads(raw)
             fields = {key: state[key] for key in self.identity}
-            window, opened = state["window"], state["opened"]
+            window, opened, total = state["window"], state["opened"], state["selected_total"]
             if (state.get("schema") != R7_STATE_SCHEMA or type(window) is not int
-                    or type(opened) is not int or opened < 0):
+                    or type(opened) is not int or opened < 0
+                    or type(total) is not int or total < 0):
                 raise ValueError
         except (ValueError, KeyError, TypeError):
             reject("fast_chain_r7_state_invalid")
         now = self.clock()
         current = int(now // self.sampler.window_seconds)
+        if fields == self.identity:
+            self.selected_total = total  # the run-wide cap survives any window
         if fields != self.identity or window != current:
             self.resumed = {"resumed": False, "state_window": window, "window": current,
                             "same_parameters": fields == self.identity}
@@ -750,7 +768,8 @@ class R7Selection:
 
     def _persist(self) -> None:
         body = json_bytes({"schema": R7_STATE_SCHEMA, **self.identity,
-                           "window": self.sampler.window, "opened": self.sampler.ordinal})
+                           "window": self.sampler.window, "opened": self.sampler.ordinal,
+                           "selected_total": self.selected_total})
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = self.state_path.with_name(self.state_path.name + ".tmp")
         with open(temporary, "wb") as handle:
@@ -763,8 +782,17 @@ class R7Selection:
         """Decide one game; a failure is the caller's typed not_started (never a default)."""
         with self.lock:
             selected = self.sampler.select(self.clock())
-            record = {"selected": selected, "window": self.sampler.window,
-                      "ordinal": self.sampler.ordinal - 1}
+            record: dict[str, Any] = {"selected": selected, "window": self.sampler.window,
+                                      "ordinal": self.sampler.ordinal - 1}
+            if selected and self.max_games is not None and self.selected_total >= self.max_games:
+                record.update(selected=False, capped=True)
+                self.coverage["capped"] += 1
+                if not self.capped_reported:
+                    self.capped_reported = True
+                    print(f"fast_chain R7 max_games {self.max_games} reached: no further "
+                          "game of this actor is chosen for R7", file=sys.stderr, flush=True)
+            elif selected:
+                self.selected_total += 1
             self._persist()
         return record
 
@@ -776,22 +804,23 @@ class R7Selection:
     def report(self) -> dict[str, Any]:
         with self.lock:
             return {"sampler_ordinals": self.sampler.report(), "resume": self.resumed,
-                    "r7_games": dict(self.coverage),
+                    "r7_games": dict(self.coverage), "selected_total": self.selected_total,
+                    "max_games": self.max_games,
                     "state_path_name": self.state_path.name}
 
 
 # -- ledger executor ---------------------------------------------------------------------
 def retain_originals(row: Mapping[str, Any]) -> bool:
-    """``open.retain_originals``: the old chain's keep-the-original rule at open.
+    """``open.retain_originals``: the fast chain's keep-the-original rule at open.
 
-    The same facts ``managed_retention.preservation_route`` uses before any result:
-    every evaluation game, and a training game the open-time 1/``audit_every`` sample
-    chose (``training_audit_selected``, set by learner admission; 5% at 20). Abnormal
-    closes are kept by the environment's sink at close regardless (WP2).
+    CARD-RL5 §12.6 (owner 2026-11-06): every evaluation game keeps its originals;
+    an ordinary training game is never sampled whole (no ``audit_every`` share; the
+    old chain's 5% stays in ``managed_retention`` and is not used here). R7 games
+    are chosen separately (``open.r7``), and abnormal closes (failure, unknown,
+    truncation, censored) are kept by the environment's sink at close (WP2/WP6).
     """
     retention = row.get("retention") or {}
-    return (retention.get("purpose") == "evaluation"
-            or row.get("training_audit_selected") is True)
+    return retention.get("purpose") == "evaluation"
 
 
 _CENSORED = {"stop", "budget", "not_started"}

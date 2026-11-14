@@ -631,13 +631,17 @@ from .managed_pipeline import PipelinedManagedExecutor  # noqa: E402
 
 
 def open_learner_episode(row: dict[str, Any], *, exchange: Any, admission: Any, actor: str,
-                         budget_id: str | None) -> None:
-    """Learner admission of one game before its world offer (both chains)."""
+                         budget_id: str | None, whole_game_sample: bool = True) -> None:
+    """Learner admission of one game before its world offer (both chains).
+
+    ``whole_game_sample`` False (the fast chain, CARD-RL5 §12.6): no ordinary
+    training game is chosen for a whole-game sample; the row records False.
+    """
     from .managed_retention import training_audit_selected
 
     if exchange.admission_pause(budget_id) is not None:
         raise BoundaryError("rl_segment", "sampling_audit_admission_paused")
-    row["training_audit_selected"] = training_audit_selected(
+    row["training_audit_selected"] = whole_game_sample and training_audit_selected(
         row, audit_every=row["retention"]["audit_every"])
     result = admission.request("episode_open", actor=actor, episode=row["intent_id"])
     row["segment_admission_owner"] = {

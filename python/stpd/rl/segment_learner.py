@@ -92,6 +92,7 @@ from .checkpoint_state import (
 )
 from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
 from .fast_handoff import HandoffError
+from .fast_release import SegmentRelease, release_option
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_source import (
     FastSegment,
@@ -681,6 +682,11 @@ class SegmentLearner:
         self.fast_receivers: list[threading.Thread] = []
         # `dataplane.fast_verify_workers` > 0: hand-off reads in verify processes.
         self.fast_verifier: FastVerifyPool | None = None
+        # `dataplane.release_trained_segments` (default false): this process deletes
+        # trained originals covered by a durable CP (`fast_release.py`); shards
+        # each run their own.
+        self.release_segments = release_option(self.dataplane)
+        self.segment_release: SegmentRelease | None = None
         self.input_sequence = 0
         self.input_head: str | None = None
         self.input_anchor = config.resume_checkpoint
@@ -956,6 +962,8 @@ class SegmentLearner:
                         excluded_seeds=frozenset(settings.excluded_seeds),
                         buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
                         gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
+                    if self.release_segments:
+                        self.segment_release = self._segment_release()
                 verify_workers = self.dataplane.get("fast_verify_workers", 0)
                 if type(verify_workers) is not int or not 0 <= verify_workers <= 8:
                     raise BoundaryError("rl_learner", "fast_verify_workers_must_be_int_0_to_8")
@@ -980,6 +988,8 @@ class SegmentLearner:
                     provider = RoutedSources(self.binary_sources, self.fast_sources)
             if self.shard_count and not fast_chain:
                 raise BoundaryError("rl_learner", "dataplane_shards_require_fast_chain")
+            if self.release_segments and not fast_chain:
+                raise BoundaryError("rl_learner", "release_trained_segments_requires_fast_chain")
             self.preparation_options = preparation_options
             if self.shard_count:
                 # The shards own every preparation; this process keeps one small
@@ -2279,6 +2289,8 @@ class SegmentLearner:
             decision = self.fast_intake.exclude(request)
         try:
             self._fast_apply(decision)
+            if self.segment_release is not None and decision.exclude_instance is not None:
+                self.segment_release.excluded(decision.exclude_instance)
         except BaseException as error:
             # Released buffered segments fail exactly as on the hand-off thread:
             # input is fenced, not only reported back to this actor (review rec. 3).
@@ -2342,13 +2354,23 @@ class SegmentLearner:
                     assert data is not None
                     intake = (self.fast_intake.offer if kind == "segment"
                               else self.fast_intake.labels)
-                    self._fast_apply(intake(message, data) if checked is None
-                                     else intake(message, data, checked))
+                    decision = (intake(message, data) if checked is None
+                                else intake(message, data, checked))
+                    self._fast_apply(decision)
+                    if self.segment_release is not None and kind == "segment":
+                        # After the apply: the segment is held (queued/buffered)
+                        # or dropped before its original is tracked.
+                        self.segment_release.received(
+                            message, decision.segment.header
+                            if decision.segment is not None else None)
                     # Ack after the bytes are owned here: the sender's in-flight
                     # bound is the only back-pressure on the assembler.
                     ack(connection, message)
                 else:
                     self._fast_apply(self.fast_intake.closed(message))
+                    if self.segment_release is not None:
+                        self.segment_release.closed(message, excluded=self.fast_intake.excluded(
+                            message["game_instance_id"]))
         except BaseException as error:
             if isinstance(error, FastVerifyClosed):
                 # The learner closed the verify pool: a stopping learner just
@@ -2589,6 +2611,23 @@ class SegmentLearner:
         if dropped:
             self._notify_capacity()
 
+    def _segment_release(self) -> SegmentRelease:
+        """This data-plane owner's deleter of trained originals (opt-in)."""
+        assert self.fast_intake is not None and self.fast_sources is not None
+        intake, sources = self.fast_intake, self.fast_sources
+
+        def held() -> set[str]:
+            # Queued, prepared or training (FastSources), or waiting for its
+            # attestation (intake buffer): not done yet.
+            with sources.lock:
+                ids = {entry["envelope"]["segment_id"] for entry in sources.entries.values()}
+            with intake.lock:
+                ids.update(segment.segment_id for segment in intake.buffer)
+            return ids
+
+        return SegmentRelease(held=held, fenced=lambda: self.input_fenced,
+                              alarm=self._event)
+
     def fast_status(self) -> dict[str, Any]:
         if self.shards is not None:
             return cast(dict[str, Any], self.shards.status())
@@ -2598,8 +2637,10 @@ class SegmentLearner:
             counters = dict(self.fast_counters)
         verify = ({"verify": self.fast_verifier.status()} if self.fast_verifier is not None
                   else {})
+        release = ({"segment_release": self.segment_release.status()}
+                   if self.segment_release is not None else {})
         return {"fast_chain": {"learner": counters, "intake": self.fast_intake.report(),
-                               **self.fast_sources.status(), **verify}}
+                               **self.fast_sources.status(), **verify, **release}}
 
     @staticmethod
     def _member(record: dict[str, Any]) -> BatchMember:
@@ -3745,8 +3786,13 @@ class SegmentLearner:
             raise sgd.violation("sgd_state_file_binding_changed")
         return value
 
-    def _capture_learning_state(self) -> Callable[[], SelfContainedCheckpoint]:
+    def _capture_learning_state(self, *, release: bool = False
+                                ) -> Callable[[], SelfContainedCheckpoint]:
         """Capture everything that belongs to this instant on the calling thread.
+
+        `release` (only the checkpoint that will be published): the originals
+        found trained or dropped now are marked for deletion once this
+        checkpoint is published (`fast_release.py`).
 
         The returned function does the rest and touches no live learner state: it
         reads and checks the SGD state file (when the SGD process owns theta),
@@ -3805,9 +3851,13 @@ class SegmentLearner:
                      # Shard count and each shard's committed/speculative selection
                      # RNG and in-flight receipts; a restore keeps both (another
                      # count is refused at start, never a silent RNG reset).
-                     **({"dataplane_shards": self.shards.snapshot()}
+                     **({"dataplane_shards": self.shards.snapshot(
+                         release_sequence=self.checkpoint_sequence
+                         if release and self.release_segments else None)}
                         if self.shards is not None else {})}
                     if self.wal is not None else None)
+        if release and self.segment_release is not None:
+            self.segment_release.capture(self.checkpoint_sequence)
 
         def finish() -> SelfContainedCheckpoint:
             nonlocal weights, optimizer, ema, torch_rng, cuda
@@ -3857,6 +3907,12 @@ class SegmentLearner:
             self._event("checkpoint_published", checkpoint_artifact_id=taken[0].artifact_id,
                         sequence=info["sequence"], timing=taken[1],
                         encoder_memory=info["encoder_memory"], memory=self._memory())
+            # Durable (published with readback): the originals its capture found
+            # trained or dropped may go now.
+            if self.segment_release is not None:
+                self.segment_release.covered(info["sequence"])
+            elif self.shards is not None and self.release_segments:
+                self.shards.covered(info["sequence"])
 
     def checkpoint(self, *, final: bool = False) -> None:
         if self.input_fenced:
@@ -3877,7 +3933,7 @@ class SegmentLearner:
         began = time.perf_counter()
         # Only the boundary capture runs here; the state-file read, its checks and
         # the checkpoint build run on the encoder thread before the encode.
-        finish = self._capture_learning_state()
+        finish = self._capture_learning_state(release=True)
         self._event("checkpoint_captured", sequence=self.checkpoint_sequence,
                     capture_seconds=time.perf_counter() - began, memory=self._memory())
         self.checkpoint_encoding = self.checkpoint_encoder.submit(
@@ -3937,6 +3993,9 @@ class SegmentLearner:
                 # and arena go; hand-off threads then stop on
                 # `fast_verify_pool_closed` without fencing (newlease_stopped).
                 cleanup.callback(verifier.close)
+            release = getattr(self, "segment_release", None)
+            if release is not None:
+                cleanup.callback(release.close)  # finishes the deletions already due
             shards = getattr(self, "shards", None)
             if shards is not None:
                 # Stops each shard's readers, prefetch and preparer and joins the

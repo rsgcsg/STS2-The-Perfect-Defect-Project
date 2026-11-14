@@ -32,6 +32,8 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 | E7 旧 CP | 真实 CP16 + 原构造包/参数次序 → 同学习状态转换 CP；转换零 SGD/World | **只读**：旧 schema `stpd/rl-segment-checkpoint-1`；显式 `convert_cp16`，没有隐式 fallback | application `--convert-cp16-package`；转换序号16、正常下一次保存17、首次新 μ58；转换和恢复 generation 各自具名 |
 | E8 保留/归档 | 开 World 前冻结 seed/selection/manifest hash → 普通自然 win/loss 抽约5%原件，其余留账；技术、unknown、异常、censored、评估全留 | **默认**：`audit_every=20`，原有 full_peer 保存/后台审计按规则调用；所有训练段全归档已移除 | `managed_retention.training_audit_selected`；原 native+behavior 原件全部规定读回后才释放本轮新副本，旧资产不扫描清理 |
 
+快链（P-REWRITE，CARD-RL5 §12.6，11-13/11-14）：普通干净训练局只留一行账（`actions.jsonl`：seed/存档、每步动作和 Host 收据摘要、结果），不再抽 5% 原件；旧链仍按 `audit_every` 抽样不变。训练段 `.stfs` 在已训练/丢弃且被持久 CP 覆盖后可删（`dataplane.release_trained_segments`，默认不删；异常局和 R7 局全留）。R7 选 d：审计局留原件和实际绑定的 μ 版本，仅本地，不上 R2，不做重放；字节上限/`max_games` 到了就大声停止选新审计局。
+
 历史 `segments.inference_stream` 字段只读；当前实现选择由 `central_scoring` 决定，
 中央 CUDA 固定独立 stream。已移除共用训练锁/默认 stream 的中央评分，以及 forced null 分布再由 learner 补算的分支。
 

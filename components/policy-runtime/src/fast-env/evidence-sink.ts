@@ -20,10 +20,14 @@ export interface FastGameMeta {
   slot: number;
   game_ref: string;
   game_instance_id: string;
+  /** The open command's seed, so the one-line record (`actions.jsonl`) names its world without the
+   * ledger row (CARD-RL5 §12.6: seed/save id, action sequence, result, receipt digests). */
+  seed: string;
   start: FastGameStartRecord;
   /** Chosen by the manager before open (`R7Sampler.select()`); every frame was schema/digest checked. */
   r7: boolean;
-  /** Chosen by the manager before open (the 5% sample, evaluation games): keep every original. */
+  /** Chosen by the manager before open (evaluation games; the fast chain samples no ordinary
+   * training game, CARD-RL5 §12.6): keep every original. */
   retain_originals: boolean;
   /** Whether `nativeLine` may be called. Always true in the K-game process: compact frames, or with
    * compact off only the fast_chain native's own divergence report line. */

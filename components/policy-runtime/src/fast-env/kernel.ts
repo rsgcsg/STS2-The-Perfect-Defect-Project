@@ -655,9 +655,11 @@ export class SlotKernel {
     // ascension: the session's level, which the Host checked against the native run at mount.
     ctx.link.send({ type: "episode_open", game_instance_id: gameInstanceId, actor_id: ctx.config.inference.actor_id,
       sampling: ctx.config.inference.sampling, single_choice: ctx.config.inference.single_choice, start: openStart,
-      ascension: ctx.config.host.ascension });
+      ascension: ctx.config.host.ascension,
+      // An R7 game: the assembler archives every mu its segments bind (option d).
+      audit_retain_mu: command.r7 });
     const evidence = ctx.evidence.openGame({ slot: this.index, game_ref: command.game_ref, game_instance_id: gameInstanceId,
-      start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: true });
+      seed: command.seed, start: openStart, r7: command.r7, retain_originals: command.retain_originals, native_lines: true });
     // Always attached: compact off, the native's divergence report (#433 S3) is still an original.
     native.attachLines(line => evidence.nativeLine(line));
     const game = new GameRun(ctx, this, native, gameInstanceId, evidence);

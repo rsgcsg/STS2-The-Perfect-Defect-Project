@@ -109,7 +109,7 @@ def archive_at(root: Path) -> DurableMuArchive:
     return DurableMuArchive(root, snapshot_of=snapshot_of)
 
 
-def test_audit_game_archives_every_bound_mu_before_scoring(tmp_path):
+def test_audit_game_archives_only_the_mu_it_binds_before_scoring(tmp_path):
     archive = archive_at(tmp_path)
     calls: list[str] = []
 
@@ -123,18 +123,27 @@ def test_audit_game_archives_every_bound_mu_before_scoring(tmp_path):
     h.step("plain")
     assert calls == []  # an ordinary game archives nothing
     h.open("r7", audit_retain_mu=True)
+    assert calls == []  # archived when a segment binds it, not at open
+    h.step("r7")
     assert calls == [weighted(1).snapshot_sha256]
-    for _ in range(64):
+    for _ in range(32):
         h.step("r7")
-    h.assembler.offer_mu(weighted(2))  # archived on offer while an R7 game is open
-    plan, _ = h.step("r7")
-    assert plan.mu == weighted(2) and calls == [mu(1).snapshot_sha256, mu(2).snapshot_sha256]
+    h.assembler.offer_mu(weighted(2))  # mid-segment: never bound by the R7 game
+    for _ in range(31):
+        h.step("r7")
+    h.assembler.offer_mu(weighted(3))
+    plan, _ = h.step("r7")  # the second segment binds mu3
+    assert plan.mu == weighted(3) and calls == [mu(1).snapshot_sha256, mu(3).snapshot_sha256]
+    assert h.assembler.report()["mu_archived"] == 2
     h.close("r7", "stop")
     h.close("plain", "stop")
     r7 = [segment for segment in h.sealed if segment.header["game_instance_id"] == "r7"]
     assert r7 and all(segment.header["audit_retain_mu"] for segment in r7)
     assert not any(segment.header["audit_retain_mu"] for segment in h.sealed
                    if segment.header["game_instance_id"] == "plain")
+    with pytest.raises(HandoffError, match="mu_archive_mismatch"):
+        archive.read(mu(2).snapshot_sha256, "gen-1")  # mu2 was never kept
+    archive(weighted(2))
     identity, weights = archive.read(mu(2).snapshot_sha256, "gen-1")
     assert identity == mu(2).identity() and weights == b"weights-2"
     archive(weighted(2))  # idempotent
@@ -187,17 +196,18 @@ def test_audit_game_fails_loud_without_weights_or_archive(tmp_path):
     assert "r7" not in h.assembler.games  # a failed open leaves no game behind
     h = Harness(mu_archive=archive_at(tmp_path))
     h.assembler.offer_mu(mu(1))  # no weights
+    h.open("r7", audit_retain_mu=True)
+    row, data = h.row("r7")
     with pytest.raises(AssemblyError, match="audit_mu_weights_missing"):
-        h.open("r7", audit_retain_mu=True)
-    assert "r7" not in h.assembler.games
+        h.assembler.begin_row(row, data)  # its first segment would bind mu1
+    assert h.assembler.games["r7"].inflight is None and not h.assembler.games["r7"].segments
     with pytest.raises(AssemblyError, match="invalid_episode_open"):
         h.open("bad", audit_retain_mu="yes")
     h.assembler.offer_mu(weighted(2))
-    h.open("r7", audit_retain_mu=True)  # the same game opens once weights exist
-    h.step("r7")
+    h.step("r7")  # the same row plans once a mu with weights is latest
 
 
-def test_mu_that_arrives_while_an_audit_game_opens_is_archived(tmp_path):
+def test_mu_that_arrives_while_an_audit_segment_archives_is_archived_and_bound(tmp_path):
     archive = archive_at(tmp_path)
     calls: list[str] = []
     h = Harness()
@@ -205,27 +215,54 @@ def test_mu_that_arrives_while_an_audit_game_opens_is_archived(tmp_path):
     def racing(handoff: MuHandoff) -> None:
         calls.append(handoff.snapshot_sha256)
         archive(handoff)
-        if len(calls) == 1:  # offer_mu saw no audit game a moment ago and took mu2
+        if len(calls) == 1:  # a newer mu became latest while mu1 was being written
             with h.assembler.lock:
                 h.assembler.ledger.offer(weighted(2))
 
     h.assembler.mu_archive = racing
     h.assembler.offer_mu(weighted(1))
     h.open("r7", audit_retain_mu=True)
-    assert calls == [mu(1).snapshot_sha256, mu(2).snapshot_sha256]
     plan, _ = h.step("r7")
+    assert calls == [mu(1).snapshot_sha256, mu(2).snapshot_sha256]
     assert plan.mu == weighted(2)
 
 
 def test_audit_game_never_scores_with_an_unarchived_mu(tmp_path):
-    h = Harness(mu_archive=archive_at(tmp_path))
+    archive = archive_at(tmp_path)
+    broken = {"on": True}
+
+    def failing(handoff: MuHandoff) -> None:
+        if broken["on"]:
+            raise HandoffError("mu_archive_write_failed")
+        archive(handoff)
+
+    h = Harness(mu_archive=failing)
     h.assembler.offer_mu(weighted(1))
     h.open("r7", audit_retain_mu=True)
-    h.assembler.archived.clear()  # e.g. an archive record lost
     row, data = h.row("r7")
-    with pytest.raises(AssemblyError, match="audit_mu_not_archived"):
-        h.assembler.begin_row(row, data)
+    with pytest.raises(AssemblyError, match="audit_mu_archive_failed:mu_archive_write_failed"):
+        h.assembler.begin_row(row, data)  # refused loudly, nothing planned
     assert h.assembler.games["r7"].inflight is None and not h.assembler.games["r7"].segments
+    assert h.assembler.report()["mu_archive_failed"] == 1
+    broken["on"] = False
+    h.assembler.begin_row(row, data)  # an archive record lost is written again first
+    assert archive.read(mu(1).snapshot_sha256, "gen-1")[0] == mu(1).identity()
+
+
+def test_a_full_archive_ends_the_audit_and_the_game_plays_on(tmp_path, capsys):
+    def full(handoff: MuHandoff) -> None:
+        raise HandoffError("mu_archive_full")
+
+    h = Harness(mu_archive=full)
+    h.assembler.offer_mu(weighted(1))
+    h.open("r7", audit_retain_mu=True)
+    row, data = h.row("r7")
+    plan = h.assembler.begin_row(row, data)  # planned as a training row, not refused
+    assert plan.mu == weighted(1)
+    assert h.assembler.games["r7"].audit_retain_mu is False
+    report = h.assembler.report()
+    assert report["audit_archive_full"] == 1 and "mu_archive_failed" not in report
+    assert "mu archive full" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("start", [
