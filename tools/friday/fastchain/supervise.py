@@ -28,6 +28,11 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
   failed submit, a disk-watermark stop, a code/profile/site/source change since the
   chain started (RL4.1 lesson: re-freeze on code change);
 - at most `resume_max_total` resumes (default 3);
+- environment-side recipe at a generation boundary (I8): `chain-CHAIN/env-recipe.txt`, one
+  `name=value` per line as `--set` takes it, only `ENV_RECIPE_KNOBS` (exploration ladder,
+  ascension mix, K); read when a later generation is submitted and recorded with it. The
+  learner recipe never changes in a chain. Another knob or a refused value ends the chain.
+  No automatic curriculum: a generation boundary is a resume, not a schedule;
 - the restore itself is the learner's: CP-only restore (fresh generation, in-flight input
   discarded), shard count recorded in the CP. Not covered: a CP that fails to restore is
   not skipped for an older one (the next generation fails and the chain stops), and
@@ -68,6 +73,9 @@ import run_profile  # noqa: E402
 
 SCHEMA = "spireagent/friday-fastchain-chain-1"
 RESUMABLE = ("input_owner_fenced_restore_last_checkpoint",)
+# Environment-side knobs a chain may change at a generation boundary (I8); not in the
+# frozen learner recipe, checked per game by the fast env and the assembler.
+ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k")
 CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 ends by its wall
 
 
@@ -181,9 +189,29 @@ class Chain:
         return {"id": f"c-{self.args.chain}", "deadline_at": self.state["deadline_at"],
                 "total_seconds": self.knobs["long_wall_seconds"], "generation": number}
 
+    def env_recipe(self) -> list[str]:
+        """The `env-recipe.txt` lines for the next generation ([] without the file)."""
+        path = self.dir / "env-recipe.txt"
+        if not path.exists():
+            return []
+        lines = []
+        for line in path.read_text().splitlines():
+            name, sep, text = line.partition("=")
+            if line.strip() and not line.lstrip().startswith("#"):
+                if not sep or name.strip() not in ENV_RECIPE_KNOBS:
+                    raise ValueError(f"env-recipe.txt line {line!r}: only {ENV_RECIPE_KNOBS} "
+                                     "may change at a generation boundary")
+                lines.append(f"{name.strip()}={text.strip()}")
+        run_profile.load_profile(self.args.profile, [*self.args.set, *lines])  # refuses loudly
+        return lines
+
     def submit(self, number: int, checkpoint: str | None) -> dict[str, Any] | str:
         """One generation through the launcher; a refusal or failure is the chain's end."""
         tag = self.runtag(number)
+        try:
+            recipe = self.env_recipe()
+        except (ValueError, run_profile.ProfileError) as error:
+            return f"generation {number} not submitted: {error}"
         chain_json = self.dir / f"chain-{number}.json"
         chain_json.write_text(json.dumps(self.chain_facts(number)))
         argv = ["preflight" if self.args.dry_run else "submit", tag,
@@ -192,11 +220,11 @@ class Chain:
                 "--long-run", "--chain-json", str(chain_json)]
         argv += ["--layout", self.args.layout] if self.args.layout else []
         argv += ["--resume-checkpoint", checkpoint] if checkpoint else []
-        for item in self.args.set:
+        for item in [*self.args.set, *recipe]:  # a later --set of the same knob wins
             argv += ["--set", item]
         generation = {"number": number, "runtag": tag, "checkpoint": checkpoint,
                       "run": str(Path(self.site["work_root"]) / f"run-{tag}"),
-                      "submitted_at": self.clock(), "argv": argv}
+                      "submitted_at": self.clock(), "argv": argv, "env_recipe": recipe}
         self.state["generations"].append(generation)
         self.persist()  # the intent is durable before anything is submitted
         try:
@@ -210,7 +238,7 @@ class Chain:
         jobs_path = Path(generation["run"]) / "jobs.json"
         generation["jobs"] = json.loads(jobs_path.read_text()) if jobs_path.exists() else {}
         self.note("generation_started", number=number, runtag=tag, checkpoint=checkpoint,
-                  jobs=generation["jobs"])
+                  jobs=generation["jobs"], env_recipe=recipe)
         return generation
 
     def newest_checkpoint(self) -> str | None:

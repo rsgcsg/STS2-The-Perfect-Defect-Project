@@ -2,14 +2,25 @@
 from __future__ import annotations
 
 import copy
+import json
+import random
 
 import pytest
 import torch
 from test_p1_t0 import observation
 
 from stpd.p1.export import export_model, load_model
-from stpd.p1.input import INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC, project
+from stpd.p1.frame_compiler import FrameCompiler
+from stpd.p1.input import (
+    INPUT_SPEC,
+    SORTED_INPUT_SPEC,
+    V2_INPUT_SPEC,
+    V2_R19_INPUT_SPEC,
+    project,
+)
 from stpd.p1.model import MStd
+from stpd.p1.rows_encoder import RowsEncoder
+from stpd.p1.rows_encoder_wire import encode_row
 from stpd.p1.vocabulary import (
     extend_parameters,
     parameters_from_checkpoint,
@@ -52,6 +63,90 @@ def test_shuffle_and_aliases_preserve_scores(projection):
         left, right = model(frame), model(other).flip(0)
     torch.testing.assert_close(left, right, rtol=3e-4, atol=2e-5)
     assert len(frame.entities) == len(project(state).entities)
+
+
+def _pile_card(alias, definition, name, kind, text, rarity="Basic"):
+    return {"cost": "1", "definition_id": definition, "description": text, "entity_id": alias,
+            "is_selected": False, "is_upgraded": False, "name": name, "rarity": rarity,
+            "type": kind}
+
+
+def combat_with_draw_pile():
+    """r1.9 piles and draw detail reads shaped like a Managed combat model view."""
+    state = {**public_state(), "revision": "r1.9"}
+    strike = ("STRIKE_DEFECT", "Strike", "Attack", "Deal 6 damage.")
+    defend = ("DEFEND_DEFECT", "Defend", "Skill", "Gain 5 Block.")
+    draw = [_pile_card("e11", *strike), _pile_card("e12", *strike), _pile_card("e13", *strike),
+            _pile_card("e14", *defend), _pile_card("e15", *defend),
+            _pile_card("e16", "ZAP", "Zap", "Skill", "Channel 1 Lightning."),
+            _pile_card("e17", "COLD_SNAP", "Cold Snap", "Attack",
+                       "Deal 6 damage. Channel 1 Frost.", "Common")]
+    state["piles"] = {"availability": "available", "source": "read:combat_piles",
+                      "content": {"zones": [
+        {"zone": "draw", "ordering": "unordered_multiset", "cards": draw},
+        {"zone": "discard", "ordering": "native_visible_order",
+         "cards": [_pile_card("e18", *defend), _pile_card("e19", *strike)]},
+        {"zone": "exhaust", "ordering": "native_visible_order", "cards": []}]}}
+    state["extra_reads"] = [{"kind": "surface_card", "availability": "available", "content": {
+        **card, "display_context": "draw", "display_owner_entity_id": None, "keywords": [],
+        "card_previews": []}} for card in draw]
+    return state
+
+
+def _reorder_draw(state, order, rename=None):
+    changed = copy.deepcopy(state)
+    zone = changed["piles"]["content"]["zones"][0]
+    zone["cards"] = [zone["cards"][i] for i in order]
+    changed["extra_reads"] = [changed["extra_reads"][i] for i in order]
+    for card in zone["cards"] + [read["content"] for read in changed["extra_reads"]]:
+        card["entity_id"] = (rename or {}).get(card["entity_id"], card["entity_id"])
+    return changed
+
+
+def test_hidden_draw_order_does_not_reach_r19_input_or_outputs():
+    """The draw pile is a public multiset: its list order and its aliases are not input."""
+    torch.set_num_threads(2)
+    torch.manual_seed(0)
+    vocabulary = {**public_vocabulary(), "input_spec": V2_R19_INPUT_SPEC}
+    model = MStd(vocabulary).eval()
+    model.enable_rl4_heads(19)
+    with torch.no_grad():  # nonzero heads, so outcome/HP really read the scene
+        model.rl4_heads.outcome.mlp[-1].weight.normal_(0, .02)
+        model.rl4_heads.hp.mlp[-1].weight.normal_(0, .02)
+    compiler, rows_encoder = FrameCompiler(vocabulary), RowsEncoder(vocabulary)
+
+    def rows(observation):
+        frame = project(observation, input_projection=V2_R19_INPUT_SPEC)
+        return frame, sorted(repr((e.kind, e.position, e.identities, e.text, e.numeric))
+                             for e in frame.entities)
+
+    state = combat_with_draw_pile()
+    frame, expected = rows(state)
+    pile = [e.position for e in frame.entities if e.kind == "$.piles.content.zones[].cards[]"]
+    assert pile == [0] * 7 + [0, 1]  # draw members share one position; discard keeps order
+    with torch.inference_mode():
+        scores, outcome, hp = model.forward_rl4([frame], [3])
+    shuffled = list(range(7))
+    random.Random(0).shuffle(shuffled)
+    orders = [[6, 5, 4, 3, 2, 1, 0], [1, 0, 2, 4, 3, 5, 6], shuffled]
+    renames = [None, {"e11": "e12", "e12": "e11"}, {f"e1{i}": f"x{9 - i}" for i in range(1, 8)}]
+    for order, rename in zip(orders, renames, strict=True):
+        changed = _reorder_draw(state, order, rename)
+        other, actual = rows(changed)
+        assert actual == expected
+        with torch.inference_mode():
+            other_scores, other_outcome, other_hp = model.forward_rl4([other], [3])
+        torch.testing.assert_close(other_scores[0], scores[0], rtol=3e-4, atol=2e-5)
+        torch.testing.assert_close(other_outcome, outcome, rtol=3e-4, atol=2e-5)
+        torch.testing.assert_close(other_hp, hp, rtol=3e-4, atol=2e-5)
+        # The training fast path encodes the same reference frame.
+        assert rows_encoder.encode(json.dumps(changed).encode()).row == encode_row(
+            compiler.compile(changed))
+
+    # Control: the same reordering of a zone with public order does reach the input.
+    ordered = copy.deepcopy(state)
+    ordered["piles"]["content"]["zones"][0]["ordering"] = "native_visible_order"
+    assert rows(ordered)[1] != rows(_reorder_draw(ordered, orders[0]))[1]
 
 
 def test_ordered_hand_keeps_positions_and_v1_is_unchanged():
