@@ -315,6 +315,16 @@ def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   f"{len(dumps)} listed, missing {missing})")
 
 
+def check_warmup_artifact(facts: dict[str, Any]) -> Result:
+    """The learner loads the fitted heads (site warmup_file) from peer_dir at start; a new
+    empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found)."""
+    warmup = facts.get("warmup_artifact") or {}
+    ok = bool(warmup.get("present"))
+    return Result("warmup_artifact", ok, f"{str(warmup.get('id'))[:12]} in peer_dir" if ok else
+                  f"warmup artifact {warmup.get('id')} has no manifest in site peer_dir "
+                  "(copy its manifest, payload index and chunks there)")
+
+
 def memory_estimate(plan: dict[str, Any]) -> dict[str, Any]:
     """Resident memory of the GPU job's learner side, counting only what runs.
 
@@ -456,6 +466,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
             check_frozen_recipe(plan, facts), check_compile_warmup(plan, facts),
+            check_warmup_artifact(facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),
