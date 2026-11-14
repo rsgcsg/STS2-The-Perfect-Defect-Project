@@ -216,10 +216,19 @@ def test_env_nodes_spread_evenly_and_slow_nodes_count_half():
     assert launch.split_slow(10, 4) == (8, 4)
 
 
-def test_build_plan_caps_memory_guard_below_job_limit_and_falls_back():
+def test_build_plan_derives_memory_guard_from_job_limit_and_falls_back():
+    for cards in (1, 2, 3):
+        plan = plan_for(cards=cards)
+        limit = plan['job_mem_g'] * preflight.GIB
+        assert plan['mem_guard_bytes'] == int(0.85 * limit)
+        assert plan['mem_hard_bytes'] == int(0.95 * limit)
+        assert plan['mem_guard_bytes'] < plan['mem_hard_bytes'] < limit
+        # Non-reclaimable bound (learner budget) leaves >= 20% of the job below the guard.
+        assert preflight.memory_estimate(plan)['counted'] <= 0.8 * plan['mem_guard_bytes']
     two = plan_for(cards=2)
-    limit = two['job_mem_g'] * preflight.GIB
-    assert two['mem_guard_bytes'] < two['mem_hard_bytes'] <= limit  # 220 GB guard > 214.7 GB
+    smaller = plan_for(cards=2, job_mem_g={'1': 160, '2': 100, '3': 240})
+    assert smaller['mem_guard_bytes'] == int(0.85 * 100 * preflight.GIB)
+    assert not preflight.check_memory(plan_for(cards=2, mem_guard_fraction=0.96)).ok
     assert two['placement']['learner_device'] == 'cuda'
     assert (two['env_nodes_max'] * two['knobs']['env_aggregators']) % two['knobs']['services'] == 0
     none = plan_for(cards=3, probe=[probe_row(free=1)])
