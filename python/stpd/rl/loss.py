@@ -162,6 +162,7 @@ def prepared_update(
     """
     from contextlib import nullcontext
 
+    from . import learning_diagnostics
     from .performance import prepared_precision
 
     if performance.compile_loss:
@@ -182,6 +183,8 @@ def prepared_update(
     try:
         t = minibatch.tensors
         totals = t["targets"].new_zeros(8)
+        # Value/HP head sums (learning_diagnostics); never part of the loss or decision.
+        value_sums = t["targets"].new_zeros(learning_diagnostics.SIZE)
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
         offset = 0
         rows_forward = performance.prepared_forward == "rows-v2"
@@ -238,6 +241,8 @@ def prepared_update(
                     row_diagnostics=row_diagnostics)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
+                value_sums = value_sums + learning_diagnostics.value_statistics(
+                    logits.detach(), hp.detach(), group_tensors)
                 phases["loss"] += time.perf_counter() - phase
                 if diagnostic is not None:
                     phase = time.perf_counter()
@@ -255,7 +260,10 @@ def prepared_update(
                 # Data parallel (C-SCALE): every rank holds the same theta/Adam and
                 # one minibatch; after this all ranks share the mean gradient and
                 # totals, so clip, KL stop and Adam make one identical decision.
-                totals, dynamic_valid = gradient_sync(model, totals, dynamic_valid)
+                # The value sums ride in the same all-reduce as the totals.
+                joined, dynamic_valid = gradient_sync(model, torch.cat((totals, value_sums)),
+                                                      dynamic_valid)
+                totals, value_sums = joined[:8], joined[8:]
                 phases["gradient_sync"] = time.perf_counter() - phase
                 phase = time.perf_counter()
             diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
@@ -266,6 +274,7 @@ def prepared_update(
                                   valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
+            decision = torch.cat((decision, value_sums.detach().float()))  # last fixed part
             decision_size = decision.numel()
             if row_diagnostics:
                 decision = torch.cat((decision, torch.cat(row_diagnostics).flatten()))
@@ -307,11 +316,14 @@ def prepared_update(
             "gradient_norm": measured[8],
             "terminal_rows": minibatch.terminal_rows,
             "hp_rows": minibatch.hp_rows,
+            "value_statistics": learning_diagnostics.statistics_fields(
+                measured[decision_size - learning_diagnostics.SIZE:decision_size]),
             "seconds": time.perf_counter() - began,
             "host_timing": {
                 **phases,
             },
         }
+        result.update(learning_diagnostics.headline(result["value_statistics"]))
         if shard is not None:
             result["data_parallel"] = {
                 "rank": shard[0], "world": shard[1], "groups": len(executed),

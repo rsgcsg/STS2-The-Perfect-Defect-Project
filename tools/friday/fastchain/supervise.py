@@ -42,6 +42,9 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
   window exits 0.
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
+its run record (`readout.py --json` plus this chain's facts) at every checkpoint the
+learner publishes, before a resume and at the chain's end (`run-record.json`, the latest;
+`run-records.jsonl`, one line per write; a failed write is noted, never stops the run),
 and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the
 run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
@@ -172,6 +175,9 @@ class Chain:
                   # their next tick); stop them with `kill PID` after its report.
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
                                           for name, loop in self.eval_loops.items()}}
+        if self.state["generations"] and self.record(
+                Path(self.state["generations"][-1]["run"]), "final"):
+            record["run_record"] = str(self.dir / "run-record.json")
         self.state["final"] = record
         (self.dir / "FINAL.json").write_text(json.dumps(record, indent=1, default=str))
         self.note("chain_end", **record)
@@ -295,10 +301,60 @@ class Chain:
                 handle.write(f"\n## {time.strftime('%Y-%m-%d %H:%M:%S')} {run.name}\n"
                              f"{text}\n{self.eval_status()}\n")
             self.persist()
+        if self.new_checkpoint(run):
+            self.record(run, "checkpoint")
         for name, loop in list(self.eval_loops.items()):
             if loop.poll() is not None:
                 self.note("evaluation_loop_ended", watcher=name, code=loop.returncode)
                 del self.eval_loops[name]
+
+    def new_checkpoint(self, run: Path) -> bool:
+        """Did the learner publish a CP since the last look? Reads only the new whole lines
+        of learner-events.jsonl (the offset is kept in state.json)."""
+        path = run / "learner-events.jsonl"
+        offsets = self.state.setdefault("record_offsets", {})
+        offset = offsets.get(run.name, 0)
+        size = path.stat().st_size if path.exists() else 0
+        if size <= offset:
+            return False
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read(size - offset)
+        whole = chunk[:chunk.rfind(b"\n") + 1]  # a line still being written waits
+        offsets[run.name] = offset + len(whole)
+        return b'"checkpoint_published"' in whole
+
+    def record(self, run: Path, why: str) -> bool:
+        """Write the run record of `run`: readout's `--json` result plus this chain's facts.
+        True when written; a failure is noted (state log, stderr), never stops the run."""
+        if not (run / "plan.json").exists():
+            return False
+        try:
+            record = readout.build(run, 1200.0)
+            generation = next((g for g in self.state["generations"] if g["run"] == str(run)),
+                              {})
+            record["chain"] = {
+                "chain": self.args.chain, "why": why, "written_at": self.clock(),
+                "generation": generation.get("number"), "runtag": generation.get("runtag"),
+                "generation_checkpoint": generation.get("checkpoint"),
+                "env_recipe": generation.get("env_recipe"),
+                "generations": len(self.state["generations"]),
+                "resumes": len(self.state["resumes_at"]),
+                "start_checkpoint": self.state["start_checkpoint"],
+                "deadline_at": self.state["deadline_at"], "identity": self.state["identity"]}
+            text = json.dumps(record, ensure_ascii=False, default=str)
+            tmp = self.dir / "run-record.json.tmp"
+            tmp.write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str))
+            os.replace(tmp, self.dir / "run-record.json")
+            with (self.dir / "run-records.jsonl").open("a") as handle:
+                handle.write(text + "\n")
+        except Exception as error:  # noqa: BLE001 - a record never stops the run
+            print(f"run record of {run.name} ({why}) failed: {error!r}", file=sys.stderr,
+                  flush=True)
+            self.note("run_record_failed", run=run.name, why=why, error=repr(error))
+            return False
+        self.persist()
+        return True
 
     # ---------------- evaluation ----------------
     def watchers(self) -> dict[str, dict[str, Any]]:
@@ -393,6 +449,7 @@ class Chain:
                 why = self.refuse_resume()
                 if why:
                     return self.final(False, why)
+                self.record(Path(generation["run"]), "generation_end")
                 checkpoint, number = self.newest_checkpoint(), number + 1
                 self.state["resumes_at"].append(self.clock())
                 self.note("resume", number=number, checkpoint=checkpoint)

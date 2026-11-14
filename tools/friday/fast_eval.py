@@ -288,6 +288,7 @@ class Loop:
                 Path(item["root"]), self.settings.get("baseline_plan"),
                 str(Path(previous[-1]["root"]) / "round/evaluation/plan.json")
                 if previous else None)
+            self.add_watcher_facts(item)
         except Exception as error:  # noqa: BLE001 -- originals stay; the report is a projection
             item.update(stage="report_failed", reason=f"{type(error).__name__}: {error}")
             self.note("evaluation_report_failed", checkpoint=item["checkpoint"],
@@ -299,6 +300,22 @@ class Loop:
                   report=summary["report_directory"], scored=current["scored"],
                   wins=current["wins"], mean_floor=current["mean_floor"],
                   reward=current["reward_mean"], conservative=current["conservative"])
+
+    def add_watcher_facts(self, item: dict[str, Any]) -> None:
+        """Adds the watcher's own facts and times to the round's `eval-record.json`."""
+        path = Path(item["root"]) / "eval-record.json"
+        record = json.loads(path.read_bytes())
+        preparing = next((e["at"] for e in self.state["log"] if e["kind"] ==
+                          "evaluation_preparing" and e.get("checkpoint") == item["checkpoint"]),
+                         None)
+        record["watcher"] = {"checkpoint": item["checkpoint"], "evaluation": item["number"],
+                             "checkpoint_record": item.get("record"),
+                             "prepare_job": item.get("prepare_job"),
+                             "evaluation_job": item.get("evaluation_job")}
+        record["stage_seconds"].update(
+            prepare_wall=_span(preparing, item.get("submitted_at")),
+            evaluation_queue=_span(item.get("submitted_at"), record.get("process_started_at")))
+        save(path, record)
 
     def start(self) -> None:
         deadline = self.settings.get("deadline_at")
@@ -367,10 +384,12 @@ def write_evaluation_report(root: Path, baseline_plan: str | None,
     (`evaluate.read_observation_report`). A reference with another observed protocol
     (Host/Runtime/input/progress pins, policy) or another seed manifest is skipped
     and named, never compared. Unknown/failed games stay unscored rows (excluded per
-    pair, listed with the floor they reached); the round is never voided.
+    pair, listed with the floor they reached); the round is never voided. Beside it,
+    `<root>/eval-record.json` (`evaluation_record`; the watcher adds its own times).
     """
     from stpd.evaluation.rl_observation import write_report
 
+    began = time.time()
     def cohort(plan: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         frozen, _, files = evaluate.read_observation_report(plan.parent / "result.json", plan)
         return files["cohort"], frozen
@@ -428,7 +447,73 @@ def write_evaluation_report(root: Path, baseline_plan: str | None,
             "conservative_reward_delta": (reward.get("conservative_paired") or {}).get(
                 "mean_delta")}
     save(output / "summary.json", summary)
+    save(root / "eval-record.json", evaluation_record(
+        root, plan, current, report, summary, time.time() - began))
     return summary
+
+
+RECORD_SCHEMA = "spireagent/friday-fast-evaluation-record-1"
+
+
+def _span(start: Any, end: Any) -> float | None:
+    return end - start if isinstance(start, (int, float)) and isinstance(
+        end, (int, float)) else None
+
+
+def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
+                      report: dict[str, Any], summary: dict[str, Any],
+                      report_seconds: float) -> dict[str, Any]:
+    """One round's record: identity, live games, stage seconds, per-seed outcomes, paired.
+
+    Stage seconds: the job's own phases from result.json (execution_and_pipeline_save =
+    play + save, observation_report, snapshot, ...), `report` (this report) and
+    `ended_to_report` (job finished -> report written: the watcher's polling and grace);
+    `Loop.add_watcher_facts` adds `prepare_wall` and `evaluation_queue`. Per-step value/HP
+    predictions are not in the trajectories: the evaluated package strips the auxiliary
+    heads, so `value_predictions` stays unrecorded (the heads remain in round/export).
+    """
+    result_path = root / "round/evaluation/result.json"
+    result = json.loads(result_path.read_bytes()) if result_path.is_file() else {}
+    timing = result.get("timing") or {}
+    now = time.time()
+    stages: dict[str, Any] = {
+        **(timing.get("phases") or {}),
+        "evaluation_process_wall": timing.get("process_wall_seconds"),
+        "report": report_seconds,
+        "ended_to_report": _span(timing.get("process_finished_at"), now)}
+    parallelism = plan.get("parallelism") or {}
+    rewards = report["rewards"]["current"]
+    official, conservative = rewards.get("by_seed", {}), rewards.get("conservative_by_seed", {})
+    return {
+        "schema": RECORD_SCHEMA, "written_at": now,
+        "process_started_at": timing.get("process_started_at"),
+        "suite": {"manifest_sha256": plan["manifest"]["sha256"], "planned": plan.get("planned"),
+                  "selections": plan.get("selections"), "character": current["character"],
+                  "ascension": current["ascension"], "host_kind": current["host_kind"],
+                  "protocol_observed": current["protocol_observed"]},
+        "policy": "argmax",
+        "parallelism": {"workers": plan.get("workers"),
+                        "live_games": parallelism.get("execution_upper_bound"),
+                        "pending_limit": parallelism.get("pending_limit"),
+                        "save_workers": parallelism.get("save_workers"),
+                        "wall_seconds": plan.get("wall_seconds"),
+                        "episode_seconds": plan.get("episode_seconds")},
+        "stage_seconds": stages,
+        "wall_used_fraction": (timing["process_wall_seconds"] / plan["wall_seconds"]
+                               if timing.get("process_wall_seconds") and plan.get("wall_seconds")
+                               else None),
+        "status": result.get("status"), "stop_requested": result.get("stop_requested"),
+        "outcome": summary["cohorts"]["current"],
+        "seeds": [{"seed": row["seed"], "status": row["status"], "result": row["result"],
+                   "scored": row["scored"], "floor": row["floor"],
+                   "boss_cleared_acts": row["boss_cleared_acts"],
+                   "elapsed_seconds": row["elapsed_seconds"],
+                   "reward": official.get(row["seed"]),
+                   "conservative_reward": conservative.get(row["seed"])}
+                  for row in current["rows"]],
+        "paired": summary["paired"], "skipped_references": summary["skipped_references"],
+        "value_predictions": {"recorded": False,
+                              "reason": "evaluated_package_strips_auxiliary_heads"}}
 
 
 def check_storage(execution: dict[str, Any], peer: dict[str, Any]) -> bool:
