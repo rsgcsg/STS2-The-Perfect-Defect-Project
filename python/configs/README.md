@@ -33,3 +33,9 @@ long-run starting point: the RL4.2/S3 method values plus the measured training l
 `recompile_limit` 16 and a 300 s stall floor unless the dataplane sets them. The run
 still supplies its paths, the inductor `cache_dir` (keep it across jobs) and up to 8
 warm-up dumps chosen with `python -m stpd.rl.offline_step warmup-cover`.
+`loss.hp_advantage_coef` (c_hp, default 0 = off) weights the per-combat HP score
+(segment format 4): A = A_outcome + c_hp * A_hp before the one normalisation. A_hp is
+in HP points (tens), A_outcome in 0..1 reward units, so c_hp is expected around
+0.001-0.01. `loss.hp_advantage_scope` is `"combat_ticket"` (default: only single-combat
+ticket segments) or `"all_combats"` (an experiment arm: every combat, full games too).
+Both are frozen for a run and must match the fast-chain gate's `learner-base.json`.
