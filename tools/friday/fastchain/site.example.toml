@@ -38,9 +38,9 @@ run_name = "fastchain-run"
 # partition missing here is refused (an unknown limit). A long run needs prep and env on
 # partitions without a 60 min limit.
 partition_max_minutes = { "PREP-PARTITION" = 0, "CPU-PARTITION" = 0, "GPU-PARTITION" = 0 }
-# sgd_compile.warmup (<= 8 offline-step dumps), chosen by
+# sgd_compile.warmup (<= 8 offline-step dump directories), chosen by
 #   python -m stpd.rl.offline_step warmup-cover --bucket-rows <prepared_bucket_rows> DUMPS...
-compile_warmup_dumps = ["/PATH/TO/dumps/step-000123.pt"]
+compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
 
 [site.gpu_types."A100-40"]
 gres = "a100"

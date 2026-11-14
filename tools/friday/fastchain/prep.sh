@@ -20,9 +20,13 @@ n=0
 for g in $(seq 0 $((NG - 1))); do
   read -r W TB C <<< "$($PY -c "import json,os; x=json.loads(os.environ['FC_PREP_GROUPS_JSON'])[$g]; print(x['workers'], x['scratch'], x['cpus'])")"
   NL=$(eval echo \${SLURM_JOB_NODELIST_HET_GROUP_$g:-$SLURM_JOB_NODELIST})
+  # One active group = a plain job (launch.py adds ':' only between groups), and srun
+  # refuses --het-group there ("No directives to start application on any available
+  # hetjob components").
+  HG=""; [ "$NG" -gt 1 ] && HG="--het-group=$g"
   for h in $(scontrol show hostnames $NL); do
     # srun does not inherit --cpus-per-task (c3c25: every host ran on 1 CPU): pass it.
-    srun --het-group=$g --nodes=1 --ntasks=1 --cpus-per-task=$C -w $h bash -c "T=$TB/fc-prep-\$SLURM_JOB_ID-h$n; trap \"rm -rf \$T\" EXIT; echo \$(hostname -s) \$(nproc) \$(grep -m1 \"model name\" /proc/cpuinfo | cut -d: -f2); $PY $H/preflight.py prep-host --run $RUN --path \$T --index $n || exit 9; (while sleep 30; do echo LOAD \$(date +%s) \$(cat /proc/loadavg) tmp_avail_kb=\$(df --output=avail \$T | tail -1) scratch_kb=\$(du -sk \$T 2>/dev/null | cut -f1); done) & exec $PY -u -m stpd.rl.remote_prepare --scratch \$T --decode-workers $W --assembly-workers $W --cache-bytes 1 --codec $FC_REMOTE_PREPARE_CODEC $MINFREE --ready-file $R/ready-$n" > $RUN/prep-host-$n.log 2>&1 &
+    srun $HG --nodes=1 --ntasks=1 --cpus-per-task=$C -w $h bash -c "T=$TB/fc-prep-\$SLURM_JOB_ID-h$n; trap \"rm -rf \$T\" EXIT; echo \$(hostname -s) \$(nproc) \$(grep -m1 \"model name\" /proc/cpuinfo | cut -d: -f2); $PY $H/preflight.py prep-host --run $RUN --path \$T --index $n || exit 9; (while sleep 30; do echo LOAD \$(date +%s) \$(cat /proc/loadavg) tmp_avail_kb=\$(df --output=avail \$T | tail -1) scratch_kb=\$(du -sk \$T 2>/dev/null | cut -f1); done) & exec $PY -u -m stpd.rl.remote_prepare --scratch \$T --decode-workers $W --assembly-workers $W --cache-bytes 1 --codec $FC_REMOTE_PREPARE_CODEC $MINFREE --ready-file $R/ready-$n" > $RUN/prep-host-$n.log 2>&1 &
     n=$((n+1))
   done
 done
