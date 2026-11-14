@@ -174,10 +174,9 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "target": target, "gpu_node": node, "gpu_node_why": "; ".join(tried),
         "gpu_partition": gpu["partition"], "gpu_gres": gpu["gres"],
         "job_mem_g": mem, "core_cap": cap,
-        # The guard must fire below the job's cgroup limit to be of any use (with 2 cards
-        # the old 220 GB guard sat above the 200 GiB = 214.7 GB limit): capped here.
-        "mem_guard_bytes": int(min(knobs["mem_guard_gb"] * 1e9, 0.97 * limit)),
-        "mem_hard_bytes": int(min(knobs["mem_hard_gb"] * 1e9, 0.99 * limit)),
+        # Fractions of the job's cgroup limit (--mem), so they always sit below it.
+        "mem_guard_bytes": int(knobs["mem_guard_fraction"] * limit),
+        "mem_hard_bytes": int(knobs["mem_hard_fraction"] * limit),
         "env_nodes_max": fast + slow, "env_fast_nodes": fast, "env_slow_nodes": slow,
         "env_cores_max": fast * knobs["env_node_cores"]
         + (slow + 1) // 2 * knobs["env_node_cores"],
