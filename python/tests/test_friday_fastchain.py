@@ -71,6 +71,22 @@ def gate_base():
     return base
 
 
+def with_hp(config, coef, scope='combat_ticket'):
+    """A learner config (gate base or frozen recipe) with c_hp = `coef` and its scope."""
+    config = copy.deepcopy(config)
+    config['loss']['hp_advantage_coef'] = coef
+    config['loss']['hp_advantage_scope'] = scope
+    return config
+
+
+def gate_without_hp(*keys):
+    """A gate learner-base.json from before the HP score (without c_hp and its scope)."""
+    base = gate_base()
+    for key in keys or ('hp_advantage_coef', 'hp_advantage_scope'):
+        del base['loss'][key]
+    return base
+
+
 def good_facts(plan):
     k = plan['knobs']
     return {'src_rev': f'{k["env_pkg_build"]}{"0" * 32}',
@@ -264,6 +280,12 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': True}}, 'producer_identity'),
     ({'max_versions': 100000}, {}, 'frozen_recipe'),
     ({}, {'gate_learner_base': None}, 'frozen_recipe'),
+    ({}, {'gate_learner_base': gate_without_hp()}, 'frozen_recipe'),
+    ({}, {'gate_learner_base': gate_without_hp()}, 'hp_score'),
+    ({}, {'gate_learner_base': gate_without_hp('hp_advantage_scope')}, 'hp_score'),
+    # c_hp > 0 agreed by gate and frozen recipe, but segment format 3
+    ({}, {'gate_learner_base': with_hp(gate_base(), 0.003),
+          'frozen_recipe': with_hp(FROZEN, 0.003)}, 'hp_score'),
     ({}, {'frozen_recipe': {
         **FROZEN, 'lr': 0.0002}}, 'frozen_recipe'),
     ({}, {'compile_warmup_dumps': {'/x/missing.pt': False}}, 'compile_warmup'),
@@ -544,6 +566,40 @@ def test_learner_config_matches_the_frozen_recipe_except_allowed_levers():
     assert resumed['resume_checkpoint'] == 'cp-1'
 
 
+def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
+    assert knobs()['segment_format'] == 'stpd/rl-fast-segment-3'  # default: format 3, c_hp 0
+    plan = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
+    facts = {**good_facts(plan), 'gate_learner_base': with_hp(gate_base(), 0.003),
+             'frozen_recipe': with_hp(FROZEN, 0.003)}
+    results = preflight.checks(plan, facts)
+    assert all(r.ok for r in results), preflight.report(results)
+    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope combat_ticket, ' \
+        'segment format stpd/rl-fast-segment-4'
+    # the "all_combats" experiment arm: the same path, gate and frozen recipe agreeing
+    arm = {**facts, 'gate_learner_base': with_hp(gate_base(), 0.003, 'all_combats'),
+           'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
+    results = preflight.checks(plan, arm)
+    assert all(r.ok for r in results), preflight.report(results)
+    assert 'scope all_combats' in by_name(results)['hp_score'].detail
+    # build passes the gate's c_hp through; A9 compares it with the frozen value
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    built = learner_config.build(with_hp(gate_base(), 0.003, 'all_combats'), plan['knobs'], run)
+    assert built['loss']['hp_advantage_coef'] == 0.003
+    assert built['loss']['hp_advantage_scope'] == 'all_combats'
+    assert learner_config.recipe_drift(built, FROZEN) == [
+        'loss.hp_advantage_coef: frozen 0.0, effective 0.003',
+        "loss.hp_advantage_scope: frozen 'combat_ticket', effective 'all_combats'"]
+    # a gate from before the HP score is refused, never read as c_hp = 0
+    old = learner_config.build(gate_without_hp(), plan['knobs'], run)
+    assert learner_config.recipe_drift(old, FROZEN) == [
+        "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
+        "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
+    refused = preflight.check_hp_score(plan, {**facts, 'gate_learner_base': gate_without_hp()})
+    assert not refused.ok and 'patch it once' in refused.detail
+
+
 def test_long_run_and_smoke_are_exclusive():
     with pytest.raises(SystemExit):
         plan_for(cards=2, smoke=True, long_run=True)
@@ -809,10 +865,12 @@ def test_new_knobs_name_their_source_features():
     need = preflight.required_features(plan_for(cards=3))
     assert {'retention', 'mu_archive', 'r7_max_games', 'r7_audit_mu',
             'segment_format_3'} <= set(need)
+    assert 'segment_format_4' not in need
     off = preflight.required_features(plan_for(
         cards=3, release_trained_segments=False, r7_games_per_hour=0,
-        service_kwargs={**knobs()['service_kwargs'], 'segment_format': 'stpd/rl-fast-segment-2'}))
+        segment_format='stpd/rl-fast-segment-4'))
     assert not {'retention', 'mu_archive', 'r7_audit_mu', 'segment_format_3'} & set(off)
+    assert 'segment_format_4' in off
     a10 = preflight.required_features(plan_for(cards=3, ascension_mix={'0': 0.5, '10': 0.5}))
     assert 'ascension' in a10
 
@@ -820,10 +878,15 @@ def test_new_knobs_name_their_source_features():
 def test_profile_relations_are_refused_at_load():
     with pytest.raises(run_profile.ProfileError, match='disk_stop_free_pct'):
         run_profile.load_profile(PROFILE, ['disk_stop_free_pct=30'])
+    # the segment format is its own knob: 3 (default) or 4, both carry the level
     with pytest.raises(run_profile.ProfileError, match='segment_format'):
+        run_profile.load_profile(PROFILE, ['segment_format=stpd/rl-fast-segment-2'])
+    with pytest.raises(run_profile.ProfileError, match='unknown'):
         run_profile.load_profile(PROFILE, [
-            'ascension_mix={ 0 = 0.5, 10 = 0.5 }',
-            'service_kwargs={ segment_format = "stpd/rl-fast-segment-2" }'])
+            'service_kwargs={ segment_format = "stpd/rl-fast-segment-4" }'])
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        'ascension_mix={ 0 = 0.5, 10 = 0.5 }', 'segment_format=stpd/rl-fast-segment-4'
+    ]))['segment_format'] == 'stpd/rl-fast-segment-4'
     with pytest.raises(run_profile.ProfileError, match='summing to 1'):
         run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
     with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):

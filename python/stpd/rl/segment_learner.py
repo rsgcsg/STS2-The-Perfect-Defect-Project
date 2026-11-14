@@ -491,6 +491,10 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         value.pop(key, None)
     for key in OPERATIONAL_FIELDS:
         value["segments"].pop(key, None)
+    # A checkpoint from before the HP score ran without it, i.e. with c_hp = 0 (its
+    # scope then changes nothing; the default one stands in).
+    value["loss"].setdefault("hp_advantage_coef", 0.0)
+    value["loss"].setdefault("hp_advantage_scope", "combat_ticket")
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
@@ -961,7 +965,9 @@ class SegmentLearner:
                         run=config.run, generation=self.generation,
                         excluded_seeds=frozenset(settings.excluded_seeds),
                         buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
-                        gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels))
+                        gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels),
+                        hp_advantage_coef=config.loss.hp_advantage_coef,
+                        hp_advantage_scope=config.loss.hp_advantage_scope)
                     if self.release_segments:
                         self.segment_release = self._segment_release()
                 verify_workers = self.dataplane.get("fast_verify_workers", 0)
