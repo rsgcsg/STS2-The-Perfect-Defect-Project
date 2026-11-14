@@ -59,6 +59,13 @@ test("normalized captures: per-capture bookkeeping dropped, hex ids renamed cons
   assert.match(a.text, /"target":"#0"/u);
   const changed = basis("0123456789abcdef01", "aaaaaaaaaaaaaaaa", 1); changed.snapshot.interaction.kind = "combat_turn";
   assert.notEqual(normalizeBasis(changed).digest, a.digest);
+  // Real Host captures: ids end in the process's snapshot sequence, every Read response has its wall time.
+  const host = (proc, seq, at) => ({ reads: [{ kind: "map", response: { observed_at: at, observed_snapshot_id: `managed_${proc}_s${seq}`, content: { floor: 1 } } }],
+    snapshot: { interaction: { interaction_id: `interaction_${proc}_s${seq}`, kind: "map_navigation" } } });
+  const parent = normalizeBasis(host("aaaaaaaaaaaaaaaa", 3, "2026-11-14T10:26:44.395Z"));
+  assert.equal(parent.digest, normalizeBasis(host("bbbbbbbbbbbbbbbb", 1, "2026-11-14T10:26:48.015Z")).digest);
+  const moved = host("aaaaaaaaaaaaaaaa", 3, "t"); moved.reads[0].response.content.floor = 2;
+  assert.notEqual(normalizeBasis(moved).digest, parent.digest);
   assert.deepEqual(diffPaths({ a: 1, b: { c: [1, 2] }, save_time: 1 }, { a: 1, b: { c: [1, 3] }, save_time: 2 }, new Set(["save_time"])), ["$.b.c.1"]);
   assert.deepEqual(unlockPaths({ players: [{ unlock_state: {} }] }), ["$.players.0.unlock_state"]);
 });

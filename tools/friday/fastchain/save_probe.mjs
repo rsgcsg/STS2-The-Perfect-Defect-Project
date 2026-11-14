@@ -33,13 +33,24 @@ const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).joi
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 class ProbeStop extends Error { name = "ProbeStop"; }
 
+/** `observed_at` at any depth: each Read response carries the capture's wall time. */
+const withoutTimes = (value) => Array.isArray(value) ? value.map(withoutTimes)
+  : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "observed_at").map(([key, child]) => [key, withoutTimes(child)]))
+    : value;
+
 /** One capture as compared across processes. */
 export function normalizeBasis(basis) {
   const snapshot = Object.fromEntries(Object.entries(basis.snapshot).filter(([key]) => !VOLATILE.has(key)));
-  const names = new Map();
-  const text = canonical({ snapshot, reads: basis.reads ?? null }).replace(/[0-9a-f]{16,}/gu, (hex) => {
+  const names = new Map(), sequences = new Map();
+  const text = canonical(withoutTimes({ snapshot, reads: basis.reads ?? null })).replace(/[0-9a-f]{16,}/gu, (hex) => {
     if (!names.has(hex)) names.set(hex, `#${names.size}`);
     return names.get(hex);
+  // Snapshot and interaction ids end in the process's snapshot sequence (`managed_<hex>_s3`): renamed
+  // in order of first appearance like the hex ids.
+  }).replace(/(#\d+)_s(\d+)/gu, (_all, id, sequence) => {
+    if (!sequences.has(sequence)) sequences.set(sequence, `@${sequences.size}`);
+    return `${id}_${sequences.get(sequence)}`;
   });
   return { text, digest: sha256(text) };
 }
@@ -145,7 +156,7 @@ export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1,
       if (done || kindOf(snapshot) !== "map_navigation" || !(floorOf(snapshot) > savedFloor)) return false;
       done = true;
       const started = performance.now();
-      const result = await native.saveMap(join(out, `post-${label}.json`));
+      const result = await native.saveMap(join(out, `post-${seed}-${label}.json`));
       posts[label] = { result, ms: performance.now() - started };
       return result.kind === "saved";
     };
@@ -169,7 +180,7 @@ export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1,
       const floor = floorOf(prefix.snapshot);
       tried.add(floor);
       started = performance.now();
-      const result = await native.saveMap(join(out, `save-f${floor}.json`));
+      const result = await native.saveMap(join(out, `save-${seed}-f${floor}.json`));
       if (result.kind === "saved") save = { descriptor: result.save, ms: performance.now() - started };
       else report.save_refusals.push({ floor, reason: result.reason });
     }
