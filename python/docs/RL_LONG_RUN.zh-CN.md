@@ -35,9 +35,10 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   按快照钉节点、把“有空卡”当“能开始”都错过）。旧站点文件缺 `constraint` 会被拒绝，补一行即可。
 - 预检任何一项不过就拒绝启动并逐项说明（只打印、从不拒绝的例外：sinfo 快照与
   `sbatch --test-only` 的 GPU 开始估计——后者不看排在前面的作业和分区锁，11-14 说“立即”
-  时实际起不来；本用户 fairshare 与“现在交一个作业，前面有多少个更高优先级的排队作业”
-  （优先级按 `sprio -w` 的分区权重 + fairshare 权重 × 因子估计，backfill 每轮只看前
-  bf_max_job_test 个，11-14 时是 500）；以及旋钮所需源码特性——产品自己会对缺失特性响亮
+  时实际起不来；本用户 fairshare 与“现在交一个作业，GPU 分区和备料分区里各有多少个更高
+  优先级的排队作业”（优先级按 `sprio -w` 的分区权重 + fairshare 权重 × 因子估计，backfill
+  每轮只看前 bf_max_job_test 个，11-14 时是 500；备料分区要看，因为备料作业 GPU 开始后才排队，
+  须在 `remote_prepare_wait_seconds` 内起来）；以及旋钮所需源码特性——产品自己会对缺失特性响亮
   拒绝）：卡位、单 rank 设备、备料机型与 scratch（每台开工时再查空闲 ≥ 2×在途）、分区时限、python_env_sha256
   与 lz4（每个节点开工时查）、提速开关生效值、慢机型白名单、env 包 SOURCE_REVISION 与源码
   同一 int 且 memo 开、candidate dll 前缀（≥12 位十六进制）、env 节点数够把聚合器铺满全部
@@ -64,19 +65,33 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
   GPU 开始前它们只是 Dependency 排队，不占 CPU 节点、不扣 fairshare（`plan.json` 里的命令不含
-  这一项，作业号见 `jobs.json`）。然后等 GPU 作业离开 PENDING，最多 `gpu_pending_max_seconds`
-  （4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印 Slurm Reason、优先级和
-  排在前面的排队作业数，取消本 run 全部作业，非零退出，不自动重交。等待期间 launcher 要一直
-  活着（真跑放 tmux/nohup 或交给 supervise）。中途任一提交失败、GPU 作业没开始就被取消或
-  Ctrl-C，同样全部取消再报错（`submit-failed.txt`），不自动重试。
+  这一项，作业号见 `jobs.json`）。然后等 gpu.sh 确认开工（写 `gpu-started`），PENDING 最多
+  `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印
+  Slurm Reason、优先级和同分区排在前面的排队作业数，取消本 run 全部作业，非零退出，不自动重交。
+  GPU 作业没确认就结束（FAILED、TIMEOUT、NODE_FAIL、BOOT_FAIL、OUT_OF_MEMORY、CANCELLED、已清除）
+  一样算失败；squeue 读不到不算回答，下一拍再读。中途任一提交失败、Ctrl-C、SIGTERM、SIGHUP
+  （ssh 断开）都全部取消再报错（`submit-failed.txt`），不自动重试。取消顺序：先依赖作业、最后
+  GPU 作业（`after:` 在 GPU 作业开始或被取消时都成立，先取消 GPU 会放出依赖作业）；scancel
+  失败时写明 `SCANCEL FAILED ... jobs may still be alive: [作业号]`，要手动 `scancel`。
+  launcher 是 GPU 作业开工前的存活负责人：从交 GPU 作业前到 gpu.sh 确认，每 10 s 摸一次
+  `launcher-alive`；gpu.sh 开工时它比 `launcher_stale_seconds`（120 s）旧就拒绝（launcher 被
+  SIGKILL、崩溃或登录节点没了），写 STOP 并以 3 退出，不会无人看管地跑 20 h。supervise 在自己
+  进程里调 launcher，每一代（含自动续跑）都是同一个检查。
 - 启动握手（GPU 先开始）：备料组作业在 GPU 开始后才排队；学习者从开始起最多等
   `remote_prepare_wait_seconds`（900 s，= 以前“备料先起”的总预算 600 + 300）等全部备料主机
   `prep-ready/ready-*`，任一台写 `prep-refused/*` 立即失败；服务等学习者 `learner.ready`，env 节点
   等服务。所以这段等待加进 GPU 作业时长（运行时长 + 240 s + 备料等待）、备料作业时长（= GPU 作业
-  时长，备料不会早于 GPU 开始）和 env 等待（`env_wait_seconds` + 备料等待）。GPU 已结束时才开始
-  的备料作业看到 STOP 直接退出。prep.sh 一次 `squeue` 失败不再当作 GPU 已结束：只有 squeue 正常
-  回答且无活状态，或 `Invalid job id`（已清除）才算结束；连续 40 次（10 min）失败则停掉主机并以 4
-  退出。
+  时长，备料不会早于 GPU 开始）和 env 等待（`env_wait_seconds` + 备料等待）。GPU 等了很久终于开始、
+  备料却 900 s 内没全起来：学习者以“remote prepare hosts not ready”退出，GPU 作业 rc 6、写 STOP，
+  run 结束（supervise 下按失败停链），不自动重交；先看预检里备料分区的排队数，必要时调大
+  `remote_prepare_wait_seconds`（时长会跟着加）。
+- GPU 作业是否还活着（prep.sh、env.sh 共用 `gpu_job.sh`）：只看 `squeue` 的 stdout（rc 0 时 stderr
+  的警告不算回答）；空回答、已结束状态或 `Invalid job id` 算结束，PENDING/REQUEUED/SUSPENDED 等
+  其余状态算活，squeue 失败算不知道、从不算结束。开工前已没有 GPU 作业的备料或 env 作业（被取消的
+  run、结果未知的提交）直接退出：备料开主机前查一次，env 在等服务时每 60 s 查一次。备料服务期间
+  squeue 答不上来时改看 GPU 作业自己的心跳（gpu.sh 每 5 s 重写 `load.txt`）：两者都说死（squeue
+  失败且心跳旧于 600 s）才停主机、写 `prep-stopped-<组>` 并以 4 退出，slurmctld 长时间故障不会
+  停掉健康的长跑。
 - 失败不被覆盖：STOP 只写第一次原因；任一服务或学习者非零退出、学习者无报告，GPU 作业
   rc ≠ 0；MPS 起不来直接拒绝（不允许无 MPS 共卡）。
 - 读数：`readout.py <run>`（老 run 用 `--plan`）给每个角色的行/s、忙碌%、队列、等待、丢弃，
@@ -103,7 +118,10 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   失败（含启动失败：恢复不了的 CP 也写报告，链立即停）、只有 STOP「service failure」（GPU
   预检、GPU 数、MPS、内存守卫，会重复）、提交失败或预检拒绝、磁盘停止、代码/配置/站点/源码
   有变。最多 `resume_max_total`（3）次，用完以第一
-  原因响亮停止（`FINAL.json`）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
+  原因响亮停止（`FINAL.json`）。GPU 排队时间算在窗口里（deadline 在链开始时定下，学习者跨 CP
+  保持）：每代在 gpu.sh 确认开工时记 `queue_seconds` 和剩余窗口并打到 stderr，`FINAL.json` 记
+  `queue_seconds_total`；没做“窗口从 learner.ready 起算”（要学习者自己定 deadline、supervise
+  再读回来，两处改动）。开工后 supervise 死掉，该代照跑但没有续跑、读数和评估（同以前）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
   每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；带 `--eval-*` 时每个套件
   一个常驻 `tools/friday/fast_eval.py` 看守（#528，不带 `--checkpoint/--once`）：每
   `eval_interval_seconds` 评最新 CP，`eval_seeds` 局 `eval_suite`（空 = 固定 A0 100），

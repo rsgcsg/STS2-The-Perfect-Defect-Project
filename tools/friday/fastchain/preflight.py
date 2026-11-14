@@ -140,7 +140,8 @@ def check_prep_schedulable(plan: dict[str, Any], facts: dict[str, Any]) -> Resul
     return Result("prep_schedulable", True,
                   f"{hosts} prep hosts in {len(groups)} plain jobs (no heterogeneous job), "
                   "each starting after the GPU job started; the learner waits "
-                  f"{plan['prep_wait_seconds']} s for all of them")
+                  f"{plan['prep_wait_seconds']} s for all of them (not all up by then: the "
+                  "learner exits, the run ends, nothing is resubmitted)")
 
 
 def check_switches(plan: dict[str, Any]) -> Result:
@@ -458,18 +459,24 @@ def check_resume(plan: dict[str, Any]) -> Result:
 
 
 def check_queue(facts: dict[str, Any]) -> Result:
-    """Printed, never enforced (CLUSTER-QUEUE-DIAG 11-14): this user's fair-share factor and
-    how many pending jobs rank above a job submitted now. Backfill looks at only the first
-    bf_max_job_test of them per cycle (500 there), so a long list means a long wait."""
+    """Printed, never enforced (CLUSTER-QUEUE-DIAG 11-14): this user's fair-share factor and,
+    in the GPU partition and the prep partition, how many pending jobs rank above a job
+    submitted now. Backfill looks at only the first bf_max_job_test of them per cycle (500
+    there), so a long list means a long wait. The prep jobs queue only once the GPU job
+    started and must be up within remote_prepare_wait_seconds, or the learner gives up."""
     q = facts.get("queue") or {}
 
-    def shown(key: str) -> str:
-        return "unknown" if q.get(key) is None else str(q[key])
+    def shown(value: Any) -> str:
+        return "unknown" if value is None else str(value)
 
-    return Result("queue", True, f"fair-share {shown('fairshare')}; a job submitted now "
-                  f"has priority ~{shown('priority_estimate')} (partition + fair-share "
-                  f"weights); {shown('above')} of {shown('pending')} pending jobs rank above "
-                  "it", warn=q.get("above") != 0)
+    parts = q.get("partitions") or {}
+    ranks = "; ".join(f"{role} partition {shown(p.get('name'))}: {shown(p.get('above'))} of "
+                      f"{shown(p.get('pending'))} pending jobs rank above it"
+                      for role, p in parts.items()) or "pending jobs unknown"
+    return Result("queue", True, f"fair-share {shown(q.get('fairshare'))}; a job submitted "
+                  f"now has priority ~{shown(q.get('priority_estimate'))} (partition + "
+                  f"fair-share weights); {ranks}",
+                  warn=not parts or any(p.get("above") != 0 for p in parts.values()))
 
 
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:

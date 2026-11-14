@@ -39,6 +39,16 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
   evaluations already submitted are not re-checked across generations;
 - a submission is never repeated: a launcher failure after jobs were submitted (unknown
   delivery) ends the chain;
+- GPU queue time counts against the window (review #540: the deadline is fixed when the
+  chain starts and the learner keeps it across CPs). `launch.py submit` returns once gpu.sh
+  confirmed its start, so each generation records `queue_seconds` and the window left at
+  that moment, prints both on stderr, and FINAL.json sums `queue_seconds_total`. Not
+  chosen: opening the window at learner.ready (the learner would set the deadline and the
+  supervisor would have to read it back);
+- the launcher (in this process) is the GPU job's liveness owner until gpu.sh confirmed
+  its start: SIGTERM/SIGHUP cancel the generation's jobs, and gpu.sh refuses on a stale
+  launcher-alive (SIGKILL); after the start a dead supervisor leaves the generation
+  running without resume, readout or evaluation, as before;
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
   window exits 0.
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
@@ -168,6 +178,9 @@ class Chain:
         record = {"ok": ok, "cause": cause, "first_cause": resumable[0] if resumable else None,
                   "generations": len(self.state["generations"]),
                   "resumes": len(self.state["generations"]) - 1, "t": self.clock(),
+                  # GPU queue time is not given back to the window (see the docstring)
+                  "queue_seconds_total": round(sum(g.get("queue_seconds") or 0
+                                                   for g in self.state["generations"]), 1),
                   # standing watchers outlive the chain (the last CP is evaluated on
                   # their next tick); stop them with `kill PID` after its report.
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
@@ -237,8 +250,18 @@ class Chain:
             return f"generation {number} refused by the launcher (exit {code}, see preflight)"
         jobs_path = Path(generation["run"]) / "jobs.json"
         generation["jobs"] = json.loads(jobs_path.read_text()) if jobs_path.exists() else {}
+        started = self.clock()  # the launcher returned: gpu.sh confirmed its start
+        generation["queue_seconds"] = round(started - generation["submitted_at"], 1)
+        generation["window_left_seconds"] = round(self.state["deadline_at"] - started)
         self.note("generation_started", number=number, runtag=tag, checkpoint=checkpoint,
-                  jobs=generation["jobs"], env_recipe=recipe)
+                  jobs=generation["jobs"], env_recipe=recipe,
+                  queue_seconds=generation["queue_seconds"],
+                  window_left_seconds=generation["window_left_seconds"])
+        if not self.args.dry_run:
+            print(f"*** generation {number} started after {generation['queue_seconds']:.0f} s "
+                  f"in the queue; {generation['window_left_seconds']} s of the chain window "
+                  f"({self.knobs['long_wall_seconds']} s, fixed at chain start) left",
+                  file=sys.stderr, flush=True)
         return generation
 
     def newest_checkpoint(self) -> str | None:

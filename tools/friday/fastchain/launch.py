@@ -4,7 +4,7 @@
     launch.py plan      RUNTAG --profile P --site S --cards N --card-type T [options]
     launch.py preflight RUNTAG ... (plan + every start check; submits nothing)
     launch.py submit    RUNTAG ... (preflight, then GPU -> prep + env with
-                        --dependency=after:GPU -> wait until the GPU job leaves PENDING)
+                        --dependency=after:GPU -> wait until gpu.sh confirms its start)
 
 Options: --layout L (default: the profile's default layout for N cards; "shared",
 "1i+1t", "1i+2t" or an explicit per-card list, see layout.py), --env-cores C (cap on
@@ -13,8 +13,9 @@ environment cores), --set knob=value (repeatable, recorded as an override), --sm
 one GPU job), --probe-only (allow the placeholder producer
 identity outside --smoke: CPs void, recorded in plan.json), --fallback (fewer cards
 with their default layouts when the sinfo snapshot shows no node with N free), --probe-json
-F (a recorded sinfo probe instead of sinfo). The snapshot never pins a node and, like
-`sbatch --test-only`, is only printed (CLUSTER-QUEUE-DIAG 11-14).
+F (a recorded sinfo probe instead of sinfo). The snapshot never pins a node; without
+--fallback it is, like `sbatch --test-only`, only printed (CLUSTER-QUEUE-DIAG 11-14: a node
+free in the snapshot is no promise that the job starts).
 
 What this replaces: the private fc-launch.py tiers (1/2/3/h100) and the hand-edited
 fc_gpu.py / fc-gpu3.sh / fc-env2.sh / fc-prep3w.sh. A layout is data; every knob comes
@@ -34,8 +35,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -49,11 +52,12 @@ import run_profile  # noqa: E402
 
 HARNESS = ("roles.py", "preflight.py", "run_profile.py", "layout.py", "readout.py",
            "learner_config.py",
-           "gpu.sh", "env.sh", "prep.sh", "env_driver.mjs", "env_aggregator.py",
+           "gpu.sh", "env.sh", "prep.sh", "gpu_job.sh", "env_driver.mjs", "env_aggregator.py",
            "env_admission.py", "proc_cpu.py", "proc_sampler.py", "native_nice.sh",
            "elu_preload.mjs")
 CANDIDATE_DLL = "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
 TAG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+HEARTBEAT_SECONDS = 10.0  # launcher-alive; gpu.sh refuses past launcher_stale_seconds
 
 
 def sh(*cmd: str) -> str:
@@ -322,7 +326,9 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
         site[key]: (os.stat(site[key]).st_mode & 0o777 if os.path.exists(site[key]) else None)
         for key in ("inference_auth_file", "prepare_auth_file")}
     facts["gpu_test_start_seconds"] = test_start(cmds["gpu"])
-    facts["queue"] = queue_facts()
+    facts["queue"] = queue_facts({"gpu": plan["gpu_partition"],
+                                  **({"prep": site["prep_partition"]}
+                                     if plan["prep_hosts"] else {})})
     return facts
 
 
@@ -417,31 +423,37 @@ def _stdout(cmd: list[str]) -> str | None:
     return out.stdout if out.returncode == 0 else None
 
 
-def parse_pending(text: str) -> list[tuple[str, int, str]]:
-    """`squeue -h -r -t PD -o %i|%Q|%r` -> (job id, priority, reason) per pending job."""
+def parse_pending(text: str) -> list[tuple[str, int, str, str]]:
+    """`squeue -h -r -t PD -o %i|%Q|%r|%P` -> (job id, priority, reason, partition)."""
     rows = []
     for line in text.splitlines():
-        parts = [part.strip() for part in line.split("|", 2)]
-        if len(parts) == 3 and parts[1].isdigit():
-            rows.append((parts[0], int(parts[1]), parts[2]))
+        parts = [part.strip() for part in line.split("|", 3)]
+        if len(parts) == 4 and parts[1].isdigit():
+            rows.append((parts[0], int(parts[1]), parts[2], parts[3]))
     return rows
 
 
-def pending_jobs() -> list[tuple[str, int, str]] | None:
+def pending_jobs() -> list[tuple[str, int, str, str]] | None:
     """Every pending job of the cluster, array elements one by one; None if unreadable."""
-    text = _stdout(["squeue", "-h", "-r", "-t", "PD", "-o", "%i|%Q|%r"])
+    text = _stdout(["squeue", "-h", "-r", "-t", "PD", "-o", "%i|%Q|%r|%P"])
     return None if text is None else parse_pending(text)
 
 
-def queue_position(job: str, rows: list[tuple[str, int, str]] | None) -> str:
+def in_partition(row: tuple[str, int, str, str], partition: str) -> bool:
+    return partition in row[3].split(",")
+
+
+def queue_position(job: str, rows: list[tuple[str, int, str, str]] | None) -> str:
+    """Where a pending job stands among the pending jobs of its own partition."""
     if rows is None:
         return f"job {job}: squeue unreadable"
     mine = next((row for row in rows if row[0] == job), None)
     if mine is None:
         return f"job {job} is not pending"
-    above = sum(1 for row in rows if row[1] > mine[1])
+    peers = [row for row in rows if in_partition(row, mine[3].split(",")[0])]
+    above = sum(1 for row in peers if row[1] > mine[1])
     return (f"job {job} PENDING, Reason={mine[2]}, priority {mine[1]}, {above} of "
-            f"{len(rows)} pending jobs rank above it")
+            f"{len(peers)} pending jobs in {mine[3]} rank above it")
 
 
 def parse_fairshare(text: str | None) -> float | None:
@@ -463,19 +475,24 @@ def parse_sprio_weights(text: str | None) -> tuple[int, int] | None:
     return None
 
 
-def queue_facts() -> dict[str, Any]:
-    """For preflight to print (never to decide): this user's fair-share factor and how many
-    pending jobs rank above a job submitted now. Its priority is estimated as partition
-    weight + fair-share weight x factor (age 0; job size and QOS left out)."""
+def queue_facts(partitions: dict[str, str]) -> dict[str, Any]:
+    """For preflight to print (never to decide): this user's fair-share factor and, per role
+    ({"gpu": partition, "prep": partition}), how many pending jobs of that partition rank
+    above a job submitted now. Its priority is estimated as partition weight + fair-share
+    weight x factor (age 0; job size and QOS left out)."""
     fair = parse_fairshare(_stdout(["sshare", "-n", "-P", "-U", "-o", "FairShare"]))
     weights = parse_sprio_weights(_stdout(["sprio", "-w", "-h", "-o", "%i|%F|%P"]))
     rows = pending_jobs()
     estimate = (round(weights[1] + weights[0] * fair)
                 if weights is not None and fair is not None else None)
-    above = (sum(1 for row in rows if row[1] > estimate)
-             if rows is not None and estimate is not None else None)
-    return {"fairshare": fair, "priority_estimate": estimate, "above": above,
-            "pending": None if rows is None else len(rows)}
+    out: dict[str, Any] = {"fairshare": fair, "priority_estimate": estimate, "partitions": {}}
+    for role, partition in partitions.items():
+        peers = None if rows is None else [r for r in rows if in_partition(r, partition)]
+        out["partitions"][role] = {
+            "name": partition, "pending": None if peers is None else len(peers),
+            "above": (sum(1 for r in peers if r[1] > estimate)
+                      if peers is not None and estimate is not None else None)}
+    return out
 
 
 def gpu_state(job: str) -> str | None:
@@ -487,39 +504,57 @@ def gpu_state(job: str) -> str | None:
     return out.stdout.strip()
 
 
-def wait_gpu_start(job: str, limit: float, *, poll: float = 10.0) -> None:
-    """Until the GPU job leaves PENDING (CLUSTER-QUEUE-DIAG 11-14). Still PENDING after
-    `limit` s, or gone without starting: SystemExit with the Slurm Reason, priority and the
-    pending jobs ranked above it (the caller cancels every job of the run). A failed squeue
-    is read again at the next poll, never taken as an answer."""
-    deadline, shown = time.monotonic() + limit, False
+def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0) -> None:
+    """Until gpu.sh confirms its start (`gpu-started`, written once its launcher check
+    passed). PENDING after `limit` s (CLUSTER-QUEUE-DIAG 11-14), or ended without that
+    confirmation (FAILED, TIMEOUT, NODE_FAIL, CANCELLED, purged ...): SystemExit with the
+    reason; the caller cancels every job of the run. A failed squeue is read again at the
+    next poll, never taken as an answer; CONFIGURING/RUNNING wait for the confirmation."""
+    deadline, shown, started = time.monotonic() + limit, False, run / "gpu-started"
     while True:
-        state = gpu_state(job)
-        if state is not None and state != "PENDING":
-            if not state or state.startswith("CANCELLED"):
-                raise SystemExit(f"GPU job {job} left the queue without starting "
-                                 f"({state or 'no longer listed'})")
+        if started.exists():
             return
+        state = gpu_state(job)
+        if state not in (None, "PENDING", "CONFIGURING", "RUNNING"):
+            if started.exists():  # confirmed between the two reads
+                return
+            stop = run / "STOP"
+            raise SystemExit(f"GPU job {job} ended before gpu.sh started the run "
+                             f"({state or 'no longer listed'}"
+                             + (f"; STOP: {stop.read_text().strip()}" if stop.exists() else "")
+                             + f"); see {run}/slurm-gpu-{job}.out")
         if state == "PENDING" and not shown:
             print(f"GPU {queue_position(job, pending_jobs())}; waiting at most {limit:.0f} s",
                   flush=True)
             shown = True
-        if time.monotonic() >= deadline:
-            raise SystemExit(f"GPU job still PENDING after {limit:.0f} s: "
-                             f"{queue_position(job, pending_jobs())}; not resubmitted")
+        if state in (None, "PENDING") and time.monotonic() >= deadline:
+            where = (queue_position(job, pending_jobs()) if state else
+                     "squeue unreadable at the deadline (the job may be starting)")
+            raise SystemExit(f"GPU job still PENDING after {limit:.0f} s: {where}; "
+                             "not resubmitted")
         time.sleep(poll)
 
 
 def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
-           *, run_cmd: Any = None, wait: Any = None) -> dict[str, Any]:
+           *, run_cmd: Any = None, wait: Any = None, run_scancel: Any = None) -> dict[str, Any]:
     """GPU job first; every other job with --dependency=after:<GPU job>, so no CPU node is
-    held (or charged) while the GPU job pends; then wait until the GPU job leaves PENDING,
-    at most plan["gpu_pending_max_seconds"]. Any failure or interrupt on the way (a later
-    sbatch failing, the pending bound, Ctrl-C during the wait) cancels every job already
-    submitted, then re-raises. Nothing is retried or resubmitted."""
+    held (or charged) while the GPU job pends; then wait until gpu.sh confirms its start, at
+    most plan["gpu_pending_max_seconds"] in PENDING. Any failure on the way (a later sbatch
+    failing, the pending bound, Ctrl-C, SIGTERM, SIGHUP) cancels every job already submitted,
+    then re-raises. Nothing is retried or resubmitted. For what no handler sees (SIGKILL, a
+    crash, a lost login node) a thread touches launcher-alive every HEARTBEAT_SECONDS from
+    before the GPU submit until gpu.sh confirmed: gpu.sh refuses to run on a stale one."""
     run_cmd = run_cmd or (lambda cmd: sh(*cmd))
     wait = wait or wait_gpu_start
     jobs: dict[str, Any] = {}
+    beat, done = run / "launcher-alive", threading.Event()
+
+    def heartbeat() -> None:
+        while not done.wait(HEARTBEAT_SECONDS):
+            beat.touch()
+
+    def interrupted(signum: int, frame: Any) -> None:
+        raise SystemExit(f"launcher got {signal.Signals(signum).name}")
 
     def go(name: str, cmd: list[str]) -> str:
         job = run_cmd(cmd).strip().split(";")[0]
@@ -527,26 +562,49 @@ def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
         (run / "jobs.json").write_text(json.dumps(jobs, indent=1))
         return job
 
+    beat.touch()
+    thread = threading.Thread(target=heartbeat, name="launcher-alive", daemon=True)
+    thread.start()
+    handlers = {s: signal.signal(s, interrupted) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
         gpu = go("gpu", cmds["gpu"])
-        (run / "gpu-job.txt").write_text(gpu + "\n")  # prep.sh serves while this job lives
+        (run / "gpu-job.txt").write_text(gpu + "\n")  # prep.sh/env.sh: is it still alive
         for name, cmd in cmds.items():
             if name != "gpu":
                 go(name, [*cmd[:-1], f"--dependency=after:{gpu}", cmd[-1]])
-        wait(gpu, plan["gpu_pending_max_seconds"])
+        wait(gpu, plan["gpu_pending_max_seconds"], run)
     except BaseException as error:
-        cancelled = cancel_all(jobs)
-        (run / "submit-failed.txt").write_text(f"{error!r}\ncancelled {cancelled}\n")
-        print(f"submit failed ({error!r}); cancelled {cancelled}", file=sys.stderr)
+        result = cancel_all(jobs, run_scancel=run_scancel)
+        (run / "submit-failed.txt").write_text(f"{error!r}\n{result}\n")
+        print(f"submit failed ({error!r}); {result}", file=sys.stderr)
         raise
+    finally:
+        done.set()
+        thread.join()
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
     return jobs
 
 
-def cancel_all(jobs: dict[str, Any]) -> list[str]:
-    ids = [str(job) for job in jobs.values()]
-    if ids:
-        subprocess.run(["scancel", *ids], check=False)
-    return ids
+def cancel_all(jobs: dict[str, Any], *, run_scancel: Any = None) -> str:
+    """Dependents first, the GPU job last: `after:` holds once the GPU job began OR was
+    cancelled, so a dependent still queued behind a cancelled GPU job would start. Every
+    scancel's return code counts: a failed one says which jobs may still be alive."""
+    run_scancel = run_scancel or (lambda ids: subprocess.run(["scancel", *ids],
+                                                             capture_output=True, text=True))
+    dependents = [str(job) for name, job in jobs.items() if name != "gpu"]
+    gpu = [str(jobs["gpu"])] if "gpu" in jobs else []
+    failed = []
+    for ids in (dependents, gpu):
+        if ids:
+            out = run_scancel(ids)
+            if out.returncode != 0:
+                failed.append(f"scancel {' '.join(ids)}: rc {out.returncode} "
+                              f"{(out.stderr or '').strip()}")
+    if failed:
+        return (f"SCANCEL FAILED ({'; '.join(failed)}), jobs may still be alive: "
+                f"{dependents + gpu}")
+    return f"cancelled {dependents + gpu}"
 
 
 def main(argv: list[str] | None = None) -> int:

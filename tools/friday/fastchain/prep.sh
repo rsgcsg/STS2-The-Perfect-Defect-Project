@@ -16,6 +16,10 @@ export PYTHONPATH=$FC_SITE_SRC_DIR/python:$FC_SITE_LZ4_PATH
 export STPD_REMOTE_PREPARE_AUTH=$(cat "$FC_SITE_PREPARE_AUTH_FILE")
 # The GPU side may have ended while this job was still pending: nothing to serve.
 [ -e $RUN/STOP ] && { echo "gpu side ended before this prep job started: $(cat $RUN/STOP)"; exit 0; }
+source $H/gpu_job.sh
+GPU=$(cat $RUN/gpu-job.txt)
+read -r V D <<< "$(gpu_job_state $GPU)"
+[ "$V" = gone ] && { echo "GPU job $GPU gone before this prep job started: $D"; exit 0; }
 # #523 a437612d: the host refuses to become ready with less free scratch than the
 # in-flight budget (0 = not passed; preflight checked the build has the flag).
 MINFREE=""; [ "${FC_PREP_MIN_FREE_BYTES:-0}" -gt 0 ] && MINFREE="--scratch-min-free-bytes $FC_PREP_MIN_FREE_BYTES"
@@ -29,21 +33,24 @@ for h in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
 done
 echo "prep group $FC_PREP_GROUP hosts up to index $((n-1)) start=$(date -Is)"
 # --- serve: until the GPU side stops (STOP) or its job is gone ---
-# A failed squeue is not "gone" (CLUSTER-QUEUE-DIAG 11-14: one failure ended every host).
-# Gone = squeue answers without a live state, or "Invalid job id" (purged). 40 failures in a
-# row (10 min without an answer): stop the hosts loudly, exit 4.
-GPU=$(cat $RUN/gpu-job.txt); FAILS=0; RC=0
+# squeue decides while it answers (gpu_job.sh: stdout only, a failure is unknown, never
+# gone). While it cannot (slurmctld outage), the GPU job's own heartbeat decides: gpu.sh
+# rewrites load.txt every 5 s while it lives. The hosts stop only when squeue cannot answer
+# AND that heartbeat is older than 600 s; prep-stopped-<group> then says why (#540 review).
+SERVE_START=$(date +%s); RC=0
 while [ ! -e $RUN/STOP ]; do
   sleep 15
-  OUT=$(squeue -h -j $GPU -o %T 2>&1); QRC=$?
-  if grep -qxE 'RUNNING|CONFIGURING|COMPLETING' <<< "$OUT"; then
-    FAILS=0
-  elif [ $QRC = 0 ] || [[ $OUT == *"Invalid job id"* ]]; then
-    echo "GPU job $GPU gone: ${OUT:-not listed} $(date -Is)"; break
-  else
-    FAILS=$((FAILS + 1)); echo "squeue failed ($FAILS in a row) $(date -Is): $OUT"
-    [ $FAILS -lt 40 ] || { echo "squeue failed $FAILS times in a row: stopping the hosts"; RC=4; break; }
-  fi
+  read -r V D <<< "$(gpu_job_state $GPU)"
+  case $V in
+    live) ;;
+    gone) echo "GPU job $GPU gone: $D $(date -Is)"; break ;;
+    *) AGE=$(( $(date +%s) - $(date -r $RUN/load.txt +%s 2>/dev/null || echo $SERVE_START) ))
+       echo "squeue cannot answer ($D); GPU heartbeat load.txt ${AGE} s old $(date -Is)"
+       if [ $AGE -gt 600 ]; then
+         echo "squeue cannot answer and the GPU heartbeat is ${AGE} s old: prep group $FC_PREP_GROUP stopped $(date -Is)" | tee $RUN/prep-stopped-$FC_PREP_GROUP
+         RC=4; break
+       fi ;;
+  esac
 done
 # --- end serve ---
 echo "stopping hosts $(date -Is)"; kill $(jobs -p) 2>/dev/null; wait
