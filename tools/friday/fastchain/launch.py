@@ -301,6 +301,10 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["compile_warmup_dumps"] = {
         path: os.path.isfile(os.path.join(path, "offline-step.tensor-tree"))
         for path in site["compile_warmup_dumps"]}
+    warmup_file = Path(site["warmup_file"])
+    warmup_id = warmup_file.read_text().strip() if warmup_file.is_file() else None
+    facts["warmup_artifact"] = {"id": warmup_id, "present": bool(warmup_id) and (
+        Path(site["peer_dir"]) / "manifests" / f"{warmup_id}.json").is_file()}
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL

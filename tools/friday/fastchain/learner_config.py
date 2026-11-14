@@ -100,6 +100,23 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     return config
 
 
+def input_cause(failure: Any) -> str | None:
+    """The learner's `input_failure` (learner-report.json) as one line down to its innermost
+    error, for STOP (roles.py), e.g. `dataplane_shard 0 / prepare INVALID_PACKET:
+    binary_remote_assembly_failed: ValueError: prepared_batch_exceeds_...` (V4 smoke-h1c)."""
+    if not isinstance(failure, dict):
+        return None
+    path, node, inner = [], failure, failure
+    while isinstance(node, dict):
+        inner = node
+        path.append(" ".join(str(node[key]) for key in ("operation", "shard") if key in node))
+        node = node.get("failure")
+    detail = (inner.get("error") or (node if isinstance(node, str) else None)
+              or inner.get("error_type") or inner.get("producer_error_type"))
+    return (" / ".join(part for part in path if part) + (f" {inner['code']}" if inner.get("code")
+            else "") + (f": {detail}" if detail else ""))
+
+
 def recipe_drift(effective: dict[str, Any], frozen: dict[str, Any],
                  prefix: str = "") -> list[str]:
     """Frozen keys whose effective value differs (and is not an allowed drift)."""

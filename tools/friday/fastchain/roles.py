@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import layout  # noqa: E402
 import learner_config  # noqa: E402
 
 MODE, RUN = sys.argv[1], Path(sys.argv[2])
@@ -389,7 +390,14 @@ def learner() -> None:
         except BaseException as error:  # noqa: BLE001
             report["close_failure"] = repr(error)
         (RUN / "learner-report.json").write_text(json.dumps(report, default=str, indent=1))
-        stop_once(f"learner failure {failure}" if failure else "learner ended")
+        cause = learner_config.input_cause(owner.input_failure)
+        reason = f"learner failure {failure}" if failure else "learner ended"
+        if not stop_once(reason + (f"; input_failure {cause}" if cause else "")) and cause:
+            # The first reason stays the first line (readers match its start); a service's
+            # downstream failure often wins the race, so the learner's input failure is
+            # added below it (V4 smoke-h1c: STOP said only ConnectionRefusedError).
+            with open(STOP, "a") as handle:
+                handle.write(f"\nlearner input_failure {cause}")
         listener.close()
     return failure
 
@@ -456,7 +464,7 @@ def service() -> None:
         write_workers=K["handoff_write_workers"])
     workers = K["service_prepare_workers"]
     cpus = sorted(os.sched_getaffinity(0))
-    mine = cpus[len(cpus) - workers * (index + 1):len(cpus) - workers * index] or cpus[-workers:]
+    mine = layout.service_cpus(cpus, workers, index)
     import inspect
     exit_option = ({"exit_code_on_failure": 70} if "exit_code_on_failure" in
                    inspect.signature(FastInferenceService).parameters else {})

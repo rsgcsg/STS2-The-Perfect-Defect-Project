@@ -124,3 +124,14 @@ def target(cards: int, targets: dict[str, int], ready: dict[str, int]) -> dict[s
 def perfect_packing(cards: int, inference_rows_h: int, training_rows_h: int) -> float:
     """Ideal rows/h for N cards: N / (1/inference + 1/training) (playbook §11.5)."""
     return cards / (1 / inference_rows_h + 1 / training_rows_h)
+
+
+def service_cpus(cpus: list[int], workers: int, index: int) -> list[int]:
+    """The prepare CPUs of service `index` (roles.service; preflight warns on sharing).
+
+    Services take `workers` CPUs each from the end of the list (bounds before the start
+    index from the end, as Python slices do). An empty or short slice falls back to the
+    last `workers` CPUs: FastInferenceService needs exactly `workers` (V4 smoke-h1b:
+    14 CPUs, 8 workers -> service 3 got 4)."""
+    mine = cpus[len(cpus) - workers * (index + 1):len(cpus) - workers * index]
+    return mine if len(mine) == workers else cpus[-workers:]
