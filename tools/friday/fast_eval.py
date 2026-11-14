@@ -20,14 +20,20 @@ Rules (RL4.1 long-run lessons, lead 11-12):
 - a refused pre-submission check (fair share) is tried again next tick; a failure
   after a submission intent is written is never retried (unknown delivery);
 - RL3 registered 100-seed suite (the RL4.2 final-evaluation seeds, PLAN v11), argmax,
-  16 workers (100 games in about 1.5 h of play plus the snapshot; 4 workers could not
-  finish 100 games inside the wall), 3 h job wall (OPS-2), 1800 s per game, unknowns
-  continue cleaned and are excluded per pair, never voiding the round;
+  1800 s per game, unknowns continue cleaned and are excluded per pair, never voiding
+  the round;
+- job size (EVAL-SPEED-CHECK 11-14, lead decision a/e): 16 workers, 16 live games
+  (`--pending-limit`: playing + saving + waiting for a shard) and 4 save threads, the
+  code maximums; memory 7 GB per live game; job wall from the number of games and
+  the expected mean steps per game (`planned_wall_seconds`, `--expected-steps`), so
+  longer games of a stronger CP get a longer wall. All are fast_eval settings,
+  frozen in state.json and passed to `evaluate.py prepare-checkpoint`;
 - after the evaluation job ends, the owner's report (`stpd.evaluation.rl_observation`:
   per-floor distribution, max floor, Boss counts, wins, mean reward, paired deltas)
-  is written next to it against `--baseline-plan` (and the previous evaluation) when
-  their observed protocol and seed manifest match; a different protocol is skipped
-  and named, never compared.
+  is written next to it against the baseline (`--baseline-plan`; default on the A0
+  100: the registered a46afd12 round, `registered_baseline`) and the previous
+  evaluation when their observed protocol and seed manifest match; a different
+  protocol is skipped and named, never compared. `--no-baseline` reports none.
 
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
@@ -47,7 +53,9 @@ published detached model, not the CP.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import math
 import shlex
 import subprocess
 import sys
@@ -61,11 +69,25 @@ from batch import hashed, private_root, save
 
 SCHEMA = "spireagent/friday-fast-evaluation-v1"
 INTERVAL_SECONDS = 7200
-WALL_SECONDS = 10800  # OPS-2: Act-3-deep games outgrow 2 h
 EPISODE_SECONDS = 1800
 SEEDS = 100
-MAX_LIVE = 2  # 3 h evaluations every 2 h overlap by at most one
+MAX_LIVE = 2  # evaluations every 2 h overlap by at most one
 WORKERS = 16  # RL4.2 final eval: 25 games on 8 workers took 1,700-2,450 s of play
+# Job 1470561 (EVAL-SPEED-CHECK 11-14): 8 live slots held 16 cores to ~4 playing games.
+PENDING_LIMIT = 16  # live games per job: playing + saving + waiting for a shard
+SAVE_WORKERS = 4  # save threads overlap without slowing each other (91 vs 97 ms/step)
+MEMORY_GB_PER_LIVE = 7  # MaxRSS 49.2 GB at 8 live games = 6.1 GB each; 16 live -> 112 GB
+EXPECTED_STEPS = 1200  # mean steps per game the wall plans for: 2x the measured 604
+STEP_SECONDS = 0.9  # live-slot seconds per step incl. its save: 6,881 s x 8 / 59,814 = 0.92
+CLOSE_SECONDS = 900  # after play: observation report (543 s for 100 games) + evidence tar
+MAX_WALL_SECONDS = 21600  # evaluate.prepare's bound
+# Registered A0 reference (lead 11-14): CP a46afd12b19d323b... on the fixed A0 100 seeds,
+# the fast_eval round of job 1470561. Under the user's /data/scratch; pinned by sha256.
+BASELINE_ROOT = Path("/data/scratch")
+A0_BASELINE = {
+    "plan": "rl41-20261104/rl5-prewrite-20261109/v3-chou2-eval/base-a46/evaluation-0001/"
+            "round/evaluation/plan.json",
+    "sha256": "2c70a68bbbfe99bad50b0416eae4df205536a6cb904001ab599ef1568b6c4f68"}
 PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
 RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
@@ -97,6 +119,33 @@ def check_manifest(path: Path) -> None:
         raise ValueError("RL3_registered100_evaluation_manifest_required")
 
 
+def planned_wall_seconds(seeds: int, expected_steps: int, live: int,
+                         episode_seconds: int) -> int:
+    """Job wall = planned play + one episode for the last game started + report/evidence.
+
+    Planned play = games x expected mean steps x live-slot seconds per step / live slots.
+    100 games at 1200 steps on 16 slots: 6,750 + 1,800 + 900 = 9,450 s; 50 games: 6,075 s.
+    """
+    play = math.ceil(seeds * expected_steps * STEP_SECONDS / live)
+    return min(MAX_WALL_SECONDS, play + episode_seconds + CLOSE_SECONDS)
+
+
+def registered_baseline(suite: str | None) -> str | None:
+    """The registered reference plan of `suite`: the a46afd12 round on the fixed A0 100.
+
+    Other suites (the A10 50) have none yet. A missing or changed plan is refused, never
+    silently dropped: pass `--baseline-plan` or `--no-baseline`.
+    """
+    from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
+
+    if (suite or RL3_LEARNING_CURVE_SUITE_ID) != RL3_LEARNING_CURVE_SUITE_ID:
+        return None
+    path = BASELINE_ROOT / getpass.getuser() / A0_BASELINE["plan"]
+    if not path.is_file() or hashed(path) != A0_BASELINE["sha256"]:
+        raise ValueError("registered_A0_baseline_plan_missing_or_changed")
+    return str(path)
+
+
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
     """The watcher's preparation command, for one CP (no R2 environment when shared_local)."""
     launcher = evaluate.launcher(root / "not-offered-plan.json",
@@ -113,7 +162,10 @@ def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str
                "--output", shlex.quote(str(root / "round")),
                "--workers", str(settings["workers"]), "--seeds", str(settings["seeds"]),
                "--wall-seconds", str(settings["wall_seconds"]),
-               "--episode-seconds", str(settings["episode_seconds"])]
+               "--episode-seconds", str(settings["episode_seconds"]),
+               "--pending-limit", str(settings["pending_limit"]),
+               "--save-workers", str(settings["save_workers"]),
+               "--memory-gb", str(settings["memory_gb"])]
     if settings.get("deadline_at") is not None:
         command += ["--deadline-at", str(settings["deadline_at"])]
     return prefix + "exec " + " ".join(command) + "\n"
@@ -438,18 +490,28 @@ def check_storage(execution: dict[str, Any], peer: dict[str, Any]) -> bool:
 def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     config = json.loads(args.learner_config.read_bytes())
     execution = json.loads(args.execution.read_bytes())
+    live = min(args.workers, args.pending_limit)
+    if args.baseline_plan:
+        baseline = str(args.baseline_plan.resolve())
+    else:
+        baseline = None if args.no_baseline else registered_baseline(None)
     return {"learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
             "runtime_source": str(Path(__file__).resolve().parents[2]),
-            "workers": args.workers, "seeds": args.seeds, "wall_seconds": args.wall_seconds,
+            "workers": args.workers, "seeds": args.seeds,
+            "pending_limit": args.pending_limit, "save_workers": args.save_workers,
+            "memory_gb": args.memory_gb or MEMORY_GB_PER_LIVE * live,
+            "expected_steps": args.expected_steps,
+            "wall_seconds": args.wall_seconds or planned_wall_seconds(
+                args.seeds, args.expected_steps, live, args.episode_seconds),
             "episode_seconds": args.episode_seconds, "interval": args.interval,
             "max_live": args.max_live, "partition": args.partition,
             "prepare_partition": args.prepare_partition,
             "exclude_nodes": args.exclude_node or [], "deadline_at": args.deadline_at,
             "checkpoint": args.checkpoint, "r2": check_storage(execution, config["peer"]),
-            "baseline_plan": str(args.baseline_plan.resolve()) if args.baseline_plan else None}
+            "baseline_plan": baseline}
 
 
 def main() -> None:
@@ -464,7 +526,15 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=INTERVAL_SECONDS)
     parser.add_argument("--workers", type=int, default=WORKERS)
     parser.add_argument("--seeds", type=int, default=SEEDS)
-    parser.add_argument("--wall-seconds", type=int, default=WALL_SECONDS)
+    parser.add_argument("--pending-limit", type=int, default=PENDING_LIMIT,
+                        help="live games per job (playing + saving + waiting for a shard)")
+    parser.add_argument("--save-workers", type=int, default=SAVE_WORKERS)
+    parser.add_argument("--memory-gb", type=int,
+                        help=f"job memory (default {MEMORY_GB_PER_LIVE} GB per live game)")
+    parser.add_argument("--expected-steps", type=int, default=EXPECTED_STEPS,
+                        help="expected mean steps per game; sets the job wall")
+    parser.add_argument("--wall-seconds", type=int,
+                        help="job wall (default: planned_wall_seconds of games and steps)")
     parser.add_argument("--episode-seconds", type=int, default=EPISODE_SECONDS)
     parser.add_argument("--max-live", type=int, default=MAX_LIVE)
     parser.add_argument("--partition", choices=("smp", "general", "debug"), default="general")
@@ -476,7 +546,10 @@ def main() -> None:
                         help="evaluate exactly this CP artifact id (else the newest CP)")
     parser.add_argument("--baseline-plan", type=Path,
                         help="plan.json of the reference round (e.g. the baseline CP's own "
-                             "fast_eval round) for the paired report")
+                             "fast_eval round) for the paired report; default on the A0 "
+                             "100: the registered a46afd12 round")
+    parser.add_argument("--no-baseline", action="store_true",
+                        help="no baseline in the report (not even the registered one)")
     parser.add_argument("--once", action="store_true",
                         help="one evaluation, then exit once its report is written "
                              "(or it ended without one)")
@@ -489,6 +562,10 @@ def main() -> None:
         parser.error("register a GAME-SLOT line first (working rule 5), then --slot-registered")
     if not 600 <= args.interval <= 86400 or not 1 <= args.max_live <= 4:
         parser.error("interval 600..86400 s, max-live 1..4")
+    if not 1 <= args.save_workers <= 4 or not args.save_workers <= args.pending_limit <= 16:
+        parser.error("save-workers 1..4, pending-limit save-workers..16 (pipeline maximums)")
+    if args.baseline_plan and args.no_baseline:
+        parser.error("--baseline-plan or --no-baseline, not both")
     check_manifest(args.manifest.resolve())
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)

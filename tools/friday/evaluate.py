@@ -11,6 +11,7 @@ import re
 import shlex
 import signal
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -27,7 +28,6 @@ from batch import (
     publish_exclusive,
     read_pinned,
     save,
-    snapshot,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +39,11 @@ RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
 # execution["storage_mode"]: "remote" (default: S3, or a local peer with an S3
 # archive) or SHARED_LOCAL (a local shared-disk peer, no archive, no R2).
 SHARED_LOCAL = "shared_local"
+# The evidence kept next to a finished evaluation (`keep_evidence`): one tar of
+# every scratch file not already held in the peer, plus the observation files.
+EVIDENCE_SCHEMA = "spireagent/friday-evaluation-evidence-v2"
+EVIDENCE_ARCHIVE = "evidence.tar"
+REPORT_FILES = ("report-source.json", "report-details.json", "report-cohort.json")
 
 
 def validate_execution(execution: dict[str, Any], selections: dict[str, str]) -> None:
@@ -84,7 +89,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             seed_prefix: int | None = None, seed_ordinals: list[int] | None = None,
             runtime_source: Path | None = None,
             observation_report: bool = False, unknown_policy: str = "stop",
-            deadline_at: float | None = None) -> dict[str, Any]:
+            deadline_at: float | None = None, memory_gb: int | None = None) -> dict[str, Any]:
+    """`memory_gb`: the job's memory request (default 4 GB per worker, as before)."""
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.managed_retention import pipeline_configuration
     from spireagent.workbench.reference_suite import load_manifest
@@ -94,7 +100,9 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
             or wall_seconds <= episode_seconds + 180
-            or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)):
+            or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)
+            or memory_gb is not None and (type(memory_gb) is not int
+                                          or not 1 <= memory_gb <= 512)):
         raise ValueError("bounded_allocation_and_episode_limits_required")
     if unknown_policy not in ('stop', 'continue_cleaned'):
         raise ValueError('explicit_evaluation_unknown_policy_required')
@@ -143,6 +151,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "execution": {"path": str(frozen_execution), "sha256": hashed(frozen_execution)},
             "manifest": {"path": str(manifest), "sha256": hashed(manifest)},
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
+            "memory_gb": memory_gb or 4 * workers,
             "observation_report": observation_report,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
             "planned": planned, "parallelism": {"requested_workers": workers,
@@ -214,7 +223,11 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
                        seeds: int = 50, wall_seconds: int = 7200,
                        episode_seconds: int = 900,
                        construction_package: Path | None = None,
-                       deadline_at: float | None = None) -> dict[str, Any]:
+                       deadline_at: float | None = None,
+                       pending_limit: int | None = None, save_workers: int | None = None,
+                       memory_gb: int | None = None) -> dict[str, Any]:
+    """`pending_limit`/`save_workers` (given together) replace the execution template's
+    pipeline; `memory_gb` is the evaluation job's memory request (fast_eval settings)."""
     from spireagent.source import source_identity
     from spireagent.storage.config import open_peer
     from spireagent.workbench.global_evidence_store import publish_detached_p1_model
@@ -238,12 +251,14 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
         producer=producer.to_dict(), retention=RETENTION,
         models={'checkpoint': {'artifact_id': model.artifact_id,
                               'package_directory': binding['package_directory']}})
+    if pending_limit is not None or save_workers is not None:
+        execution['pipeline'] = {'pending_limit': pending_limit, 'save_workers': save_workers}
     save(output / 'input-execution.json', execution)
     plan = prepare(output / 'input-execution.json', output / 'evaluation',
         selections={'checkpoint': 'checkpoint'}, workers=workers, wall_seconds=wall_seconds,
         episode_seconds=episode_seconds, manifest_path=manifest, seed_prefix=seeds,
         runtime_source=Path(__file__).resolve().parents[2], observation_report=True,
-        unknown_policy='continue_cleaned', deadline_at=deadline_at)
+        unknown_policy='continue_cleaned', deadline_at=deadline_at, memory_gb=memory_gb)
     plan['checkpoint_binding'] = {'path': str(output / 'checkpoint-binding.json'),
                                  'sha256': hashed(output / 'checkpoint-binding.json')}
     save(output / 'evaluation/plan.json', plan)
@@ -356,7 +371,8 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         if partition == 'debug' and minutes > 60 or partition == 'general' and minutes > 1440:
             raise ValueError('evaluation_exceeds_CPU_partition_wall_limit')
         command = ['sbatch', '--parsable', '--partition=' + partition, '--nodes=1', '--ntasks=1',
-                   f"--cpus-per-task={plan['workers']}", f"--mem={4 * plan['workers']}G",
+                   f"--cpus-per-task={plan['workers']}",
+                   f"--mem={plan.get('memory_gb', 4 * plan['workers'])}G",
                    f'--time={minutes}', '--no-requeue', '--signal=B:USR1@300',
                    f'--job-name={job_name}', f'--output={logs}/%j.out',
                    f'--error={logs}/%j.err']
@@ -471,8 +487,8 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
             continue
         original = Path(slot['report']['path'])
         if not original.exists() and summary.get('scratch_retained'):
-            relative = original.relative_to(summary['scratch_retained'])
-            original = Path(plan['result_root']) / 'evidence' / relative
+            original = retained_original(Path(plan['result_root']), summary['scratch_retained'],
+                                         original, readback)
         if hashed(original) != slot['report']['sha256']:
             raise ValueError('original_evaluation_report_changed')
         row = json.loads(original.read_bytes())['episodes'][0]
@@ -580,7 +596,7 @@ def fixed_baseline(batches: list[dict[str, Any]], binding: dict[str, Any],
     for batch in batches:
         for key in ('plan', 'result', 'snapshot'):
             read_pinned(batch[key])
-        if read_pinned(batch['snapshot']).get('full_readback') is not True:
+        if not originals_retained(read_pinned(batch['snapshot'])):
             raise ValueError('baseline_full_snapshot_readback_required')
         plan, result, files = read_observation_report(
             Path(batch['result']['path']), Path(batch['plan']['path']),
@@ -640,6 +656,178 @@ def fixed_baseline(batches: list[dict[str, Any]], binding: dict[str, Any],
             'frozen_seeds': expected,
             'excluded': [{'seed': r['seed'], 'status': r['status']} for r in rows if not r['scored']],
             'qualification': 'Original per-row admission only; no failed row is upgraded.'}
+
+
+def peer_held(slot: dict[str, Any], scratch: Path) -> dict[str, Any] | None:
+    """The peer receipts of one normal scored game, or None (its files are then all kept).
+
+    A `trajectory_and_full_peer` game was saved to the peer twice, each read back in
+    full when saved (managed_pipeline): its sealed run directory as global evidence
+    (typed verification) and its trajectory in a shard. Receipts are read by their
+    pinned sha256; any mismatch or read error keeps every file of that game.
+    """
+    if (slot.get('status') != 'finished' or not slot.get('report')
+            or slot.get('preservation_route') != 'trajectory_and_full_peer'):
+        return None
+    attempt = Path(slot['report']['path']).parent
+    try:
+        row = read_pinned(slot['report'])['episodes'][0]
+
+        def receipt(name: str) -> Any:
+            return read_pinned({'path': str(attempt / row[name]['path']),
+                                'sha256': row[name]['sha256']})
+        full, shard = receipt('preservation'), receipt('trajectory_preservation')
+        readback = full['peer_readback']
+        if not (row['status'] == 'finished' and row['run_id'] == slot['run_id']
+                and full['status'] == 'completed' and full['run_id'] == row['run_id']
+                and full['artifact_id'] == row['stored_evidence_id'] == slot['stored_evidence_id']
+                and readback['full_readback'] is True and readback['typed_verification'] == 'pass'
+                and shard['status'] == 'completed' and shard['full_readback'] is True
+                and shard['trajectory_verification'] == 'pass'
+                and shard['run_id'] == row['run_id']
+                and shard['artifact_id'] == row['trajectory_shard_id']
+                == slot['trajectory_shard_id']
+                and shard['episode_sha256'] == row['trajectory']['sha256']
+                and shard['original_content_id'] == readback['content_id']
+                and (attempt / 'runs' / row['run_id']).is_dir()):
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {'attempt': attempt.relative_to(scratch).as_posix(), 'run_id': row['run_id'],
+            'stored_evidence_id': full['artifact_id'], 'content_id': readback['content_id'],
+            'trajectory_shard_id': shard['artifact_id'],
+            'episode_sha256': shard['episode_sha256'], 'trajectory': row['trajectory']['path'],
+            'preservation': row['preservation'],
+            'trajectory_preservation': row['trajectory_preservation'],
+            'full_readback': True, 'typed_verification': 'pass',
+            'trajectory_verification': 'pass'}
+
+
+class _HashingWriter:
+    """The bytes handed to the shared disk, hashed as they are written."""
+
+    def __init__(self, stream: Any) -> None:
+        self.stream, self.digest, self.size = stream, hashlib.sha256(), 0
+
+    def write(self, data: bytes) -> int:
+        self.digest.update(data)
+        self.size += len(data)
+        return int(self.stream.write(data))
+
+    def tell(self) -> int:
+        return int(self.stream.tell())
+
+
+def _durable_replace(temporary: Path, path: Path) -> None:
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def keep_evidence(scratch: Path, root: Path, summary: dict[str, Any],
+                  execution: dict[str, Any]) -> dict[str, Any]:
+    """Keep every original of this evaluation once (replaces the per-file snapshot).
+
+    Not copied again: the run directory and trajectory of each `peer_held` game (in
+    the peer, each with its full readback receipt named here), and each attempt's
+    copy of the evaluated model when it is byte-identical to the model package the
+    plan already keeps. Everything else under the scratch, including every file of
+    any other game (unknown, failed, abnormal), goes into `evidence/evidence.tar`:
+    written once, its sha256 taken while writing and again from the shared disk.
+    The observation files stay plain in `evidence/` (read by name and bound by
+    sha256 in result.json). `tar -xf evidence/evidence.tar -C evidence` restores the
+    old copy minus the peer-held files.
+    """
+    evidence = private_root(root / 'evidence')
+    held = [h for h in (peer_held(slot, scratch) for slot in summary['ledger_report']['slots'])
+            if h is not None]
+    skipped = {scratch / h['attempt'] / 'runs' / h['run_id'] for h in held}
+    skipped |= {scratch / h['attempt'] / h['trajectory'] for h in held}
+    models = {hashed(path) for model in execution['models'].values()
+              if (path := Path(model.get('package_directory') or '/nonexistent')
+                  / 'model.tensor-tree').is_file()}
+    plain = {}
+    for name in REPORT_FILES:
+        if (scratch / name).is_file():
+            data = (scratch / name).read_bytes()
+            temporary = evidence / (name + '.tmp')
+            with temporary.open('wb') as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _durable_replace(temporary, evidence / name)
+            plain[name] = hashlib.sha256(data).hexdigest()
+            if hashed(evidence / name) != plain[name]:
+                raise ValueError('persistent_snapshot_readback_failed')
+    copies = files = 0
+    temporary = evidence / (EVIDENCE_ARCHIVE + '.tmp')
+    with temporary.open('wb') as raw:
+        writer = _HashingWriter(raw)
+        with tarfile.open(fileobj=writer, mode='w', format=tarfile.PAX_FORMAT) as archive:
+            for directory, folders, names in os.walk(scratch):
+                base = Path(directory)
+                for name in folders + names:
+                    if (base / name).is_symlink():
+                        raise ValueError('scratch_symlink_not_supported')
+                folders[:] = sorted(f for f in folders if base / f not in skipped)
+                for name in sorted(names):
+                    path = base / name
+                    if path in skipped or base == scratch and name in REPORT_FILES:
+                        continue
+                    if (name == 'model.tensor-tree' and base.name == 'registration'
+                            and hashed(path) in models):
+                        copies += 1
+                        continue
+                    archive.add(path, arcname=path.relative_to(scratch).as_posix(),
+                                recursive=False)
+                    files += 1
+        raw.flush()
+        os.fsync(raw.fileno())
+    _durable_replace(temporary, evidence / EVIDENCE_ARCHIVE)
+    written = writer.digest.hexdigest()
+    if hashed(evidence / EVIDENCE_ARCHIVE) != written:
+        raise ValueError('persistent_snapshot_readback_failed')
+    return {'schema': EVIDENCE_SCHEMA,
+            'archive': {'path': EVIDENCE_ARCHIVE, 'sha256': written, 'bytes': writer.size,
+                        'files': files},
+            'plain': plain, 'peer_held': held,
+            'model_copies': {'package_sha256': sorted(models), 'not_copied': copies},
+            'bytes': writer.size + sum((evidence / name).stat().st_size for name in plain),
+            'full_readback': True}
+
+
+def originals_retained(receipt: dict[str, Any]) -> bool:
+    """Every original of a finished evaluation is kept and was read back in full.
+
+    v1 (`batch.snapshot`): every scratch file copied and compared. v2
+    (`keep_evidence`): the tar and observation files read back from the shared disk,
+    and each game left in the peer named with its full typed peer and shard readback.
+    """
+    if receipt.get('full_readback') is not True:
+        return False
+    if receipt.get('schema') != EVIDENCE_SCHEMA:
+        return True
+    return all(h.get('full_readback') is True and h.get('typed_verification') == 'pass'
+               and h.get('trajectory_verification') == 'pass' for h in receipt['peer_held'])
+
+
+def retained_original(result_root: Path, scratch_retained: str, path: Path,
+                      workspace: Path) -> Path:
+    """One attempt file after its scratch is gone: the v1 copy, or extracted from the v2 tar
+    (its whole attempt directory, into `workspace`)."""
+    relative = path.relative_to(scratch_retained)
+    copied = result_root / 'evidence' / relative
+    archive = result_root / 'evidence' / EVIDENCE_ARCHIVE
+    if copied.exists() or not archive.is_file():
+        return copied
+    prefix = relative.parent.as_posix() + '/'
+    with tarfile.open(archive) as stream:
+        stream.extractall(workspace, members=[m for m in stream if m.name.startswith(prefix)],
+                          filter='data')
+    return workspace / relative
 
 
 def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -755,7 +943,7 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
                 phases['observation_report'] = time.monotonic() - phase_began
                 save(scratch / 'result.json', summary)
             phase_began = time.monotonic()
-            receipt = snapshot(scratch, root / 'evidence')
+            receipt = keep_evidence(scratch, root, summary, read_pinned(plan['execution']))
             phases['snapshot'] = time.monotonic() - phase_began
             save(root / 'snapshot.json', receipt)
             summary['timing'].update(process_finished_at=time.time(),
@@ -801,6 +989,11 @@ def main():
     cp_parser.add_argument('--episode-seconds', type=int, default=900)
     cp_parser.add_argument('--deadline-at', type=float)
     cp_parser.add_argument('--construction-package', type=Path)
+    cp_parser.add_argument('--pending-limit', type=int,
+                           help='with --save-workers: the save pipeline of this evaluation')
+    cp_parser.add_argument('--save-workers', type=int)
+    cp_parser.add_argument('--memory-gb', type=int,
+                           help='job memory request (default 4 GB per worker)')
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--execution', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
@@ -859,7 +1052,9 @@ def main():
         result = prepare_checkpoint(args.learner_config, args.checkpoint, args.execution,
             args.manifest, args.output.resolve(), workers=args.workers, seeds=args.seeds,
             wall_seconds=args.wall_seconds, episode_seconds=args.episode_seconds,
-            construction_package=args.construction_package, deadline_at=args.deadline_at)
+            construction_package=args.construction_package, deadline_at=args.deadline_at,
+            pending_limit=args.pending_limit, save_workers=args.save_workers,
+            memory_gb=args.memory_gb)
     elif args.command == 'prepare':
         pairs = [value.split('=', 1) for value in args.selection]
         if any(len(pair) != 2 or not all(pair) for pair in pairs):
