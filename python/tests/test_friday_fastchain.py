@@ -781,7 +781,10 @@ def test_profile_relations_are_refused_at_load():
     with pytest.raises(run_profile.ProfileError, match='summing to 1'):
         run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
     with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):
-        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true'])
+        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true', 'eval_a10_suite=""'])
+    a10 = run_profile.values(run_profile.load_profile(PROFILE))
+    assert a10['eval_a10_enabled'] is True
+    assert a10['eval_a10_suite'] == 'managed-rl5-learning-curve-50-20261114-Defect-a10'
     assert run_profile.values(run_profile.load_profile(PROFILE))['ascension_mix'] == {'0': 1.0}
 
 

@@ -36,9 +36,10 @@ def fast_eval():
 SETTINGS = {'learner_config': '/w/learner.json', 'peer': {'kind': 'local', 'directory': '/p'},
             'run': 'run-1', 'training_generation': None, 'execution': '/w/exec.json',
             'manifest': '/w/manifest.json', 'runtime_source': '/src/repo', 'workers': 4,
-            'seeds': 100, 'wall_seconds': 10800, 'episode_seconds': 1800, 'interval': 7200,
-            'max_live': 2, 'partition': 'general', 'prepare_partition': 'debug',
-            'exclude_nodes': [], 'deadline_at': None}
+            'seeds': 100, 'pending_limit': 16, 'save_workers': 4, 'memory_gb': 112,
+            'expected_steps': 1200, 'wall_seconds': 10800, 'episode_seconds': 1800,
+            'interval': 7200, 'max_live': 2, 'partition': 'general',
+            'prepare_partition': 'debug', 'exclude_nodes': [], 'deadline_at': None}
 
 
 class World:
@@ -100,6 +101,7 @@ def test_newest_cp_is_prepared_then_its_plan_submitted_every_interval(fast_eval,
     assert 'prepare-checkpoint' in script and '--checkpoint cp-b' in script
     assert '--seeds 100' in script and '--wall-seconds 10800' in script
     assert '--episode-seconds 1800' in script and '--deadline-at' not in script
+    assert '--pending-limit 16 --save-workers 4 --memory-gb 112' in script
     assert (tmp_path / 'evaluation-0001/submission-intent.json').is_file()
     runner.tick()  # still preparing: nothing new
     assert len(world.commands) == 1 and not world.submits
@@ -121,6 +123,58 @@ def test_newest_cp_is_prepared_then_its_plan_submitted_every_interval(fast_eval,
     assert loop(fast_eval, world, tmp_path).state == saved
     with pytest.raises(ValueError, match='settings_changed'):
         loop(fast_eval, world, tmp_path, seeds=50)
+
+
+def args_for(tmp_path, **overrides):
+    learner, execution = tmp_path / 'learner.json', tmp_path / 'execution.json'
+    learner.write_text(json.dumps({'peer': {'kind': 'local', 'directory': '/p'}, 'run': 'r'}))
+    execution.write_text(json.dumps({'storage_mode': 'shared_local'}))
+    values = dict(learner_config=learner, execution=execution, manifest=tmp_path / 'm.json',
+                  suite=None, training_generation=None, interval=7200, workers=16, seeds=100,
+                  pending_limit=16, save_workers=4, memory_gb=None, expected_steps=1200,
+                  wall_seconds=None, episode_seconds=1800, max_live=2, partition='general',
+                  prepare_partition='debug', exclude_node=None, deadline_at=None,
+                  checkpoint=None, baseline_plan=None, no_baseline=True)
+    return __import__('argparse').Namespace(**{**values, **overrides})
+
+
+def test_job_size_and_wall_are_settings_from_games_and_expected_steps(fast_eval, tmp_path):
+    """Lead 11-14 (a)(e): 16 live games, 4 save threads, 7 GB each; wall from games x steps."""
+    settings = fast_eval.settings_from(args_for(tmp_path))
+    assert (settings['pending_limit'], settings['save_workers']) == (16, 4)
+    assert settings['memory_gb'] == 112 and settings['expected_steps'] == 1200
+    assert settings['wall_seconds'] == 100 * 1200 * 0.9 / 16 + 1800 + 900 == 9450
+    a10 = fast_eval.settings_from(args_for(tmp_path, seeds=50))
+    assert a10['wall_seconds'] == 6075
+    longer = fast_eval.settings_from(args_for(tmp_path, expected_steps=2400))
+    assert longer['wall_seconds'] == 16200 > settings['wall_seconds']
+    assert fast_eval.planned_wall_seconds(100, 5000, 16, 1800) == fast_eval.MAX_WALL_SECONDS
+    given = fast_eval.settings_from(args_for(tmp_path, wall_seconds=7000, memory_gb=90,
+                                             pending_limit=8))
+    assert given['wall_seconds'] == 7000 and given['memory_gb'] == 90
+    assert fast_eval.settings_from(args_for(tmp_path, pending_limit=8))['memory_gb'] == 56
+
+
+def test_registered_A0_baseline_is_the_default_and_refused_when_changed(fast_eval, tmp_path):
+    import getpass
+
+    plan = tmp_path / getpass.getuser() / fast_eval.A0_BASELINE['plan']
+    plan.parent.mkdir(parents=True)
+    plan.write_text('{"plan": "a46afd12 round"}')
+    with (patch.object(fast_eval, 'BASELINE_ROOT', tmp_path),
+          patch.dict(fast_eval.A0_BASELINE, sha256=fast_eval.hashed(plan))):
+        default = fast_eval.settings_from(args_for(tmp_path, no_baseline=False))
+        assert default['baseline_plan'] == str(plan)
+        a10 = fast_eval.settings_from(args_for(
+            tmp_path, no_baseline=False, suite='managed-rl5-learning-curve-50-20261114-Defect-a10'))
+        assert a10['baseline_plan'] is None
+        given = fast_eval.settings_from(args_for(tmp_path, no_baseline=False,
+                                                 baseline_plan=tmp_path / 'other.json'))
+        assert given['baseline_plan'] == str((tmp_path / 'other.json').resolve())
+        assert fast_eval.settings_from(args_for(tmp_path))['baseline_plan'] is None
+        plan.write_text('{"plan": "changed"}')
+        with pytest.raises(ValueError, match='registered_A0_baseline_plan_missing_or_changed'):
+            fast_eval.settings_from(args_for(tmp_path, no_baseline=False))
 
 
 def test_busy_failed_and_deadline_skip_without_stopping(fast_eval, tmp_path):
