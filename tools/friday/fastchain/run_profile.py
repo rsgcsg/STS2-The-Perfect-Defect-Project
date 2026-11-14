@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shlex
 import sys
 import tomllib
@@ -115,6 +116,64 @@ def ascension_plan(mix: dict[str, float], drivers: int) -> list[int]:
     return [level for level in sorted(counts) for _ in range(counts[level])]
 
 
+ARM_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")  # rl-inference-4 sampling.arm_id
+
+
+def _class_policy(value: Any) -> str | None:
+    """rl-inference-4 class policy: temperature in [1, 3], uniform_mix in [0, 0.1]."""
+    if not isinstance(value, dict) or set(value) != {"temperature", "uniform_mix"}:
+        return "exactly {temperature, uniform_mix}"
+    t, mix = value["temperature"], value["uniform_mix"]
+    if type(t) not in (int, float) or not 1 <= t <= 3:
+        return f"temperature in [1, 3] (got {t!r})"
+    if type(mix) not in (int, float) or not 0 <= mix <= 0.1:
+        return f"uniform_mix in [0, 0.1] (got {mix!r})"
+    return None
+
+
+def _exploration_ladder(value: Any) -> str | None:
+    """{arm: {share, combat: {temperature, uniform_mix}, noncombat: {...}}}, shares sum 1."""
+    if not isinstance(value, dict) or not value:
+        return "table arm -> {share, combat, noncombat}"
+    for arm, spec in value.items():
+        if not ARM_ID.match(arm):
+            return f"arm names as rl-inference-4 arm_id (bad arm {arm!r})"
+        if not isinstance(spec, dict) or set(spec) != {"share", "combat", "noncombat"}:
+            return f"arm {arm}: exactly {{share, combat, noncombat}}"
+        if type(spec["share"]) not in (int, float) or not 0 <= spec["share"] <= 1:
+            return f"arm {arm}: share in [0, 1] (got {spec['share']!r})"
+        for name in ("combat", "noncombat"):
+            error = _class_policy(spec[name])
+            if error:
+                return f"arm {arm}.{name}: {error}"
+    total = sum(spec["share"] for spec in value.values())
+    if abs(total - 1) > 1e-9:
+        return f"arm shares summing to 1 (sum {total})"
+    return None
+
+
+def exploration_plan(ladder: dict[str, Any], first: int, count: int) -> list[str]:
+    """Arms of the env drivers numbered first .. first+count-1 across the run.
+
+    Smooth weighted round robin over the run-wide driver number (ties: arm name), so
+    every prefix of drivers holds each arm's share to within one driver: a node that
+    never joins does not skew the ladder. One arm per driver because the fast env takes
+    one `inference.sampling` per process (Ape-X style per-actor arms).
+    """
+    arms = sorted(ladder)
+    weight = {arm: round(ladder[arm]["share"] * 10**9) for arm in arms}  # exact integers
+    total = sum(weight.values())
+    current = dict.fromkeys(arms, 0)
+    out = []
+    for _ in range(first + count):
+        for arm in arms:
+            current[arm] += weight[arm]
+        pick = max(arms, key=lambda arm: (current[arm], -arms.index(arm)))
+        current[pick] -= total
+        out.append(pick)
+    return out[first:]
+
+
 SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
 
 
@@ -130,6 +189,9 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                    f"{SEGMENT_FORMAT_3!r} (#530: format 2 cannot carry the level)")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
+    if values["replay_k"] > values["env_slots"]:
+        out.append(f"replay_k {values['replay_k']} must not exceed env_slots "
+                   f"{values['env_slots']} (the K games of one start share one driver, I6)")
     return out
 
 
@@ -296,8 +358,10 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "r7_max_games": _int(0),
     "r7_expected_games_per_node_hour": _int(1),
     "mu_archive_gb": _num(1, 4096),
-    # ascension (#530 S-1): level -> weight, summing to 1
-    "ascension_mix": _ascension_mix,
+    # environment-side recipe (I4-I6, I8): changeable at a generation boundary
+    "ascension_mix": _ascension_mix,  # #530 S-1: level -> weight, summing to 1
+    "exploration_ladder": _exploration_ladder,
+    "replay_k": _int(1, 16),
     # environment nodes
     "env_node_cores": _int(1, 512),
     "env_node_mem_g": _int(1),
