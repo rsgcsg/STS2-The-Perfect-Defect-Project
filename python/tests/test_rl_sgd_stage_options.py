@@ -294,6 +294,33 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
     for event in two_events[frozen_at:]:
         for full in event["sgd_timing"]["probe"]["gc_full"]:
             assert full["objects"] < 10_000 and full["seconds"] >= 0, full
+    for event in firsts:  # rank 0's boundary, every section in order
+        timing = event["sgd_timing"]
+        assert list(timing["boundary_sections"]) == [
+            "last_step", "replica_check", "snapshot_capture", "snapshot_write",
+            "snapshot_send", "gc", "idle"]
+        assert sum(timing["boundary_sections"].values()) == pytest.approx(
+            timing["boundary_seconds"], abs=1e-9)
+
+
+def test_dataset_boundary_sections_sum_to_the_boundary(tmp_path, monkeypatch):
+    """Always on: contiguous stepping-thread sections, wall and thread CPU, from a
+    dataset's last step end to the next dataset's start (its first step reports)."""
+    owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=3)
+    try:
+        events = train(owner, 3)
+    finally:
+        owner.close()
+    firsts = [e["sgd_timing"] for e in events if e["sgd_timing"]["boundary_seconds"] is not None]
+    assert len(firsts) >= 2
+    for timing in firsts:
+        wall, cpu = timing["boundary_sections"], timing["boundary_sections_cpu"]
+        assert list(wall) == list(cpu) == [
+            "last_step", "snapshot_capture", "snapshot_write", "snapshot_send", "idle"]
+        assert min(wall.values()) >= 0 and min(cpu.values()) >= 0
+        assert sum(wall.values()) == pytest.approx(timing["boundary_seconds"], abs=1e-9)
+    assert not any("boundary_sections" in e["sgd_timing"] for e in events
+                   if e["sgd_timing"]["boundary_seconds"] is None)
 
 
 @pytest.mark.parametrize("split", [False, True])

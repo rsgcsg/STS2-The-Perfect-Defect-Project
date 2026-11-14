@@ -35,6 +35,7 @@ import time
 from collections import OrderedDict, deque
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -1344,7 +1345,10 @@ class _SgdWorker:
             young = gc.get_threshold()[:2]
             gc.set_threshold(*young, GC_AUTOMATIC_FULL_OFF)
         self.idle_since = time.perf_counter()
-        self.last_step_end: float | None = None
+        # Dataset boundary clock: (section, perf_counter, thread CPU) marks from
+        # the last step's end to the next dataset's start, each closing one
+        # contiguous section; reported with that dataset's first step.
+        self.boundary_marks: list[tuple[str, float, float]] = []
         # Default off. Bounded by `limit`; never part of CP, uses or the step fence.
         self.offline_dump = init.get("offline_dump")
         self.offline_dumps = 0
@@ -1511,11 +1515,13 @@ class _SgdWorker:
                 self.run_dataset(message, next_message)
             elif kind == "checkpoint":
                 if self.rank == 0:  # followers hold the same theta; rank 0 answers
+                    self.mark("idle")
                     self.capture_state(message)
                     if self.staging_config.gc_freeze:
                         # Its safetensors encoding leaves the CPU copies in a
                         # cycle; automatic full collections are off.
                         gc.collect()
+                    self.mark("checkpoint")
             else:
                 raise _ChildViolation("sgd_unexpected_message_" + str(kind))
 
@@ -1701,9 +1707,18 @@ class _SgdWorker:
             _, (plan, device_batch) = self.staged.popitem(last=False)
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
+        self.mark("idle")
         waited = time.perf_counter() - self.idle_since
-        boundary = (time.perf_counter() - self.last_step_end
-                    if self.last_step_end is not None else None)
+        boundary: float | None = None
+        sections: dict[str, dict[str, float]] | None = None
+        if self.boundary_marks:  # the sections sum to `boundary_seconds`
+            marks, self.boundary_marks = self.boundary_marks, []
+            boundary = marks[-1][1] - marks[0][1]
+            sections = {"boundary_sections": {}, "boundary_sections_cpu": {}}
+            for (_, wall, cpu), (name, wall_end, cpu_end) in pairwise(marks):
+                for key, seconds in (("boundary_sections", wall_end - wall),
+                                     ("boundary_sections_cpu", cpu_end - cpu)):
+                    sections[key][name] = sections[key].get(name, 0.0) + seconds
         cuda = self.device.type == "cuda"
         probe = _StepProbe(torch, cuda) if self.staging_config.step_probe else None
         while True:
@@ -1764,7 +1779,7 @@ class _SgdWorker:
                 events[1].synchronize()
                 cuda_seconds = events[0].elapsed_time(events[1]) / 1000
             end = time.perf_counter()
-            self.last_step_end = end
+            self.boundary_marks = [("step_end", end, time.thread_time())]
             probed = probe.end() if probe is not None else None
             groups = self.optimizer.param_groups
             self.send("step", dataset=dataset, minibatch=minibatch, epoch=epoch,
@@ -1778,6 +1793,8 @@ class _SgdWorker:
                               else 0.0,
                               "boundary_seconds": boundary if minibatch == epoch == 0
                               else None,
+                              **(sections if minibatch == epoch == 0
+                                 and sections is not None else {}),
                               **({"replica_check_seconds": self.replica_seconds}
                                  if minibatch == epoch == 0
                                  and self.replica_seconds is not None else {}),
@@ -1797,6 +1814,7 @@ class _SgdWorker:
             probe.close()
         del device_batch, batch
         self.datasets += 1
+        self.mark("last_step")  # its probe, report and send; the dataset teardown
         if self.parallel is not None:
             from .data_parallel import replica_check
 
@@ -1805,11 +1823,18 @@ class _SgdWorker:
             check_began = time.perf_counter()
             replica_check(self.model)
             self.replica_seconds = time.perf_counter() - check_began
+            self.mark("replica_check")
         if self.updates > start_updates and self.rank == 0:
             self.snapshot()
         if self.staging_config.gc_freeze:
             self.collect_boundary()
+            self.mark("gc")
         self.idle_since = time.perf_counter()
+
+    def mark(self, section: str) -> None:
+        """Close one dataset-boundary section now (no-op outside a boundary)."""
+        if self.boundary_marks:
+            self.boundary_marks.append((section, time.perf_counter(), time.thread_time()))
 
     def collect_boundary(self) -> None:
         """`gc_freeze`, on the stepping thread between datasets, after the snapshot
@@ -1926,10 +1951,13 @@ class _SgdWorker:
         began = time.perf_counter()
         weights = snapshot_weights(self.model.state_dict())
         captured = time.perf_counter()
+        self.mark("snapshot_capture")
         file = write_tree(self.root / f"mu-{self.updates:09d}.tree",
                           {"schema": WEIGHTS_SCHEMA, "updates": self.updates, "weights": weights})
+        self.mark("snapshot_write")
         self.send("snapshot", updates=self.updates, datasets=self.datasets, file=file,
                   capture_seconds=captured - began, write_seconds=time.perf_counter() - captured)
+        self.mark("snapshot_send")
 
     def capture_state(self, request: dict[str, Any]) -> None:
         from .checkpoint_state import cpu_copy, snapshot_weights
