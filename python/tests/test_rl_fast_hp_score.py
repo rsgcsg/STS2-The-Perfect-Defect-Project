@@ -35,9 +35,10 @@ from stpd.rl.loss import HP_ADVANTAGE_SCOPES, LossConfig, batched_segment_loss
 from stpd.rl.prepared_batch import BatchMember, PrepareRequest
 
 INSTANCE = "node-a.000000000001"
-# `two_segments(FORMAT_3)` sealed on the base before W2 (568da206), same game, same ids.
-GOLDEN_FORMAT_3_BOOTSTRAP = "417a85b68d5572179db468f99a69d2bfba93139e32eabd1998e612af292de8cc"
-GOLDEN_FORMAT_3_TERMINAL = "10639e99bc454f3d41a52ee50de8acf2083e9082a218db16003c63569e42a5cc"
+# `two_segments(FORMAT_3, pinned identity)` sealed on the base before W2 (568da206):
+# same game, same ids.
+GOLDEN_FORMAT_3_BOOTSTRAP = "ce5fdd65c9052c3f9093850267201faa4d367efdc0045d62807f262627f1e9bd"
+GOLDEN_FORMAT_3_TERMINAL = "6392aa3fe3c7c765c6e529628368c1127f4f05412806625e8c6e286e86ed3fe9"
 
 
 def facts(hp: int, max_hp: int = 80) -> dict[str, Any]:
@@ -88,14 +89,15 @@ class HpGame:
     """Real assembler, real rows-v2 bytes; `hp` of a step = the public hp it led to."""
 
     def __init__(self, segment_format: str = FORMAT_4, *, compiler: Any = COMPILER,
-                 handoff: Any = None) -> None:
+                 handoff: Any = None, compiler_identity: Any = None) -> None:
         self.sealed: list[Any] = []
         self.closed: list[Any] = []
         frame = compiler.compile(public_state())
         self.raw, self.width = encode_row(frame), len(frame.choices)
         self.hp_score = segment_format == FORMAT_4
         self.assembler = FastSegmentAssembler(
-            assembler_id="node-a", compiler_identity=compiler.identity, emit=self.sealed.append,
+            assembler_id="node-a", compiler_identity=compiler_identity or compiler.identity,
+            emit=self.sealed.append,
             terminal_labeler=lambda _summary: {
                 "class": 3, "reward": float(class_reward_values()[3])},
             on_closed=self.closed.append, segment_format=segment_format, verify_every=1)
@@ -399,8 +401,8 @@ def full_game(g: HpGame, game: str = "g") -> None:
     g.close(game, "terminal")
 
 
-def two_segments(segment_format: str) -> list[Any]:
-    g = HpGame(segment_format)
+def two_segments(segment_format: str, compiler_identity: Any = None) -> list[Any]:
+    g = HpGame(segment_format, compiler_identity=compiler_identity)
     full_game(g)
     assert [s.kind for s in g.sealed] == ["bootstrap", "terminal"]
     return g.sealed
@@ -408,7 +410,11 @@ def two_segments(segment_format: str) -> list[Any]:
 
 def test_format_3_with_c_hp_off_seals_the_same_bytes_as_before_the_hp_score():
     # Format 3 (the launcher default) with c_hp off: not one sealed byte changed by W2.
-    assert [hashlib.sha256(s.data).hexdigest() for s in two_segments(FORMAT_3)] == [
+    # The header's compiler_sha256 binds the installed torch/tokenizers/safetensors
+    # versions (torch is "2.13.0+cpu" on Linux), so the golden pins that one field.
+    identity = {**COMPILER.identity, "compiler_sha256": "0" * 64}
+    assert [hashlib.sha256(s.data).hexdigest()
+            for s in two_segments(FORMAT_3, identity)] == [
         GOLDEN_FORMAT_3_BOOTSTRAP, GOLDEN_FORMAT_3_TERMINAL]
 
 
