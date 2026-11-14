@@ -1311,7 +1311,9 @@ class SegmentLearner:
         # Main-thread time blocked on `staged` when a dataset is taken, and how
         # many datasets were already staged ahead at that point (SGD process only).
         self.timing.update(sgd_stage_wait_seconds=0.0, sgd_staged_ahead_batches=0.0,
-                           sgd_prestarted_batches=0.0)
+                           sgd_prestarted_batches=0.0, sgd_stage_pin_seconds=0.0,
+                           sgd_stage_h2d_seconds=0.0, sgd_stage_verify_seconds=0.0,
+                           sgd_stage_verify_wait_seconds=0.0)
         self.sgd_rates = (self.optimizer.param_groups[0]["lr"],
                           self.optimizer.param_groups[1]["lr"])
         self.sgd_memory: dict[str, Any] | None = None
@@ -1331,7 +1333,8 @@ class SegmentLearner:
             **({"data_parallel": dict(options.data_parallel)}
                if options.data_parallel is not None else {}),
             **({"compile": dict(options.compile)} if options.compile is not None else {}),
-            **({"stage_thread": True} if options.stage_thread else {})})
+            **({"stage_thread": True} if options.stage_thread else {}),
+            "stage_options": options.stage_init()})
         Path(state["path"]).unlink()
         if (ready["weights_sha256"] != weights_digest(weights)
                 or ready["updates"] != self.updates or ready["datasets"] != self.datasets):
@@ -1408,6 +1411,12 @@ class SegmentLearner:
                 self.handoff_releases.append(self.handoff_releaser.submit(release, handoff))
         self.timing["input_transfer_host_seconds"] += message["host_seconds"]
         self.timing["input_transfer_copies"] += message["copies"]
+        # Rank 0's split of `host_seconds`: map+pin, H2D issue + tree map, the
+        # (overlapped) hash, and the hash wait left after the copy finished.
+        self.timing["sgd_stage_pin_seconds"] += message["pin_seconds"]
+        self.timing["sgd_stage_h2d_seconds"] += message["stage_seconds"]
+        self.timing["sgd_stage_verify_seconds"] += message["verify_seconds"]
+        self.timing["sgd_stage_verify_wait_seconds"] += message["verify_wait_seconds"]
 
     def _check_releases(self, *, wait: bool = False) -> None:
         """Main thread: drop finished hand-off releases, raising the first failure

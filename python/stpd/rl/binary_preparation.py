@@ -233,10 +233,28 @@ def prepared_digest(view: memoryview, threads: int = 1) -> str:
     batch on several threads (hashlib releases the GIL) instead of one ~0.4 s
     serial pass. The writer and the verifier both call this function.
     """
+    parts = prepared_chunk_digests(view, range(prepared_chunk_count(len(view))), threads)
+    return prepared_digest_combine(len(view), [parts[i] for i in range(len(parts))])
+
+
+def prepared_chunk_count(length: int) -> int:
+    return -(-length // PREPARED_DIGEST_CHUNK)
+
+
+def prepared_chunk_digests(view: memoryview, indices: Any,
+                           threads: int = 1) -> dict[int, bytes]:
+    """sha256 of the chosen 16 MiB chunks of `view` (index -> 32 bytes).
+
+    Data-parallel SGD ranks may each hash a disjoint subset; rank 0 then combines
+    every chunk with `prepared_digest_combine`, which yields `prepared_digest`.
+    """
     if view.ndim != 1 or view.itemsize != 1:
         raise ValueError("prepared_digest_requires_a_flat_byte_view")
-    chunks = [view[start:start + PREPARED_DIGEST_CHUNK]
-              for start in range(0, len(view), PREPARED_DIGEST_CHUNK)]
+    count = prepared_chunk_count(len(view))
+    chosen = sorted(set(indices))
+    if any(type(i) is not int or not 0 <= i < count for i in chosen):
+        raise ValueError("prepared_digest_chunk_index_out_of_range")
+    chunks = [view[i * PREPARED_DIGEST_CHUNK:(i + 1) * PREPARED_DIGEST_CHUNK] for i in chosen]
     try:
         if threads > 1 and len(chunks) > 1:
             from concurrent.futures import ThreadPoolExecutor
@@ -249,7 +267,15 @@ def prepared_digest(view: memoryview, threads: int = 1) -> str:
     finally:
         for chunk in chunks:
             chunk.release()
-    outer = hashlib.sha256(PREPARED_DIGEST.encode() + len(view).to_bytes(8, "big"))
+    return dict(zip(chosen, parts, strict=True))
+
+
+def prepared_digest_combine(length: int, parts: list[bytes]) -> str:
+    """`prepared_digest` from every chunk's sha256, in chunk order."""
+    if len(parts) != prepared_chunk_count(length) or any(
+            type(part) is not bytes or len(part) != 32 for part in parts):
+        raise ValueError("prepared_digest_chunks_incomplete")
+    outer = hashlib.sha256(PREPARED_DIGEST.encode() + length.to_bytes(8, "big"))
     for part in parts:
         outer.update(part)
     return outer.hexdigest()

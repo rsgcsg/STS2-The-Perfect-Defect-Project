@@ -294,7 +294,7 @@ def test_a_raising_verify_thread_fails_the_stage_and_yields_no_staged(tmp_path, 
     from types import SimpleNamespace
 
     from stpd.rl import binary_preparation
-    from stpd.rl.sgd_process import _SgdWorker
+    from stpd.rl.sgd_process import _SgdWorker, _StageConfig
 
     owner, _, _ = terminal_owner(tmp_path, monkeypatch, episodes=1, dataplane=PARALLEL)
     try:
@@ -305,7 +305,8 @@ def test_a_raising_verify_thread_fails_the_stage_and_yields_no_staged(tmp_path, 
                 "used_bytes": handoff.used_bytes, "sha256": handoff.sha256,
                 "minibatch_count": handoff.minibatch_count}
         worker = SimpleNamespace(device=torch.device("cpu"), rank=0, shard=None,
-                                 stage_executor=None)
+                                 stage_executor=None, parallel=None,
+                                 staging_config=_StageConfig())
         worker._staged_fields = _SgdWorker._staged_fields.__get__(worker)
         _, fields = _SgdWorker._stage_work(worker, plan)  # control: verifies
         assert fields["verify_seconds"] > 0

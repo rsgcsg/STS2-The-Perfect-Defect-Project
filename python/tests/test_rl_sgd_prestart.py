@@ -138,7 +138,9 @@ def assert_same(left, right, *, exact=True):
         if one is None:
             assert two is None
             continue
-        assert one.counters == two.counters
+        # `mu_version` counts finished async publications: load-dependent in
+        # either mode (see `progress`), not part of the learning.
+        assert dc.replace(one.counters, mu_version=0) == dc.replace(two.counters, mu_version=0)
         for part in ("weights", "optimizer", "ema"):
             (assert_tree if exact else close_tree)(getattr(one, part), getattr(two, part))
     assert len(left["events"]) == len(right["events"])
