@@ -70,10 +70,16 @@ export interface FastEnvConfig {
 /** `save` = the Host `save_map` result object, passed to the Host `load_map` unchanged (the Host verifies it). */
 export type HostSave = Record<string, unknown> & { sha256: string; act: number; floor: number };
 export type GameStart = { kind: "new_run" } | { kind: "from_save"; save: HostSave };
+/** Map-boundary save points of one new_run game (save tickets; absent or null = none, today's game). At the
+ * first settled `map_navigation` state of each listed floor the env asks the Host for a map save into
+ * `directory` (absolute, existing; the Host never overwrites a file). One attempt per floor, never retried. */
+export interface SavePoints { directory: string; floors: number[] }
+export const MAX_SAVE_FLOORS = 64;
 
 export type FastEnvCommand =
   | { cmd: "open"; command_id: string; slot: number; game_ref: string; seed: string;
-      initial_progress: Record<string, unknown> | null; start: GameStart; r7: boolean; retain_originals: boolean }
+      initial_progress: Record<string, unknown> | null; start: GameStart; r7: boolean; retain_originals: boolean;
+      save_points: SavePoints | null }
   /** game_instance_id (optional): the game this close is for; a close for any other game is ignored and counted. */
   | { cmd: "close_slot"; command_id: string; slot: number; game_instance_id: string | null }
   | { cmd: "stop"; command_id: string }
@@ -218,7 +224,8 @@ export function parseFastEnvCommand(value: unknown): FastEnvCommand {
   const commandId = str(v.command_id, "command.command_id", ID);
   switch (v.cmd) {
     case "open": {
-      obj(v, "open", ["schema", "cmd", "command_id", "slot", "game_ref", "seed", "initial_progress", "start", "r7", "retain_originals"]);
+      obj(v, "open", ["schema", "cmd", "command_id", "slot", "game_ref", "seed", "initial_progress", "start", "r7", "retain_originals",
+        "save_points"]);
       const start = obj(v.start, "open.start");
       let parsedStart: GameStart;
       if (start.kind === "new_run" && Object.keys(start).length === 1) parsedStart = { kind: "new_run" };
@@ -229,11 +236,25 @@ export function parseFastEnvCommand(value: unknown): FastEnvCommand {
         parsedStart = { kind: "from_save", save: save as HostSave };
       }
       else throw new FastEnvContractError("open.start");
+      let savePoints: SavePoints | null = null;
+      if (v.save_points !== null && v.save_points !== undefined) {
+        // Saves come from new runs only: a loaded game's lineage is one load deep (no chained saves).
+        if (parsedStart.kind !== "new_run") throw new FastEnvContractError("open.save_points");
+        const points = obj(v.save_points, "open.save_points", ["directory", "floors"]);
+        const directory = str(points.directory, "open.save_points.directory");
+        if (!directory.startsWith("/")) throw new FastEnvContractError("open.save_points.directory");
+        if (!Array.isArray(points.floors) || points.floors.length === 0 || points.floors.length > MAX_SAVE_FLOORS)
+          throw new FastEnvContractError("open.save_points.floors");
+        const floors = points.floors.map((floor, index) => int(floor, `open.save_points.floors.${index}`, 0, 1000));
+        if (new Set(floors).size !== floors.length) throw new FastEnvContractError("open.save_points.floors");
+        savePoints = { directory, floors };
+      }
       return { cmd: "open", command_id: commandId, slot: int(v.slot, "open.slot", 0, MAX_SLOTS - 1),
         game_ref: str(v.game_ref, "open.game_ref", ID), seed: str(v.seed, "open.seed"),
         initial_progress: v.initial_progress == null ? null : obj(v.initial_progress, "open.initial_progress"),
         start: parsedStart, r7: v.r7 === undefined ? false : bool(v.r7, "open.r7"),
-        retain_originals: v.retain_originals === undefined ? false : bool(v.retain_originals, "open.retain_originals") };
+        retain_originals: v.retain_originals === undefined ? false : bool(v.retain_originals, "open.retain_originals"),
+        save_points: savePoints };
     }
     case "close_slot":
       obj(v, "close_slot", ["schema", "cmd", "command_id", "slot", "game_instance_id"]);

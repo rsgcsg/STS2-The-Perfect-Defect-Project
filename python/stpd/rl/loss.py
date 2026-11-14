@@ -435,6 +435,9 @@ class RlSample:
     behavior_probabilities: list[float] | None = None
 
 
+HP_ADVANTAGE_SCOPES = ("combat_ticket", "all_combats")
+
+
 @dataclass(frozen=True)
 class LossConfig:
     clip: float = 0.2
@@ -449,17 +452,30 @@ class LossConfig:
     policy_coef: float = 1.0
     terminal_coef: float = 0.1
     hp_coef: float = 0.1
+    # c_hp: weight of the per-combat HP score A_hp (format-4 segments), added to the
+    # outcome advantage before the one normalisation (fast_source.decode_fast_packet).
+    # Units: A_hp (the segment's hp_adv) is in HP points (tens), A_outcome in 0..1
+    # reward units, so c_hp is expected around 0.001-0.01. 0 = off; frozen for a run
+    # (resume-locked) like every loss key.
+    hp_advantage_coef: float = 0.0
+    # Which rows get c_hp * A_hp: "combat_ticket" (default, owner: the HP score is for
+    # single-combat practice) = only segments whose ticket.end == "combat";
+    # "all_combats" (an experiment arm) = every scored combat row, full games included.
+    # Frozen for a run like c_hp.
+    hp_advantage_scope: str = "combat_ticket"
 
     def __post_init__(self) -> None:
         if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef, self.policy_coef,
-                                 self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef))
+                                 self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef,
+                                 self.hp_advantage_coef))
                 or type(self.clip) not in (int, float) or not 0 < self.clip <= 1
                 or type(self.max_grad_norm) not in (int, float)
                 or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
                 or type(self.rho_max) not in (int, float)
-                or not math.isfinite(self.rho_max) or self.rho_max <= 0):
+                or not math.isfinite(self.rho_max) or self.rho_max <= 0
+                or self.hp_advantage_scope not in HP_ADVANTAGE_SCOPES):
             raise BoundaryError("rl_loss", "invalid_PPO_configuration")
 
 

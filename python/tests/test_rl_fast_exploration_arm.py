@@ -64,7 +64,8 @@ def test_high_arm_applied_and_behavior_q_survive_service_assembler_and_segment()
         logits[step] = [0.1 * (step % 7), 1.5, -0.8]
         FastInferenceService._scored(
             service, SimpleNamespace(row=row, plan=plan, sampling=HIGH),
-            SimpleNamespace(scores=logits[step], outcome_probabilities=values()),
+            # RowScores also carries the hp head (W2: the service passes it on)
+            SimpleNamespace(scores=logits[step], outcome_probabilities=values(), hp=0.5),
             values() if plan.tail is not None else None)
         assembler.step_outcome({
             "schema": "stpd/rl-inference-4", "kind": "step_outcome",
