@@ -24,16 +24,17 @@ Rules (RL4.1 long-run lessons, lead 11-12):
   the round;
 - job size (EVAL-SPEED-CHECK 11-14, lead decision a/e): 16 workers, 16 live games
   (`--pending-limit`: playing + saving + waiting for a shard) and 4 save threads, the
-  code maximums; memory 7 GB per live game; job wall from the number of games and
+  code maximums; memory 3 GB per live game; job wall from the number of games and
   the expected mean steps per game (`planned_wall_seconds`, `--expected-steps`), so
   longer games of a stronger CP get a longer wall. All are fast_eval settings,
   frozen in state.json and passed to `evaluate.py prepare-checkpoint`;
 - after the evaluation job ends, the owner's report (`stpd.evaluation.rl_observation`:
   per-floor distribution, max floor, Boss counts, wins, mean reward, paired deltas)
-  is written next to it against the baseline (`--baseline-plan`; default on the A0
-  100: the registered a46afd12 round, `registered_baseline`) and the previous
-  evaluation when their observed protocol and seed manifest match; a different
-  protocol is skipped and named, never compared. `--no-baseline` reports none.
+  is written next to it against the baseline (`--baseline-plan`; default: the suite's
+  registered round, `registered_baseline`) and the previous evaluation when their
+  observed protocol and seed manifest match; a different protocol is skipped and
+  named, never compared. A baseline on another Host pin than `--execution` is
+  refused at start, so pairing is never dropped silently. `--no-baseline` reports none.
 
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
@@ -76,18 +77,23 @@ WORKERS = 16  # RL4.2 final eval: 25 games on 8 workers took 1,700-2,450 s of pl
 # Job 1470561 (EVAL-SPEED-CHECK 11-14): 8 live slots held 16 cores to ~4 playing games.
 PENDING_LIMIT = 16  # live games per job: playing + saving + waiting for a shard
 SAVE_WORKERS = 4  # save threads overlap without slowing each other (91 vs 97 ms/step)
-MEMORY_GB_PER_LIVE = 7  # MaxRSS 49.2 GB at 8 live games = 6.1 GB each; 16 live -> 112 GB
+MEMORY_GB_PER_LIVE = 3  # job 1471903: MaxRSS 34.1 GB at 16 live games = 2.1 GB each
 EXPECTED_STEPS = 1200  # mean steps per game the wall plans for: 2x the measured 604
-STEP_SECONDS = 0.9  # live-slot seconds per step incl. its save: 6,881 s x 8 / 59,814 = 0.92
-CLOSE_SECONDS = 900  # after play: observation report (543 s for 100 games) + evidence tar
+# Live-slot seconds per step incl. its save queue, at 16 live (job 1471903):
+# 4,568 s x 16 / 59,814 = 1.22 (0.92 at 8 live; queued saves hold slots longer).
+STEP_SECONDS = 1.25
+CLOSE_SECONDS = 900  # after play: observation report (548 s for 100 games) + evidence tar
 MAX_WALL_SECONDS = 21600  # evaluate.prepare's bound
-# Registered A0 reference (lead 11-14): CP a46afd12b19d323b... on the fixed A0 100 seeds,
-# the fast_eval round of job 1470561. Under the user's /data/scratch; pinned by sha256.
+# Registered references per suite (lead 11-14), pinned by sha256 under the user's
+# /data/scratch. A0 100: CP a46afd12b19d323b... on Host rc.66 (job 1471903), per seed
+# identical to the rc.64 round of job 1470561 (100/100), which it replaces: the report
+# pairs only rounds on one Host pin.
 BASELINE_ROOT = Path("/data/scratch")
-A0_BASELINE = {
-    "plan": "rl41-20261104/rl5-prewrite-20261109/v3-chou2-eval/base-a46/evaluation-0001/"
-            "round/evaluation/plan.json",
-    "sha256": "2c70a68bbbfe99bad50b0416eae4df205536a6cb904001ab599ef1568b6c4f68"}
+BASELINES = {
+    "managed-rl3-learning-curve-100-20261030-Defect-a0": {
+        "plan": "rl41-20261104/rl5-prewrite-20261109/w4-evalspeed/a/eval16/evaluation-0001/"
+                "round/evaluation/plan.json",
+        "sha256": "56a4c3b34e9e2f60e4dc3c613b3fdf5b3850b3230848d078417135f298a37cb1"}}
 PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
 RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
@@ -128,26 +134,36 @@ def planned_wall_seconds(seeds: int, expected_steps: int, live: int,
     """Job wall = planned play + one episode for the last game started + report/evidence.
 
     Planned play = games x expected mean steps x live-slot seconds per step / live slots.
-    100 games at 1200 steps on 16 slots: 6,750 + 1,800 + 900 = 9,450 s; 50 games: 6,075 s.
+    100 games at 1200 steps on 16 slots: 9,375 + 1,800 + 900 = 12,075 s; 50 games: 7,388 s.
     """
     play = math.ceil(seeds * expected_steps * STEP_SECONDS / live)
     return min(MAX_WALL_SECONDS, play + episode_seconds + CLOSE_SECONDS)
 
 
 def registered_baseline(suite: str | None) -> str | None:
-    """The registered reference plan of `suite`: the a46afd12 round on the fixed A0 100.
+    """The registered reference plan of `suite` (default: the fixed A0 100), or None.
 
-    Other suites (the A10 50) have none yet. A missing or changed plan is refused, never
-    silently dropped: pass `--baseline-plan` or `--no-baseline`.
+    A missing or changed plan is refused, never silently dropped: pass `--baseline-plan`
+    or `--no-baseline`.
     """
     from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
 
-    if (suite or RL3_LEARNING_CURVE_SUITE_ID) != RL3_LEARNING_CURVE_SUITE_ID:
+    entry = BASELINES.get(suite or RL3_LEARNING_CURVE_SUITE_ID)
+    if entry is None:
         return None
-    path = BASELINE_ROOT / getpass.getuser() / A0_BASELINE["plan"]
-    if not path.is_file() or hashed(path) != A0_BASELINE["sha256"]:
-        raise ValueError("registered_A0_baseline_plan_missing_or_changed")
+    path = BASELINE_ROOT / getpass.getuser() / entry["plan"]
+    if not path.is_file() or hashed(path) != entry["sha256"]:
+        raise ValueError("registered_baseline_plan_missing_or_changed")
     return str(path)
+
+
+def plan_host_pin(plan: Path) -> Any:
+    """The Host pin a round ran on: from the execution copy its plan binds by sha256."""
+    execution = json.loads(plan.read_bytes())["execution"]
+    path = Path(execution["path"])
+    if hashed(path) != execution["sha256"]:
+        raise ValueError("baseline_execution_changed")
+    return json.loads(path.read_bytes()).get("host_pin")
 
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
@@ -499,6 +515,9 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
         baseline = str(args.baseline_plan.resolve())
     else:
         baseline = None if args.no_baseline else registered_baseline(args.suite)
+    if baseline is not None and plan_host_pin(Path(baseline)) != execution.get("host_pin"):
+        # The report never pairs across Host pins: refuse now instead of a silent skip.
+        raise ValueError("baseline_host_pin_differs_from_execution")
     return {"learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation,
@@ -551,8 +570,9 @@ def main() -> None:
                         help="evaluate exactly this CP artifact id (else the newest CP)")
     parser.add_argument("--baseline-plan", type=Path,
                         help="plan.json of the reference round (e.g. the baseline CP's own "
-                             "fast_eval round) for the paired report; default on the A0 "
-                             "100: the registered a46afd12 round")
+                             "fast_eval round, same Host pin) for the paired report; "
+                             "default: the suite's registered round (A0 100: a46afd12 "
+                             "on Host rc.66)")
     parser.add_argument("--no-baseline", action="store_true",
                         help="no baseline in the report (not even the registered one)")
     parser.add_argument("--once", action="store_true",
