@@ -298,8 +298,10 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["frozen_recipe"] = json.loads(frozen.read_text()) if frozen.exists() else None
     gate = Path(site["gate_dir"]) / "learner-base.json"
     facts["gate_learner_base"] = json.loads(gate.read_text()) if gate.exists() else None
-    facts["compile_warmup_dumps"] = {path: os.path.isfile(path)
-                                     for path in site["compile_warmup_dumps"]}
+    # A dump is a directory; sgd_process warm() loads offline_step.TREE inside it.
+    facts["compile_warmup_dumps"] = {
+        path: os.path.isfile(os.path.join(path, "offline-step.tensor-tree"))
+        for path in site["compile_warmup_dumps"]}
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL
