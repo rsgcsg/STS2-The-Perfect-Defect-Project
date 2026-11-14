@@ -1257,8 +1257,11 @@ describe("fast-env save points (save tickets)", () => {
       await h.next(event => event.event === "ready");
       h.open(0, { save_points: { directory, floors: [1, 2] } });
       const closed = await h.next(event => event.event === "closed");
-      expect(closed).toMatchObject({ reason: "env_crash", native: "replaced",
-        detail: outcome === "failed" ? "save_failed:managed_map_continue_native_save_failed" : "save_unknown:managed_map_continue_unknown_replace_process" });
+      expect(closed).toMatchObject({ reason: "env_crash", native: "replaced" });
+      // The close names the code, the floor and the path the Host kept for diagnosis.
+      const code = outcome === "failed" ? "save_failed:managed_map_continue_native_save_failed" : "save_unknown:managed_map_continue_unknown_replace_process";
+      expect(closed.detail).toBe(`${code} floor=1 path=${h.natives[0]!.saves[0]}`);
+      expect(h.natives[0]!.saves[0]!.startsWith(`${directory}/`)).toBe(true);
       // The row before the map is completed; the map state's own row was never sent.
       expect(closed.decisions).toBe(1);
       expect(h.natives[0]!.saves).toHaveLength(1);
@@ -1329,6 +1332,19 @@ describe("HostSlotNative", () => {
     saveError = new Error("managed_map_continue_quiescent_map_required");
     expect(await native.saveMap("/pool/b.json")).toEqual({ kind: "refused", reason: "managed_map_continue_quiescent_map_required" });
     expect(requests.at(-1).command).toBe("claim_control");
+    // The reservation found the path taken (openSync "wx"): refused, nothing written.
+    saveError = Object.assign(new Error("EEXIST: file already exists, open '/pool/a.json'"), { code: "EEXIST" });
+    expect(await native.saveMap("/pool/a.json")).toMatchObject({ kind: "refused" });
+    expect(requests.at(-1).command).toBe("claim_control");
+    // Any other error with the episode still available (a native request timeout whose late reply may still
+    // be queued) is a failure: no claim, the native is not used again.
+    for (const other of ["run_identity timed out after 30000ms.", "managed_expected_game_continuity_mismatch"]) {
+      saveError = new Error(other);
+      const failure = await native.saveMap("/pool/t.json").catch(error => error);
+      expect(failure).toBeInstanceOf(SaveMapFailure);
+      expect(failure).toMatchObject({ outcome: "failed", message: `save_failed:${other}` });
+      expect(requests.at(-1).command).toBe("save_map");
+    }
     saveError = new Error("managed_map_continue_unknown_replace_process"); available = false;
     const unknown = await native.saveMap("/pool/c.json").catch(error => error);
     expect(unknown).toBeInstanceOf(SaveMapFailure);

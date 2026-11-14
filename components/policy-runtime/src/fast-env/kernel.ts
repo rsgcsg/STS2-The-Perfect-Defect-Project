@@ -467,14 +467,17 @@ class GameRun {
   async #save(directory: string, facts: PublicFacts): Promise<void> {
     const { config, stats } = this.ctx;
     const name = `${config.env_process_id}.${this.gameRef}.f${facts.floor}.${randomUUID().slice(0, 8)}.json`.replaceAll(":", "_");
+    const path = join(directory, name);
     const started = performance.now();
     let result;
-    try { result = await this.native.saveMap(join(directory, name)); }
+    try { result = await this.native.saveMap(path); }
     catch (error) {
       stats.saves.ms += performance.now() - started;
       const unknown = error instanceof SaveMapFailure && error.outcome === "unknown";
       if (unknown) stats.saves.unknown += 1; else stats.saves.failed += 1;
-      throw new GameEnd("env_crash", error instanceof SaveMapFailure ? error.message : `save_failed:${errorText(error)}`, { replaceNative: true });
+      // The Host keeps whatever it reserved or wrote at this path for diagnosis: the close names it.
+      const code = error instanceof SaveMapFailure ? error.message : `save_failed:${errorText(error)}`;
+      throw new GameEnd("env_crash", `${code} floor=${facts.floor} path=${path}`, { replaceNative: true });
     }
     const ms = performance.now() - started;
     stats.saves.ms += ms;

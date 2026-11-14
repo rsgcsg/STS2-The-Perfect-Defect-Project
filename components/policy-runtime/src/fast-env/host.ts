@@ -27,9 +27,10 @@ export interface SlotNative {
   /** Submits one Host BoundAction. Resolves with the Host's original receipt object. */
   step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown>;
   /** Host `save_map` of the current settled map state into `path` (absolute, new). Control is handed back
-   * for the save (the Host refuses a save while it is held) and claimed again after it. `refused`: the Host
-   * refused before any native write and the game is as it was. Throws SaveMapFailure when the Host ended the
-   * episode (its native save failed, or its outcome is unknown): this native can no longer reset or load. */
+   * for the save (the Host refuses a save while it is held) and claimed again after it. `refused`: one of the
+   * Host's known refusals before any file reservation or native write, and the game is as it was. Throws
+   * SaveMapFailure on anything else (the native save failed or its outcome is unknown, a timeout, a drift):
+   * this native is not used again. */
   saveMap(path: string): Promise<SaveMapResult>;
   /** Gives control back between games. */
   release(): Promise<void>;
@@ -59,6 +60,20 @@ export class SaveMapFailure extends Error {
     super(`${outcome === "unknown" ? "save_unknown" : "save_failed"}:${code}`);
     this.name = "SaveMapFailure";
   }
+}
+
+/** The Host's code for a save whose native outcome is unknown (managed-map-continue.mjs ManagedMapContinueUnknown). */
+const SAVE_UNKNOWN = "managed_map_continue_unknown_replace_process";
+/** The Host's save_map refusals thrown before it reserves the file or asks the native anything that could
+ * leave a reply behind (managed-pe-driver-session.mjs save_map, managed-map-continue.mjs). A quiescence
+ * refusal after a completed run_identity reply is one of them: that reply was consumed. */
+const SAVE_REFUSED_BEFORE_WRITE = new Set(["managed_control_held", "managed_map_continue_absolute_path_required",
+  "managed_map_continue_candidate_identity_required", "managed_map_continue_quiescent_map_required"]);
+function saveRefusedBeforeWrite(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  // The reservation itself (openSync(path, "wx")) found the path taken: nothing was written or asked.
+  if ((error as NodeJS.ErrnoException).code === "EEXIST") return true;
+  return SAVE_REFUSED_BEFORE_WRITE.has(error.message);
 }
 
 /** `start` is what the native's first compact frame says (null when compact output is off). */
@@ -243,13 +258,15 @@ export class HostSlotNative implements SlotNative {
         expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: this.#continuity }, MANAGER);
     } catch (error) {
       const code = error instanceof Error ? error.message : String(error);
-      // The Host clears the episode when its native save failed or is unknown; nothing is claimed again.
       const status = this.driver.status();
-      if (!status.episode_available || status.game_continuity_id !== this.#continuity)
-        throw new SaveMapFailure(code, code === "managed_map_continue_unknown_replace_process" ? "unknown" : "failed");
-      // Refused before any native write (not a quiescent map, path taken): the game is as it was.
-      await this.#claimControl();
-      return { kind: "refused", reason: code };
+      // Only the Host's known refusals before any file reservation or native write leave the game as it
+      // was. Anything else (a native request timeout whose late reply may still be queued, a drift, the
+      // Host clearing the episode after a failed or unknown native save) ends it and replaces the process.
+      if (status.episode_available && status.game_continuity_id === this.#continuity && saveRefusedBeforeWrite(error)) {
+        await this.#claimControl();
+        return { kind: "refused", reason: code };
+      }
+      throw new SaveMapFailure(code, code === SAVE_UNKNOWN ? "unknown" : "failed");
     }
     if (result?.type !== "save_map_result" || result.save === null || typeof result.save !== "object")
       throw new SaveMapFailure("fast_env_save_result_drift", "failed");

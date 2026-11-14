@@ -1,7 +1,7 @@
 // node --test tools/friday/fastchain/tickets.test.mjs (run by python/tests/test_friday_save_tickets.py)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SaveTickets, TICKETS_SCHEMA, parseTicketsConfig } from "./tickets.mjs";
@@ -133,6 +133,47 @@ test("a refused load or an unknown close seals the attempt and pauses the family
   assert.ok(t1.ticket);
   assert.equal(a.plan("t2").start.kind, "new_run");
   assert.deepEqual(b.counters().ticket_closes, { env_crash: 1, unknown: 1 });
+});
+
+test("a bad ledger line is counted and reported once; the lines after it still count and planning goes on", () => {
+  const dir = pool();
+  const a = new SaveTickets(config(dir, { endgame_share: 0 }), DRIVER);
+  const first = pooled(a, "src1");
+  // A driver killed mid-append leaves a torn line; a non-object line is no record either.
+  appendFileSync(join(dir, "ledger.jsonl"), '{"kind":"save","id":"tor\n' + "null\n");
+  const second = pooled(a, "src2", { floor: 30 });
+  const reports = [];
+  const write = process.stderr.write;
+  process.stderr.write = (text) => { reports.push(String(text)); return true; };
+  let reader;
+  try {
+    reader = new SaveTickets(config(dir, { endgame_share: 1 }), { ...DRIVER, id: "drv-r" });
+    reader.refresh(); reader.refresh();
+    pooled(reader, "own", { floor: 40 });
+  } finally { process.stderr.write = write; }
+  assert.equal(reports.filter(text => text.startsWith("save_tickets_ledger_bad_line:")).length, 2);
+  const counters = reader.counters();
+  assert.equal(counters.ledger_bad_lines, 2);
+  assert.equal(counters.pool_saves, 3);
+  assert.ok(reader.saves.has(second.sha256)); // the line after the bad ones
+  reader.random = () => 0;
+  assert.equal(reader.plan("t1").start.save.sha256, first.sha256);
+});
+
+test("a driver restarted onto a full pool still saves until it learns its candidate, then claims", () => {
+  const dir = pool();
+  const opts = { endgame_share: 1, save_every_games: 1, max_live_saves: 1 };
+  const before = new SaveTickets(config(dir, { ...opts, endgame_share: 0 }), DRIVER);
+  const save = pooled(before, "src");
+  assert.equal(before.plan("full").save_points, null); // the pool is full for a driver that knows its candidate
+  const after = new SaveTickets(config(dir, opts), DRIVER); // the restart: nothing learned yet
+  const plan = after.plan("r1");
+  assert.equal(plan.start.kind, "new_run");
+  assert.notEqual(plan.save_points, null);
+  assert.deepEqual(after.counters().new_run_without_ticket, { no_own_save_yet: 1 });
+  after.onEvent(saved("r1")); after.onAdmission("r1", true); after.onEvent(closed("r1"));
+  after.random = () => 0;
+  assert.equal(after.plan("r2").ticket, `${save.sha256}.u0`);
 });
 
 test("only the session's level, candidate and weighted floor bands are offered", () => {

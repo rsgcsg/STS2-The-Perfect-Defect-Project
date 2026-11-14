@@ -95,7 +95,7 @@ export class SaveTickets {
     this.newRuns = 0;
     this.counts = { save_points_games: 0, saves_reported: 0, saves_pooled: 0, saves_dropped: {}, saves_duplicate: 0,
       tickets_claimed: 0, claim_conflicts: 0, from_save_opened: 0, load_failed: 0, open_refused_other: 0,
-      ticket_closes: {}, families_paused: 0, new_run_without_ticket: {} };
+      ticket_closes: {}, families_paused: 0, new_run_without_ticket: {}, ledger_bad_lines: 0 };
   }
 
   #append(record) {
@@ -115,8 +115,21 @@ export class SaveTickets {
       const text = this.partial + buffer.toString("utf8");
       const end = text.lastIndexOf("\n");
       this.partial = text.slice(end + 1);
-      for (const line of text.slice(0, end + 1).split("\n")) if (line) this.#apply(JSON.parse(line));
+      for (const line of text.slice(0, end + 1).split("\n")) if (line) this.#line(line);
     } finally { closeSync(fd); }
+  }
+
+  /** One ledger line. A line that is not a JSON object (a driver killed mid-append, a full disk) is counted
+   * and reported once, here, as it is read; the lines after it still count. */
+  #line(line) {
+    let record;
+    try { record = JSON.parse(line); } catch { record = null; }
+    if (record === null || typeof record !== "object" || Array.isArray(record)) {
+      this.counts.ledger_bad_lines += 1;
+      process.stderr.write(`save_tickets_ledger_bad_line: ${this.ledgerPath} (${line.length} bytes) ${JSON.stringify(line.slice(0, 200))}\n`);
+      return;
+    }
+    this.#apply(record);
   }
 
   #apply(record) {
@@ -209,7 +222,10 @@ export class SaveTickets {
       const why = this.candidate === null ? "no_own_save_yet" : "no_eligible_ticket";
       this.counts.new_run_without_ticket[why] = (this.counts.new_run_without_ticket[why] ?? 0) + 1;
     }
-    const saving = this.newRuns++ % this.config.save_every_games === 0 && this.#liveCount() < this.config.max_live_saves;
+    // A driver that has not learned its Host candidate yet (a restart onto a full pool) still saves, or it
+    // could never claim and the pool would never drain.
+    const saving = this.newRuns++ % this.config.save_every_games === 0
+      && (this.candidate === null || this.#liveCount() < this.config.max_live_saves);
     this.games.set(gameRef, { saves: [], admitted: null, closed: null });
     if (!saving) return { seed: null, start: { kind: "new_run" }, save_points: null, ticket: null };
     this.counts.save_points_games += 1;

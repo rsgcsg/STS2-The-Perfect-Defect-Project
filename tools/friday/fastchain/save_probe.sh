@@ -3,9 +3,12 @@
 # settings as env.sh does: the env package (built from a commit that has fast-env saveMap; the
 # probe script is taken from the same package), the candidate, the exact game and the initial
 # progress. One Managed process at a time (1 + loads per seed); a few core-minutes. Writes only
-# under OUT_DIR (private; saves never leave it).
+# under OUT_DIR, which must be new or empty (private; saves never leave it).
 #   sbatch -p <cpu partition> -c 2 --mem 8G -t 30 --export=ALL,FC_RUN=<run dir with job-env.sh> \
 #     tools/friday/fastchain/save_probe.sh OUT_DIR [--seeds A,B] [--save-floor 1] [--steps 400] [--loads 2] [--ascension 10]
+# Exit: 0 same game (captures, choices, post-save RNG and unlock state equal); 3 a load diverged;
+# 4 same game but the save carries no unlock state (unlock half unproven); 1 incomplete, rerun;
+# 2 usage. Only 0 counts as a passing P1-e probe.
 umask 077
 source /etc/profile >/dev/null 2>&1
 [ -n "${FC_RUN:-}" ] && [ -n "${1:-}" ] || { echo "usage: FC_RUN=<run dir> save_probe.sh OUT_DIR [probe flags]"; exit 2; }

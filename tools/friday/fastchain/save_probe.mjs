@@ -5,26 +5,37 @@
 // loadSave / capture / step, from a built package) against the exact game with a seeded random
 // player, no model:
 //   A  fresh process, new run (seed, initial progress) -> plays to the first map at floor >=
-//      --save-floor -> saveMap -> plays on (--steps) recording every capture; at the first map of
-//      a later floor it saves again (the "post" save, for a raw compare).
+//      --save-floor -> saveMap -> plays on (--steps) recording every capture; at the first map past
+//      the save floor where the Host takes a save it saves again (the "post" save, for a raw compare).
 //   Bn fresh process (--loads of them), loadSave(the A save) -> the same seeded player from the
 //      same point, the same post save.
 // Compared: every capture after the save (the public snapshot and Reads, per-capture
 // bookkeeping dropped, hex ids of 16+ characters renamed in order of first appearance: they are
-// per-process random), each chosen action, where the game ended; the two post saves as JSON.
-// Exit 0 = every load played the same game; 3 = a load diverged; 1 = incomplete; 2 = usage.
+// per-process random), each chosen action, where the game ended; the two post saves as JSON
+// (every differing path is reported; a differing RNG-bearing or unlock path is a divergence).
+// Exit, over every seed (a divergence anywhere wins):
+//   0  every load of every seed is the same game: the same captures and choices to the end, and the
+//      post saves carry equal RNG fields and an equal run unlock state;
+//   3  some load diverged: a capture or choice, or a post save's RNG or unlock fields (also when
+//      another seed is incomplete);
+//   4  the same game, but the save carries no unlock state: the unlock half of P1-e is unproven;
+//   1  incomplete (a stage failed, a post save is missing, fewer loads than asked): rerun, e.g. with
+//      more --steps so the game reaches a map past the save floor;
+//   2  usage (a missing, unknown, repeated or invalid argument; an --out that is not empty).
 // Needs the exact game build (a Mac with another game build is refused at process start), so it
 // runs on a cluster CPU node: save_probe.sh. Writes only under --out (private; the saves stay
-// there, never to R2 or git). A diverging capture pair is written there for diffing.
+// there, never to R2 or git); every file name carries its seed (the Host never overwrites a file).
+// A diverging capture pair is written there for diffing.
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const PROBE_SCHEMA = "spireagent/fastchain-save-probe-1";
+export const PROBE_SCHEMA = "spireagent/fastchain-save-probe-2";
 const MANAGER = { principal: "manager", sharedService: true };
 /** Per-capture bookkeeping of a snapshot: differs between processes by construction. */
 const VOLATILE = new Set(["snapshot_id", "sequence", "observed_at", "session"]);
+const DEFAULT_SEEDS = "W3P1E0001,W3P1E0002";
 
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
   : value !== null && typeof value === "object"
@@ -32,14 +43,29 @@ const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).joi
     : JSON.stringify(value);
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 class ProbeStop extends Error { name = "ProbeStop"; }
+class UsageError extends Error { name = "UsageError"; }
+
+/** The seed as it appears in this probe's file names. */
+export const fileStem = (seed) => seed.replace(/[^A-Za-z0-9_-]/gu, "_");
+
+/** `observed_at` at any depth: every Read response carries the capture's wall time. */
+const withoutTimes = (value) => Array.isArray(value) ? value.map(withoutTimes)
+  : value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "observed_at").map(([key, child]) => [key, withoutTimes(child)]))
+    : value;
 
 /** One capture as compared across processes. */
 export function normalizeBasis(basis) {
   const snapshot = Object.fromEntries(Object.entries(basis.snapshot).filter(([key]) => !VOLATILE.has(key)));
-  const names = new Map();
-  const text = canonical({ snapshot, reads: basis.reads ?? null }).replace(/[0-9a-f]{16,}/gu, (hex) => {
+  const names = new Map(), sequences = new Map();
+  const text = canonical(withoutTimes({ snapshot, reads: basis.reads ?? null })).replace(/[0-9a-f]{16,}/gu, (hex) => {
     if (!names.has(hex)) names.set(hex, `#${names.size}`);
     return names.get(hex);
+  // Host snapshot and interaction ids end in the process's own snapshot ordinal (`managed_<hex>_s3`):
+  // renamed in order of first appearance like the hex ids (found by the first cluster run, V4).
+  }).replace(/(#\d+)_s(\d+)/gu, (_all, id, sequence) => {
+    if (!sequences.has(sequence)) sequences.set(sequence, `@${sequences.size}`);
+    return `${id}_${sequences.get(sequence)}`;
   });
   return { text, digest: sha256(text) };
 }
@@ -92,7 +118,8 @@ async function settled(native, { sleep, timeoutMs }) {
   }
 }
 
-/** The seeded random player from where the game is. `beforeAct` may save and ask for a fresh capture. */
+/** The seeded random player from where the game is. `beforeAct` may save ("saved": capture again) or try
+ * and be refused ("refused": marked in the trace, so a refusal in one process only is a divergence). */
 async function play(native, random, { maxSteps, stopAt = () => false, beforeAct = async () => false, record, timing, options }) {
   const trace = [], texts = [];
   for (let steps = 0; ;) {
@@ -104,7 +131,9 @@ async function play(native, random, { maxSteps, stopAt = () => false, beforeAct 
     if (terminal(snapshot)) { entry.end = "terminal"; entry.victory = snapshot.interaction?.content?.surface?.victory ?? null; return { trace, texts, snapshot }; }
     if (stopAt(snapshot)) { entry.end = "stop_at"; return { trace, texts, snapshot }; }
     if (steps >= maxSteps) { entry.end = "max_steps"; return { trace, texts, snapshot }; }
-    if (await beforeAct(snapshot)) { entry.end = "saved"; continue; }
+    const before = await beforeAct(snapshot);
+    if (before === "saved") { entry.end = "saved"; continue; }
+    if (before === "refused") entry.save_refused = true;
     const actions = actionsOf(snapshot);
     entry.index = Math.floor(random() * actions.length);
     entry.label = actions[entry.index].label ?? null;
@@ -130,25 +159,50 @@ const progressSummary = (identity) => {
 };
 const round = (value) => value === null ? null : Math.round(value);
 
+/** Probe sizes: integers, at least one step, one load and floor 1 (a zero would compare nothing and pass). */
+function checkSizes({ seed, saveFloor, steps, loads }) {
+  if (typeof seed !== "string" || !seed) throw new UsageError("save_probe_usage:seed");
+  for (const [name, value] of [["save_floor", saveFloor], ["steps", steps], ["loads", loads]])
+    if (!Number.isSafeInteger(value) || value < 1) throw new UsageError(`save_probe_usage:${name}`);
+}
+
+/** A seed's status from its report: any divergence wins, then anything missing makes it incomplete. */
+function seedStatus(report) {
+  const diverged = report.resumed.some(entry => entry.first_divergence !== null
+    || entry.post_save !== null && (entry.post_save.rng_paths_differing.length > 0 || entry.post_save.unlock_paths_differing.length > 0));
+  if (diverged) return "diverged";
+  if (report.failure !== null || report.resumed.length !== report.loads || report.resumed.some(entry => entry.post_save === null)) return "incomplete";
+  return "same_game";
+}
+
 /** One seed: A, then `loads` fresh-process loads; the report of what matched. */
 export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1, steps = 400, loads = 2, out,
   sleep = (ms) => new Promise(done => setTimeout(done, ms)), timeoutMs = 30_000 }) {
+  checkSizes({ seed, saveFloor, steps, loads });
+  const stem = fileStem(seed);
   const options = { sleep, timeoutMs };
   const report = { seed, save_floor: saveFloor, steps, loads, status: "incomplete", save: null, save_refusals: [],
     parent: null, resumed: [], failure: null };
   const timing = { step_ms: 0, steps: 0 };
   let stage = "parent_start", native = null;
   const posts = {};
-  const postHook = (label, savedFloor) => {
-    let done = false;
-    return async (snapshot) => {
-      if (done || kindOf(snapshot) !== "map_navigation" || !(floorOf(snapshot) > savedFloor)) return false;
-      done = true;
-      const started = performance.now();
-      const result = await native.saveMap(join(out, `post-${label}.json`));
-      posts[label] = { result, ms: performance.now() - started };
-      return result.kind === "saved";
-    };
+  // The post save: tried at every map past the save floor until the Host takes one (a map right after a
+  // combat with rewards pending is refused, S1/V4), the same in every process of the same game.
+  const postHook = (label, savedFloor) => async (snapshot) => {
+    const post = posts[label] ??= { result: null, refusals: [], ms: 0 };
+    if (post.result !== null || kindOf(snapshot) !== "map_navigation" || !(floorOf(snapshot) > savedFloor)) return false;
+    const started = performance.now();
+    const result = await native.saveMap(join(out, `${stem}-post-${label}-f${floorOf(snapshot)}.json`));
+    post.ms += performance.now() - started;
+    if (result.kind !== "saved") { post.refusals.push({ floor: floorOf(snapshot), reason: result.reason }); return "refused"; }
+    post.result = result;
+    return "saved";
+  };
+  /** The post save of `label` as JSON, or why there is none. */
+  const postOf = (label, end) => {
+    const post = posts[label];
+    if (!post?.result) return { json: null, missing: `${post?.refusals.length ? `refused_${post.refusals.length}_then_` : ""}not_saved:${end}` };
+    return { json: JSON.parse(readFileSync(post.result.save.path, "utf8")), missing: null, floor: post.result.save.floor ?? null };
   };
   try {
     let started = performance.now();
@@ -169,7 +223,7 @@ export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1,
       const floor = floorOf(prefix.snapshot);
       tried.add(floor);
       started = performance.now();
-      const result = await native.saveMap(join(out, `save-f${floor}.json`));
+      const result = await native.saveMap(join(out, `${stem}-save-f${floor}.json`));
       if (result.kind === "saved") save = { descriptor: result.save, ms: performance.now() - started };
       else report.save_refusals.push({ floor, reason: result.reason });
     }
@@ -179,10 +233,11 @@ export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1,
     const continued = await play(native, seededRandom(`${seed}/after-save`), { maxSteps: steps, record: true, timing, options,
       beforeAct: postHook("parent", save.descriptor.floor) });
     parent.progress_after = progressSummary(await identityOf(native));
-    report.parent = { ...parent, trace_length: continued.trace.length, end: continued.trace.at(-1) };
+    const parentPost = postOf("parent", continued.trace.at(-1).end);
+    report.parent = { ...parent, trace_length: continued.trace.length, end: continued.trace.at(-1),
+      post_save_floor: parentPost.floor ?? null, post_save_refusals: posts.parent?.refusals ?? [], post_save_missing: parentPost.missing };
     await native.shutdown(false); native = null;
 
-    const parentPost = posts.parent?.result.kind === "saved" ? JSON.parse(readFileSync(posts.parent.result.save.path, "utf8")) : null;
     for (let load = 1; load <= loads; load += 1) {
       const label = `load${load}`;
       stage = `${label}_start`; started = performance.now();
@@ -205,77 +260,125 @@ export async function probeSeed({ factory, seed, initialProgress, saveFloor = 1,
       for (let i = 0; i < Math.max(run.trace.length, continued.trace.length) && first === null; i += 1)
         if (canonical(run.trace[i] ?? null) !== canonical(continued.trace[i] ?? null)) first = i;
       if (first !== null && run.texts[first] !== undefined && continued.texts[first] !== undefined) {
-        writeFileSync(join(out, `diverge-${seed}-${label}-parent.json`), continued.texts[first], { mode: 0o600 });
-        writeFileSync(join(out, `diverge-${seed}-${label}-resumed.json`), run.texts[first], { mode: 0o600 });
+        writeFileSync(join(out, `diverge-${stem}-${label}-parent.json`), continued.texts[first], { mode: 0o600 });
+        writeFileSync(join(out, `diverge-${stem}-${label}-resumed.json`), run.texts[first], { mode: 0o600 });
       }
       resumed.trace_length = run.trace.length;
       resumed.first_divergence = first === null ? null : { index: first, parent: continued.trace[first] ?? null, resumed: run.trace[first] ?? null };
       resumed.kinds = Object.entries(run.trace.reduce((counts, entry) => ({ ...counts, [entry.kind]: (counts[entry.kind] ?? 0) + 1 }), {}));
-      const post = posts[label]?.result.kind === "saved" ? JSON.parse(readFileSync(posts[label].result.save.path, "utf8")) : null;
-      if (parentPost && post) {
-        const differing = diffPaths(parentPost, post, new Set(["save_time"]));
-        const unlocks = unlockPaths(parentPost);
-        resumed.post_save = { differing_paths: differing, rng_paths_differing: differing.filter(path => /rng/iu.test(path)),
-          unlock_paths: unlocks, unlock_paths_differing: differing.filter(path => /unlock/iu.test(path)) };
-      } else resumed.post_save = null;
+      const post = postOf(label, run.trace.at(-1).end);
+      if (parentPost.json !== null && post.json !== null) {
+        const differing = diffPaths(parentPost.json, post.json, new Set(["save_time"]));
+        resumed.post_save = { floor: post.floor, differing_paths: differing, rng_paths_differing: differing.filter(path => /rng/iu.test(path)),
+          unlock_paths: unlockPaths(parentPost.json), unlock_paths_differing: differing.filter(path => /unlock/iu.test(path)) };
+        resumed.post_save_missing = null;
+      } else {
+        resumed.post_save = null;
+        resumed.post_save_missing = { parent: parentPost.missing, resumed: post.missing };
+      }
       report.resumed.push(resumed);
     }
-    report.status = report.resumed.every(resumed => resumed.first_divergence === null) ? "same_game" : "diverged";
   } catch (error) {
     report.failure = { stage, reason: error instanceof Error ? `${error.name}:${error.message}`.slice(0, 300) : String(error) };
   } finally {
     if (native !== null) await native.shutdown(true).catch(() => {});
   }
+  report.status = seedStatus(report);
   report.timing = { steps: timing.steps, step_ms_mean: timing.steps ? Math.round(timing.step_ms / timing.steps) : null };
   return report;
 }
 
 /** What the run says about P1-e, from the per-seed reports. */
 export function verdict(reports) {
-  const complete = reports.every(report => report.status !== "incomplete");
   const resumed = reports.flatMap(report => report.resumed);
-  const posts = resumed.map(entry => entry.post_save).filter(Boolean);
+  const present = resumed.map(entry => entry.post_save).filter(Boolean);
+  const allPosts = reports.length > 0 && reports.every(report => report.resumed.length === report.loads)
+    && resumed.every(entry => entry.post_save !== null);
   return {
-    same_game: !complete ? null : reports.every(report => report.status === "same_game"),
+    same_game: reports.some(report => report.status === "diverged") ? false
+      : reports.length > 0 && reports.every(report => report.status === "same_game") ? true : null,
+    rng_state: present.some(post => post.rng_paths_differing.length > 0) ? "differs" : allPosts ? "equal" : "post_saves_missing",
     // The run's UnlockState is visible only if the native save carries it.
-    unlock_state: posts.length === 0 ? "post_saves_missing"
-      : posts.every(post => post.unlock_paths.length === 0) ? "not_in_save_unproven"
-        : posts.every(post => post.unlock_paths_differing.length === 0) ? "carried_in_save_equal" : "differs",
+    unlock_state: present.some(post => post.unlock_paths_differing.length > 0) ? "differs"
+      : !allPosts ? "post_saves_missing"
+        : present.every(post => post.unlock_paths.length > 0) ? "carried_in_save_equal" : "not_in_save_unproven",
     parent_progress_proven: reports.some(report => !report.parent) ? null
       : reports.every(report => report.parent.progress?.run_unlock_state_matches === true),
     resumed_initial_progress_null: resumed.length === 0 ? null : resumed.every(entry => entry.progress === null)
   };
 }
 
-const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : fallback; };
-async function main() {
-  const pkg = arg("pkg"), out = arg("out") && resolve(arg("out")), candidate = arg("candidate"), progressFile = arg("initial-progress");
-  if (!pkg || !out || !candidate || !progressFile) {
-    process.stderr.write("usage: save_probe.mjs --pkg PKG --candidate DIR --initial-progress FILE --out DIR [--game DIR] [--seeds A,B] "
-      + "[--save-floor 1] [--steps 400] [--loads 2] [--ascension 10] [--language zh]\n");
+/** The exit code of a verdict (the header explains each). */
+export function exitCode(summary) {
+  if (summary.same_game === false) return 3;
+  if (summary.same_game === null) return 1;
+  return summary.unlock_state === "carried_in_save_equal" ? 0 : 4;
+}
+
+/** name -> [min, max] for integers, else the kind of value. */
+const FLAGS = { pkg: "path", candidate: "path", "initial-progress": "path", out: "path", game: "path", seeds: "seeds",
+  "save-floor": [1, 1000], steps: [1, 100_000], loads: [1, 100], ascension: [0, 10], language: "text" };
+
+/** Strict `--name value` pairs: unknown, repeated, valueless or out-of-range flags are refused. */
+export function parseArgs(argv) {
+  const seen = {};
+  for (let i = 0; i < argv.length; i += 2) {
+    const flag = argv[i], value = argv[i + 1];
+    const name = typeof flag === "string" && flag.startsWith("--") ? flag.slice(2) : null;
+    if (name === null || !Object.hasOwn(FLAGS, name) || Object.hasOwn(seen, name)) throw new UsageError(`save_probe_usage:${flag}`);
+    if (typeof value !== "string" || !value || value.startsWith("--")) throw new UsageError(`save_probe_usage:${flag}:value`);
+    seen[name] = value;
+  }
+  for (const name of ["pkg", "candidate", "initial-progress", "out"])
+    if (!Object.hasOwn(seen, name)) throw new UsageError(`save_probe_usage:--${name}:required`);
+  const integer = (name, fallback) => {
+    const text = seen[name] ?? String(fallback), [min, max] = FLAGS[name], value = Number(text);
+    if (!/^[0-9]+$/u.test(text) || !Number.isSafeInteger(value) || value < min || value > max) throw new UsageError(`save_probe_usage:--${name}:${text}`);
+    return value;
+  };
+  const seeds = (seen.seeds ?? DEFAULT_SEEDS).split(",");
+  if (seeds.some(seed => !seed || seed !== seed.trim()) || new Set(seeds.map(fileStem)).size !== seeds.length)
+    throw new UsageError(`save_probe_usage:--seeds:${seen.seeds}`);
+  return { pkg: resolve(seen.pkg), candidate: resolve(seen.candidate), initialProgressFile: resolve(seen["initial-progress"]),
+    out: resolve(seen.out), game: seen.game === undefined ? null : resolve(seen.game), seeds,
+    saveFloor: integer("save-floor", 1), steps: integer("steps", 400), loads: integer("loads", 2),
+    ascension: integer("ascension", 10), language: seen.language ?? "zh" };
+}
+
+const USAGE = "usage: save_probe.mjs --pkg PKG --candidate DIR --initial-progress FILE --out NEW_OR_EMPTY_DIR [--game DIR] "
+  + `[--seeds ${DEFAULT_SEEDS}] [--save-floor 1] [--steps 400] [--loads 2] [--ascension 10] [--language zh]\n`;
+
+export async function main(argv = process.argv.slice(2)) {
+  let args;
+  try { args = parseArgs(argv); }
+  catch (error) { process.stderr.write(`${error.message}\n${USAGE}`); return 2; }
+  if (existsSync(args.out) && readdirSync(args.out).length > 0) {
+    process.stderr.write(`save_probe_usage:--out:not_empty ${args.out} (every run writes a new directory)\n${USAGE}`);
     return 2;
   }
-  mkdirSync(out, { recursive: true, mode: 0o700 });
-  const { hostSlotNativeFactory } = await import(pathToFileURL(join(pkg, "components/policy-runtime/dist/fast-env/host.js")).href);
+  mkdirSync(args.out, { recursive: true, mode: 0o700 });
+  const { hostSlotNativeFactory } = await import(pathToFileURL(join(args.pkg, "components/policy-runtime/dist/fast-env/host.js")).href);
   const factory = await hostSlotNativeFactory({
-    host: { package: join(pkg, "components/host-runtime"), candidate_directory: candidate, game_directory: arg("game", null),
-      character: "Defect", language: arg("language", "zh"), ascension: Number(arg("ascension", "10")), request_timeout_ms: 30_000 },
+    host: { package: join(args.pkg, "components/host-runtime"), candidate_directory: args.candidate, game_directory: args.game,
+      character: "Defect", language: args.language, ascension: args.ascension, request_timeout_ms: 30_000 },
     compact: { enabled: true, reconcile_interval: 64, projection_memo: null },
     // Every capture gets the Host full check here (production samples 1%).
     checks: { sample_rate: 1, reduce_light: null }, memo: { native_card: null, receipt_canonical: null } });
-  const initialProgress = JSON.parse(readFileSync(progressFile, "utf8"));
+  const initialProgress = JSON.parse(readFileSync(args.initialProgressFile, "utf8"));
   const reports = [];
-  for (const seed of arg("seeds", "W3P1E0001,W3P1E0002").split(",")) {
-    const report = await probeSeed({ factory, seed, initialProgress, out, saveFloor: Number(arg("save-floor", "1")),
-      steps: Number(arg("steps", "400")), loads: Number(arg("loads", "2")) });
+  for (const seed of args.seeds) {
+    const report = await probeSeed({ factory, seed, initialProgress, out: args.out, saveFloor: args.saveFloor,
+      steps: args.steps, loads: args.loads });
     process.stderr.write(`${seed}: ${report.status}${report.failure ? ` ${report.failure.stage} ${report.failure.reason}` : ""}\n`);
     reports.push(report);
   }
   const summary = { schema: PROBE_SCHEMA, generated_at: new Date().toISOString(), host_version: factory.hostVersion,
+    args: { seeds: args.seeds, save_floor: args.saveFloor, steps: args.steps, loads: args.loads, ascension: args.ascension, language: args.language },
     verdict: verdict(reports), seeds: reports };
-  writeFileSync(join(out, "report.json"), `${JSON.stringify(summary, null, 1)}\n`, { mode: 0o600 });
-  process.stdout.write(`${JSON.stringify(summary.verdict)}\n`);
-  return summary.verdict.same_game === null ? 1 : summary.verdict.same_game ? 0 : 3;
+  summary.exit = exitCode(summary.verdict);
+  writeFileSync(join(args.out, "report.json"), `${JSON.stringify(summary, null, 1)}\n`, { mode: 0o600 });
+  process.stdout.write(`${JSON.stringify({ exit: summary.exit, ...summary.verdict })}\n`);
+  return summary.exit;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) process.exitCode = await main();
