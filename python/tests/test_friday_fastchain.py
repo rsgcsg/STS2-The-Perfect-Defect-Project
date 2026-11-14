@@ -5,6 +5,7 @@ import copy
 import importlib
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 
@@ -727,7 +728,8 @@ def chain_for(tmp_path, endings, **sets):
         chain='lr1', profile=PROFILE, site=site, cards=2, card_type='A100-40', layout=None,
         set=[f'{k}={v}' for k, v in sets.items()], resume_checkpoint=None,
         eval_execution=None, eval_manifest=None, eval_baseline_plan=None,
-        eval_a10_manifest=None, eval_slot_registered=False, dry_run=False)
+        eval_no_baseline=False, eval_a10_manifest=None, eval_slot_registered=False,
+        dry_run=False)
     chain = supervise.Chain(args, clock=lambda: cluster.now, sleep=cluster.sleep,
                             launch_main=cluster.launch_main, squeue=cluster.squeue,
                             scancel=cluster.scancel, checkpoints=lambda g: cluster.records)
@@ -890,7 +892,10 @@ def test_profile_relations_are_refused_at_load():
     with pytest.raises(run_profile.ProfileError, match='summing to 1'):
         run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
     with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):
-        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true'])
+        run_profile.load_profile(PROFILE, ['eval_a10_enabled=true', 'eval_a10_suite=""'])
+    a10 = run_profile.values(run_profile.load_profile(PROFILE))
+    assert a10['eval_a10_enabled'] is True
+    assert a10['eval_a10_suite'] == 'managed-rl5-learning-curve-50-20261114-Defect-a10'
     assert run_profile.values(run_profile.load_profile(PROFILE))['ascension_mix'] == {'0': 1.0}
 
 
@@ -1227,7 +1232,86 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
     assert a0[a0.index('--suite') + 1] == 'rl3-a0-100' and '--baseline-plan' in a0
     assert a10[a10.index('--suite') + 1] == 'a10-50' and a10[a10.index('--seeds') + 1] == '50'
     assert '--baseline-plan' not in a10 and '--dry-run' in a0
+    assert a0[a0.index('--baseline-source') + 1] == 'explicit' and '--baseline-sha256' not in a0
     execution = json.loads((chain.dir / 'eval-execution.json').read_text())
     assert execution['storage_mode'] == 'shared_local' and execution['peer'] == {
         'kind': 'local', 'directory': chain.site['peer_dir']}
     assert execution['store'] == chain.site['peer_dir'] and execution['models'] == {}
+
+
+def eval_chain(tmp_path, baselines='', **changes):
+    """A chain with both standing watchers; `baselines` is appended to the site's [site]."""
+    chain, cluster = chain_for(tmp_path, [{}], eval_a10_enabled='true', eval_a10_suite='a10-50',
+                               **changes)
+    if baselines:
+        text = chain.args.site.read_text().replace(
+            '\n[site.gpu_types', baselines + '\n[site.gpu_types', 1)
+        chain.args.site.write_text(text)
+        chain.site = supervise.run_profile.load_site(chain.args.site)
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.spawn = lambda cmd, log: type('P', (), {'pid': 7, 'poll': lambda self: None,
+                                                  'returncode': None})()
+    return chain, cluster
+
+
+SITE_BASELINES = (f'eval_baselines.a0 = {{ plan = "/b/a0/plan.json", sha256 = "{"a" * 64}" }}\n'
+                  f'eval_baselines.a10 = {{ plan = "/b/a10/plan.json", sha256 = "{"b" * 64}" }}\n')
+
+
+def test_watcher_start_checks_run_before_generation_zero_and_stop_the_chain(tmp_path):
+    """M1: a watcher that would refuse to start stops the chain before any training job."""
+    chain, cluster = eval_chain(tmp_path, SITE_BASELINES)
+    checked = []
+
+    def check(cmd):
+        checked.append(cmd)
+        refused = '--suite' in cmd and cmd[cmd.index('--suite') + 1] == 'a10-50'
+        return subprocess.CompletedProcess(cmd, 2 if refused else 0, '', 'fast_eval check '
+                                           'refused: ValueError: named_frozen_evaluation_suite'
+                                           '_manifest_required' if refused else '')
+
+    chain.check = check
+    assert chain.run() == 1
+    assert cluster.argvs == []  # no generation was submitted
+    final = json.loads((chain.dir / 'FINAL.json').read_text())
+    assert 'watcher a10 refused at start' in final['cause'] and 'manifest' in final['cause']
+    a0, a10 = checked
+    assert all(cmd[-1] == '--check' for cmd in checked)
+    assert a0[a0.index('--baseline-plan') + 1] == '/b/a0/plan.json'
+    assert a0[a0.index('--baseline-sha256') + 1] == 'a' * 64
+    assert a10[a10.index('--baseline-source') + 1] == 'site'
+    # --dry-run runs the same checks.
+    dry, cluster = eval_chain(tmp_path / 'dry', SITE_BASELINES)
+    dry.args.dry_run, dry.check = True, check
+    assert dry.run() == 1 and cluster.argvs == []
+
+
+def test_no_baseline_needs_the_flag_and_the_flag_overrides_the_site(tmp_path):
+    chain, cluster = eval_chain(tmp_path)  # no eval_baselines in the site
+    chain.check = lambda cmd: subprocess.CompletedProcess(cmd, 0, '{}', '')
+    assert chain.run() == 1 and cluster.argvs == []
+    final = json.loads((chain.dir / 'FINAL.json').read_text())
+    assert 'no baseline' in final['cause'] and '--eval-no-baseline' in final['cause']
+    flagged, cluster = eval_chain(tmp_path / 'flag', SITE_BASELINES)
+    flagged.args.eval_no_baseline = True
+    checked = []
+    flagged.check = lambda cmd: checked.append(cmd) or subprocess.CompletedProcess(cmd, 0, '', '')
+    assert flagged.run() == 0 and len(cluster.argvs) == 1
+    assert all('--no-baseline' in cmd and '--baseline-plan' not in cmd for cmd in checked)
+    with pytest.raises(supervise.run_profile.ProfileError, match='eval_baselines'):
+        eval_chain(tmp_path / 'bad', 'eval_baselines.a0 = { plan = "/b", sha256 = "short" }')
+
+
+def test_a_dead_watcher_is_dead_in_the_readout(tmp_path, capsys):
+    chain, _ = eval_chain(tmp_path, SITE_BASELINES)
+    chain.dir.mkdir(parents=True)
+    chain.state = {'log': []}
+    dead = type('P', (), {'pid': 7, 'poll': lambda self: 1, 'returncode': 1})()
+    chain.eval_loops = {'a0': dead}
+    chain.tick(tmp_path / 'no-run-yet')
+    assert 'DEAD (exit 1)' in capsys.readouterr().err
+    status = chain.eval_status()
+    assert 'a0 DEAD (exit 1) no state yet' in status and 'a10 no state yet' in status

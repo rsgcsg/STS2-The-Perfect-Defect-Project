@@ -96,7 +96,7 @@ def read_batch(bundle: dict[str, Any], expected_model: dict[str, Any],
     """A failed audit stays failed; only original admitted natural rows qualify."""
     for name in ('plan', 'result', 'snapshot'):
         read_pinned(bundle[name])
-    if read_pinned(bundle['snapshot']).get('full_readback') is not True:
+    if not evaluate.originals_retained(read_pinned(bundle['snapshot'])):
         raise ValueError('normal_batch_full_snapshot_required')
     plan, original, files = evaluate.read_observation_report(
         Path(bundle['result']['path']), Path(bundle['plan']['path']))
