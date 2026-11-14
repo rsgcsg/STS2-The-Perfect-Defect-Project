@@ -222,11 +222,12 @@ def hp_advantages(start: Mapping[str, Any] | None,
     A_hp_t = D_t - (100 HP(s_t) - H_t). None when a fact it needs is missing.
     """
     facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
-    if any(not isinstance(fact, Mapping) or type(fact.get("hp")) is not int
-           or type(fact.get("max_hp")) is not int for fact in facts):
+    checked = [fact for fact in facts if isinstance(fact, Mapping)
+               and type(fact.get("hp")) is int and type(fact.get("max_hp")) is int]
+    if len(checked) != len(facts):
         return None
-    hp = [fact["hp"] for fact in facts]
-    max_hp = [fact["max_hp"] for fact in facts]
+    hp = [fact["hp"] for fact in checked]
+    max_hp = [fact["max_hp"] for fact in checked]
     death = ((steps[-1][0] or {}).get("terminal") or {}).get("result") == "defeat"
     end_hp = 0 if death else hp[-1]
     extra = -DEATH_POINTS - (max_hp[-1] - max_hp[0]) if death else 0
