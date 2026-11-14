@@ -518,8 +518,30 @@ def test_class_values_follow_the_game_ascension_a1_to_a9():
     for level in range(1, 10):  # A1-A9: same floors and bosses as A0 (game enum, 11-13)
         assert torch.equal(class_reward_values(ascension=level), a0)
         assert finish_floor(level) == 48
-    assert tuple(range(10)) == SUPPORTED_ASCENSIONS
+    assert tuple(range(11)) == SUPPORTED_ASCENSIONS
     with pytest.raises(ValueError, match="unsupported_ascension"):
-        class_reward_values(ascension=10)
+        class_reward_values(ascension=11)
     assert checked_terminal_class(result="loss", floor=20, reward=float(a0[20]),
                                   ascension=5) == 20
+
+
+def test_a10_class_values_use_floor_49_and_refuse_a_floor_49_loss():
+    from stpd.rl.heads import checked_terminal_class, class_reward_values, finish_floor
+
+    a10 = class_reward_values(ascension=10)
+    assert finish_floor(10) == 49
+    for floor in range(49):
+        bosses = sum(boss < floor for boss in (17, 33, 48))
+        assert float(a10[floor]) == pytest.approx(0.5 * (floor / 49) ** 2 + 0.1 * bosses)
+    assert float(a10[49]) == 1.0
+    assert float(a10[50]) == pytest.approx(0.5 * (35 / 49) ** 2 + 0.1)  # Golden Compass
+    assert checked_terminal_class(result="loss", floor=48, reward=float(a10[48]),
+                                  ascension=10) == 48
+    assert checked_terminal_class(result="win", floor=49, reward=1.0, ascension=10) == 49
+    # A0's floor-48 value is not A10's: the level decides the table.
+    with pytest.raises(ValueError, match="terminal_class_reward_mismatch"):
+        checked_terminal_class(result="loss", floor=48,
+                               reward=float(class_reward_values()[48]), ascension=10)
+    for floor in (49, 50):
+        with pytest.raises(ValueError, match="terminal_a10_floor49_loss_unsupported"):
+            checked_terminal_class(result="loss", floor=floor, reward=0.7, ascension=10)

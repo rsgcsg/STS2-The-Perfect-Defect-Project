@@ -33,6 +33,29 @@ def test_public_terminal_label_is_the_old_chain_label(case, expected):
     assert label["reward"] == pytest.approx(expected[1], abs=1e-12)
 
 
+A10_CASES = [
+    (([1], "defeat", 10), (10, 0.5 * (10 / 49) ** 2)),
+    (([1, 2, 2, 2], "defeat", 35), (50, 0.5 * (35 / 49) ** 2 + 0.1)),  # Golden Compass
+    (([1, 2, 3, 3], "defeat", 48), (48, 0.5 * (48 / 49) ** 2 + 0.2)),  # lost at Boss 3
+    (([1, 2, 3, 3], "victory", 49), (49, 1.0)),
+]
+
+
+@pytest.mark.parametrize(("case", "expected"), A10_CASES)
+def test_a10_public_terminal_label_uses_the_49_floor_table(case, expected):
+    acts, result, floor = case
+    label = public_terminal_label({"ascension": 10, "result": result, "max_floor": floor,
+                                   "acts": acts})
+    assert label["class"] == expected[0]
+    assert label["reward"] == pytest.approx(expected[1], abs=1e-12)
+
+
+def test_a10_loss_at_floor_49_is_refused_not_relabelled():
+    with pytest.raises(ValueError, match="terminal_a10_floor49_loss_unsupported"):
+        public_terminal_label({"ascension": 10, "result": "defeat", "max_floor": 49,
+                               "acts": [1, 2, 3, 3]})
+
+
 def test_public_terminal_label_refuses_what_the_old_chain_refuses():
     # From a save in act 2 nothing public shows Boss 1; the old chain refuses the class.
     with pytest.raises(ValueError, match="terminal_class_reward_mismatch"):
@@ -51,8 +74,9 @@ def test_public_terminal_label_refuses_what_the_old_chain_refuses():
 
 
 def _terminal_game(h: Harness, game: str, acts: list[int], floor: int, *,
-                   result: str = "defeat", start: dict | None = None) -> None:
-    h.open(game, start=start)
+                   result: str = "defeat", start: dict | None = None,
+                   ascension: int = 0) -> None:
+    h.open(game, start=start, ascension=ascension)
     rows = []
     for act in acts[:-1]:
         _, row = h.step(game, outcome=False, floor=min(floor, 10))
@@ -89,6 +113,31 @@ def test_default_labeler_seals_terminal_from_public_act_advances():
     assert save.kind == "truncated"
     assert save.header["seal"]["truncation"]["reason"] == "terminal_label_refused"
     assert assembler.report()["terminal_label_refused"] == 1
+
+
+def test_a10_terminals_seal_on_the_49_table_and_a_floor_49_loss_is_refused():
+    from stpd.rl.fast_assembly import FastSegmentAssembler
+    from stpd.rl.fast_segment import FORMAT_3
+
+    sealed: list[Any] = []
+    assembler = FastSegmentAssembler(assembler_id="node-a",
+                                     compiler_identity={"compiler_sha256": "b" * 64},
+                                     emit=sealed.append, segment_format=FORMAT_3)
+    h = Harness()
+    h.assembler, h.sealed = assembler, sealed
+    assembler.offer_mu(mu(1))
+    _terminal_game(h, "boss3", [2, 3, 3], 48, ascension=10)
+    _terminal_game(h, "boss4", [2, 3, 3], 49, ascension=10)
+    boss3, boss4 = sealed
+    assert boss3.kind == "terminal" and boss3.header["ascension"] == 10
+    assert boss3.header["seal"]["terminal"]["class"] == 48
+    assert boss3.header["seal"]["terminal"]["reward"] == pytest.approx(
+        0.5 * (48 / 49) ** 2 + 0.2)
+    # Floor-49 loss: no class has its reward; kept as original, counted under A10.
+    assert boss4.kind == "truncated"
+    assert assembler.report()["by_ascension"]["10"]["label_refused"] == {
+        "terminal_a10_floor49_loss_unsupported": 1}
+    assert assembler.report()["a10_floor49_loss_refused"] == 1  # the run readout field
 
 
 def weighted(index: int, payload: bytes | None = None, generation: str = "gen-1") -> MuHandoff:

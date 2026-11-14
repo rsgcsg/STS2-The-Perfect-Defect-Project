@@ -199,12 +199,26 @@ def load_plan(path: Path) -> dict[str, Any]:
     return value
 
 
-def prepare_learning_curve_manifest(game_directory: Path, output: Path) -> dict[str, Any]:
-    """Use the exact shipped version, including its v prefix; never guess a version."""
-    from stpd.evaluation.suites import rl3_learning_curve_manifest
+def prepare_learning_curve_manifest(game_directory: Path, output: Path,
+                                    suite: str | None = None) -> dict[str, Any]:
+    """Use the exact shipped version, including its v prefix; never guess a version.
 
+    `suite`: the fixed A0 100 (default) or the fixed A10 50, each frozen and reported
+    on its own.
+    """
+    from stpd.evaluation.suites import (
+        RL3_LEARNING_CURVE_SUITE_ID,
+        RL5_A10_CURVE_SUITE_ID,
+        rl3_learning_curve_manifest,
+        rl5_a10_curve_manifest,
+    )
+
+    builders = {RL3_LEARNING_CURVE_SUITE_ID: rl3_learning_curve_manifest,
+                RL5_A10_CURVE_SUITE_ID: rl5_a10_curve_manifest}
+    if (suite or RL3_LEARNING_CURVE_SUITE_ID) not in builders:
+        raise ValueError('fixed_learning_curve_suite_required')
     release = json.loads((game_directory / 'release_info.json').read_bytes())
-    manifest = rl3_learning_curve_manifest(release['version'])
+    manifest = builders[suite or RL3_LEARNING_CURVE_SUITE_ID](release['version'])
     save(output, manifest)
     return manifest
 
@@ -775,6 +789,7 @@ def main():
     manifest_parser = commands.add_parser('prepare-manifest')
     manifest_parser.add_argument('--game-directory', type=Path, required=True)
     manifest_parser.add_argument('--output', type=Path, required=True)
+    manifest_parser.add_argument('--suite', help='fixed suite id (default: the A0 100 seeds)')
     projection_parser = commands.add_parser('project-report')
     projection_parser.add_argument('--result', type=Path, required=True)
     projection_parser.add_argument('--plan', type=Path, required=True)
@@ -833,7 +848,7 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     if args.command == 'prepare-manifest':
-        result = prepare_learning_curve_manifest(args.game_directory, args.output)
+        result = prepare_learning_curve_manifest(args.game_directory, args.output, args.suite)
     elif args.command == 'project-report':
         result = project_observation_report(args.result, args.plan, args.output)
     elif args.command == 'check-checkpoint':

@@ -1613,12 +1613,14 @@ def test_in_process_transport_starts_the_same_runtime_arguments_inside_the_host_
     artifacts = SimpleNamespace(root=tmp_path, put=lambda name, _bytes: name)
     row = {"selection_id": "model", "seed": "seed", "intent_id": "intent",
            "world_mutation_offered": False}
-    executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
+    # A10 is admitted; the requested level goes to the Host, which checks it at mount.
+    executor(row, {"ascension": 10, "host": "Managed", "character": "Defect"},
              artifacts, lambda: None)
     assert row["managed_transport"] == "in_process"
     assert row["status"] == "unknown" and row["reason"] == "RuntimeError"
     assert row["cleanup_accepted"] is True
     (kwargs,) = launches
+    assert kwargs["ascension"] == 10 and kwargs["character"] == "Defect"
     assert kwargs["embedder"] == [str(tmp_path / "managed-inprocess-host.js"), "--host-package",
                                   str(tmp_path / "host"), "--runtime-stdout",
                                   str(tmp_path / "private" / "runtime.stdout"), "--"]

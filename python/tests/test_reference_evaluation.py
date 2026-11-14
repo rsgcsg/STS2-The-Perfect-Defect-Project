@@ -177,6 +177,33 @@ def test_rl3_learning_curve_reader_refuses_changed_plan(tmp_path, field, value):
         load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
+def test_rl5_a10_curve_suite_is_fresh_reserved_and_roundtrips(tmp_path):
+    from stpd.evaluation import suites
+
+    manifest = suites.rl5_a10_curve_manifest("v0.111.0")
+    seeds = manifest["seeds"]
+    assert manifest["ascension"] == 10 and manifest["host"] == "Managed"
+    assert manifest["purpose"] == "fixed_evaluation_only"
+    assert len(seeds) == len(set(seeds)) == manifest["episode_count"] == 50
+    others = {seed for name in suites.suite_names() for seed in suites.load_suite(name)["seeds"]}
+    others.update(suites.t2_managed_manifest("v0.111.0")["seeds"])
+    others.update(suites.rl3_learning_curve_manifest("v0.111.0")["seeds"])
+    for level in (0, 10):
+        others.update(suites.rl5_int_sealed_manifest("v0.111.0", level)["seeds"])
+    assert not set(seeds) & others
+    for seed in seeds:
+        assert seed_membership(seed) == (suites.RL5_A10_CURVE_SUITE_ID,)
+        with pytest.raises(ValueError, match="reserved"):
+            suites.require_non_evaluation_seed(seed)
+    path = tmp_path / "manifest.json"
+    path.write_bytes(json_bytes(manifest))
+    assert load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())[1] == manifest
+    manifest["ascension"] = 0
+    path.write_bytes(json_bytes(manifest))
+    with pytest.raises(BoundaryError, match="manifest_configuration_changed"):
+        load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
 def test_rl5_int_sealed_seeds_are_fresh_and_excluded_from_training():
     from stpd.evaluation import suites
 

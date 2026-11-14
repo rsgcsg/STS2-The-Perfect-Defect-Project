@@ -134,6 +134,12 @@ def test_exact_game_version_is_taken_from_shipped_release(rl, tmp_path):
     (game/'release_info.json').write_text('{"version":"v0.111.0"}')
     manifest = rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'manifest.json')
     assert manifest['game_version'] == 'v0.111.0' and len(manifest['seeds']) == 100
+    from stpd.evaluation.suites import RL5_A10_CURVE_SUITE_ID
+    a10 = rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'a10.json',
+                                                      RL5_A10_CURVE_SUITE_ID)
+    assert a10['ascension'] == 10 and len(a10['seeds']) == 50
+    with pytest.raises(ValueError, match='fixed_learning_curve_suite_required'):
+        rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'x.json', 'other')
     (game/'release_info.json').write_text('{"version":"0.111.0"}')
     with pytest.raises(ValueError, match='explicit exact game version'):
         rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'bad.json')

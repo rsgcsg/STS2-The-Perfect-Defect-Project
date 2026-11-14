@@ -32,7 +32,7 @@ CLASS_FLOORS = tuple(range(49)) + (49, 35)
 WIN_CLASS = 49
 HEAD_PREFIX = "rl4_heads."
 # Ascensions whose class rewards this module describes (the fast chain refuses others).
-SUPPORTED_ASCENSIONS = tuple(range(10))
+SUPPORTED_ASCENSIONS = tuple(range(11))
 _BOSS_FLOORS = (17, 33, 48)
 
 
