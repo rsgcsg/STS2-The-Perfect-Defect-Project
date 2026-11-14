@@ -7,7 +7,9 @@ launch.py (plan.json for the name `N卡 · 布局 · 卡型`, the target and the
 ideal) and the files the roles write (learner-events/-status, service-status-*, gpu.csv,
 env-n*/). Prints per role: rows/s, busy %, queue, wait and drops over the best window;
 then the training rows/h against the target of this card count; for multi-card runs a
-loss-table skeleton (ideal by perfect packing, measured, one row per cause).
+loss-table skeleton (ideal by perfect packing, measured, one row per cause); and the
+environment-side recipe (games, mean floor, wins, rows per exploration arm, ascension
+level, start kind and K) so short runs with different recipes can be compared.
 
 Missing files give an empty row, never a guessed number.
 """
@@ -213,6 +215,65 @@ def env_edge(run: Path, window: tuple[float, float] | None) -> dict[str, Any]:
             "core_ms_per_row": 1000 * cpu / rows if rows else None, "closed": closed}
 
 
+def _bucket() -> dict[str, Any]:
+    return {"games": 0, "other": 0, "floor_sum": 0, "wins": 0, "rows": 0}
+
+
+def _add(bucket: dict[str, Any], record: dict[str, Any], counted: bool) -> None:
+    """One closed game. complete = terminal, admitted and evidence ok; rows = the model rows
+    (decisions) of every admitted game whose evidence held, complete or not."""
+    if counted:
+        bucket["rows"] += record.get("decisions") or 0
+    if counted and record.get("reason") == "terminal":
+        bucket["games"] += 1
+        bucket["floor_sum"] += record.get("floor") or 0
+        bucket["wins"] += record.get("terminal") == "victory"
+    else:
+        bucket["other"] += 1
+
+
+def _finish(bucket: dict[str, Any]) -> dict[str, Any]:
+    out = {key: value for key, value in bucket.items() if key != "floor_sum"}
+    out["mean_floor"] = bucket["floor_sum"] / bucket["games"] if bucket["games"] else None
+    return out
+
+
+def recipe_edge(run: Path) -> dict[str, Any]:
+    """Environment-side recipe over the whole run so far, from every driver's driver.jsonl
+    `closed` lines: per exploration arm, per ascension level, per start kind and per K
+    (games = complete games, mean floor and wins over them, other = every other close, rows
+    = model rows of admitted games; for K > 1 also groups, full groups = all K complete, and
+    the mean floor range inside a group). A run without those lines gives {}."""
+    tables: dict[str, dict[str, dict[str, Any]]] = {"arm": {}, "ascension": {}, "start": {},
+                                                    "k": {}}
+    groups: dict[str, dict[str, Any]] = {}  # driver dir/group -> k, complete, floors
+    for path in sorted(glob.glob(str(run / "env-n*" / "p*" / "driver.jsonl"))):
+        records = jsonl(path)
+        admitted = {r.get("game_ref") for r in records
+                    if r.get("event") == "admission" and r.get("ok")}
+        for r in records:
+            if r.get("event") != "closed" or "arm" not in r:
+                continue
+            counted = r.get("game_ref") in admitted and not r.get("evidence_failed")
+            for key in tables:
+                _add(tables[key].setdefault(str(r.get("replay_k" if key == "k" else key)),
+                                            _bucket()), r, counted)
+            g = groups.setdefault(f"{Path(path).parent}/{r.get('group')}",
+                                  {"k": str(r.get("replay_k")), "floors": []})
+            if counted and r.get("reason") == "terminal":
+                g["floors"].append(r.get("floor") or 0)
+    if not groups:
+        return {}
+    out: dict[str, Any] = {key: {name: _finish(b) for name, b in sorted(table.items())}
+                           for key, table in tables.items()}
+    for k, row in out["k"].items():
+        mine = [g["floors"] for g in groups.values() if g["k"] == k]
+        spread = [max(f) - min(f) for f in mine if len(f) >= 2]
+        row.update({"groups": len(mine), "full_groups": sum(len(f) == int(k) for f in mine),
+                    "mean_floor_range": sum(spread) / len(spread) if spread else None})
+    return out
+
+
 def loss_table(plan: dict[str, Any], train: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Multi-card skeleton: ideal (perfect packing) vs measured, one row per cause.
 
@@ -277,7 +338,7 @@ def build(run: Path, window: float, plan_path: Path | None = None) -> dict[str, 
     return {"name": plan["name"], "target": target, "training": train,
             "services": service_edges(run, span), "gpu": gpu_cards(run, span),
             "env": env_edge(run, span), "compile": compile_edge(events),
-            "disk": disk_edge(run),
+            "disk": disk_edge(run), "recipe": recipe_edge(run),
             "verdict": verdict(train.get("rows_h"), target),
             "loss_table": loss_table(plan, train)}
 
@@ -332,6 +393,19 @@ def render(r: dict[str, Any]) -> str:
                                              for name, pct in sorted(d["free_pct"].items())))
     out += [("ALARM " if line.startswith("DISK STOP") else "") + line
             for line in d.get("events", [])]
+    if r.get("recipe"):
+        out += ["", "recipe, whole run so far (games = complete: terminal, admitted, evidence "
+                "ok; rows = model rows of admitted games):",
+                f"  {'':<22}{'games':>8}{'other':>7}{'floor':>7}{'wins':>6}{'rows':>12}"
+                f"{'groups':>8}{'full':>6}{'range':>7}"]
+        for key in ("arm", "ascension", "start", "k"):
+            for name, row in r["recipe"][key].items():
+                label = f"{key} {'A' + name if key == 'ascension' else name}"
+                grouped = key == "k" and name != "1"
+                out.append(f"  {label:<22}{row['games']:>8,}{row['other']:>7,}"
+                           f"{fmt(row['mean_floor'], 1):>7}{row['wins']:>6,}{row['rows']:>12,}"
+                           + (f"{row['groups']:>8,}{row['full_groups']:>6,}"
+                              f"{fmt(row['mean_floor_range'], 1):>7}" if grouped else ""))
     if r["loss_table"]:
         out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:

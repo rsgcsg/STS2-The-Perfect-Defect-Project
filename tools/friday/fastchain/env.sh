@@ -68,8 +68,11 @@ GC=$([ "$FC_DRIVER_SINGLE_THREADED_GC" = 1 ] && echo --single-threaded-gc on || 
 # node's drivers); #529: R7 audit games chosen by the admission sidecar when the rate > 0.
 ASC=($($PY -c "import json, sys; sys.path.insert(0, sys.argv[3]); import run_profile; print(*run_profile.ascension_plan(json.loads(sys.argv[1]), int(sys.argv[2])))" "$FC_ASCENSION_MIX" $P $H))
 [ ${#ASC[@]} -eq $P ] || { echo "ascension plan failed: ${ASC[*]}"; kill "${AGGP[@]}" $ADM; exit 3; }
+# I4: one exploration arm per driver, interleaved over the run's driver numbers (node x P + p).
+ARM=($($PY -c "import json, sys; sys.path.insert(0, sys.argv[4]); import run_profile; print(*run_profile.exploration_plan(json.loads(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])))" "$FC_EXPLORATION_LADDER" $(( NODEIDX * P )) $P $H))
+[ ${#ARM[@]} -eq $P ] || { echo "exploration plan failed: ${ARM[*]}"; kill "${AGGP[@]}" $ADM; exit 3; }
 R7=$(awk "BEGIN { print ($FC_R7_GAMES_PER_HOUR > 0) ? \"on\" : \"off\" }")
-echo "ascension per driver: ${ASC[*]} r7=$R7"
+echo "ascension per driver: ${ASC[*]} arm per driver: ${ARM[*]} replay_k=$FC_REPLAY_K r7=$R7"
 pids=()
 for p in $(seq 1 $P); do
   node $H/env_driver.mjs --pkg $FC_SITE_ENV_PKG --memo "$FC_ENV_MEMO" --out $O/p$p --tag n$NODEIDX-p$p --slots $K --single-choice omit --compact on \
@@ -79,7 +82,8 @@ for p in $(seq 1 $P); do
     --cold-start $FC_DRIVER_COLD_START --elu-preload $H/elu_preload.mjs \
     --inference-timeout-ms $FC_DRIVER_INFERENCE_TIMEOUT_MS --reopen-backoff-start-ms $FC_DRIVER_REOPEN_BACKOFF_START_MS \
     --reopen-backoff-cap-ms $FC_DRIVER_REOPEN_BACKOFF_CAP_MS --reopen-backoff-jitter $FC_DRIVER_REOPEN_BACKOFF_JITTER \
-    --reduce-light-interval $FC_DRIVER_REDUCE_LIGHT_INTERVAL $GC --ascension ${ASC[$((p - 1))]} --r7 $R7 > $O/p$p.driver.log 2>&1 &
+    --reduce-light-interval $FC_DRIVER_REDUCE_LIGHT_INTERVAL $GC --ascension ${ASC[$((p - 1))]} --r7 $R7 \
+    --exploration-ladder "$FC_EXPLORATION_LADDER" --arm ${ARM[$((p - 1))]} --replay-k $FC_REPLAY_K > $O/p$p.driver.log 2>&1 &
   pids+=($!)
 done
 drain() { cat $RUN/STOP > $O/stop-at-drain.txt 2>/dev/null; echo "drain $1 $(date -Is) stop=$(cat $O/stop-at-drain.txt 2>/dev/null)"; kill -USR1 "${pids[@]}" 2>/dev/null; }
