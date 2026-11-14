@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlayerEnvironmentRestClient, checkPublicBasisLight, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
 import { ReduceStrictSampleFailure } from "@rsgcsg/sts2-connector-client/p1-global";
@@ -21,7 +21,8 @@ import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
 import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
-import { HostSlotNative, SampledCheckFailure, captureSampleOffset, fastGameInstanceId, captureSampleSchedule, type NativeEpisode, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
+import { HostSlotNative, SampledCheckFailure, SaveMapFailure, captureSampleOffset, fastGameInstanceId, captureSampleSchedule, type NativeEpisode,
+  type SaveMapResult, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
 /** Equal subtrees become one deep-frozen object, kept across steps (what the E5 Host hands over). */
 function internFrozen(value: unknown, table: Map<string, object>): unknown {
@@ -66,7 +67,9 @@ interface NativeHooks {
   onCpuRead?: () => void | Promise<void>;
   /** The state after native step n (0 = after the mount): a six-option combat ("multi"), the
    * same combat with one option ("single") or the game over ("terminal"). Overrides terminalAfter. */
-  script?: (step: number) => "multi" | "single" | "terminal";
+  script?: (step: number) => Scripted;
+  /** The Host's answer to the n-th map save of this native (default: written). */
+  saveMap?: (save: number) => "saved" | "refused" | "failed" | "unknown";
   /** The successor frame of these native steps carries one native combat_end fact. */
   combatEndOn?: number[];
   /** Receipts come back deep-frozen, equal subtrees as the same objects across steps (E5 identity). */
@@ -75,9 +78,18 @@ interface NativeHooks {
   projectionMemo?: () => { hits: number; misses: number; checks: number };
 }
 
+/** A scripted state: "map:N" is a settled map (one option) on floor N. */
+type Scripted = "multi" | "single" | "terminal" | `map:${number}`;
+
 /** A state of the scripted fixture game; every one gets its own snapshot id and the fixture's session. */
-function scriptedBasis(source: GlobalHttpFixture, kind: "multi" | "single", step: number): any {
-  const basis = p1Fixture("synthetic-complete-combat");
+function scriptedBasis(source: GlobalHttpFixture, kind: Exclude<Scripted, "terminal">, step: number): any {
+  const map = kind.startsWith("map:");
+  const basis = p1Fixture(map ? "managed-map_navigation" : "synthetic-complete-combat");
+  if (map) {
+    basis.snapshot.persistent.content.run.floor = Number(kind.slice(4));
+    // The fixture predates the map's current_position field (null: nothing visited yet in this act).
+    basis.snapshot.interaction.content.context.current_position = null;
+  }
   if (kind === "single") {
     // The same combat with only End turn left: one option.
     const actions = basis.snapshot.bound_actions;
@@ -124,7 +136,7 @@ class FakeNative implements SlotNative {
     this.source.terminalAfterStep = (this.hooks.terminalAfter ?? 1) <= 1;
     this.#combatEnd = [];
     const first = this.hooks.script?.(0);
-    if (first === "single") this.source.basis = scriptedBasis(this.source, "single", 0);
+    if (first !== undefined && first !== "multi" && first !== "terminal") this.source.basis = scriptedBasis(this.source, first, 0);
     await this.transport.acquire(new AbortController().signal);
     return { gameInstanceId: `gi-${randomUUID().replaceAll("-", "")}`, start: { kind: "new_run" } };
   }
@@ -174,6 +186,22 @@ class FakeNative implements SlotNative {
     return this.hooks.internReceipts ? internFrozen(value, this.#interned) : value;
   }
   #interned = new Map<string, object>();
+  /** Paths of every map save asked of this native. */
+  saves: string[] = [];
+  async saveMap(path: string): Promise<SaveMapResult> {
+    const n = this.saves.push(path);
+    const outcome = this.hooks.saveMap?.(n) ?? "saved";
+    if (outcome === "failed") throw new SaveMapFailure("managed_map_continue_native_save_failed", "failed");
+    if (outcome === "unknown") throw new SaveMapFailure("managed_map_continue_unknown_replace_process", "unknown");
+    if (outcome === "refused") return { kind: "refused", reason: "managed_map_continue_quiescent_map_required" };
+    const text = JSON.stringify({ fixture_save: n });
+    await writeFile(path, text, { flag: "wx" });
+    const run = this.source.basis.snapshot.persistent.content.run;
+    return { kind: "saved", save: { schema: "sts2.host-runtime/managed-map-continue-1", path, bytes: Buffer.byteLength(text),
+      sha256: createHash("sha256").update(text).digest("hex"), candidate: { artifact_sha256: "1".repeat(64), runtime_sts2_sha256: "2".repeat(64) },
+      seed: "seed-0", act: run.act, floor: run.floor, save_boundary: "map_room", source_room_type: "MapRoom",
+      parent_runtime_instance_id: this.runtimeInstanceId, parent_game_continuity_id: "managed_episode_fixture" } };
+  }
   projectionMemo() { return this.hooks.projectionMemo?.() ?? null; }
   async release() { await this.transport.release(); }
   taint() { const reason = this.hooks.taintReason?.() ?? null; return { tainted: reason !== null, reason }; }
@@ -1153,6 +1181,95 @@ describe("fast-env failure paths", () => {
   });
 });
 
+describe("fast-env save points (save tickets)", () => {
+  // A row on a combat, then a map on floor 1 (one option, a row under score), then floor 2, then the game over.
+  const mapGame = (step: number): Scripted => (["multi", "map:1", "map:2", "terminal"] as const)[step] ?? "terminal";
+  const saveDir = () => mkdtemp(join(tmpdir(), "fast-env-saves-"));
+
+  it("open.save_points: absolute directory, 1..64 distinct floors, new_run only; absent or null = none", () => {
+    const open = { schema: FAST_ENV_COMMAND_SCHEMA, cmd: "open", command_id: "c1", slot: 0, game_ref: "g", seed: "s", initial_progress: null, start: { kind: "new_run" }, r7: false };
+    expect(parseFastEnvCommand(open)).toMatchObject({ save_points: null });
+    expect(parseFastEnvCommand({ ...open, save_points: null })).toMatchObject({ save_points: null });
+    expect(parseFastEnvCommand({ ...open, save_points: { directory: "/pool/saves", floors: [17, 33] } }))
+      .toMatchObject({ save_points: { directory: "/pool/saves", floors: [17, 33] } });
+    const save = { schema: "x", sha256: "e".repeat(64), act: 2, floor: 18 };
+    for (const bad of [{ directory: "pool", floors: [1] }, { directory: "/p", floors: [] }, { directory: "/p", floors: [1, 1] },
+      { directory: "/p", floors: [-1] }, { directory: "/p", floors: Array.from({ length: 65 }, (_, i) => i) }, { directory: "/p", floors: [1], every: 2 }])
+      expect(() => parseFastEnvCommand({ ...open, save_points: bad })).toThrow(/open.save_points/u);
+    expect(() => parseFastEnvCommand({ ...open, start: { kind: "from_save", save }, save_points: { directory: "/p", floors: [1] } }))
+      .toThrow(/open.save_points/u);
+  });
+
+  it("no save points (default): no save is asked, the game and the status are exactly today's", async () => {
+    const h = await harness({ hooks: () => ({ script: mapGame }) });
+    await h.next(event => event.event === "ready");
+    h.open(0);
+    const closed = await h.next(event => event.event === "closed");
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 3, native: "kept" });
+    expect(h.natives[0]!.saves).toEqual([]);
+    expect(h.events.some(event => event.event === "saved" || event.event === "save_refused")).toBe(false);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters).not.toHaveProperty("saves");
+  });
+
+  it("saves once at the settled map of a listed floor, reports the Host descriptor and mu, and the game plays on", async () => {
+    const directory = await saveDir();
+    const h = await harness({ hooks: () => ({ script: mapGame }) });
+    await h.next(event => event.event === "ready");
+    h.open(0, { save_points: { directory, floors: [1] } });
+    const opened = await h.next(event => event.event === "opened");
+    const saved = await h.next(event => event.event === "saved");
+    const closed = await h.next(event => event.event === "closed");
+    expect(saved).toMatchObject({ slot: 0, game_instance_id: opened.game_instance_id, game_ref: opened.game_ref, floor: 1, ascension: 0, character: "Defect",
+      mu_snapshot_sha256: "a".repeat(64), decisions: 1, public_facts: { act: 1, floor: 1 },
+      save: { schema: "sts2.host-runtime/managed-map-continue-1", act: 1, floor: 1, sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) } });
+    expect(saved.save.path.startsWith(`${directory}/env-test.`)).toBe(true);
+    expect(await readdir(directory)).toHaveLength(1);
+    // The save is side work: the map row and the next one still act, the game ends at its own terminal.
+    expect(closed).toMatchObject({ reason: "terminal", decisions: 3, native: "kept" });
+    expect(h.natives[0]!.saves).toHaveLength(1);
+    expect(linkOf(h.linkMessages, "step_outcome", opened.game_instance_id).map(outcome => outcome.status)).toEqual(["completed", "completed", "completed"]);
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters.saves).toMatchObject({ written: 1, refused: 0, failed: 0, unknown: 0 });
+  });
+
+  it("each listed floor is tried once; a refusal before any write keeps the game", async () => {
+    const directory = await saveDir();
+    const twice = (step: number): Scripted => (["map:1", "map:1", "map:2", "map:3", "terminal"] as const)[step] ?? "terminal";
+    const h = await harness({ hooks: () => ({ script: twice, saveMap: n => n === 2 ? "refused" : "saved" }) });
+    await h.next(event => event.event === "ready");
+    h.open(0, { save_points: { directory, floors: [1, 2, 3] } });
+    const closed = await h.next(event => event.event === "closed");
+    const saved = h.events.filter(event => event.event === "saved"), refused = h.events.filter(event => event.event === "save_refused");
+    // Floor 1 is saved at its first map (before any row: no producing model yet) and not again.
+    expect(saved.map(event => [event.floor, event.decisions, event.mu_snapshot_sha256])).toEqual([[1, 0, null], [3, 3, "a".repeat(64)]]);
+    expect(refused).toEqual([expect.objectContaining({ floor: 2, reason: "managed_map_continue_quiescent_map_required" })]);
+    expect(h.natives[0]!.saves).toHaveLength(3);
+    expect(closed).toMatchObject({ reason: "terminal", native: "kept", decisions: 4 });
+    h.send({ cmd: "status" });
+    expect((await h.next(event => event.event === "status")).counters.saves).toMatchObject({ written: 2, refused: 1, failed: 0, unknown: 0 });
+  });
+
+  it("a failed or unknown save ends the game env_crash (never retried) and replaces the native", async () => {
+    for (const outcome of ["failed", "unknown"] as const) {
+      const directory = await saveDir();
+      const h = await harness({ hooks: () => ({ script: mapGame, saveMap: () => outcome }) });
+      await h.next(event => event.event === "ready");
+      h.open(0, { save_points: { directory, floors: [1, 2] } });
+      const closed = await h.next(event => event.event === "closed");
+      expect(closed).toMatchObject({ reason: "env_crash", native: "replaced",
+        detail: outcome === "failed" ? "save_failed:managed_map_continue_native_save_failed" : "save_unknown:managed_map_continue_unknown_replace_process" });
+      // The row before the map is completed; the map state's own row was never sent.
+      expect(closed.decisions).toBe(1);
+      expect(h.natives[0]!.saves).toHaveLength(1);
+      expect(h.natives[0]!.shutdowns).toEqual([true]);
+      expect(linkOf(h.linkMessages, "episode_close", closed.game_instance_id)).toEqual([expect.objectContaining({ reason: "env_crash" })]);
+      h.send({ cmd: "status" });
+      expect((await h.next(event => event.event === "status")).counters.saves).toMatchObject({ [outcome]: 1, written: 0 });
+    }
+  });
+});
+
 describe("HostSlotNative", () => {
   it("passes the Host's control epoch through unchanged (an opaque id, not a number)", async () => {
     const requests: any[] = [];
@@ -1181,6 +1298,44 @@ describe("HostSlotNative", () => {
     expect(requests.filter(request => request.command === "step").at(-1).control_epoch).toBe(7);
     epoch = null;
     await expect(native.reset({ seed: "s", initialProgress: null, r7: false })).rejects.toThrow(/fast_env_claim_result_drift/u);
+  });
+
+  it("saveMap: releases control, saves as manager, claims again; a pre-write refusal keeps the game; a Host failure does not", async () => {
+    const requests: any[] = [];
+    let saveError: Error | null = null, available = true;
+    const driver: any = {
+      async handle(request: any, intent: any) {
+        requests.push({ ...request, principal: intent.principal });
+        if (request.command === "claim_control") return { type: "claim_control_result", control_token: `token-${requests.length}`, control_epoch: "e" };
+        if (request.command === "save_map") {
+          if (saveError) throw saveError;
+          return { type: "save_map_result", save: { sha256: "f".repeat(64), path: request.path } };
+        }
+        return { type: `${request.command}_result` };
+      },
+      status: () => ({ game_continuity_id: available ? "continuity-1" : null, episode_available: available }),
+      async shutdown() {}
+    };
+    const started: any = { session: { episodeInstance: "episode-1", episodeStart: { kind: "new_run" } }, runtime: { adapterRuntimeInstanceId: "runtime-1" } };
+    const native = new HostSlotNative(started, driver);
+    await native.reset({ seed: "s", initialProgress: null, r7: false });
+    expect(await native.saveMap("/pool/a.json")).toEqual({ kind: "saved", save: { sha256: "f".repeat(64), path: "/pool/a.json" } });
+    expect(requests.slice(-3).map(request => [request.command, request.principal])).toEqual([["release_control", "client"], ["save_map", "manager"], ["claim_control", "client"]]);
+    expect(requests.at(-2)).toMatchObject({ path: "/pool/a.json", expected_runtime_instance_id: "runtime-1", expected_game_continuity_id: "continuity-1" });
+    // Steps go on under the new credential.
+    const token = `token-${requests.length}`;
+    await native.step({ requestId: "r", expectedSnapshotId: "snap", boundActionId: "b" });
+    expect(requests.at(-1)).toMatchObject({ command: "step", control_token: token });
+    saveError = new Error("managed_map_continue_quiescent_map_required");
+    expect(await native.saveMap("/pool/b.json")).toEqual({ kind: "refused", reason: "managed_map_continue_quiescent_map_required" });
+    expect(requests.at(-1).command).toBe("claim_control");
+    saveError = new Error("managed_map_continue_unknown_replace_process"); available = false;
+    const unknown = await native.saveMap("/pool/c.json").catch(error => error);
+    expect(unknown).toBeInstanceOf(SaveMapFailure);
+    expect(unknown).toMatchObject({ outcome: "unknown", message: "save_unknown:managed_map_continue_unknown_replace_process" });
+    expect(requests.at(-1).command).toBe("save_map");
+    saveError = new Error("managed_map_continue_native_save_failed");
+    await expect(native.saveMap("/pool/d.json")).rejects.toMatchObject({ outcome: "failed" });
   });
 
   it("scopes the native episode id by the Host launch, so two env nodes with the same native id stay distinct", async () => {

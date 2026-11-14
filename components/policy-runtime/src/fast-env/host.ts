@@ -26,6 +26,11 @@ export interface SlotNative {
   fullChecks(): number;
   /** Submits one Host BoundAction. Resolves with the Host's original receipt object. */
   step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<unknown>;
+  /** Host `save_map` of the current settled map state into `path` (absolute, new). Control is handed back
+   * for the save (the Host refuses a save while it is held) and claimed again after it. `refused`: the Host
+   * refused before any native write and the game is as it was. Throws SaveMapFailure when the Host ended the
+   * episode (its native save failed, or its outcome is unknown): this native can no longer reset or load. */
+  saveMap(path: string): Promise<SaveMapResult>;
   /** Gives control back between games. */
   release(): Promise<void>;
   taint(): { tainted: boolean; reason: string | null };
@@ -43,6 +48,17 @@ export interface SlotNative {
   /** E5 counters of this native's Host session since it started (null when the projection memo is off). */
   projectionMemo?(): { hits: number; misses: number; checks: number } | null;
   shutdown(force: boolean): Promise<void>;
+}
+
+/** `save` is the Host's own `managed-map-continue-1` descriptor, unchanged. */
+export type SaveMapResult = { kind: "saved"; save: Record<string, unknown> } | { kind: "refused"; reason: string };
+
+/** The Host ended the episode during a save: `unknown` = the Host could not tell whether the native wrote it. */
+export class SaveMapFailure extends Error {
+  constructor(readonly code: string, readonly outcome: "failed" | "unknown") {
+    super(`${outcome === "unknown" ? "save_unknown" : "save_failed"}:${code}`);
+    this.name = "SaveMapFailure";
+  }
 }
 
 /** `start` is what the native's first compact frame says (null when compact output is off). */
@@ -116,7 +132,7 @@ interface HostModules {
   startManagedPlayerEnvironmentSession(options: Record<string, unknown>): Promise<any>;
   ManagedPeDriverSession: new (started: unknown, options: { requestTimeoutMs: number }) => {
     handle(request: Record<string, unknown>, intent: Record<string, unknown>): Promise<any>;
-    status(): { game_continuity_id: string | null };
+    status(): { game_continuity_id: string | null; episode_available: boolean };
     shutdown(options?: { force?: boolean }): Promise<unknown>;
   };
   discoverGameDirectory(): string | null;
@@ -211,13 +227,40 @@ export class HostSlotNative implements SlotNative {
     return this.#claim();
   }
 
-  async #claim(): Promise<NativeEpisode> {
-    this.#continuity = this.driver.status().game_continuity_id;
+  async #claimControl(): Promise<void> {
     const claim = await this.driver.handle({ command: "claim_control", request_id: rid(),
       expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: this.#continuity }, CLIENT);
     if (claim?.type !== "claim_control_result") throw new Error("fast_env_claim_result_drift");
     if (typeof claim.control_token !== "string" || claim.control_epoch == null) throw new Error("fast_env_claim_result_drift");
     this.#control = { token: claim.control_token, epoch: claim.control_epoch };
+  }
+
+  async saveMap(path: string): Promise<SaveMapResult> {
+    await this.release();
+    let result: any;
+    try {
+      result = await this.driver.handle({ command: "save_map", request_id: rid(), path,
+        expected_runtime_instance_id: this.runtimeInstanceId, expected_game_continuity_id: this.#continuity }, MANAGER);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      // The Host clears the episode when its native save failed or is unknown; nothing is claimed again.
+      const status = this.driver.status();
+      if (!status.episode_available || status.game_continuity_id !== this.#continuity)
+        throw new SaveMapFailure(code, code === "managed_map_continue_unknown_replace_process" ? "unknown" : "failed");
+      // Refused before any native write (not a quiescent map, path taken): the game is as it was.
+      await this.#claimControl();
+      return { kind: "refused", reason: code };
+    }
+    if (result?.type !== "save_map_result" || result.save === null || typeof result.save !== "object")
+      throw new SaveMapFailure("fast_env_save_result_drift", "failed");
+    // The capture sample schedule of this episode stays as it was fixed at mount.
+    await this.#claimControl();
+    return { kind: "saved", save: result.save };
+  }
+
+  async #claim(): Promise<NativeEpisode> {
+    this.#continuity = this.driver.status().game_continuity_id;
+    await this.#claimControl();
     const episodeId: string | null = this.started.session.episodeInstance ?? null;
     // Fixed after mount and before the first capture: no model choice can move it. The
     // compact episode id when there is one, else what the open itself named (seed / save).
