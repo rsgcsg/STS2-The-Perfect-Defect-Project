@@ -41,18 +41,21 @@ from stpd.p1.frame_compiler import FrameCompiler
 from . import batch_preparation as bp
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_source import decode_fast_packet
+from .learning_diagnostics import decision_codes
 from .prepared_batch import AuxiliaryInput, PreparedBatch, PrepareRequest
 from .tensor_segment import auxiliary_frame, decode_packet, packet_header
 
 _worker_compiler: FrameCompiler | None = None
+_worker_decisions: tuple[int, ...] | None = None  # fast rows' run-record decision types
 
 
 def _initialize(vocabulary: dict[str, Any], threads: int) -> None:
-    global _worker_compiler
+    global _worker_compiler, _worker_decisions
     torch.set_num_threads(threads)
     if torch.get_num_interop_threads() != 1:
         torch.set_num_interop_threads(1)
     _worker_compiler = FrameCompiler(vocabulary)
+    _worker_decisions = decision_codes(vocabulary["actions"])
     # Import-time objects (torch, numpy, stpd, the compiler: ~2e5) never die.
     # Move them out of the collector's view once, so the per-task
     # `gc.collect()` scans only what the task created (~60 ms -> ~0 per call
@@ -333,7 +336,8 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
             if descriptor.envelope.get("format") == FAST_FORMAT:
                 # fast_chain only: the learner's own envelope binds the sealed segment.
                 _source, header = decode_fast_packet(
-                    raw, envelope=descriptor.envelope, compiler=_worker_compiler
+                    raw, envelope=descriptor.envelope, compiler=_worker_compiler,
+                    decisions=_worker_decisions,
                 )
             else:
                 _source, header = decode_packet(

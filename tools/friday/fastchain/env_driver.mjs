@@ -32,6 +32,9 @@ if (!LADDER || typeof LADDER !== "object" || !Object.hasOwn(LADDER, ARM ?? "")) 
 }
 const SAMPLING = { mode: "temperature_uniform", seed: `wp8-${arg("tag")}`, arm_id: ARM,
   classes: { combat: LADDER[ARM].combat, noncombat: LADDER[ARM].noncombat } };
+// A3: the run's lowest arm temperature (recipe sampling_temperature_min). The fast env
+// refuses an arm below it; 1 (the default) leaves the key out, so the config is as before.
+const TEMPERATURE_MIN = Number(arg("temperature-min", "1"));
 // I6: games per start (1-16, at most this driver's slots); required, never a default.
 const REPLAY_K_RAW = arg("replay-k");
 if (!/^([1-9]|1[0-6])$/.test(REPLAY_K_RAW ?? "") || Number(REPLAY_K_RAW) > K) {
@@ -102,7 +105,8 @@ const config = { schema: "sts2.policy-runtime/fast-env-config-1", env_process_id
     // C1 (V3-wu/V3-shen): --reduce-light-interval N > 0 sets reduce_light.strict_interval
     ...(Number(arg("reduce-light-interval", "0")) > 0 ? { reduce_light: { strict_interval: Number(arg("reduce-light-interval")) } } : {}) },
   decision_link: { kind: "unix", path: SOCK },
-  inference: { timeout_ms: INFERENCE_TIMEOUT_MS, actor_id: `v3g-${arg("tag")}`, single_choice: SINGLE, sampling: SAMPLING },
+  inference: { timeout_ms: INFERENCE_TIMEOUT_MS, actor_id: `v3g-${arg("tag")}`, single_choice: SINGLE, sampling: SAMPLING,
+    ...(TEMPERATURE_MIN !== 1 ? { temperature_min: TEMPERATURE_MIN } : {}) },
   budget: { max_decisions_per_game: 4000, max_native_steps_per_game: 8000, game_wall_ms: 3_600_000 },
   no_progress: null, settling_timeout_ms: 30000,
   ...(arg("cold-start") ? { cold_start: { max_concurrent: Number(arg("cold-start")), directory: null } } : {}),
@@ -115,7 +119,7 @@ writeFileSync(join(OUT, "config.json"), JSON.stringify(config, null, 1), { mode:
 const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-gc (V3-shen)
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
   single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
-  ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, replay_k: REPLAY_K, tickets: TICKETS ?? null };
+  ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, temperature_min: TEMPERATURE_MIN, replay_k: REPLAY_K, tickets: TICKETS ?? null };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 

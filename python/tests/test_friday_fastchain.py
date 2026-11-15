@@ -1102,6 +1102,13 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert games['run']['A10']['bosses']['act3_boss2'] == {
         'games': 1, 'reached': 1, 'cleared': 0, 'clear_rate': 0.0,
         'clear_rate_given_reached': 0.0}
+    assert every['act3_reached_rate'] == 0.75  # floors 34, 48 (won) and 49 passed the act-2 Boss
+    # A3: every arm's full games; control's are the top-level numbers
+    assert sorted(games['arms']) == ['control', 'explore']
+    assert games['arms']['control']['run'] == games['run']
+    assert games['arms']['control']['rolling'] == games['rolling']
+    explore = games['arms']['explore']['rolling']['all']
+    assert (explore['games'], explore['mean_floor'], explore['act3_reached_rate']) == (1, 40, 1)
     inc = r['incidents']
     assert inc['env_closed_by_reason'] == {'terminal': 7, 'timeout': 1}
     assert inc['env_close_details'] == {'timeout': {'episode_seconds': 1}}
@@ -1116,7 +1123,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     for line in ('identity: src abc123def456', 'incl. aux', 'first use:',
                  'EV vs lambda-return 0.750', 'HP MAE 2.00 HP', 'training games A0',
                  'Boss cleared act1 67%', 'admission refused', 'boundary per dataset (13)',
-                 'checkpoints: 2, last cp-2'):
+                 'checkpoints: 2, last cp-2', 'training games arm explore A0 (full, last 100): '
+                 '1 games, floor 40.0, win 0.0%, act 3 reached 100%'):
         assert line in text, line
     assert readout.main([str(run), '--json']) == 0
     assert json.loads(capsys.readouterr().out)['learning'] == json.loads(
@@ -1855,6 +1863,7 @@ def test_job_env_carries_r7_and_ascension_knobs():
     assert 'FC_REPLAY_K=1' in env and 'FC_EXPLORATION_LADDER=\'{"control":{"combat":{' \
         '"temperature":1.0,"uniform_mix":0.0},"noncombat":{"temperature":1.0,' \
         '"uniform_mix":0.0},"share":1.0}}\'' in env
+    assert 'FC_SAMPLING_TEMPERATURE_MIN=1.0' in env  # A3: today's [1, 3] validation
 
 
 # ---------------- environment-side recipe (exploration ladder, K replay) ----------------
@@ -1876,7 +1885,9 @@ def test_exploration_ladder_and_replay_k_are_validated():
             ('{ "bad arm" = ' + arm % '{ temperature = 1.0, uniform_mix = 0.0 }' + ' }',
              'bad arm'),
             ('{ a = ' + arm % '{ temperature = 0.5, uniform_mix = 0.0 }' + ' }',
-             r'temperature in \[1, 3\]'),
+             'a.combat: temperature 0.5 below sampling_temperature_min 1.0'),
+            ('{ a = ' + arm % '{ temperature = 0.2, uniform_mix = 0.0 }' + ' }',
+             r'temperature in \[0.25, 3\]'),
             ('{ a = ' + arm % '{ temperature = 1.0, uniform_mix = 0.2 }' + ' }',
              r'uniform_mix in \[0, 0.1\]'),
             ('{ a = ' + arm % '{ temperature = 1.0 }' + ' }', 'exactly'),
@@ -1886,6 +1897,16 @@ def test_exploration_ladder_and_replay_k_are_validated():
             run_profile.load_profile(PROFILE, [f'exploration_ladder={bad}'])
     with pytest.raises(run_profile.ProfileError, match='replay_k 13 must not exceed env_slots'):
         run_profile.load_profile(PROFILE, ['replay_k=13'])
+    # A3: an arm below 1 only with the run's lower minimum, itself in [0.25, 1]
+    bold = arm % '{ temperature = 0.7, uniform_mix = 0.0 }'
+    with pytest.raises(run_profile.ProfileError, match='temperature 0.7 below'):
+        run_profile.load_profile(PROFILE, [f'exploration_ladder={{ bold = {bold} }}'])
+    values = run_profile.values(run_profile.load_profile(PROFILE, [
+        f'exploration_ladder={{ bold = {bold} }}', 'sampling_temperature_min=0.7']))
+    assert values['exploration_ladder']['bold']['combat']['temperature'] == 0.7
+    for low in ('0.2', '1.5'):
+        with pytest.raises(run_profile.ProfileError, match='sampling_temperature_min'):
+            run_profile.load_profile(PROFILE, [f'sampling_temperature_min={low}'])
     with pytest.raises(run_profile.ProfileError, match='replay_k'):
         run_profile.load_profile(PROFILE, ['replay_k=0'])
 
@@ -1920,6 +1941,8 @@ def test_env_sh_gives_each_driver_its_level_and_arm(tmp_path):
     asc, arms = out.split('|')
     assert asc.split() == ['0'] * 4 + ['10'] * 6
     assert arms.split() == run_profile.exploration_plan(ladder, 10, 10)
+    # A3: every driver gets the run's lowest arm temperature (the fast env checks its arm)
+    assert '--temperature-min $FC_SAMPLING_TEMPERATURE_MIN' in (FASTCHAIN / 'env.sh').read_text()
 
 
 FAKE_FAST_ENV = '''
@@ -2074,6 +2097,37 @@ def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
     assert 'arm hot' in text and 'ascension A0' in text and 'k 3' in text
 
 
+def test_env_driver_puts_the_temperature_minimum_in_the_config_only_below_1(tmp_path):
+    """A3: --temperature-min 1 (the default env.sh passes) leaves config.json as it was
+    without the flag; a lower one reaches the fast env as inference.temperature_min."""
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    bold = json.dumps({'bold': {'share': 1.0,
+                                'combat': {'temperature': 0.7, 'uniform_mix': 0.0},
+                                'noncombat': {'temperature': 2.0, 'uniform_mix': 0.02}}})
+    configs = {}
+    try:
+        for name, flags in (('before', ()), ('one', ('--temperature-min', '1')),
+                            ('bold', ('--temperature-min', '0.7'))):
+            ladder, arm = (bold, 'bold') if name == 'bold' else (LADDER_JSON, 'hot')
+            done = run_driver(world, tmp_path / name, admit.path, '--exploration-ladder',
+                              ladder, '--arm', arm, '--replay-k', '1', *flags)
+            assert done.returncode == 0, done.stderr
+            configs[name] = (tmp_path / name / 'config.json').read_text().replace(
+                str(tmp_path / name), 'OUT')
+    finally:
+        admit.close()
+    assert configs['one'] == configs['before']
+    assert 'temperature_min' not in json.loads(configs['before'])['inference']
+    inference = json.loads(configs['bold'])['inference']
+    assert inference['temperature_min'] == 0.7
+    assert inference['sampling']['classes'] == {
+        'combat': {'temperature': 0.7, 'uniform_mix': 0.0},
+        'noncombat': {'temperature': 2.0, 'uniform_mix': 0.02}}
+    flags = [r for r in readout.jsonl(tmp_path / 'bold' / 'driver.jsonl')
+             if r['event'] == 'driver_flags']
+    assert flags[0]['temperature_min'] == 0.7
+
+
 def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
     world, admit = fake_driver_world(tmp_path), AdmitAll()
     tickets = tmp_path / 'tickets.mjs'
@@ -2131,7 +2185,8 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     driver.mkdir(parents=True)
 
     def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid'):
-        return {'event': 'closed', 'game_ref': ref, 'reason': reason, 'arm': arm,
+        return {'event': 'closed', 't': 1000 + int(ref[1:]), 'game_ref': ref,
+                'reason': reason, 'arm': arm,
                 'ascension': 10, 'replay_k': 2, 'group': group, 'member': 0, 'seed': 's',
                 'start': 'new_run', 'decisions': 100, 'floor': floor, 'terminal': result,
                 'evidence_failed': failed}

@@ -105,7 +105,7 @@ from .fast_source import (
 )
 from .fast_verify import FastVerifyClosed, FastVerifyPool
 from .learner import ROOT, LearnerConfig, _device
-from .learning_diagnostics import advantage_fields
+from .learning_diagnostics import advantage_fields, exploration_fields
 from .loss import prepared_update
 from .performance import PerformanceConfig
 from .prepared_batch import (
@@ -3492,6 +3492,7 @@ class SegmentLearner:
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
+            result["exploration"] = exploration_fields(self.device_batch.metadata)
         policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         return self._account_step(active, batch, index, len(batch.minibatches), result,

@@ -158,3 +158,69 @@ def headline(statistics: dict[str, dict[str, list[float]]]) -> dict[str, float |
             "value_mse": whole["td"]["mse"],
             "outcome_explained_variance": whole["terminal"]["explained_variance"],
             "hp_mae_points": whole["hp"]["mae"]}
+
+
+# Exploration dose (RL5-METHODS A3), one fold per training dataset. Each fast-chain
+# source counts its multi-choice rows once (fast_source.decode_fast_packet) and puts the
+# counts on its first row's `metadata["exploration"]`: per arm, act and decision type,
+# the chosen action's rank in the model's own ordering, whether the model's top
+# probability exceeds 0.99 and whether the row's advantage (before the one
+# normalisation) is positive. Read from the public frame and the recorded q only:
+# nothing reaches the model, the loss or the prepared digest.
+DECISIONS = ("combat", "card_reward", "map", "event", "rest", "shop", "treasure", "reward",
+             "other")
+# Noncombat decision type = the first of these that one of the row's choices has
+# (RETHINK-C: a card reward is a reward screen that offers `reward.take_card`).
+_DECISION_PREFIXES = (("card_reward.", "reward.take_card"), ("map.",), ("event.",),
+                      ("rest.",), ("shop.",), ("treasure.",), ("reward.",))
+EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
+
+
+def decision_codes(actions: list[str]) -> tuple[int, ...]:
+    """Vocabulary action names -> noncombat decision code (index into DECISIONS);
+    a row's type is the smallest code among its choices."""
+    out = []
+    for name in actions:
+        code = next((i + 1 for i, prefixes in enumerate(_DECISION_PREFIXES)
+                     if name.startswith(prefixes)), len(DECISIONS) - 1)
+        out.append(code)
+    return tuple(out)
+
+
+def exploration_row(q: list[float], selected: int, temperature: float, uniform_mix: float,
+                    ) -> tuple[int, bool]:
+    """(rank of the chosen action: 0 top, 1 second, 2 third or later; the model's top
+    probability > 0.99) from the recorded q of one row.
+
+    q = (1-eps) p^(1/T) / sum + eps/N is strictly increasing in p, so the rank in q is
+    the rank in the model's p; p is recovered as ((q - eps/N) / (1-eps))^T normalised
+    (T = 1, eps = 0: p = q).
+    """
+    chosen = q[selected]
+    rank = min(sum(value > chosen for value in q), 2)
+    share = uniform_mix / len(q)
+    tempered = [max(value - share, 0.0) ** temperature for value in q]
+    return rank, max(tempered) > 0.99 * sum(tempered)
+
+
+def add_exploration(counts: dict[str, list[int]], arm: str, act: int, decision: int,
+                    rank: int, top: bool, positive: bool) -> None:
+    """Count one multi-choice row into {"arm|actN|decision": [EXPLORATION_FIELDS...]}."""
+    row = counts.setdefault(f"{arm}|act{act}|{DECISIONS[decision]}", [0, 0, 0, 0, 0])
+    row[0] += 1
+    row[1] += rank == 1
+    row[2] += rank == 2
+    row[3] += top
+    row[4] += rank > 0 and positive
+
+
+def exploration_fields(metadata: Any) -> dict[str, list[int]]:
+    """One dataset's counts: the sum of its sources' `metadata["exploration"]`."""
+    out: dict[str, list[int]] = {}
+    for row in metadata:
+        counts = row.get("exploration")
+        for key, values in (counts or {}).items():
+            total = out.setdefault(key, [0, 0, 0, 0, 0])
+            for i, value in enumerate(values):
+                total[i] += value
+    return out

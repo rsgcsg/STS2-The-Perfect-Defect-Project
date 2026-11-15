@@ -488,11 +488,15 @@ def service() -> None:
     import inspect
     exit_option = ({"exit_code_on_failure": 70} if "exit_code_on_failure" in
                    inspect.signature(FastInferenceService).parameters else {})
+    # RL5-METHODS A3: passed only below 1, so the default runs on a pre-A3 source too.
+    low = float(K["sampling_temperature_min"])
+    sampling_floor = {"temperature_min": low} if low != 1 else {}
     service = FastInferenceService(
         vocabulary, compiler.identity, assembler,
         training_generation=first["training_generation"], prepare_workers=workers,
         prepare_cpus=mine, max_rows=K["service_max_rows"], device="cuda",
         failure_dir=str(RUN / f"failures{tag}"),
+        **sampling_floor,
         **{"window_ms": float(K["service_window_ms"]),
            "max_job_rows": K["service_max_job_rows"],
            "compile": K["service_compile"], **kwargs}, **exit_option)
