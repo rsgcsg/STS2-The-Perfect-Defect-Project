@@ -25,6 +25,16 @@ A CP's local payload chunks go when it is not among the newest `keep_checkpoints
 Manifests and payload indexes stay (lineage; a later read falls back to the peer, as
 the Store already does). A chunk goes only when every payload naming it belongs only to
 deleted artifacts. A failed delete is counted and reported, never raised.
+
+Accepted race: a CP the learner thread is writing at that moment, which reuses a chunk
+only an artifact being dropped names and has not written its index yet, misses that
+chunk locally; local reads and the archive copy then fetch it from the peer copy of the
+dropped (archived) artifact. It needs non-monotonic sharing inside a sub-second window.
+
+Cost: built only when a keep count is > 0 (default: no object, no pass, no event). A
+pass lists `manifests/` and `payload-indexes/v1/` (only new files are parsed) and
+unlinks the selected chunks; the local-bytes walk runs only on the first pass after a
+new CP, not per publication.
 """
 from __future__ import annotations
 
@@ -55,6 +65,7 @@ class LocalRetention:
         self.mu: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.checkpoints: OrderedDict[str, int] = OrderedDict()  # CP id -> mu version
         self.retired_before: set[str] = set()
+        self.measure = True  # take the local-bytes readout on the next pass (once per CP)
         self.future: Any = None
         self.totals = {"passes": 0, "pass_failures": 0, "deleted_models": 0,
                        "deleted_checkpoints": 0, "deleted_mu_dirs": 0,
@@ -71,6 +82,7 @@ class LocalRetention:
 
     def checkpoint(self, artifact_id: str, version: int) -> None:
         self.checkpoints[artifact_id] = version
+        self.measure = True
 
     def select(self, servable: set[str]) -> dict[str, Any]:
         """The next pass's candidates; `servable` = `pool.snapshots` keys right now."""
@@ -91,7 +103,9 @@ class LocalRetention:
                         models.append({"snapshot": key, **entry})
         checkpoints = (list(self.checkpoints)[:-self.keep_checkpoints]
                        if self.keep_checkpoints else [])
-        return {"models": models, "checkpoints": checkpoints, "mu_dirs": mu_dirs}
+        measure, self.measure = self.measure, False
+        return {"models": models, "checkpoints": checkpoints, "mu_dirs": mu_dirs,
+                "measure": measure}
 
     def settle(self, result: dict[str, Any]) -> dict[str, Any]:
         """Fold one finished pass in; returns the run-record fields."""
@@ -173,7 +187,6 @@ class _References:
 
     def drop(self, manifests: list[Manifest], failures: list[dict[str, Any]]) -> int:
         """Unlink the chunks only these (now dead) manifests use; returns bytes freed."""
-        self.scan()  # re-read just before unlinking: the window to a new user is tiny
         self.dead.update(m.artifact_id for m in manifests)
         freed = 0
         for payload in {p.sha256 for m in manifests for p in m.payloads}:
@@ -208,7 +221,7 @@ def _tree_bytes(root: Path) -> int:
 
 
 def trim(root: str, *, models: list[dict[str, Any]], checkpoints: list[str],
-         mu_dirs: list[str]) -> dict[str, Any]:
+         mu_dirs: list[str], measure: bool = False) -> dict[str, Any]:
     """One deletion pass (publisher process). Errors per item are counted, not raised."""
     began = time.perf_counter()
     store, mu_root = Path(root) / "store", Path(root) / "mu-network"
@@ -268,8 +281,9 @@ def trim(root: str, *, models: list[dict[str, Any]], checkpoints: list[str],
             failures.append({"mu_dir": key, "error": "; ".join(errors[:3])})
         else:
             result["deleted_mu_dirs"].append(key)
-    result["store_object_bytes"] = _tree_bytes(store / "objects")
-    result["mu_network_bytes"] = _tree_bytes(mu_root)
+    if measure:  # once per CP: a full walk per publication would slow the publisher
+        result["store_object_bytes"] = _tree_bytes(store / "objects")
+        result["mu_network_bytes"] = _tree_bytes(mu_root)
     result["failures"] = failures
     result["seconds"] = time.perf_counter() - began
     return result

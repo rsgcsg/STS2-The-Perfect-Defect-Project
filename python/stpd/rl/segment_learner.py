@@ -1048,11 +1048,13 @@ class SegmentLearner:
             initializer=_publisher_initialize,
         )
         # #558: local copies on this node (learner-live/store, mu-network) are chosen
-        # here and deleted by the publisher process, between publications. 0 = keep all.
-        self.local_retention = (LocalRetention(
-            keep_models=self.dataplane.get("local_keep_models", 0),
-            keep_checkpoints=self.dataplane.get("local_keep_checkpoints", 0))
-            if self.dataplane is not None else None)
+        # here and deleted by the publisher process, between publications. Both 0 (the
+        # default) = no object at all: no pass, no event, today's behaviour exactly.
+        keep = ((self.dataplane.get("local_keep_models", 0),
+                 self.dataplane.get("local_keep_checkpoints", 0))
+                if self.dataplane is not None else (0, 0))
+        self.local_retention = (LocalRetention(keep_models=keep[0], keep_checkpoints=keep[1])
+                                if any(keep) else None)
         # Commit-time header checks decode ~7 MB of JSON per packet; in this
         # process that held the GIL ~0.2 s per commit and starved the GPU step.
         self.header_checks = ProcessPoolExecutor(
@@ -1926,6 +1928,8 @@ class SegmentLearner:
             retention.future = self.publisher.submit(
                 local_retention_trim, str(self.live_work), **retention.select(servable))
         except Exception as error:  # noqa: BLE001
+            print(f"*** learner local retention: pass not queued: {error!r}",
+                  file=sys.stderr, flush=True)
             self._event("learner_local_retention", **retention.failed(error))
 
     def _schedule_publication(self) -> None:

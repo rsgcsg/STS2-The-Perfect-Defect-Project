@@ -101,12 +101,19 @@ def test_default_keeps_every_local_copy(live):
         retention.checkpoint(f"cp{version}", version)
         retire(live)
     drain(live)
-    for _ in range(3):
-        fields = run_pass(live, retention)
+    passes = [run_pass(live, retention) for _ in range(3)]
+    for fields in passes:
         assert fields["deleted_models"] == fields["deleted_checkpoints"] == 0
         assert fields["deleted_mu_dirs"] == 0 and fields["freed_bytes"] == 0
     assert len(list((live.root / "mu-network").iterdir())) == 5
-    assert fields["store_object_bytes"] > 0 and fields["mu_network_bytes"] > 0
+    # The local-bytes walk runs once after a new CP, not on every pass.
+    assert passes[0]["store_object_bytes"] > 0 and passes[0]["mu_network_bytes"] > 0
+    assert "store_object_bytes" not in passes[1] and "store_object_bytes" not in passes[2]
+    retention.checkpoint("cp6", 5)
+    assert run_pass(live, retention)["mu_network_bytes"] > 0
+    # The learner builds no LocalRetention at all when both counts are 0.
+    source = (ROOT / "python/stpd/rl/segment_learner.py").read_text()
+    assert "if any(keep) else None" in source
     profile = tomllib.loads((ROOT / "tools/friday/fastchain/rl5-fastchain.toml").read_text())
     for name in ("learner_local_keep_models", "learner_local_keep_checkpoints"):
         assert profile["knobs"][name]["value"] == profile["knobs"][name]["default"] == 0
@@ -262,3 +269,39 @@ def test_learner_pass_reports_a_failed_pass_and_goes_on(live, capsys):
     # A pass still running: nothing new is queued.
     SegmentLearner._local_retention_pass(learner)
     assert len(submitted) == 1 and len(events) == 1
+
+
+def test_checkpoint_without_receipt_is_kept(live):
+    retention = LocalRetention(keep_checkpoints=1)
+    ids = []
+    for sequence in range(1, 4):
+        manifest = Manifest("checkpoint", PRODUCER, payloads=(live.store.put_bytes(
+            "checkpoint", ZERO + f"cp-unique-{sequence:06d}".encode()),),
+            parameters=FrozenObject.of({"sequence": sequence}))
+        live.store.publish(manifest)
+        retention.checkpoint(manifest.artifact_id, 1)
+        ids.append(manifest.artifact_id)
+    drain(live)
+    for receipt in (live.root / "store" / ".archive" / "completed").iterdir():
+        if receipt.read_text().find(ids[0]) >= 0:
+            receipt.unlink()  # cp1 not yet copied to the peer
+    fields = run_pass(live, retention)
+    assert (fields["deleted_checkpoints"], fields["kept_unarchived"]) == (1, 1)
+    assert unique_chunk(live, b"cp-unique-000001").exists()
+    assert not unique_chunk(live, b"cp-unique-000002").exists()
+
+
+def test_chunk_of_a_payload_without_manifest_yet_survives(live):
+    """A payload whose index exists but whose manifest is not written yet (mid-publication)
+    keeps every chunk it names, even one only a dropped version otherwise names."""
+    retention = LocalRetention(keep_models=1)
+    for version in range(1, 4):
+        retention.published(publish(live, version), str(live.root / "v"))
+        serve(live, "fast")
+        retire(live)
+    drain(live)
+    live.store.put_bytes("checkpoint", b"weights-v0000001" + b"in-flight-cp-xxx")  # no manifest
+    run_pass(live, retention)
+    assert run_pass(live, retention)["deleted_models"] == 2
+    assert unique_chunk(live, b"weights-v0000001").exists()
+    assert not unique_chunk(live, b"weights-v0000002").exists()

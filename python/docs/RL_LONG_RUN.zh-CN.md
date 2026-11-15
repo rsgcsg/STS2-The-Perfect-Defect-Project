@@ -187,8 +187,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   记的版本；model 与 heads manifest 都有归档完成收据（peer 已全量读回），否则留到下轮。
   `learner_local_keep_checkpoints`（默认 0）同理留最新 K 个本地 CP（续训从 peer 读）。
   manifest、索引留着，之后读会回落到 peer。删失败记数、stderr 报警、不停训练；每轮一条
-  `learner_local_retention` 事件记删除数、未归档保留数、失败、释放字节和本地 store/mu-network
-  占盘（默认全留时也记占盘）。
+  `learner_local_retention` 事件记删除数、未归档保留数、失败、释放字节；本地 store/mu-network
+  占盘只在每个新 CP 后的第一轮走一次目录。两个开关都为 0（默认）时学习者不建这个对象：没有
+  删除轮、没有事件、不走目录，和改动前完全一样。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
   `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合
