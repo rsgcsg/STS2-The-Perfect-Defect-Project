@@ -320,10 +320,21 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["compile_warmup_dumps"] = {
         path: os.path.isfile(os.path.join(path, "offline-step.tensor-tree"))
         for path in site["compile_warmup_dumps"]}
-    warmup_file = Path(site["warmup_file"])
-    warmup_id = warmup_file.read_text().strip() if warmup_file.is_file() else None
-    facts["warmup_artifact"] = {"id": warmup_id, "present": bool(warmup_id) and (
-        Path(site["peer_dir"]) / "manifests" / f"{warmup_id}.json").is_file()}
+    if site["warmup_file"]:
+        warmup_file = Path(site["warmup_file"])
+        warmup_id = warmup_file.read_text().strip() if warmup_file.is_file() else None
+        facts["warmup_artifact"] = {"id": warmup_id, "present": bool(warmup_id) and (
+            Path(site["peer_dir"]) / "manifests" / f"{warmup_id}.json").is_file()}
+    else:  # site warmup_file = "": no fitted heads (a random-init start)
+        facts["warmup_artifact"] = {"id": None, "present": False, "none": True}
+    # The start model a fresh start's learner loads (its model.json; None = missing, refused
+    # by preflight check_resume unless resuming): e.g. a CP export's binding or a random
+    # init's seed, shown in the run record.
+    start = Path(site["start_package"]) / "model.json"
+    descriptor = json.loads(start.read_text()) if start.is_file() else None
+    facts["start_model"] = ({"package_sha256": descriptor["package_sha256"],
+                             "training_identity": descriptor.get("training_identity")}
+                            if descriptor else None)
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL
@@ -707,7 +718,8 @@ def main(argv: list[str] | None = None) -> int:
     (run / "preflight.txt").write_text(preflight.report(results) + "\n")
     # The source this run was frozen from: the identity of its run record (readout.py).
     (run / "facts.json").write_text(json.dumps({key: facts.get(key) for key in (
-        "src_checkout", "src_rev", "src_features", "env_pkg_rev", "env_candidate_sha256")},
+        "src_checkout", "src_rev", "src_features", "env_pkg_rev", "env_candidate_sha256",
+        "start_model")},
         indent=1))
     jobs = submit(run, plan, cmds)
     print(json.dumps({"run": str(run), "name": plan["name"], "jobs": jobs}, ensure_ascii=False),
