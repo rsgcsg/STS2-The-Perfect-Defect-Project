@@ -209,3 +209,93 @@ def test_diagnostics_leave_loss_gradients_and_step_bit_identical(model, compiled
         for key, value in state.items():
             assert torch.equal(value, off_adam[index][key]), (index, key)
     assert torch.equal(on_rng, off_rng)
+
+
+def same(left, right, path="batch"):
+    """Bitwise structural equality: tensors by dtype and torch.equal, the rest by ==."""
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor) and left.dtype == right.dtype, path
+        assert torch.equal(left, right), path
+    elif dataclasses.is_dataclass(left) and not isinstance(left, type):
+        assert type(left) is type(right), path
+        for field in dataclasses.fields(left):
+            same(getattr(left, field.name), getattr(right, field.name), f"{path}.{field.name}")
+    elif isinstance(left, dict):
+        assert left.keys() == right.keys(), path
+        for key, value in left.items():
+            same(value, right[key], f"{path}[{key!r}]")
+    elif isinstance(left, (tuple, list)):
+        assert type(left) is type(right) and len(left) == len(right), path
+        for index, (a, b) in enumerate(zip(left, right, strict=True)):
+            same(a, b, f"{path}[{index}]")
+    else:
+        assert left == right, path
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_the_hp_share_leaves_the_prepared_batch_and_three_steps_bit_identical(model, compiled):
+    """RL5-METHODS A2, the bar above for the run record's HP share: with c_hp > 0 the
+    fast chain hands the preparation its c_hp * A_hp part only to measure that share.
+    A batch prepared with it and one prepared without it (as at c_hp = 0 and before A2)
+    hold bitwise equal tensors apart from the two share fields, and three steps on them
+    keep totals, gradients, Adam state, parameters and RNG bitwise equal."""
+    from test_rl_fast_hp_score import HpGame, batch, single_combat, sources
+
+    from stpd.p1.frame_compiler import FrameCompiler
+
+    compiler = FrameCompiler(model.vocabulary)
+    game = HpGame(compiler=compiler)
+    single_combat(game)  # c_hp's default scope: a single-combat ticket
+    parts = sources(game.sealed, "t", 0.003, compiler=compiler)
+    assert all(source.hp_advantages is not None for source in parts)
+    on, off = (batch(game.sealed, list(items), "t", compiler) for items in (
+        parts, [dataclasses.replace(source, hp_advantages=None) for source in parts]))
+    assert on.normalization.hp_share is not None and off.normalization.hp_share is None
+    assert dataclasses.replace(on.normalization, hp_std=None, hp_share=None) == \
+        off.normalization
+    ignored = {"normalization", "prepared_at", "timings", "worker_pids"}
+    for field in dataclasses.fields(on):
+        if field.name not in ignored:
+            same(getattr(on, field.name), getattr(off, field.name), field.name)
+    generator = torch.Generator().manual_seed(5)  # real gradients: the heads start at zero
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(torch.randn(parameter.shape, generator=generator,
+                                       dtype=parameter.dtype) * 0.05)
+    performance = PerformanceConfig(prepared_forward="rows-v2", prepared_compile=compiled)
+    runs = []
+    for prepared_batch in (on, off):
+        [minibatch] = prepared_batch.minibatches
+        trained = copy.deepcopy(model)
+        optimizer = torch.optim.AdamW(trained.parameters(), lr=1e-3)
+        torch.manual_seed(123)
+        steps = []
+        for _ in range(3):
+            seen = {}
+
+            def sync(model, totals, valid, seen=seen):
+                seen["totals"] = totals[:8].clone()
+                seen["gradients"] = {name: p.grad.clone()
+                                     for name, p in model.named_parameters()
+                                     if p.grad is not None}
+                return totals, valid
+
+            result = prepared_update(trained, optimizer, minibatch,
+                                     config=LossConfig(mode="ppo", value_coef=0.2),
+                                     performance=performance, target_kl=1e9,
+                                     gradient_sync=sync)
+            assert result["stepped"] and result["rows_forward"]["compiled"] is compiled
+            steps.append((result, seen))
+        runs.append((steps, trained.state_dict(), optimizer.state_dict()["state"],
+                     torch.get_rng_state()))
+    (on_steps, on_state, on_adam, on_rng), (off_steps, off_state, off_adam, off_rng) = runs
+    assert on_steps[0][0]["gradient_norm"] > 0 and on_steps[0][0]["policy_loss"] != 0
+    assert sum(bool(g.any()) for g in on_steps[0][1]["gradients"].values()) > 1
+    for (on_result, on_seen), (off_result, off_seen) in zip(on_steps, off_steps, strict=True):
+        same(on_seen, off_seen, "step")
+        for key in ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
+                    "clip_fraction", "gradient_norm"):
+            assert on_result[key] == off_result[key], key
+    same(on_state, off_state, "parameters")
+    same(on_adam, off_adam, "adam")
+    assert torch.equal(on_rng, off_rng)

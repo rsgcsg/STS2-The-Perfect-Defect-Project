@@ -108,8 +108,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   非头号选择归一前优势 > 0 的比例；按决策类型与幕；学习端从已记录的 q、applied 与解码优势算，
   只进 metadata，不改训练数值）、对照臂整局训练局滚动结果与 `arms` 下每臂同样的结果（每难度
   平均层数、胜率、各幕 Boss 通过率、到第三幕比例）、SGD 边界分段、停止/拒绝/未知按原因计数、
-  CP id。每类战斗（普通/精英/首领）的死亡率与掉血不在内：段和 driver.jsonl 不带房间类型和
-  单场战斗边界（首领战每场死亡率 = 1 − `clear_rate_given_reached`）。
+  CP id。每类战斗（普通/精英/首领）的死亡率与净血量变化用 A2 的 `hp_score`（只在格式 4，
+  全部臂合计、不分臂；格式 3 下为空，首领战每场死亡率另可看 1 − `clear_rate_given_reached`）。
   只解析完整行（写到一半的末行等下次读，坏的完整行报错并给出字节位置）；对照臂完整局没有自然
   结局（无 victory/defeat 或无整数层/难度）计入 `unscored_closes`，不计分、不报错。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
@@ -172,6 +172,17 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
     对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值
     并同步闸门（下面的命令），再 `--set segment_format=stpd/rl-fast-segment-4`。
+  - 按战斗类型权重（RL5-METHODS A2）：配置旋钮 `hp_combat_weights`（`normal`/`elite`/`boss`，
+    默认 1/1/1 = 不加权）只乘 A_hp 的净血量变化部分及其基线，药水 −5 与死亡 −30 不乘。战斗类型
+    = 该战斗首行的公开 `combat.content.encounter_type`：聚合器随行发 `encounter`，格式 4 的战斗行
+    缺它时组装拒收（`hp_encounter_required`）；`unknown`（如事件战）按 normal。非 1/1/1 要求格式 4
+    （载入配置时核对），预检要求源码特性 `hp_combat_weights`。实验起点
+    `--set 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'`。
+  - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额
+    （多选行上 Cov(c_hp A_hp, A) / Var(A)，各数据集均值），`hp_std` 是它的标准差；c_hp 0 时两者
+    为 null。`hp_score` 按战斗类型给格式 4 组装器累计的战斗数、死亡数与死亡率、每场平均净血量
+    变化（H_T − H_0 + M_T − M_0，死亡记 −H_0，不加权）。毛伤害不进段（段里只有决策时刻的 HP），
+    不记。
   - 闸门须补一次：本改动之前生成的 `learner-base.json` 没有这两个键，预检 `frozen_recipe`
     报 `effective '<missing>'`、`hp_score` 报缺键，一律拒绝。
   - **还有旧代码（本改动之前）的链要再开一代时，不要补闸门**：旧代码的学习者

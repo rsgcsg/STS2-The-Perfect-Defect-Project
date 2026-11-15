@@ -180,6 +180,14 @@ def exploration_plan(ladder: dict[str, Any], first: int, count: int) -> list[str
 # group_id, ticket and the per-combat HP score column). Both carry the level.
 SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
 SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
+# RL5-METHODS A2: the format-4 HP-change weight per combat type (fast_assembly.hp_weights).
+HP_COMBAT_TYPES = ("normal", "elite", "boss")
+
+
+def _hp_combat_weights(value: Any) -> str | None:
+    if not isinstance(value, dict) or set(value) != set(HP_COMBAT_TYPES):
+        return f"table with exactly the keys {list(HP_COMBAT_TYPES)}"
+    return _table_of(_num(0))(value)
 
 
 def cross_problems(values: dict[str, Any]) -> list[str]:
@@ -190,6 +198,10 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                    f"disk_warn_free_pct {values['disk_warn_free_pct']}")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
+    if (any(w != 1 for w in values["hp_combat_weights"].values())
+            and values["segment_format"] != SEGMENT_FORMAT_4):
+        out.append("hp_combat_weights other than 1 / 1 / 1 need segment_format "
+                   f"{SEGMENT_FORMAT_4} (the per-combat HP score)")
     if values["replay_k"] > values["env_slots"]:
         out.append(f"replay_k {values['replay_k']} must not exceed env_slots "
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
@@ -327,6 +339,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
     # c_hp > 0 (the gate's loss.hp_advantage_coef) needs 4: preflight check_hp_score
     "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4),
+    "hp_combat_weights": _hp_combat_weights,
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),

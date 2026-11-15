@@ -235,14 +235,16 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
         gae_lambda=envelope["gae_lambda"], ascension=segment_ascension(header))
     coef = envelope["hp_advantage_coef"]
+    hp_part = None  # c_hp * A_hp as added (A2: the run record's HP share of Var(A))
     if coef:  # A = A_outcome + c_hp * A_hp, before the learner's one normalisation
         if header["format"] != FORMAT_4:
             raise FastIntakeError("fast_segment_without_hp_score")
         if (envelope["hp_advantage_scope"] == "all_combats"
                 or header["ticket"]["end"] == "combat"):
-            advantages = advantages + coef * torch.tensor(
+            hp_part = coef * torch.tensor(
                 [0.0 if value is None else value for value in header["hp_adv"]],
                 dtype=advantages.dtype)
+            advantages = advantages + hp_part
     if decisions is not None:
         arm, signs = header["sampling"]["arm_id"], (advantages > 0).tolist()
         for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
@@ -265,7 +267,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         tuple(frames), tuple(floors), tuple(refs), probabilities, targets, advantages,
         tuple(actions), tuple(old), tuple(metadata),
         {"decode_bind": decoded - began, "lambda_targets": time.perf_counter() - decoded},
-        os.getpid(), identity, labels)
+        os.getpid(), identity, labels, hp_part)
     witness = {
         **labels, "run": envelope["run"], "training_generation": envelope["training_generation"],
         "rows": len(rows), "mu": dict(header["mu"]), "compiler_identity": identity,

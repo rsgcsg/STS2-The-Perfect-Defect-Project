@@ -15,7 +15,12 @@ from test_rl_fast_source import COMPILER, SAMPLING, attest, mu, values
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from stpd.p1.rows_encoder_wire import encode_row
 from stpd.rl import batch_preparation as bp
-from stpd.rl.fast_assembly import AssemblyError, FastSegmentAssembler, hp_advantages
+from stpd.rl.fast_assembly import (
+    DEFAULT_HP_WEIGHTS,
+    AssemblyError,
+    FastSegmentAssembler,
+    hp_advantages,
+)
 from stpd.rl.fast_segment import (
     FORMAT_3,
     FORMAT_4,
@@ -89,7 +94,8 @@ class HpGame:
     """Real assembler, real rows-v2 bytes; `hp` of a step = the public hp it led to."""
 
     def __init__(self, segment_format: str = FORMAT_4, *, compiler: Any = COMPILER,
-                 handoff: Any = None, compiler_identity: Any = None) -> None:
+                 handoff: Any = None, compiler_identity: Any = None,
+                 hp_weights: dict[str, float] | None = None) -> None:
         self.sealed: list[Any] = []
         self.closed: list[Any] = []
         frame = compiler.compile(public_state())
@@ -100,7 +106,8 @@ class HpGame:
             emit=self.sealed.append,
             terminal_labeler=lambda _summary: {
                 "class": 3, "reward": float(class_reward_values()[3])},
-            on_closed=self.closed.append, segment_format=segment_format, verify_every=1)
+            on_closed=self.closed.append, segment_format=segment_format, verify_every=1,
+            hp_weights=hp_weights)
         self.assembler.instance_id = INSTANCE
         self.assembler.offer_mu(handoff or mu(1))
         self.request = 0
@@ -116,15 +123,16 @@ class HpGame:
 
     def step(self, game: str, *, combat: bool, hp: int | None = None, max_hp: int = 80,
              predicted: float = 0.5, potion: bool = False, terminal: str | None = None,
-             status: str = "completed") -> dict[str, Any]:
-        """One decision; `hp=None` sends no step outcome (the row is never played)."""
+             status: str = "completed", encounter: str | None = "normal") -> dict[str, Any]:
+        """One decision; `hp=None` sends no step outcome (the row is never played).
+        A combat row carries `encounter` as the aggregator sends it (A2)."""
         self.request += 1
         step = self.steps[game]
         self.steps[game] += 1
         row = {"request_id": self.request, "game_instance_id": game, "step_index": step,
                "consumption_id": f"c-{self.request}", "catalog_len": self.width,
                "catalog_sha256": "c" * 64, "observation_sha256": "d" * 64,
-               "in_combat": combat, "floor": 1,
+               "in_combat": combat, "floor": 1, "encounter": encounter if combat else None,
                "payload": {"offset": 0, "length": len(self.raw),
                            "row_sha256": hashlib.sha256(self.raw).hexdigest()}}
         plan = self.assembler.begin_row(row, self.raw)
@@ -184,8 +192,12 @@ def test_each_combat_is_scored_from_its_public_facts_into_the_format_4_column():
     # second combat: D = (0-58) - 30 - (82-82) = -88, baseline 25-58: A = -55
     assert header["hp_adv"] == [None, -7.5, 5.0, 3.75, None, -55.0]
     assert header["group_id"] == "g" and header["ticket"] == {"start": "new_run", "end": "game"}
+    # Per encounter (A2): net HP change (58-70) + (82-80) = -10, then a death from 58: -58.
+    none = {"battles": 0, "deaths": 0, "hp_change": 0}
     assert g.scores() == {"battles": 2, "battles_unscored": 0, "potions": 1, "deaths": 1,
-                          "rows_unscored": 0, "ticket_ends": 0}
+                          "rows_unscored": 0, "ticket_ends": 0, "by_encounter": {
+                              "normal": {"battles": 2, "deaths": 1, "hp_change": -68},
+                              "elite": none, "boss": none, "unknown": none}}
 
 
 def test_format_4_round_trip_is_format_3_plus_the_three_fields():
@@ -354,9 +366,9 @@ def envelope(segment: Any, game: str, coef: float,
 
 
 def sources(segments: list[Any], game: str, coef: float,
-            scope: str = "combat_ticket") -> list[Any]:
+            scope: str = "combat_ticket", compiler: Any = COMPILER) -> list[Any]:
     return [decode_fast_packet(s.data, envelope=envelope(s, game, coef, scope),
-                               compiler=COMPILER)[0]
+                               compiler=compiler)[0]
             for s in segments]
 
 
@@ -377,14 +389,15 @@ def normalised(value: torch.Tensor) -> torch.Tensor:
     return (value - float(value.mean())) / max(float(value.std(unbiased=False)), 1e-8)
 
 
-def batch(segments: list[Any], prepared: list[Any], game: str) -> Any:
+def batch(segments: list[Any], prepared: list[Any], game: str,
+          compiler: Any = COMPILER) -> Any:
     count = sum(len(s.frames) for s in prepared)
     request = PrepareRequest(
         RunSequence("run-1", "gen-1", 1),
         tuple(BatchMember(s.segment_id, HotPayloadRef(f"run-1/gen-1/{i}", "f" * 64, 1),
                           game, len(s.header["rows"]), s.header["mu"]["snapshot_sha256"],
                           "intent-" + game) for i, s in enumerate(segments)),
-        (), (tuple(range(count)),), (), COMPILER.identity, random.Random(1).getstate(),
+        (), (tuple(range(count)),), (), compiler.identity, random.Random(1).getstate(),
         128 * 1024**2)
     return bp.assemble(request, tuple(prepared), microbatch_size=16, deduplicate_text=True,
                        prepared_layout="rows-v2")
@@ -570,3 +583,239 @@ def test_the_learner_admits_prepares_and_steps_a_short_combat_ticket_segment(
         assert result["rows"] > 0 and result["approx_kl_mu_theta"] > 0
     finally:
         owner.close()
+
+
+# -- RL5-METHODS A2: the combat-type weight, the encounter, the run record, the chain ---
+WEIGHTS = {"normal": 1.0, "elite": 1.0, "boss": 0.3}  # plan v3 §3.2: the first experiment
+
+
+def test_the_weight_scales_the_hp_change_and_its_baseline_never_potion_or_death_points():
+    survive = [(outcome(65), 62.5, False), (outcome(60), 50.0, True),
+               (outcome(58, 82), 56.25, False)]
+    died = [(outcome(40, 75), 45.0, False), (outcome(3, 75, terminal="defeat"), 20.0, True)]
+    # w = 1 (every type's default) is the unweighted score to the bit.
+    assert hp_advantages(facts(70), survive, 1.0) == hp_advantages(facts(70), survive)
+    assert hp_advantages(facts(50, 70), died, 1.0) == hp_advantages(facts(50, 70), died)
+    # Survive with a potion and a max-HP gain: h_0 = (58-70) + (82-80) = -10, baseline
+    # 62.5-70; h_1 = (58-65) + 2 = -5, baseline 50-65; h_2 = 0, baseline 56.25-60.
+    assert hp_advantages(facts(70), survive, 0.3) == pytest.approx(
+        [0.3 * (-10 + 7.5) - 5, 0.3 * (-5 + 15) - 5, 0.3 * (0 + 3.75)])
+    # Die: H_T = 0 and the combat's max-HP gain taken back are HP change (scaled), the -30
+    # and the potion are not: h_0 = (0-50) + (75-70) - 5, h_1 = (0-40) + 0 - 5.
+    assert hp_advantages(facts(50, 70), died, 0.3) == pytest.approx(
+        [0.3 * (-50 + 5) - 5 - 30, 0.3 * (-45 + 20) - 5 - 30])
+    # w = 0 leaves exactly the unscaled points.
+    assert hp_advantages(facts(70), survive, 0.0) == [-5.0, -5.0, 0.0]
+    assert hp_advantages(facts(50, 70), died, 0.0) == [-35.0, -35.0]
+
+
+def three_types(g: HpGame) -> None:
+    g.open("g")
+    g.step("g", combat=False, hp=70)                                      # map: 70/80
+    g.step("g", combat=True, encounter="boss", hp=50, predicted=0.6)
+    g.step("g", combat=True, encounter="boss", hp=40, predicted=0.5)      # boss dead at 40
+    g.step("g", combat=False, hp=40)                                      # its reward
+    g.step("g", combat=False, hp=80)                                      # the act heal
+    g.step("g", combat=True, encounter="elite", hp=72, predicted=0.75)
+    g.step("g", combat=False, hp=72)
+    g.step("g", combat=True, encounter="unknown", hp=0, terminal="defeat")  # an event fight
+    g.close("g", "terminal")
+
+
+def test_a_boss_is_scored_before_the_act_heal_and_each_type_takes_its_weight():
+    plain, weighted = HpGame(), HpGame(hp_weights={"normal": 0.5, "elite": 2.0, "boss": 0.3})
+    three_types(plain)
+    three_types(weighted)
+    # Boss: from 70 to 40 (the last boss row's outcome, not the healed 80 later):
+    # h = -30, baseline 60-70 -> -20; h = -10, baseline 50-50 -> -10. Elite from the
+    # healed 80: h = -8, baseline 75-80 -> -3. Event fight (unknown: the normal weight),
+    # death from 72: h = -72, baseline 50-72, -30 unscaled -> -80.
+    assert plain.sealed[0].header["hp_adv"] == [None, -20.0, -10.0, None, None, -3.0, None,
+                                                -80.0]
+    assert weighted.sealed[0].header["hp_adv"] == pytest.approx(
+        [None, -6.0, -3.0, None, None, -6.0, None, 0.5 * -50 - 30])
+    none = {"battles": 0, "deaths": 0, "hp_change": 0}
+    for g in (plain, weighted):  # counted unweighted, per encounter
+        assert g.scores()["by_encounter"] == {
+            "normal": none, "elite": {"battles": 1, "deaths": 0, "hp_change": -8},
+            "boss": {"battles": 1, "deaths": 0, "hp_change": -30},
+            "unknown": {"battles": 1, "deaths": 1, "hp_change": -72}}
+
+
+def test_default_weights_seal_the_same_bytes_and_bad_weights_are_refused():
+    same = [HpGame(), HpGame(hp_weights={"normal": 1, "elite": 1.0, "boss": 1.0})]
+    for g in same:
+        play_two_combats(g)
+    assert same[0].sealed[0].data == same[1].sealed[0].data
+
+    def assembler(segment_format: str, weights: Any) -> FastSegmentAssembler:
+        return FastSegmentAssembler(assembler_id="node-a", emit=lambda _segment: None,
+                                    compiler_identity=COMPILER.identity,
+                                    segment_format=segment_format, hp_weights=weights)
+
+    assert assembler(FORMAT_3, None).hp_weights == DEFAULT_HP_WEIGHTS
+    assert assembler(FORMAT_3, {"normal": 1, "elite": 1, "boss": 1}).hp_weights == \
+        DEFAULT_HP_WEIGHTS
+    assert assembler(FORMAT_4, WEIGHTS).hp_weights == WEIGHTS
+    for bad in ({"normal": 1.0, "elite": 1.0}, {**WEIGHTS, "unknown": 1.0},
+                {**WEIGHTS, "boss": -0.1}, {**WEIGHTS, "boss": float("nan")},
+                {**WEIGHTS, "boss": float("inf")}, {**WEIGHTS, "boss": "0.3"},
+                {**WEIGHTS, "boss": True}):
+        with pytest.raises(AssemblyError, match="invalid_hp_weights"):
+            assembler(FORMAT_4, bad)
+    with pytest.raises(AssemblyError, match="hp_weights_need_segment_format_4"):
+        assembler(FORMAT_3, WEIGHTS)
+
+
+@pytest.mark.parametrize("encounter", [None, "Boss", "monster"])
+def test_a_format_4_combat_row_must_name_its_public_encounter(encounter):
+    g = HpGame()
+    g.open("g")
+    g.step("g", combat=False, hp=70, encounter=None)  # off combat nothing is needed
+    with pytest.raises(AssemblyError, match="hp_encounter_required"):
+        g.step("g", combat=True, hp=60, encounter=encounter)
+    three = HpGame(FORMAT_3)  # format 3 reads no encounter
+    three.open("g")
+    three.step("g", combat=True, hp=60, encounter=encounter)
+
+
+@pytest.fixture(scope="module")
+def link_model() -> Any:
+    from stpd.p1.input import V2_INPUT_SPEC
+    from stpd.p1.model import MStd, MStdExecution
+    from stpd.p1.vocabulary import public_vocabulary
+    torch.manual_seed(3)
+    model = MStd(public_vocabulary(V2_INPUT_SPEC), MStdExecution(
+        implementation="experimental-packed-v1", microbatch_size=4,
+        scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1))
+    model.enable_rl4_heads(7)
+    return model.eval().requires_grad_(False)
+
+
+def test_the_aggregator_hands_the_service_each_combat_rows_public_encounter(link_model):
+    """Env line -> node aggregator (encoder pool) -> service -> assembler.begin_row."""
+    import os
+    import tempfile
+
+    import test_p1_fast_inference as link
+
+    class Rows(link.FakeAssembler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows: list[dict[str, Any]] = []
+
+        def begin_row(self, row: dict[str, Any], row_bytes: bytes) -> Any:
+            self.rows.append(dict(row))
+            return super().begin_row(row, row_bytes)
+
+    assembler = Rows()
+    service = link._service(link_model.vocabulary, link_model, assembler)
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = link._aggregator(link_model.vocabulary, service, path)
+    try:
+        env = link.FakeEnv(path)
+        env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
+                  "input_spec": link.AGENT_SPEC})
+        env.send({"type": "episode_open", "ascension": 0, "game_instance_id": "g1",
+                  "actor_id": "actor-1", "sampling": link.SAMPLING, "single_choice": "score",
+                  "start": {"kind": "new_run"}})
+        fight = public_state()
+        fight["combat"] = {"availability": "available", "content": {"encounter_type": "elite"}}
+        lines = [link._decision_line(1, "g1", 0, public_state()),
+                 link._decision_line(2, "g1", 1, fight).replace(b'"in_combat":false',
+                                                                 b'"in_combat":true')]
+        for step, line in enumerate(lines):
+            env.socket.sendall(line)
+            assert env.reply()["type"] == "scored"
+            env.send({"type": "step_outcome", "row_id": step + 1, "game_instance_id": "g1",
+                      "step_index": step, "status": "completed", "receipt_sha256": "b" * 64,
+                      "public_facts": {"act": 1, "floor": 3, "hp": 50, "max_hp": 70},
+                      "terminal": None})
+    finally:
+        stats = aggregator.close()
+        service.close()
+    assert stats["failure"] is None
+    assert [(row["in_combat"], row["encounter"]) for row in assembler.rows] == [
+        (False, None), (True, "elite")]
+    assert all(type(hp) is float for _, hp, _ in assembler.hp)  # the HP head, for format 4
+
+
+def mixed_game(g: HpGame, game: str = "g") -> None:
+    """A full game: normal, elite and boss combats in the first 64-row segment, a death."""
+    g.open(game)
+    g.step(game, combat=False, hp=70)
+    for index in range(70):
+        g.step(game, combat=index % 20 != 19,
+               encounter=("normal", "elite", "boss")[index // 20 % 3], hp=70 - index // 2,
+               potion=index % 9 == 4, predicted=0.5 + 0.0078125 * (index % 5))
+    g.step(game, combat=True, hp=0, terminal="defeat")
+    g.close(game, "terminal")
+
+
+def test_format_4_with_c_hp_and_weights_trains_full_games_through_the_handoff(
+        tmp_path, monkeypatch):
+    """Assembler (format 4, weights 1 / 1 / 0.3) -> shm handoff -> learner intake ->
+    preparation (c_hp > 0, scope all_combats) -> one SGD step, with the HP share."""
+    import multiprocessing
+
+    from test_rl_fast_learner import admission, fast_learner, learner_mu, queued
+    from test_rl_fast_source import _sender, closed_for
+
+    from stpd.p1.frame_compiler import FrameCompiler
+    coef = 0.003
+    owner = fast_learner(tmp_path, monkeypatch, hp_advantage_coef=coef,
+                         hp_advantage_scope="all_combats")
+    try:
+        compiler = FrameCompiler(owner.model.vocabulary)
+        g = HpGame(compiler=compiler, handoff=learner_mu(owner), hp_weights=WEIGHTS)
+        mixed_game(g)
+        plain = HpGame(compiler=compiler, handoff=learner_mu(owner))
+        mixed_game(plain)
+        sealed = g.sealed
+        assert [s.kind for s in sealed] == ["bootstrap", "terminal"]
+        first = sealed[0]
+        # Only the boss rows (segment rows 41-59) carry the 0.3.
+        changed = [row for row, (a, b) in enumerate(zip(
+            first.header["hp_adv"], plain.sealed[0].header["hp_adv"], strict=True)) if a != b]
+        assert changed == list(range(41, 60))
+        assert admission(owner, "g", 1)["admitted"]
+        ours, theirs = multiprocessing.Pipe()
+        process = multiprocessing.Process(target=_sender, args=(theirs, sealed,
+                                                                closed_for(sealed)))
+        process.start()
+        theirs.close()
+        reader = owner.attach_fast_handoff(ours)
+        process.join(30)
+        assert process.exitcode == 0
+        reader.join(30)
+        assert not reader.is_alive() and not owner.input_fenced
+        assert queued(owner) == [s.segment_id for s in sealed]
+        assert owner._prepare()  # one dataset: the 64-row segment
+        prepared = owner.active_batch
+        assert prepared is not None
+        ppo = torch.tensor([kind == "ppo" for kind in prepared.kinds])
+        assert int(ppo.sum()) == 64 and bool(prepared.policy_mask[ppo].all())
+        raw = outcome_advantages(first) + coef * hp_column(first)
+        assert torch.allclose(prepared.advantages[ppo], normalised(raw), atol=1e-6)
+        hp, centred = coef * hp_column(first).double(), raw.double() - raw.double().mean()
+        share = float(((hp - hp.mean()) * centred).mean() / centred.square().mean())
+        normalization = prepared.normalization
+        assert normalization.hp_std == pytest.approx(float(hp.std(unbiased=False)))
+        assert normalization.hp_share == pytest.approx(share, rel=1e-4)
+        assert 0 < normalization.hp_share < 1
+        result = owner._step()
+        assert result["rows"] > 0
+        assert result["advantage_raw"]["hp_share"] == normalization.hp_share
+    finally:
+        owner.close()
+
+
+def test_c_hp_zero_hands_no_hp_part_and_records_no_hp_share():
+    old, new = two_segments(FORMAT_3), two_segments(FORMAT_4)
+    for segments in (old, new):
+        prepared = sources(segments, "g", 0.0)
+        assert all(source.hp_advantages is None for source in prepared)
+        normalization = batch(segments, prepared, "g").normalization
+        assert (normalization.hp_std, normalization.hp_share) == (None, None)
+    with_hp = batch(new, sources(new, "g", 0.003, "all_combats"), "g").normalization
+    assert with_hp.hp_std is not None and with_hp.hp_share is not None
