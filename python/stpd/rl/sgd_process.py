@@ -57,10 +57,12 @@ OPTION_KEYS = frozenset((
     "sgd_offline_dump_every", "sgd_offline_dump_limit", "sgd_offline_dump_directory",
     "sgd_data_parallel", "sgd_compile", "sgd_stage_thread", "sgd_prestart",
     "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
-    "sgd_step_probe", "sgd_gc_freeze",
+    "sgd_step_probe", "sgd_gc_freeze", "sgd_gc_refreeze_objects",
 ))
 # `sgd_gc_freeze`: freeze again at a dataset boundary once this many unfrozen
-# objects sit in the oldest generation (graphs compiled lazily, caches).
+# objects sit in the oldest generation (graphs compiled lazily, caches); default
+# of `sgd_gc_refreeze_objects`. Each online recompile leaves 19k-96k such objects
+# (V5 smoke of 18a56576), so this default lets a few pile up between freezes.
 GC_REFREEZE_OBJECTS = 200_000
 # `sgd_gc_freeze`: third threshold that keeps automatic full collections off
 # (CPython <= 3.13 generational semantics; the nodes run 3.11).
@@ -131,15 +133,17 @@ class SgdOptions:
     # Every SGD rank: no automatic full collection (they landed inside steps,
     # rescanning the whole long-lived heap with the GIL held); instead one full
     # collection at each dataset boundary, and `gc.freeze()` after the first
-    # dataset and whenever `GC_REFREEZE_OBJECTS` new long-lived objects piled up
+    # dataset and whenever `gc_refreeze_objects` new long-lived objects piled up
     # (graphs compiled later), so that collection stays small.
     gc_freeze: bool = False
+    gc_refreeze_objects: int = GC_REFREEZE_OBJECTS
 
     def stage_init(self) -> dict[str, Any]:
         """The SGD child's staging options (part of its init message)."""
         return {"stream_reuse": self.stage_stream_reuse, "lean_tree": self.stage_lean_tree,
                 "verify_split": self.verify_split,
-                "step_probe": self.step_probe, "gc_freeze": self.gc_freeze}
+                "step_probe": self.step_probe, "gc_freeze": self.gc_freeze,
+                "gc_refreeze_objects": self.gc_refreeze_objects}
 
 
 # `prepared_compile` defaults (V3 T6 probes 1458888/1458938): the levered block plus
@@ -233,6 +237,11 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         flags[key] = dataplane.get(key, False)
         if type(flags[key]) is not bool:
             raise ValueError("invalid_" + key)
+    refreeze = dataplane.get("sgd_gc_refreeze_objects", GC_REFREEZE_OBJECTS)
+    if type(refreeze) is not int or refreeze < 1:
+        raise ValueError("invalid_sgd_gc_refreeze_objects")
+    if "sgd_gc_refreeze_objects" in dataplane and not flags["sgd_gc_freeze"]:
+        raise ValueError("sgd_gc_refreeze_objects_without_sgd_gc_freeze")
     return SgdOptions(
         stall_seconds=number("sgd_stall_seconds", 120, 1, 3600),
         start_seconds=number("sgd_start_seconds", 600, 1, 3600),
@@ -252,6 +261,7 @@ def sgd_options(dataplane: dict[str, Any] | None) -> SgdOptions | None:
         verify_split=flags["sgd_verify_split"],
         step_probe=flags["sgd_step_probe"],
         gc_freeze=flags["sgd_gc_freeze"],
+        gc_refreeze_objects=refreeze,
     )
 
 
@@ -430,13 +440,15 @@ class _StageConfig:
     verify_split: bool = False
     step_probe: bool = False
     gc_freeze: bool = False
+    gc_refreeze_objects: int = GC_REFREEZE_OBJECTS
 
     @classmethod
     def from_init(cls, value: Any) -> _StageConfig:
         if value is None:
             return cls()
         if not isinstance(value, dict) or set(value) != {
-                "stream_reuse", "lean_tree", "verify_split", "step_probe", "gc_freeze"}:
+                "stream_reuse", "lean_tree", "verify_split", "step_probe", "gc_freeze",
+                "gc_refreeze_objects"}:
             raise _ChildViolation("sgd_stage_options_changed")
         return cls(**value)
 
@@ -1843,7 +1855,7 @@ class _SgdWorker:
         """`gc_freeze`, on the stepping thread between datasets, after the snapshot
         (whose safetensors encoding leaves its CPU slab in a cycle): one full
         collection (automatic ones are off); after the first dataset (compile
-        warm-up done), and whenever `GC_REFREEZE_OBJECTS` unfrozen objects sit in
+        warm-up done), and whenever `gc_refreeze_objects` unfrozen objects sit in
         the oldest generation, also `gc.freeze()`: survivors leave the
         collector's view for good, so later collections scan only what came after.
 
@@ -1859,7 +1871,7 @@ class _SgdWorker:
         collected = gc.collect()
         self.mark("gc_collect")
         objects = len(gc.get_objects(2))  # survivors only: garbage is never frozen
-        refreeze = self.gc_frozen == 0 or objects >= GC_REFREEZE_OBJECTS
+        refreeze = self.gc_frozen == 0 or objects >= self.staging_config.gc_refreeze_objects
         if refreeze:
             gc.freeze()
             self.gc_frozen += 1

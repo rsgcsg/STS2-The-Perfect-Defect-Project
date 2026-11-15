@@ -106,21 +106,22 @@ def learner() -> None:
                                          == "placeholder"})
     gate = Path(site("gate_dir"))
     resume = os.environ.get("FC_RESUME_CHECKPOINT") or None
+    restored_config = None
+    if resume:
+        # The CP's own config: its deadline/budget decide which window the learner accepts
+        # and its start fields are the start a resume records (learner_config.start_fields).
+        # Inside the CP payload only, read with the learner's own reader.
+        from types import SimpleNamespace
+
+        from spireagent.rl_exchange import Exchange
+        exchange = Exchange({"kind": "local", "directory": site("peer_dir")}, site("run_name"))
+        restored = SegmentLearner._read_checkpoint(SimpleNamespace(exchange=exchange), resume)
+        restored_config = restored.config
+        del restored
     window = None
     if os.environ.get("FC_CHAIN_ID"):  # a generation of a resume chain (supervise.py)
-        cp_config = None
-        if resume:
-            # The CP's own deadline/budget decide which window the learner accepts; they
-            # live only inside the CP payload, read with the learner's own reader.
-            from types import SimpleNamespace
-
-            from spireagent.rl_exchange import Exchange
-            exchange = Exchange({"kind": "local", "directory": site("peer_dir")},
-                                site("run_name"))
-            restored = SegmentLearner._read_checkpoint(SimpleNamespace(exchange=exchange),
-                                                       resume)
-            cp_config = {k: restored.config.get(k) for k in ("deadline_at", "operating_budget")}
-            del restored
+        cp_config = (None if restored_config is None else
+                     {k: restored_config.get(k) for k in ("deadline_at", "operating_budget")})
         window = learner_config.window(
             os.environ["FC_CHAIN_ID"], int(os.environ["FC_CHAIN_TOTAL_SECONDS"]),
             float(os.environ["FC_CHAIN_DEADLINE"]), resume, cp_config)
@@ -128,11 +129,22 @@ def learner() -> None:
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
                                              "checkpoint_window": cp_config, **window})
-    base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
+    # The gate's recipe; loss keys it predates come from this source's frozen config, as
+    # preflight checked (A9 frozen_recipe).
+    gate_base, filled = learner_config.gate_recipe(
+        json.loads((gate / "learner-base.json").read_bytes()),
+        json.loads((Path(site("src_dir")) / K["frozen_learner_config"]).read_bytes()))
+    if filled:
+        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
+                                             "loss": filled})
+    base = learner_config.build(gate_base, K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
-        "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
+        **learner_config.start_fields(site("start_package"), restored_config),
+        "wall_seconds": os.environ["FC_WALL"],
         "device": os.environ["FC_LEARNER_DEVICE"], "generation": os.environ["FC_GENERATION"],
-        "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
+        # "" = no fitted heads (a random-init start; preflight check_warmup_artifact)
+        "warmup_artifact_id": (Path(site("warmup_file")).read_text().strip()
+                               if site("warmup_file") else None),
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
         "resume_checkpoint": resume, "window": window})
@@ -191,6 +203,8 @@ def learner() -> None:
         dataplane["release_trained_segments"] = True
     if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
         dataplane["sgd_gc_freeze"] = True
+    if K["sgd_gc_refreeze_objects"] != 200_000:  # 200_000 = sgd_process.GC_REFREEZE_OBJECTS
+        dataplane["sgd_gc_refreeze_objects"] = K["sgd_gc_refreeze_objects"]
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
         dataplane["sgd_step_probe"] = True
     if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only
@@ -241,7 +255,7 @@ def learner() -> None:
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
                "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
-               "sgd_step_probe", "release_trained_segments")},
+               "sgd_gc_refreeze_objects", "sgd_step_probe", "release_trained_segments")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}

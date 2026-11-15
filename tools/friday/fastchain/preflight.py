@@ -38,6 +38,7 @@ GIB = 1024**3
 # and the "UNKNOWN (0x...)" that BeeGFS/Ceph mounts print, is refused.
 LOCAL_FS = ("tmpfs", "xfs", "ext2/ext3", "ext4", "btrfs", "overlayfs", "overlay", "zfs")
 HEX12 = re.compile(r"^[0-9a-f]{12,64}$")
+RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned by a test)
 # sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
@@ -240,6 +241,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["residual"] = "prepared_kernels residual lever (#526)"
     if k["sgd_gc_freeze"]:
         need["gc_freeze"] = "sgd_gc_freeze (#525 b40d31db)"
+    if k["sgd_gc_refreeze_objects"] != 200_000:
+        need["gc_refreeze"] = "sgd_gc_refreeze_objects (RL5-METHODS F)"
     if k["sgd_step_probe"]:
         need["step_probe"] = "sgd_step_probe (#525)"
     if k["levers"] and k["compile_warmup"]:
@@ -304,6 +307,7 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
             ("frozen config " + plan["knobs"]["frozen_learner_config"], frozen),
             ("gate learner-base.json", base)) if value is None]
         return Result("frozen_recipe", False, "missing " + " and ".join(missing))
+    base, filled = learner_config.gate_recipe(base, frozen)
     effective = learner_config.build(base, plan["knobs"], {
         "run_name": "preflight", "peer_dir": "-", "start_package": "-",
         "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
@@ -314,26 +318,34 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
                   + "; ".join(drift)) if drift else
                   f"effective learner config = {plan['knobs']['frozen_learner_config']} "
-                  f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})")
+                  f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})"
+                  + (f"; not in the gate, from the frozen config: loss.{', loss.'.join(filled)}"
+                     if filled else ""))
 
 
 def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     """c_hp (the gate's `loss.hp_advantage_coef`, equal to the frozen config's by A9) > 0
     needs segment format 4: the learner refuses every older segment
     (`fast_segment_without_hp_score`), so refuse the run before it starts. Its scope
-    (`loss.hp_advantage_scope`) comes from the gate the same way."""
+    (`loss.hp_advantage_scope`) comes from the gate the same way; a gate made before them
+    gets both from the frozen config (`learner_config.gate_recipe`)."""
     base, fmt = facts.get("gate_learner_base"), plan["knobs"]["segment_format"]
-    loss = (base or {}).get("loss") or {}
-    coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
     if base is None:
         return Result("hp_score", False, "no gate learner-base.json")
+    frozen = facts.get("frozen_recipe")
+    base, filled = learner_config.gate_recipe(base, frozen) if frozen else (base, {})
+    loss = base.get("loss") or {}
+    coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
     if type(coef) not in (int, float) or scope not in ("combat_ticket", "all_combats"):
-        return Result("hp_score", False, "gate learner-base.json lacks loss.hp_advantage_coef "
-                      "/ loss.hp_advantage_scope: patch it once (RL_LONG_RUN.zh-CN.md, c_hp)")
+        return Result("hp_score", False, "neither the gate learner-base.json nor the frozen "
+                      "config has a valid loss.hp_advantage_coef / loss.hp_advantage_scope "
+                      "(a source before #538?)")
     if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
         return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
                       f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
-    return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}")
+    return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}"
+                  + (" (from the frozen config; not in the gate)"
+                     if {"hp_advantage_coef", "hp_advantage_scope"} & set(filled) else ""))
 
 
 def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
@@ -350,8 +362,23 @@ def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
 
 def check_warmup_artifact(facts: dict[str, Any]) -> Result:
     """The learner loads the fitted heads (site warmup_file) from peer_dir at start; a new
-    empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found)."""
+    empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found).
+
+    Site warmup_file = "" loads none: the RL4 heads start from their constructor init. A
+    random-init start package (python -m stpd.rl.random_start) needs that, since fitted
+    heads are bound to the package they were fitted on (the learner refuses them)."""
     warmup = facts.get("warmup_artifact") or {}
+    start = facts.get("start_model") or {}
+    identity = start.get("training_identity") or {}
+    random_init = (f"random-init start {str(start.get('package_sha256'))[:12]} seed "
+                   f"{identity.get('seed')}" if identity.get("schema") == RANDOM_START else None)
+    if warmup.get("none"):
+        return Result("warmup_artifact", True, 'none (site warmup_file = ""): RL4 heads start '
+                      "from their constructor init" + (f"; {random_init}" if random_init else ""))
+    if random_init:
+        return Result("warmup_artifact", False, f"{random_init} has no fitted heads: set site "
+                      'warmup_file = "" (warmup artifact '
+                      f"{str(warmup.get('id'))[:12]} was fitted on another package)")
     ok = bool(warmup.get("present"))
     return Result("warmup_artifact", ok, f"{str(warmup.get('id'))[:12]} in peer_dir" if ok else
                   f"warmup artifact {warmup.get('id')} has no manifest in site peer_dir "
@@ -510,10 +537,15 @@ def check_cores(plan: dict[str, Any]) -> Result:
                   f"{plan['env_cores_max']} = {total} cores (cap {cap})")
 
 
-def check_resume(plan: dict[str, Any]) -> Result:
-    """A resume or chain generation: a real producer and enough window left."""
+def check_resume(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """A fresh start needs its start package (the learner loads it); a resume restores the
+    CP and never reads it. A resume or chain generation: a real producer and enough window
+    left."""
     k, chain, cp = plan["knobs"], plan.get("chain"), plan.get("resume_checkpoint")
     bad = []
+    if not cp and facts.get("start_model") is None:
+        bad.append(f"fresh start without a start package: no model.json in site "
+                   f"start_package {plan['site']['start_package']}")
     if chain is None:
         return Result("resume", not bad, "; ".join(bad) or
                       (f"start from CP {cp}" if cp else "fresh start from the start package"))
@@ -559,7 +591,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),
-            check_resume(plan), check_queue(facts)]
+            check_resume(plan, facts), check_queue(facts)]
 
 
 def report(results: list[Result]) -> str:
