@@ -1253,6 +1253,137 @@ def test_readout_counts_closes_without_a_natural_end_apart(tmp_path):
     assert 'closes without a natural end' in readout.render(r)
 
 
+def _many_control_games(run, n, start_t=10_000):
+    """n more complete A0 control games (floor 10 + i % 30, every 7th a win) on driver p0."""
+    lines = []
+    for i in range(n):
+        ref = f'm{i}'
+        lines += [{'event': 'admission', 'game_ref': ref, 'ok': True},
+                  {'event': 'closed', 't': start_t + i, 'game_ref': ref, 'reason': 'terminal',
+                   'arm': 'control', 'start': 'new_run', 'floor': 10 + i % 30,
+                   'replay_k': 1, 'group': ref, 'ascension': 0,
+                   'terminal': 'victory' if i % 7 == 0 else 'defeat'}]
+    with (run / 'env-n0' / 'p0' / 'driver.jsonl').open('a') as handle:
+        handle.write(jsonl_text(lines))
+
+
+def _set_knob(run, name, value):
+    path = run / 'effective-profile.json'
+    profile = json.loads(path.read_text())
+    profile['knobs'][name] = {'value': value}
+    path.write_text(json.dumps(profile))
+
+
+def test_readout_rolling_window_defaults_to_the_last_100_and_takes_the_profile_windows(tmp_path):
+    """#556: `readout_rolling_games` [100] (the default) and a run frozen without the knob give
+    the same rolling section as before (last 100, no extra key); [30, 1000] puts the last 30
+    in `rolling` and the last 1000 beside it, per arm too, incrementally."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    _many_control_games(run, 150)
+    old = readout.build(run, 1200)  # no knob in the profile: a run frozen before #556
+    games = old['training_games']
+    assert games['rolling_games'] == 100 and 'rolling_windows' not in games
+    assert 'rolling_windows' not in games['arms']['control']
+    last = [10 + i % 30 for i in range(50, 150)]  # the newest 100 by close time
+    assert games['rolling']['all']['games'] == 100
+    assert games['rolling']['all']['mean_floor'] == pytest.approx(sum(last) / 100)
+    assert games['rolling']['all']['win_rate'] == pytest.approx(
+        sum(i % 7 == 0 for i in range(50, 150)) / 100)
+    assert games['run']['all']['games'] == 154
+    _set_knob(run, 'readout_rolling_games', [100])
+    new = readout.build(run, 1200)  # the default: the same record (bar the profile digest)
+
+    def lines(record):
+        return [line for line in readout.render(record).splitlines()
+                if not line.startswith('identity:')]
+    assert {**new, 'identity': None} == {**old, 'identity': None}
+    assert lines(new) == lines(old)
+    assert 'training games A0 (control, full, last 100): 100 games' in readout.render(old)
+
+    _set_knob(run, 'readout_rolling_games', [30, 1000])
+    reader = readout.Readout(run, 1200)
+    reader.update()
+    _many_control_games(run, 20, start_t=20_000)  # appended after the first read
+    r = reader.update().record()
+    assert r == readout.build(run, 1200)  # incremental == one fresh read
+    games = r['training_games']
+    assert games['rolling_games'] == 30 and games['rolling']['all']['games'] == 30
+    newest = [10 + i % 30 for i in range(130, 150)] + [10 + i % 30 for i in range(20)]
+    assert games['rolling']['all']['mean_floor'] == pytest.approx(sum(newest[-30:]) / 30)
+    wide = games['rolling_windows']['1000']['all']
+    assert wide['games'] == games['run']['all']['games'] == 174
+    assert games['arms']['control']['rolling_windows'] == games['rolling_windows']
+    assert games['arms']['explore']['rolling_windows']['1000']['all']['games'] == 1
+    text = readout.render(r)
+    assert 'training games A0 (control, full, last 30): 30 games' in text
+    assert 'training games all (control, full, last 1000): 174 games' in text
+    assert 'training games arm explore A0 (full, last 1000): 1 games' in text
+    with pytest.raises(ValueError, match='positive ints'):
+        readout.Readout(run, 1200, rolling=[0])
+
+
+def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
+    """RL5-METHODS R: per exploration arm the assemblers' per-encounter HP counters
+    (`<arm>+save` apart) and the learner's per-arm clip fraction and approx KL."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    r = readout.build(run, 1200)
+    assert r['hp_score_arms'] == {} and r['learning']['run_mean']['policy_by_arm'] is None
+    text = readout.render(r)
+    assert 'PPO update per arm' not in text and '  arm control:' not in text
+    zero = {'battles': 0, 'deaths': 0, 'hp_change': 0}
+
+    def table(normal, boss):
+        return {'normal': normal, 'elite': zero, 'boss': boss, 'unknown': zero}
+    hot = table({'battles': 10, 'deaths': 1, 'hp_change': -100}, zero)
+    control = table({'battles': 4, 'deaths': 0, 'hp_change': -20},
+                    {'battles': 2, 'deaths': 1, 'hp_change': -90})
+    saved = table(zero, {'battles': 1, 'deaths': 1, 'hp_change': -60})
+    statuses = [({'control': control, 'hot': hot}, 0), ({'control': control,
+                                                          'control+save': saved}, 1)]
+    for by_arm, index in statuses:
+        by_encounter = {kind: {key: sum(t[kind][key] for t in by_arm.values())
+                               for key in zero} for kind in control}
+        (run / f'service-status-{index}.jsonl').write_text(jsonl_text([
+            {'t': 2300, 'service': {'rows': 1}, 'assembler': {'hp_score': {
+                'by_encounter': by_encounter, 'by_arm': by_arm}}}]))
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    for event in events:
+        if event.get('kind') == 'progress':  # 4 rows of control (1 clipped), 2 of hot
+            event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1]}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    r = readout.build(run, 1200)
+    arms = r['hp_score_arms']
+    assert sorted(arms) == ['control', 'control+save', 'hot']
+    assert arms['control']['normal'] == {'combats': 8, 'deaths': 0, 'death_rate': 0.0,
+                                         'mean_net_hp_change': -5.0}
+    assert arms['control']['boss'] == {'combats': 4, 'deaths': 2, 'death_rate': 0.5,
+                                       'mean_net_hp_change': -45.0}
+    assert arms['hot']['normal']['death_rate'] == 0.1
+    assert arms['hot']['elite']['death_rate'] is None
+    assert arms['control+save']['boss']['mean_net_hp_change'] == -60.0
+    assert r['hp_score']['boss']['combats'] == 5  # all arms together, as before
+    attempts = r['learning']['run_mean']['attempts']
+    ppo = r['learning']['run_mean']['policy_by_arm']
+    assert ppo['control'] == {'rows': 4 * attempts, 'clip_fraction': 0.25,
+                              'approx_kl': pytest.approx(0.001), 'ratio_nonfinite': 0}
+    assert ppo['hot'] == {'rows': 2 * attempts, 'clip_fraction': 1.0,
+                          'approx_kl': pytest.approx(0.01), 'ratio_nonfinite': attempts}
+    assert r['learning']['latest']['policy_by_arm']['hot']['clip_fraction'] == 1.0
+    text = readout.render(r)
+    assert 'PPO update per arm (rows, clip, approx KL): control ' in text
+    assert '/ 0.250 / 0.0010, hot ' in text
+    assert '  arm control+save: normal 0 / 0 / -, elite 0 / 0 / -, boss 1 / 1 / -60.0' in text
+    events[-5]['policy_by_arm'] = {'hot': [2, 0.01]}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    with pytest.raises(ValueError, match='2 fields, expected 4'):
+        readout.build(run, 1200)
+
+
 def test_readout_refuses_to_guess_missing_aux(tmp_path):
     run = tmp_path / 'run-t1'
     write_run(run)
@@ -1934,6 +2065,18 @@ def test_save_starts_knob_defaults_off_and_is_validated():
     assert 'save_starts' in supervise.ENV_RECIPE_KNOBS
 
 
+def test_readout_rolling_games_knob_defaults_to_100_and_is_validated():
+    """#556: [100] = the readout before the knob; a list of 1-4 distinct ints in [10, 1e5]."""
+    assert run_profile.values(run_profile.load_profile(PROFILE, []))[
+        'readout_rolling_games'] == [100]
+    on = run_profile.values(run_profile.load_profile(
+        PROFILE, ['readout_rolling_games=[100, 1000]']))
+    assert on['readout_rolling_games'] == [100, 1000]
+    for bad in ('[]', '[5]', '[100, 100]', '[100, 200, 300, 400, 500]', '100', '[1e3]'):
+        with pytest.raises(run_profile.ProfileError, match='readout_rolling_games'):
+            run_profile.load_profile(PROFILE, [f'readout_rolling_games={bad}'])
+
+
 def test_exploration_plan_interleaves_arms_over_the_run_drivers():
     ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
         'exploration_ladder']
@@ -2181,7 +2324,8 @@ def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad
     try:
         for name, extra in (('none', ()), ('off', ('--save-starts', SAVE_STARTS_OFF,
                                                     '--save-pool', str(tmp_path / 'pool')))):
-            out = tmp_path / name
+            out = tmp_path / name / 'env-n0' / 'p0'
+            write_run(tmp_path / name, cards=1)
             done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
                               '--arm', 'hot', '--replay-k', '2', *extra)
             assert done.returncode == 0, done.stderr
@@ -2199,6 +2343,15 @@ def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad
     assert [o['seed'] for o in runs['off'][:n]] == [f'S{i // 2}' for i in range(n)]
     assert all(o['start'] == {'kind': 'new_run'} for o in runs['off'])
     assert not (tmp_path / 'pool').exists()
+    # #553 should-fix 1: nor does the readout change: no save counters, no save-start table,
+    # every close in the arm tables.
+    off = readout.jsonl(tmp_path / 'off' / 'env-n0' / 'p0' / 'driver.jsonl')
+    assert not [r for r in off if r['event'] in ('save_counters', 'save_pooled')]
+    record = readout.build(tmp_path / 'off', 1200)
+    assert record['save_starts'] == {}
+    assert set(record['recipe']['start']) == {'new_run'}
+    assert record['recipe']['arm']['hot'] == record['recipe']['start']['new_run']
+    assert 'save starts:' not in readout.render(record)
     for flags, message in (
             (('--exploration-ladder', LADDER_JSON, '--arm', 'cold', '--replay-k', '1'), '--arm'),
             (('--exploration-ladder', LADDER_JSON, '--arm', 'hot'), '--replay-k'),

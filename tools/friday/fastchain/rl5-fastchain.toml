@@ -94,6 +94,7 @@ resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain 
 min_generation_seconds = { value = 1800, default = 1800, why = "a generation shorter than this cannot reach its first CP after warm-up: the chain ends instead", measured = "c2k (warm-up + first CP ~20 min)" }
 supervise_poll_seconds = { value = 60, default = 60, why = "supervisor checks the GPU job and the schedules once per poll", measured = "watcher cadence" }
 readout_every_seconds = { value = 3600, default = 3600, why = "hourly readout of the current generation (lead 11-13 item 5)", measured = "RL4.2 hourly check" }
+readout_rolling_games = { value = [100], default = [100], why = "training-game rolling windows of the readout in complete games (first = headline, others shown beside it); e.g. [100, 1000] so a stall rule (~6 h without a rise) or an A0 30% rolling win rate rests on more than a few minutes of games (#556)", measured = "100 = the readout before #556; games per hour at production speed: see the readout (not measured for this knob)" }
 eval_interval_seconds = { value = 7200, default = 7200, why = "a 100-game evaluation of the newest CP every 2 h (fast_eval.py)", measured = "lead 11-12; user C3" }
 eval_seeds = { value = 100, default = 100, why = "100 games per evaluation (user 11-13 C3; RL3 registered suite)", measured = "LONG-RUN-CHECK §五 C3" }
 disk_sample_seconds = { value = 60, default = 60, why = "disk watermark sampling period (run dir and GPU local tmp)", measured = "A2" }

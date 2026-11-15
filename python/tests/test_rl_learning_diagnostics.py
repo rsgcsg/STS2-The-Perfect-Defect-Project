@@ -299,3 +299,29 @@ def test_the_hp_share_leaves_the_prepared_batch_and_three_steps_bit_identical(mo
     same(on_state, off_state, "parameters")
     same(on_adam, off_adam, "adam")
     assert torch.equal(on_rng, off_rng)
+
+
+def test_policy_rows_fold_per_arm_by_the_source_tables():
+    """RL5-METHODS R: a row's arm is its source's (the last exploration table at or before
+    it); KL per row is r - 1 - log r; a missing or zero ratio adds no KL, counted apart."""
+    from stpd.rl.learning_diagnostics import UNATTRIBUTED, policy_by_arm, row_arms
+
+    metadata = [{"floor": 1},  # a source without a table (single-choice rows only)
+                {"floor": 1, "exploration": {"hot|act1|combat": [2, 0, 0, 0, 0]}},
+                {"floor": 2}, {"floor": 2},
+                {"floor": 5, "exploration": {"control+save|act2|map": [1, 0, 0, 0, 0],
+                                             "control+save|act2|combat": [1, 0, 0, 0, 0]}},
+                {"floor": 6}]
+    arms = row_arms(metadata)
+    assert arms == [None, "hot", "hot", "hot", "control+save", "control+save"]
+    samples = [{"row": 0, "ratio": 1.0, "outside_clip": False},
+               {"row": 1, "ratio": 1.5, "outside_clip": True},
+               {"row": 3, "ratio": 0.8, "outside_clip": False},
+               {"row": 4, "ratio": None, "outside_clip": False},
+               {"row": 5, "ratio": 0.0, "outside_clip": True}]
+    out = policy_by_arm(arms, samples)
+    assert out[UNATTRIBUTED] == [1, 0.0, 0, 0]
+    assert out["hot"][0] == 2 and out["hot"][2] == 1 and out["hot"][3] == 0
+    assert out["hot"][1] == pytest.approx(0.5 - math.log(1.5) - 0.2 - math.log(0.8))
+    assert out["control+save"] == [2, 0.0, 1, 2]
+    assert policy_by_arm(arms, []) == {}

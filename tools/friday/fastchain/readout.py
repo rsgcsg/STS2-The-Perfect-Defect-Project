@@ -19,9 +19,11 @@ training rows/h with and without aux rows, first use and intake, the learner's v
 diagnostics and PPO statistics (latest window and run mean; with c_hp > 0 the HP term's
 share of the advantage variance), the exploration dose per arm (rank of the chosen action
 in the model's own ordering, top p > 0.99 share, non-top choices with a positive
-advantage; by decision type and act), per combat type the format-4 HP score counters
-(all arms together), training-game results of the control arm's full games and of every
-arm's (rolling and whole run, per ascension), the SGD boundary sections,
+advantage; by decision type and act) and the PPO update's clip fraction and approximate
+KL per arm, per combat type the format-4 HP score counters (all arms together and per
+arm), training-game results of the control arm's full games and of every arm's (rolling
+over the profile's `readout_rolling_games` windows, default the last 100, and whole run,
+per ascension), the SGD boundary sections,
 stops/refusals/unknowns with cause counts and the checkpoint ids.
 supervise.py writes it as run-record.json at every checkpoint and at the end.
 
@@ -55,7 +57,11 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
                     "gradient_norm")
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
+# stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
+POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
 ROLLING_GAMES = 100  # the training-game rolling mean: the last N complete games
+# effective-profile knob `readout_rolling_games` (#556): [headline, windows shown beside it]
+ROLLING_KNOB = "readout_rolling_games"
 SAVE_USE_BUCKETS = (("1", 1), ("2", 2), ("3-4", 4), ("5-8", 8), ("9-16", 16), (">16", 1 << 30))
 BOSS_FLOORS = (17, 33, 48)  # stpd.rl.heads; A10 has a second last-act Boss on 49
 BOSS_NAMES = ("act1_boss", "act2_boss", "act3_boss", "act3_boss2")
@@ -218,16 +224,15 @@ def _last_record(path: str) -> dict[str, Any] | None:
     return None
 
 
-def hp_score_edge(run: Path) -> dict[str, Any]:
-    """Segment format 4 (A2): per encounter type (normal / elite / boss / unknown) the
-    combats the assemblers scored, their deaths and the mean net HP change per combat
-    (H_T - H_0 + M_T - M_0, death -H_0; HP points, unweighted), from each service's
-    latest cumulative `assembler.hp_score`. Gross damage taken never reaches a segment
-    (only HP at decision states), so it is not here. Empty under formats 1-3."""
+def _hp_scores(run: Path) -> list[dict[str, Any]]:
+    """Each service's latest cumulative `assembler.hp_score` (format 4)."""
+    return [((_last_record(path) or {}).get("assembler") or {}).get("hp_score") or {}
+            for path in sorted(glob.glob(str(run / "service-status-*.jsonl")))]
+
+
+def _hp_table(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
     totals: dict[str, list[int]] = {}
-    for path in sorted(glob.glob(str(run / "service-status-*.jsonl"))):
-        last = _last_record(path) or {}
-        by = ((last.get("assembler") or {}).get("hp_score") or {}).get("by_encounter") or {}
+    for by in parts:
         for kind, c in by.items():
             t = totals.setdefault(kind, [0, 0, 0])
             t[0] += c["battles"]
@@ -236,6 +241,25 @@ def hp_score_edge(run: Path) -> dict[str, Any]:
     return {kind: {"combats": n, "deaths": d, "death_rate": d / n if n else None,
                    "mean_net_hp_change": h / n if n else None}
             for kind, (n, d, h) in totals.items()}
+
+
+def hp_score_edge(run: Path, scores: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Segment format 4 (A2): per encounter type (normal / elite / boss / unknown) the
+    combats the assemblers scored, their deaths and the mean net HP change per combat
+    (H_T - H_0 + M_T - M_0, death -H_0; HP points, unweighted), from each service's
+    latest cumulative `assembler.hp_score`. Gross damage taken never reaches a segment
+    (only HP at decision states), so it is not here. Empty under formats 1-3."""
+    scores = _hp_scores(run) if scores is None else scores
+    return _hp_table(score.get("by_encounter") or {} for score in scores)
+
+
+def hp_score_arm_edge(run: Path, scores: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """The same per exploration arm (`<arm>+save` = that arm's save starts), from the
+    assemblers' `hp_score.by_arm` (RL5-METHODS R); empty before it or under formats 1-3."""
+    scores = _hp_scores(run) if scores is None else scores
+    names = sorted({arm for score in scores for arm in score.get("by_arm") or {}})
+    return {arm: _hp_table((score.get("by_arm") or {}).get(arm) or {} for score in scores)
+            for arm in names}
 
 
 def gpu_cards(run: Path, window: tuple[float, float] | None) -> dict[str, dict[str, float]]:
@@ -461,7 +485,7 @@ def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
 
 
 LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advantage_raw",
-                 "exploration")
+                 "exploration", "policy_by_arm")
 
 
 def _shares(counts: list[int]) -> dict[str, Any]:
@@ -502,6 +526,7 @@ class _Learning:
         self.raw_last: dict[str, Any] | None = None
         self.hp = [0.0, 0.0, 0]  # A2, c_hp > 0: sum of hp_share, of hp_std, datasets
         self.exploration: dict[str, list[int]] = {}
+        self.policy_arms: dict[str, list[float]] = {}
 
     def add(self, e: dict[str, Any]) -> None:
         self.attempts += 1
@@ -536,6 +561,13 @@ class _Learning:
             row = self.exploration.setdefault(key, [0] * len(EXPLORATION_FIELDS))
             for i, value in enumerate(values):
                 row[i] += value
+        for arm, values in (e.get("policy_by_arm") or {}).items():
+            if len(values) != len(POLICY_ARM_FIELDS):
+                raise ValueError(f"policy_by_arm {arm}: {len(values)} fields, expected "
+                                 f"{len(POLICY_ARM_FIELDS)}")
+            row = self.policy_arms.setdefault(arm, [0] * len(POLICY_ARM_FIELDS))
+            for i, value in enumerate(values):
+                row[i] += value
 
     def result(self) -> dict[str, Any]:
         out: dict[str, Any] = {"attempts": self.attempts, "stepped": self.stepped}
@@ -553,6 +585,14 @@ class _Learning:
             "hp_share": hp_share / hp_datasets if hp_datasets else None,
             "hp_std": hp_std / hp_datasets if hp_datasets else None} if self.datasets else None
         out["exploration"] = exploration_summary(self.exploration)
+        # Per arm, pooled over its policy rows of every attempt (KL-stopped included):
+        # share outside the clip range and mean r - 1 - log r. The run-wide scalars above
+        # are means of per-attempt means, so they need not equal a row-weighted mix of these.
+        out["policy_by_arm"] = {
+            arm: {"rows": round(rows), "clip_fraction": clipped / rows if rows else None,
+                  "approx_kl": kl / (rows - bad) if rows > bad else None,
+                  "ratio_nonfinite": round(bad)}
+            for arm, (rows, kl, clipped, bad) in sorted(self.policy_arms.items())} or None
         return out
 
 
@@ -638,13 +678,19 @@ class _Games:
         return out
 
 
-class _Results:
-    """One arm's scored full games: whole run and the last ROLLING_GAMES by close time,
-    all levels and per ascension; `unscored` = its complete closes without a natural end."""
+def _last(games: deque[dict[str, Any]], n: int) -> Iterable[dict[str, Any]]:
+    """The newest n of a deque (all of it when it holds no more)."""
+    return games if len(games) <= n else list(games)[-n:]
 
-    def __init__(self) -> None:
-        self.all, self.level = _Games(), {}
-        self.rolling: deque[dict[str, Any]] = deque(maxlen=ROLLING_GAMES)
+
+class _Results:
+    """One arm's scored full games: whole run and the last `windows[0]` by close time (more
+    windows beside it under `rolling_windows`), all levels and per ascension; `unscored` =
+    its complete closes without a natural end."""
+
+    def __init__(self, windows: tuple[int, ...] = (ROLLING_GAMES,)) -> None:
+        self.all, self.level, self.windows = _Games(), {}, windows
+        self.rolling: deque[dict[str, Any]] = deque(maxlen=max(windows))
         self.rolling_level: dict[int, deque[dict[str, Any]]] = {}
         self.unscored = 0
 
@@ -653,14 +699,20 @@ class _Results:
         self.all.add(game)
         self.level.setdefault(level, _Games()).add(game)
         self.rolling.append(game)
-        self.rolling_level.setdefault(level, deque(maxlen=ROLLING_GAMES)).append(game)
+        self.rolling_level.setdefault(level, deque(maxlen=max(self.windows))).append(game)
+
+    def _rolling(self, n: int, levels: list[int]) -> dict[str, Any]:
+        return {"all": _Games(_last(self.rolling, n)).result(),
+                **{f"A{a}": _Games(_last(self.rolling_level[a], n)).result() for a in levels}}
 
     def result(self) -> dict[str, Any]:
         levels = sorted(self.level)
-        return {"rolling": {"all": _Games(self.rolling).result(),
-                            **{f"A{a}": _Games(self.rolling_level[a]).result() for a in levels}},
-                "run": {"all": self.all.result(),
-                        **{f"A{a}": self.level[a].result() for a in levels}}}
+        out = {"rolling": self._rolling(self.windows[0], levels),
+               "run": {"all": self.all.result(),
+                       **{f"A{a}": self.level[a].result() for a in levels}}}
+        if len(self.windows) > 1:
+            out["rolling_windows"] = {str(n): self._rolling(n, levels) for n in self.windows[1:]}
+        return out
 
 
 def _count(table: dict[str, int], key: Any) -> None:
@@ -681,9 +733,19 @@ class Readout:
     record() is the run record from the folded state. A Readout whose update raised is
     discarded by its owner (supervise starts a fresh one), never updated again."""
 
-    def __init__(self, run: Path, window: float = 1200.0, plan_path: Path | None = None):
+    def __init__(self, run: Path, window: float = 1200.0, plan_path: Path | None = None,
+                 rolling: Iterable[int] | None = None):
         self.run, self.window = Path(run), float(window)
         self.plan_path = plan_path or self.run / "plan.json"
+        # rolling windows in complete games: given, else the run's effective-profile knob,
+        # else (100,) (a run frozen before #556)
+        if rolling is None:
+            knob = ((_json(self.run / "effective-profile.json") or {}).get("knobs") or {}).get(
+                ROLLING_KNOB) or {}
+            rolling = knob.get("value") or (ROLLING_GAMES,)
+        self.rolling = tuple(rolling)
+        if not self.rolling or any(type(n) is not int or n < 1 for n in self.rolling):
+            raise ValueError(f"rolling windows {self.rolling!r}: positive ints expected")
         self.events = Tail(self.run / "learner-events.jsonl")
         self.status = Tail(self.run / "learner-status.jsonl")
         self.drivers: dict[str, tuple[Tail, set[Any]]] = {}  # path -> tail, open admitted
@@ -719,7 +781,7 @@ class Readout:
         self.open_refused: dict[str, int] = {}
         self.failures: dict[str, int] = {}
         self.arms: dict[str, _Results] = {}  # full games per exploration arm (A3)
-        self.control = self.arms["control"] = _Results()
+        self.control = self.arms["control"] = _Results(self.rolling)
         self.games_t: tuple[float, float] | None = None
         # save starts (tickets.mjs): pooled saves per act; complete save-start games per
         # start act and per use of the save; opened games per start; each driver's latest
@@ -865,7 +927,7 @@ class Readout:
         if (terminal not in ("victory", "defeat") or type(floor) is not int
                 or type(ascension) is not int):
             # no natural end on record: counted apart, never scored
-            self.arms.setdefault(arm, _Results()).unscored += 1
+            self.arms.setdefault(arm, _Results(self.rolling)).unscored += 1
             return
         win = terminal == "victory"
         bosses = (*BOSS_FLOORS, 49) if ascension == 10 else BOSS_FLOORS
@@ -961,7 +1023,7 @@ class Readout:
                 "driver_counters": dict(sorted(counters.items()))}
 
     def _game(self, game: dict[str, Any]) -> None:
-        self.arms.setdefault(game["arm"], _Results()).add(game)
+        self.arms.setdefault(game["arm"], _Results(self.rolling)).add(game)
         if game["arm"] != "control":
             return
         first, last = self.games_t or (game["t"], game["t"])
@@ -1081,7 +1143,8 @@ class Readout:
         """Sampled-play results straight from training data: the control arm's full games
         (start new_run) that are complete (terminal, admitted, evidence ok) with a natural
         end (victory or defeat, int floor and ascension), per ascension and all together,
-        over the whole run and the last ROLLING_GAMES by close time. A Boss on floor b is
+        over the whole run and the last `rolling_games` by close time (the knob's first
+        window; its other windows under `rolling_windows`, only when set). A Boss on floor b is
         cleared iff the game was won or ended above b (natural layout). Other complete
         closes are `unscored_closes` (counted, never scored). `arms`: the same for every
         exploration arm's full games (control included)."""
@@ -1091,7 +1154,7 @@ class Readout:
         count = self.control.all.games
         return {"filter": "arm control, start new_run, complete (terminal, admitted, "
                           "evidence ok), result victory/defeat",
-                "unscored_closes": self.control.unscored, "rolling_games": ROLLING_GAMES,
+                "unscored_closes": self.control.unscored, "rolling_games": self.rolling[0],
                 "complete_games_per_h": (count / (max(last - first, 1) / 3_600_000)
                                          if count > 1 else None),
                 **self.control.result(),
@@ -1135,6 +1198,7 @@ class Readout:
         train = self.training()
         span = train.get("window")
         target = plan["target"]
+        scores = _hp_scores(self.run)
         return {"schema": SCHEMA, "name": plan["name"], "target": target, "training": train,
                 "services": service_edges(self.run, span), "gpu": gpu_cards(self.run, span),
                 "env": env_edge(self.run, span), "compile": self.compile.result(),
@@ -1145,7 +1209,8 @@ class Readout:
                 "identity": identity_edge(self.run, plan, self.plan_path),
                 "throughput": self.throughput(train),
                 "learning": self.learning_result(),
-                "hp_score": hp_score_edge(self.run),
+                "hp_score": hp_score_edge(self.run, scores),
+                "hp_score_arms": hp_score_arm_edge(self.run, scores),
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
@@ -1230,32 +1295,50 @@ def render_record(r: dict[str, Any]) -> list[str]:
                 "(top% / p>0.99%): " + ", ".join(
                     f"{name} {100 * d['top']:.0f}/{100 * d['top_p_over_099']:.0f}"
                     for name, d in dose["by_decision"].items()))
+        arms = x.get("policy_by_arm") or {}
+        if key == "latest" and set(arms) - {"control"}:
+            out.append("  PPO update per arm (rows, clip, approx KL): " + ", ".join(
+                f"{arm} {a['rows']:,} / {fmt(a['clip_fraction'], 3)} / "
+                f"{fmt(a['approx_kl'], 4)}" for arm, a in arms.items()))
     games = r.get("training_games") or {}
-    for level, g in (games.get("rolling") or {}).items():
-        if not g.get("games"):
-            continue
-        bosses = " ".join(f"{name.replace('_boss', '')} {100 * b['clear_rate']:.0f}%"
-                          for name, b in g["bosses"].items())
-        out.append(f"training games {level} (control, full, last {games['rolling_games']}): "
-                   f"{g['games']} games, floor {g['mean_floor']:.1f}, win "
-                   f"{100 * g['win_rate']:.1f}%, reward {fmt(g['mean_reward_v21'], 3)}; "
-                   f"Boss cleared {bosses}")
+    windows = [(games.get("rolling_games"), games.get("rolling") or {}),
+               *((int(n), part) for n, part in (games.get("rolling_windows") or {}).items())]
+    for n, rolling in windows:
+        for level, g in rolling.items():
+            if not g.get("games"):
+                continue
+            bosses = " ".join(f"{name.replace('_boss', '')} {100 * b['clear_rate']:.0f}%"
+                              for name, b in g["bosses"].items())
+            out.append(f"training games {level} (control, full, last {n}): "
+                       f"{g['games']} games, floor {g['mean_floor']:.1f}, win "
+                       f"{100 * g['win_rate']:.1f}%, reward {fmt(g['mean_reward_v21'], 3)}; "
+                       f"Boss cleared {bosses}")
     arms = games.get("arms") or {}
     for arm, results in arms.items() if set(arms) != {"control"} else ():
-        for level, g in results["rolling"].items():
-            if g.get("games"):
-                out.append(f"training games arm {arm} {level} (full, last "
-                           f"{games['rolling_games']}): {g['games']} games, floor "
-                           f"{g['mean_floor']:.1f}, win {100 * g['win_rate']:.1f}%, act 3 "
-                           f"reached {100 * g['act3_reached_rate']:.0f}%; Boss cleared "
-                           + " ".join(f"{name.replace('_boss', '')} "
-                                      f"{100 * b['clear_rate']:.0f}%"
-                                      for name, b in g["bosses"].items()))
+        arm_windows = [(games["rolling_games"], results["rolling"]),
+                       *((int(n), part) for n, part in
+                         (results.get("rolling_windows") or {}).items())]
+        for n, rolling in arm_windows:
+            for level, g in rolling.items():
+                if g.get("games"):
+                    out.append(f"training games arm {arm} {level} (full, last "
+                               f"{n}): {g['games']} games, floor "
+                               f"{g['mean_floor']:.1f}, win {100 * g['win_rate']:.1f}%, act 3 "
+                               f"reached {100 * g['act3_reached_rate']:.0f}%; Boss cleared "
+                               + " ".join(f"{name.replace('_boss', '')} "
+                                          f"{100 * b['clear_rate']:.0f}%"
+                                          for name, b in g["bosses"].items()))
+
+    def hp_line(table: dict[str, Any]) -> str:
+        return ", ".join(f"{kind} {c['combats']} / {c['deaths']} / "
+                         f"{fmt(c['mean_net_hp_change'], 1)}" for kind, c in table.items())
     hp_score = r.get("hp_score") or {}
     if hp_score:
-        out.append("HP score by encounter (combats, deaths, mean net HP change): " + ", ".join(
-            f"{kind} {c['combats']} / {c['deaths']} / {fmt(c['mean_net_hp_change'], 1)}"
-            for kind, c in hp_score.items()))
+        out.append("HP score by encounter (combats, deaths, mean net HP change): "
+                   + hp_line(hp_score))
+    hp_arms = r.get("hp_score_arms") or {}
+    for arm, table in hp_arms.items() if set(hp_arms) - {"control"} else ():
+        out.append(f"  arm {arm}: " + hp_line(table))
     if games.get("unscored_closes"):
         out.append(f"training games: {games['unscored_closes']} complete control closes "
                    "without a natural end (no victory/defeat or floor) not scored")
