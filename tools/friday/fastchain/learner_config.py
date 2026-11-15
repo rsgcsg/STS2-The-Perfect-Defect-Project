@@ -9,7 +9,9 @@ Recipe keys (the whole `loss` block, c_hp and its scope included) pass through u
 from the gate and have no default here. `gate_recipe(base, frozen)` first adds the `loss`
 keys a gate made before them lacks (c_hp and its scope, #538), from the frozen config of
 the run's own source; a key the gate has stays the gate's and A9 still compares it. Every
-other missing key shows as `<missing>` drift.
+other missing key shows as `<missing>` drift. `learner_base(gate, frozen, knobs, run)` is the
+two in order, the one call roles.py and preflight share; `sgd_gc_dataplane(knobs)` the SGD
+child's GC keys roles.py adds to dataplane.json.
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).
 """
 from __future__ import annotations
@@ -75,6 +77,25 @@ def gate_recipe(base: dict[str, Any], frozen: dict[str, Any]
     if not filled:
         return base, {}
     return {**base, "loss": {**loss, **filled}}, filled
+
+
+def learner_base(gate: dict[str, Any], frozen: dict[str, Any], knobs: dict[str, Any],
+                 run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """This run's learner.json (roles.py writes it, preflight checks it): `gate_recipe`
+    then `build`, one function so the two cannot differ. Returns it and the filled keys."""
+    base, filled = gate_recipe(gate, frozen)
+    return build(base, knobs, run), filled
+
+
+def sgd_gc_dataplane(knobs: dict[str, Any]) -> dict[str, Any]:
+    """The SGD child's GC data-plane keys (#525, RL5-METHODS F); keys at their default
+    are left out, so an older source runs the default unchanged."""
+    out: dict[str, Any] = {}
+    if knobs["sgd_gc_freeze"]:  # one collect at each boundary, gc.freeze after the first
+        out["sgd_gc_freeze"] = True
+    if knobs["sgd_gc_refreeze_objects"] != 200_000:  # = sgd_process.GC_REFREEZE_OBJECTS
+        out["sgd_gc_refreeze_objects"] = knobs["sgd_gc_refreeze_objects"]
+    return out
 
 
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:

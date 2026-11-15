@@ -306,8 +306,14 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
             ("frozen config " + plan["knobs"]["frozen_learner_config"], frozen),
             ("gate learner-base.json", base)) if value is None]
         return Result("frozen_recipe", False, "missing " + " and ".join(missing))
-    base, filled = learner_config.gate_recipe(base, frozen)
-    effective = learner_config.build(base, plan["knobs"], {
+    # A9 walks the frozen keys only: a gate loss key the source lacks (a misspelling, or a
+    # gate for newer code) would pass here and stop the learner (LossConfig) after the queue.
+    unknown = sorted(set(base.get("loss") or {}) - set(frozen.get("loss") or {}))
+    if unknown:
+        return Result("frozen_recipe", False, "gate learner-base.json has loss keys the "
+                      f"frozen config lacks: {', '.join(unknown)} (misspelt? a source older "
+                      "than the gate needs its own gate)")
+    effective, filled = learner_config.learner_base(base, frozen, plan["knobs"], {
         "run_name": "preflight", "peer_dir": "-", "start_package": "-",
         "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
         "generation": "-", "warmup_artifact_id": base["segments"].get("warmup_artifact_id"),

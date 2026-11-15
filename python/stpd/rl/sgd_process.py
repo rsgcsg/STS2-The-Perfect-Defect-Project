@@ -61,7 +61,7 @@ OPTION_KEYS = frozenset((
 ))
 # `sgd_gc_freeze`: freeze again at a dataset boundary once this many unfrozen
 # objects sit in the oldest generation (graphs compiled lazily, caches); default
-# of `sgd_gc_refreeze_objects`. Each online recompile leaves 19k-96k such objects
+# of `sgd_gc_refreeze_objects`. Each online recompile leaves 28k-96k such objects
 # (V5 smoke of 18a56576), so this default lets a few pile up between freezes.
 GC_REFREEZE_OBJECTS = 200_000
 # `sgd_gc_freeze`: third threshold that keeps automatic full collections off

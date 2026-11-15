@@ -128,15 +128,11 @@ def learner() -> None:
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
                                              "checkpoint_window": cp_config, **window})
-    # The gate's recipe; loss keys it predates come from this source's frozen config, as
-    # preflight checked (A9 frozen_recipe).
-    gate_base, filled = learner_config.gate_recipe(
+    # The gate's recipe; loss keys it predates come from this source's frozen config: the
+    # same function preflight checked (A9 frozen_recipe).
+    base, filled = learner_config.learner_base(
         json.loads((gate / "learner-base.json").read_bytes()),
-        json.loads((Path(site("src_dir")) / K["frozen_learner_config"]).read_bytes()))
-    if filled:
-        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
-                                             "loss": filled})
-    base = learner_config.build(gate_base, K, {
+        json.loads((Path(site("src_dir")) / K["frozen_learner_config"]).read_bytes()), K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
         "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
         "device": os.environ["FC_LEARNER_DEVICE"], "generation": os.environ["FC_GENERATION"],
@@ -144,6 +140,9 @@ def learner() -> None:
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
         "resume_checkpoint": resume, "window": window})
+    if filled:
+        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
+                                             "loss": filled})
     ranks = int(os.environ["FC_RANKS"])
     work = RUN / "learner"
     work.mkdir(parents=True)
@@ -197,10 +196,7 @@ def learner() -> None:
             "recompile_limit": K["compile_recompile_limit"]}
     if K["release_trained_segments"]:  # #529: delete trained originals once a CP covers them
         dataplane["release_trained_segments"] = True
-    if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
-        dataplane["sgd_gc_freeze"] = True
-    if K["sgd_gc_refreeze_objects"] != 200_000:  # 200_000 = sgd_process.GC_REFREEZE_OBJECTS
-        dataplane["sgd_gc_refreeze_objects"] = K["sgd_gc_refreeze_objects"]
+    dataplane.update(learner_config.sgd_gc_dataplane(K))  # #525, RL5-METHODS F
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
         dataplane["sgd_step_probe"] = True
     if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only

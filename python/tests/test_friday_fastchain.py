@@ -186,7 +186,7 @@ def test_gc_refreeze_threshold_is_a_knob_that_needs_gc_freeze():
     default 200000 is the earlier constant and needs no source feature."""
     profile = run_profile.load_profile(PROFILE)
     assert profile['sgd_gc_refreeze_objects']['default'] == 200_000
-    assert profile['sgd_gc_refreeze_objects']['value'] == 25_000
+    assert profile['sgd_gc_refreeze_objects']['value'] == 40_000
     assert preflight.required_features(plan_for(cards=3))['gc_refreeze']
     assert 'gc_refreeze' not in preflight.required_features(
         plan_for(cards=3, sgd_gc_refreeze_objects=200_000))
@@ -1366,6 +1366,68 @@ def test_a_gate_from_before_the_hp_score_takes_both_keys_from_the_frozen_config(
     # a gate made after #538 (or a patched copy) reports nothing filled
     assert 'not in the gate' not in by_name(preflight.checks(plan, good_facts(plan)))[
         'frozen_recipe'].detail
+
+
+def test_a_partly_filled_gate_keeps_its_own_loss_keys_for_a9():
+    """#551 review S1: filling one key never replaces the loss keys the gate has; its
+    stale c_hp is still compared with the frozen value (a gate_recipe that merged the
+    whole frozen loss block over the gate would compare frozen with frozen)."""
+    gate = gate_without_hp('hp_advantage_scope', config=with_hp(gate_base(), 0.003))
+    filled_base, filled = learner_config.gate_recipe(gate, FROZEN)
+    assert filled == {'hp_advantage_scope': 'combat_ticket'}
+    assert filled_base['loss']['hp_advantage_coef'] == 0.003  # the gate's, not frozen 0.0
+    plan = plan_for(cards=3, wall_seconds=2400)
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'gate_learner_base': gate}))
+    assert not results['frozen_recipe'].ok
+    assert results['frozen_recipe'].detail == (
+        'drift from the frozen parameters: loss.hp_advantage_coef: frozen 0.0, effective 0.003')
+
+
+def test_a_gate_loss_key_the_frozen_config_lacks_is_refused_before_the_queue():
+    """#551 review S2: A9 walks the frozen keys only; a misspelt key in a patched gate copy
+    would pass (its correct name filled from the frozen config) and stop the learner's
+    LossConfig after the GPU queue. Preflight names it."""
+    gate = gate_without_hp('hp_advantage_coef')
+    gate['loss']['hp_advantage_coeff'] = 0.003
+    plan = plan_for(cards=3, wall_seconds=2400)
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'gate_learner_base': gate}))
+    assert not results['frozen_recipe'].ok
+    assert results['frozen_recipe'].detail.startswith(
+        'gate learner-base.json has loss keys the frozen config lacks: hp_advantage_coeff')
+
+
+def test_roles_writes_the_learner_config_and_gc_keys_preflight_checked():
+    """#551 review S4: roles.py (a job script, not importable here) takes its learner.json
+    from `learner_base`, the one function preflight checks, and its GC keys from
+    `sgd_gc_dataplane`; the configured threshold reaches the SGD child's init."""
+    from stpd.rl.sgd_process import sgd_options
+
+    plan = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    frozen = with_hp(FROZEN, 0.003)
+    written, filled = learner_config.learner_base(gate_without_hp(), frozen, plan['knobs'], run)
+    assert written['loss']['hp_advantage_coef'] == 0.003 and set(filled) == {
+        'hp_advantage_coef', 'hp_advantage_scope'}
+    assert learner_config.recipe_drift(written, frozen) == []
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'frozen_recipe': frozen,
+                                              'gate_learner_base': gate_without_hp()}))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['hp_score'].detail.startswith('c_hp 0.003')
+    gc_keys = learner_config.sgd_gc_dataplane(plan['knobs'])
+    assert gc_keys == {'sgd_gc_freeze': True, 'sgd_gc_refreeze_objects': 40_000}
+    assert sgd_options({'sgd_process': True, **gc_keys}).stage_init()[
+        'gc_refreeze_objects'] == 40_000
+    assert learner_config.sgd_gc_dataplane(knobs(sgd_gc_freeze=False,
+                                                 sgd_gc_refreeze_objects=200_000)) == {}
+    assert learner_config.sgd_gc_dataplane(knobs(sgd_gc_refreeze_objects=200_000)) == {
+        'sgd_gc_freeze': True}
+    roles = (FASTCHAIN / 'roles.py').read_text()
+    assert 'base, filled = learner_config.learner_base(' in roles
+    assert 'dataplane.update(learner_config.sgd_gc_dataplane(K))' in roles
+    assert 'gate_recipe' not in roles and 'learner_config.build(' not in roles
+    assert 'dataplane["sgd_gc_' not in roles
 
 
 def test_long_run_and_smoke_are_exclusive():
