@@ -127,7 +127,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、每臂探索剂量（RL5-METHODS A3：
   训练行中所选动作在模型自己排序里的名次 头号/二选/三选及以后、模型头号概率 > 0.99 的比例、
   非头号选择归一前优势 > 0 的比例；按决策类型与幕；学习端从已记录的 q、applied 与解码优势算，
-  只进 metadata，不改训练数值）、对照臂整局训练局滚动结果与 `arms` 下每臂同样的结果（每难度
+  只进 metadata，不改训练数值；存档开局的行记在「臂名+save」下，不混进该臂从头开的局）、对照臂
+  整局训练局滚动结果与 `arms` 下每臂同样的结果（只算从头开的局；每难度
   平均层数、胜率、各幕 Boss 通过率、到第三幕比例）、SGD 边界分段、停止/拒绝/未知按原因计数、
   CP id。每类战斗（普通/精英/首领）的死亡率与净血量变化用 A2 的 `hp_score`（只在格式 4，
   全部臂合计、不分臂；格式 3 下为空，首领战每场死亡率另可看 1 − `clear_rate_given_reached`）。
@@ -175,8 +176,26 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `r7_max_games` 均分上限），驱动开局前问 `r7`，选中的局 `open.r7 = true`（原件全留）；
   服务侧 `mu_archive = local_mu_archive(run/mu-archive-K, mu_archive_gb 均分)`、跟随器
   `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
-  普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
-  之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+  普通局只留账本。fast env 的 `episode_open` 已带 `audit_retain_mu`（kernel.ts），R7 局的
+  mu 存进服务侧 mu 存档。
+- CP 保留（#555，`supervise.py` + `cp_retention.py`）：每发布一个 CP，链按
+  `checkpoint_keep_newest`（默认 0 = 全留；开时 ≥ 2）留最新 N 个、评估看守在
+  `eval-*/protected-checkpoints.json` 里认领的、`eval-*/state.json` 里任何阶段的评估点过的
+  （含 `prepare_submit_unknown`）、同一 work root 下所有 `chain-*/state.json` 的起点 CP、
+  各代起点 CP，以及每
+  `checkpoint_milestone_hours` 小时窗口的第一个，其余只删 CP 自己独占的 payload 块
+  （manifest、索引和 CP 记录留着，读已删 CP 响亮报 `object_not_found`）。删失败记数、
+  stderr 报警、下个 CP 再试，不停训练；认领文件读不了就这一轮不删。运行记录
+  `chain.checkpoint_retention` 记 kept / deleted / delete_failed / payload_bytes_kept
+  （被留件 payload 大小之和，不是真实占盘：共享块重复计，只被已删件共享的块留在盘上不计）。
+  按 manifest 数谁在用每个 payload：另一件也引用同一 payload（heads 未变、续训 mu 与旧版
+  相同、评估导出与链发布相同）就整件跳过。已接受的竞态：写手复用了只有被删件用的块，且它
+  发布时的读回刚好在删除之前完成，则该件缺块（读时响亮报错）；需要非单调共享且在毫秒窗口内。
+  模型发布同样处理（`model_keep_newest`，默认 0 = 全留）：每个 mu 版本一份 model + heads，
+  学习者先写节点本地 Store，归档再复制到 peer；peer 上没有活路径读旧版本（推理从学习者本地
+  Store 取，续训用 CP 自带权重，评估从 CP 导出自己的模型，R7 用 mu 存档）。留最新 K 个和每个
+  被留 CP 记的版本，其余删 model 与 heads 的独占块，记录与 manifest 留着；运行记录
+  `chain.model_retention` 单独计数。学习者节点本地的 Store 和 `mu-network` 缓存见下一条。
 - GPU 节点本地保留（#558，`segment_learner.py` + `local_retention.py`）：数据面模式下学习者
   Store 在节点本地（`learner-live/store`，归档到 peer），每个被服务的 mu 另有一份整文件拷贝
   （`learner-live/mu-network/<snapshot>`），两者原本只增不减。`learner_local_keep_models`
@@ -239,13 +258,28 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   - 同起点 K 局 `replay_k`（1–16，≤ `env_slots`，默认 1）：同一驱动的 K 个槽开同一 ticket，
     组号 `TAG-kN`、成员号记在 driver.jsonl；中途被拒或早停的成员不补（不重试）。种子消耗变 1/K。
     `env_driver.mjs --replay-k` 必填。
-  - 起点 ticket 钩子：`env_driver.mjs --tickets M.mjs`（导出 `nextTicket({tag})` →
-    `{seed, start}`，W3 的「从存档起」接这里）；不给 = 种子表的下一个新局。
+  - 存档开局 `save_starts`（RL5-METHODS B，`tickets.mjs`；默认 `share = 0` = 不存不读，开局命令与
+    原来逐字相同）：`share` = 从存档开的局占开局数的比例（按开局数，不按决策数）；`share > 0` 时每个
+    新局在每个首领战前（全局 16/32/47 层）的地图和 `random_saves` 个随机层存档，进本节点 `/tmp` 的
+    池子（每作业一个、作业结束删、不上 R2）；按 `act_weights` 抽幕（目标 = 各幕「打过的层数」占比，
+    补最缺的幕），再在该幕均匀抽层、该层均匀抽一份；`died_later_weight` = 只从「同一幕里死前最后
+    一份」里抽的比例（用户未定，默认 0）；每份最多用 `uses_per_save` 次；池超 `pool_gb` 删最旧的（有
+    未结占用的不删），用完的也删。只收已录取且证据完好的局的存档；存档开局带原种子，录取照查留出
+    种子；读档被拒或结果不明：作废、停整族、不重试。只有同难度、同候选、同初始进度（sha256）的驱动
+    能用。`env.sh` 传 `--save-starts`、`--save-pool`。终局标签：第 a 幕的存档开局算已过前 a−1 个
+    首领（与同终点的新局同类）；读档后直接进首领战（首领前存档）时，这场战斗从第一行自己的公开
+    HP 起算（聚合器在战斗行带 `public_hp`），与新局同一场战斗同分。
   - 读数「recipe」表：按臂、难度、起点种类、K 给局数（完整 = 终局、已录取、证据完好）、平均层数、
-    胜场、行数（已录取且证据完好局的模型行）；K > 1 另给组数、满组数、组内层数极差均值。
+    胜场、行数（已录取且证据完好局的模型行）；K > 1 另给组数、满组数、组内层数极差均值。按臂、
+    难度、K 三张只算从头开的局，存档开局只进「起点种类」和下面的「save starts」表。
+    「save starts」表：每幕入池存档数、问题存档数；完整的存档开局按起始幕、按第几次用给局数、平均
+    终层、比存档多走的层数、胜场、原局死了的局里走过原死亡层的比例。滚动成绩只算对照臂从头开的局。
+    运行中也看得到（每个 CP 的运行记录）：按起点种类的已开局数与实际份额（存档开局 / 全部已开局，
+    对照配置的 `share`），和各驱动最近一次的存档计数之和（无票退回新局、读档失败、停族、抢占冲突、
+    淘汰；驱动每次 status 与退出时写进 `driver.jsonl`）。
   - 链内换配方只在代际边界：`chain-CHAIN/env-recipe.txt`，每行一个 `name=value`（同
-    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`sampling_temperature_min`，
-    下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
+    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`sampling_temperature_min`、
+    `save_starts`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
     可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
 
 ## 以下为旧部署操作史

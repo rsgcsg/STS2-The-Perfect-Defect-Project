@@ -176,6 +176,27 @@ def exploration_plan(ladder: dict[str, Any], first: int, count: int) -> list[str
     return out[first:]
 
 
+SAVE_STARTS_KEYS = frozenset({"share", "random_saves", "act_weights", "died_later_weight",
+                              "uses_per_save", "pool_gb"})
+
+
+def _save_starts(value: Any) -> str | None:
+    """RL5-METHODS B: tickets.mjs parses the same table (share 0 = no save starts)."""
+    if not isinstance(value, dict) or set(value) != SAVE_STARTS_KEYS:
+        return f"table with exactly {sorted(SAVE_STARTS_KEYS)}"
+    for key, check in (("share", _num(0, 1)), ("random_saves", _int(0, 44)),
+                       ("died_later_weight", _num(0, 1)), ("uses_per_save", _int(1, 1024)),
+                       ("pool_gb", _num(0.001, 1000))):
+        error = check(value[key])
+        if error:
+            return f"{key}: {error}"
+    weights = value["act_weights"]
+    if (not isinstance(weights, list) or len(weights) != 3
+            or any(_num(0, 1e6)(w) for w in weights) or not sum(weights) > 0):
+        return "act_weights: three numbers >= 0 (acts 1-3), not all 0"
+    return None
+
+
 # The assembler's segment format (#530 S-1: 3 carries the ascension level; W2: 4 adds
 # group_id, ticket and the per-combat HP score column). Both carry the level.
 SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
@@ -196,6 +217,9 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["disk_stop_free_pct"] >= values["disk_warn_free_pct"]:
         out.append(f"disk_stop_free_pct {values['disk_stop_free_pct']} must be below "
                    f"disk_warn_free_pct {values['disk_warn_free_pct']}")
+    if values["checkpoint_keep_newest"] == 1:
+        out.append("checkpoint_keep_newest is 0 (keep every CP) or >= 2: the newest is the "
+                   "resume CP, the one before covers an evaluation's claim (cp_retention.py)")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if (any(w != 1 for w in values["hp_combat_weights"].values())
@@ -386,6 +410,9 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "eval_a10_seeds": _int(1, 100),
     # retention and R7 audit games (#529)
     "release_trained_segments": _bool,
+    "checkpoint_keep_newest": _int(0, 10000),
+    "checkpoint_milestone_hours": _num(0, 1000),
+    "model_keep_newest": _int(0, 1000000),
     "r7_games_per_hour": _num(0, 100),
     "r7_max_games": _int(0),
     "r7_expected_games_per_node_hour": _int(1),
@@ -395,6 +422,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "exploration_ladder": _exploration_ladder,
     "sampling_temperature_min": _num(TEMPERATURE_FLOOR, 1),
     "replay_k": _int(1, 16),
+    "save_starts": _save_starts,
     # environment nodes
     "env_node_cores": _int(1, 512),
     "env_node_mem_g": _int(1),

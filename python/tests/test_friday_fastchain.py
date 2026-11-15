@@ -25,7 +25,7 @@ def load_fastchain():
     own directory). Load them as one set, then take the plain names back out of
     sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
     names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout',
-             'supervise')
+             'cp_retention', 'supervise')
     saved_path = list(sys.path)
     saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
     sys.path.insert(0, str(FASTCHAIN))
@@ -39,7 +39,7 @@ def load_fastchain():
     return loaded
 
 
-run_profile, learner_config, layout, preflight, launch, readout, supervise = \
+run_profile, learner_config, layout, preflight, launch, readout, cp_retention, supervise = \
     load_fastchain()
 
 
@@ -1070,7 +1070,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert i['source_dirty'] is False and len(i['profile_sha256']) == 64
     assert i['overridden_knobs'] == {'segment_format': 'stpd/rl-fast-segment-4'}
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
-        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'stpd/rl-fast-segment-4',
+        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'save_starts': None,
+        'segment_format': 'stpd/rl-fast-segment-4',
         'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
         'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}}
     p = r['throughput']
@@ -1565,6 +1566,7 @@ def chain_for(tmp_path, endings, **sets):
     tmp_path.mkdir(parents=True, exist_ok=True)
     site = tmp_path / 'site.toml'
     text = SITE.read_text().replace('/scratch/USER/fastchain"', f'{tmp_path}"', 1)
+    text = text.replace('/scratch/USER/fastchain/peer"', f'{tmp_path / "peer"}"', 1)
     site.write_text(text)
     cluster = FakeCluster(tmp_path, endings)
     args = __import__('argparse').Namespace(
@@ -1911,6 +1913,28 @@ def test_exploration_ladder_and_replay_k_are_validated():
         run_profile.load_profile(PROFILE, ['replay_k=0'])
 
 
+def test_save_starts_knob_defaults_off_and_is_validated():
+    """RL5-METHODS B: share 0 by default (no save, no save start); the env exports it as JSON."""
+    values = run_profile.values(run_profile.load_profile(PROFILE, []))
+    assert values['save_starts'] == {'share': 0.0, 'random_saves': 2,
+                                     'act_weights': [1.0, 1.0, 1.0], 'died_later_weight': 0.0,
+                                     'uses_per_save': 16, 'pool_gb': 10.0}
+    assert "export FC_SAVE_STARTS='{\"act_weights\":[1.0,1.0,1.0]," in '\n'.join(
+        run_profile.env_lines(values))
+    on = ('save_starts={ share = 0.3, random_saves = 2, act_weights = [1.0, 1.0, 0.5], '
+          'died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }')
+    on_values = run_profile.values(run_profile.load_profile(PROFILE, [on]))
+    assert on_values['save_starts']['share'] == 0.3
+    for old, new, match in (('share = 0.3', 'share = 1.5', 'share'),
+                            ('[1.0, 1.0, 0.5]', '[0, 0, 0]', 'act_weights'),
+                            ('[1.0, 1.0, 0.5]', '[1.0, 1.0]', 'act_weights'),
+                            ('uses_per_save = 16', 'uses_per_save = 0', 'uses_per_save'),
+                            (', pool_gb = 10.0', '', 'exactly')):
+        with pytest.raises(run_profile.ProfileError, match=match):
+            run_profile.load_profile(PROFILE, [on.replace(old, new)])
+    assert 'save_starts' in supervise.ENV_RECIPE_KNOBS
+
+
 def test_exploration_plan_interleaves_arms_over_the_run_drivers():
     ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
         'exploration_ladder']
@@ -1946,6 +1970,7 @@ def test_env_sh_gives_each_driver_its_level_and_arm(tmp_path):
 
 
 FAKE_FAST_ENV = '''
+import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -1958,16 +1983,33 @@ createInterface({ input: process.stdin }).on("line", line => {
   const c = JSON.parse(line);
   if (c.cmd === "open") {
     n += 1;
-    const id = `inst${n}`, floor = 3 + (n % 5);
+    // a save start ends 22 floors after its save; a game with save points reaches floor 30-34
+    const fromSave = c.start.kind === "from_save";
+    const id = `inst${n}`;
+    const floor = fromSave ? c.start.save.floor + 22 + 17
+      : c.save_points ? 30 + (n % 5) : 3 + (n % 5);
     appendFileSync(join(dirname(path), "opens.jsonl"), JSON.stringify(c) + "\\n");
-    if (c.seed.startsWith("bad")) {  // a start the native cannot mount
+    // a start the native cannot mount: a bad seed, or (save starts) a save made on floor 16
+    if (c.seed.startsWith("bad") || (fromSave && c.start.save.floor === 16 - 17)) {
       emit({ event: "open_refused", slot: c.slot, game_ref: c.game_ref, reason: "reset_failed:x" });
       return;
     }
     const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
+    const act = (f) => f <= 17 ? 1 : f <= 33 ? 2 : 3;
     emit({ event: "opened", ...game, start: c.start });
+    for (const f of c.save_points?.floors ?? []) if (f <= floor) {
+      const sha256 = createHash("sha256").update(`${id}.${f}`).digest("hex");
+      emit({ event: "saved", ...game, floor: f, ascension: config.host.ascension,
+        character: config.host.character, decisions: f,
+        public_facts: { act: act(f), floor: f, hp: 10, max_hp: 80 }, save: {
+          schema: "sts2.host-runtime/managed-map-continue-1",
+          path: join(c.save_points.directory, `${sha256}.json`), bytes: 80000, sha256,
+          candidate: { artifact_sha256: "1".repeat(64) }, seed: c.seed, act: act(f),
+          floor: f - 17, parent_game_continuity_id: `fam-${id}` } });
+    }
     setTimeout(() => emit({ event: "closed", ...game, reason: "terminal", decisions: 10,
-      public_facts: { floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
+      public_facts: { act: act(floor), floor },
+      terminal: { result: floor === 7 ? "victory" : "defeat" },
       evidence_failed: false }), 30);
   } else if (c.cmd === "status") {
     emit({ event: "status", counters: { decisions: 10 * n, forced_steps: 0, native_steps: 0,
@@ -2128,20 +2170,36 @@ def test_env_driver_puts_the_temperature_minimum_in_the_config_only_below_1(tmp_
     assert flags[0]['temperature_min'] == 0.7
 
 
-def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
+SAVE_STARTS_OFF = json.dumps(run_profile.values(run_profile.load_profile(PROFILE, []))[
+    'save_starts'], separators=(',', ':'), sort_keys=True)
+
+
+def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad_flags(tmp_path):
+    """The default knob (share 0): the same open commands as a driver without the flag."""
+    assert json.loads(SAVE_STARTS_OFF)['share'] == 0
     world, admit = fake_driver_world(tmp_path), AdmitAll()
-    tickets = tmp_path / 'tickets.mjs'
-    tickets.write_text('let n = 0;\nexport function nextTicket({ tag }) { n += 1; '
-                       'return { seed: `${tag}-t${n}`, start: { kind: "new_run" } }; }\n')
-    out = tmp_path / 'hook'
+    runs = {}
     try:
-        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
-                          '--arm', 'hot', '--replay-k', '2', '--tickets', str(tickets))
+        for name, extra in (('none', ()), ('off', ('--save-starts', SAVE_STARTS_OFF,
+                                                    '--save-pool', str(tmp_path / 'pool')))):
+            out = tmp_path / name
+            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                              '--arm', 'hot', '--replay-k', '2', *extra)
+            assert done.returncode == 0, done.stderr
+            runs[name] = [json.loads(line)
+                          for line in (out / 'opens.jsonl').read_text().splitlines()]
     finally:
         admit.close()
-    assert done.returncode == 0, done.stderr
-    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
-    assert [o['seed'] for o in opens] == [f'n0-p1-t{i // 2 + 1}' for i in range(len(opens))]
+
+    def strip(command):
+        return {k: v for k, v in command.items() if k not in ('command_id', 'slot')}
+    n = min(len(runs['none']), len(runs['off']))
+    assert n > 8 and [strip(o) for o in runs['off'][:n]] == [strip(o) for o in runs['none'][:n]]
+    assert set(runs['off'][0]) == {'schema', 'cmd', 'command_id', 'slot', 'game_ref', 'seed',
+                                   'initial_progress', 'start', 'r7', 'retain_originals'}
+    assert [o['seed'] for o in runs['off'][:n]] == [f'S{i // 2}' for i in range(n)]
+    assert all(o['start'] == {'kind': 'new_run'} for o in runs['off'])
+    assert not (tmp_path / 'pool').exists()
     for flags, message in (
             (('--exploration-ladder', LADDER_JSON, '--arm', 'cold', '--replay-k', '1'), '--arm'),
             (('--exploration-ladder', LADDER_JSON, '--arm', 'hot'), '--replay-k'),
@@ -2152,48 +2210,117 @@ def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
         assert refused.returncode == 2 and message in refused.stderr, flags
 
 
-
-def test_env_driver_stops_loudly_on_a_refused_or_failing_hook_ticket(tmp_path):
-    """Review L1: a hook ticket that comes back refused never hot-loops open/refuse."""
-    import time
-    world = fake_driver_world(tmp_path)
-    for name, body in (
-            ('refused', 'export function nextTicket() { return { seed: "bad-save", '
-                        'start: { kind: "new_run" } }; }\n'),
-            ('throws', 'export function nextTicket() { throw new Error("no save left"); }\n')):
-        tickets = tmp_path / f'{name}.mjs'
-        tickets.write_text(body)
-        admit, out, began = AdmitAll(), tmp_path / name, time.monotonic()
-        try:
-            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
-                              '--arm', 'hot', '--replay-k', '1', '--tickets', str(tickets),
-                              steady=40)
-        finally:
-            admit.close()
-        assert done.returncode == 3 and 'driver stops' in done.stderr, done.stderr
-        assert time.monotonic() - began < 20  # stopped at once, not at the end of steady
-        [failed] = [r for r in readout.jsonl(out / 'driver.jsonl')
-                    if r['event'] == 'ticket_failed']
-        assert failed['reason'] == ('open_refused' if name == 'refused'
-                                    else 'ticket_hook_failed')
-        opens = out / 'opens.jsonl'
-        assert len(opens.read_text().splitlines() if opens.exists() else []) <= 4  # one/slot
+def test_env_driver_save_starts_pool_draw_refusals_and_readout(tmp_path):
+    """Share 0.5: new runs save into the node pool, save starts claim one use per game (a K
+    group shares one save), a refused load is sealed and its family paused (never reopened),
+    and the readout reports save starts apart from the control arm's rolling results."""
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    run = tmp_path / 'run-s'
+    write_run(run, cards=1)
+    out, pool = run / 'env-n0-1' / 'p1', tmp_path / 'pool'
+    knob = dict(json.loads(SAVE_STARTS_OFF), share=0.5, uses_per_save=4)
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                          '--arm', 'hot', '--replay-k', '2', '--save-starts', json.dumps(knob),
+                          '--save-pool', str(pool), steady=3)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    new = [o for o in opens if o['start']['kind'] == 'new_run']
+    starts = [o for o in opens if o['start']['kind'] == 'from_save']
+    assert new and starts and all({16, 32, 47} <= set(o['save_points']['floors'])
+                                  and len(o['save_points']['floors']) == 5 for o in new)
+    assert all('save_points' not in o for o in starts)
+    log = readout.jsonl(out / 'driver.jsonl')
+    refused = [r for r in log if r['event'] == 'open_refused']
+    started = [r for r in log if r['event'] == 'opened' and r['start'] == 'from_save']
+    # one use per game: no (save, use) twice; a K group = one save
+    uses = [(r['save'], r['use']) for r in started + refused]
+    assert started and len(uses) == len(set(uses))
+    groups = {}
+    for r in started + refused:
+        groups.setdefault(r['group'], set()).add(r['save'])
+    assert all(len(saves) == 1 for saves in groups.values())
+    assert all(r['seed'].startswith('S') and r['save_floor'] != 16 for r in started)
+    ledger = [json.loads(line) for line in (pool / 'ledger.jsonl').read_text().splitlines()]
+    by_save = {line['id'][:16]: line for line in ledger if line['kind'] == 'save'}
+    pause_at = {line['family']: i for i, line in enumerate(ledger) if line['kind'] == 'pause'}
+    assert refused and all(r['reason'] == 'reset_failed:x' for r in refused)
+    assert {by_save[r['save']]['family'] for r in refused} == set(pause_at)
+    # a paused family's save is never claimed after its pause line
+    assert all(i < pause_at.get(line['family'], 1 << 30) for i, line in enumerate(ledger)
+               if line['kind'] == 'claim')
+    summary = json.loads((out / 'summary.json').read_text())['save_starts']
+    assert summary['load_failed'] == len(refused) and summary['saves_pooled'] > 0
+    reader = readout.Readout(run).update()
+    saves = reader.save_starts()
+    pooled = sum(1 for r in log if r['event'] == 'save_pooled')
+    assert sum(saves['pooled_by_act'].values()) == pooled == summary['saves_pooled']
+    admitted = {r['game_ref'] for r in log if r['event'] == 'admission' and r['ok']}
+    complete = [r for r in log if r['event'] == 'closed' and r['start'] == 'from_save'
+                and r['game_ref'] in admitted]
+    assert sum(row['games'] for row in saves['by_start_act'].values()) == len(complete) > 0
+    assert all(row['mean_floors_gained'] == 22 for row in saves['by_start_act'].values())
+    recipe = reader.recipe()
+    assert recipe['start']['from_save']['games'] == len(complete)
+    # Per-arm and K tables hold the new runs only (save starts: the start table).
+    assert recipe['arm'] == {'hot': recipe['start']['new_run']}
+    assert sum(row['games'] for row in recipe['k'].values()) == recipe['arm']['hot']['games']
+    # A3's per-arm results hold the arm's new runs only, too; no control-arm game to roll.
+    played = reader.training_games()
+    assert played['run']['all']['games'] == 0 and set(played['arms']) == {'hot'}
+    assert played['arms']['hot']['run']['all']['games'] == recipe['arm']['hot']['games']
+    text = readout.render(readout.build(run, 1200))
+    assert 'save starts: pooled per act' in text and 'effective share' in text
+    # #553 review C: cumulative counters on every status, the last one at exit = summary;
+    # the readout shows the effective share and the counters while the driver still runs.
+    lines = [r for r in log if r['event'] == 'save_counters']
+    assert len(lines) >= 3
+    assert {k: v for k, v in lines[-1].items() if k not in ('t', 'event')} == summary
+    assert all(a['tickets_claimed'] <= b['tickets_claimed']
+               and a['from_save_opened'] <= b['from_save_opened']
+               for a, b in zip(lines, lines[1:], strict=False))
+    opened = {}
+    for r in log:
+        if r['event'] == 'opened':
+            opened[r['start']] = opened.get(r['start'], 0) + 1
+    assert saves['opened_by_start'] == opened and opened['from_save'] == len(started)
+    assert saves['effective_share'] == pytest.approx(len(started) / sum(opened.values()))
+    assert saves['drivers_reporting'] == 1
+    assert saves['driver_counters']['load_failed'] == summary['load_failed'] == len(refused)
+    assert saves['driver_counters']['new_run_without_ticket'] == summary[
+        'new_run_without_ticket']
+    assert not any(key.startswith('pool_') for key in saves['driver_counters'])
+    running = tmp_path / 'run-running'
+    write_run(running, cards=1)
+    cut = next(i for i, r in enumerate(log) if r['event'] == 'save_counters'
+               and r['from_save_opened'] > 0)
+    (running / 'env-n0-1' / 'p1').mkdir(parents=True)
+    (running / 'env-n0-1' / 'p1' / 'driver.jsonl').write_text(jsonl_text(log[:cut + 1]))
+    early = readout.build(running, 1200)['save_starts']
+    assert early['drivers_reporting'] == 1 and early['effective_share'] > 0
+    assert early['driver_counters']['from_save_opened'] == log[cut]['from_save_opened']
 
 
 def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     driver = tmp_path / 'env-n0-1' / 'p1'
     driver.mkdir(parents=True)
 
-    def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid'):
+    def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid',
+               start='new_run'):
         return {'event': 'closed', 't': 1000 + int(ref[1:]), 'game_ref': ref,
                 'reason': reason, 'arm': arm,
                 'ascension': 10, 'replay_k': 2, 'group': group, 'member': 0, 'seed': 's',
-                'start': 'new_run', 'decisions': 100, 'floor': floor, 'terminal': result,
+                'start': start, 'decisions': 100, 'floor': floor, 'terminal': result,
                 'evidence_failed': failed}
-    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': i != 4} for i in range(1, 7)]
+    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': i != 4} for i in range(1, 9)]
     records += [closed('g1', 'k1', 10), closed('g2', 'k1', 16, result='victory'),
                 closed('g3', 'k2', 12), closed('g4', 'k2', 30),  # g4 refused admission
-                closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True)]
+                closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True),
+                # a save-start K group: the start table only (#553 review H)
+                closed('g7', 'k4', 40, start='from_save'),
+                closed('g8', 'k4', 25, start='from_save')]
     (driver / 'driver.jsonl').write_text(jsonl_text(records))
     recipe = readout.recipe_edge(tmp_path)
     mid = recipe['arm']['mid']
@@ -2202,6 +2329,8 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     k2 = recipe['k']['2']
     assert (k2['groups'], k2['full_groups'], k2['mean_floor_range']) == (3, 1, 6)
     assert recipe['ascension']['10']['games'] == 3 and recipe['start']['new_run']['rows'] == 400
+    assert recipe['start']['from_save']['games'] == 2
+    assert recipe['start']['from_save']['mean_floor'] == pytest.approx(32.5)
     assert readout.recipe_edge(tmp_path / 'nothing') == {}
 
 
@@ -2318,3 +2447,253 @@ def test_a_dead_watcher_is_dead_in_the_readout(tmp_path, capsys):
     assert 'DEAD (exit 1)' in capsys.readouterr().err
     status = chain.eval_status()
     assert 'a0 DEAD (exit 1) no state yet' in status and 'a10 no state yet' in status
+
+
+# ---------------- checkpoint retention (#555) ----------------
+
+def test_cp_retention_default_keeps_every_checkpoint_and_one_is_refused():
+    values = knobs()
+    assert values['checkpoint_keep_newest'] == 0 and values['checkpoint_milestone_hours'] == 0
+    records = [{'checkpoint_artifact_id': f'cp{i}', 'published_at': 300.0 * i}
+               for i in range(1, 9)]
+    assert cp_retention.select(records, keep_newest=0, milestone_hours=0, started_at=0,
+                               protected=()) == ([f'cp{i}' for i in range(1, 9)], [])
+    with pytest.raises(run_profile.ProfileError, match='checkpoint_keep_newest'):
+        run_profile.load_profile(PROFILE, ['checkpoint_keep_newest=1'])
+    run_profile.load_profile(PROFILE, ['checkpoint_keep_newest=2'])
+
+
+def test_cp_retention_keeps_newest_claims_and_one_per_milestone_window():
+    # One CP every 30 min for 5 h; milestones every 2 h; newest 2; cp4 claimed.
+    records = [{'checkpoint_artifact_id': f'cp{i}', 'published_at': 1000 + 1800.0 * i}
+               for i in range(10)]
+    kept, drop = cp_retention.select(records, keep_newest=2, milestone_hours=2,
+                                     started_at=1000, protected={'cp4', 'elsewhere'})
+    assert kept == ['cp0', 'cp4', 'cp8', 'cp9']  # windows 0-2 h, 2-4 h, 4-6 h: cp0, cp4, cp8
+    assert drop == ['cp1', 'cp2', 'cp3', 'cp5', 'cp6', 'cp7']
+
+
+def retention_chain(tmp_path, monkeypatch, **sets):
+    """A chain whose peer holds 6 real CPs (16-byte chunks): each payload = one chunk all
+    CPs share (an all-zero block) + one unique chunk. Generation lr1-r1 started from cp1,
+    the A0 watcher claims cp2, a model shares cp4's unique chunk."""
+    from spireagent.artifact_contracts import Manifest, Producer
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.rl_exchange import Exchange
+    from spireagent.storage import store as store_module
+
+    monkeypatch.setattr(store_module, 'CHUNK_BYTES', 16)
+    chain, cluster = chain_for(tmp_path, [], **sets)
+    chain.dir.mkdir(parents=True)
+    exchange = Exchange({'kind': 'local', 'directory': chain.site['peer_dir']},
+                        chain.site['run_name'])
+    producer = Producer('rsgcsg/STS2-The-Perfect-Defect', 'a' * 40, 'b' * 64)
+    zero, cps = bytes(16), []
+    for i in range(1, 7):
+        generation = 'g-fc-lr1' if i <= 3 else 'g-fc-lr1-r1'
+        payload = exchange.store.put_bytes('checkpoint', zero + f'unique-cp-{i:06d}'.encode())
+        manifest = Manifest('checkpoint', producer, payloads=(payload,),
+                            parameters=FrozenObject.of({'sequence': i}))
+        exchange.store.publish(manifest)
+        exchange.publish_checkpoint(i, manifest.artifact_id, sequence=i,
+                                    training_generation=generation)
+        cps.append(manifest)
+    exchange.store.publish(Manifest('model', producer, payloads=(exchange.store.put_bytes(
+        'weights', b'unique-cp-000004' + b'model-weights-xx'),)))
+    # One model publication (model + heads + record) per CP version, as the learner's.
+    from spireagent.artifact_contracts import Parent
+    for i in range(1, 7):
+        generation = 'g-fc-lr1' if i <= 3 else 'g-fc-lr1-r1'
+        weights = exchange.store.put_bytes('weights', f'model-weights-{i:02d}'.encode())
+        model = Manifest('model', producer, payloads=(weights, exchange.store.put_bytes(
+            'package_manifest', f'package-json-{i:03d}'.encode())))
+        exchange.store.publish(model)
+        heads = Manifest('checkpoint', producer, parents=(Parent('policy', model.artifact_id),),
+                         payloads=(exchange.store.put_bytes(
+                             'checkpoint', f'heads-bytes-{i:04d}'.encode()),),
+                         parameters=FrozenObject.of({'schema': 'stpd/rl-behavior-heads-1'}))
+        exchange.store.publish(heads)
+        exchange.publish_model({'run': chain.site['run_name'], 'version': i,
+                                'training_generation': generation, 'published_at': 100.0 + i,
+                                'model_artifact_id': model.artifact_id,
+                                'model_sha256': weights.sha256,
+                                'heads_artifact_id': heads.artifact_id})
+    chain.checkpoints = chain.peer_checkpoints
+    chain.state = {'started_at': 0.0, 'deadline_at': 10**12, 'start_checkpoint': None,
+                   'identity': {}, 'resumes_at': [], 'log': [],
+                   'generations': [{'number': 0, 'runtag': 'lr1', 'checkpoint': None,
+                                    'run': str(tmp_path / 'run-lr1')},
+                                   {'number': 1, 'runtag': 'lr1-r1',
+                                    'checkpoint': cps[0].artifact_id,
+                                    'run': str(tmp_path / 'run-lr1-r1')}]}
+    claim = chain.dir / 'eval-a0' / 'protected-checkpoints.json'
+    claim.parent.mkdir()
+    claim.write_text(json.dumps({'schema': 'x/protected', 'checkpoints': [cps[1].artifact_id]}))
+    return chain, exchange, cps
+
+
+def chunk(exchange, data):
+    import hashlib
+    return exchange.blobs.root / 'objects' / 'sha256' / hashlib.sha256(data).hexdigest()
+
+
+def test_cp_retention_default_deletes_nothing_and_records_bytes(tmp_path, monkeypatch):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch)
+    chain.retain()
+    assert chain.retention == {'keep_newest': 0, 'milestone_hours': 0, 'kept': 6,
+                               'deleted': 0, 'delete_failed': 0, 'deleted_bytes': 0,
+                               'payload_bytes_kept': 6 * 32}
+    for cp in cps:
+        exchange.store.bytes(cp.payload('checkpoint'))
+    assert chain.model_retention == {'keep_newest': 0, 'kept': 6, 'deleted': 0,
+                                     'deleted_bytes': 0, 'delete_failed': 0,
+                                     'payload_bytes_kept': 6 * 48}
+
+
+def test_model_retention_keeps_newest_and_versions_of_retained_cps(tmp_path, monkeypatch):
+    from spireagent.storage.blobs import StoreError
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2,
+                                           model_keep_newest=1)
+    chain.retain()
+    # Retained CPs name versions (lr1, 1), (lr1, 2), (lr1-r1, 5), (lr1-r1, 6); newest = 6.
+    facts = chain.model_retention
+    assert facts['kept'] == 4 and facts['deleted'] == 2 and facts['delete_failed'] == 0
+    assert facts['deleted_bytes'] == 2 * 48 and facts['payload_bytes_kept'] == 4 * 48
+    for generation, version, gone in (('g-fc-lr1', 1, False), ('g-fc-lr1', 3, True),
+                                      ('g-fc-lr1-r1', 4, True), ('g-fc-lr1-r1', 6, False)):
+        record = exchange.model(version, training_generation=generation)
+        model = exchange.store.get_manifest(record['model_artifact_id'])  # manifest stays
+        heads = exchange.store.get_manifest(record['heads_artifact_id'])
+        for payload in (*model.payloads, heads.payload('checkpoint')):
+            if gone:
+                with pytest.raises(StoreError, match='object_not_found'):
+                    exchange.store.bytes(payload)
+            else:
+                exchange.store.bytes(payload)
+    run = Path(chain.state['generations'][1]['run'])
+    run.mkdir()
+    (run / 'plan.json').write_text(json.dumps(plan_for(cards=2)))
+    (run / 'learner-events.jsonl').write_text('')
+    assert chain.record(run, 'checkpoint')
+    line = json.loads((chain.dir / 'run-records.jsonl').read_text().splitlines()[-1])
+    assert line['chain']['model_retention']['deleted'] == 2
+    chain.retain()  # nothing more, never re-counted
+    assert chain.model_retention['deleted'] == 2
+    assert chain.model_retention['deleted_bytes'] == 2 * 48
+
+
+def test_model_retention_selection_and_heads_binding():
+    records = [{'training_generation': 'g', 'version': v, 'published_at': float(v)}
+               for v in range(1, 11)]
+    kept, drop = cp_retention.select_models(records, keep_newest=3, tied={('g', 2)})
+    assert [r['version'] for r in kept] == [2, 8, 9, 10] and len(drop) == 6
+    assert cp_retention.select_models(records, keep_newest=0, tied=set()) == (records, [])
+
+
+def test_cp_retention_deletes_only_unclaimed_unshared_cp_bytes(tmp_path, monkeypatch):
+    from spireagent.storage.blobs import StoreError
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    chain.retain()
+    # kept: cp1 (generation lr1-r1 started from it), cp2 (claimed), cp5 + cp6 (newest)
+    assert chain.retention['kept'] == 4 and chain.retention['deleted'] == 2
+    assert chain.retention['payload_bytes_kept'] == 4 * 32
+    assert chain.retention['deleted_bytes'] == 16  # cp3's unique chunk; cp4's is shared
+    assert chain.state['checkpoint_retention']['deleted'] == [cps[2].artifact_id,
+                                                              cps[3].artifact_id]
+    for index in (0, 1, 4, 5):
+        exchange.store.bytes(cps[index].payload('checkpoint'))
+    with pytest.raises(StoreError, match='object_not_found'):
+        exchange.store.bytes(cps[2].payload('checkpoint'))
+    assert chunk(exchange, bytes(16)).exists()  # every CP names the zero block
+    assert chunk(exchange, b'unique-cp-000004').exists()  # the model names it
+    assert not chunk(exchange, b'unique-cp-000003').exists()
+    # Lineage still resolves the deleted id (manifest and record stay).
+    assert exchange.store.get_manifest(cps[2].artifact_id).kind == 'checkpoint'
+    # The resume CP is the newest and still restorable.
+    assert chain.newest_checkpoint() == cps[5].artifact_id
+    # The run record line carries the facts.
+    run = Path(chain.state['generations'][1]['run'])
+    run.mkdir()
+    (run / 'plan.json').write_text(json.dumps(plan_for(cards=2)))
+    (run / 'learner-events.jsonl').write_text('')
+    assert chain.record(run, 'checkpoint')
+    line = json.loads((chain.dir / 'run-records.jsonl').read_text().splitlines()[-1])
+    assert line['chain']['checkpoint_retention']['deleted'] == 2
+    # A second pass deletes nothing more and never re-counts.
+    chain.retain()
+    assert chain.retention['deleted'] == 2 and chain.retention['deleted_bytes'] == 16
+
+
+def test_cp_retention_failed_delete_is_loud_counted_and_retried(tmp_path, monkeypatch,
+                                                               capsys):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    real = os.unlink
+
+    def refuse(path):
+        raise PermissionError(13, 'quota', str(path))
+    monkeypatch.setattr(cp_retention.os, 'unlink', refuse)
+    chain.retain()  # never raises: training goes on
+    # cp3's unique chunk failed (cp3 stays pending); cp4 has no unshared chunk to remove
+    assert chain.retention['delete_failed'] == 1 and chain.retention['deleted'] == 1
+    assert 'not deleted' in capsys.readouterr().err
+    assert any(e['kind'] == 'checkpoint_delete_failed' for e in chain.state['log'])
+    monkeypatch.setattr(cp_retention.os, 'unlink', real)
+    chain.retain()
+    assert chain.retention['deleted'] == 2 and chain.retention['delete_failed'] == 1
+
+
+def test_cp_retention_never_deletes_on_an_unreadable_claim(tmp_path, monkeypatch, capsys):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2,
+                                           model_keep_newest=1)
+    (chain.dir / 'eval-a0' / 'protected-checkpoints.json').write_text('{')
+    chain.retain()
+    assert 'error' in chain.retention and chain.retention['deleted'] == 0
+    assert chain.state['log'][-1]['kind'] == 'checkpoint_retention_failed'
+    assert 'CP/model retention skipped' in capsys.readouterr().err
+    for cp in cps:
+        exchange.store.bytes(cp.payload('checkpoint'))
+    assert chain.model_retention['deleted'] == 0  # no model deleted that round either
+    for version in (1, 2, 3):
+        record = exchange.model(version, training_generation='g-fc-lr1')
+        exchange.store.bytes(exchange.store.get_manifest(record['model_artifact_id'])
+                             .payload('weights'))
+
+
+def test_cp_retention_keeps_a_payload_another_artifact_names(tmp_path, monkeypatch):
+    """Review M1: two artifacts with byte-identical payloads share one payload index;
+    deleting one must leave the other readable."""
+    from spireagent.artifact_contracts import Manifest, Producer
+    from spireagent.json_boundary import FrozenObject
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch)
+    producer = Producer('rsgcsg/STS2-The-Perfect-Defect', 'a' * 40, 'b' * 64)
+    same = [Manifest('checkpoint', producer, payloads=(exchange.store.put_bytes(
+        'checkpoint', b'identical-bytes-' * 2),), parameters=FrozenObject.of({'n': n}))
+        for n in (1, 2)]
+    for manifest in same:
+        exchange.store.publish(manifest)
+    deleter = cp_retention.Deleter(exchange.store)
+    done = deleter.delete(same[0].artifact_id)
+    assert done['freed_bytes'] == 0 and done['shared'] == 1
+    exchange.store.bytes(same[1].payload('checkpoint'))
+
+
+def test_cp_retention_claims_evaluated_cps_and_other_chain_starts(tmp_path):
+    """Review S1/S2: every CP an evaluation names (any stage) and the start CPs of every
+    chain under the same work root are protected; a malformed state skips the pass."""
+    chain_dir = tmp_path / 'chain-a'
+    (chain_dir / 'eval-a0').mkdir(parents=True)
+    (chain_dir / 'eval-a0' / 'state.json').write_text(json.dumps({'evaluations': [
+        {'checkpoint': 'cp-done', 'stage': 'done'},
+        {'checkpoint': 'cp-unknown', 'stage': 'prepare_submit_unknown'},
+        {'checkpoint': None, 'stage': 'orphan_intent'}]}))  # review M2: must not block
+    (tmp_path / 'chain-b').mkdir()
+    (tmp_path / 'chain-b' / 'state.json').write_text(json.dumps({
+        'start_checkpoint': 'cp-branch', 'generations': [{'checkpoint': None},
+                                                         {'checkpoint': 'cp-gen'}]}))
+    assert cp_retention.claims(chain_dir) == {'cp-done', 'cp-unknown', 'cp-branch', 'cp-gen'}
+    (chain_dir / 'eval-a0' / 'state.json').write_text('{"evaluations": [{}]}')
+    with pytest.raises(ValueError, match='no evaluations list'):
+        cp_retention.claims(chain_dir)

@@ -56,6 +56,7 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
 ROLLING_GAMES = 100  # the training-game rolling mean: the last N complete games
+SAVE_USE_BUCKETS = (("1", 1), ("2", 2), ("3-4", 4), ("5-8", 8), ("9-16", 16), (">16", 1 << 30))
 BOSS_FLOORS = (17, 33, 48)  # stpd.rl.heads; A10 has a second last-act Boss on 49
 BOSS_NAMES = ("act1_boss", "act2_boss", "act3_boss", "act3_boss2")
 TIMING = ("preparation_wait_seconds", "sgd_stage_wait_seconds", "optimizer_attempt_seconds",
@@ -432,7 +433,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
         "placement": plan.get("placement"),
         "recipe": {"exploration_ladder": knobs.get("exploration_ladder"),
                    "ascension_mix": knobs.get("ascension_mix"),
-                   "replay_k": knobs.get("replay_k"), "segment_format": segment_format,
+                   "replay_k": knobs.get("replay_k"), "save_starts": knobs.get("save_starts"),
+                   "segment_format": segment_format,
                    "hp_coef": loss.get("hp_coef"),
                    "c_hp": loss.get("hp_advantage_coef"),
                    "c_hp_scope": loss.get("hp_advantage_scope"),
@@ -719,6 +721,11 @@ class Readout:
         self.arms: dict[str, _Results] = {}  # full games per exploration arm (A3)
         self.control = self.arms["control"] = _Results()
         self.games_t: tuple[float, float] | None = None
+        # save starts (tickets.mjs): pooled saves per act; complete save-start games per
+        # start act and per use of the save; opened games per start; each driver's latest
+        # save counters (cumulative, #553 review C)
+        self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {},
+                                      "opened": {}, "counters": {}}
 
     @property
     def read_bytes(self) -> int:
@@ -827,6 +834,13 @@ class Readout:
             admitted.discard(r.get("game_ref"))
         elif kind == "open_refused":
             _count(self.open_refused, r.get("reason"))
+        elif kind == "save_pooled":
+            _count(self.saves["pooled"], r.get("act"))
+            self.saves["problem"] += r.get("problem") is True
+        elif kind == "opened":
+            _count(self.saves["opened"], r.get("start"))
+        elif kind == "save_counters":
+            self.saves["counters"][path] = r
         elif kind in ("slot_failed", "build_output_stopped", "fatal", "evidence_failed"):
             _count(self.failures, kind)
 
@@ -841,6 +855,8 @@ class Readout:
         counted = admitted and not r.get("evidence_failed")
         if "arm" in r:
             self._recipe(path, r, counted)
+        if counted and reason == "terminal" and r.get("start") == "from_save":
+            self._save_start(r)
         arm = r.get("arm")
         if not (counted and reason == "terminal" and type(arm) is str
                 and r.get("start") == "new_run"):
@@ -859,9 +875,15 @@ class Readout:
                       "bosses": [(win or floor >= b, win or floor > b) for b in bosses]})
 
     def _recipe(self, path: str, r: dict[str, Any], counted: bool) -> None:
+        # The arm, ascension and K tables compare games started from scratch; a save start
+        # is counted in the start table (and save_starts) only, never mixed in.
+        scratch = r.get("start") != "from_save"
         for key, table in self.tables.items():
-            _add(table.setdefault(str(r.get("replay_k" if key == "k" else key)), _bucket()),
-                 r, counted)
+            if scratch or key == "start":
+                _add(table.setdefault(str(r.get("replay_k" if key == "k" else key)),
+                                      _bucket()), r, counted)
+        if not scratch:
+            return
         name = f"{Path(path).parent}/{r.get('group')}"
         group = self.groups.get(name)
         if group is None:
@@ -877,6 +899,66 @@ class Readout:
         group[4] += 1  # every member game closes once: after K closes the group is done
         if group[0].isdigit() and group[4] >= int(group[0]):
             del self.groups[name]
+
+    def _save_start(self, r: dict[str, Any]) -> None:
+        """A complete game started from a save: end floor, floors gained over the save, and
+        whether it got past the floor its source game died on (source died only)."""
+        floor, start, use = r.get("floor"), r.get("save_floor"), r.get("use")
+        if type(floor) is not int or type(start) is not int or type(use) is not int:
+            return
+        died = r.get("source_terminal") == "defeat" and type(r.get("source_floor")) is int
+        won = r.get("terminal") == "victory"
+        n = use + 1
+        uses = next(label for label, top in SAVE_USE_BUCKETS if n <= top)
+        for table, key in ((self.saves["act"], str(r.get("save_act"))), (self.saves["use"], uses)):
+            b = table.setdefault(key, {"games": 0, "floor_sum": 0, "gained_sum": 0, "wins": 0,
+                                       "source_died": 0, "passed": 0})
+            b["games"] += 1
+            b["floor_sum"] += floor
+            b["gained_sum"] += floor - start
+            b["wins"] += won
+            b["source_died"] += died
+            b["passed"] += died and (won or floor > r["source_floor"])
+
+    def save_starts(self) -> dict[str, Any]:
+        """Save starts over the whole run (tickets.mjs): saves pooled per act (problem = the
+        last save before its source died in that act); complete save-start games per start
+        act and per use of their save (1st, 2nd, 3-4th ...): mean end floor, mean floors
+        gained over the save, wins, and of those whose source died, the share that got past
+        the source's death floor. Rolling training-game results never include them.
+        While the run goes (#553 review C): games opened per start and the effective share
+        (from_save / all opened), and the drivers' latest save counters summed (fallback
+        new runs, load failures, paused families, claim conflicts, evictions; the node pool
+        views `pool_*` are left out, several drivers share one pool)."""
+        s = self.saves
+        if not s["pooled"] and not s["act"] and not s["counters"]:
+            return {}
+        opened = s["opened"]
+        total = sum(opened.values())
+        counters: dict[str, Any] = {}
+        for line in s["counters"].values():
+            for key, value in line.items():
+                if key.startswith("pool_") or key in ("t", "event"):
+                    continue
+                if type(value) is int:
+                    counters[key] = counters.get(key, 0) + value
+                elif isinstance(value, dict):
+                    part = counters.setdefault(key, {})
+                    for name, n in value.items():
+                        part[name] = part.get(name, 0) + n
+
+        def rows(table: dict[str, Any]) -> dict[str, Any]:
+            return {key: {"games": b["games"], "mean_floor": b["floor_sum"] / b["games"],
+                          "mean_floors_gained": b["gained_sum"] / b["games"], "wins": b["wins"],
+                          "source_died": b["source_died"], "passed_source_death": b["passed"],
+                          "pass_rate": b["passed"] / b["source_died"] if b["source_died"] else None}
+                    for key, b in sorted(table.items())}
+        return {"pooled_by_act": dict(sorted(s["pooled"].items())), "problem_saves": s["problem"],
+                "by_start_act": rows(s["act"]), "by_use": rows(s["use"]),
+                "opened_by_start": dict(sorted(opened.items())),
+                "effective_share": opened.get("from_save", 0) / total if total else None,
+                "drivers_reporting": len(s["counters"]),
+                "driver_counters": dict(sorted(counters.items()))}
 
     def _game(self, game: dict[str, Any]) -> None:
         self.arms.setdefault(game["arm"], _Results()).add(game)
@@ -1057,6 +1139,7 @@ class Readout:
                 "services": service_edges(self.run, span), "gpu": gpu_cards(self.run, span),
                 "env": env_edge(self.run, span), "compile": self.compile.result(),
                 "disk": disk_edge(self.run), "recipe": self.recipe(),
+                "save_starts": self.save_starts(),
                 "verdict": verdict(train.get("rows_h"), target),
                 "loss_table": loss_table(plan, train),
                 "identity": identity_edge(self.run, plan, self.plan_path),
@@ -1241,7 +1324,8 @@ def render(r: dict[str, Any]) -> str:
     out += render_record(r)
     if r.get("recipe"):
         out += ["", "recipe, whole run so far (games = complete: terminal, admitted, evidence "
-                "ok; rows = model rows of admitted games):",
+                "ok; rows = model rows of admitted games; arm / ascension / k: games started "
+                "from scratch, start: all):",
                 f"  {'':<22}{'games':>8}{'other':>7}{'floor':>7}{'wins':>6}{'rows':>12}"
                 f"{'groups':>8}{'full':>6}{'range':>7}"]
         for key in ("arm", "ascension", "start", "k"):
@@ -1252,6 +1336,24 @@ def render(r: dict[str, Any]) -> str:
                            f"{fmt(row['mean_floor'], 1):>7}{row['wins']:>6,}{row['rows']:>12,}"
                            + (f"{row['groups']:>8,}{row['full_groups']:>6,}"
                               f"{fmt(row['mean_floor_range'], 1):>7}" if grouped else ""))
+    saves = r.get("save_starts") or {}
+    if saves:
+        configured = ((r.get("identity") or {}).get("recipe") or {}).get("save_starts") or {}
+        c = saves.get("driver_counters") or {}
+        out += ["", f"save starts: pooled per act {saves['pooled_by_act']}, problem saves "
+                f"{saves['problem_saves']} (complete games; pass = past the source's death floor)",
+                f"  opened {saves.get('opened_by_start')}, effective share "
+                f"{fmt(saves.get('effective_share'), 3)} (configured {configured.get('share')}); "
+                f"{saves.get('drivers_reporting')} drivers: new run without ticket "
+                f"{c.get('new_run_without_ticket', {})}, load failed {c.get('load_failed', 0)}, "
+                f"families paused {c.get('families_paused', 0)}, claim conflicts "
+                f"{c.get('claim_conflicts', 0)}, evicted {c.get('evicted', {})}"]
+        for key, label in (("by_start_act", "act"), ("by_use", "use")):
+            for name, row in saves[key].items():
+                out.append(f"  {label + ' ' + name:<12}{row['games']:>8,} games  floor "
+                           f"{fmt(row['mean_floor'], 1)}  +{fmt(row['mean_floors_gained'], 1)}"
+                           f"  wins {row['wins']}  pass {row['passed_source_death']}/"
+                           f"{row['source_died']}")
     if r["loss_table"]:
         out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:

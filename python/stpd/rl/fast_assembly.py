@@ -44,7 +44,8 @@ Rules (design v2 §2.4–§2.6, `stpd/rl-inference-4` README):
 - a natural terminal is labelled by `public_terminal_label` (lead decision
   2026-11-09): the old chain's `boss_clearance`, `episode_reward` (A0) and
   `checked_terminal_class`, called directly on public facts only (Bosses
-  cleared = public act advances). A label the old chain refuses seals
+  cleared = public act advances; a `from_save` game in act a starts from
+  acts 1..a, its earlier Bosses beaten). A label the old chain refuses seals
   `truncated` (`terminal_label_refused`, counted); a labeler that breaks its
   contract seals `truncated` (`terminal_label_invalid`) and raises. Missing
   auxiliary labels never truncate: no auxiliary rows are produced here;
@@ -92,7 +93,9 @@ segment `bootstrap` on that row's value (I3: a truncation, no new class); the
 post-combat row itself is no training row. A combat's type is the public
 `encounter` its first row carries (required on every format-4 combat row,
 `hp_encounter_required`); `hp_weights` (normal / elite / boss, default 1 / 1 / 1)
-scales its HP-change part, never the potion or death points (A2).
+scales its HP-change part, never the potion or death points (A2). A combat with
+no row before it (a save start loaded into a Boss fight) starts at the public HP
+its first row carries (`public_hp`, B); without that it is never scored.
 
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
@@ -484,6 +487,10 @@ class _Battle:
     before: dict[str, Any] | None
     # Its first row's public `encounter` (ENCOUNTERS).
     encounter: str
+    # With no row before it (a save start loaded into a Boss fight), the combat starts at
+    # its first row's own public HP (the row's `public_hp`: the same fields the step
+    # outcome's public_facts read); None: no start fact, never scored.
+    first: dict[str, Any] | None = None
     # (segment, row index, row meta, 100 x HP prediction, potion used), in order.
     rows: list[tuple[_Segment, int, dict[str, Any], float, bool]] = field(default_factory=list)
     ended: bool = False
@@ -654,15 +661,18 @@ class FastSegmentAssembler:
                 if (type(first_act) is not int or first_act < 1
                         or type(first_floor) is not int or first_floor < 0):
                     raise AssemblyError("invalid_episode_open")
+                # The Host-checked native act of the save: a game in act a has beaten the
+                # Bosses of acts 1..a-1, so the label sees those advances (RL5-METHODS B).
+                acts = list(range(1, first_act + 1))
             elif start.get("kind") == "new_run":
-                first_act, first_floor = 1, 0
+                first_floor, acts = 0, [1]
             else:
                 raise AssemblyError("invalid_episode_open")
             if audit and self.mu_archive is None:
                 raise AssemblyError("audit_mu_archive_unconfigured")
             game = _Game(instance, str(message["actor_id"]), copy.deepcopy(dict(sampling)),
                          str(message["single_choice"]), start, audit, ascension,
-                         acts=[first_act], group_id=group_id, ticket_end=str(ticket["end"]))
+                         acts=acts, group_id=group_id, ticket_end=str(ticket["end"]))
             game.max_floor = first_floor
             self.games[instance] = game
             self._by_ascension(ascension)["episodes"] += 1
@@ -729,6 +739,12 @@ class FastSegmentAssembler:
             if (self.hp_score and row.get("in_combat") is True
                     and row.get("encounter") not in ENCOUNTERS):
                 raise AssemblyError("hp_encounter_required")
+            public_hp = row.get("public_hp")
+            if public_hp is not None and not (
+                    isinstance(public_hp, Mapping) and set(public_hp) == {"hp", "max_hp"}
+                    and type(public_hp["hp"]) is int and public_hp["hp"] >= 0
+                    and type(public_hp["max_hp"]) is int and public_hp["max_hp"] >= 1):
+                raise AssemblyError("invalid_row")
             if game.single_choice == "omit" and row.get("catalog_len") == 1:
                 raise AssemblyError("single_option_row_under_omit")
             current = game.segments[-1] if game.segments else None
@@ -824,7 +840,7 @@ class FastSegmentAssembler:
         if self.hp_score:
             segment.hp_adv.append(None)
             self._battle_row(game, segment, meta, 100.0 * hp, potion,  # type: ignore[operator]
-                             row.get("encounter"))
+                             row.get("encounter"), row.get("public_hp"))
         if plan.tail is not None:
             previous = next((s for s in game.segments
                              if s.segment_id == plan.tail.segment_id), None)
@@ -1118,11 +1134,14 @@ class FastSegmentAssembler:
                 and len(segment.rows) == MAX_ROWS and segment.completed())
 
     def _battle_row(self, game: _Game, segment: _Segment, meta: dict[str, Any],
-                    predicted: float, potion: bool, encounter: str | None) -> None:
+                    predicted: float, potion: bool, encounter: str | None,
+                    public_hp: Mapping[str, Any] | None = None) -> None:
         """Track the finished row's combat; a non-combat row ends the open one."""
         if meta["in_combat"]:
             if not game.battles or game.battles[-1].ended:
-                game.battles.append(_Battle(game.last_row, str(encounter)))
+                game.battles.append(_Battle(game.last_row, str(encounter), first=(
+                    None if game.last_row is not None or public_hp is None
+                    else dict(public_hp))))
             game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
                                           potion))
             segment.hp_open += 1
@@ -1140,7 +1159,7 @@ class FastSegmentAssembler:
                     *(row[2] for row in battle.rows))):
                 return
             game.battles.pop(0)
-            start = None if battle.before is None else battle.before["outcome"].get(
+            start = battle.first if battle.before is None else battle.before["outcome"].get(
                 "public_facts")
             steps = [(meta["outcome"], predicted, potion)
                      for _, _, meta, predicted, potion in battle.rows]

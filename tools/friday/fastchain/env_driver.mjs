@@ -8,12 +8,17 @@
 // Environment-side recipe (NEW-METHODS-PLAN I4/I6): this driver's exploration arm (one
 // `inference.sampling` per fast-env process) and K games per start in its own slots (one
 // assembler), each game logged in driver.jsonl with arm, ascension, group and outcome.
+// Save starts (RL5-METHODS B, tickets.mjs): with `save_starts.share` > 0 new runs save at
+// map screens into the node pool and that share of starts opens from a pool save; the
+// driver's save counters go to driver.jsonl on every status and at exit.
 import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { SaveTickets } from "./tickets.mjs";
 
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : fallback; };
 const PKG = arg("pkg"), OUT = arg("out"), K = Number(arg("slots", "8"));
@@ -60,27 +65,27 @@ const admitCall = (request) => new Promise(resolve => { admitQueue.push(resolve)
 const games = new Map(), admission = { sent: 0, admitted: 0, refused: {}, closed_after_refusal: 0, excluded: 0, exclusion_failed: {} };
 const SEEDS = readFileSync(arg("seeds"), "utf8").trim().split("\n");
 let seedIndex = Number(arg("seed-offset", "0"));
-// Start tickets (hook for W3 `from_save` tickets): `--tickets M.mjs` exports
-// `nextTicket({ tag })` -> { seed, start } (or a promise of it), `start` a fast-env GameStart.
-// Without it every ticket is the next seed of the list as a new run. A hook ticket that
-// throws or that the fast env refuses at open stops this driver (exit 3, see ticketFailed).
-const TICKETS = arg("tickets");
-const nextTicket = TICKETS ? (await import(pathToFileURL(TICKETS).href)).nextTicket
-  : () => ({ seed: SEEDS[seedIndex++ % SEEDS.length], start: { kind: "new_run" } });
-if (typeof nextTicket !== "function") { process.stderr.write(`--tickets ${TICKETS} exports no nextTicket\n`); process.exit(2); }
-// I6 K replay: each ticket opens REPLAY_K times in this driver's slots as group `TAG-kN`;
-// a member that is refused or ends early is never replaced (no game is retried).
-let group = null, groupCount = 0;
-const nextStart = () => {
-  if (group === null || group.member >= REPLAY_K)
-    group = { id: `${arg("tag")}-k${++groupCount}`, member: 0, ticket: Promise.resolve().then(() => nextTicket({ tag: arg("tag") })) };
-  const current = group, member = current.member++;
-  return current.ticket.then(ticket => ({ ...ticket, group: current.id, member }));
-};
 const gameFacts = (ref) => { const g = games.get(ref); return { game_ref: ref, ...(g ?? {}) }; };
 const initialProgress = JSON.parse(readFileSync(arg("initial-progress"), "utf8"));
 mkdirSync(OUT, { recursive: true, mode: 0o700 });
 const log = (record) => appendFileSync(join(OUT, "driver.jsonl"), `${JSON.stringify({ t: Date.now(), ...record })}\n`);
+// Save starts: `--save-starts` the recipe knob (JSON), `--save-pool` the node-local pool
+// (env.sh). Off (share 0 or no flag): every start is the next seed of the list as a new run.
+const SAVE_STARTS = JSON.parse(arg("save-starts") ?? "null");
+const saves = SAVE_STARTS?.share > 0 ? new SaveTickets(SAVE_STARTS, { id: arg("tag"), ascension: ASCENSION, character: "Defect",
+  pool: arg("save-pool"), progress_sha256: createHash("sha256").update(JSON.stringify(initialProgress)).digest("hex") }, { log }) : null;
+// I6 K replay: each start opens REPLAY_K times in this driver's slots as group `TAG-kN` (a
+// save start: one claimed use per game); a member that is refused or ends early is never
+// replaced (no game is retried).
+let group = null, groupCount = 0;
+const nextStart = () => {
+  if (group === null || group.member >= group.size) {
+    const id = `${arg("tag")}-k${++groupCount}`;
+    const plan = saves ? saves.plan(id, REPLAY_K) : { seed: null, start: { kind: "new_run" }, save_points: null, tickets: null };
+    group = { id, plan, member: 0, size: plan.tickets?.length ?? REPLAY_K, seed: plan.seed ?? SEEDS[seedIndex++ % SEEDS.length] };
+  }
+  return { group, member: group.member++ };
+};
 
 const policy = await import(pathToFileURL(join(PKG, "components/policy-runtime/dist/global-program.js")).href);
 const manifest = policy.createGlobalProgramManifest({ episodeId: "wp8-chain", p1Revision: "r1.9",
@@ -119,7 +124,8 @@ writeFileSync(join(OUT, "config.json"), JSON.stringify(config, null, 1), { mode:
 const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-gc (V3-shen)
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
   single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
-  ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, temperature_min: TEMPERATURE_MIN, replay_k: REPLAY_K, tickets: TICKETS ?? null };
+  ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, temperature_min: TEMPERATURE_MIN, replay_k: REPLAY_K,
+  save_starts: SAVE_STARTS };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 
@@ -132,22 +138,22 @@ const send = (command) => (stopSent && command.cmd !== "stop") ? false : env.std
 const r7Counts = { selected: 0, not_selected: 0, failed: {} };
 const openWith = (slot, r7) => {
   if (stopping) return;
-  nextStart().then(({ seed, start, group: groupId, member }) => {
-    if (stopping) return;
-    opened += 1;
-    games.set(`g${opened}`, { seed, group: groupId, member, start: start?.kind ?? null });
-    send({ cmd: "open", slot, game_ref: `g${opened}`, seed, initial_progress: initialProgress, start, r7, retain_originals: false });
-  }, error => ticketFailed({ slot, reason: "ticket_hook_failed", detail: String(error?.message ?? error) }));
+  let next;
+  try { next = nextStart(); } catch (error) { return ticketFailed({ slot, reason: "save_start_failed", detail: String(error?.message ?? error) }); }
+  const { group: { id, plan, seed }, member } = next, ref = `g${++opened}`;
+  games.set(ref, { seed, group: id, member, start: plan.start.kind, ...(saves ? saves.opening(ref, plan, member) : {}) });
+  send({ cmd: "open", slot, game_ref: ref, seed, initial_progress: initialProgress, start: plan.start, r7, retain_originals: false,
+    ...(plan.save_points ? { save_points: plan.save_points } : {}) });
 };
-// A hook ticket that fails or that the fast env refuses could come back again and again: the
-// driver stops (no backoff, no retry) and exits 3. A malformed command is the fast env's own
-// fatal error (`command_invalid`). Seed-list tickets keep reopening as before.
+// A save-start draw that throws (a pool the driver cannot read or write) stops the driver
+// (no backoff, no retry) and exits 3. A refused or unknown save start is sealed by
+// tickets.mjs (its family paused) and the slot opens the next start, never the same ticket.
 let ticketFailure = null;
 const ticketFailed = (detail) => {
   if (ticketFailure) return;
   ticketFailure = detail; summary.ticket_failure = detail;
-  log({ event: "ticket_failed", tickets: TICKETS, ...detail });
-  process.stderr.write(`ticket from --tickets ${TICKETS} failed, driver stops: ${JSON.stringify(detail)}\n`);
+  log({ event: "ticket_failed", ...detail });
+  process.stderr.write(`save start failed, driver stops: ${JSON.stringify(detail)}\n`);
   stopping = true; summary.final_status = true;
   if (!stopSent) { stopSent = true; send({ cmd: "stop" }); }
 };
@@ -172,6 +178,7 @@ const excludedSent = new Set();
 const summary = { tag: arg("tag"), slots: K, admission, ascension: ASCENSION, arm: ARM, replay_k: REPLAY_K, r7: r7Counts, single_choice: SINGLE, warm_s: WARM_S, steady_s: STEADY_S, closed: [], refused: [], failures: [], statuses: [] };
 createInterface({ input: env.stdout }).on("line", line => {
   const event = JSON.parse(line);
+  saves?.onEvent(event);
   // A game's lines carry its start; its `closed` line is the readout's per-arm/level/group record.
   log({ event: event.event, slot: event.slot ?? null, reason: event.reason ?? null, detail: event.detail ?? null,
     ...(event.game_ref ? gameFacts(event.game_ref) : {}),
@@ -188,6 +195,7 @@ createInterface({ input: env.stdout }).on("line", line => {
     admission.sent += 1;
     admitCall({ op: "admit", actor: `v3g-${tag}`, intent_id: `v3g-${tag}-${ref}`, seed: games.get(ref).seed, game_instance_id: instance }).then(r => {
       log({ event: "admission", game_ref: ref, game_instance_id: instance, ok: r.ok, code: r.code ?? null });
+      saves?.onAdmission(ref, r.ok);
       if (r.ok) { admission.admitted += 1; return; }
       admission.refused[r.code] = (admission.refused[r.code] ?? 0) + 1;
       admission.closed_after_refusal += 1;
@@ -207,13 +215,14 @@ createInterface({ input: env.stdout }).on("line", line => {
     } else { notStartedRun.delete(event.slot); open(event.slot); }
   } else if (event.event === "open_refused") {
     summary.refused.push(event);
-    if (TICKETS && !["build_output_stopped", "stopping"].includes(event.reason))
-      ticketFailed({ slot: event.slot, reason: "open_refused", detail: event.reason, ...gameFacts(event.game_ref) });
-    else if (event.reason !== "build_output_stopped") open(event.slot);
+    if (event.reason !== "build_output_stopped") open(event.slot);
   }
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);
   else if (event.event === "status") {
     summary.statuses.push({ t: Date.now(), counters: event.counters, slots: event.slots });
+    // #553 review C: the save-start counters so far on every status (cumulative), so the
+    // run record shows the effective share while the run goes, not only at driver exit.
+    if (saves) log({ event: "save_counters", ...saves.counters() });
     if (summary.final_status && !stopSent) { stopping = true; stopSent = true; send({ cmd: "stop" }); }
   } else if (event.event === "stopped" || event.event === "fatal") summary.end = event;
 });
@@ -226,6 +235,7 @@ process.on("SIGUSR1", () => {
 });
 const code = await new Promise(resolve => env.on("exit", resolve));
 summary.exit = code;
+if (saves) { summary.save_starts = saves.counters(); log({ event: "save_counters", ...summary.save_starts }); }
 ADMIT.end();
 const a = summary.statuses[0], b = summary.statuses[summary.statuses.length - 1];
 if (a && b) {

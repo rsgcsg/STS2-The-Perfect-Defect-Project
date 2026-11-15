@@ -97,6 +97,16 @@ def public_encounter(observation: dict[str, Any], in_combat: bool) -> Any:
     return (combat.get("content") or {}).get("encounter_type") if combat else None
 
 
+def public_hp(observation: dict[str, Any], in_combat: bool) -> dict[str, Any] | None:
+    """A combat row's public player hp / max_hp (the model's own input; the kernel's
+    public_facts read the same fields): a combat with no row before it starts there
+    (RL5-METHODS B). None off combat or when either is absent."""
+    combat = observation.get("combat") if in_combat else None
+    player = ((observation.get("player") or {}).get("content") or {}) if combat else {}
+    return ({"hp": player["hp"], "max_hp": player["max_hp"]}
+            if "hp" in player and "max_hp" in player else None)
+
+
 def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
     """Encoder-pool handler: one decision line -> (meta, row); parsed once, here."""
     from .rows_encoder import parse_public_json
@@ -112,6 +122,7 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
             "catalog_sha256": encoded.catalog_sha256, "catalog_len": encoded.catalog_len,
             "in_combat": encoded.in_combat, "floor": message.get("floor"),
             "encounter": public_encounter(source["observation"], encoded.in_combat),
+            "public_hp": public_hp(source["observation"], encoded.in_combat),
             "step_index": message.get("step_index"),
             "consumption_id": message.get("consumption_id"), "binding": None}
     # The line's own claims must equal what was encoded (no repair, no fallback).
@@ -319,6 +330,7 @@ class NodeAggregator:
                              "observation_sha256": meta["observation_sha256"],
                              "in_combat": meta["in_combat"], "floor": meta["floor"],
                              "encounter": meta["encounter"],
+                             "public_hp": meta["public_hp"],
                              "payload": {"offset": len(binary), "length": len(row),
                                          "row_sha256": meta["row_sha256"]}})
                 binary += row
