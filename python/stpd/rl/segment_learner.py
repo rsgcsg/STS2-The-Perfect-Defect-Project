@@ -106,6 +106,8 @@ from .fast_source import (
 from .fast_verify import FastVerifyClosed, FastVerifyPool
 from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import advantage_fields, exploration_fields
+from .local_retention import LocalRetention
+from .local_retention import trim as local_retention_trim
 from .loss import prepared_update
 from .performance import PerformanceConfig
 from .prepared_batch import (
@@ -1045,6 +1047,14 @@ class SegmentLearner:
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_publisher_initialize,
         )
+        # #558: local copies on this node (learner-live/store, mu-network) are chosen
+        # here and deleted by the publisher process, between publications. Both 0 (the
+        # default) = no object at all: no pass, no event, today's behaviour exactly.
+        keep = ((self.dataplane.get("local_keep_models", 0),
+                 self.dataplane.get("local_keep_checkpoints", 0))
+                if self.dataplane is not None else (0, 0))
+        self.local_retention = (LocalRetention(keep_models=keep[0], keep_checkpoints=keep[1])
+                                if any(keep) else None)
         # Commit-time header checks decode ~7 MB of JSON per packet; in this
         # process that held the GIL ~0.2 s per commit and starved the GPU step.
         self.header_checks = ProcessPoolExecutor(
@@ -1120,6 +1130,8 @@ class SegmentLearner:
                            "model_files": self._model_files, "on_failure": self._transport_failure}
                            if self.dataplane is not None else None,
             )
+            if self.local_retention is not None:
+                self.local_retention.served(initial["identity"])
             if self.fast_intake is not None:
                 # The start (or restored) mu is this learner's first publication.
                 # Known limit: mu published by an earlier process is not carried
@@ -1876,14 +1888,49 @@ class SegmentLearner:
                 self.pool.retire(
                     {owner["mu"]["snapshot_sha256"] for owner in self.lease_owners.values()}
                 )
+                if self.local_retention is not None:
+                    version = publication["identity"]["version"]
+                    self.local_retention.published(publication["identity"], str(
+                        self.live_work / "versions" / self.generation / f"{version:06d}"))
             self._event("model_published", version=publication["identity"]["version"],
                         updates=publication["updates"],
                         temporary_export_released_bytes=publication["temporary_export_released_bytes"],
                         publication_seconds=publication["publication_seconds"],
                         publisher_memory=publication["publisher_memory"])
             self._kick_publication()
+            self._local_retention_pass()
             if not wait:
                 return
+
+    def _local_retention_pass(self) -> None:
+        """#558: settle the last pass, queue the next behind the in-flight publication.
+
+        Here only set arithmetic and one submit; every filesystem call runs in the
+        publisher process. A failed pass or delete is reported, never raised."""
+        retention = self.local_retention
+        if retention is None:
+            return
+        if retention.future is not None:
+            if not retention.future.done():
+                return
+            future, retention.future = retention.future, None
+            try:
+                fields = retention.settle(future.result())
+            except Exception as error:  # noqa: BLE001 - loud, counted, training goes on
+                fields = retention.failed(error)
+            if fields.get("error") or fields.get("failures"):
+                print(f"*** learner local retention: {fields.get('error') or fields['failures']}",
+                      file=sys.stderr, flush=True)
+            self._event("learner_local_retention", **fields)
+        with self.condition:
+            servable = set(self.pool.snapshots)
+        try:
+            retention.future = self.publisher.submit(
+                local_retention_trim, str(self.live_work), **retention.select(servable))
+        except Exception as error:  # noqa: BLE001
+            print(f"*** learner local retention: pass not queued: {error!r}",
+                  file=sys.stderr, flush=True)
+            self._event("learner_local_retention", **retention.failed(error))
 
     def _schedule_publication(self) -> None:
         if self.sgd_owns_theta and self.sgd_snapshot_updates == self.updates:
@@ -3918,6 +3965,8 @@ class SegmentLearner:
                 sequence=info["sequence"],
                 training_generation=info["training_generation"],
             )
+            if self.local_retention is not None:
+                self.local_retention.checkpoint(taken[0].artifact_id, info["version"])
             self._event("checkpoint_published", checkpoint_artifact_id=taken[0].artifact_id,
                         sequence=info["sequence"], timing=taken[1],
                         encoder_memory=info["encoder_memory"], memory=self._memory())

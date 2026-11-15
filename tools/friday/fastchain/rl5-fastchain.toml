@@ -17,6 +17,8 @@ dispatch_workers = { value = 4, default = 4, why = "prepare dispatch threads (#5
 prepare_slots = { value = 896, default = 896, why = "gate value", measured = "c3c series" }
 capacity_rows = { value = 212992, default = 212992, why = "learner queue capacity", measured = "c3c series" }
 wal_max_gib = { value = 20, default = 4, why = "node-local WAL cap for a 1 h run", measured = "s1 series" }
+learner_local_keep_models = { value = 0, default = 0, why = "GPU-node copies of mu publications (learner-live/store chunks + mu-network dir, local_retention.py): keep the newest K plus every snapshot get_mu may still serve and the newest local CP's version; an older one goes once the archive receipt shows the peer has it; 0 = keep every copy (today)", measured = "#558; derived ~45 GB/h on the GPU node (publications + a whole mu-network copy each)" }
+learner_local_keep_checkpoints = { value = 0, default = 0, why = "GPU-node copies of CPs in learner-live/store: keep the newest K, drop older ones the archive already copied to the peer (resume reads the peer); 0 = keep every copy (today)", measured = "#558" }
 lanes = { value = 4, default = 4, why = "dataplane lanes", measured = "s1 series" }
 sgd_start_seconds = { value = 1500, default = 300, why = "a cold inductor cache must not eat the start budget", measured = "s1d" }
 checkpoint_seconds = { value = 0, default = 0, why = "0 = gate default 300 s; each CP capture costs 3.5-7.6 s after #515", measured = "c3c15/c3c18" }

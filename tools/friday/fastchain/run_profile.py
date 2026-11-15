@@ -315,6 +315,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "prepare_slots": _int(1),
     "capacity_rows": _int(1),
     "wal_max_gib": _int(1, 512),
+    "learner_local_keep_models": _int(0, 100000),
+    "learner_local_keep_checkpoints": _int(0, 10000),
     "lanes": _int(1, 64),
     "sgd_start_seconds": _num(1),
     "checkpoint_seconds": _num(0),

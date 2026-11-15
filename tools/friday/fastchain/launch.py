@@ -364,6 +364,7 @@ FEATURES = {
     "step_probe": ("python/stpd/rl/sgd_process.py", '"sgd_step_probe"'),  # #525
     "compile_warmup": ("python/stpd/rl/sgd_process.py", '"warmup"'),  # WP8 sgd_compile
     "retention": ("python/stpd/rl/fast_release.py", "release_trained_segments"),  # #529
+    "local_retention": ("python/stpd/rl/segment_learner.py", '"local_keep_models"'),  # #558
     "mu_archive": ("python/stpd/rl/fast_mu_pack.py", "def local_mu_archive"),  # #529
     "r7_max_games": ("python/spireagent/workbench/fast_chain_episodes.py",  # #529
                      '"max_games"'),
