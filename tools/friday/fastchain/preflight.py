@@ -249,6 +249,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["compile_warmup"] = "sgd_compile.warmup (WP8)"
     if k["release_trained_segments"]:
         need["retention"] = "dataplane.release_trained_segments (#529)"
+    if k["learner_local_keep_models"] or k["learner_local_keep_checkpoints"]:
+        need["local_retention"] = "dataplane.local_keep_models / local_keep_checkpoints (#558)"
     if k["r7_games_per_hour"] > 0:
         need["mu_archive"] = "local_mu_archive / node_cache_weights (#529)"
         need["r7_max_games"] = "R7Selection max_games (#529)"

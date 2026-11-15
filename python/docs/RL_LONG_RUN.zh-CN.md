@@ -183,8 +183,39 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `r7_max_games` 均分上限），驱动开局前问 `r7`，选中的局 `open.r7 = true`（原件全留）；
   服务侧 `mu_archive = local_mu_archive(run/mu-archive-K, mu_archive_gb 均分)`、跟随器
   `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
-  普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
-  之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+  普通局只留账本。fast env 的 `episode_open` 已带 `audit_retain_mu`（kernel.ts），R7 局的
+  mu 存进服务侧 mu 存档。
+- CP 保留（#555，`supervise.py` + `cp_retention.py`）：每发布一个 CP，链按
+  `checkpoint_keep_newest`（默认 0 = 全留；开时 ≥ 2）留最新 N 个、评估看守在
+  `eval-*/protected-checkpoints.json` 里认领的、`eval-*/state.json` 里任何阶段的评估点过的
+  （含 `prepare_submit_unknown`）、同一 work root 下所有 `chain-*/state.json` 的起点 CP、
+  各代起点 CP，以及每
+  `checkpoint_milestone_hours` 小时窗口的第一个，其余只删 CP 自己独占的 payload 块
+  （manifest、索引和 CP 记录留着，读已删 CP 响亮报 `object_not_found`）。删失败记数、
+  stderr 报警、下个 CP 再试，不停训练；认领文件读不了就这一轮不删。运行记录
+  `chain.checkpoint_retention` 记 kept / deleted / delete_failed / payload_bytes_kept
+  （被留件 payload 大小之和，不是真实占盘：共享块重复计，只被已删件共享的块留在盘上不计）。
+  按 manifest 数谁在用每个 payload：另一件也引用同一 payload（heads 未变、续训 mu 与旧版
+  相同、评估导出与链发布相同）就整件跳过。已接受的竞态：写手复用了只有被删件用的块，且它
+  发布时的读回刚好在删除之前完成，则该件缺块（读时响亮报错）；需要非单调共享且在毫秒窗口内。
+  模型发布同样处理（`model_keep_newest`，默认 0 = 全留）：每个 mu 版本一份 model + heads，
+  学习者先写节点本地 Store，归档再复制到 peer；peer 上没有活路径读旧版本（推理从学习者本地
+  Store 取，续训用 CP 自带权重，评估从 CP 导出自己的模型，R7 用 mu 存档）。留最新 K 个和每个
+  被留 CP 记的版本，其余删 model 与 heads 的独占块，记录与 manifest 留着；运行记录
+  `chain.model_retention` 单独计数。学习者节点本地的 Store 和 `mu-network` 缓存见下一条。
+- GPU 节点本地保留（#558，`segment_learner.py` + `local_retention.py`）：数据面模式下学习者
+  Store 在节点本地（`learner-live/store`，归档到 peer），每个被服务的 mu 另有一份整文件拷贝
+  （`learner-live/mu-network/<snapshot>`），两者原本只增不减。`learner_local_keep_models`
+  （默认 0 = 全留）开时，每次发布后学习者只做集合运算并把一轮删除排进发布进程（单 worker，
+  排在进行中的发布之后，所以删时没有发布在写），旧 mu 的本地块和 mu-network 目录在以下全满足
+  时才删：不在最新 K 个里；本轮和上一轮都不在 `pool.snapshots`（get_mu 能服务的全部：最新、
+  各节点报告缓存的、各租约绑定的；不在其中的 key 本来就被拒且不会回来）；不是最新本地 CP
+  记的版本；model 与 heads manifest 都有归档完成收据（peer 已全量读回），否则留到下轮。
+  `learner_local_keep_checkpoints`（默认 0）同理留最新 K 个本地 CP（续训从 peer 读）。
+  manifest、索引留着，之后读会回落到 peer。删失败记数、stderr 报警、不停训练；每轮一条
+  `learner_local_retention` 事件记删除数、未归档保留数、失败、释放字节；本地 store/mu-network
+  占盘只在每个新 CP 后的第一轮走一次目录。两个开关都为 0（默认）时学习者不建这个对象：没有
+  删除轮、没有事件、不走目录，和改动前完全一样。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
   `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合

@@ -59,6 +59,11 @@ learner publishes, before a resume and at the chain's end (`run-record.json`, th
 `run-records.jsonl`, one line per write; a failed write is noted, never stops the run).
 Both come from one readout.Readout per generation that reads only the new bytes each time
 (dropped after an error, so the next tick starts a fresh one),
+CP retention at every published CP (cp_retention.py; `checkpoint_keep_newest`, default
+0 = keep every CP): the newest N, evaluation claims, generation starts and milestones stay,
+the run record's `chain.checkpoint_retention` counts kept / deleted / payload bytes kept,
+and the same for model publications on the peer (`model_keep_newest`, default 0 = keep
+all; `chain.model_retention`),
 and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the
 run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
@@ -89,6 +94,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import cp_retention  # noqa: E402
 import launch  # noqa: E402
 import readout  # noqa: E402
 import run_profile  # noqa: E402
@@ -110,7 +116,8 @@ def identity(profile: Path, site: Path, overrides: list[str],
              src: dict[str, Any]) -> dict[str, Any]:
     """What a resume must not change: harness code, profile, site, overrides, source."""
     return {"harness": {name: digest(HERE / name)
-                        for name in (*launch.HARNESS, "launch.py", "supervise.py")},
+                        for name in (*launch.HARNESS, "launch.py", "supervise.py",
+                                     "cp_retention.py")},
             "profile": digest(profile), "site": digest(site), "overrides": list(overrides),
             "source": src}
 
@@ -177,6 +184,12 @@ class Chain:
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
         self.reader: readout.Readout | None = None  # the current generation's readout
+        self.deleter: cp_retention.Deleter | None = None  # CP retention (cp_retention.py)
+        self.retention: dict[str, Any] | None = None  # its facts for the next run record
+        self.model_retention: dict[str, Any] | None = None  # the same for model publications
+        self.peer: Any = None  # the peer Exchange retention reads (lazily opened)
+        self.model_records: dict[tuple[str, int], dict[str, Any]] = {}
+        self.models_deleted: set[tuple[str | None, int]] = set()
 
     # ---------------- state ----------------
     def note(self, kind: str, **fields: Any) -> None:
@@ -340,6 +353,7 @@ class Chain:
                              f"{text}\n{self.eval_status()}\n")
             self.persist()
         if self.new_checkpoint(run):
+            self.retain()
             self.record(run, "checkpoint")
         for name, loop in list(self.eval_loops.items()):
             if loop.poll() is not None:
@@ -402,7 +416,9 @@ class Chain:
                 "generations": len(self.state["generations"]),
                 "resumes": len(self.state["resumes_at"]),
                 "start_checkpoint": self.state["start_checkpoint"],
-                "deadline_at": self.state["deadline_at"], "identity": self.state["identity"]}
+                "deadline_at": self.state["deadline_at"], "identity": self.state["identity"],
+                "checkpoint_retention": self.retention,
+                "model_retention": self.model_retention}
             text = json.dumps(record, ensure_ascii=False, default=str)
             tmp = self.dir / "run-record.json.tmp"
             tmp.write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str))
@@ -416,6 +432,113 @@ class Chain:
             return False
         self.persist()
         return True
+
+    # ---------------- checkpoint retention ----------------
+    def retain(self) -> None:
+        """After a published CP: apply cp_retention to this chain's CPs and model
+        publications on the peer (delete only with checkpoint_keep_newest /
+        model_keep_newest > 0) and keep the facts for the run record. A failed unlink is
+        loud (stderr, state log) and counted, and is tried again next time; any other
+        error (an unreadable claim file included) skips this round loudly. Neither ever
+        stops the run."""
+        totals = self.state.setdefault("checkpoint_retention",
+                                       {"deleted": [], "deleted_bytes": 0, "delete_failed": 0})
+        models = self.state.setdefault("model_retention",
+                                       {"deleted": 0, "deleted_bytes": 0, "delete_failed": 0})
+        try:
+            if self.deleter is None:
+                from spireagent.rl_exchange import Exchange
+
+                self.peer = Exchange({"kind": "local", "directory": self.site["peer_dir"]},
+                                     self.site["run_name"])
+                self.deleter = cp_retention.Deleter(self.peer.store)
+            kept_records = self.retain_checkpoints(totals)
+            self.retain_models(models, kept_records)
+        except Exception as error:  # noqa: BLE001 - retention never stops the run
+            print(f"*** CP/model retention skipped: {error!r}", file=sys.stderr, flush=True)
+            self.note("checkpoint_retention_failed", error=repr(error))
+            self.retention = {"error": repr(error), "deleted": len(totals["deleted"]),
+                              "delete_failed": totals["delete_failed"]}
+            self.model_retention = {"error": repr(error), **models}
+        self.persist()
+
+    def retain_checkpoints(self, totals: dict[str, Any]) -> list[dict[str, Any]]:
+        """The CP pass; returns the retained CP records (they tie their model version)."""
+        assert self.deleter is not None
+        keep_newest = self.knobs["checkpoint_keep_newest"]
+        generations = {f"g-fc-{g['runtag']}" for g in self.state["generations"]}
+        records = [r for r in self.checkpoints(generations)
+                   if r.get("training_generation") in generations]
+        protected = {g["checkpoint"] for g in self.state["generations"] if g["checkpoint"]}
+        protected |= cp_retention.claims(self.dir)
+        kept, drop = cp_retention.select(
+            records, keep_newest=keep_newest,
+            milestone_hours=self.knobs["checkpoint_milestone_hours"],
+            started_at=self.state["started_at"], protected=protected)
+        for artifact in (a for a in drop if a not in totals["deleted"]):
+            done = self.deleter.delete(artifact)
+            totals["deleted_bytes"] += done["freed_bytes"]
+            if done["failed"]:
+                totals["delete_failed"] += len(done["failed"])
+                print(f"*** CP retention: {len(done['failed'])} chunk(s) of {artifact} "
+                      f"not deleted: {done['failed'][:3]}", file=sys.stderr, flush=True)
+                self.note("checkpoint_delete_failed", checkpoint=artifact,
+                          failed=done["failed"])
+                continue  # tried again after the next CP
+            totals["deleted"].append(artifact)
+            self.note("checkpoint_deleted", checkpoint=artifact, **{
+                k: v for k, v in done.items() if k != "failed"})
+        self.retention = {
+            "keep_newest": keep_newest,
+            "milestone_hours": self.knobs["checkpoint_milestone_hours"],
+            "kept": len(kept), "deleted": len(totals["deleted"]),
+            "delete_failed": totals["delete_failed"],
+            "deleted_bytes": totals["deleted_bytes"],
+            "payload_bytes_kept": sum(self.deleter.payload_bytes(a) for a in kept)}
+        kept_ids = set(kept)
+        return [r for r in records if r["checkpoint_artifact_id"] in kept_ids]
+
+    def retain_models(self, totals: dict[str, Any], kept_cps: list[dict[str, Any]]) -> None:
+        """The model-publication pass (cp_retention.select_models). Records are immutable:
+        each is read once per process. Deleted ones are remembered in memory only (a
+        repeated delete after a supervisor restart frees nothing and is harmless); state
+        keeps the counts, and one note per pass names them."""
+        assert self.deleter is not None
+        keep_newest = self.knobs["model_keep_newest"]
+        for g in self.state["generations"]:
+            generation = f"g-fc-{g['runtag']}"
+            for version in self.peer.model_versions(training_generation=generation):
+                if (generation, version) not in self.model_records:
+                    self.model_records[(generation, version)] = self.peer.model(
+                        version, training_generation=generation)
+        tied = {(r.get("training_generation"), r["version"]) for r in kept_cps}
+        kept, drop = cp_retention.select_models(list(self.model_records.values()),
+                                                keep_newest=keep_newest, tied=tied)
+        deleted = freed = failed = 0
+        for record in drop:
+            key = (record.get("training_generation"), record["version"])
+            if key in self.models_deleted:
+                continue
+            done = self.deleter.delete_model(record)
+            freed += done["freed_bytes"]
+            if done["failed"]:
+                failed += len(done["failed"])
+                print(f"*** model retention: {len(done['failed'])} chunk(s) of version "
+                      f"{key} not deleted: {done['failed'][:3]}", file=sys.stderr, flush=True)
+                self.note("model_delete_failed", version=key, failed=done["failed"])
+                continue
+            self.models_deleted.add(key)
+            deleted += 1
+        totals["deleted"] += deleted
+        totals["deleted_bytes"] += freed
+        totals["delete_failed"] += failed
+        if deleted:
+            self.note("models_deleted", count=deleted, freed_bytes=freed)
+        self.model_retention = {
+            "keep_newest": keep_newest, "kept": len(kept), **totals,
+            "payload_bytes_kept": sum(self.deleter.payload_bytes(r["model_artifact_id"])
+                                 + self.deleter.payload_bytes(r["heads_artifact_id"])
+                                 for r in kept)}
 
     # ---------------- evaluation ----------------
     def watchers(self) -> dict[str, dict[str, Any]]:
