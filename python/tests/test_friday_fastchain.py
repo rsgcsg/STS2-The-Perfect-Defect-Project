@@ -906,6 +906,11 @@ def test_job_side_pure_helpers():
 
 # ---------------- readout ----------------
 
+def jsonl_text(records):
+    """JSON lines as the roles write them: every line ends with a newline."""
+    return ''.join(json.dumps(record) + '\n' for record in records)
+
+
 def write_run(run, cards=3):
     plan = plan_for(cards=cards)
     run.mkdir()
@@ -914,17 +919,17 @@ def write_run(run, cards=3):
     events = [{'t': t0, 'kind': 'training_started'}]
     events += [{'t': t0 + i, 'kind': 'progress', 'stepped': True, 'rows': 8000,
                 'terminal_rows': 600, 'hp_rows': 400, 'seconds': 1.0} for i in range(1, 1300)]
-    (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     status = [{'t': t0 + i, 'queued_rows': 50_000, 'timing': {
         'preparation_wait_seconds': 0.1 * i, 'sgd_stage_wait_seconds': 0.05 * i,
         'optimizer_attempt_seconds': 0.8 * i},
         'fast_chain': {'learner': {'admitted_rows': 8100 * i, 'capacity_dropped_rows': 10 * i}}}
         for i in range(0, 1300, 10)]
-    (run / 'learner-status.jsonl').write_text('\n'.join(map(json.dumps, status)))
+    (run / 'learner-status.jsonl').write_text(jsonl_text(status))
     service = [{'t': t0 + i, 'handoff_q': 3, 'service': {'rows': 2000 * i,
                 'device_seconds': 0.7 * i}, 'handoff': {'written': i, 'dropped': 0}}
                for i in range(0, 1300, 5)]
-    (run / 'service-status-0.jsonl').write_text('\n'.join(map(json.dumps, service)))
+    (run / 'service-status-0.jsonl').write_text(jsonl_text(service))
     (run / 'gpu.csv').write_text('\n'.join(
         f'{int((t0 + i) * 1000)}, {c}, {90 if c else 70}, 30000'
         for i in range(0, 1300, 2) for c in range(cards)))
@@ -951,13 +956,215 @@ def test_readout_edge_table_target_and_loss_table(tmp_path):
     assert 'incl. aux' in text and 'td only' in text
 
 
+# Value sums (learning_diagnostics.FIELDS) of two rows: targets 0.2/0.4, predictions
+# 0.25/0.35 -> EV 0.75, MSE 0.0025; HP: one row, error 0.02 -> MAE 2 HP points.
+TD_SUMS = [2.0, 0.6, 0.2, 0.0, 0.005, 0.1]
+HP_SUMS = [1.0, 0.5, 0.25, 0.02, 0.0004, 0.02]
+NONE_SUMS = [0.0] * 6
+
+
+def write_record_inputs(run):
+    """Adds what the run record reads to a write_run directory: learner diagnostics,
+    boundary sections, checkpoints, driver lines and the identity files."""
+    t0 = 1000.0
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    heads = {'td': TD_SUMS, 'terminal': NONE_SUMS, 'hp': HP_SUMS}
+    for event in events:
+        if event['kind'] != 'progress':
+            continue
+        i = round(event['t'] - t0)
+        event.update(first_use=7000 * i, first_use_multi=3000 * i, entropy=1.5,
+                     approx_kl_mu_theta=0.01, clip_fraction=0.1, value_statistics={
+                         'all': heads, 'act1': heads, 'act2': {h: NONE_SUMS for h in heads},
+                         'act3': {h: NONE_SUMS for h in heads},
+                         'boss_floor': {h: NONE_SUMS for h in heads}})
+        if i % 100 == 1:
+            event['advantage_raw'] = {'multi_rows': 100, 'mean': 0.01, 'std': 0.2}
+            event['sgd_timing'] = {'boundary_sections': {'gather': 0.5, 'assemble': 1.5},
+                                   'boundary_sections_cpu': {'gather': 0.4},
+                                   'boundary_seconds': 2.0}
+    events += [{'t': t0 + 1300, 'kind': 'progress', 'stepped': False, 'kl_stopped': True},
+               {'t': t0 + 1301, 'kind': 'checkpoint_published',
+                'checkpoint_artifact_id': 'cp-1', 'sequence': 1},
+               {'t': t0 + 1302, 'kind': 'checkpoint_published',
+                'checkpoint_artifact_id': 'cp-2', 'sequence': 2},
+               {'t': t0 + 1303, 'kind': 'fast_handoff_lost'}]
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    (run / 'effective-profile.json').write_text(json.dumps({'knobs': {
+        'replay_k': {'value': 4}, 'segment_format': {'value': 'stpd/rl-fast-segment-4',
+                           'overridden_from': 'stpd/rl-fast-segment-3'},
+        'ascension_mix': {'value': {'0': 0.5, '10': 0.5}},
+        'exploration_ladder': {'value': [0.0, 0.1]}}}))
+    (run / 'facts.json').write_text(json.dumps({
+        'src_rev': 'abc123def4567890', 'src_checkout': {'git': True, 'dirty': False}}))
+    (run / 'learner').mkdir()
+    (run / 'learner' / 'learner.json').write_text(json.dumps({'loss': {
+        'hp_coef': 0.1, 'hp_advantage_coef': 0.005,
+        'hp_advantage_scope': 'combat_ticket'}}))
+    driver = run / 'env-n0' / 'p0'
+    driver.mkdir(parents=True)
+
+    def closed(ref, t, floor, ascension=0, terminal='defeat', **changes):
+        return {'event': 'closed', 't': t, 'game_ref': ref, 'reason': 'terminal',
+                'arm': 'control', 'start': 'new_run', 'floor': floor, 'replay_k': 1,
+                'group': ref, 'ascension': ascension, 'terminal': terminal, **changes}
+    lines = [{'event': 'admission', 'game_ref': ref, 'ok': True, 'code': None}
+             for ref in ('a', 'b', 'c', 'd', 'e', 'f')]
+    lines += [{'event': 'admission', 'game_ref': 'g', 'ok': False, 'code': 'protocol'},
+              closed('a', 1_000, 17), closed('b', 2_000, 34),
+              closed('c', 3_000, 48, terminal='victory'), closed('d', 4_000, 49, ascension=10),
+              closed('e', 5_000, 40, arm='explore'), closed('f', 6_000, 40, start='replay'),
+              closed('g', 7_000, 40), closed('h', 8_000, 12, reason='timeout',
+                                             detail='episode_seconds', terminal=None),
+              {'event': 'open_refused', 'reason': 'no_slot'}, {'event': 'slot_failed'}]
+    (driver / 'driver.jsonl').write_text(jsonl_text(lines))
+
+
+def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_path, capsys):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    r = readout.build(run, 1200)
+    assert r['schema'] == readout.SCHEMA == 'spireagent/friday-fastchain-run-record-1'
+    i = r['identity']
+    assert i['name'] == '3卡 · 1推理+2训练 · A100-40' and i['source_revision'] == 'abc123def4567890'
+    assert i['source_dirty'] is False and len(i['profile_sha256']) == 64
+    assert i['overridden_knobs'] == {'segment_format': 'stpd/rl-fast-segment-4'}
+    assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
+        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'stpd/rl-fast-segment-4',
+        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket'}
+    p = r['throughput']
+    assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
+    assert p['run_training_rows_per_h_td_only'] == pytest.approx(8000 * 3600, rel=1e-3)
+    assert p['latest_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=0.01)
+    assert p['first_use_rows_per_h'] == pytest.approx(7000 * 3600, rel=1e-3)
+    assert p['first_use_ratio_of_admitted'] == pytest.approx(7000 / 8100, rel=0.01)
+    assert p['admitted_rows_total'] == 8100 * 1290 and p['kl_stopped_attempts'] == 1
+    for part in ('latest', 'run_mean'):
+        x = r['learning'][part]
+        assert x['value']['all']['td']['explained_variance'] == pytest.approx(0.75)
+        assert x['value']['all']['td']['mse'] == pytest.approx(0.0025)
+        assert x['value']['all']['hp']['mae'] == pytest.approx(2.0)  # HP points
+        assert x['value']['all']['terminal']['explained_variance'] is None
+        assert x['value']['act3']['td']['rows'] == 0
+        assert x['entropy'] == pytest.approx(1.5) and x['clip_fraction'] == pytest.approx(0.1)
+    assert r['learning']['run_mean']['advantage_raw']['datasets'] == 13
+    assert r['learning']['run_mean']['advantage_raw']['std'] == pytest.approx(0.2)
+    games = r['training_games']
+    every = games['rolling']['all']
+    assert every['games'] == 4 and every['mean_floor'] == 37 and every['win_rate'] == 0.25
+    assert every['reward_undefined_games'] == 1  # A10 floor-49 loss has no reward class
+    a0 = games['run']['A0']
+    assert a0['mean_reward_v21'] == pytest.approx(
+        (0.5 * (17 / 48) ** 2 + 0.5 * (34 / 48) ** 2 + 0.2 + 1.0) / 3)
+    assert {k: (b['reached'], b['cleared']) for k, b in a0['bosses'].items()} == {
+        'act1_boss': (3, 2), 'act2_boss': (2, 2), 'act3_boss': (1, 1)}
+    assert games['run']['A10']['bosses']['act3_boss2'] == {
+        'games': 1, 'reached': 1, 'cleared': 0, 'clear_rate': 0.0,
+        'clear_rate_given_reached': 0.0}
+    inc = r['incidents']
+    assert inc['env_closed_by_reason'] == {'terminal': 7, 'timeout': 1}
+    assert inc['env_close_details'] == {'timeout': {'episode_seconds': 1}}
+    assert inc['admission_refused_by_code'] == {'protocol': 1}
+    assert inc['open_refused_by_reason'] == {'no_slot': 1}
+    assert inc['driver_failures_by_kind'] == {'slot_failed': 1} and inc['handoff_lost'] == 1
+    boundary = r['boundary_sections']['run']
+    assert boundary['datasets'] == 13
+    assert boundary['boundary_sections_seconds_mean'] == {'gather': 0.5, 'assemble': 1.5}
+    assert [c['checkpoint_artifact_id'] for c in r['checkpoints']] == ['cp-1', 'cp-2']
+    text = readout.render(r)
+    for line in ('identity: src abc123def456', 'incl. aux', 'first use:',
+                 'EV vs lambda-return 0.750', 'HP MAE 2.00 HP', 'training games A0',
+                 'Boss cleared act1 67%', 'admission refused', 'boundary per dataset (13)',
+                 'checkpoints: 2, last cp-2'):
+        assert line in text, line
+    assert readout.main([str(run), '--json']) == 0
+    assert json.loads(capsys.readouterr().out)['learning'] == json.loads(
+        json.dumps(r['learning']))
+    events = (run / 'learner-events.jsonl').read_text().replace('[2.0, 0.6, 0.2, 0.0, 0.005, 0.1]',
+                                                              '[2.0, 0.6]', 1)
+    (run / 'learner-events.jsonl').write_text(events)
+    with pytest.raises(ValueError, match='2 fields, expected 6'):
+        readout.build(run, 1200)  # fails loudly, never a guessed EV
+
+
+def test_readout_reads_only_appended_bytes_and_waits_for_a_torn_line(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    events, driver = run / 'learner-events.jsonl', run / 'env-n0' / 'p0' / 'driver.jsonl'
+    folded = [events, run / 'learner-status.jsonl', driver]
+    reader = readout.Readout(run, 1200)
+    before = reader.update().record()
+    assert reader.read_bytes == sum(path.stat().st_size for path in folded)
+    assert before == readout.build(run, 1200)
+    read = reader.read_bytes
+    reader.update()
+    assert reader.read_bytes == read  # nothing new: nothing read
+    heads = {'td': TD_SUMS, 'terminal': NONE_SUMS, 'hp': HP_SUMS}
+    new_events = jsonl_text({'t': 2310.0 + i, 'kind': 'progress', 'stepped': True,
+                             'rows': 8000, 'terminal_rows': 600, 'hp_rows': 400,
+                             'seconds': 1.0, 'value_statistics': {'all': heads}}
+                            for i in range(3))
+    new_games = jsonl_text([{'event': 'admission', 'game_ref': 'z', 'ok': True},
+                            {'event': 'closed', 't': 9_000, 'game_ref': 'z',
+                             'reason': 'terminal', 'arm': 'control', 'start': 'new_run',
+                             'floor': 20, 'replay_k': 1, 'group': 'z', 'ascension': 0,
+                             'terminal': 'defeat'}])
+    torn = '{"t": 2320.0, "kind": "checkpoint_published", "checkpoint_artifact_id"'
+    with events.open('a') as handle:
+        handle.write(new_events + torn)
+    with driver.open('a') as handle:
+        handle.write(new_games)
+    after = reader.update().record()
+    # Only the appended whole lines were read; the torn line waits, nothing earlier is lost.
+    assert reader.read_bytes - read == len(new_events) + len(new_games)
+    assert after['throughput']['updates'] == before['throughput']['updates'] + 3
+    assert after['learning']['run_mean']['attempts'] == \
+        before['learning']['run_mean']['attempts'] + 3
+    assert after['training_games']['run']['all']['games'] == 5
+    assert [c['checkpoint_artifact_id'] for c in after['checkpoints']] == ['cp-1', 'cp-2']
+    assert after == readout.build(run, 1200)  # incremental == one fresh read
+    with events.open('a') as handle:
+        handle.write(': "cp-3"}\n')
+    assert [c['checkpoint_artifact_id'] for c in reader.update().record()['checkpoints']] == [
+        'cp-1', 'cp-2', 'cp-3']
+    with events.open('a') as handle:
+        handle.write('{"t": 2330.0, "kind": \n')
+    with pytest.raises(ValueError, match='not JSON'):
+        readout.Readout(run, 1200).update()  # a broken complete line fails loudly
+
+
+def test_readout_counts_closes_without_a_natural_end_apart(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    driver = run / 'env-n0' / 'p0' / 'driver.jsonl'
+    base = {'event': 'closed', 'reason': 'terminal', 'arm': 'control', 'start': 'new_run',
+            'replay_k': 1, 'ascension': 0}
+    with driver.open('a') as handle:
+        handle.write(jsonl_text([
+            {'event': 'admission', 'game_ref': 'n1', 'ok': True},
+            {'event': 'admission', 'game_ref': 'n2', 'ok': True},
+            {**base, 't': 9_000, 'game_ref': 'n1', 'group': 'n1', 'floor': None,
+             'terminal': None},  # the kernel closed it 'terminal' with no public end
+            {**base, 't': 9_500, 'game_ref': 'n2', 'group': 'n2', 'floor': 30,
+             'terminal': None}]))
+    r = readout.build(run, 1200)
+    games = r['training_games']
+    assert games['unscored_closes'] == 2
+    assert games['run']['all']['games'] == 4 and games['run']['all']['win_rate'] == 0.25
+    assert 'closes without a natural end' in readout.render(r)
+
+
 def test_readout_refuses_to_guess_missing_aux(tmp_path):
     run = tmp_path / 'run-t1'
     write_run(run)
-    events = [json.loads(line) for line in (run / 'learner-events.jsonl').read_text().split('\n')]
+    events = [json.loads(line) for line in (run / 'learner-events.jsonl').read_text().splitlines()]
     for event in events[5:]:
         event.pop('hp_rows', None)
-    (run / 'learner-events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     result = readout.build(run, 1200)
     assert result['training']['rows_h'] is None and result['training']['aux_missing']
     assert result['verdict'] is None
@@ -1197,6 +1404,62 @@ def test_chain_resumes_a_fence_from_the_newest_cp_in_a_new_run_and_generation(tm
     final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
     assert final['ok'] and final['resumes'] == 1
     assert 'restore_last_checkpoint' in final['first_cause']['failure']
+
+
+def test_chain_writes_the_run_record_at_checkpoints_resume_and_end(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    launch_main = cluster.launch_main
+
+    def launch_with_run(argv):
+        code = launch_main(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        (run / 'plan.json').write_text(json.dumps(plan_for(cards=2)))
+        (run / 'learner-events.jsonl').write_text(json.dumps(
+            {'t': 1.0, 'kind': 'training_started'}) + '\n')
+        return code
+    chain.launch_main = launch_with_run
+    assert chain.run() == 0
+    chain_dir = tmp_path / 'chain-lr1'
+    lines = [json.loads(x) for x in (chain_dir / 'run-records.jsonl').read_text().splitlines()]
+    assert [(x['chain']['why'], x['chain']['generation']) for x in lines] == [
+        ('generation_end', 0), ('final', 1)]
+    latest = json.loads((chain_dir / 'run-record.json').read_text())
+    assert latest['schema'] == readout.SCHEMA and latest['chain']['resumes'] == 1
+    assert latest['identity']['name'] == '2卡 · 1推理+1训练 · A100-40'
+    assert json.loads((chain_dir / 'FINAL.json').read_text())['run_record'] == str(
+        chain_dir / 'run-record.json')
+    # A new CP is seen once, and only from whole lines.
+    run = tmp_path / 'run-lr1-r1'
+    events = run / 'learner-events.jsonl'
+    assert not chain.new_checkpoint(run)
+    with events.open('a') as handle:
+        handle.write('{"t": 2.0, "kind": "checkpoint_published", "checkpoint_artifact_id"')
+    assert not chain.new_checkpoint(run)
+    with events.open('a') as handle:
+        handle.write(': "cp-x"}\n')
+    assert chain.new_checkpoint(run) and not chain.new_checkpoint(run)
+    chain.tick(run)  # nothing new: no record
+    assert len((chain_dir / 'run-records.jsonl').read_text().splitlines()) == 2
+    with events.open('a') as handle:
+        handle.write('{"t": 3.0, "kind": "checkpoint_published", "checkpoint_artifact_id": '
+                     '"cp-y"}\n')
+    chain.tick(run)
+    last = json.loads((chain_dir / 'run-records.jsonl').read_text().splitlines()[-1])
+    assert last['chain']['why'] == 'checkpoint'
+    assert [c['checkpoint_artifact_id'] for c in last['checkpoints']] == ['cp-x', 'cp-y']
+    # One readout per generation: each record read only what was appended since the last.
+    assert chain.reader.run == run and chain.reader.read_bytes == events.stat().st_size
+    (run / 'plan.json').write_text('{')  # a broken record is noted, never stops the run
+    assert not chain.record(run, 'checkpoint')
+    assert chain.state['log'][-1]['kind'] == 'run_record_failed'
+    assert chain.reader is None  # the next record starts a fresh readout
+    # A read error on the events file (NFS) is noted; the tick goes on, no CP this time.
+    events.rename(run / 'events.bak')
+    events.mkdir()  # opening it raises IsADirectoryError, an OSError
+    chain.state['record_offsets'][run.name] = 0
+    chain.tick(run)
+    assert chain.state['log'][-1]['kind'] == 'checkpoint_scan_failed'
+    assert chain.state['record_offsets'][run.name] == 0  # the next tick tries again
 
 
 def test_chain_stops_loudly_when_resumes_run_out_and_keeps_the_first_cause(tmp_path):
@@ -1593,6 +1856,14 @@ def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
     k3 = recipe['k']['3']
     assert k3['groups'] == len({r['group'] for r in closed}) and k3['full_groups'] >= 3
     assert k3['mean_floor_range'] is not None
+    # A group is held only until all K of its games closed (its share stays in k_rows).
+    closes = {}
+    for r in closed:
+        closes[r['group']] = closes.get(r['group'], 0) + 1
+    reader = readout.Readout(run).update()
+    assert {name.rsplit('/', 1)[1] for name in reader.groups} == {
+        g for g, n in closes.items() if n < 3}
+    assert len(reader.groups) < k3['groups'] and reader.recipe() == recipe
     built = readout.build(run, 1200)
     assert built['recipe'] == recipe
     text = readout.render(built)
@@ -1664,7 +1935,7 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     records += [closed('g1', 'k1', 10), closed('g2', 'k1', 16, result='victory'),
                 closed('g3', 'k2', 12), closed('g4', 'k2', 30),  # g4 refused admission
                 closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True)]
-    (driver / 'driver.jsonl').write_text('\n'.join(map(json.dumps, records)))
+    (driver / 'driver.jsonl').write_text(jsonl_text(records))
     recipe = readout.recipe_edge(tmp_path)
     mid = recipe['arm']['mid']
     assert (mid['games'], mid['other'], mid['wins'], mid['rows']) == (3, 3, 1, 400)

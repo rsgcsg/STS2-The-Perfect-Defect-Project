@@ -493,6 +493,8 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
 
     def report(root, baseline, previous):
         calls.append((root, baseline, previous))
+        (root / 'eval-record.json').write_text(json.dumps(
+            {'process_started_at': world.now + 5, 'stage_seconds': {'report': 1.0}}))
         return {'report_directory': str(root / 'report'), 'baseline': baseline,
                 'paired': {'baseline': {}}, 'skipped_references': {},
                 'cohorts': {'current': {'scored': 99, 'wins': 1, 'mean_floor': 37.5,
@@ -515,6 +517,13 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
         reported = runner.state['log'][-1]
         assert reported['kind'] == 'evaluation_reported' and reported['baseline'] == BASELINE
         assert reported['paired'] == ['baseline'] and reported['skipped'] == {}
+        record = json.loads((Path(first['root']) / 'eval-record.json').read_text())
+        assert record['watcher']['checkpoint'] == 'cp-a'
+        assert record['watcher']['evaluation_job'] == first['evaluation_job']
+        assert record['stage_seconds']['report'] == 1.0
+        assert record['stage_seconds']['evaluation_queue'] == pytest.approx(
+            world.now + 5 - first['submitted_at'])
+        assert record['stage_seconds']['prepare_wall'] is not None
         world.record('cp-b', 20)
         world.now += 7200
         runner.tick()
@@ -551,8 +560,10 @@ def test_skipped_baseline_and_deferred_report_are_loud(fast_eval, tmp_path, caps
                 'scored': 50, 'wins': 0, 'mean_floor': 20.0, 'reward_mean': 0.1,
                 'conservative': 0.1}}}):
         runner.report(item)
-    kinds = [entry['kind'] for entry in runner.state['log'][-2:]]
-    assert kinds == ['evaluation_reported', 'evaluation_baseline_skipped']
+    kinds = [entry['kind'] for entry in runner.state['log'][-3:]]
+    # No eval-record.json here: the record failure is loud, the good report still counts.
+    assert kinds == ['evaluation_record_failed', 'evaluation_reported',
+                     'evaluation_baseline_skipped'] and item['stage'] == 'reported'
     assert runner.state['log'][-1]['differing'] == ['input_spec']
     assert 'evaluation_baseline_skipped' in capsys.readouterr().err
 
@@ -613,3 +624,12 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
     assert 'Act1 Boss cleared' in readme and 'Farther / same / nearer' in readme
     assert json.loads((tmp_path / 'eval/report/summary.json').read_text()) == json.loads(
         json.dumps(summary))
+    record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
+    assert record['schema'] == fast_eval.RECORD_SCHEMA
+    assert record['suite']['manifest_sha256'] == 'm'
+    assert [(s['seed'], s['scored'], s['floor']) for s in record['seeds']] == [
+        ('s1', True, 33), ('s2', True, 48), ('s3', False, 44)]
+    assert record['paired'] == json.loads(json.dumps(summary['paired']))
+    assert record['outcome']['wins'] == 1 and record['stage_seconds']['report'] >= 0
+    assert record['value_predictions'] == {
+        'recorded': False, 'reason': 'evaluated_package_strips_auxiliary_heads'}
