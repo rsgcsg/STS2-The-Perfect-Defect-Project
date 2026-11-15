@@ -40,3 +40,7 @@ in HP points (tens), A_outcome in 0..1 reward units, so c_hp is expected around
 ticket segments) or `"all_combats"` (an experiment arm: every combat, full games too).
 Both are frozen for a run. A fast-chain gate `learner-base.json` that has them must match;
 a gate made before them takes them from here (`learner_config.gate_recipe`).
+The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used from the
+row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
+row whose own choice is `potion.use` A_hp 0, so using a potion is judged by the outcome
+advantage alone; death points, combat weights and the HP-head baseline are unchanged.

@@ -475,6 +475,9 @@ def service() -> None:
     # so the default runs on any source as before.
     combat_weights = K["hp_combat_weights"]
     hp = {"hp_weights": combat_weights} if any(w != 1 for w in combat_weights.values()) else {}
+    # Ticket H: passed only off the default (preflight then needs the feature).
+    if K["hp_potion_mode"] != "points":
+        hp["hp_potion_mode"] = K["hp_potion_mode"]
     assembler = FastSegmentAssembler(
         assembler_id=f"fc{tag}", compiler_identity=compiler.identity,
         segment_format=K["segment_format"], **hp, **audit,

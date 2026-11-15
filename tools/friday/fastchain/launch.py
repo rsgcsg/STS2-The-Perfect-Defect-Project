@@ -374,6 +374,8 @@ FEATURES = {
     "segment_format_4": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-4"),  # W2
     "hp_combat_weights": ("python/stpd/rl/fast_assembly.py",  # RL5-METHODS A2
                           "hp_weights_need_segment_format_4"),
+    "hp_potion_mode": ("python/stpd/rl/fast_assembly.py",  # ticket H
+                       "hp_potion_mode_needs_segment_format_4"),
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),
     "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528

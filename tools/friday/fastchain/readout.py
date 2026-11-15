@@ -238,6 +238,19 @@ def hp_score_edge(run: Path) -> dict[str, Any]:
             for kind, (n, d, h) in totals.items()}
 
 
+def hp_potion_rows_exempt(run: Path) -> int | None:
+    """Ticket H (`hp_potion_mode = "value_head"`): potion rows of scored combats given
+    A_hp 0, summed over each service's latest cumulative `assembler.hp_score`; None when
+    no service reports it (the default "points")."""
+    total = None
+    for path in sorted(glob.glob(str(run / "service-status-*.jsonl"))):
+        last = _last_record(path) or {}
+        n = ((last.get("assembler") or {}).get("hp_score") or {}).get("potion_rows_exempt")
+        if n is not None:
+            total = (total or 0) + n
+    return total
+
+
 def gpu_cards(run: Path, window: tuple[float, float] | None) -> dict[str, dict[str, float]]:
     cards: dict[str, list[tuple[float, float]]] = {}
     try:
@@ -438,7 +451,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "hp_coef": loss.get("hp_coef"),
                    "c_hp": loss.get("hp_advantage_coef"),
                    "c_hp_scope": loss.get("hp_advantage_scope"),
-                   "hp_combat_weights": knobs.get("hp_combat_weights")}}
+                   "hp_combat_weights": knobs.get("hp_combat_weights"),
+                   "hp_potion_mode": knobs.get("hp_potion_mode")}}
 
 
 def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
@@ -1146,6 +1160,7 @@ class Readout:
                 "throughput": self.throughput(train),
                 "learning": self.learning_result(),
                 "hp_score": hp_score_edge(self.run),
+                "hp_potion_rows_exempt": hp_potion_rows_exempt(self.run),
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
@@ -1256,6 +1271,8 @@ def render_record(r: dict[str, Any]) -> list[str]:
         out.append("HP score by encounter (combats, deaths, mean net HP change): " + ", ".join(
             f"{kind} {c['combats']} / {c['deaths']} / {fmt(c['mean_net_hp_change'], 1)}"
             for kind, c in hp_score.items()))
+    if r.get("hp_potion_rows_exempt") is not None:
+        out.append(f"HP score potion rows exempt (value_head): {r['hp_potion_rows_exempt']}")
     if games.get("unscored_closes"):
         out.append(f"training games: {games['unscored_closes']} complete control closes "
                    "without a natural end (no victory/defeat or floor) not scored")

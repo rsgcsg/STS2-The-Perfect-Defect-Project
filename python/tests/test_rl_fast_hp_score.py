@@ -95,7 +95,8 @@ class HpGame:
 
     def __init__(self, segment_format: str = FORMAT_4, *, compiler: Any = COMPILER,
                  handoff: Any = None, compiler_identity: Any = None,
-                 hp_weights: dict[str, float] | None = None) -> None:
+                 hp_weights: dict[str, float] | None = None,
+                 potion_mode: str | None = None) -> None:
         self.sealed: list[Any] = []
         self.closed: list[Any] = []
         frame = compiler.compile(public_state())
@@ -107,7 +108,8 @@ class HpGame:
             terminal_labeler=lambda _summary: {
                 "class": 3, "reward": float(class_reward_values()[3])},
             on_closed=self.closed.append, segment_format=segment_format, verify_every=1,
-            hp_weights=hp_weights)
+            hp_weights=hp_weights,
+            **({} if potion_mode is None else {"hp_potion_mode": potion_mode}))
         self.assembler.instance_id = INSTANCE
         self.assembler.offer_mu(handoff or mu(1))
         self.request = 0
@@ -916,3 +918,44 @@ def test_c_hp_zero_hands_no_hp_part_and_records_no_hp_share():
         assert (normalization.hp_std, normalization.hp_share) == (None, None)
     with_hp = batch(new, sources(new, "g", 0.003, "all_combats"), "g").normalization
     assert with_hp.hp_std is not None and with_hp.hp_share is not None
+
+
+# -- ticket H: hp_potion_mode "value_head" -----------------------------------------
+def test_potion_mode_points_is_the_default_to_the_byte():
+    absent, points = HpGame(), HpGame(potion_mode="points")
+    for g in (absent, points):
+        play_two_combats(g)
+    assert absent.sealed[0].data == points.sealed[0].data
+    assert absent.sealed[0].header["hp_adv"] == [None, -7.5, 5.0, 3.75, None, -55.0]
+    assert "potion_rows_exempt" not in absent.scores()
+
+
+def test_value_head_mode_drops_potion_points_and_the_potion_rows_hp_term():
+    g = HpGame(potion_mode="value_head")
+    play_two_combats(g)
+    # First combat (70 -> 58, M 80 -> 82; row 2 drinks): rows 1 and 3 lose the -5 they
+    # carried (row 1: -7.5 -> -2.5; row 3 had none: 3.75); row 2 is exempt: 0.
+    # Second combat (death, no potion): unchanged.
+    assert g.sealed[0].header["hp_adv"] == [None, -2.5, 0.0, 3.75, None, -55.0]
+    assert g.scores()["potion_rows_exempt"] == 1 and g.scores()["potions"] == 1
+    # the weight and the death points are untouched; a potion as the last row: 0
+    died = [(outcome(60), 62.5, False), (outcome(0, terminal="defeat"), 25.0, True)]
+    assert hp_advantages(facts(70), died, 0.5, "value_head") == [
+        0.5 * (-70) - 30 - 0.5 * (62.5 - 70), 0.0]
+    assert hp_advantages(facts(70), died, 0.5) == [
+        0.5 * (-70) - 30 - 5 - 0.5 * (62.5 - 70), 0.5 * (-60) - 30 - 5 - 0.5 * (25 - 60)]
+
+
+def test_hp_potion_mode_is_checked_and_needs_format_4():
+    def assembler(segment_format: str, mode: Any) -> FastSegmentAssembler:
+        return FastSegmentAssembler(assembler_id="node-a", emit=lambda _segment: None,
+                                    compiler_identity=COMPILER.identity,
+                                    segment_format=segment_format, hp_potion_mode=mode)
+
+    assert assembler(FORMAT_4, "value_head").hp_potion_mode == "value_head"
+    assert assembler(FORMAT_3, "points").hp_potion_mode == "points"
+    for bad in ("Value_head", None, 0):
+        with pytest.raises(AssemblyError, match="invalid_hp_potion_mode"):
+            assembler(FORMAT_4, bad)
+    with pytest.raises(AssemblyError, match="hp_potion_mode_needs_segment_format_4"):
+        assembler(FORMAT_3, "value_head")
