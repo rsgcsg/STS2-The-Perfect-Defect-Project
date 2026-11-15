@@ -974,7 +974,8 @@ def test_host_character_or_ascension_change_is_still_refused(
 @pytest.mark.parametrize('status, closed', [('save_failed', True), ('save_pending', False)])
 def test_save_failed_after_retry_is_one_excluded_pair_in_the_segment_evaluation(
         owner, watch, tmp_path, monkeypatch, status, closed):
-    (tmp_path / 'snapshot.json').write_text('{"full_readback": true}')
+    (tmp_path / 'snapshot.json').write_text(
+        '{"schema": "spireagent/friday-local-snapshot-v1", "full_readback": true}')
     slots = ([{'status': 'finished', 'cleanup_accepted': True}] * 49
              + [{'status': status, 'cleanup_accepted': True}])
     result = {'ledger_report': {'slots': slots, 'score_admitted': True}}
