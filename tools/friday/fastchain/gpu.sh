@@ -12,6 +12,30 @@ module load "$FC_SITE_MODULE_LOAD" >/dev/null 2>&1; set -u
 RUN=$FC_RUN; H=$FC_HARNESS; PY=$FC_SITE_PYTHON
 # The job's exit code for supervise.py (review D1): absent = the node died or was preempted.
 trap 'echo $? > "$RUN/gpu-rc"' EXIT
+stop_once() { ( set -o noclobber; echo "$1" > "$RUN/STOP" ) 2>/dev/null; }  # never overwrite a reason
+# --- launcher check: ---
+# The launcher (also inside supervise.py, which runs it in-process, for every generation)
+# touches launcher-alive every 10 s until this job confirms its start with gpu-started
+# (review #540 M1). Older than launcher_stale_seconds = the launcher died while this job
+# pended (SIGKILL, crash, lost login node): refuse, never run unsupervised; STOP makes the
+# prep and env jobs that start after this one exit at once. A stale first reading is read
+# once more after 30 s, after opening the file (NFS close-to-open revalidates its cached
+# attributes, which can lag up to acregmax 60 s): a false refusal costs the whole queue wait.
+beat() {  # "<age> s old", or "missing"
+  local m; m=$(date -r "$RUN/launcher-alive" +%s 2>/dev/null) && echo "$(( $(date +%s) - m )) s old" || echo missing
+}
+stale() { [ "$1" = missing ] || [ "${1%% *}" -gt $FC_LAUNCHER_STALE_SECONDS ]; }
+AGE=$(beat)
+if stale "$AGE"; then
+  echo "launcher heartbeat $AGE (> $FC_LAUNCHER_STALE_SECONDS s); reading it again in 30 s $(date -Is)"
+  sleep 30; cat "$RUN/launcher-alive" >/dev/null 2>&1; AGE=$(beat)
+fi
+if stale "$AGE"; then
+  echo "launcher gone before GPU start: heartbeat $AGE (> $FC_LAUNCHER_STALE_SECONDS s); refusing $(date -Is)"
+  stop_once "launcher gone before GPU start: heartbeat $AGE"; exit 3
+fi
+echo "${SLURM_JOB_ID:-} $(date -Is) launcher heartbeat $AGE" > "$RUN/gpu-started"
+# --- end launcher check ---
 export PYTHONPATH=$FC_SITE_SRC_DIR/python:$FC_SITE_LZ4_PATH PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
 export LD_LIBRARY_PATH=$FC_SITE_LIB_PATH:${LD_LIBRARY_PATH:-}
 export TORCHINDUCTOR_CACHE_DIR=$FC_SITE_INDUCTOR_CACHE TMPDIR=$FC_SITE_GPU_LOCAL_TMP/fc-$SLURM_JOB_ID
@@ -28,7 +52,6 @@ echo "node=$(hostname -s) start=$(date -Is) job=$SLURM_JOB_ID run=$FC_RUNTAG src
 echo "layout: $FC_NAME services=$FC_SERVICES -> card $FC_SERVICE_CARD; learner sees $FC_LEARNER_VISIBLE device $FC_LEARNER_DEVICE ranks $FC_RANKS"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 # Start checks on this node (refuse = no run): bz2, lz4, python_env_sha256, local tmp.
-stop_once() { ( set -o noclobber; echo "$1" > "$RUN/STOP" ) 2>/dev/null; }  # never overwrite a reason
 $PY $H/preflight.py job-gpu --run $RUN --path $TMPDIR || { stop_once "service failure: gpu preflight"; exit 9; }
 JG=(${CUDA_VISIBLE_DEVICES//,/ })
 [ ${#JG[@]} -eq $FC_CARDS ] || { echo "job gpus ${CUDA_VISIBLE_DEVICES} != $FC_CARDS planned"; stop_once "service failure: gpus"; exit 7; }
