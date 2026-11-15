@@ -117,15 +117,17 @@ def ascension_plan(mix: dict[str, float], drivers: int) -> list[int]:
 
 
 ARM_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")  # rl-inference-4 sampling.arm_id
+TEMPERATURE_FLOOR = 0.25  # rl-inference-4 envelope; the run's floor is sampling_temperature_min
 
 
 def _class_policy(value: Any) -> str | None:
-    """rl-inference-4 class policy: temperature in [1, 3], uniform_mix in [0, 0.1]."""
+    """rl-inference-4 class policy: temperature in [0.25, 3], uniform_mix in [0, 0.1]
+    (the run's own minimum `sampling_temperature_min` is a cross check)."""
     if not isinstance(value, dict) or set(value) != {"temperature", "uniform_mix"}:
         return "exactly {temperature, uniform_mix}"
     t, mix = value["temperature"], value["uniform_mix"]
-    if type(t) not in (int, float) or not 1 <= t <= 3:
-        return f"temperature in [1, 3] (got {t!r})"
+    if type(t) not in (int, float) or not TEMPERATURE_FLOOR <= t <= 3:
+        return f"temperature in [{TEMPERATURE_FLOOR}, 3] (got {t!r})"
     if type(mix) not in (int, float) or not 0 <= mix <= 0.1:
         return f"uniform_mix in [0, 0.1] (got {mix!r})"
     return None
@@ -224,6 +226,14 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["replay_k"] > values["env_slots"]:
         out.append(f"replay_k {values['replay_k']} must not exceed env_slots "
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
+    if values["sgd_gc_refreeze_objects"] != 200_000 and not values["sgd_gc_freeze"]:
+        out.append("sgd_gc_refreeze_objects other than 200000 needs sgd_gc_freeze")
+    low = values["sampling_temperature_min"]
+    for arm, spec in sorted(values["exploration_ladder"].items()):
+        for name in ("combat", "noncombat"):
+            if spec[name]["temperature"] < low:
+                out.append(f"exploration_ladder arm {arm}.{name}: temperature "
+                           f"{spec[name]['temperature']} below sampling_temperature_min {low}")
     return out
 
 
@@ -336,6 +346,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "compile_warmup": _bool,
     "compile_recompile_limit": _int(8, 64),
     "sgd_gc_freeze": _bool,
+    "sgd_gc_refreeze_objects": _int(1),
     "sgd_step_probe": _bool,
     # remote prepare
     "remote_prepare": _bool,
@@ -401,6 +412,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # environment-side recipe (I4-I6, I8): changeable at a generation boundary
     "ascension_mix": _ascension_mix,  # #530 S-1: level -> weight, summing to 1
     "exploration_ladder": _exploration_ladder,
+    "sampling_temperature_min": _num(TEMPERATURE_FLOOR, 1),
     "replay_k": _int(1, 16),
     "save_starts": _save_starts,
     # environment nodes
@@ -551,6 +563,10 @@ def load_site(path: Path) -> dict[str, Any]:
     if not isinstance(site, dict):
         raise ProfileError("site profile needs a [site] table")
     problems = [f"{key}: missing" for key in sorted(set(SITE_KEYS) - set(site))]
+    # Only `schema` and [site] are read: anything else at the top level would be ignored.
+    problems += [f"{key}: top-level key outside [site] is not read" + (
+        f"; write it as [site.{key}]" if key in SITE_KEYS or key in OPTIONAL_SITE_KEYS else "")
+        for key in sorted(set(data) - {"schema", "site"})]
     problems += [f"{key}: unknown site key" for key in sorted(
         set(site) - set(SITE_KEYS) - set(OPTIONAL_SITE_KEYS))]
     for key, check in {**SITE_KEYS, **OPTIONAL_SITE_KEYS}.items():

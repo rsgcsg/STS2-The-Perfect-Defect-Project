@@ -5,14 +5,22 @@ the gate supplies the recipe, the run profile the speed levers and the run its
 operational values. `recipe_drift(effective, frozen)` compares it with the frozen
 long-run parameters (python/configs/rl5.json): every frozen key must be equal, except
 the ones in `ALLOWED_DRIFT`, each with the reason the launcher sets it on purpose.
-Recipe keys (the whole `loss` block, c_hp and its scope included) pass
-through unchanged from the gate and have no default here: a gate without one shows as
-`<missing>` drift (regenerate the gate, python/docs/RL_LONG_RUN.zh-CN.md).
+Recipe keys (the whole `loss` block, c_hp and its scope included) pass through unchanged
+from the gate and have no default here. `gate_recipe(base, frozen)` first adds the `loss`
+keys a gate made before them lacks (c_hp and its scope, #538), from the frozen config of
+the run's own source; a key the gate has stays the gate's and A9 still compares it. Every
+other missing key shows as `<missing>` drift. `learner_base(gate, frozen, knobs, run)` is the
+two in order, the one call roles.py and preflight share; `sgd_gc_dataplane(knobs)` the SGD
+child's GC keys roles.py adds to dataplane.json.
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).
+`start_fields(...)` is the start a run records: the restored CP's on a resume, the site
+package's (its model.json, the only file read here) on a fresh start.
 """
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
 # frozen key -> why the launcher may differ from rl5.json there. Speed levers change no
@@ -61,10 +69,58 @@ def window(chain_id: str, total_seconds: int, chain_deadline: float,
             "deadline_at": chain_deadline}
 
 
+def gate_recipe(base: dict[str, Any], frozen: dict[str, Any]
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The gate's learner-base.json with the `loss` keys it lacks taken from the frozen
+    config (`frozen`, python/configs/rl5.json of the run's source), and those filled keys.
+    One shared gate then serves every source: an older learner refuses unknown loss keys
+    (`LossConfig(**loss)`), so the gate itself must not gain them while one still runs."""
+    loss = base.get("loss") or {}
+    filled = {key: value for key, value in (frozen.get("loss") or {}).items()
+              if key not in loss}
+    if not filled:
+        return base, {}
+    return {**base, "loss": {**loss, **filled}}, filled
+
+
+def learner_base(gate: dict[str, Any], frozen: dict[str, Any], knobs: dict[str, Any],
+                 run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """This run's learner.json (roles.py writes it, preflight checks it): `gate_recipe`
+    then `build`, one function so the two cannot differ. Returns it and the filled keys."""
+    base, filled = gate_recipe(gate, frozen)
+    return build(base, knobs, run), filled
+
+
+def sgd_gc_dataplane(knobs: dict[str, Any]) -> dict[str, Any]:
+    """The SGD child's GC data-plane keys (#525, RL5-METHODS F); keys at their default
+    are left out, so an older source runs the default unchanged."""
+    out: dict[str, Any] = {}
+    if knobs["sgd_gc_freeze"]:  # one collect at each boundary, gc.freeze after the first
+        out["sgd_gc_freeze"] = True
+    if knobs["sgd_gc_refreeze_objects"] != 200_000:  # = sgd_process.GC_REFREEZE_OBJECTS
+        out["sgd_gc_refreeze_objects"] = knobs["sgd_gc_refreeze_objects"]
+    return out
+
+
+def start_fields(start_package: str, checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    """`start_package` and `start_model_sha256` for `build`.
+
+    A resume never loads the start package (SegmentLearner restores the CP), so its start
+    comes from the restored CP's `config`: the real lineage, also after the site's package
+    was removed or replaced in place. Only a fresh start reads the site's package; the
+    learner then verifies that package_sha256. `checkpoint` = the restored CP's config."""
+    if checkpoint is not None:
+        return {key: checkpoint.get(key) for key in ("start_package", "start_model_sha256")}
+    descriptor = json.loads((Path(start_package) / "model.json").read_bytes())
+    return {"start_package": start_package, "start_model_sha256": descriptor["package_sha256"]}
+
+
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     """`run`: run_name, peer_dir, start_package, wall_seconds, device, generation,
     warmup_artifact_id, rendezvous_path, ranks, resume_checkpoint (or None) and, in a
-    resume chain, window (`window(...)`)."""
+    resume chain, window (`window(...)`). Optional start_model_sha256 (`start_fields`): the
+    start package's package_sha256, which the learner verifies on a fresh start and every
+    CP's config keeps (lineage)."""
     config = copy.deepcopy(base)
     config.pop("peer", None)  # never carry the gate's archive subtree
     config.update({
@@ -72,7 +128,8 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         "operating_budget_parent": None, "resume_checkpoint": run["resume_checkpoint"],
         "peer": {"kind": "local", "directory": run["peer_dir"]},
         "start_package": run["start_package"], "start_artifact_id": None,
-        "start_model_sha256": None, "wall_seconds": float(run["wall_seconds"]),
+        "start_model_sha256": run.get("start_model_sha256"),
+        "wall_seconds": float(run["wall_seconds"]),
         "device": run["device"], "max_versions": knobs["max_versions"]})
     # h100i: the offline 1,866-1,934 wan/h step ran with compile, the kernel set and one
     # bucket per group; the gate base had them off.

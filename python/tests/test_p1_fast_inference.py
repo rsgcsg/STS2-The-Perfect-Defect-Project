@@ -167,14 +167,15 @@ def _observations(count: int) -> list[dict[str, Any]]:
 
 
 def _decision_line(row_id: int, game: str, step: int, observation: dict[str, Any], *,
-                   catalog_len: int | None = None) -> bytes:
+                   catalog_len: int | None = None, in_combat: bool = False,
+                   floor: int = 3) -> bytes:
     """The WP2 kernel's field order: the routing head first, then the input."""
     catalog = observation["catalog"]
     head = (f'{{"schema":"{LINK_SCHEMA}","type":"decision","row_id":{row_id},'
             f'"game_instance_id":"{game}","step_index":{step},"consumption_id":"c-{game}-{step}",'
             f'"catalog_len":{len(catalog) if catalog_len is None else catalog_len},'
             f'"catalog_sha256":"{digest(json_bytes(catalog))}","observation_sha256":"{"0" * 64}",'
-            f'"in_combat":false,"floor":3,')
+            f'"in_combat":{json.dumps(in_combat)},"floor":{floor},')
     body = json.dumps({"input_spec": AGENT_SPEC, "observation": observation,
                        "catalog": catalog})
     return (head + '"input":' + body + "}\n").encode()
@@ -429,23 +430,25 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
     assert aborted == {3: "ROW_DECODE_FAILED", 5: "IDENTITY_MISMATCH"}
 
 
-def _open_client(service: FastInferenceService, encoder: RowsEncoder, game: str) -> Any:
+def _open_client(service: FastInferenceService, encoder: RowsEncoder, game: str,
+                 sampling: dict[str, Any] = SAMPLING) -> Any:
     client = _attach(service, encoder.identity["encoder"])
     assert unpack_message(client.recv_bytes(V3_MAX_MESSAGE))[0]["kind"] == "attached"
     client.send_bytes(pack_message({
         "schema": V3_SCHEMA, "kind": "episode_open",
         "ascension": 0, "request_id": 2, "game_instance_id": game,
-        "actor_id": "a", "sampling": SAMPLING, "single_choice": "score",
+        "actor_id": "a", "sampling": sampling, "single_choice": "score",
         "start": {"kind": "new_run"}}))
     return client
 
 
 def _score(client: Any, encoded: Any, request_id: int, game: str, *,
-           row_sha256: str | None = None, floor: int = 2) -> dict[str, Any]:
+           row_sha256: str | None = None, floor: int = 2,
+           in_combat: bool = False) -> dict[str, Any]:
     row = {"request_id": request_id, "game_instance_id": game, "step_index": request_id,
            "consumption_id": f"c{request_id}", "catalog_len": encoded.catalog_len,
            "catalog_sha256": encoded.catalog_sha256,
-           "observation_sha256": encoded.observation_sha256, "in_combat": False,
+           "observation_sha256": encoded.observation_sha256, "in_combat": in_combat,
            "floor": floor, "payload": {"offset": 0, "length": len(encoded.row),
                                        "row_sha256": row_sha256 or encoded.row_sha256}}
     client.send_bytes(pack_message({"schema": V3_SCHEMA, "kind": "score_request",
@@ -805,6 +808,49 @@ def test_episode_open_sampling_is_checked_and_a_bad_one_is_refused(vocabulary, m
         report = service.close()
     assert report["episodes_refused"] == 1
     assert "rl_inference_3_episode_refused" in capfd.readouterr().err
+
+
+BOLD = {**SAMPLING, "arm_id": "bold",
+        "classes": {"combat": {"temperature": 0.7, "uniform_mix": 0.0},
+                    "noncombat": {"temperature": 2.0, "uniform_mix": 0.02}}}
+
+
+def test_a_temperature_below_1_needs_the_configured_minimum(vocabulary, model):
+    """RL5-METHODS A3: the default minimum 1 keeps the [1, 3] check; a run that sets
+    temperature_min 0.7 opens a combat-T-0.7 arm and samples exactly from its q."""
+    from stpd.p1.inference_service import check_sampling
+
+    assert check_sampling(BOLD) == "sampling_temperature"
+    assert check_sampling(BOLD, 0.7) is None and check_sampling(BOLD, 0.8) is not None
+    floor = {**BOLD, "classes": {**BOLD["classes"],
+                                 "combat": {"temperature": 0.2, "uniform_mix": 0.0}}}
+    assert check_sampling(floor, 0.25) is not None
+    for bad in (0.2, 1.5, "0.7", True):
+        with pytest.raises(ValueError, match="temperature_min"):
+            _service(vocabulary, model, FakeAssembler(), temperature_min=bad)
+    encoder = RowsEncoder(vocabulary)
+    observation = _observations(1)[0]
+    encoded = encoder.encode(json.dumps(observation).encode())
+    expected = RowsScorer(model, bf16=False).score(
+        [FrameCompiler(vocabulary).compile(observation)], [2])[0].scores
+    service = _service(vocabulary, model, FakeAssembler(), temperature_min=0.7)
+    client = _open_client(service, encoder, "bold", BOLD)
+    try:
+        for request_id, in_combat in ((4, True), (5, False)):
+            result = _score(client, encoded, request_id, "bold", in_combat=in_combat)
+            policy = BOLD["classes"]["combat" if in_combat else "noncombat"]
+            _, q = distribution(expected, policy["temperature"], policy["uniform_mix"])
+            assert result["status"] == "scored"
+            assert result["applied"] == {"arm_id": "bold", **policy, "decision_class":
+                                         "combat" if in_combat else "noncombat"}
+            assert result["behavior_q"] == pytest.approx(q, abs=1e-6)
+            assert result["selected_index"] == draw(result["behavior_q"], BOLD["seed"],
+                                                    f"c{request_id}")
+            assert result["selected_q"] == result["behavior_q"][result["selected_index"]]
+    finally:
+        client.close()
+        report = service.close()
+    assert report["episodes_refused"] == 0
 
 
 def test_episode_open_without_a_supported_ascension_is_refused(vocabulary, model, capfd):

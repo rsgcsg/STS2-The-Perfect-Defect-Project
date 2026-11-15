@@ -106,21 +106,22 @@ def learner() -> None:
                                          == "placeholder"})
     gate = Path(site("gate_dir"))
     resume = os.environ.get("FC_RESUME_CHECKPOINT") or None
+    restored_config = None
+    if resume:
+        # The CP's own config: its deadline/budget decide which window the learner accepts
+        # and its start fields are the start a resume records (learner_config.start_fields).
+        # Inside the CP payload only, read with the learner's own reader.
+        from types import SimpleNamespace
+
+        from spireagent.rl_exchange import Exchange
+        exchange = Exchange({"kind": "local", "directory": site("peer_dir")}, site("run_name"))
+        restored = SegmentLearner._read_checkpoint(SimpleNamespace(exchange=exchange), resume)
+        restored_config = restored.config
+        del restored
     window = None
     if os.environ.get("FC_CHAIN_ID"):  # a generation of a resume chain (supervise.py)
-        cp_config = None
-        if resume:
-            # The CP's own deadline/budget decide which window the learner accepts; they
-            # live only inside the CP payload, read with the learner's own reader.
-            from types import SimpleNamespace
-
-            from spireagent.rl_exchange import Exchange
-            exchange = Exchange({"kind": "local", "directory": site("peer_dir")},
-                                site("run_name"))
-            restored = SegmentLearner._read_checkpoint(SimpleNamespace(exchange=exchange),
-                                                       resume)
-            cp_config = {k: restored.config.get(k) for k in ("deadline_at", "operating_budget")}
-            del restored
+        cp_config = (None if restored_config is None else
+                     {k: restored_config.get(k) for k in ("deadline_at", "operating_budget")})
         window = learner_config.window(
             os.environ["FC_CHAIN_ID"], int(os.environ["FC_CHAIN_TOTAL_SECONDS"]),
             float(os.environ["FC_CHAIN_DEADLINE"]), resume, cp_config)
@@ -128,14 +129,24 @@ def learner() -> None:
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
                                              "checkpoint_window": cp_config, **window})
-    base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
+    # The gate's recipe; loss keys it predates come from this source's frozen config: the
+    # same function preflight checked (A9 frozen_recipe).
+    base, filled = learner_config.learner_base(
+        json.loads((gate / "learner-base.json").read_bytes()),
+        json.loads((Path(site("src_dir")) / K["frozen_learner_config"]).read_bytes()), K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
-        "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
+        **learner_config.start_fields(site("start_package"), restored_config),
+        "wall_seconds": os.environ["FC_WALL"],
         "device": os.environ["FC_LEARNER_DEVICE"], "generation": os.environ["FC_GENERATION"],
-        "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
+        # "" = no fitted heads (a random-init start; preflight check_warmup_artifact)
+        "warmup_artifact_id": (Path(site("warmup_file")).read_text().strip()
+                               if site("warmup_file") else None),
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
         "resume_checkpoint": resume, "window": window})
+    if filled:
+        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
+                                             "loss": filled})
     ranks = int(os.environ["FC_RANKS"])
     work = RUN / "learner"
     work.mkdir(parents=True)
@@ -189,8 +200,7 @@ def learner() -> None:
             "recompile_limit": K["compile_recompile_limit"]}
     if K["release_trained_segments"]:  # #529: delete trained originals once a CP covers them
         dataplane["release_trained_segments"] = True
-    if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
-        dataplane["sgd_gc_freeze"] = True
+    dataplane.update(learner_config.sgd_gc_dataplane(K))  # #525, RL5-METHODS F
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
         dataplane["sgd_step_probe"] = True
     if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only
@@ -241,7 +251,7 @@ def learner() -> None:
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
                "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
-               "sgd_step_probe", "release_trained_segments")},
+               "sgd_gc_refreeze_objects", "sgd_step_probe", "release_trained_segments")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}
@@ -478,11 +488,15 @@ def service() -> None:
     import inspect
     exit_option = ({"exit_code_on_failure": 70} if "exit_code_on_failure" in
                    inspect.signature(FastInferenceService).parameters else {})
+    # RL5-METHODS A3: passed only below 1, so the default runs on a pre-A3 source too.
+    low = float(K["sampling_temperature_min"])
+    sampling_floor = {"temperature_min": low} if low != 1 else {}
     service = FastInferenceService(
         vocabulary, compiler.identity, assembler,
         training_generation=first["training_generation"], prepare_workers=workers,
         prepare_cpus=mine, max_rows=K["service_max_rows"], device="cuda",
         failure_dir=str(RUN / f"failures{tag}"),
+        **sampling_floor,
         **{"window_ms": float(K["service_window_ms"]),
            "max_job_rows": K["service_max_job_rows"],
            "compile": K["service_compile"], **kwargs}, **exit_option)

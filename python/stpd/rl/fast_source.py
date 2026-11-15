@@ -105,6 +105,7 @@ from .fast_handoff import (
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, sha256
 from .heads import categorical_lambda_targets
+from .learning_diagnostics import add_exploration, exploration_row
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id", "close_reason",
@@ -170,8 +171,17 @@ def fast_envelope(header: dict[str, Any], *, size: int, digest: str, run: str,
 
 
 def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
-                       compiler: FrameCompiler | None) -> tuple[bp.PreparedSource, dict[str, Any]]:
-    """Fast segment bytes -> (PreparedSource, {"envelope", "witness"}); never repaired."""
+                       compiler: FrameCompiler | None,
+                       decisions: Sequence[int] | None = None,
+                       ) -> tuple[bp.PreparedSource, dict[str, Any]]:
+    """Fast segment bytes -> (PreparedSource, {"envelope", "witness"}); never repaired.
+
+    `decisions` (learning_diagnostics.decision_codes of the vocabulary actions) adds the
+    source's run-record exploration counts to its first row's metadata (A3): per arm,
+    act and decision type, the multi-choice rows, chosen rank second / third+, top
+    p > 0.99, non-top with advantage > 0. Metadata only: the training tensors and
+    actions are the same with or without it.
+    """
     began = time.perf_counter()
     if compiler is None:
         raise FastIntakeError("fast_source_requires_frame_compiler")
@@ -236,6 +246,23 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
                 [0.0 if value is None else value for value in header["hp_adv"]],
                 dtype=advantages.dtype)
             advantages = advantages + hp_part
+    if decisions is not None:
+        arm, signs = header["sampling"]["arm_id"], (advantages > 0).tolist()
+        counts: dict[str, list[int]] = {}
+        for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
+            q = meta["behavior_q"]
+            if len(q) < 2:
+                continue
+            applied = meta["applied"]
+            rank, top = exploration_row(q, meta["selected_index"], applied["temperature"],
+                                        applied["uniform_mix"])
+            floor = meta["floor"]
+            decision = 0 if meta["in_combat"] else min(
+                decisions[action] for action in frame.tensors["actions"].tolist())
+            add_exploration(counts, arm, 1 if floor <= 17 else 2 if floor <= 33 else 3,
+                            decision, rank, top, signs[index])
+        if counts:  # once per source, not per row (the transport walks every row)
+            metadata[0]["exploration"] = counts
     labels = {"segment_id": header["segment_id"], "run_id": header["game_instance_id"],
               "terminal": terminal, "hp_battles": []}
     source = bp.PreparedSource(

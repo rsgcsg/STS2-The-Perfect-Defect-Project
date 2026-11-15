@@ -31,9 +31,10 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - at most `resume_max_total` resumes (default 3);
 - environment-side recipe at a generation boundary (I8): `chain-CHAIN/env-recipe.txt`, one
   `name=value` per line as `--set` takes it, only `ENV_RECIPE_KNOBS` (exploration ladder,
-  ascension mix, K, save starts); read when a later generation is submitted and recorded with
-  it. The learner recipe never changes in a chain. Another knob or a refused value ends the chain.
-  No automatic curriculum: a generation boundary is a resume, not a schedule;
+  ascension mix, K, the ladder's lowest temperature, save starts); read when a later
+  generation is submitted and recorded with it. The learner recipe never changes in a chain.
+  Another knob or a refused value ends the chain. No automatic curriculum: a generation
+  boundary is a resume, not a schedule;
 - the restore itself is the learner's: CP-only restore (fresh generation, in-flight input
   discarded), shard count recorded in the CP. Not covered: a CP that fails to restore is
   not skipped for an older one (the next generation fails and the chain stops), and
@@ -96,7 +97,8 @@ SCHEMA = "spireagent/friday-fastchain-chain-1"
 RESUMABLE = ("input_owner_fenced_restore_last_checkpoint",)
 # Environment-side knobs a chain may change at a generation boundary (I8); not in the
 # frozen learner recipe, checked per game by the fast env and the assembler.
-ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k", "save_starts")
+ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k",
+                    "sampling_temperature_min", "save_starts")
 CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 ends by its wall
 
 

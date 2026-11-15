@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import gc
 import mmap
 import os
 import pickle
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -28,6 +30,7 @@ from stpd.rl.binary_preparation import (
 )
 from stpd.rl.data_parallel import shard_transport
 from stpd.rl.sgd_process import (
+    GC_REFREEZE_OBJECTS,
     _DataParallel,
     _SgdWorker,
     _StageConfig,
@@ -44,12 +47,22 @@ def test_stage_options_are_explicit_and_default_to_the_earlier_path():
     options = sgd_options(base)
     assert options.stage_init() == {"stream_reuse": False, "lean_tree": False,
                                     "verify_split": False, "step_probe": False,
-                                    "gc_freeze": False}
+                                    "gc_freeze": False, "gc_refreeze_objects": 200_000}
     assert _StageConfig.from_init(options.stage_init()) == _StageConfig()
     chosen = sgd_options({**base, **FAST})
     assert chosen.stage_init() == {"stream_reuse": True, "lean_tree": True,
                                    "verify_split": True, "step_probe": True,
-                                   "gc_freeze": True}
+                                   "gc_freeze": True, "gc_refreeze_objects": 200_000}
+    # `sgd_gc_refreeze_objects`: the re-freeze threshold, default the earlier constant.
+    assert GC_REFREEZE_OBJECTS == 200_000
+    lower = sgd_options({**base, **FAST, "sgd_gc_refreeze_objects": 25_000})
+    assert lower.stage_init()["gc_refreeze_objects"] == 25_000
+    assert _StageConfig.from_init(lower.stage_init()).gc_refreeze_objects == 25_000
+    for bad in (0, -1, 2.5, True, "25000"):
+        with pytest.raises(ValueError, match="invalid_sgd_gc_refreeze_objects"):
+            sgd_options({**base, **FAST, "sgd_gc_refreeze_objects": bad})
+    with pytest.raises(ValueError, match="without_sgd_gc_freeze"):
+        sgd_options({**base, "sgd_gc_refreeze_objects": 25_000})
     for key, bad in (("sgd_stage_stream_reuse", 1), ("sgd_stage_lean_tree", "yes"),
                      ("sgd_verify_split", None),
                      ("sgd_step_probe", "on"), ("sgd_gc_freeze", 1)):
@@ -57,6 +70,36 @@ def test_stage_options_are_explicit_and_default_to_the_earlier_path():
             sgd_options({**base, key: bad})
     with pytest.raises(ValueError, match="without_explicit_selection"):
         sgd_options({"sgd_verify_split": True})
+
+
+def test_boundary_refreezes_once_the_configured_unfrozen_count_is_reached():
+    """`collect_boundary`: the first boundary freezes; later ones freeze again only
+    when the unfrozen survivors reach `gc_refreeze_objects` (online recompiles add
+    tens of thousands of permanent objects each)."""
+    def boundary(threshold: int) -> SimpleNamespace:
+        return SimpleNamespace(state={}, gc_frozen=0, gc_report=None, mark=lambda _: None,
+                               staging_config=_StageConfig(gc_freeze=True,
+                                                           gc_refreeze_objects=threshold))
+    try:
+        for threshold, froze_again in ((GC_REFREEZE_OBJECTS, False), (5_000, True)):
+            gc.unfreeze()
+            worker = boundary(threshold)
+            _SgdWorker.collect_boundary(worker)  # type: ignore[arg-type]
+            assert worker.gc_report["froze"] and worker.gc_frozen == 1
+            kept = [[index] for index in range(20_000)]  # long-lived, as compiled graphs
+            _SgdWorker.collect_boundary(worker)  # type: ignore[arg-type]
+            report = worker.gc_report
+            assert report["objects"] >= len(kept) and report["froze"] is froze_again
+            assert worker.gc_frozen == 1 + froze_again
+            _SgdWorker.collect_boundary(worker)  # type: ignore[arg-type]
+            third = worker.gc_report
+            if froze_again:  # the kept objects left the collector's view
+                assert third["objects"] < 5_000 and not third["froze"], third
+            else:  # still scanned at every boundary
+                assert third["objects"] >= len(kept) and not third["froze"], third
+            del kept
+    finally:
+        gc.unfreeze()
 
 
 @pytest.mark.parametrize("length", [0, 1, PREPARED_DIGEST_CHUNK, 3 * PREPARED_DIGEST_CHUNK + 7])

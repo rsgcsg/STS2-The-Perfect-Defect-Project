@@ -74,8 +74,24 @@ def wire_row(meta: dict[str, Any], data: bytes, rid: int, name: str, step: int,
             "consumption_id": f"{name}-{step}", "catalog_len": meta["catalog_len"],
             "catalog_sha256": meta["catalog_sha256"],
             "observation_sha256": meta["observation_sha256"], "in_combat": meta["in_combat"],
-            "floor": meta["floor"] or 0,
+            "floor": meta["floor"] or 0, "encounter": meta["encounter"],
             "payload": {"offset": offset, "length": len(data), "row_sha256": meta["row_sha256"]}}
+
+
+def bench_row(encoder: Any, line: bytes) -> tuple[dict[str, Any], bytes] | None:
+    """One observation line -> (meta, row) as the node aggregator builds it; None
+    without a catalog. `encounter` as the aggregator reads it, so format 4 admits
+    the bench's combat rows."""
+    from stpd.p1.fast_aggregator import public_encounter
+    from stpd.p1.rows_encoder import parse_public_json
+
+    e = encoder.encode(line)
+    if e.catalog_len < 1:
+        return None
+    return ({"catalog_len": e.catalog_len, "catalog_sha256": e.catalog_sha256,
+             "observation_sha256": e.observation_sha256, "in_combat": e.in_combat,
+             "floor": e.floor, "row_sha256": e.row_sha256,
+             "encounter": public_encounter(parse_public_json(line), e.in_combat)}, e.row)
 
 
 def connect(address: Any, authkey: bytes, encoder: dict[str, Any], compiler: dict[str, Any],
@@ -691,12 +707,8 @@ def main(argv: list[str] | None = None) -> None:
     rows: list[tuple[dict[str, Any], bytes]] = []
     with open(a.obs, "rb") as handle:
         for line in list(handle)[:a.max_obs]:
-            e = encoder.encode(line.rstrip(b"\n"))
-            if e.catalog_len >= 1:
-                rows.append(({"catalog_len": e.catalog_len, "catalog_sha256": e.catalog_sha256,
-                              "observation_sha256": e.observation_sha256,
-                              "in_combat": e.in_combat, "floor": e.floor,
-                              "row_sha256": e.row_sha256}, e.row))
+            if (row := bench_row(encoder, line.rstrip(b"\n"))) is not None:
+                rows.append(row)
     catalog = [m["catalog_len"] for m, _ in rows]
     cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
     client_cpus = everything = cpus

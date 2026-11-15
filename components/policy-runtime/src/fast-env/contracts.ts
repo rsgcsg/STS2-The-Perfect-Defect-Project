@@ -133,19 +133,24 @@ function bool(value: unknown, field: string): boolean {
   return value;
 }
 
-function classPolicy(value: unknown, field: string): ClassPolicy {
+/** The lowest arm temperature any run may configure (rl-inference-4 envelope [0.25, 3]). */
+export const TEMPERATURE_FLOOR = 0.25;
+
+function classPolicy(value: unknown, field: string, temperatureMin: number): ClassPolicy {
   const v = obj(value, field, ["temperature", "uniform_mix"]);
-  return { temperature: num(v.temperature, `${field}.temperature`, 1, 3), uniform_mix: num(v.uniform_mix, `${field}.uniform_mix`, 0, 0.1) };
+  return { temperature: num(v.temperature, `${field}.temperature`, temperatureMin, 3), uniform_mix: num(v.uniform_mix, `${field}.uniform_mix`, 0, 0.1) };
 }
 
-export function parseSampling(value: unknown, field = "sampling"): Sampling {
+/** `temperatureMin` = the run's configured minimum (config `inference.temperature_min`, default 1 = the original [1, 3]). */
+export function parseSampling(value: unknown, field = "sampling", temperatureMin = 1): Sampling {
   const v = obj(value, field, ["mode", "seed", "arm_id", "classes"]);
   if (v.mode !== "temperature_uniform") throw new FastEnvContractError(`${field}.mode`);
   const seed = str(v.seed, `${field}.seed`);
   if (seed.length > 128) throw new FastEnvContractError(`${field}.seed`);
   const classes = obj(v.classes, `${field}.classes`, ["combat", "noncombat"]);
   return { mode: "temperature_uniform", seed, arm_id: str(v.arm_id, `${field}.arm_id`, ID),
-    classes: { combat: classPolicy(classes.combat, `${field}.classes.combat`), noncombat: classPolicy(classes.noncombat, `${field}.classes.noncombat`) } };
+    classes: { combat: classPolicy(classes.combat, `${field}.classes.combat`, temperatureMin),
+      noncombat: classPolicy(classes.noncombat, `${field}.classes.noncombat`, temperatureMin) } };
 }
 
 export function parseFastEnvConfig(value: unknown): FastEnvConfig {
@@ -174,7 +179,9 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
       "checks.reduce_light.strict_interval", 1, 1024) };
   const link = obj(v.decision_link, "decision_link", ["kind", "path"]);
   if (link.kind !== "unix") throw new FastEnvContractError("decision_link.kind");
-  const inference = obj(v.inference, "inference", ["timeout_ms", "actor_id", "sampling", "single_choice"]);
+  const inference = obj(v.inference, "inference", ["timeout_ms", "actor_id", "sampling", "single_choice", "temperature_min"]);
+  // Optional (absent = 1): the run's lowest arm temperature; the inference service holds the same minimum.
+  const temperatureMin = inference.temperature_min === undefined ? 1 : num(inference.temperature_min, "inference.temperature_min", TEMPERATURE_FLOOR, 1);
   if (inference.single_choice !== "score" && inference.single_choice !== "omit") throw new FastEnvContractError("inference.single_choice");
   const budget = obj(v.budget, "budget", ["max_decisions_per_game", "max_native_steps_per_game", "game_wall_ms"]);
   const evidence = obj(v.evidence, "evidence", ["directory", "boundary_rows"]);
@@ -204,7 +211,7 @@ export function parseFastEnvConfig(value: unknown): FastEnvConfig {
     checks: { sample_rate: num(checks.sample_rate, "checks.sample_rate", 0, 1), reduce_light: reduceLight },
     decision_link: { kind: "unix", path: str(link.path, "decision_link.path") },
     inference: { timeout_ms: int(inference.timeout_ms, "inference.timeout_ms", 1, 600_000),
-      actor_id: str(inference.actor_id, "inference.actor_id", ID), sampling: parseSampling(inference.sampling, "inference.sampling"),
+      actor_id: str(inference.actor_id, "inference.actor_id", ID), sampling: parseSampling(inference.sampling, "inference.sampling", temperatureMin),
       single_choice: inference.single_choice },
     budget: { max_decisions_per_game: int(budget.max_decisions_per_game, "budget.max_decisions_per_game", 1, 1_000_000),
       max_native_steps_per_game: int(budget.max_native_steps_per_game, "budget.max_native_steps_per_game", 1, 1_000_000),
@@ -295,5 +302,5 @@ export function parseLinkReply(value: unknown): LinkReply {
     row_in_segment: int(v.row_in_segment, "reply.row_in_segment", 0, 63), selected_index: int(v.selected_index, "reply.selected_index", 0, Number.MAX_SAFE_INTEGER),
     behavior_q: q, selected_q: selectedQ,
     applied: { arm_id: str(applied.arm_id, "reply.applied.arm_id", ID), decision_class: applied.decision_class,
-      temperature: num(applied.temperature, "reply.applied.temperature", 1, 3), uniform_mix: num(applied.uniform_mix, "reply.applied.uniform_mix", 0, 0.1) } };
+      temperature: num(applied.temperature, "reply.applied.temperature", TEMPERATURE_FLOOR, 3), uniform_mix: num(applied.uniform_mix, "reply.applied.uniform_mix", 0, 0.1) } };
 }

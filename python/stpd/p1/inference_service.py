@@ -425,12 +425,17 @@ def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
 
 
 _SAMPLING_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# The lowest temperature a run may configure (rl-inference-4 envelope). At T >= 0.25
+# a probability p > 0 keeps q > 0 for logit gaps up to ~180 nats, beyond what the
+# float32 policy distinguishes from 0; a lower T would round reachable actions to 0.
+TEMPERATURE_FLOOR = 0.25
 
 
-def check_sampling(sampling: Any) -> str | None:
+def check_sampling(sampling: Any, temperature_min: float = 1.0) -> str | None:
     """The episode_open `sampling` against the rl-inference-4 schema; None if valid.
 
-    T in [1, 3], uniform_mix in [0, 0.1], both classes, seed and arm_id strings,
+    T in [temperature_min, 3] (the run's configured minimum, default 1),
+    uniform_mix in [0, 0.1], both classes, seed and arm_id strings,
     no other keys (#431 review M1): the draw must never meet a value it cannot
     use, and out-of-range arms would silently change the training data.
     """
@@ -452,7 +457,7 @@ def check_sampling(sampling: Any) -> str | None:
         if not isinstance(policy, dict) or set(policy) != {"temperature", "uniform_mix"}:
             return "sampling_class_keys"
         temperature, mix = policy["temperature"], policy["uniform_mix"]
-        if type(temperature) not in (int, float) or not 1.0 <= temperature <= 3.0:
+        if type(temperature) not in (int, float) or not temperature_min <= temperature <= 3.0:
             return "sampling_temperature"
         if type(mix) not in (int, float) or not 0.0 <= mix <= 0.1:
             return "sampling_uniform_mix"
@@ -1069,6 +1074,10 @@ class FastInferenceService:
     rows-v2 forward levers of `rows_kernels.LEVERS` (the V3 T6 training levers, same
     parameters and function, BF16 tolerance) for the device forward, e.g.
     "cross+heads+nodes"; an invalid value is refused at construction.
+
+    `temperature_min` (run recipe `sampling_temperature_min`, default 1 = the
+    original [1, 3]) is the lowest arm temperature an episode may carry, in
+    [TEMPERATURE_FLOOR, 1]; an episode below it is refused loudly.
     """
 
     def __init__(self, vocabulary: dict[str, Any], compiler_identity: dict[str, Any],
@@ -1083,7 +1092,7 @@ class FastInferenceService:
                  audit_fraction: float = 0.01, kernels: str = "",
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None, exit_code_on_failure: int | None = None,
-                 exit_grace_seconds: float = 60.0) -> None:
+                 exit_grace_seconds: float = 60.0, temperature_min: float = 1.0) -> None:
         """`exit_code_on_failure`: a launcher that runs this service as its process sets
         it (non-zero). Once the service stops on a failure (`stop_reason` set by any
         background thread, a failed publish, a gone device process, an audit
@@ -1116,6 +1125,10 @@ class FastInferenceService:
             raise ValueError("invalid_rl_inference_3_arena")
         if not 0.0 <= audit_fraction <= 1.0:
             raise ValueError("invalid_rl_inference_3_audit_fraction")
+        if (type(temperature_min) not in (int, float)
+                or not TEMPERATURE_FLOOR <= temperature_min <= 1.0):
+            raise ValueError("invalid_rl_inference_3_temperature_min")
+        self.temperature_min = temperature_min
         from .rows_scorer import inference_kernels
 
         inference_kernels(kernels)  # V3 yin-device option, '' = the original forward; loud
@@ -1403,7 +1416,8 @@ class FastInferenceService:
                 elif not link.attached:
                     raise BoundaryError("rl_inference_3", "attach_required")
                 elif kind == "episode_open":
-                    problem = (check_sampling(envelope.get("sampling"))
+                    problem = (check_sampling(envelope.get("sampling"),
+                                              self.temperature_min)
                                or check_episode_ascension(envelope.get("ascension")))
                     if problem is not None:
                         # Refused loudly: the game is never opened, so its rows

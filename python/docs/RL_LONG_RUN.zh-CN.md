@@ -29,6 +29,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
 - 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
   照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
+  文件顶层只有 `schema` 和 `[site]`，其余顶层键或表一律拒绝；评估基线写在 `[site]` 里
+  （`eval_baselines.a0 = {...}`）或单独一张 `[site.eval_baselines]`，顶层 `[eval_baselines]` 会被拒绝。
   卡型 = 分区 + gres + `constraint`（只有该卡型节点才有的 feature，`sinfo -o "%N %f"` 查，
   `""` = 分区和 gres 已能区分）；`nodes` 只用于打印 sinfo 快照和 `--fallback` 选卡数，从不
   钉节点；只有站点显式写了可选的 `nodelist` 才加 `--nodelist`（CLUSTER-QUEUE-DIAG 11-14：
@@ -53,14 +55,33 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   与 `--smoke` 互斥。分区时限表 `partition_max_minutes` 必须列出用到的每个分区（0 = 不限，
   漏写即拒绝）；每个作业须 ≥ 运行时长 + 余量，env 节点可加入的窗口（时长 − 排空 − 最短加入）
   须 > 0。长跑的备料放在不限时分区（不放 60 分钟的 debug）。
-- 冻结参数核对（A9）：`learner_config.build` 是 roles.py 与预检共用的同一函数；预检用闸门
-  `learner-base.json` 算出生效学习者配置，与源码里的 `frozen_learner_config`（`rl5.json`）逐键
-  比较，除 `ALLOWED_DRIFT`（设备、提速开关、诊断频率、预热件、内存预算）外有差异即拒绝；
+- 冻结参数核对（A9）：`learner_config.learner_base`（`gate_recipe` 补键 + `build`）是 roles.py
+  与预检共用的同一函数；预检用闸门 `learner-base.json` 算出生效学习者配置，与源码里的
+  `frozen_learner_config`（`rl5.json`）逐键比较，除 `ALLOWED_DRIFT`（设备、提速开关、诊断频率、
+  预热件、内存预算）外有差异即拒绝；闸门 `loss` 里有、`rl5.json` 没有的键（如拼错的
+  `hp_advantage_coeff`）也拒绝，否则要到 GPU 排完队学习者 `LossConfig` 才崩；
   `max_versions` 由运行配置给（900000，同冻结值）。
 - 编译预热：`compile_warmup = true` 时 `sgd_compile.warmup` 取站点 `compile_warmup_dumps`
   （1–8 个 dump，由 `python -m stpd.rl.offline_step warmup-cover` 选，文件须存在），另有
   `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
-  首值时报警，探针开时报 gc 秒数。
+  首值时报警，探针开时报 gc 秒数。`sgd_gc_refreeze_objects`（代码默认 200000，配置 40000）：
+  边界 collect 后未冻结对象达到它就再冻结一次；每次在线重编译永久留下 2.8万–9.6万个对象
+  （V5 冒烟按低点到低点 +9.59万/+5.88万/+2.78万），默认值下它们越积越多，边界 collect 从
+  4.4 ms 涨到 65 ms。两次重编译之间的残留：c2q 最后一次冻结后 1,790 个边界，中位 13,049、
+  p99 15,804、最大 19,086；V5 在 0 与约 1.1万之间。40000 约为观测最大值的 2 倍，稳态多扫的
+  几 ms（0.33–0.6 µs/对象，推断，未量）换来少冻结。
+- 起点模型：站点 `start_package`（含 `model.json` 的模型包）。新起时学习者配置的
+  `start_model_sha256` 取该包的 `package_sha256`，学习者加载时核对；包缺失时预检拒绝。续跑不读
+  起点包（学习者恢复 CP），起点字段取被恢复 CP 的 config，包删了或原地换了照样续、记的仍是真实
+  起点。每个 CP 的 config 都带这两个字段。run 目录 `facts.json` 记提交时站点包的哈希和
+  `training_identity`（CP 导出的绑定或随机初始化的种子）；运行记录 `identity.start_model` 的哈希取
+  学习者配置（`learner/learner.json`），与提交时的包一致才带 `training_identity`，不一致时写出来。
+  从零开始：`python -m stpd.rl.random_start --template <当前起点包> --seed N --out DIR`
+  按模板的词表、执行配置和尺寸（q3-m-std-1）用 MStd 自身的初始化生成新权重，站点写
+  `start_package = DIR/package`、`warmup_file = ""`（拟合好的 RL4 头绑定原包，学习者会拒绝；
+  空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。合法类随楼层变，所以初始价值是
+  楼层的函数（A0 约 floor 0 时 0.28、floor 48 时 0.85，审查探针），早期优势近似以楼层为势的
+  整形：同层约 0、每上一层约 +0.006、死亡处约 −0.28。随机包配了预热件时预检拒绝。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
@@ -103,8 +124,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   不是上界，不算。`--json` 给运行记录（`spireagent/friday-fastchain-run-record-1`，与表同数）：
   身份（源码版本、配置摘要、`N卡 · 布局 · 卡型`、配方旋钮含 c_hp/scope）、含/不含 aux 的训练
   行/h、首用比与入队/丢弃、学习者价值/HP 诊断（EV 对 λ 回报与终局、MSE、HP MAE，按幕与 Boss 层
-  分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、对照臂整局训练局滚动结果（每难度
-  平均层数、胜率、各幕 Boss 通过率）、SGD 边界分段、停止/拒绝/未知按原因计数、CP id。
+  分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、每臂探索剂量（RL5-METHODS A3：
+  训练行中所选动作在模型自己排序里的名次 头号/二选/三选及以后、模型头号概率 > 0.99 的比例、
+  非头号选择归一前优势 > 0 的比例；按决策类型与幕；学习端从已记录的 q、applied 与解码优势算，
+  只进 metadata，不改训练数值）、对照臂整局训练局滚动结果与 `arms` 下每臂同样的结果（每难度
+  平均层数、胜率、各幕 Boss 通过率、到第三幕比例）、SGD 边界分段、停止/拒绝/未知按原因计数、
+  CP id。每类战斗（普通/精英/首领）的死亡率与净血量变化用 A2 的 `hp_score`（只在格式 4，
+  全部臂合计、不分臂；格式 3 下为空，首领战每场死亡率另可看 1 − `clear_rate_given_reached`）。
   只解析完整行（写到一半的末行等下次读，坏的完整行报错并给出字节位置）；对照臂完整局没有自然
   结局（无 victory/defeat 或无整数层/难度）计入 `unscored_closes`，不计分、不报错。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
@@ -165,40 +191,35 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
     env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
-    对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值
-    并同步闸门（下面的命令），再 `--set segment_format=stpd/rl-fast-segment-4`。
+    对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
+    再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。
   - 按战斗类型权重（RL5-METHODS A2）：配置旋钮 `hp_combat_weights`（`normal`/`elite`/`boss`，
     默认 1/1/1 = 不加权）只乘 A_hp 的净血量变化部分及其基线，药水 −5 与死亡 −30 不乘。战斗类型
     = 该战斗首行的公开 `combat.content.encounter_type`：聚合器随行发 `encounter`，格式 4 的战斗行
     缺它时组装拒收（`hp_encounter_required`）；`unknown`（如事件战）按 normal。非 1/1/1 要求格式 4
     （载入配置时核对），预检要求源码特性 `hp_combat_weights`。实验起点
     `--set 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'`。
+    主管定的读法（2026-11-15，#548 审查）：死亡时降到 0 血（−H_t）和收回的最大血量都属于
+    被乘的血量变化部分，只有 −30 与药水项不乘。
   - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额
     （多选行上 Cov(c_hp A_hp, A) / Var(A)，各数据集均值），`hp_std` 是它的标准差；c_hp 0 时两者
     为 null。`hp_score` 按战斗类型给格式 4 组装器累计的战斗数、死亡数与死亡率、每场平均净血量
     变化（H_T − H_0 + M_T − M_0，死亡记 −H_0，不加权）。毛伤害不进段（段里只有决策时刻的 HP），
     不记。
-  - 闸门须补一次：本改动之前生成的 `learner-base.json` 没有这两个键，预检 `frozen_recipe`
-    报 `effective '<missing>'`、`hp_score` 报缺键，一律拒绝。
-  - **还有旧代码（本改动之前）的链要再开一代时，不要补闸门**：旧代码的学习者
-    `LossConfig(**loss)` 遇到未知键直接 TypeError，起不来；旧预检只比较 frozen 里有的键，
-    多出的键不算漂移，拦不住，要到 GPU 作业提交后学习者才崩。supervise 每代都重读闸门。
-  - 命令在运行所用源码 checkout 根目录执行（`GATE` = 站点文件的 `gate_dir`）。值取自同一份
-    `rl5.json`，不是默认值；只在 `.pre-c_hp` 不存在时备份，所以换值再跑不会覆盖真正的旧闸门。
-    回滚 = 还原 `.pre-c_hp`（旧代码只能用它）。
-
-```sh
-GATE=/path/of/site/gate_dir
-[ -e "$GATE/learner-base.json.pre-c_hp" ] || cp -p "$GATE/learner-base.json" "$GATE/learner-base.json.pre-c_hp"
-python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = json.load(open(f))["loss"]; b["loss"].update({k: l[k] for k in ("hp_advantage_coef", "hp_advantage_scope")}); open(g + ".new", "w").write(json.dumps(b, indent=2) + "\n")' "$GATE/learner-base.json" python/configs/rl5.json && mv "$GATE/learner-base.json.new" "$GATE/learner-base.json"
-```
-
-  之后 `launch.py preflight ...` 应见 `PASS frozen_recipe` 与 `PASS hp_score`。实验换值时先改
-  源码 `rl5.json`，再跑同一命令。
+  - 闸门不用补（RL5-METHODS F）：共享闸门的 `learner-base.json` 生成于 #538 之前，没有这两个键；
+    预检和学习者启动都经同一个 `learner_config.learner_base`，从运行源码的 `rl5.json` 补上闸门缺的
+    `loss` 键（预检 `frozen_recipe` 的 PASS 行列出补了哪些，学习者事件记 `harness_gate_filled`）。
+    闸门已有的键仍是闸门的值，A9 照样逐键比较，所以补过键的私有闸门副本照用，值须等于
+    `rl5.json`。以后新增的 `loss` 键同样从 `rl5.json` 补，不用重做闸门。
+  - **不要往共享闸门里加键**：旧代码（#538 之前）的学习者 `LossConfig(**loss)` 遇到未知键直接
+    TypeError，起不来；旧预检只比较 frozen 里有的键，拦不住，要到 GPU 作业提交后学习者才崩。
+    supervise 每代都重读闸门。
 - env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
   - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
-    `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，
-    即原行为）。一个驱动一个臂（fast env 一进程一个 `inference.sampling`，`open` 不带每局
+    `temperature`[`sampling_temperature_min`,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂
+    `control` = T 1 / mix 0，即原行为）。温度下限 `sampling_temperature_min`（[0.25, 1]，默认 1
+    = 原 [1,3] 校验）：低于 1 的臂（如战斗 T 0.7）要先把它调低；档案、fast env 配置
+    `inference.temperature_min`（=1 时不写）、推理服务三处用同一个值。一个驱动一个臂（fast env 一进程一个 `inference.sampling`，`open` 不带每局
     采样），按全 run 驱动号 `节点号 × P + p` 平滑加权轮转，任意前缀各臂份额误差 ≤ 1 个驱动；
     `env_driver.mjs --exploration-ladder --arm` 必填。fast env、服务、组装逐行核 applied 与
     该臂一致，behavior_q 即实际采样分布（I4）。
@@ -222,7 +243,8 @@ python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = j
     「save starts」表：每幕入池存档数、问题存档数；完整的存档开局按起始幕、按第几次用给局数、平均
     终层、比存档多走的层数、胜场、原局死了的局里走过原死亡层的比例。滚动成绩只算对照臂从头开的局。
   - 链内换配方只在代际边界：`chain-CHAIN/env-recipe.txt`，每行一个 `name=value`（同
-    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`save_starts`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
+    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`sampling_temperature_min`、
+    `save_starts`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
     可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
 
 ## 以下为旧部署操作史

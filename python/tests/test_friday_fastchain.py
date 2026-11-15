@@ -83,9 +83,10 @@ def with_hp(config, coef, scope='combat_ticket'):
     return config
 
 
-def gate_without_hp(*keys):
-    """A gate learner-base.json from before the HP score (without c_hp and its scope)."""
-    base = gate_base()
+def gate_without_hp(*keys, config=None):
+    """A gate learner-base.json (or `config`) from before the HP score (without c_hp and
+    its scope)."""
+    base = copy.deepcopy(config) if config is not None else gate_base()
     for key in keys or ('hp_advantage_coef', 'hp_advantage_scope'):
         del base['loss'][key]
     return base
@@ -99,6 +100,7 @@ def good_facts(plan):
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
             'warmup_artifact': {'id': 'f' * 64, 'present': True},
+            'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'gpu_test_start_seconds': 0.0,
             'queue': {'fairshare': 0.5, 'priority_estimate': 15000, 'partitions': {
@@ -162,6 +164,39 @@ def test_repository_profile_and_example_site_validate():
     assert all(k['why'].strip() and k['measured'].strip() for k in profile.values())
     site = run_profile.load_site(SITE)
     assert set(site['gpu_types']) == {'A100-40', 'A100-80'}
+
+
+def test_site_refuses_every_top_level_key_outside_site(tmp_path):
+    """A bare [eval_baselines] (or any other top-level key) was silently ignored."""
+    baselines = (f'a0 = {{ plan = "/b/a0/plan.json", sha256 = "{"a" * 64}" }}\n'
+                 f'a10 = {{ plan = "/b/a10/plan.json", sha256 = "{"b" * 64}" }}\n')
+    site = tmp_path / 'site.toml'
+    site.write_text(SITE.read_text() + '\n[site.eval_baselines]\n' + baselines)
+    assert set(run_profile.load_site(site)['eval_baselines']) == {'a0', 'a10'}
+    site.write_text(SITE.read_text() + '\n[eval_baselines]\n' + baselines)
+    with pytest.raises(run_profile.ProfileError,
+                       match=r'eval_baselines: top-level .*write it as \[site.eval_baselines\]'):
+        run_profile.load_site(site)
+    site.write_text('note = "x"\n' + SITE.read_text())
+    with pytest.raises(run_profile.ProfileError, match='note: top-level key outside'):
+        run_profile.load_site(site)
+
+
+def test_gc_refreeze_threshold_is_a_knob_that_needs_gc_freeze():
+    """F: the profile lowers the re-freeze threshold (online recompiles); the code
+    default 200000 is the earlier constant and needs no source feature."""
+    profile = run_profile.load_profile(PROFILE)
+    assert profile['sgd_gc_refreeze_objects']['default'] == 200_000
+    assert profile['sgd_gc_refreeze_objects']['value'] == 40_000
+    assert preflight.required_features(plan_for(cards=3))['gc_refreeze']
+    assert 'gc_refreeze' not in preflight.required_features(
+        plan_for(cards=3, sgd_gc_refreeze_objects=200_000))
+    with pytest.raises(run_profile.ProfileError, match='needs sgd_gc_freeze'):
+        run_profile.load_profile(PROFILE, ['sgd_gc_freeze=false'])
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        'sgd_gc_freeze=false', 'sgd_gc_refreeze_objects=200000']))['sgd_gc_freeze'] is False
+    with pytest.raises(run_profile.ProfileError, match='sgd_gc_refreeze_objects'):
+        run_profile.load_profile(PROFILE, ['sgd_gc_refreeze_objects=0'])
 
 
 def test_overrides_are_validated_and_recorded():
@@ -295,9 +330,11 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': True}}, 'producer_identity'),
     ({'max_versions': 100000}, {}, 'frozen_recipe'),
     ({}, {'gate_learner_base': None}, 'frozen_recipe'),
-    ({}, {'gate_learner_base': gate_without_hp()}, 'frozen_recipe'),
-    ({}, {'gate_learner_base': gate_without_hp()}, 'hp_score'),
-    ({}, {'gate_learner_base': gate_without_hp('hp_advantage_scope')}, 'hp_score'),
+    # a key the gate has stays the gate's: c_hp other than the frozen value is drift
+    ({}, {'gate_learner_base': with_hp(gate_base(), 0.003)}, 'frozen_recipe'),
+    # neither the gate nor the frozen config (a source before #538) has c_hp and its scope
+    ({}, {'gate_learner_base': gate_without_hp(),
+          'frozen_recipe': gate_without_hp(config=FROZEN)}, 'hp_score'),
     # c_hp > 0 agreed by gate and frozen recipe, but segment format 3
     ({}, {'gate_learner_base': with_hp(gate_base(), 0.003),
           'frozen_recipe': with_hp(FROZEN, 0.003)}, 'hp_score'),
@@ -1066,6 +1103,13 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert games['run']['A10']['bosses']['act3_boss2'] == {
         'games': 1, 'reached': 1, 'cleared': 0, 'clear_rate': 0.0,
         'clear_rate_given_reached': 0.0}
+    assert every['act3_reached_rate'] == 0.75  # floors 34, 48 (won) and 49 passed the act-2 Boss
+    # A3: every arm's full games; control's are the top-level numbers
+    assert sorted(games['arms']) == ['control', 'explore']
+    assert games['arms']['control']['run'] == games['run']
+    assert games['arms']['control']['rolling'] == games['rolling']
+    explore = games['arms']['explore']['rolling']['all']
+    assert (explore['games'], explore['mean_floor'], explore['act3_reached_rate']) == (1, 40, 1)
     inc = r['incidents']
     assert inc['env_closed_by_reason'] == {'terminal': 7, 'timeout': 1}
     assert inc['env_close_details'] == {'timeout': {'episode_seconds': 1}}
@@ -1080,7 +1124,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     for line in ('identity: src abc123def456', 'incl. aux', 'first use:',
                  'EV vs lambda-return 0.750', 'HP MAE 2.00 HP', 'training games A0',
                  'Boss cleared act1 67%', 'admission refused', 'boundary per dataset (13)',
-                 'checkpoints: 2, last cp-2'):
+                 'checkpoints: 2, last cp-2', 'training games arm explore A0 (full, last 100): '
+                 '1 games, floor 40.0, win 0.0%, act 3 reached 100%'):
         assert line in text, line
     assert readout.main([str(run), '--json']) == 0
     assert json.loads(capsys.readouterr().out)['learning'] == json.loads(
@@ -1294,13 +1339,107 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     assert learner_config.recipe_drift(built, FROZEN) == [
         'loss.hp_advantage_coef: frozen 0.0, effective 0.003',
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective 'all_combats'"]
-    # a gate from before the HP score is refused, never read as c_hp = 0
+    # build alone never invents c_hp: a gate without it is `<missing>` drift
     old = learner_config.build(gate_without_hp(), plan['knobs'], run)
     assert learner_config.recipe_drift(old, FROZEN) == [
         "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
-    refused = preflight.check_hp_score(plan, {**facts, 'gate_learner_base': gate_without_hp()})
-    assert not refused.ok and 'patch it once' in refused.detail
+
+
+def test_a_gate_from_before_the_hp_score_takes_both_keys_from_the_frozen_config():
+    """F: the shared gate predates #538 and must stay so while old-code chains run (their
+    LossConfig refuses unknown keys); the run's own frozen config supplies the missing
+    loss keys, reported, and A9 still compares every key the gate has."""
+    filled_base, filled = learner_config.gate_recipe(gate_without_hp(), with_hp(FROZEN, 0.003))
+    assert filled == {'hp_advantage_coef': 0.003, 'hp_advantage_scope': 'combat_ticket'}
+    assert filled_base['loss'] == with_hp(gate_base(), 0.003)['loss']
+    assert 'hp_advantage_coef' not in gate_without_hp()['loss']  # the input is not changed
+    same, none = learner_config.gate_recipe(with_hp(gate_base(), 0.5), FROZEN)
+    assert none == {} and same['loss']['hp_advantage_coef'] == 0.5  # the gate's value wins
+    plan = plan_for(cards=3, wall_seconds=2400)
+    facts = {**good_facts(plan), 'gate_learner_base': gate_without_hp()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['frozen_recipe'].detail.endswith(
+        'not in the gate, from the frozen config: loss.hp_advantage_coef, '
+        'loss.hp_advantage_scope')
+    assert results['hp_score'].detail == ('c_hp 0.0, scope combat_ticket, segment format '
+                                          'stpd/rl-fast-segment-3 (from the frozen config; '
+                                          'not in the gate)')
+    # the c_hp experiment: only the source rl5.json changes, the shared gate does not
+    four = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
+    arm = {**good_facts(four), 'gate_learner_base': gate_without_hp(),
+           'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
+    results = by_name(preflight.checks(four, arm))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['hp_score'].detail.startswith('c_hp 0.003, scope all_combats')
+    # a gate made after #538 (or a patched copy) reports nothing filled
+    assert 'not in the gate' not in by_name(preflight.checks(plan, good_facts(plan)))[
+        'frozen_recipe'].detail
+
+
+def test_a_partly_filled_gate_keeps_its_own_loss_keys_for_a9():
+    """#551 review S1: filling one key never replaces the loss keys the gate has; its
+    stale c_hp is still compared with the frozen value (a gate_recipe that merged the
+    whole frozen loss block over the gate would compare frozen with frozen)."""
+    gate = gate_without_hp('hp_advantage_scope', config=with_hp(gate_base(), 0.003))
+    filled_base, filled = learner_config.gate_recipe(gate, FROZEN)
+    assert filled == {'hp_advantage_scope': 'combat_ticket'}
+    assert filled_base['loss']['hp_advantage_coef'] == 0.003  # the gate's, not frozen 0.0
+    plan = plan_for(cards=3, wall_seconds=2400)
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'gate_learner_base': gate}))
+    assert not results['frozen_recipe'].ok
+    assert results['frozen_recipe'].detail == (
+        'drift from the frozen parameters: loss.hp_advantage_coef: frozen 0.0, effective 0.003')
+
+
+def test_a_gate_loss_key_the_frozen_config_lacks_is_refused_before_the_queue():
+    """#551 review S2: A9 walks the frozen keys only; a misspelt key in a patched gate copy
+    would pass (its correct name filled from the frozen config) and stop the learner's
+    LossConfig after the GPU queue. Preflight names it."""
+    gate = gate_without_hp('hp_advantage_coef')
+    gate['loss']['hp_advantage_coeff'] = 0.003
+    plan = plan_for(cards=3, wall_seconds=2400)
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'gate_learner_base': gate}))
+    assert not results['frozen_recipe'].ok
+    assert results['frozen_recipe'].detail.startswith(
+        'gate learner-base.json has loss keys the frozen config lacks: hp_advantage_coeff')
+
+
+def test_roles_writes_the_learner_config_and_gc_keys_preflight_checked():
+    """#551 review S4: roles.py (a job script, not importable here) takes its learner.json
+    from `learner_base`, the one function preflight checks, and its GC keys from
+    `sgd_gc_dataplane`; the configured threshold reaches the SGD child's init."""
+    from stpd.rl.sgd_process import sgd_options
+
+    plan = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    frozen = with_hp(FROZEN, 0.003)
+    run['start_model_sha256'] = 'a' * 64  # A1 start_fields pass through to build
+    written, filled = learner_config.learner_base(gate_without_hp(), frozen, plan['knobs'], run)
+    assert written['loss']['hp_advantage_coef'] == 0.003 and set(filled) == {
+        'hp_advantage_coef', 'hp_advantage_scope'}
+    assert (written['start_package'], written['start_model_sha256']) == ('/s', 'a' * 64)
+    assert learner_config.recipe_drift(written, frozen) == []
+    results = by_name(preflight.checks(plan, {**good_facts(plan), 'frozen_recipe': frozen,
+                                              'gate_learner_base': gate_without_hp()}))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['hp_score'].detail.startswith('c_hp 0.003')
+    gc_keys = learner_config.sgd_gc_dataplane(plan['knobs'])
+    assert gc_keys == {'sgd_gc_freeze': True, 'sgd_gc_refreeze_objects': 40_000}
+    assert sgd_options({'sgd_process': True, **gc_keys}).stage_init()[
+        'gc_refreeze_objects'] == 40_000
+    assert learner_config.sgd_gc_dataplane(knobs(sgd_gc_freeze=False,
+                                                 sgd_gc_refreeze_objects=200_000)) == {}
+    assert learner_config.sgd_gc_dataplane(knobs(sgd_gc_refreeze_objects=200_000)) == {
+        'sgd_gc_freeze': True}
+    roles = (FASTCHAIN / 'roles.py').read_text()
+    assert 'base, filled = learner_config.learner_base(' in roles
+    assert 'dataplane.update(learner_config.sgd_gc_dataplane(K))' in roles
+    assert 'gate_recipe' not in roles and 'learner_config.build(' not in roles
+    assert 'dataplane["sgd_gc_' not in roles
 
 
 def test_long_run_and_smoke_are_exclusive():
@@ -1340,13 +1479,16 @@ def test_chain_generation_plan_and_resume_preflight():
     assert plan['wall_seconds'] == 72000 and plan['resume_checkpoint'] == 'cp-0123456789'
     env = launch.job_env(plan)
     assert 'FC_RESUME_CHECKPOINT=cp-0123456789' in env and 'FC_CHAIN_ID=c-t1' in env
-    assert preflight.check_resume(plan).ok
+    assert preflight.check_resume(plan, {'start_model': None}).ok  # a resume reads no package
     late = launch.build_plan('t1-r2', knobs(), run_profile.load_site(SITE), cards=2,
                              card_type='A100-40', layout_spec=None, env_cores=None,
                              smoke=False, probe_rows=[probe_row()], long_run=True,
                              chain={**chain, 'deadline_at': __import__('time').time() + 600})
     assert late['wall_seconds'] <= 600
-    assert 'min_generation_seconds' in preflight.check_resume(late).detail
+    assert 'min_generation_seconds' in preflight.check_resume(late, good_facts(late)).detail
+    # a fresh start (generation 1, no CP) loads the start package: missing = refused at login
+    missing = preflight.check_resume(late, {**good_facts(late), 'start_model': None})
+    assert not missing.ok and 'fresh start without a start package' in missing.detail
     with pytest.raises(SystemExit):
         launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=2,
                           card_type='A100-40', layout_spec=None, env_cores=None, smoke=True,
@@ -1722,6 +1864,7 @@ def test_job_env_carries_r7_and_ascension_knobs():
     assert 'FC_REPLAY_K=1' in env and 'FC_EXPLORATION_LADDER=\'{"control":{"combat":{' \
         '"temperature":1.0,"uniform_mix":0.0},"noncombat":{"temperature":1.0,' \
         '"uniform_mix":0.0},"share":1.0}}\'' in env
+    assert 'FC_SAMPLING_TEMPERATURE_MIN=1.0' in env  # A3: today's [1, 3] validation
 
 
 # ---------------- environment-side recipe (exploration ladder, K replay) ----------------
@@ -1743,7 +1886,9 @@ def test_exploration_ladder_and_replay_k_are_validated():
             ('{ "bad arm" = ' + arm % '{ temperature = 1.0, uniform_mix = 0.0 }' + ' }',
              'bad arm'),
             ('{ a = ' + arm % '{ temperature = 0.5, uniform_mix = 0.0 }' + ' }',
-             r'temperature in \[1, 3\]'),
+             'a.combat: temperature 0.5 below sampling_temperature_min 1.0'),
+            ('{ a = ' + arm % '{ temperature = 0.2, uniform_mix = 0.0 }' + ' }',
+             r'temperature in \[0.25, 3\]'),
             ('{ a = ' + arm % '{ temperature = 1.0, uniform_mix = 0.2 }' + ' }',
              r'uniform_mix in \[0, 0.1\]'),
             ('{ a = ' + arm % '{ temperature = 1.0 }' + ' }', 'exactly'),
@@ -1753,6 +1898,16 @@ def test_exploration_ladder_and_replay_k_are_validated():
             run_profile.load_profile(PROFILE, [f'exploration_ladder={bad}'])
     with pytest.raises(run_profile.ProfileError, match='replay_k 13 must not exceed env_slots'):
         run_profile.load_profile(PROFILE, ['replay_k=13'])
+    # A3: an arm below 1 only with the run's lower minimum, itself in [0.25, 1]
+    bold = arm % '{ temperature = 0.7, uniform_mix = 0.0 }'
+    with pytest.raises(run_profile.ProfileError, match='temperature 0.7 below'):
+        run_profile.load_profile(PROFILE, [f'exploration_ladder={{ bold = {bold} }}'])
+    values = run_profile.values(run_profile.load_profile(PROFILE, [
+        f'exploration_ladder={{ bold = {bold} }}', 'sampling_temperature_min=0.7']))
+    assert values['exploration_ladder']['bold']['combat']['temperature'] == 0.7
+    for low in ('0.2', '1.5'):
+        with pytest.raises(run_profile.ProfileError, match='sampling_temperature_min'):
+            run_profile.load_profile(PROFILE, [f'sampling_temperature_min={low}'])
     with pytest.raises(run_profile.ProfileError, match='replay_k'):
         run_profile.load_profile(PROFILE, ['replay_k=0'])
 
@@ -1809,6 +1964,8 @@ def test_env_sh_gives_each_driver_its_level_and_arm(tmp_path):
     asc, arms = out.split('|')
     assert asc.split() == ['0'] * 4 + ['10'] * 6
     assert arms.split() == run_profile.exploration_plan(ladder, 10, 10)
+    # A3: every driver gets the run's lowest arm temperature (the fast env checks its arm)
+    assert '--temperature-min $FC_SAMPLING_TEMPERATURE_MIN' in (FASTCHAIN / 'env.sh').read_text()
 
 
 FAKE_FAST_ENV = '''
@@ -1981,6 +2138,37 @@ def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
     assert 'arm hot' in text and 'ascension A0' in text and 'k 3' in text
 
 
+def test_env_driver_puts_the_temperature_minimum_in_the_config_only_below_1(tmp_path):
+    """A3: --temperature-min 1 (the default env.sh passes) leaves config.json as it was
+    without the flag; a lower one reaches the fast env as inference.temperature_min."""
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    bold = json.dumps({'bold': {'share': 1.0,
+                                'combat': {'temperature': 0.7, 'uniform_mix': 0.0},
+                                'noncombat': {'temperature': 2.0, 'uniform_mix': 0.02}}})
+    configs = {}
+    try:
+        for name, flags in (('before', ()), ('one', ('--temperature-min', '1')),
+                            ('bold', ('--temperature-min', '0.7'))):
+            ladder, arm = (bold, 'bold') if name == 'bold' else (LADDER_JSON, 'hot')
+            done = run_driver(world, tmp_path / name, admit.path, '--exploration-ladder',
+                              ladder, '--arm', arm, '--replay-k', '1', *flags)
+            assert done.returncode == 0, done.stderr
+            configs[name] = (tmp_path / name / 'config.json').read_text().replace(
+                str(tmp_path / name), 'OUT')
+    finally:
+        admit.close()
+    assert configs['one'] == configs['before']
+    assert 'temperature_min' not in json.loads(configs['before'])['inference']
+    inference = json.loads(configs['bold'])['inference']
+    assert inference['temperature_min'] == 0.7
+    assert inference['sampling']['classes'] == {
+        'combat': {'temperature': 0.7, 'uniform_mix': 0.0},
+        'noncombat': {'temperature': 2.0, 'uniform_mix': 0.02}}
+    flags = [r for r in readout.jsonl(tmp_path / 'bold' / 'driver.jsonl')
+             if r['event'] == 'driver_flags']
+    assert flags[0]['temperature_min'] == 0.7
+
+
 SAVE_STARTS_OFF = json.dumps(run_profile.values(run_profile.load_profile(PROFILE, []))[
     'save_starts'], separators=(',', ':'), sort_keys=True)
 
@@ -2078,7 +2266,10 @@ def test_env_driver_save_starts_pool_draw_refusals_and_readout(tmp_path):
     # Per-arm and K tables hold the new runs only (save starts: the start table).
     assert recipe['arm'] == {'hot': recipe['start']['new_run']}
     assert sum(row['games'] for row in recipe['k'].values()) == recipe['arm']['hot']['games']
-    assert reader.training_games() == {}  # arm hot: no control-arm new runs to roll
+    # A3's per-arm results hold the arm's new runs only, too; no control-arm game to roll.
+    played = reader.training_games()
+    assert played['run']['all']['games'] == 0 and set(played['arms']) == {'hot'}
+    assert played['arms']['hot']['run']['all']['games'] == recipe['arm']['hot']['games']
     assert 'save starts: pooled per act' in readout.render(readout.build(run, 1200))
 
 
@@ -2088,7 +2279,8 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
 
     def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid',
                start='new_run'):
-        return {'event': 'closed', 'game_ref': ref, 'reason': reason, 'arm': arm,
+        return {'event': 'closed', 't': 1000 + int(ref[1:]), 'game_ref': ref,
+                'reason': reason, 'arm': arm,
                 'ascension': 10, 'replay_k': 2, 'group': group, 'member': 0, 'seed': 's',
                 'start': start, 'decisions': 100, 'floor': floor, 'terminal': result,
                 'evidence_failed': failed}

@@ -90,6 +90,23 @@ def agent_input_spec(identity: dict[str, Any]) -> dict[str, str]:
                                          "vocabulary_sha256": identity["vocabulary_sha256"]}))}
 
 
+def public_encounter(observation: dict[str, Any], in_combat: bool) -> Any:
+    """A combat row's public `combat.content.encounter_type` (the model's own input), for
+    the format-4 HP weight (RL5-METHODS A2); None off combat."""
+    combat = observation.get("combat") if in_combat else None
+    return (combat.get("content") or {}).get("encounter_type") if combat else None
+
+
+def public_hp(observation: dict[str, Any], in_combat: bool) -> dict[str, Any] | None:
+    """A combat row's public player hp / max_hp (the model's own input; the kernel's
+    public_facts read the same fields): a combat with no row before it starts there
+    (RL5-METHODS B). None off combat or when either is absent."""
+    combat = observation.get("combat") if in_combat else None
+    player = ((observation.get("player") or {}).get("content") or {}) if combat else {}
+    return ({"hp": player["hp"], "max_hp": player["max_hp"]}
+            if "hp" in player and "max_hp" in player else None)
+
+
 def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
     """Encoder-pool handler: one decision line -> (meta, row); parsed once, here."""
     from .rows_encoder import parse_public_json
@@ -101,17 +118,11 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
     if not isinstance(source, dict) or not isinstance(source.get("observation"), dict):
         raise BoundaryError("p1_fast_aggregator", "decision_input_required")
     encoded = encoder.encode_parsed(source["observation"])
-    # The combat's public type (the model's own input), for the format-4 HP weight (A2).
-    combat = source["observation"].get("combat") if encoded.in_combat else None
-    # The player's public HP on a combat row (the model's own input; the kernel's
-    # public_facts read the same fields): a combat with no row before it starts there (B).
-    player = ((source["observation"].get("player") or {}).get("content") or {}) if combat else {}
     meta = {"row_sha256": encoded.row_sha256, "observation_sha256": encoded.observation_sha256,
             "catalog_sha256": encoded.catalog_sha256, "catalog_len": encoded.catalog_len,
             "in_combat": encoded.in_combat, "floor": message.get("floor"),
-            "encounter": (combat.get("content") or {}).get("encounter_type") if combat else None,
-            "public_hp": ({"hp": player["hp"], "max_hp": player["max_hp"]}
-                          if "hp" in player and "max_hp" in player else None),
+            "encounter": public_encounter(source["observation"], encoded.in_combat),
+            "public_hp": public_hp(source["observation"], encoded.in_combat),
             "step_index": message.get("step_index"),
             "consumption_id": message.get("consumption_id"), "binding": None}
     # The line's own claims must equal what was encoded (no repair, no fallback).
