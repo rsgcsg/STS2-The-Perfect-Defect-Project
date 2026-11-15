@@ -1675,10 +1675,11 @@ class SegmentLearner:
     def _discard_stopped_queue(self) -> None:
         """Terminal training discard; original accepted facts and World ledger stay intact."""
         assert self.wal is not None
-        if self.fast_intake is not None and self.fast_intake.value_target == "game":
+        intake = getattr(self, "fast_intake", None)  # as in `close()`
+        if intake is not None and intake.value_target == "game":
             # Held games never close now: dropped here, before the final status,
             # so the run record has them (`game_target_stop_dropped_rows`).
-            self.fast_intake.discard_held("stop")
+            intake.discard_held("stop")
         records = list(self.queue.pending)
         if not records:
             return
@@ -3311,7 +3312,8 @@ class SegmentLearner:
             return active
 
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
-        if "game_end_lt128_selected_rows" in self.fast_counters:
+        if records and "rows_to_game_end" in records[0].get("envelope", {}):
+            # Only "game" fast records carry it (old-chain records have no envelope).
             count_game_end(self.fast_counters, records, "selected")
         if self.wal is not None:
             for record in records:
