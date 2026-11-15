@@ -282,7 +282,7 @@ def recipe_edge(run: Path) -> dict[str, Any]:
 
 def _group_share(group: list[Any], k_row: list[int], sign: int) -> None:
     """One K group's part of its K row: [groups, full groups, floor range sum, ranged]."""
-    k, games, low, high = group
+    k, games, low, high = group[:4]
     if games >= 2:
         k_row[2] += sign * (high - low)
         k_row[3] += sign
@@ -580,7 +580,9 @@ class Readout:
         # drivers
         self.tables: dict[str, dict[str, dict[str, Any]]] = {
             "arm": {}, "ascension": {}, "start": {}, "k": {}}
-        self.groups: dict[str, list[Any]] = {}  # driver dir/group -> k, games, low, high
+        # open K groups: driver dir/group -> k, games, low, high, closes (dropped at K closes;
+        # its share stays in k_rows)
+        self.groups: dict[str, list[Any]] = {}
         self.k_rows: dict[str, list[int]] = {}
         self.closed: dict[str, int] = {}
         self.details: dict[str, dict[str, int]] = {}
@@ -735,7 +737,7 @@ class Readout:
         name = f"{Path(path).parent}/{r.get('group')}"
         group = self.groups.get(name)
         if group is None:
-            group = self.groups[name] = [str(r.get("replay_k")), 0, 0, 0]
+            group = self.groups[name] = [str(r.get("replay_k")), 0, 0, 0, 0]
             self.k_rows.setdefault(group[0], [0, 0, 0, 0])[0] += 1
         if counted and r.get("reason") == "terminal":
             k_row, floor = self.k_rows[group[0]], r.get("floor") or 0
@@ -744,6 +746,9 @@ class Readout:
             group[3] = max(group[3], floor) if group[1] else floor
             group[1] += 1
             _group_share(group, k_row, 1)
+        group[4] += 1  # every member game closes once: after K closes the group is done
+        if group[0].isdigit() and group[4] >= int(group[0]):
+            del self.groups[name]
 
     def _game(self, game: dict[str, Any]) -> None:
         level = game["ascension"]
@@ -888,7 +893,7 @@ class Readout:
                         **{f"A{a}": self.games_level[a].result() for a in levels}}}
 
     def recipe(self) -> dict[str, Any]:
-        if not self.groups:
+        if not self.tables["arm"]:
             return {}
         out: dict[str, Any] = {key: {name: _finish(b) for name, b in sorted(table.items())}
                                for key, table in self.tables.items()}

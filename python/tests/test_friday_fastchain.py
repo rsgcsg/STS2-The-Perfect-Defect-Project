@@ -1453,6 +1453,13 @@ def test_chain_writes_the_run_record_at_checkpoints_resume_and_end(tmp_path):
     assert not chain.record(run, 'checkpoint')
     assert chain.state['log'][-1]['kind'] == 'run_record_failed'
     assert chain.reader is None  # the next record starts a fresh readout
+    # A read error on the events file (NFS) is noted; the tick goes on, no CP this time.
+    events.rename(run / 'events.bak')
+    events.mkdir()  # opening it raises IsADirectoryError, an OSError
+    chain.state['record_offsets'][run.name] = 0
+    chain.tick(run)
+    assert chain.state['log'][-1]['kind'] == 'checkpoint_scan_failed'
+    assert chain.state['record_offsets'][run.name] == 0  # the next tick tries again
 
 
 def test_chain_stops_loudly_when_resumes_run_out_and_keeps_the_first_cause(tmp_path):
@@ -1849,6 +1856,14 @@ def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
     k3 = recipe['k']['3']
     assert k3['groups'] == len({r['group'] for r in closed}) and k3['full_groups'] >= 3
     assert k3['mean_floor_range'] is not None
+    # A group is held only until all K of its games closed (its share stays in k_rows).
+    closes = {}
+    for r in closed:
+        closes[r['group']] = closes.get(r['group'], 0) + 1
+    reader = readout.Readout(run).update()
+    assert {name.rsplit('/', 1)[1] for name in reader.groups} == {
+        g for g, n in closes.items() if n < 3}
+    assert len(reader.groups) < k3['groups'] and reader.recipe() == recipe
     built = readout.build(run, 1200)
     assert built['recipe'] == recipe
     text = readout.render(built)

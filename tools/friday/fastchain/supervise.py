@@ -349,16 +349,23 @@ class Chain:
 
     def new_checkpoint(self, run: Path) -> bool:
         """Did the learner publish a CP since the last look? Reads only the new whole lines
-        of learner-events.jsonl (the offset is kept in state.json)."""
+        of learner-events.jsonl (the offset is kept in state.json). A read error (NFS) is
+        noted and counts as no new CP this tick: it must never end supervise."""
         path = run / "learner-events.jsonl"
         offsets = self.state.setdefault("record_offsets", {})
         offset = offsets.get(run.name, 0)
-        size = path.stat().st_size if path.exists() else 0
-        if size <= offset:
+        try:
+            size = path.stat().st_size if path.exists() else 0
+            if size <= offset:
+                return False
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                chunk = handle.read(size - offset)
+        except OSError as error:
+            print(f"checkpoint scan of {run.name} failed: {error!r}", file=sys.stderr,
+                  flush=True)
+            self.note("checkpoint_scan_failed", run=run.name, error=repr(error))
             return False
-        with path.open("rb") as handle:
-            handle.seek(offset)
-            chunk = handle.read(size - offset)
         whole = chunk[:chunk.rfind(b"\n") + 1]  # a line still being written waits
         offsets[run.name] = offset + len(whole)
         return b'"checkpoint_published"' in whole

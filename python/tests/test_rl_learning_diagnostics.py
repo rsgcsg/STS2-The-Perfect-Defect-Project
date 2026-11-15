@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import math
 
 import pytest
@@ -126,12 +127,39 @@ def test_prepared_update_reports_value_sums_in_the_synced_totals(model):
     assert result["value_mse"] is not None and result["value_mse"] >= 0
 
 
+def nontrivial(model, minibatch):
+    """Real gradients on every path: perturbed weights (the fixture heads start at zero),
+    random advantages, and 2 terminal plus 3 HP auxiliary rows (no td/policy weight)."""
+    generator = torch.Generator().manual_seed(5)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(torch.randn(parameter.shape, generator=generator,
+                                       dtype=parameter.dtype) * 0.05)
+    t = {key: value.clone() for key, value in minibatch.tensors.items()}
+    terminal, hp = [8, 9], [5, 6, 7]
+    for row in terminal + hp:
+        t["td_mask"][row] = t["policy_mask"][row] = 0
+    t["advantages"] = torch.randn(t["advantages"].shape, generator=generator) * t["policy_mask"]
+    for row in terminal:
+        t["terminal_mask"][row] = 1
+        t["targets"][row] = 0
+        t["targets"][row, int(t["outcome_valid"][row].nonzero()[0])] = 1
+    for row in hp:
+        t["hp_mask"][row] = 1
+        t["hp_targets"][row] = float(torch.rand((), generator=generator))
+    for name in ("policy", "td", "terminal", "hp"):
+        t[f"{name}_indices"] = torch.nonzero(t[f"{name}_mask"], as_tuple=True)[0]
+    return dataclasses.replace(
+        minibatch, tensors=t, policy_rows=len(t["policy_indices"]),
+        td_rows=len(t["td_indices"]), terminal_rows=len(terminal), hp_rows=len(hp))
+
+
 @pytest.mark.parametrize("compiled", [False, True])
 def test_diagnostics_leave_loss_gradients_and_step_bit_identical(model, compiled, monkeypatch):
     """The sums read detached outputs under no_grad: with them replaced by zeros, the
-    loss totals, gradients, Adam state and parameters stay bitwise equal (eager and the
-    compiled rows forward)."""
-    minibatch = prepared(model, "rows-v2").minibatches[0]
+    loss totals, gradients, Adam state, parameters and RNG stay bitwise equal over three
+    steps with real gradients (eager and the compiled rows forward)."""
+    minibatch = nontrivial(model, prepared(model, "rows-v2").minibatches[0])
     performance = PerformanceConfig(prepared_forward="rows-v2", prepared_compile=compiled)
     runs = []
     for disabled in (False, True):
@@ -140,31 +168,44 @@ def test_diagnostics_leave_loss_gradients_and_step_bit_identical(model, compiled
                                 lambda logits, hp, t: logits.new_zeros(ld.SIZE))
         trained = copy.deepcopy(model)
         optimizer = torch.optim.AdamW(trained.parameters(), lr=1e-3)
-        seen = {}
+        torch.manual_seed(123)
+        steps = []
+        for _ in range(3):
+            seen = {}
 
-        def sync(model, totals, valid, seen=seen):
-            seen["totals"] = totals[:8].clone()
-            seen["gradients"] = {name: p.grad.clone() for name, p in model.named_parameters()
-                                 if p.grad is not None}
-            return totals, valid
+            def sync(model, totals, valid, seen=seen):
+                seen["totals"] = totals[:8].clone()
+                seen["gradients"] = {name: p.grad.clone()
+                                     for name, p in model.named_parameters()
+                                     if p.grad is not None}
+                return totals, valid
 
-        result = prepared_update(trained, optimizer, minibatch,
-                                 config=LossConfig(mode="ppo", value_coef=0.2),
-                                 performance=performance, target_kl=1e9, gradient_sync=sync)
-        assert result["stepped"] and result["rows_forward"]["compiled"] is compiled
-        runs.append((result, seen, trained.state_dict(), optimizer.state_dict()["state"]))
-    (on, on_seen, on_state, on_adam), (off, off_seen, off_state, off_adam) = runs
-    assert on["value_statistics"]["all"]["td"][0] > 0
+            result = prepared_update(trained, optimizer, minibatch,
+                                     config=LossConfig(mode="ppo", value_coef=0.2),
+                                     performance=performance, target_kl=1e9,
+                                     gradient_sync=sync)
+            assert result["stepped"] and result["rows_forward"]["compiled"] is compiled
+            steps.append((result, seen))
+        runs.append((steps, trained.state_dict(), optimizer.state_dict()["state"],
+                     torch.get_rng_state()))
+    (on_steps, on_state, on_adam, on_rng), (off_steps, off_state, off_adam, off_rng) = runs
+    on, off = on_steps[0][0], off_steps[0][0]
+    whole = on["value_statistics"]["all"]
+    assert whole["td"][0] > 0 and whole["terminal"][0] == 2 and whole["hp"][0] == 3
     assert off["value_statistics"]["all"]["td"][0] == 0
-    assert torch.equal(on_seen["totals"], off_seen["totals"])
-    assert on_seen["gradients"].keys() == off_seen["gradients"].keys()
-    for name, gradient in on_seen["gradients"].items():
-        assert torch.equal(gradient, off_seen["gradients"][name]), name
+    assert on["gradient_norm"] > 0 and on["policy_loss"] != 0  # not a zero-gradient case
+    assert sum(bool(g.any()) for g in on_steps[0][1]["gradients"].values()) > 1
+    for (on_result, on_seen), (off_result, off_seen) in zip(on_steps, off_steps, strict=True):
+        assert torch.equal(on_seen["totals"], off_seen["totals"])
+        assert on_seen["gradients"].keys() == off_seen["gradients"].keys()
+        for name, gradient in on_seen["gradients"].items():
+            assert torch.equal(gradient, off_seen["gradients"][name]), name
+        for key in ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
+                    "clip_fraction", "terminal_loss", "hp_loss", "gradient_norm"):
+            assert on_result[key] == off_result[key], key
     for name, value in on_state.items():
         assert torch.equal(value, off_state[name]), name
     for index, state in on_adam.items():
         for key, value in state.items():
             assert torch.equal(value, off_adam[index][key]), (index, key)
-    for key in ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta", "clip_fraction",
-                "terminal_loss", "hp_loss", "gradient_norm"):
-        assert on[key] == off[key], key
+    assert torch.equal(on_rng, off_rng)
