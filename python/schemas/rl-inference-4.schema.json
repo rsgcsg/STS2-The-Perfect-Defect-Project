@@ -157,6 +157,10 @@
         "observation_sha256": {"$ref": "#/$defs/sha256"},
         "in_combat": {"type": "boolean"},
         "floor": {"type": "integer", "minimum": 0},
+        "encounter": {
+          "description": "Optional (RL5-METHODS A2): the observation's public combat.content.encounter_type on a combat row, null otherwise. Segment format 4 requires one of normal, elite, boss, unknown on every combat row (its per-type HP weight and counters).",
+          "type": ["string", "null"]
+        },
         "payload": {
           "type": "object", "additionalProperties": false,
           "required": ["offset", "length", "row_sha256"],

@@ -65,6 +65,9 @@ class PreparedSource:
     pid: int
     compiler_identity: dict[str, Any]
     labels: dict[str, Any]
+    # Fast chain with c_hp > 0 (RL5-METHODS A2): the c_hp * A_hp part already in
+    # `raw_advantages`, read only for the run record's HP share; None otherwise.
+    hp_advantages: Tensor | None = None
 
 
 # These are per-worker immutable construction facts, never learner parameters.
@@ -1613,6 +1616,16 @@ def assemble(
     mean = float(multi.mean()) if len(multi) else 0.0
     scale = max(float(multi.std(unbiased=False)), 1e-8) if len(multi) else 1.0
     advantages[:n][policy_mask[:n]] = (multi - mean) / scale
+    hp_std = hp_share = None  # read-only diagnostics of c_hp * A_hp (A2)
+    if len(multi) and any(source.hp_advantages is not None for source in ppo):
+        hp = torch.cat([source.raw_advantages.new_zeros(source.raw_advantages.shape)
+                        if source.hp_advantages is None else source.hp_advantages
+                        for source in ppo])[policy_mask[:n]].double()
+        centred = multi.double() - multi.double().mean()
+        hp_std = float(hp.std(unbiased=False))
+        # The HP term's part of Var(A) in Var(A) = Cov(A_out, A) + Cov(c_hp A_hp, A).
+        variance = float(centred.square().mean())
+        hp_share = float(((hp - hp.mean()) * centred).mean()) / variance if variance else None
     targets = torch.zeros((total, OUTCOME_CLASSES))
     targets[:n] = ppo_targets
     hp_targets = torch.zeros(total)
@@ -1743,7 +1756,7 @@ def assemble(
         td_mask,
         terminal_mask,
         hp_mask,
-        AdvantageNormalization(len(multi), mean, scale),
+        AdvantageNormalization(len(multi), mean, scale, hp_std, hp_share),
         tuple(minibatches),
         time.time(),
         0,

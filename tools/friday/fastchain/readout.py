@@ -16,8 +16,10 @@ Missing files give an empty row, never a guessed number.
 `--json` prints the run record (`SCHEMA`): the same numbers plus the run's identity
 (source revision, profile digest, `N卡 · 布局 · 卡型`, recipe knobs), throughput in
 training rows/h with and without aux rows, first use and intake, the learner's value/HP
-diagnostics and PPO statistics (latest window and run mean), training-game results of
-the control arm's full games (rolling and whole run, per ascension), the SGD boundary
+diagnostics and PPO statistics (latest window and run mean; with c_hp > 0 the HP term's
+share of the advantage variance), per combat type the format-4 HP score counters,
+training-game results of the control arm's full games (rolling and whole run, per
+ascension), the SGD boundary
 sections, stops/refusals/unknowns with cause counts and the checkpoint ids.
 supervise.py writes it as run-record.json at every checkpoint and at the end.
 
@@ -198,6 +200,38 @@ def service_edges(run: Path, window: tuple[float, float] | None) -> list[dict[st
             "written_s": delta(a, z, "handoff", "written") / dt,
             "dropped_s": delta(a, z, "handoff", "dropped") / dt})
     return out
+
+
+def _last_record(path: str) -> dict[str, Any] | None:
+    """The last complete JSON line of a sampler file (read from its end only)."""
+    with open(path, "rb") as handle:
+        handle.seek(0, 2)
+        handle.seek(max(handle.tell() - (1 << 20), 0))
+        lines = handle.read().splitlines()
+    for line in reversed(lines):
+        with contextlib.suppress(ValueError):
+            return json.loads(line)
+    return None
+
+
+def hp_score_edge(run: Path) -> dict[str, Any]:
+    """Segment format 4 (A2): per encounter type (normal / elite / boss / unknown) the
+    combats the assemblers scored, their deaths and the mean net HP change per combat
+    (H_T - H_0 + M_T - M_0, death -H_0; HP points, unweighted), from each service's
+    latest cumulative `assembler.hp_score`. Gross damage taken never reaches a segment
+    (only HP at decision states), so it is not here. Empty under formats 1-3."""
+    totals: dict[str, list[int]] = {}
+    for path in sorted(glob.glob(str(run / "service-status-*.jsonl"))):
+        last = _last_record(path) or {}
+        by = ((last.get("assembler") or {}).get("hp_score") or {}).get("by_encounter") or {}
+        for kind, c in by.items():
+            t = totals.setdefault(kind, [0, 0, 0])
+            t[0] += c["battles"]
+            t[1] += c["deaths"]
+            t[2] += c["hp_change"]
+    return {kind: {"combats": n, "deaths": d, "death_rate": d / n if n else None,
+                   "mean_net_hp_change": h / n if n else None}
+            for kind, (n, d, h) in totals.items()}
 
 
 def gpu_cards(run: Path, window: tuple[float, float] | None) -> dict[str, dict[str, float]]:
@@ -384,7 +418,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "segment_format": segment_format,
                    "hp_coef": loss.get("hp_coef"),
                    "c_hp": loss.get("hp_advantage_coef"),
-                   "c_hp_scope": loss.get("hp_advantage_scope")}}
+                   "c_hp_scope": loss.get("hp_advantage_scope"),
+                   "hp_combat_weights": knobs.get("hp_combat_weights")}}
 
 
 def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
@@ -418,6 +453,7 @@ class _Learning:
         self.pooled: dict[str, dict[str, list[float]]] = {}
         self.raw_mean = self.raw_std = 0.0
         self.raw_last: dict[str, Any] | None = None
+        self.hp = [0.0, 0.0, 0]  # A2, c_hp > 0: sum of hp_share, of hp_std, datasets
 
     def add(self, e: dict[str, Any]) -> None:
         self.attempts += 1
@@ -441,6 +477,10 @@ class _Learning:
             self.raw_mean += raw["mean"]
             self.raw_std += raw["std"]
             self.raw_last = raw
+            if isinstance(raw.get("hp_share"), (int, float)):
+                self.hp[0] += raw["hp_share"]
+                self.hp[1] += raw["hp_std"]
+                self.hp[2] += 1
 
     def result(self) -> dict[str, Any]:
         out: dict[str, Any] = {"attempts": self.attempts, "stepped": self.stepped}
@@ -450,9 +490,13 @@ class _Learning:
         out["value"] = {bucket: {head: value_summary(values, 100.0 if head == "hp" else 1.0)
                                  for head, values in heads.items()}
                         for bucket, heads in self.pooled.items()} or None
+        hp_share, hp_std, hp_datasets = self.hp
         out["advantage_raw"] = {
             "datasets": self.datasets, "mean": self.raw_mean / self.datasets,
-            "std": self.raw_std / self.datasets, "last": self.raw_last} if self.datasets else None
+            "std": self.raw_std / self.datasets, "last": self.raw_last,
+            # c_hp * A_hp's share of Var(A) and its std, mean over datasets (None: c_hp 0)
+            "hp_share": hp_share / hp_datasets if hp_datasets else None,
+            "hp_std": hp_std / hp_datasets if hp_datasets else None} if self.datasets else None
         return out
 
 
@@ -987,6 +1031,7 @@ class Readout:
                 "identity": identity_edge(self.run, plan, self.plan_path),
                 "throughput": self.throughput(train),
                 "learning": self.learning_result(),
+                "hp_score": hp_score_edge(self.run),
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
@@ -1045,6 +1090,9 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"{fmt(x.get('approx_kl_mu_theta'), 4)}, clip "
                    f"{fmt(x.get('clip_fraction'), 3)}, entropy {fmt(x.get('entropy'), 3)}; "
                    f"advantage mean {fmt(adv.get('mean'), 4)} std {fmt(adv.get('std'), 4)}")
+        if adv.get("hp_share") is not None:
+            out.append(f"  HP term (c_hp A_hp) {label}: {100 * adv['hp_share']:.1f}% of "
+                       f"advantage variance, std {fmt(adv['hp_std'], 4)}")
         if key == "latest" and x.get("value"):
             out.append("  EV vs lambda-return by bucket: " + ", ".join(
                 f"{bucket} {ev('td', heads)}" for bucket, heads in x["value"].items()
@@ -1059,6 +1107,11 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"{g['games']} games, floor {g['mean_floor']:.1f}, win "
                    f"{100 * g['win_rate']:.1f}%, reward {fmt(g['mean_reward_v21'], 3)}; "
                    f"Boss cleared {bosses}")
+    hp_score = r.get("hp_score") or {}
+    if hp_score:
+        out.append("HP score by encounter (combats, deaths, mean net HP change): " + ", ".join(
+            f"{kind} {c['combats']} / {c['deaths']} / {fmt(c['mean_net_hp_change'], 1)}"
+            for kind, c in hp_score.items()))
     if games.get("unscored_closes"):
         out.append(f"training games: {games['unscored_closes']} complete control closes "
                    "without a natural end (no victory/defeat or floor) not scored")
