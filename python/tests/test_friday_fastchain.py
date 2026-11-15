@@ -1032,7 +1032,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert i['source_dirty'] is False and len(i['profile_sha256']) == 64
     assert i['overridden_knobs'] == {'segment_format': 'stpd/rl-fast-segment-4'}
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
-        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'stpd/rl-fast-segment-4',
+        '0': 0.5, '10': 0.5}, 'replay_k': 4, 'save_starts': None,
+        'segment_format': 'stpd/rl-fast-segment-4',
         'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket'}
     p = r['throughput']
     assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
@@ -1686,6 +1687,26 @@ def test_exploration_ladder_and_replay_k_are_validated():
         run_profile.load_profile(PROFILE, ['replay_k=0'])
 
 
+def test_save_starts_knob_defaults_off_and_is_validated():
+    """RL5-METHODS B: share 0 by default (no save, no save start); the env exports it as JSON."""
+    values = run_profile.values(run_profile.load_profile(PROFILE, []))
+    assert values['save_starts'] == {'share': 0.0, 'random_saves': 2, 'act_weights': [1.0, 1.0, 1.0],
+                                     'died_later_weight': 0.0, 'uses_per_save': 16, 'pool_gb': 10.0}
+    assert "export FC_SAVE_STARTS='{\"act_weights\":[1.0,1.0,1.0]," in '\n'.join(
+        run_profile.env_lines(values))
+    on = ('save_starts={ share = 0.3, random_saves = 2, act_weights = [1.0, 1.0, 0.5], '
+          'died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }')
+    assert run_profile.values(run_profile.load_profile(PROFILE, [on]))['save_starts']['share'] == 0.3
+    for old, new, match in (('share = 0.3', 'share = 1.5', 'share'),
+                            ('[1.0, 1.0, 0.5]', '[0, 0, 0]', 'act_weights'),
+                            ('[1.0, 1.0, 0.5]', '[1.0, 1.0]', 'act_weights'),
+                            ('uses_per_save = 16', 'uses_per_save = 0', 'uses_per_save'),
+                            (', pool_gb = 10.0', '', 'exactly')):
+        with pytest.raises(run_profile.ProfileError, match=match):
+            run_profile.load_profile(PROFILE, [on.replace(old, new)])
+    assert 'save_starts' in supervise.ENV_RECIPE_KNOBS
+
+
 def test_exploration_plan_interleaves_arms_over_the_run_drivers():
     ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
         'exploration_ladder']
@@ -1719,6 +1740,7 @@ def test_env_sh_gives_each_driver_its_level_and_arm(tmp_path):
 
 
 FAKE_FAST_ENV = '''
+import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -1731,16 +1753,28 @@ createInterface({ input: process.stdin }).on("line", line => {
   const c = JSON.parse(line);
   if (c.cmd === "open") {
     n += 1;
-    const id = `inst${n}`, floor = 3 + (n % 5);
+    // a save start ends 22 floors after its save; a game with save points reaches floor 30-34
+    const fromSave = c.start.kind === "from_save";
+    const id = `inst${n}`, floor = fromSave ? c.start.save.floor + 22 + 17 : c.save_points ? 30 + (n % 5) : 3 + (n % 5);
     appendFileSync(join(dirname(path), "opens.jsonl"), JSON.stringify(c) + "\\n");
-    if (c.seed.startsWith("bad")) {  // a start the native cannot mount
+    // a start the native cannot mount: a bad seed, or (save starts) a save made on floor 16
+    if (c.seed.startsWith("bad") || (fromSave && c.start.save.floor === 16 - 17)) {
       emit({ event: "open_refused", slot: c.slot, game_ref: c.game_ref, reason: "reset_failed:x" });
       return;
     }
     const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
+    const act = (f) => f <= 17 ? 1 : f <= 33 ? 2 : 3;
     emit({ event: "opened", ...game, start: c.start });
+    for (const f of c.save_points?.floors ?? []) if (f <= floor) {
+      const sha256 = createHash("sha256").update(`${id}.${f}`).digest("hex");
+      emit({ event: "saved", ...game, floor: f, ascension: config.host.ascension, character: config.host.character,
+        decisions: f, public_facts: { act: act(f), floor: f, hp: 10, max_hp: 80 }, save: {
+          schema: "sts2.host-runtime/managed-map-continue-1", path: join(c.save_points.directory, `${sha256}.json`),
+          bytes: 80000, sha256, candidate: { artifact_sha256: "1".repeat(64) }, seed: c.seed, act: act(f),
+          floor: f - 17, parent_game_continuity_id: `fam-${id}` } });
+    }
     setTimeout(() => emit({ event: "closed", ...game, reason: "terminal", decisions: 10,
-      public_facts: { floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
+      public_facts: { act: act(floor), floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
       evidence_failed: false }), 30);
   } else if (c.cmd === "status") {
     emit({ event: "status", counters: { decisions: 10 * n, forced_steps: 0, native_steps: 0,
@@ -1870,20 +1904,36 @@ def test_env_driver_arm_sampling_and_k_replay_groups_feed_the_readout(tmp_path):
     assert 'arm hot' in text and 'ascension A0' in text and 'k 3' in text
 
 
-def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
+SAVE_STARTS_OFF = json.dumps(run_profile.values(run_profile.load_profile(PROFILE, []))[
+    'save_starts'], separators=(',', ':'), sort_keys=True)
+
+
+def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad_flags(tmp_path):
+    """The default knob (share 0): the same open commands as a driver without the flag."""
+    assert json.loads(SAVE_STARTS_OFF)['share'] == 0
     world, admit = fake_driver_world(tmp_path), AdmitAll()
-    tickets = tmp_path / 'tickets.mjs'
-    tickets.write_text('let n = 0;\nexport function nextTicket({ tag }) { n += 1; '
-                       'return { seed: `${tag}-t${n}`, start: { kind: "new_run" } }; }\n')
-    out = tmp_path / 'hook'
+    runs = {}
     try:
-        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
-                          '--arm', 'hot', '--replay-k', '2', '--tickets', str(tickets))
+        for name, extra in (('none', ()), ('off', ('--save-starts', SAVE_STARTS_OFF,
+                                                    '--save-pool', str(tmp_path / 'pool')))):
+            out = tmp_path / name
+            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                              '--arm', 'hot', '--replay-k', '2', *extra)
+            assert done.returncode == 0, done.stderr
+            runs[name] = [json.loads(line)
+                          for line in (out / 'opens.jsonl').read_text().splitlines()]
     finally:
         admit.close()
-    assert done.returncode == 0, done.stderr
-    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
-    assert [o['seed'] for o in opens] == [f'n0-p1-t{i // 2 + 1}' for i in range(len(opens))]
+
+    def strip(command):
+        return {k: v for k, v in command.items() if k not in ('command_id', 'slot')}
+    n = min(len(runs['none']), len(runs['off']))
+    assert n > 8 and [strip(o) for o in runs['off'][:n]] == [strip(o) for o in runs['none'][:n]]
+    assert set(runs['off'][0]) == {'schema', 'cmd', 'command_id', 'slot', 'game_ref', 'seed',
+                                   'initial_progress', 'start', 'r7', 'retain_originals'}
+    assert [o['seed'] for o in runs['off'][:n]] == [f'S{i // 2}' for i in range(n)]
+    assert all(o['start'] == {'kind': 'new_run'} for o in runs['off'])
+    assert not (tmp_path / 'pool').exists()
     for flags, message in (
             (('--exploration-ladder', LADDER_JSON, '--arm', 'cold', '--replay-k', '1'), '--arm'),
             (('--exploration-ladder', LADDER_JSON, '--arm', 'hot'), '--replay-k'),
@@ -1894,32 +1944,61 @@ def test_env_driver_start_ticket_hook_and_refused_flags(tmp_path):
         assert refused.returncode == 2 and message in refused.stderr, flags
 
 
-
-def test_env_driver_stops_loudly_on_a_refused_or_failing_hook_ticket(tmp_path):
-    """Review L1: a hook ticket that comes back refused never hot-loops open/refuse."""
-    import time
-    world = fake_driver_world(tmp_path)
-    for name, body in (
-            ('refused', 'export function nextTicket() { return { seed: "bad-save", '
-                        'start: { kind: "new_run" } }; }\n'),
-            ('throws', 'export function nextTicket() { throw new Error("no save left"); }\n')):
-        tickets = tmp_path / f'{name}.mjs'
-        tickets.write_text(body)
-        admit, out, began = AdmitAll(), tmp_path / name, time.monotonic()
-        try:
-            done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
-                              '--arm', 'hot', '--replay-k', '1', '--tickets', str(tickets),
-                              steady=40)
-        finally:
-            admit.close()
-        assert done.returncode == 3 and 'driver stops' in done.stderr, done.stderr
-        assert time.monotonic() - began < 20  # stopped at once, not at the end of steady
-        [failed] = [r for r in readout.jsonl(out / 'driver.jsonl')
-                    if r['event'] == 'ticket_failed']
-        assert failed['reason'] == ('open_refused' if name == 'refused'
-                                    else 'ticket_hook_failed')
-        opens = out / 'opens.jsonl'
-        assert len(opens.read_text().splitlines() if opens.exists() else []) <= 4  # one/slot
+def test_env_driver_save_starts_pool_draw_refusals_and_readout(tmp_path):
+    """Share 0.5: new runs save into the node pool, save starts claim one use per game (a K
+    group shares one save), a refused load is sealed and its family paused (never reopened),
+    and the readout reports save starts apart from the control arm's rolling results."""
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    run = tmp_path / 'run-s'
+    write_run(run, cards=1)
+    out, pool = run / 'env-n0-1' / 'p1', tmp_path / 'pool'
+    knob = dict(json.loads(SAVE_STARTS_OFF), share=0.5, uses_per_save=4)
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
+                          '--arm', 'hot', '--replay-k', '2', '--save-starts', json.dumps(knob),
+                          '--save-pool', str(pool), steady=3)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    new = [o for o in opens if o['start']['kind'] == 'new_run']
+    starts = [o for o in opens if o['start']['kind'] == 'from_save']
+    assert new and starts and all({16, 32, 47} <= set(o['save_points']['floors'])
+                                  and len(o['save_points']['floors']) == 5 for o in new)
+    assert all('save_points' not in o for o in starts)
+    log = readout.jsonl(out / 'driver.jsonl')
+    refused = [r for r in log if r['event'] == 'open_refused']
+    started = [r for r in log if r['event'] == 'opened' and r['start'] == 'from_save']
+    # one use per game: no (save, use) twice; a K group = one save
+    uses = [(r['save'], r['use']) for r in started + refused]
+    assert started and len(uses) == len(set(uses))
+    groups = {}
+    for r in started + refused:
+        groups.setdefault(r['group'], set()).add(r['save'])
+    assert all(len(saves) == 1 for saves in groups.values())
+    assert all(r['seed'].startswith('S') and r['save_floor'] != 16 for r in started)
+    ledger = [json.loads(line) for line in (pool / 'ledger.jsonl').read_text().splitlines()]
+    by_save = {line['id'][:16]: line for line in ledger if line['kind'] == 'save'}
+    pause_at = {line['family']: i for i, line in enumerate(ledger) if line['kind'] == 'pause'}
+    assert refused and all(r['reason'] == 'reset_failed:x' for r in refused)
+    assert {by_save[r['save']]['family'] for r in refused} == set(pause_at)
+    # a paused family's save is never claimed after its pause line
+    assert all(i < pause_at.get(line['family'], 1 << 30) for i, line in enumerate(ledger)
+               if line['kind'] == 'claim')
+    summary = json.loads((out / 'summary.json').read_text())['save_starts']
+    assert summary['load_failed'] == len(refused) and summary['saves_pooled'] > 0
+    reader = readout.Readout(run).update()
+    saves = reader.save_starts()
+    pooled = sum(1 for r in log if r['event'] == 'save_pooled')
+    assert sum(saves['pooled_by_act'].values()) == pooled == summary['saves_pooled']
+    admitted = {r['game_ref'] for r in log if r['event'] == 'admission' and r['ok']}
+    complete = [r for r in log if r['event'] == 'closed' and r['start'] == 'from_save'
+                and r['game_ref'] in admitted]
+    assert sum(row['games'] for row in saves['by_start_act'].values()) == len(complete) > 0
+    assert all(row['mean_floors_gained'] == 22 for row in saves['by_start_act'].values())
+    assert reader.recipe()['start']['from_save']['games'] == len(complete)
+    assert reader.training_games() == {}  # arm hot: no control-arm new runs to roll
+    assert 'save starts: pooled per act' in readout.render(readout.build(run, 1200))
 
 
 def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):

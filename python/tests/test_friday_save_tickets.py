@@ -1,5 +1,5 @@
-"""Save tickets (tools/friday/fastchain/tickets.mjs) and the P1-e save probe (save_probe.mjs):
-their node:test suites, run where CI runs Python."""
+"""Save starts (tools/friday/fastchain/tickets.mjs), the P1-e save probe (save_probe.mjs) and the
+acts 2-3 replay probe (save_replay_probe.mjs): their node:test suites, run where CI runs Python."""
 from __future__ import annotations
 
 import shutil
@@ -11,7 +11,8 @@ import pytest
 FASTCHAIN = Path(__file__).resolve().parents[2] / 'tools/friday/fastchain'
 
 
-@pytest.mark.parametrize('suite', ['tickets.test.mjs', 'save_probe.test.mjs'])
+@pytest.mark.parametrize('suite', ['tickets.test.mjs', 'save_probe.test.mjs',
+                                   'save_replay_probe.test.mjs'])
 def test_save_tickets_node_suite(suite: str) -> None:
     node = shutil.which('node')
     assert node, 'development Node is required for the fast-chain save tickets suites'

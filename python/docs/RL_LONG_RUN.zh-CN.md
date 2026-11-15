@@ -194,12 +194,21 @@ python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = j
   - 同起点 K 局 `replay_k`（1–16，≤ `env_slots`，默认 1）：同一驱动的 K 个槽开同一 ticket，
     组号 `TAG-kN`、成员号记在 driver.jsonl；中途被拒或早停的成员不补（不重试）。种子消耗变 1/K。
     `env_driver.mjs --replay-k` 必填。
-  - 起点 ticket 钩子：`env_driver.mjs --tickets M.mjs`（导出 `nextTicket({tag})` →
-    `{seed, start}`，W3 的「从存档起」接这里）；不给 = 种子表的下一个新局。
+  - 存档开局 `save_starts`（RL5-METHODS B，`tickets.mjs`；默认 `share = 0` = 不存不读，开局命令与
+    原来逐字相同）：`share` = 从存档开的局占开局数的比例（按开局数，不按决策数）；`share > 0` 时每个
+    新局在每个首领战前（全局 16/32/47 层）的地图和 `random_saves` 个随机层存档，进本节点 `/tmp` 的
+    池子（每作业一个、作业结束删、不上 R2）；按 `act_weights` 抽幕（目标 = 各幕「打过的层数」占比，
+    补最缺的幕），再在该幕均匀抽层、该层均匀抽一份；`died_later_weight` = 只从「同一幕里死前最后
+    一份」里抽的比例（用户未定，默认 0）；每份最多用 `uses_per_save` 次；池超 `pool_gb` 删最旧的（有
+    未结占用的不删），用完的也删。只收已录取且证据完好的局的存档；存档开局带原种子，录取照查留出
+    种子；读档被拒或结果不明：作废、停整族、不重试。只有同难度、同候选、同初始进度（sha256）的驱动
+    能用。`env.sh` 传 `--save-starts`、`--save-pool`。
   - 读数「recipe」表：按臂、难度、起点种类、K 给局数（完整 = 终局、已录取、证据完好）、平均层数、
     胜场、行数（已录取且证据完好局的模型行）；K > 1 另给组数、满组数、组内层数极差均值。
+    「save starts」表：每幕入池存档数、问题存档数；完整的存档开局按起始幕、按第几次用给局数、平均
+    终层、比存档多走的层数、胜场、原局死了的局里走过原死亡层的比例。滚动成绩只算对照臂从头开的局。
   - 链内换配方只在代际边界：`chain-CHAIN/env-recipe.txt`，每行一个 `name=value`（同
-    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
+    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`save_starts`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
     可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
 
 ## 以下为旧部署操作史
