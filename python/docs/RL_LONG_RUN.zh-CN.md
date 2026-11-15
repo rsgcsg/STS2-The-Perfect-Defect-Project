@@ -184,6 +184,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   （manifest、索引和 CP 记录留着，读已删 CP 响亮报 `object_not_found`）。删失败记数、
   stderr 报警、下个 CP 再试，不停训练；认领文件读不了就这一轮不删。运行记录
   `chain.checkpoint_retention` 记 kept / deleted / delete_failed / bytes_on_disk。
+  模型发布同样处理（`model_keep_newest`，默认 0 = 全留）：每个 mu 版本一份 model + heads，
+  学习者先写节点本地 Store，归档再复制到 peer；peer 上没有活路径读旧版本（推理从学习者本地
+  Store 取，续训用 CP 自带权重，评估从 CP 导出自己的模型，R7 用 mu 存档）。留最新 K 个和每个
+  被留 CP 记的版本，其余删 model 与 heads 的独占块，记录与 manifest 留着；运行记录
+  `chain.model_retention` 单独计数。学习者节点本地的 Store 和 `mu-network` 缓存不在这里删。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
   `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合

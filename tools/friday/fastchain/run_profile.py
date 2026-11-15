@@ -389,6 +389,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "release_trained_segments": _bool,
     "checkpoint_keep_newest": _int(0, 10000),
     "checkpoint_milestone_hours": _num(0, 1000),
+    "model_keep_newest": _int(0, 1000000),
     "r7_games_per_hour": _num(0, 100),
     "r7_max_games": _int(0),
     "r7_expected_games_per_node_hour": _int(1),

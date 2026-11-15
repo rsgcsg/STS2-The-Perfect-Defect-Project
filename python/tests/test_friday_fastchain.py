@@ -2372,6 +2372,24 @@ def retention_chain(tmp_path, monkeypatch, **sets):
         cps.append(manifest)
     exchange.store.publish(Manifest('model', producer, payloads=(exchange.store.put_bytes(
         'weights', b'unique-cp-000004' + b'model-weights-xx'),)))
+    # One model publication (model + heads + record) per CP version, as the learner's.
+    from spireagent.artifact_contracts import Parent
+    for i in range(1, 7):
+        generation = 'g-fc-lr1' if i <= 3 else 'g-fc-lr1-r1'
+        weights = exchange.store.put_bytes('weights', f'model-weights-{i:02d}'.encode())
+        model = Manifest('model', producer, payloads=(weights, exchange.store.put_bytes(
+            'package_manifest', f'package-json-{i:03d}'.encode())))
+        exchange.store.publish(model)
+        heads = Manifest('checkpoint', producer, parents=(Parent('policy', model.artifact_id),),
+                         payloads=(exchange.store.put_bytes(
+                             'checkpoint', f'heads-bytes-{i:04d}'.encode()),),
+                         parameters=FrozenObject.of({'schema': 'stpd/rl-behavior-heads-1'}))
+        exchange.store.publish(heads)
+        exchange.publish_model({'run': chain.site['run_name'], 'version': i,
+                                'training_generation': generation, 'published_at': 100.0 + i,
+                                'model_artifact_id': model.artifact_id,
+                                'model_sha256': weights.sha256,
+                                'heads_artifact_id': heads.artifact_id})
     chain.checkpoints = chain.peer_checkpoints
     chain.state = {'started_at': 0.0, 'deadline_at': 10**12, 'start_checkpoint': None,
                    'identity': {}, 'resumes_at': [], 'log': [],
@@ -2399,6 +2417,50 @@ def test_cp_retention_default_deletes_nothing_and_records_bytes(tmp_path, monkey
                                'bytes_on_disk': 6 * 32}
     for cp in cps:
         exchange.store.bytes(cp.payload('checkpoint'))
+    assert chain.model_retention == {'keep_newest': 0, 'kept': 6, 'deleted': 0,
+                                     'deleted_bytes': 0, 'delete_failed': 0,
+                                     'bytes_on_disk': 6 * 48}
+
+
+def test_model_retention_keeps_newest_and_versions_of_retained_cps(tmp_path, monkeypatch):
+    from spireagent.storage.blobs import StoreError
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2,
+                                           model_keep_newest=1)
+    chain.retain()
+    # Retained CPs name versions (lr1, 1), (lr1, 2), (lr1-r1, 5), (lr1-r1, 6); newest = 6.
+    facts = chain.model_retention
+    assert facts['kept'] == 4 and facts['deleted'] == 2 and facts['delete_failed'] == 0
+    assert facts['deleted_bytes'] == 2 * 48 and facts['bytes_on_disk'] == 4 * 48
+    for generation, version, gone in (('g-fc-lr1', 1, False), ('g-fc-lr1', 3, True),
+                                      ('g-fc-lr1-r1', 4, True), ('g-fc-lr1-r1', 6, False)):
+        record = exchange.model(version, training_generation=generation)
+        model = exchange.store.get_manifest(record['model_artifact_id'])  # manifest stays
+        heads = exchange.store.get_manifest(record['heads_artifact_id'])
+        for payload in (*model.payloads, heads.payload('checkpoint')):
+            if gone:
+                with pytest.raises(StoreError, match='object_not_found'):
+                    exchange.store.bytes(payload)
+            else:
+                exchange.store.bytes(payload)
+    run = Path(chain.state['generations'][1]['run'])
+    run.mkdir()
+    (run / 'plan.json').write_text(json.dumps(plan_for(cards=2)))
+    (run / 'learner-events.jsonl').write_text('')
+    assert chain.record(run, 'checkpoint')
+    line = json.loads((chain.dir / 'run-records.jsonl').read_text().splitlines()[-1])
+    assert line['chain']['model_retention']['deleted'] == 2
+    chain.retain()  # nothing more, never re-counted
+    assert chain.model_retention['deleted'] == 2
+    assert chain.model_retention['deleted_bytes'] == 2 * 48
+
+
+def test_model_retention_selection_and_heads_binding():
+    records = [{'training_generation': 'g', 'version': v, 'published_at': float(v)}
+               for v in range(1, 11)]
+    kept, drop = cp_retention.select_models(records, keep_newest=3, tied={('g', 2)})
+    assert [r['version'] for r in kept] == [2, 8, 9, 10] and len(drop) == 6
+    assert cp_retention.select_models(records, keep_newest=0, tied=set()) == (records, [])
 
 
 def test_cp_retention_deletes_only_unclaimed_unshared_cp_bytes(tmp_path, monkeypatch):
@@ -2455,11 +2517,17 @@ def test_cp_retention_failed_delete_is_loud_counted_and_retried(tmp_path, monkey
 
 
 def test_cp_retention_never_deletes_on_an_unreadable_claim(tmp_path, monkeypatch, capsys):
-    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2,
+                                           model_keep_newest=1)
     (chain.dir / 'eval-a0' / 'protected-checkpoints.json').write_text('{')
     chain.retain()
     assert 'error' in chain.retention and chain.retention['deleted'] == 0
     assert chain.state['log'][-1]['kind'] == 'checkpoint_retention_failed'
-    assert 'CP retention skipped' in capsys.readouterr().err
+    assert 'CP/model retention skipped' in capsys.readouterr().err
     for cp in cps:
         exchange.store.bytes(cp.payload('checkpoint'))
+    assert chain.model_retention['deleted'] == 0  # no model deleted that round either
+    for version in (1, 2, 3):
+        record = exchange.model(version, training_generation='g-fc-lr1')
+        exchange.store.bytes(exchange.store.get_manifest(record['model_artifact_id'])
+                             .payload('weights'))
