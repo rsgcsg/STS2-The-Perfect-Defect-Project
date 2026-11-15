@@ -303,6 +303,35 @@ def job_env(plan: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+CHECKPOINT_MAGIC = b"STPDCKP1"  # = stpd.rl.checkpoint_codec.MAGIC (pinned by a test)
+WARMUP_SCHEMA = "stpd/rl4-head-warmup-1"  # = what segment_learner._start_model accepts
+
+
+def warmup_package(peer_dir: Path, artifact_id: str) -> str:
+    """`model_package_sha256` of the fitted heads in a local peer store, read from the JSON
+    header at the front of the warm-up artifact's checkpoint payload (no torch, no tensor
+    bytes; the learner still verifies the whole payload at start)."""
+    manifest = json.loads((peer_dir / "manifests" / f"{artifact_id}.json").read_bytes())
+    payload, = (p for p in manifest["payloads"] if p["role"] == "checkpoint")
+    index = json.loads((peer_dir / "payload-indexes" / "v1" /
+                        f"{payload['sha256']}.json").read_bytes())
+    raw = b""
+    for chunk in index["chunks"]:
+        raw += (peer_dir / "objects" / "sha256" / chunk["sha256"]).read_bytes()
+        if len(raw) >= 16 and len(raw) >= 16 + int.from_bytes(raw[8:16], "little"):
+            break
+    if raw[:8] != CHECKPOINT_MAGIC:
+        raise ValueError("warm-up payload is not a tensor-tree checkpoint")
+    tree = json.loads(raw[16:16 + int.from_bytes(raw[8:16], "little")])["tree"]
+    if tree["kind"] != "mapping":
+        raise ValueError("warm-up payload is not a mapping")
+    fields = {key: node["value"] for key, node in tree["value"] if node["kind"] == "scalar"}
+    if fields.get("schema") != WARMUP_SCHEMA:
+        raise ValueError(f"warm-up payload schema {fields.get('schema')!r} is not "
+                         f"{WARMUP_SCHEMA}")
+    return fields["model_package_sha256"]
+
+
 def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str, Any]:
     site = plan["site"]
     facts: dict[str, Any] = {}
@@ -325,6 +354,12 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
         warmup_id = warmup_file.read_text().strip() if warmup_file.is_file() else None
         facts["warmup_artifact"] = {"id": warmup_id, "present": bool(warmup_id) and (
             Path(site["peer_dir"]) / "manifests" / f"{warmup_id}.json").is_file()}
+        if facts["warmup_artifact"]["present"]:
+            try:
+                facts["warmup_artifact"]["package_sha256"] = warmup_package(
+                    Path(site["peer_dir"]), warmup_id)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                facts["warmup_artifact"]["package_error"] = repr(error)
     else:  # site warmup_file = "": no fitted heads (a random-init start)
         facts["warmup_artifact"] = {"id": None, "present": False, "none": True}
     # The start model a fresh start's learner loads (its model.json; None = missing, refused

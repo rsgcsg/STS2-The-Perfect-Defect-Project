@@ -82,6 +82,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。合法类随楼层变，所以初始价值是
   楼层的函数（A0 约 floor 0 时 0.28、floor 48 时 0.85，审查探针），早期优势近似以楼层为势的
   整形：同层约 0、每上一层约 +0.006、死亡处约 −0.28。随机包配了预热件时预检拒绝。
+  受训起点配 `warmup_file = ""` 时预检拒绝，除非站点写 `trained_start_without_warmup = true`；
+  新起点的预热件按其 `model_package_sha256` 与起点包比对，不一致在提交前拒绝（续跑从 CP 取头，不比）。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：

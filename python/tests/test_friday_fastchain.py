@@ -99,7 +99,7 @@ def good_facts(plan):
             'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
-            'warmup_artifact': {'id': 'f' * 64, 'present': True},
+            'warmup_artifact': {'id': 'f' * 64, 'present': True, 'package_sha256': 'e' * 64},
             'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'gpu_test_start_seconds': 0.0,
@@ -1319,16 +1319,17 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     plan = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
     facts = {**good_facts(plan), 'gate_learner_base': with_hp(gate_base(), 0.003),
              'frozen_recipe': with_hp(FROZEN, 0.003)}
-    results = preflight.checks(plan, facts)
-    assert all(r.ok for r in results), preflight.report(results)
-    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope combat_ticket, ' \
-        'segment format stpd/rl-fast-segment-4'
+    # scope combat_ticket: no source sends single-combat tickets, so no row gets the term
+    results = by_name(preflight.checks(plan, facts))
+    assert [r.name for r in results.values() if not r.ok] == ['hp_score']
+    assert 'scope combat_ticket adds nothing' in results['hp_score'].detail
     # the "all_combats" experiment arm: the same path, gate and frozen recipe agreeing
     arm = {**facts, 'gate_learner_base': with_hp(gate_base(), 0.003, 'all_combats'),
            'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
     results = preflight.checks(plan, arm)
     assert all(r.ok for r in results), preflight.report(results)
-    assert 'scope all_combats' in by_name(results)['hp_score'].detail
+    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope all_combats, ' \
+        'segment format stpd/rl-fast-segment-4'
     # build passes the gate's c_hp through; A9 compares it with the frozen value
     run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
            'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
@@ -1344,6 +1345,69 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     assert learner_config.recipe_drift(old, FROZEN) == [
         "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
+
+
+def test_hp_score_refuses_a_coefficient_no_row_would_receive():
+    """G: c_hp > 0 with scope combat_ticket adds nothing (no source sends single-combat
+    tickets), and every c_hp > 0 needs format 4; c_hp 0 (today's default) passes as before."""
+    def hp(fmt, coef, scope):
+        plan = plan_for(cards=3, wall_seconds=2400, segment_format=fmt)
+        facts = {**good_facts(plan), 'gate_learner_base': with_hp(gate_base(), coef, scope),
+                 'frozen_recipe': with_hp(FROZEN, coef, scope)}
+        return preflight.check_hp_score(plan, facts)
+
+    three, four = 'stpd/rl-fast-segment-3', 'stpd/rl-fast-segment-4'
+    assert not hp(three, 0.003, 'all_combats').ok  # all_combats still needs format 4
+    assert 'needs segment_format' in hp(three, 0.003, 'all_combats').detail
+    assert not hp(three, 0.003, 'combat_ticket').ok
+    refused = hp(four, 0.003, 'combat_ticket')
+    assert not refused.ok and 'sends no single-combat tickets' in refused.detail
+    assert hp(four, 0.003, 'all_combats').ok
+    for fmt in (three, four):  # c_hp 0: the scope does not matter, as today
+        assert hp(fmt, 0.0, 'combat_ticket').ok and hp(fmt, 0.0, 'all_combats').ok
+    # the fact the refusal rests on: the fast env's episode_open names no ticket, so the
+    # assembler ends every game as {"end": "game"}; a ticket source must lift the refusal
+    kernel = (FASTCHAIN.parents[2] / 'components/policy-runtime/src/fast-env/kernel.ts')
+    opened = kernel.read_text().split('type: "episode_open"', 1)[1].split('});', 1)[0]
+    assert 'ticket' not in opened
+
+
+def test_a_trained_start_without_fitted_heads_needs_the_site_to_say_so():
+    """G / REVIEW-550 O1: a trained start with warmup_file = "" starts its RL4 heads from the
+    constructor init; refused unless site trained_start_without_warmup = true. A random-init
+    start and a resume (heads from the CP) pass as before."""
+    plan = plan_for(cards=3, wall_seconds=2400)
+    none = {**good_facts(plan), 'warmup_artifact': {'id': None, 'present': False, 'none': True}}
+    refused = preflight.check_warmup_artifact(plan, none)
+    assert not refused.ok and 'trained_start_without_warmup' in refused.detail
+    assert preflight.check_warmup_artifact({**plan, 'resume_checkpoint': 'cp-1'}, none).ok
+    random_init = {**none, 'start_model': {'package_sha256': 'e' * 64, 'training_identity': {
+        'schema': preflight.RANDOM_START, 'seed': 5}}}
+    assert preflight.check_warmup_artifact(plan, random_init).ok
+    meant = copy.deepcopy(plan)
+    meant['site']['trained_start_without_warmup'] = True
+    passed = preflight.check_warmup_artifact(meant, none)
+    assert passed.ok and passed.detail.endswith('site trained_start_without_warmup = true')
+    both = preflight.check_warmup_artifact(meant, good_facts(plan))  # opt-out + a warm-up
+    assert not both.ok and 'set one of them' in both.detail
+    # fitted heads: compared with the start package on a fresh start
+    other = {**good_facts(plan), 'warmup_artifact': {'id': 'f' * 64, 'present': True,
+                                                     'package_sha256': 'd' * 64}}
+    mismatch = preflight.check_warmup_artifact(plan, other)
+    assert not mismatch.ok and 'd' * 64 in mismatch.detail and 'e' * 64 in mismatch.detail
+    assert preflight.check_warmup_artifact({**plan, 'resume_checkpoint': 'cp-1'}, other).ok
+
+
+def test_site_takes_trained_start_without_warmup_as_an_optional_bool(tmp_path):
+    assert 'trained_start_without_warmup' not in run_profile.load_site(SITE)  # default: off
+    site = tmp_path / 'site.toml'
+    text = SITE.read_text().replace('\n[site]\n', '\n[site]\ntrained_start_without_warmup = @\n')
+    site.write_text(text.replace('@', 'true'))
+    assert run_profile.load_site(site)['trained_start_without_warmup'] is True
+    site.write_text(text.replace('@', '"yes"'))
+    with pytest.raises(run_profile.ProfileError,
+                       match='trained_start_without_warmup: expected bool'):
+        run_profile.load_site(site)
 
 
 def test_a_gate_from_before_the_hp_score_takes_both_keys_from_the_frozen_config():
@@ -1416,7 +1480,7 @@ def test_roles_writes_the_learner_config_and_gc_keys_preflight_checked():
     run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
            'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
            'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
-    frozen = with_hp(FROZEN, 0.003)
+    frozen = with_hp(FROZEN, 0.003, 'all_combats')
     run['start_model_sha256'] = 'a' * 64  # A1 start_fields pass through to build
     written, filled = learner_config.learner_base(gate_without_hp(), frozen, plan['knobs'], run)
     assert written['loss']['hp_advantage_coef'] == 0.003 and set(filled) == {
