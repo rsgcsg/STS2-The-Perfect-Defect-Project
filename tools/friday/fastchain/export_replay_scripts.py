@@ -17,7 +17,8 @@ from spireagent.workbench.managed_trajectory_store import read_shard
 def main() -> None:
     peer, result_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
     scratch, min_floor = Path(sys.argv[4]), int(sys.argv[5])
-    result = json.load(open(result_path))
+    with open(result_path) as file:
+        result = json.load(file)
     slots = sorted((s for s in result["ledger_report"]["slots"]
                     if (s["max_observed_floor"] or 0) >= min_floor),
                    key=lambda s: s["seed_ordinal"])
@@ -47,9 +48,11 @@ def main() -> None:
                               observation["scene"].get("native_kind")])
             terminal = (episode.get("outcome") or {}).get("terminal") or {}
             out.write(json.dumps({"seed": slot["seed"], "seed_ordinal": slot["seed_ordinal"],
-                                  "run_id": slot["run_id"], "max_floor": slot["max_observed_floor"],
+                                  "run_id": slot["run_id"],
+                                  "max_floor": slot["max_observed_floor"],
                                   "result": terminal.get("result"), "ascension": slot["ascension"],
-                                  "steps": steps}, ensure_ascii=False, separators=(",", ":")) + "\n")
+                                  "steps": steps},
+                                 ensure_ascii=False, separators=(",", ":")) + "\n")
             written += 1
     print(json.dumps({"scripts": written, "min_floor": min_floor, "out": out_path}))
 

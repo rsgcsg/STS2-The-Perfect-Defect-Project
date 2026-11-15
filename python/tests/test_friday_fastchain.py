@@ -1760,13 +1760,15 @@ def test_exploration_ladder_and_replay_k_are_validated():
 def test_save_starts_knob_defaults_off_and_is_validated():
     """RL5-METHODS B: share 0 by default (no save, no save start); the env exports it as JSON."""
     values = run_profile.values(run_profile.load_profile(PROFILE, []))
-    assert values['save_starts'] == {'share': 0.0, 'random_saves': 2, 'act_weights': [1.0, 1.0, 1.0],
-                                     'died_later_weight': 0.0, 'uses_per_save': 16, 'pool_gb': 10.0}
+    assert values['save_starts'] == {'share': 0.0, 'random_saves': 2,
+                                     'act_weights': [1.0, 1.0, 1.0], 'died_later_weight': 0.0,
+                                     'uses_per_save': 16, 'pool_gb': 10.0}
     assert "export FC_SAVE_STARTS='{\"act_weights\":[1.0,1.0,1.0]," in '\n'.join(
         run_profile.env_lines(values))
     on = ('save_starts={ share = 0.3, random_saves = 2, act_weights = [1.0, 1.0, 0.5], '
           'died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }')
-    assert run_profile.values(run_profile.load_profile(PROFILE, [on]))['save_starts']['share'] == 0.3
+    on_values = run_profile.values(run_profile.load_profile(PROFILE, [on]))
+    assert on_values['save_starts']['share'] == 0.3
     for old, new, match in (('share = 0.3', 'share = 1.5', 'share'),
                             ('[1.0, 1.0, 0.5]', '[0, 0, 0]', 'act_weights'),
                             ('[1.0, 1.0, 0.5]', '[1.0, 1.0]', 'act_weights'),
@@ -1825,7 +1827,9 @@ createInterface({ input: process.stdin }).on("line", line => {
     n += 1;
     // a save start ends 22 floors after its save; a game with save points reaches floor 30-34
     const fromSave = c.start.kind === "from_save";
-    const id = `inst${n}`, floor = fromSave ? c.start.save.floor + 22 + 17 : c.save_points ? 30 + (n % 5) : 3 + (n % 5);
+    const id = `inst${n}`;
+    const floor = fromSave ? c.start.save.floor + 22 + 17
+      : c.save_points ? 30 + (n % 5) : 3 + (n % 5);
     appendFileSync(join(dirname(path), "opens.jsonl"), JSON.stringify(c) + "\\n");
     // a start the native cannot mount: a bad seed, or (save starts) a save made on floor 16
     if (c.seed.startsWith("bad") || (fromSave && c.start.save.floor === 16 - 17)) {
@@ -1837,14 +1841,17 @@ createInterface({ input: process.stdin }).on("line", line => {
     emit({ event: "opened", ...game, start: c.start });
     for (const f of c.save_points?.floors ?? []) if (f <= floor) {
       const sha256 = createHash("sha256").update(`${id}.${f}`).digest("hex");
-      emit({ event: "saved", ...game, floor: f, ascension: config.host.ascension, character: config.host.character,
-        decisions: f, public_facts: { act: act(f), floor: f, hp: 10, max_hp: 80 }, save: {
-          schema: "sts2.host-runtime/managed-map-continue-1", path: join(c.save_points.directory, `${sha256}.json`),
-          bytes: 80000, sha256, candidate: { artifact_sha256: "1".repeat(64) }, seed: c.seed, act: act(f),
+      emit({ event: "saved", ...game, floor: f, ascension: config.host.ascension,
+        character: config.host.character, decisions: f,
+        public_facts: { act: act(f), floor: f, hp: 10, max_hp: 80 }, save: {
+          schema: "sts2.host-runtime/managed-map-continue-1",
+          path: join(c.save_points.directory, `${sha256}.json`), bytes: 80000, sha256,
+          candidate: { artifact_sha256: "1".repeat(64) }, seed: c.seed, act: act(f),
           floor: f - 17, parent_game_continuity_id: `fam-${id}` } });
     }
     setTimeout(() => emit({ event: "closed", ...game, reason: "terminal", decisions: 10,
-      public_facts: { act: act(floor), floor }, terminal: { result: floor === 7 ? "victory" : "defeat" },
+      public_facts: { act: act(floor), floor },
+      terminal: { result: floor === 7 ? "victory" : "defeat" },
       evidence_failed: false }), 30);
   } else if (c.cmd === "status") {
     emit({ event: "status", counters: { decisions: 10 * n, forced_steps: 0, native_steps: 0,

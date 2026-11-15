@@ -31,8 +31,8 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - at most `resume_max_total` resumes (default 3);
 - environment-side recipe at a generation boundary (I8): `chain-CHAIN/env-recipe.txt`, one
   `name=value` per line as `--set` takes it, only `ENV_RECIPE_KNOBS` (exploration ladder,
-  ascension mix, K, save starts); read when a later generation is submitted and recorded with it. The
-  learner recipe never changes in a chain. Another knob or a refused value ends the chain.
+  ascension mix, K, save starts); read when a later generation is submitted and recorded with
+  it. The learner recipe never changes in a chain. Another knob or a refused value ends the chain.
   No automatic curriculum: a generation boundary is a resume, not a schedule;
 - the restore itself is the learner's: CP-only restore (fresh generation, in-flight input
   discarded), shard count recorded in the CP. Not covered: a CP that fails to restore is
