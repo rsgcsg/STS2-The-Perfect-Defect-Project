@@ -25,6 +25,7 @@ rows of that floor (its reward screen), not the fight alone.
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -223,4 +224,48 @@ def exploration_fields(metadata: Any) -> dict[str, list[int]]:
             total = out.setdefault(key, [0, 0, 0, 0, 0])
             for i, value in enumerate(values):
                 total[i] += value
+    return out
+
+
+# PPO update per exploration arm (RL5-METHODS R): the per-row policy facts the update
+# already returns (`_policy_rows`: ratio and outside-clip of every multi-choice row,
+# pre-step) summed per arm. The arm is derived, not carried: sources are whole and in
+# order in a dataset, and every source with a multi-choice row names its arm in its first
+# row's exploration table, so a row's arm is that of the last table at or before it.
+# Diagnostics only: computed on the host after the step, never part of the loss.
+POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
+UNATTRIBUTED = "unattributed"
+
+
+def row_arms(metadata: Any, sources: Any) -> list[str | None]:
+    """Per dataset row, its source's arm: the exploration table on the source's first row
+    (fast_source), None for a source without one. `sources` = each source's row count, in
+    dataset order (the batch request's members); they must cover the metadata exactly."""
+    out: list[str | None] = []
+    for rows in sources:
+        counts = metadata[len(out)].get("exploration") if rows else None
+        arm = next(iter(counts)).split("|", 1)[0] if counts else None
+        out.extend([arm] * rows)
+    if len(out) != len(metadata):
+        raise ValueError(f"row_arms: sources cover {len(out)} rows, metadata has "
+                         f"{len(metadata)}")
+    return out
+
+
+def policy_by_arm(arms: list[str | None],
+                  samples: list[dict[str, Any]]) -> dict[str, list[float]]:
+    """{arm: [POLICY_ARM_FIELDS...]} over one attempt's policy rows. approx KL per row is
+    the loss's r - 1 - log r (its mean over rows = `approx_kl_mu_theta`); a row whose
+    ratio is missing, non-finite or 0 counts in `ratio_nonfinite` and adds no KL."""
+    out: dict[str, list[float]] = {}
+    for sample in samples:
+        arm = arms[sample["row"]] or UNATTRIBUTED
+        total = out.setdefault(arm, [0, 0.0, 0, 0])
+        total[0] += 1
+        total[2] += bool(sample["outside_clip"])
+        ratio = sample["ratio"]
+        if ratio is None or not math.isfinite(ratio) or ratio <= 0:
+            total[3] += 1
+        else:
+            total[1] += ratio - 1 - math.log(ratio)
     return out
