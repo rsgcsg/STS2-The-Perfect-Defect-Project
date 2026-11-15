@@ -411,6 +411,8 @@ FEATURES = {
                           "hp_weights_need_segment_format_4"),
     "hp_potion_mode": ("python/stpd/rl/fast_assembly.py",  # ticket H
                        "hp_potion_mode_needs_segment_format_4"),
+    "kl_stop_scope": ("python/stpd/rl/segments.py", "kl_stop_scope"),  # ticket K
+    "lr_warmup_steps": ("python/stpd/rl/segments.py", "lr_warmup_steps"),  # ticket K
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),
     "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528

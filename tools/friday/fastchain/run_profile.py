@@ -213,6 +213,8 @@ SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
 HP_COMBAT_TYPES = ("normal", "elite", "boss")
 # Ticket H: how the per-combat HP score treats potions (fast_assembly.HP_POTION_MODES).
 HP_POTION_MODES = ("points", "value_head")
+# Ticket K: which policy rows the learner's KL stop measures (stpd.rl.loss.KL_STOP_SCOPES).
+KL_STOP_SCOPES = ("all", "control")
 
 
 def _hp_combat_weights(value: Any) -> str | None:
@@ -244,6 +246,15 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
     if values["sgd_gc_refreeze_objects"] != 200_000 and not values["sgd_gc_freeze"]:
         out.append("sgd_gc_refreeze_objects other than 200000 needs sgd_gc_freeze")
+    if values["kl_stop_scope"] == "control":
+        control = values["exploration_ladder"].get("control")
+        if not control or not control["share"]:
+            out.append('kl_stop_scope "control" needs an exploration_ladder arm named '
+                       "control with share > 0 (the KL stop measures that arm's rows only)")
+        elif any(control[name] != {"temperature": 1, "uniform_mix": 0}
+                 for name in ("combat", "noncombat")):
+            out.append('kl_stop_scope "control" needs the control arm unaltered (combat and '
+                       "noncombat temperature 1, uniform_mix 0): its rows are the stop basis")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
         for name in ("combat", "noncombat"):
@@ -383,6 +394,9 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4),
     "hp_combat_weights": _hp_combat_weights,
     "hp_potion_mode": _choice(*HP_POTION_MODES),
+    # RL5-METHODS K: the learner's segments.kl_stop_scope / lr_warmup_steps (learner_config)
+    "kl_stop_scope": _choice(*KL_STOP_SCOPES),
+    "lr_warmup_steps": _int(0, 1_000_000),
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),

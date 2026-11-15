@@ -47,6 +47,39 @@ class AuxiliarySample:
     hp: float | None = None
 
 
+# KL stop scope (`segments.kl_stop_scope`, RL5-METHODS K). "all": the stop compares the
+# KL over every policy row of a minibatch (the rule before K). "control": over the rows
+# of the control arm only, the arm without exploration change (fast chain:
+# `exploration_ladder.control`; arms as `learning_diagnostics.row_arms` derives them).
+# Its save starts (`control+save`, fast_source; arm ids never contain "+") count too:
+# a save start changes the starting state, not the sampling policy (lead, #578 review).
+KL_STOP_SCOPES = ("all", "control")
+CONTROL_ARMS = frozenset(("control", "control+save"))
+
+
+def minibatch_control_rows(minibatch: Any, arms: list[str | None] | None,
+                           policy_mask: list[bool]) -> list[bool]:
+    """Per row of `minibatch` in its tensor order (its groups' rows): True for a policy
+    row (`policy_mask` = the dataset's `PreparedBatch.policy_mask` as a list) of the
+    control arm. `arms` = `row_arms` of the dataset (None: no row has an arm)."""
+    return [arms is not None and row < len(arms) and arms[row] in CONTROL_ARMS
+            and policy_mask[row] for group in minibatch.groups for row in group.rows]
+
+
+def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],
+                          updates: int, steps: int) -> None:
+    """`segments.lr_warmup_steps` (RL5-METHODS K): before optimizer step `updates + 1`
+    every group's lr is its configured lr (`base`, in group order) times
+    min(1, (updates + 1) / steps), i.e. linear from base/steps to base. `updates` is
+    the restored successful-step count, so a resume continues the ramp and a resume
+    after it stays at base. steps 0 (default) leaves the optimizer untouched."""
+    if not steps:
+        return
+    scale = min(1.0, (updates + 1) / steps)
+    for group, rate in zip(optimizer.param_groups, base, strict=True):
+        group["lr"] = rate * scale
+
+
 def segment_update(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
     """Retired RL4 row interface, retained only to reject stale callers clearly."""
     raise ValueError("row_segment_update_retired_use_prepared_update")
@@ -69,12 +102,15 @@ def batched_segment_loss(
     hp_rows: int,
     policy_coef: float = 1.0,
     row_diagnostics: list[torch.Tensor] | None = None,
+    control_kl: list[torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
     All impossible classes and padded candidates are masked before normalization.
     Aux rows have harmless dummy policy distributions and policy weight zero.
     Only recorded multi-choice PPO rows contribute to policy/KL/entropy.
+    `control_kl` (KL stop scope "control"): appends the KL sum weighted by
+    `t["control_weight"]` (control-arm policy rows / their minibatch count).
     """
     logp = scores.float().log_softmax(-1)
     probability = logp.exp()
@@ -89,6 +125,9 @@ def batched_segment_loss(
     ).sum()
     entropy = (-(probability * safe_logp).sum(-1) * policy_mask).sum()
     kl = ((ratio - 1 - log_ratio) * policy_mask).sum()
+    if control_kl is not None:
+        control_kl.append(((ratio.detach() - 1 - log_ratio.detach())
+                           * t["control_weight"]).sum())
     clipped = (((ratio.detach() - 1).abs() > clip).float() * policy_mask).sum()
     reverse = (
         (probability * safe_logp - torch.special.xlogy(probability, t["old_probabilities"])).sum(-1)
@@ -149,8 +188,15 @@ def prepared_update(
     collect_policy_rows: bool = False,
     gradient_sync: Any = None,
     shard: tuple[int, int] | None = None,
+    control_rows: list[bool] | None = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
+
+    `control_rows` (KL stop scope "control", RL5-METHODS K): per row of this
+    minibatch in tensor order (`minibatch_control_rows`), True for a control-arm
+    policy row. The stop then compares the KL over those rows only with
+    `target_kl`; a minibatch without one falls back to the all-rows KL and says so
+    (`kl_stop_basis`). None (scope "all", default) is the unchanged rule.
 
     `shard=(rank, world)` (data parallel, same update) runs only this rank's
     groups (`data_parallel.shard_groups`) with the minibatch's global
@@ -182,6 +228,14 @@ def prepared_update(
     row_values: list[float] = []
     try:
         t = minibatch.tensors
+        control_count = sum(control_rows) if control_rows is not None else 0
+        control_parts: list[torch.Tensor] | None = None
+        if control_rows is not None:
+            if len(control_rows) != len(t["targets"]):
+                raise ValueError("control_rows_must_cover_the_minibatch")
+            control_parts = []
+            t = {**t, "control_weight": torch.tensor(
+                control_rows, dtype=torch.float32).div_(max(control_count, 1)).to(device)}
         totals = t["targets"].new_zeros(8)
         # Value/HP head sums (learning_diagnostics); never part of the loss or decision.
         value_sums = t["targets"].new_zeros(learning_diagnostics.SIZE)
@@ -238,7 +292,7 @@ def prepared_update(
                     terminal_coef=config.terminal_coef, hp_coef=config.hp_coef,
                     multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
                     terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows,
-                    row_diagnostics=row_diagnostics)
+                    row_diagnostics=row_diagnostics, control_kl=control_parts)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
                 value_sums = value_sums + learning_diagnostics.value_statistics(
@@ -256,14 +310,23 @@ def prepared_update(
                 # Drop their small graphs before the next encoder allocation.
                 del loss, partial, components, valid, scores, logits, hp
             phase = time.perf_counter()
+            # Control-row KL (scope "control"): the sum over this rank's groups (none
+            # on a rank without groups), in the same all-reduce and unit as totals[3].
+            scope = None
+            if control_parts is not None:
+                scope = (torch.stack(control_parts).sum()[None] if control_parts
+                         else totals.new_zeros(1))
             if gradient_sync is not None:
                 # Data parallel (C-SCALE): every rank holds the same theta/Adam and
                 # one minibatch; after this all ranks share the mean gradient and
                 # totals, so clip, KL stop and Adam make one identical decision.
                 # The value sums ride in the same all-reduce as the totals.
-                joined, dynamic_valid = gradient_sync(model, torch.cat((totals, value_sums)),
-                                                      dynamic_valid)
-                totals, value_sums = joined[:8], joined[8:]
+                joined, dynamic_valid = gradient_sync(
+                    model, torch.cat((totals, value_sums) if scope is None
+                                     else (totals, value_sums, scope)), dynamic_valid)
+                totals, value_sums = joined[:8], joined[8:8 + learning_diagnostics.SIZE]
+                if scope is not None:
+                    scope = joined[8 + learning_diagnostics.SIZE:]
                 phases["gradient_sync"] = time.perf_counter() - phase
                 phase = time.perf_counter()
             diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
@@ -274,8 +337,11 @@ def prepared_update(
                                   valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
-            decision = torch.cat((decision, value_sums.detach().float()))  # last fixed part
+            decision = torch.cat((decision, value_sums.detach().float()))
+            if scope is not None:
+                decision = torch.cat((decision, scope.detach().float()))  # last fixed part
             decision_size = decision.numel()
+            values_end = decision_size - (scope is not None)
             if row_diagnostics:
                 decision = torch.cat((decision, torch.cat(row_diagnostics).flatten()))
             measured = decision.cpu().tolist()  # one pre-step device synchronization
@@ -285,7 +351,17 @@ def prepared_update(
             if not measured[9]:
                 optimizer.zero_grad(set_to_none=True)
                 raise ValueError("non_finite_prepared_outputs_loss_or_gradient")
-            stopped = measured[3] > target_kl
+            basis = None
+            if control_rows is None:
+                stopped = measured[3] > target_kl
+            elif control_count:
+                basis = "control"
+                stopped = measured[decision_size - 1] > target_kl
+            else:
+                # No control-arm policy row in this minibatch: the all-rows rule,
+                # counted per attempt (`kl_stop_basis`), never a silent pass.
+                basis = "all_rows_no_control"
+                stopped = measured[3] > target_kl
             if stopped:
                 optimizer.zero_grad(set_to_none=True)
             else:
@@ -317,15 +393,19 @@ def prepared_update(
             "terminal_rows": minibatch.terminal_rows,
             "hp_rows": minibatch.hp_rows,
             "value_statistics": learning_diagnostics.statistics_fields(
-                measured[decision_size - learning_diagnostics.SIZE:decision_size]),
+                measured[values_end - learning_diagnostics.SIZE:values_end]),
             "value_calibration": learning_diagnostics.calibration_fields(
-                measured[decision_size - learning_diagnostics.SIZE:decision_size]),
-            "seconds":time.perf_counter() - began,
+                measured[values_end - learning_diagnostics.SIZE:values_end]),
+            "seconds": time.perf_counter() - began,
             "host_timing": {
                 **phases,
             },
         }
         result.update(learning_diagnostics.headline(result["value_statistics"]))
+        if basis is not None:
+            result.update(kl_stop_basis=basis, kl_control_rows=control_count,
+                          approx_kl_control=measured[decision_size - 1]
+                          if control_count else None)
         if shard is not None:
             result["data_parallel"] = {
                 "rank": shard[0], "world": shard[1], "groups": len(executed),
