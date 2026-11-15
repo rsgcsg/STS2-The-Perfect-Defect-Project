@@ -32,6 +32,10 @@ class SegmentConfig:
     minibatches: int = 4
     epochs: int = 1
     gae_lambda: float = 0.99
+    # Value-target rule (RL5-METHODS V): "segment" = lambda-targets end at each 64-row
+    # segment's own seal (the behaviour before V); "game" = traces stitched to the
+    # game's end (fast chain only; `fast_source.game_target_tails`). Resume-locked.
+    value_target: str = "segment"
     episode_rows: int = 128
     capacity_rows: int = 4608
     capacity_limit_rows: int | None = None
@@ -76,6 +80,7 @@ class SegmentConfig:
                 or self.dataset_rows < self.minibatches
                 or type(self.auxiliary_rows) is not int or self.auxiliary_rows < 0
                 or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
+                or self.value_target not in ("segment", "game")
                 or any(type(v) not in (int, float) or not math.isfinite(v)
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,

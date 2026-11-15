@@ -60,6 +60,7 @@ from .segment_learner import (
     SegmentLearner,
     _pending_receipt,
     binary_preparer_arguments,
+    value_target_options,
 )
 from .segments import AuxiliaryPool, SegmentQueue
 from .sgd_process import _parent_death_signal
@@ -937,7 +938,8 @@ class _ShardLearner(SegmentLearner):
             buffer_segments=dataplane.get("fast_buffer_segments", 512),
             gae_lambda=settings.gae_lambda, aux_labels=frozenset(init["aux_labels"]),
             hp_advantage_coef=config.loss.hp_advantage_coef,
-            hp_advantage_scope=config.loss.hp_advantage_scope)
+            hp_advantage_scope=config.loss.hp_advantage_scope,
+            **value_target_options(settings, self.work))
         if self.shard_count > 1:
             intake.notify = send
         self.fast_intake = self.shard_intake = intake
@@ -1282,6 +1284,8 @@ class _ShardLearner(SegmentLearner):
         self._check_releases(wait=True)
         if self.segment_release is not None:
             self.segment_release.close()
+        if self.shard_intake.value_target == "game":
+            self.shard_intake.discard_held("stop")  # counted and loud
         return self._on_status(message)
 
 

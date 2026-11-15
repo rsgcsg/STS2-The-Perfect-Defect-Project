@@ -1709,7 +1709,11 @@ class _SgdWorker:
             self.send("staged", dataset=dataset, **fields)
 
     def run_dataset(self, start: dict[str, Any], next_message: Any) -> None:
-        from .learning_diagnostics import advantage_fields, exploration_fields
+        from .learning_diagnostics import (
+            advantage_fields,
+            exploration_fields,
+            value_target_fields,
+        )
         from .loss import prepared_update
 
         torch = self.torch
@@ -1782,6 +1786,7 @@ class _SgdWorker:
                 result["advantage_raw"] = advantage_fields(device_batch.normalization)
                 if self.rank == 0:  # every rank holds the whole dataset; rank 0 reports
                     result["exploration"] = exploration_fields(device_batch.metadata)
+                    result["value_target"] = value_target_fields(device_batch.metadata)
             ema_seconds = 0.0
             if result["stepped"]:
                 self.state["stage"] = "ema"
