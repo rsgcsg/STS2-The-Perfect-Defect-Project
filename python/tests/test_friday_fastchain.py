@@ -2559,7 +2559,8 @@ def test_cp_retention_claims_evaluated_cps_and_other_chain_starts(tmp_path):
     (chain_dir / 'eval-a0').mkdir(parents=True)
     (chain_dir / 'eval-a0' / 'state.json').write_text(json.dumps({'evaluations': [
         {'checkpoint': 'cp-done', 'stage': 'done'},
-        {'checkpoint': 'cp-unknown', 'stage': 'prepare_submit_unknown'}]}))
+        {'checkpoint': 'cp-unknown', 'stage': 'prepare_submit_unknown'},
+        {'checkpoint': None, 'stage': 'orphan_intent'}]}))  # review M2: must not block
     (tmp_path / 'chain-b').mkdir()
     (tmp_path / 'chain-b' / 'state.json').write_text(json.dumps({
         'start_checkpoint': 'cp-branch', 'generations': [{'checkpoint': None},

@@ -61,7 +61,7 @@ Both come from one readout.Readout per generation that reads only the new bytes 
 (dropped after an error, so the next tick starts a fresh one),
 CP retention at every published CP (cp_retention.py; `checkpoint_keep_newest`, default
 0 = keep every CP): the newest N, evaluation claims, generation starts and milestones stay,
-the run record's `chain.checkpoint_retention` counts kept / deleted / bytes on disk,
+the run record's `chain.checkpoint_retention` counts kept / deleted / payload bytes kept,
 and the same for model publications on the peer (`model_keep_newest`, default 0 = keep
 all; `chain.model_retention`),
 and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the

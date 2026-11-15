@@ -92,11 +92,13 @@ def claims(chain_dir: Path) -> set[str]:
     for path in sorted(chain_dir.glob("eval-*/state.json")):
         value = json.loads(path.read_text())
         evaluations = value.get("evaluations") if isinstance(value, dict) else None
+        # fast_eval records a crashed watcher's unfinished intent with checkpoint None.
         if not isinstance(evaluations, list) or not all(
-                isinstance(e, dict) and isinstance(e.get("checkpoint"), str)
-                for e in evaluations):
+                isinstance(e, dict) and (e.get("checkpoint") is None
+                                         or isinstance(e["checkpoint"], str))
+                and "checkpoint" in e for e in evaluations):
             raise ValueError(f"{path}: no evaluations list")
-        out.update(e["checkpoint"] for e in evaluations)
+        out.update(e["checkpoint"] for e in evaluations if e["checkpoint"] is not None)
     for path in sorted(chain_dir.parent.glob("chain-*/state.json")):
         value = json.loads(path.read_text())
         if not isinstance(value, dict):
