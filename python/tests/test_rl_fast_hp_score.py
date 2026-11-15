@@ -593,9 +593,7 @@ def test_the_weight_scales_the_hp_change_and_its_baseline_never_potion_or_death_
     survive = [(outcome(65), 62.5, False), (outcome(60), 50.0, True),
                (outcome(58, 82), 56.25, False)]
     died = [(outcome(40, 75), 45.0, False), (outcome(3, 75, terminal="defeat"), 20.0, True)]
-    # w = 1 (every type's default) is the unweighted score to the bit.
-    assert hp_advantages(facts(70), survive, 1.0) == hp_advantages(facts(70), survive)
-    assert hp_advantages(facts(50, 70), died, 1.0) == hp_advantages(facts(50, 70), died)
+    # w = 1 (every type's default) is pinned to the #538 floats in the next test.
     # Survive with a potion and a max-HP gain: h_0 = (58-70) + (82-80) = -10, baseline
     # 62.5-70; h_1 = (58-65) + 2 = -5, baseline 50-65; h_2 = 0, baseline 56.25-60.
     assert hp_advantages(facts(70), survive, 0.3) == pytest.approx(
@@ -607,6 +605,35 @@ def test_the_weight_scales_the_hp_change_and_its_baseline_never_potion_or_death_
     # w = 0 leaves exactly the unscaled points.
     assert hp_advantages(facts(70), survive, 0.0) == [-5.0, -5.0, 0.0]
     assert hp_advantages(facts(50, 70), died, 0.0) == [-35.0, -35.0]
+
+
+# #538's A_hp_t = returned_t - (predicted_t - H_t), `returned_t` the integer points, written
+# out as floats (computed with the #538 code at 18a56576). Predictions that are not binary
+# fractions make a rewrite that is equal in exact maths but rounds differently fail here
+# (#548 review: `w (h - (predicted - H_t)) + unscaled` gives 50.93157673898216 below).
+PINNED_538 = {
+    # Three potions, survive: returned = 7 - 15, 3 - 10, 2 - 5.
+    "potions": (facts(81, 90), [(outcome(85, 90), 22.068423261017834, True),
+                                (outcome(86, 90), 30.1, True), (outcome(88, 90), 40.7, True)],
+                [50.931576738982166, 47.9, 42.3]),
+    # Max-HP gain and a potion, survive: returned = -13 + 3 - 5, -7 + 3 - 5, -2 + 3.
+    "max_hp_gain": (facts(70), [(outcome(64), 61.7, False), (outcome(59), 48.3, True),
+                                (outcome(57, 83), 52.9, False)],
+                    [-6.700000000000003, 6.700000000000003, 7.100000000000001]),
+    # Death (H_T = 0, the max-HP gain taken back, -30): returned = -50 + 5 - 5 - 35,
+    # -41 - 35, -12 - 35.
+    "death": (facts(50, 70), [(outcome(41, 75), 89.47253489848646, True),
+                              (outcome(12, 75), 58.37624240224966, False),
+                              (outcome(4, 75, "defeat"), 4.076967704366093, False)],
+              [-124.47253489848646, -93.37624240224966, -39.07696770436609]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(PINNED_538))
+def test_w_1_is_the_538_hp_score_to_the_float(case):
+    start, steps, expected = PINNED_538[case]
+    assert hp_advantages(start, steps) == expected
+    assert hp_advantages(start, steps, 1.0) == expected
 
 
 def three_types(g: HpGame) -> None:
@@ -738,6 +765,30 @@ def test_the_aggregator_hands_the_service_each_combat_rows_public_encounter(link
     assert [(row["in_combat"], row["encounter"]) for row in assembler.rows] == [
         (False, None), (True, "elite")]
     assert all(type(hp) is float for _, hp, _ in assembler.hp)  # the HP head, for format 4
+
+
+def test_the_inference_bench_sends_each_combat_rows_public_encounter(link_model):
+    """#548 review: the bench's rows carry `encounter` as the aggregator's do, so a
+    format-4 bench run is not refused on every combat row."""
+    import importlib.util
+
+    from stpd.p1.rows_encoder import RowsEncoder
+
+    spec = importlib.util.spec_from_file_location(
+        "bench_rl_inference_3", Path(__file__).parents[1] / "tools" / "bench_rl_inference_3.py")
+    assert spec is not None and spec.loader is not None
+    bench = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bench)
+    encoder = RowsEncoder(link_model.vocabulary)
+    fight = public_state()
+    fight["combat"] = {"availability": "available", "content": {"encounter_type": "boss"}}
+    sent = []
+    for observation in (public_state(), fight):
+        row = bench.bench_row(encoder, json.dumps(observation).encode())
+        assert row is not None
+        sent.append(bench.wire_row(row[0], row[1], 1, "g1", 0, 0))
+    assert [(wire["in_combat"], wire["encounter"]) for wire in sent] == [
+        (False, None), (True, "boss")]
 
 
 def mixed_game(g: HpGame, game: str = "g") -> None:

@@ -46,6 +46,11 @@ is closed and versioned.
     before it opens; every temporary mu its segments bind is archived with its weights
     (bound by sha256) before a row is scored with it, and the game's originals are kept
     in full; the flag carries no game information;
+  - a row's `encounter` (optional, RL5-METHODS A2; no version bump) is the observation's
+    public `combat.content.encounter_type` on a combat row (normal / elite / boss /
+    unknown) and null otherwise; segment format 4 refuses a combat row without one of
+    those values (`hp_encounter_required`), format 3 ignores it; it is never model input
+    beyond the observation it came from;
   - `single_choice: omit` (L1) changes training data: one-option states are not rows,
     their native steps fold into the previous row's outcome (`forced_steps`), and
     `max_decisions_per_game` counts model rows only. The user approved omit for the fast

@@ -173,6 +173,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     缺它时组装拒收（`hp_encounter_required`）；`unknown`（如事件战）按 normal。非 1/1/1 要求格式 4
     （载入配置时核对），预检要求源码特性 `hp_combat_weights`。实验起点
     `--set 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'`。
+    主管定的读法（2026-11-15，#548 审查）：死亡时降到 0 血（−H_t）和收回的最大血量都属于
+    被乘的血量变化部分，只有 −30 与药水项不乘。
   - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额
     （多选行上 Cov(c_hp A_hp, A) / Var(A)，各数据集均值），`hp_std` 是它的标准差；c_hp 0 时两者
     为 null。`hp_score` 按战斗类型给格式 4 组装器累计的战斗数、死亡数与死亡率、每场平均净血量
