@@ -1073,7 +1073,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
         '0': 0.5, '10': 0.5}, 'replay_k': 4, 'save_starts': None,
         'segment_format': 'stpd/rl-fast-segment-4',
         'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
-        'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}}
+        'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3},
+        'hp_potion_mode': None}  # a plan without the knob (ticket H)
     p = r['throughput']
     assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
     assert p['run_training_rows_per_h_td_only'] == pytest.approx(8000 * 3600, rel=1e-3)
@@ -2957,3 +2958,42 @@ def test_cp_retention_claims_evaluated_cps_and_other_chain_starts(tmp_path):
     (chain_dir / 'eval-a0' / 'state.json').write_text('{"evaluations": [{}]}')
     with pytest.raises(ValueError, match='no evaluations list'):
         cp_retention.claims(chain_dir)
+
+
+def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing():
+    """Ticket H: "value_head" needs format 4 (profile and preflight) and c_hp > 0
+    (preflight); off the default it needs a source that knows it, roles passes it on."""
+    profile = run_profile.load_profile(PROFILE)
+    assert profile['hp_potion_mode']['value'] == profile['hp_potion_mode']['default'] \
+        == 'points'
+    with pytest.raises(run_profile.ProfileError, match='hp_potion_mode.*segment_format'):
+        run_profile.load_profile(PROFILE, ['hp_potion_mode="value_head"'])
+    with pytest.raises(run_profile.ProfileError, match='hp_potion_mode'):
+        run_profile.load_profile(PROFILE, ['hp_potion_mode="zero"'])
+    four = 'stpd/rl-fast-segment-4'
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        'hp_potion_mode="value_head"', f'segment_format={four}']))['hp_potion_mode'] == \
+        'value_head'
+
+    def hp(fmt, coef, mode):
+        plan = plan_for(cards=3, wall_seconds=2400, segment_format=fmt)
+        plan['knobs']['hp_potion_mode'] = mode  # past the profile relation
+        facts = {**good_facts(plan),
+                 'gate_learner_base': with_hp(gate_base(), coef, 'all_combats'),
+                 'frozen_recipe': with_hp(FROZEN, coef, 'all_combats')}
+        return preflight.check_hp_score(plan, facts)
+
+    zero = hp(four, 0.0, 'value_head')
+    assert not zero.ok and "hp_potion_mode 'value_head' needs c_hp > 0" in zero.detail
+    three = hp('stpd/rl-fast-segment-3', 0.003, 'value_head')
+    assert not three.ok and 'needs segment_format' in three.detail
+    on = hp(four, 0.003, 'value_head')
+    assert on.ok and on.detail.endswith('potions value_head')
+    assert hp(four, 0.003, 'points').detail == \
+        'c_hp 0.003, scope all_combats, segment format stpd/rl-fast-segment-4'
+    assert hp('stpd/rl-fast-segment-3', 0.0, 'points').ok
+    assert 'hp_potion_mode' not in preflight.required_features(plan_for(cards=3))
+    assert 'hp_potion_mode' in preflight.required_features(plan_for(
+        cards=3, segment_format=four, hp_potion_mode='value_head'))
+    roles = (FASTCHAIN / 'roles.py').read_text()
+    assert 'hp["hp_potion_mode"] = K["hp_potion_mode"]' in roles

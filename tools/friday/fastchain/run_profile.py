@@ -211,6 +211,8 @@ SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
 SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
 # RL5-METHODS A2: the format-4 HP-change weight per combat type (fast_assembly.hp_weights).
 HP_COMBAT_TYPES = ("normal", "elite", "boss")
+# Ticket H: how the per-combat HP score treats potions (fast_assembly.HP_POTION_MODES).
+HP_POTION_MODES = ("points", "value_head")
 
 
 def _hp_combat_weights(value: Any) -> str | None:
@@ -233,6 +235,9 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if (any(w != 1 for w in values["hp_combat_weights"].values())
             and values["segment_format"] != SEGMENT_FORMAT_4):
         out.append("hp_combat_weights other than 1 / 1 / 1 need segment_format "
+                   f"{SEGMENT_FORMAT_4} (the per-combat HP score)")
+    if values["hp_potion_mode"] != "points" and values["segment_format"] != SEGMENT_FORMAT_4:
+        out.append(f"hp_potion_mode {values['hp_potion_mode']!r} needs segment_format "
                    f"{SEGMENT_FORMAT_4} (the per-combat HP score)")
     if values["replay_k"] > values["env_slots"]:
         out.append(f"replay_k {values['replay_k']} must not exceed env_slots "
@@ -377,6 +382,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # c_hp > 0 (the gate's loss.hp_advantage_coef) needs 4: preflight check_hp_score
     "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4),
     "hp_combat_weights": _hp_combat_weights,
+    "hp_potion_mode": _choice(*HP_POTION_MODES),
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),

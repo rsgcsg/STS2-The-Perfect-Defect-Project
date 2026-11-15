@@ -53,3 +53,7 @@ to `"hash"`: a whole game enters the queue at its close and a dataset takes at m
 `episode_rows` of it, so the default `"oldest"` drops the later segments of long games
 first. `"hash"` drops the lowest packet digest instead. The run record counts selected
 and evicted rows by distance to the game's end (`game_end_*_rows`).
+The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used from the
+row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
+row whose own choice is `potion.use` only the death points (no HP-change part), so using
+a potion is judged by the outcome advantage, not by the HP it saves; death points, combat weights and the HP-head baseline are unchanged.
