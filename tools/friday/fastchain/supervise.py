@@ -490,7 +490,7 @@ class Chain:
             "kept": len(kept), "deleted": len(totals["deleted"]),
             "delete_failed": totals["delete_failed"],
             "deleted_bytes": totals["deleted_bytes"],
-            "bytes_on_disk": sum(self.deleter.payload_bytes(a) for a in kept)}
+            "payload_bytes_kept": sum(self.deleter.payload_bytes(a) for a in kept)}
         kept_ids = set(kept)
         return [r for r in records if r["checkpoint_artifact_id"] in kept_ids]
 
@@ -532,7 +532,7 @@ class Chain:
             self.note("models_deleted", count=deleted, freed_bytes=freed)
         self.model_retention = {
             "keep_newest": keep_newest, "kept": len(kept), **totals,
-            "bytes_on_disk": sum(self.deleter.payload_bytes(r["model_artifact_id"])
+            "payload_bytes_kept": sum(self.deleter.payload_bytes(r["model_artifact_id"])
                                  + self.deleter.payload_bytes(r["heads_artifact_id"])
                                  for r in kept)}
 

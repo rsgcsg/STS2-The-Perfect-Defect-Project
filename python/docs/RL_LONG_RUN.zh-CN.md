@@ -175,15 +175,21 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `r7_max_games` 均分上限），驱动开局前问 `r7`，选中的局 `open.r7 = true`（原件全留）；
   服务侧 `mu_archive = local_mu_archive(run/mu-archive-K, mu_archive_gb 均分)`、跟随器
   `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
-  普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
-  之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+  普通局只留账本。fast env 的 `episode_open` 已带 `audit_retain_mu`（kernel.ts），R7 局的
+  mu 存进服务侧 mu 存档。
 - CP 保留（#555，`supervise.py` + `cp_retention.py`）：每发布一个 CP，链按
   `checkpoint_keep_newest`（默认 0 = 全留；开时 ≥ 2）留最新 N 个、评估看守在
-  `eval-*/protected-checkpoints.json` 里认领的、各代起点 CP，以及每
+  `eval-*/protected-checkpoints.json` 里认领的、`eval-*/state.json` 里任何阶段的评估点过的
+  （含 `prepare_submit_unknown`）、同一 work root 下所有 `chain-*/state.json` 的起点 CP、
+  各代起点 CP，以及每
   `checkpoint_milestone_hours` 小时窗口的第一个，其余只删 CP 自己独占的 payload 块
   （manifest、索引和 CP 记录留着，读已删 CP 响亮报 `object_not_found`）。删失败记数、
   stderr 报警、下个 CP 再试，不停训练；认领文件读不了就这一轮不删。运行记录
-  `chain.checkpoint_retention` 记 kept / deleted / delete_failed / bytes_on_disk。
+  `chain.checkpoint_retention` 记 kept / deleted / delete_failed / payload_bytes_kept
+  （被留件 payload 大小之和，不是真实占盘：共享块重复计，只被已删件共享的块留在盘上不计）。
+  按 manifest 数谁在用每个 payload：另一件也引用同一 payload（heads 未变、续训 mu 与旧版
+  相同、评估导出与链发布相同）就整件跳过。已接受的竞态：写手复用了只有被删件用的块，且它
+  发布时的读回刚好在删除之前完成，则该件缺块（读时响亮报错）；需要非单调共享且在毫秒窗口内。
   模型发布同样处理（`model_keep_newest`，默认 0 = 全留）：每个 mu 版本一份 model + heads，
   学习者先写节点本地 Store，归档再复制到 peer；peer 上没有活路径读旧版本（推理从学习者本地
   Store 取，续训用 CP 自带权重，评估从 CP 导出自己的模型，R7 用 mu 存档）。留最新 K 个和每个

@@ -2414,12 +2414,12 @@ def test_cp_retention_default_deletes_nothing_and_records_bytes(tmp_path, monkey
     chain.retain()
     assert chain.retention == {'keep_newest': 0, 'milestone_hours': 0, 'kept': 6,
                                'deleted': 0, 'delete_failed': 0, 'deleted_bytes': 0,
-                               'bytes_on_disk': 6 * 32}
+                               'payload_bytes_kept': 6 * 32}
     for cp in cps:
         exchange.store.bytes(cp.payload('checkpoint'))
     assert chain.model_retention == {'keep_newest': 0, 'kept': 6, 'deleted': 0,
                                      'deleted_bytes': 0, 'delete_failed': 0,
-                                     'bytes_on_disk': 6 * 48}
+                                     'payload_bytes_kept': 6 * 48}
 
 
 def test_model_retention_keeps_newest_and_versions_of_retained_cps(tmp_path, monkeypatch):
@@ -2431,7 +2431,7 @@ def test_model_retention_keeps_newest_and_versions_of_retained_cps(tmp_path, mon
     # Retained CPs name versions (lr1, 1), (lr1, 2), (lr1-r1, 5), (lr1-r1, 6); newest = 6.
     facts = chain.model_retention
     assert facts['kept'] == 4 and facts['deleted'] == 2 and facts['delete_failed'] == 0
-    assert facts['deleted_bytes'] == 2 * 48 and facts['bytes_on_disk'] == 4 * 48
+    assert facts['deleted_bytes'] == 2 * 48 and facts['payload_bytes_kept'] == 4 * 48
     for generation, version, gone in (('g-fc-lr1', 1, False), ('g-fc-lr1', 3, True),
                                       ('g-fc-lr1-r1', 4, True), ('g-fc-lr1-r1', 6, False)):
         record = exchange.model(version, training_generation=generation)
@@ -2470,7 +2470,7 @@ def test_cp_retention_deletes_only_unclaimed_unshared_cp_bytes(tmp_path, monkeyp
     chain.retain()
     # kept: cp1 (generation lr1-r1 started from it), cp2 (claimed), cp5 + cp6 (newest)
     assert chain.retention['kept'] == 4 and chain.retention['deleted'] == 2
-    assert chain.retention['bytes_on_disk'] == 4 * 32
+    assert chain.retention['payload_bytes_kept'] == 4 * 32
     assert chain.retention['deleted_bytes'] == 16  # cp3's unique chunk; cp4's is shared
     assert chain.state['checkpoint_retention']['deleted'] == [cps[2].artifact_id,
                                                               cps[3].artifact_id]
@@ -2531,3 +2531,40 @@ def test_cp_retention_never_deletes_on_an_unreadable_claim(tmp_path, monkeypatch
         record = exchange.model(version, training_generation='g-fc-lr1')
         exchange.store.bytes(exchange.store.get_manifest(record['model_artifact_id'])
                              .payload('weights'))
+
+
+def test_cp_retention_keeps_a_payload_another_artifact_names(tmp_path, monkeypatch):
+    """Review M1: two artifacts with byte-identical payloads share one payload index;
+    deleting one must leave the other readable."""
+    from spireagent.artifact_contracts import Manifest, Producer
+    from spireagent.json_boundary import FrozenObject
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch)
+    producer = Producer('rsgcsg/STS2-The-Perfect-Defect', 'a' * 40, 'b' * 64)
+    same = [Manifest('checkpoint', producer, payloads=(exchange.store.put_bytes(
+        'checkpoint', b'identical-bytes-' * 2),), parameters=FrozenObject.of({'n': n}))
+        for n in (1, 2)]
+    for manifest in same:
+        exchange.store.publish(manifest)
+    deleter = cp_retention.Deleter(exchange.store)
+    done = deleter.delete(same[0].artifact_id)
+    assert done['freed_bytes'] == 0 and done['shared'] == 1
+    exchange.store.bytes(same[1].payload('checkpoint'))
+
+
+def test_cp_retention_claims_evaluated_cps_and_other_chain_starts(tmp_path):
+    """Review S1/S2: every CP an evaluation names (any stage) and the start CPs of every
+    chain under the same work root are protected; a malformed state skips the pass."""
+    chain_dir = tmp_path / 'chain-a'
+    (chain_dir / 'eval-a0').mkdir(parents=True)
+    (chain_dir / 'eval-a0' / 'state.json').write_text(json.dumps({'evaluations': [
+        {'checkpoint': 'cp-done', 'stage': 'done'},
+        {'checkpoint': 'cp-unknown', 'stage': 'prepare_submit_unknown'}]}))
+    (tmp_path / 'chain-b').mkdir()
+    (tmp_path / 'chain-b' / 'state.json').write_text(json.dumps({
+        'start_checkpoint': 'cp-branch', 'generations': [{'checkpoint': None},
+                                                         {'checkpoint': 'cp-gen'}]}))
+    assert cp_retention.claims(chain_dir) == {'cp-done', 'cp-unknown', 'cp-branch', 'cp-gen'}
+    (chain_dir / 'eval-a0' / 'state.json').write_text('{"evaluations": [{}]}')
+    with pytest.raises(ValueError, match='no evaluations list'):
+        cp_retention.claims(chain_dir)
