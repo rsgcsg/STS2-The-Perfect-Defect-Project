@@ -82,6 +82,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。合法类随楼层变，所以初始价值是
   楼层的函数（A0 约 floor 0 时 0.28、floor 48 时 0.85，审查探针），早期优势近似以楼层为势的
   整形：同层约 0、每上一层约 +0.006、死亡处约 −0.28。随机包配了预热件时预检拒绝。
+  受训起点配 `warmup_file = ""` 时预检拒绝，除非站点写 `trained_start_without_warmup = true`；
+  新起点的预热件按其 `model_package_sha256` 与起点包比对，不一致在提交前拒绝（续跑从 CP 取头，不比）。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
@@ -228,7 +230,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     0.001–0.01。
   - 范围（owner：血点分用于单战斗练习）：`"combat_ticket"`（默认）只给 `ticket.end ==
     "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
-    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
+    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行，
+    预检 `hp_score` 因此拒绝 c_hp > 0 配 `combat_ticket`（#568）。
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
     对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
     再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。

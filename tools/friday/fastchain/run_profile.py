@@ -504,8 +504,11 @@ def _baseline(value: Any) -> str | None:
 
 # Optional site keys. eval_baselines: the registered reference round per evaluation
 # watcher (supervise: a0, a10), its plan.json pinned by sha256 (fast_eval --baseline-*).
+# trained_start_without_warmup (default false): a fresh start from a trained package with
+# warmup_file = "" is meant (heads from their constructor init); preflight refuses it otherwise.
 OPTIONAL_SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "eval_baselines": _table_of(_baseline, frozenset({"a0", "a10"}), "baselines"),
+    "trained_start_without_warmup": _bool,
 }
 
 
