@@ -85,7 +85,9 @@ the repository/task so work is not dependent on one private conversation.
 ## Mandatory independent review before acceptance
 
 Material changes under [Governance](ENGINEERING_GOVERNANCE.md#2-change-classes-and-required-confidence)
-receive one appropriately scoped non-author review of a stable candidate. Ordinary
+receive one appropriately scoped non-author review of a stable candidate.
+非作者复核做在已转正式（非草稿）且 CI 已通过的 PR 头上；之后头再变，就复核变了的部分（用户 11-15 批）。
+Ordinary
 editorial/internal changes use the author's short self-check; do not require another
 agent for every wording change or commit. A reviewer is not an extra implementation
 owner or an excuse to re-audit the whole project.

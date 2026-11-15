@@ -176,7 +176,9 @@ Keep these decisions in the existing task packet: first incorrect fact/owner,
 exact dependencies, the risky claim and counterexample, the test's real/mocked
 seams, and its completion boundary. Source review and the short boundary check
 precede a frozen full candidate. Independently green leaf tests alone do not
-establish their joined contract. No additional manager, ledger or test framework
+establish their joined contract.
+每批 PR 合进集成分支后，先用真正安装的包跑一次小的组合冒烟，过了再在它上面继续开发（用户 11-15 批）。
+No additional manager, ledger or test framework
 is required for this procedure.
 
 On failure, retain the original outcome and useful bounded diagnostics: source,
