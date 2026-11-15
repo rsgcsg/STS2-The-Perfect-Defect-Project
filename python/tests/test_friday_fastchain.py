@@ -3254,6 +3254,7 @@ def test_readout_shows_the_restored_cp_and_the_declared_changes(tmp_path):
                 'run': 'r', 'training_generation': 'g-old', 'sequence': 7,
                 'mu_version': 40, 'updates': 900, 'producer': {}, 'recipe_changes':
                 LR_DOWN['changes'], 'optimizer_lr': {'restored': [0.000113, 0.0001],
+                                                     'base': [0.00005, 0.0001],
                                                      'applied': [0.00005, 0.0001]}}
     with (run / 'learner-events.jsonl').open('a') as out:
         out.write(json.dumps(restored) + '\n')
@@ -3264,10 +3265,37 @@ def test_readout_shows_the_restored_cp_and_the_declared_changes(tmp_path):
     text = readout.render(r)
     for line in ('restored CP: cp-src (generation g-old, CP 7, mu 40, 900 updates)',
                  "declared recipe changes: lr 0.000113 -> 5e-05, segments.value_target "
-                 "'segment' -> 'game'; optimizer lr restored [0.000113, 0.0001], applied "
-                 "[5e-05, 0.0001]"):
+                 "'segment' -> 'game'; optimizer lr restored [0.000113, 0.0001], base "
+                 "[5e-05, 0.0001], next step [5e-05, 0.0001]"):
         assert line in text, text
-    plan['resume_checkpoint'] = 'cp-expected'  # the learner restored another CP: loud
+    assert r['incidents']['restored_checkpoint_mismatch'] is None
+    plan['resume_checkpoint'] = 'cp-expected'  # the learner restored another CP: an incident
     (run / 'plan.json').write_text(json.dumps(plan))
-    text = readout.render(readout.build(run, 1200))
+    r = readout.build(run, 1200)
+    assert r['incidents']['restored_checkpoint_mismatch'] == {'expected': 'cp-expected',
+                                                              'restored': 'cp-src'}
+    text = readout.render(r)
     assert "NOT the plan's resume CP cp-expected" in text
+    assert 'INCIDENT: the learner restored CP cp-src, the plan\'s resume CP is cp-expected' \
+        in text
+
+
+def test_a_failed_cp_read_names_the_cp_not_the_store_path(tmp_path):
+    peer = tmp_path / 'secret-site-peer'
+    plan = declared_plan(LR_DOWN)
+    facts = launch.resume_checkpoint_facts(plan, peer)
+    error = facts['resume_checkpoint_config_error']
+    assert 'cp-src' in error and 'FileNotFoundError' in error and str(peer) not in error
+    assert 'secret-site-peer' not in error
+    result = preflight.check_declared_changes(plan, {**good_facts(plan), **facts})
+    assert not result.ok and 'secret-site-peer' not in result.detail
+    assert launch.resume_checkpoint_facts(declared_plan({}), peer) == {}  # nothing read
+
+
+def test_preflight_compares_declared_values_type_strict_like_the_learner():
+    declared = {'checkpoint': 'cp-src', 'changes': {
+        'loss.hp_advantage_coef': {'old': False, 'new': 0.003}}}
+    plan = declared_plan(declared)
+    facts = {**good_facts(plan), 'resume_checkpoint_config': cp_config()}  # c_hp 0.0
+    result = preflight.check_declared_changes(plan, facts)
+    assert not result.ok and 'declared old False, CP has 0.0' in result.detail

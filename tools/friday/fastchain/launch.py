@@ -349,6 +349,19 @@ def checkpoint_config(peer_dir: Path, artifact_id: str) -> dict[str, Any]:
     return tree_value(fields["config"])
 
 
+def resume_checkpoint_facts(plan: dict[str, Any], peer_dir: Path) -> dict[str, Any]:
+    """RL5-METHODS C: the CP's recipe, only when a declared change needs it (none = today).
+    A failed read names the CP and the error type, never the store path."""
+    declared = plan["knobs"].get("declared_changes") or {}
+    if not declared or plan.get("resume_checkpoint") != declared["checkpoint"]:
+        return {}
+    try:
+        return {"resume_checkpoint_config": checkpoint_config(peer_dir, declared["checkpoint"])}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {"resume_checkpoint_config_error": f"{type(error).__name__} reading checkpoint "
+                f"{declared['checkpoint']} (missing or not a self-contained learner CP)"}
+
+
 def warmup_package(peer_dir: Path, artifact_id: str) -> str:
     """`model_package_sha256` of the fitted heads in a local peer store, read from the JSON
     header at the front of the warm-up artifact's checkpoint payload."""
@@ -398,14 +411,7 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["start_model"] = ({"package_sha256": descriptor["package_sha256"],
                              "training_identity": descriptor.get("training_identity")}
                             if descriptor else None)
-    # RL5-METHODS C: the CP's recipe, only when a declared change needs it (none = today).
-    declared = plan["knobs"].get("declared_changes") or {}
-    if declared and plan.get("resume_checkpoint") == declared["checkpoint"]:
-        try:
-            facts["resume_checkpoint_config"] = checkpoint_config(Path(site["peer_dir"]),
-                                                                  declared["checkpoint"])
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            facts["resume_checkpoint_config_error"] = repr(error)
+    facts.update(resume_checkpoint_facts(plan, Path(site["peer_dir"])))
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL

@@ -1238,7 +1238,7 @@ class SegmentLearner:
         ).result()
         self.published_updates = initial["updates"]
         self.published_at[self.version] = time.time()
-        # Which CP this learner actually restored (RL4.2 resumed from a stale CP unnoticed)
+        # Which CP this learner actually restored (checked against the plan in the run record)
         # and, at a declared continuation, each change and the lr applied. The fast chain
         # writes it into the run's learner-events.jsonl (roles.py) for the run record.
         self.restored_checkpoint: dict[str, Any] | None = None
@@ -1251,9 +1251,14 @@ class SegmentLearner:
                 "mu_version": restored.counters.mu_version,
                 "updates": restored.counters.updates, "producer": restored.producer,
                 "recipe_changes": self.recipe_changes,
+                # restored: the CP's group lr; base: this config's (lr, head_lr); applied:
+                # the lr of the next optimizer step (base x the lr warm-up scale, if any).
                 "optimizer_lr": {"restored": self.restored_lr,
-                                 "applied": [group["lr"] for group in
-                                             self.optimizer.param_groups]}}
+                                 "base": [config.lr, settings.head_lr],
+                                 "applied": [rate * (min(1.0, (self.updates + 1)
+                                             / settings.lr_warmup_steps)
+                                             if settings.lr_warmup_steps else 1.0)
+                                             for rate in (config.lr, settings.head_lr)]}}
             self._event("checkpoint_restored", **{
                 ("restored_training_generation" if key == "training_generation" else key): value
                 for key, value in self.restored_checkpoint.items()})

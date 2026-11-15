@@ -23,9 +23,11 @@ def read_cp(owner):
     return record, decode_state(owner.exchange.store.bytes(payload, maximum=payload.size))
 
 
-def trained_cp(tmp_path, monkeypatch):
+def trained_cp(tmp_path, monkeypatch, warmup=0):
     """A CP after one real SGD step (non-empty Adam moments)."""
     config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, segments=dataclasses.replace(
+        config.segments, lr_warmup_steps=warmup))
     owner = SegmentLearner(config, tmp_path / "owner", io)
     try:
         deliver(owner, actor="a")
@@ -92,7 +94,7 @@ def test_accepted_change_keeps_model_and_optimizer_state_and_applies_the_new_val
         assert restored["checkpoint_artifact_id"] == cp_id and restored["updates"] == 1
         assert restored["recipe_changes"] == {k: dict(v) for k, v in declared["changes"].items()}
         assert restored["optimizer_lr"] == {"restored": [old_lr, old_head],
-                                            "applied": [5e-6, 2e-5]}
+                                            "base": [5e-6, 2e-5], "applied": [5e-6, 2e-5]}
         event, = [e for e in owner.exchange.event_records()
                   if e["kind"] == "checkpoint_restored"]
         assert event["checkpoint_artifact_id"] == cp_id
@@ -252,3 +254,24 @@ def test_preflight_reads_the_cp_config_from_the_peer_header_without_torch(
     assert cp.config["lr"] == config.lr and "resume_recipe_changes" not in cp.config
     with pytest.raises(FileNotFoundError):
         launch.checkpoint_config(peer, "0" * 64)
+
+
+def test_during_an_unfinished_warm_up_the_record_shows_the_real_next_step_lr(
+        tmp_path, monkeypatch):
+    """lr_warmup_steps 10, one update done: the next step runs at base x 2/10, from the
+    new base; the warm-up does not restart."""
+    config, io, cp_id, _ = trained_cp(tmp_path, monkeypatch, warmup=10)
+    declared = declaration(cp_id, lr=(config.lr, 5e-6))
+    owner = SegmentLearner(continuation(config, cp_id, declared=declared, lr=5e-6),
+                           tmp_path / "next", io)
+    try:
+        lr = owner.restored_checkpoint["optimizer_lr"]
+        head = config.segments.head_lr
+        assert lr["base"] == [5e-6, head]
+        assert lr["applied"] == pytest.approx([5e-6 * 0.2, head * 0.2])
+        deliver(owner, actor="c")
+        deliver(owner, actor="d")
+        assert owner._prepare() and owner._step()["stepped"]
+        assert [g["lr"] for g in owner.optimizer.param_groups] == pytest.approx(lr["applied"])
+    finally:
+        owner.close()

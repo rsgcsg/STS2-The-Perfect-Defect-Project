@@ -377,21 +377,24 @@ def check_declared_changes(plan: dict[str, Any], facts: dict[str, Any]) -> Resul
         "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
         "generation": "-", "warmup_artifact_id": None, "rendezvous_path": "-",
         "ranks": plan["placement"]["ranks"], "resume_checkpoint": cp})
+    def same(a: Any, b: Any) -> bool:  # as the learner (recipe_changes._same): 0.0 != False
+        return a == b and (type(a) is bool) == (type(b) is bool)
+
     bad, shown = [], []
     for key in learner_config.DECLARABLE:
         have_old = learner_config.config_value(old, key)
         have_new = learner_config.config_value(new, key)
         change = declared["changes"].get(key)
         if change is None:
-            if have_old != have_new:
+            if not same(have_old, have_new):
                 bad.append(f"{key} changes {have_old!r} -> {have_new!r} undeclared")
             continue
         shown.append(f"{key} {change['old']!r} -> {change['new']!r}")
-        if change["old"] != have_old:
+        if not same(change["old"], have_old):
             bad.append(f"{key}: declared old {change['old']!r}, CP has {have_old!r}")
-        if change["new"] != have_new:
+        if not same(change["new"], have_new):
             bad.append(f"{key}: declared new {change['new']!r}, this run has {have_new!r}")
-        if have_old == have_new:
+        if same(have_old, have_new):
             bad.append(f"{key}: {have_old!r} in both the CP and this run")
     return Result("declared_changes", not bad, "; ".join(bad) if bad else
                   f"from CP {cp}: " + ", ".join(shown) + " (model and optimizer state kept; "
