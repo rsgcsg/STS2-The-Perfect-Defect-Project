@@ -83,9 +83,10 @@ def with_hp(config, coef, scope='combat_ticket'):
     return config
 
 
-def gate_without_hp(*keys):
-    """A gate learner-base.json from before the HP score (without c_hp and its scope)."""
-    base = gate_base()
+def gate_without_hp(*keys, config=None):
+    """A gate learner-base.json (or `config`) from before the HP score (without c_hp and
+    its scope)."""
+    base = copy.deepcopy(config) if config is not None else gate_base()
     for key in keys or ('hp_advantage_coef', 'hp_advantage_scope'):
         del base['loss'][key]
     return base
@@ -162,6 +163,39 @@ def test_repository_profile_and_example_site_validate():
     assert all(k['why'].strip() and k['measured'].strip() for k in profile.values())
     site = run_profile.load_site(SITE)
     assert set(site['gpu_types']) == {'A100-40', 'A100-80'}
+
+
+def test_site_refuses_every_top_level_key_outside_site(tmp_path):
+    """A bare [eval_baselines] (or any other top-level key) was silently ignored."""
+    baselines = (f'a0 = {{ plan = "/b/a0/plan.json", sha256 = "{"a" * 64}" }}\n'
+                 f'a10 = {{ plan = "/b/a10/plan.json", sha256 = "{"b" * 64}" }}\n')
+    site = tmp_path / 'site.toml'
+    site.write_text(SITE.read_text() + '\n[site.eval_baselines]\n' + baselines)
+    assert set(run_profile.load_site(site)['eval_baselines']) == {'a0', 'a10'}
+    site.write_text(SITE.read_text() + '\n[eval_baselines]\n' + baselines)
+    with pytest.raises(run_profile.ProfileError,
+                       match=r'eval_baselines: top-level .*write it as \[site.eval_baselines\]'):
+        run_profile.load_site(site)
+    site.write_text('note = "x"\n' + SITE.read_text())
+    with pytest.raises(run_profile.ProfileError, match='note: top-level key outside'):
+        run_profile.load_site(site)
+
+
+def test_gc_refreeze_threshold_is_a_knob_that_needs_gc_freeze():
+    """F: the profile lowers the re-freeze threshold (online recompiles); the code
+    default 200000 is the earlier constant and needs no source feature."""
+    profile = run_profile.load_profile(PROFILE)
+    assert profile['sgd_gc_refreeze_objects']['default'] == 200_000
+    assert profile['sgd_gc_refreeze_objects']['value'] == 25_000
+    assert preflight.required_features(plan_for(cards=3))['gc_refreeze']
+    assert 'gc_refreeze' not in preflight.required_features(
+        plan_for(cards=3, sgd_gc_refreeze_objects=200_000))
+    with pytest.raises(run_profile.ProfileError, match='needs sgd_gc_freeze'):
+        run_profile.load_profile(PROFILE, ['sgd_gc_freeze=false'])
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        'sgd_gc_freeze=false', 'sgd_gc_refreeze_objects=200000']))['sgd_gc_freeze'] is False
+    with pytest.raises(run_profile.ProfileError, match='sgd_gc_refreeze_objects'):
+        run_profile.load_profile(PROFILE, ['sgd_gc_refreeze_objects=0'])
 
 
 def test_overrides_are_validated_and_recorded():
@@ -295,9 +329,11 @@ def test_preflight_passes_a_consistent_plan():
     ({}, {'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': True}}, 'producer_identity'),
     ({'max_versions': 100000}, {}, 'frozen_recipe'),
     ({}, {'gate_learner_base': None}, 'frozen_recipe'),
-    ({}, {'gate_learner_base': gate_without_hp()}, 'frozen_recipe'),
-    ({}, {'gate_learner_base': gate_without_hp()}, 'hp_score'),
-    ({}, {'gate_learner_base': gate_without_hp('hp_advantage_scope')}, 'hp_score'),
+    # a key the gate has stays the gate's: c_hp other than the frozen value is drift
+    ({}, {'gate_learner_base': with_hp(gate_base(), 0.003)}, 'frozen_recipe'),
+    # neither the gate nor the frozen config (a source before #538) has c_hp and its scope
+    ({}, {'gate_learner_base': gate_without_hp(),
+          'frozen_recipe': gate_without_hp(config=FROZEN)}, 'hp_score'),
     # c_hp > 0 agreed by gate and frozen recipe, but segment format 3
     ({}, {'gate_learner_base': with_hp(gate_base(), 0.003),
           'frozen_recipe': with_hp(FROZEN, 0.003)}, 'hp_score'),
@@ -1244,13 +1280,43 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     assert learner_config.recipe_drift(built, FROZEN) == [
         'loss.hp_advantage_coef: frozen 0.0, effective 0.003',
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective 'all_combats'"]
-    # a gate from before the HP score is refused, never read as c_hp = 0
+    # build alone never invents c_hp: a gate without it is `<missing>` drift
     old = learner_config.build(gate_without_hp(), plan['knobs'], run)
     assert learner_config.recipe_drift(old, FROZEN) == [
         "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
-    refused = preflight.check_hp_score(plan, {**facts, 'gate_learner_base': gate_without_hp()})
-    assert not refused.ok and 'patch it once' in refused.detail
+
+
+def test_a_gate_from_before_the_hp_score_takes_both_keys_from_the_frozen_config():
+    """F: the shared gate predates #538 and must stay so while old-code chains run (their
+    LossConfig refuses unknown keys); the run's own frozen config supplies the missing
+    loss keys, reported, and A9 still compares every key the gate has."""
+    filled_base, filled = learner_config.gate_recipe(gate_without_hp(), with_hp(FROZEN, 0.003))
+    assert filled == {'hp_advantage_coef': 0.003, 'hp_advantage_scope': 'combat_ticket'}
+    assert filled_base['loss'] == with_hp(gate_base(), 0.003)['loss']
+    assert 'hp_advantage_coef' not in gate_without_hp()['loss']  # the input is not changed
+    same, none = learner_config.gate_recipe(with_hp(gate_base(), 0.5), FROZEN)
+    assert none == {} and same['loss']['hp_advantage_coef'] == 0.5  # the gate's value wins
+    plan = plan_for(cards=3, wall_seconds=2400)
+    facts = {**good_facts(plan), 'gate_learner_base': gate_without_hp()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['frozen_recipe'].detail.endswith(
+        'not in the gate, from the frozen config: loss.hp_advantage_coef, '
+        'loss.hp_advantage_scope')
+    assert results['hp_score'].detail == ('c_hp 0.0, scope combat_ticket, segment format '
+                                          'stpd/rl-fast-segment-3 (from the frozen config; '
+                                          'not in the gate)')
+    # the c_hp experiment: only the source rl5.json changes, the shared gate does not
+    four = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
+    arm = {**good_facts(four), 'gate_learner_base': gate_without_hp(),
+           'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
+    results = by_name(preflight.checks(four, arm))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['hp_score'].detail.startswith('c_hp 0.003, scope all_combats')
+    # a gate made after #538 (or a patched copy) reports nothing filled
+    assert 'not in the gate' not in by_name(preflight.checks(plan, good_facts(plan)))[
+        'frozen_recipe'].detail
 
 
 def test_long_run_and_smoke_are_exclusive():
