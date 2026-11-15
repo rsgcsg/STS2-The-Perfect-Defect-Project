@@ -79,6 +79,10 @@ class AdvantageNormalization:
     multi_rows: int
     mean: float
     scale: float  # dataset-wide multi-choice population std, floor 1e-8
+    # c_hp > 0 only (RL5-METHODS A2), over the same multi-choice rows: the std of
+    # c_hp * A_hp and its share Cov(c_hp A_hp, A) / Var(A) of the advantage variance.
+    hp_std: float | None = None
+    hp_share: float | None = None
 
 
 @dataclass(frozen=True)

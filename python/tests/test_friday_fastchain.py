@@ -995,7 +995,8 @@ def write_record_inputs(run):
         'replay_k': {'value': 4}, 'segment_format': {'value': 'stpd/rl-fast-segment-4',
                            'overridden_from': 'stpd/rl-fast-segment-3'},
         'ascension_mix': {'value': {'0': 0.5, '10': 0.5}},
-        'exploration_ladder': {'value': [0.0, 0.1]}}}))
+        'exploration_ladder': {'value': [0.0, 0.1]},
+        'hp_combat_weights': {'value': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}}}}))
     (run / 'facts.json').write_text(json.dumps({
         'src_rev': 'abc123def4567890', 'src_checkout': {'git': True, 'dirty': False}}))
     (run / 'learner').mkdir()
@@ -1033,7 +1034,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert i['overridden_knobs'] == {'segment_format': 'stpd/rl-fast-segment-4'}
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
         '0': 0.5, '10': 0.5}, 'replay_k': 4, 'segment_format': 'stpd/rl-fast-segment-4',
-        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket'}
+        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
+        'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}}
     p = r['throughput']
     assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
     assert p['run_training_rows_per_h_td_only'] == pytest.approx(8000 * 3600, rel=1e-3)
@@ -1087,6 +1089,53 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     (run / 'learner-events.jsonl').write_text(events)
     with pytest.raises(ValueError, match='2 fields, expected 6'):
         readout.build(run, 1200)  # fails loudly, never a guessed EV
+
+
+def test_readout_run_record_carries_the_hp_share_and_the_hp_score_by_encounter(tmp_path):
+    # RL5-METHODS A2: c_hp * A_hp's share of the advantage variance (learner) and the
+    # format-4 per-encounter counters (each service's latest cumulative assembler report).
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    r = readout.build(run, 1200)  # c_hp 0 / format 3: neither section has a number
+    assert r['hp_score'] == {}
+    assert r['learning']['run_mean']['advantage_raw']['hp_share'] is None
+    text = readout.render(r)
+    assert 'HP term' not in text and 'HP score by encounter' not in text
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    for event in events:
+        if 'advantage_raw' in event:  # 13 datasets: 6 at a share of 0.1, then 7 at 0.3
+            event['advantage_raw'].update(hp_std=0.05,
+                                          hp_share=0.1 if event['t'] < 1600 else 0.3)
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    zero = {'battles': 0, 'deaths': 0, 'hp_change': 0}
+
+    def status(t, normal, boss):
+        return {'t': t, 'service': {'rows': 1}, 'assembler': {'hp_score': {'by_encounter': {
+            'normal': normal, 'elite': zero, 'boss': boss, 'unknown': zero}}}}
+    with open(run / 'service-status-0.jsonl', 'a') as handle:
+        handle.write(jsonl_text([status(2300, {'battles': 10, 'deaths': 1,
+                                               'hp_change': -100},
+                                        {'battles': 2, 'deaths': 0, 'hp_change': -40})]))
+    (run / 'service-status-1.jsonl').write_text(jsonl_text([
+        status(2200, zero, zero),
+        status(2300, {'battles': 20, 'deaths': 2, 'hp_change': -260},
+               {'battles': 1, 'deaths': 1, 'hp_change': -50})]) + '{"t": 2305, "assem')
+    r = readout.build(run, 1200)
+    assert r['learning']['run_mean']['advantage_raw']['hp_share'] == pytest.approx(2.7 / 13)
+    assert r['learning']['run_mean']['advantage_raw']['hp_std'] == pytest.approx(0.05)
+    assert r['hp_score'] == {
+        'normal': {'combats': 30, 'deaths': 3, 'death_rate': 0.1, 'mean_net_hp_change': -12.0},
+        'elite': {'combats': 0, 'deaths': 0, 'death_rate': None, 'mean_net_hp_change': None},
+        'boss': {'combats': 3, 'deaths': 1, 'death_rate': pytest.approx(1 / 3),
+                 'mean_net_hp_change': -30.0},
+        'unknown': {'combats': 0, 'deaths': 0, 'death_rate': None,
+                    'mean_net_hp_change': None}}
+    text = readout.render(r)
+    assert 'HP term (c_hp A_hp) run mean: 20.8% of advantage variance' in text
+    assert ('HP score by encounter (combats, deaths, mean net HP change): normal 30 / 3 / '
+            '-12.0, elite 0 / 0 / ') in text
 
 
 def test_readout_reads_only_appended_bytes_and_waits_for_a_torn_line(tmp_path):
@@ -1611,6 +1660,12 @@ def test_new_knobs_name_their_source_features():
     assert 'segment_format_4' in off
     a10 = preflight.required_features(plan_for(cards=3, ascension_mix={'0': 0.5, '10': 0.5}))
     assert 'ascension' in a10
+    # A2: only a weight other than 1 / 1 / 1 needs a source that knows it
+    assert 'hp_combat_weights' not in need and 'hp_combat_weights' not in off
+    weighted = preflight.required_features(plan_for(
+        cards=3, segment_format='stpd/rl-fast-segment-4',
+        hp_combat_weights={'normal': 1.0, 'elite': 1.0, 'boss': 0.3}))
+    assert 'hp_combat_weights' in weighted
 
 
 def test_profile_relations_are_refused_at_load():
@@ -1627,6 +1682,21 @@ def test_profile_relations_are_refused_at_load():
     ]))['segment_format'] == 'stpd/rl-fast-segment-4'
     with pytest.raises(run_profile.ProfileError, match='summing to 1'):
         run_profile.load_profile(PROFILE, ['ascension_mix={ 0 = 0.5, 10 = 0.4 }'])
+    # A2: the HP-change weight per combat type, default 1 / 1 / 1; others need format 4
+    profile = run_profile.load_profile(PROFILE)
+    assert profile['hp_combat_weights']['value'] == profile['hp_combat_weights']['default'] \
+        == {'normal': 1.0, 'elite': 1.0, 'boss': 1.0}
+    weighted = 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'
+    with pytest.raises(run_profile.ProfileError, match='hp_combat_weights.*segment_format'):
+        run_profile.load_profile(PROFILE, [weighted])
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        weighted, 'segment_format=stpd/rl-fast-segment-4']))['hp_combat_weights'] == {
+        'normal': 1.0, 'elite': 1.0, 'boss': 0.3}
+    for bad in ('{ normal = 1.0, elite = 1.0 }', '{ normal = 1, elite = 1, boss = -0.3 }',
+                '{ normal = 1, elite = 1, boss = 1, unknown = 1 }'):
+        with pytest.raises(run_profile.ProfileError, match='hp_combat_weights'):
+            run_profile.load_profile(PROFILE, ['hp_combat_weights=' + bad,
+                                               'segment_format=stpd/rl-fast-segment-4'])
     with pytest.raises(run_profile.ProfileError, match='eval_a10_suite'):
         run_profile.load_profile(PROFILE, ['eval_a10_enabled=true', 'eval_a10_suite=""'])
     a10 = run_profile.values(run_profile.load_profile(PROFILE))

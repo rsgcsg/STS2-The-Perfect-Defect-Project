@@ -38,6 +38,11 @@ from .prepared_batch import AuxiliaryFrame
 
 # Closed descriptor vocabulary. No dynamic import/class construction from wire.
 _CLASSES = {c.__name__: c for c in (bp.PreparedSource, bp._TensorView, TensorFrame, Reduction)}
+# Fields never in a descriptor: TensorFrame's host caches; the fast chain's c_hp part
+# (RL5-METHODS A2), always None here, so the packet format stays as it was.
+_NOT_PACKED: dict[type, frozenset[str]] = {
+    TensorFrame: frozenset({"host", "metadata_cache"}),
+    bp.PreparedSource: frozenset({"hp_advantages"})}
 _DTYPES: dict[str, np.dtype[Any]] = {
     "F32": np.dtype("<f4"),
     "F64": np.dtype("<f8"),
@@ -76,7 +81,7 @@ def _pack(value: Any) -> Any:
             "fields": {
                 f.name: _pack(getattr(value, f.name))
                 for f in dc.fields(value)
-                if not isinstance(value, TensorFrame) or f.name not in {"host", "metadata_cache"}
+                if f.name not in _NOT_PACKED.get(type(value), ())
             },
         }
     if isinstance(value, tuple):
@@ -101,9 +106,7 @@ def _unpack(value: Any, slabs: tuple[torch.Tensor, ...]) -> Any:
         if set(value) != {"$class", "fields"} or value["$class"] not in _CLASSES:
             raise ValueError("binary_unknown_descriptor")
         cls = _CLASSES[value["$class"]]
-        expected = {f.name for f in dc.fields(cls)}
-        if cls is TensorFrame:
-            expected -= {"host", "metadata_cache"}
+        expected = {f.name for f in dc.fields(cls)} - _NOT_PACKED.get(cls, frozenset())
         if set(value["fields"]) != expected:
             raise ValueError("binary_descriptor_fields_changed")
         fields = {k: _unpack(v, slabs) for k, v in value["fields"].items()}
