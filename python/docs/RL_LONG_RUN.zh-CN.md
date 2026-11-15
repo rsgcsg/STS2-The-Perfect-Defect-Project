@@ -177,6 +177,18 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
   普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
   之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+- GPU 节点本地保留（#558，`segment_learner.py` + `local_retention.py`）：数据面模式下学习者
+  Store 在节点本地（`learner-live/store`，归档到 peer），每个被服务的 mu 另有一份整文件拷贝
+  （`learner-live/mu-network/<snapshot>`），两者原本只增不减。`learner_local_keep_models`
+  （默认 0 = 全留）开时，每次发布后学习者只做集合运算并把一轮删除排进发布进程（单 worker，
+  排在进行中的发布之后，所以删时没有发布在写），旧 mu 的本地块和 mu-network 目录在以下全满足
+  时才删：不在最新 K 个里；本轮和上一轮都不在 `pool.snapshots`（get_mu 能服务的全部：最新、
+  各节点报告缓存的、各租约绑定的；不在其中的 key 本来就被拒且不会回来）；不是最新本地 CP
+  记的版本；model 与 heads manifest 都有归档完成收据（peer 已全量读回），否则留到下轮。
+  `learner_local_keep_checkpoints`（默认 0）同理留最新 K 个本地 CP（续训从 peer 读）。
+  manifest、索引留着，之后读会回落到 peer。删失败记数、stderr 报警、不停训练；每轮一条
+  `learner_local_retention` 事件记删除数、未归档保留数、失败、释放字节和本地 store/mu-network
+  占盘（默认全留时也记占盘）。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
   `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合

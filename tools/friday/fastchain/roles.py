@@ -200,6 +200,10 @@ def learner() -> None:
             "recompile_limit": K["compile_recompile_limit"]}
     if K["release_trained_segments"]:  # #529: delete trained originals once a CP covers them
         dataplane["release_trained_segments"] = True
+    if K["learner_local_keep_models"]:  # #558: GPU-node copies of mu publications
+        dataplane["local_keep_models"] = K["learner_local_keep_models"]
+    if K["learner_local_keep_checkpoints"]:  # #558: GPU-node copies of CPs
+        dataplane["local_keep_checkpoints"] = K["learner_local_keep_checkpoints"]
     dataplane.update(learner_config.sgd_gc_dataplane(K))  # #525, RL5-METHODS F
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
         dataplane["sgd_step_probe"] = True
@@ -251,7 +255,8 @@ def learner() -> None:
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
                "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
-               "sgd_gc_refreeze_objects", "sgd_step_probe", "release_trained_segments")},
+               "sgd_gc_refreeze_objects", "sgd_step_probe", "release_trained_segments",
+               "local_keep_models", "local_keep_checkpoints")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}
