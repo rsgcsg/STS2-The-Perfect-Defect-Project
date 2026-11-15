@@ -25,7 +25,7 @@ def load_fastchain():
     own directory). Load them as one set, then take the plain names back out of
     sys.modules and sys.path so they cannot shadow same-named modules of other tests."""
     names = ('run_profile', 'learner_config', 'layout', 'preflight', 'launch', 'readout',
-             'supervise')
+             'cp_retention', 'supervise')
     saved_path = list(sys.path)
     saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
     sys.path.insert(0, str(FASTCHAIN))
@@ -39,7 +39,7 @@ def load_fastchain():
     return loaded
 
 
-run_profile, learner_config, layout, preflight, launch, readout, supervise = \
+run_profile, learner_config, layout, preflight, launch, readout, cp_retention, supervise = \
     load_fastchain()
 
 
@@ -1565,6 +1565,7 @@ def chain_for(tmp_path, endings, **sets):
     tmp_path.mkdir(parents=True, exist_ok=True)
     site = tmp_path / 'site.toml'
     text = SITE.read_text().replace('/scratch/USER/fastchain"', f'{tmp_path}"', 1)
+    text = text.replace('/scratch/USER/fastchain/peer"', f'{tmp_path / "peer"}"', 1)
     site.write_text(text)
     cluster = FakeCluster(tmp_path, endings)
     args = __import__('argparse').Namespace(
@@ -2318,3 +2319,147 @@ def test_a_dead_watcher_is_dead_in_the_readout(tmp_path, capsys):
     assert 'DEAD (exit 1)' in capsys.readouterr().err
     status = chain.eval_status()
     assert 'a0 DEAD (exit 1) no state yet' in status and 'a10 no state yet' in status
+
+
+# ---------------- checkpoint retention (#555) ----------------
+
+def test_cp_retention_default_keeps_every_checkpoint_and_one_is_refused():
+    values = knobs()
+    assert values['checkpoint_keep_newest'] == 0 and values['checkpoint_milestone_hours'] == 0
+    records = [{'checkpoint_artifact_id': f'cp{i}', 'published_at': 300.0 * i}
+               for i in range(1, 9)]
+    assert cp_retention.select(records, keep_newest=0, milestone_hours=0, started_at=0,
+                               protected=()) == ([f'cp{i}' for i in range(1, 9)], [])
+    with pytest.raises(run_profile.ProfileError, match='checkpoint_keep_newest'):
+        run_profile.load_profile(PROFILE, ['checkpoint_keep_newest=1'])
+    run_profile.load_profile(PROFILE, ['checkpoint_keep_newest=2'])
+
+
+def test_cp_retention_keeps_newest_claims_and_one_per_milestone_window():
+    # One CP every 30 min for 5 h; milestones every 2 h; newest 2; cp4 claimed.
+    records = [{'checkpoint_artifact_id': f'cp{i}', 'published_at': 1000 + 1800.0 * i}
+               for i in range(10)]
+    kept, drop = cp_retention.select(records, keep_newest=2, milestone_hours=2,
+                                     started_at=1000, protected={'cp4', 'elsewhere'})
+    assert kept == ['cp0', 'cp4', 'cp8', 'cp9']  # windows 0-2 h, 2-4 h, 4-6 h: cp0, cp4, cp8
+    assert drop == ['cp1', 'cp2', 'cp3', 'cp5', 'cp6', 'cp7']
+
+
+def retention_chain(tmp_path, monkeypatch, **sets):
+    """A chain whose peer holds 6 real CPs (16-byte chunks): each payload = one chunk all
+    CPs share (an all-zero block) + one unique chunk. Generation lr1-r1 started from cp1,
+    the A0 watcher claims cp2, a model shares cp4's unique chunk."""
+    from spireagent.artifact_contracts import Manifest, Producer
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.rl_exchange import Exchange
+    from spireagent.storage import store as store_module
+
+    monkeypatch.setattr(store_module, 'CHUNK_BYTES', 16)
+    chain, cluster = chain_for(tmp_path, [], **sets)
+    chain.dir.mkdir(parents=True)
+    exchange = Exchange({'kind': 'local', 'directory': chain.site['peer_dir']},
+                        chain.site['run_name'])
+    producer = Producer('rsgcsg/STS2-The-Perfect-Defect', 'a' * 40, 'b' * 64)
+    zero, cps = bytes(16), []
+    for i in range(1, 7):
+        generation = 'g-fc-lr1' if i <= 3 else 'g-fc-lr1-r1'
+        payload = exchange.store.put_bytes('checkpoint', zero + f'unique-cp-{i:06d}'.encode())
+        manifest = Manifest('checkpoint', producer, payloads=(payload,),
+                            parameters=FrozenObject.of({'sequence': i}))
+        exchange.store.publish(manifest)
+        exchange.publish_checkpoint(i, manifest.artifact_id, sequence=i,
+                                    training_generation=generation)
+        cps.append(manifest)
+    exchange.store.publish(Manifest('model', producer, payloads=(exchange.store.put_bytes(
+        'weights', b'unique-cp-000004' + b'model-weights-xx'),)))
+    chain.checkpoints = chain.peer_checkpoints
+    chain.state = {'started_at': 0.0, 'deadline_at': 10**12, 'start_checkpoint': None,
+                   'identity': {}, 'resumes_at': [], 'log': [],
+                   'generations': [{'number': 0, 'runtag': 'lr1', 'checkpoint': None,
+                                    'run': str(tmp_path / 'run-lr1')},
+                                   {'number': 1, 'runtag': 'lr1-r1',
+                                    'checkpoint': cps[0].artifact_id,
+                                    'run': str(tmp_path / 'run-lr1-r1')}]}
+    claim = chain.dir / 'eval-a0' / 'protected-checkpoints.json'
+    claim.parent.mkdir()
+    claim.write_text(json.dumps({'schema': 'x/protected', 'checkpoints': [cps[1].artifact_id]}))
+    return chain, exchange, cps
+
+
+def chunk(exchange, data):
+    import hashlib
+    return exchange.blobs.root / 'objects' / 'sha256' / hashlib.sha256(data).hexdigest()
+
+
+def test_cp_retention_default_deletes_nothing_and_records_bytes(tmp_path, monkeypatch):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch)
+    chain.retain()
+    assert chain.retention == {'keep_newest': 0, 'milestone_hours': 0, 'kept': 6,
+                               'deleted': 0, 'delete_failed': 0, 'deleted_bytes': 0,
+                               'bytes_on_disk': 6 * 32}
+    for cp in cps:
+        exchange.store.bytes(cp.payload('checkpoint'))
+
+
+def test_cp_retention_deletes_only_unclaimed_unshared_cp_bytes(tmp_path, monkeypatch):
+    from spireagent.storage.blobs import StoreError
+
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    chain.retain()
+    # kept: cp1 (generation lr1-r1 started from it), cp2 (claimed), cp5 + cp6 (newest)
+    assert chain.retention['kept'] == 4 and chain.retention['deleted'] == 2
+    assert chain.retention['bytes_on_disk'] == 4 * 32
+    assert chain.retention['deleted_bytes'] == 16  # cp3's unique chunk; cp4's is shared
+    assert chain.state['checkpoint_retention']['deleted'] == [cps[2].artifact_id,
+                                                              cps[3].artifact_id]
+    for index in (0, 1, 4, 5):
+        exchange.store.bytes(cps[index].payload('checkpoint'))
+    with pytest.raises(StoreError, match='object_not_found'):
+        exchange.store.bytes(cps[2].payload('checkpoint'))
+    assert chunk(exchange, bytes(16)).exists()  # every CP names the zero block
+    assert chunk(exchange, b'unique-cp-000004').exists()  # the model names it
+    assert not chunk(exchange, b'unique-cp-000003').exists()
+    # Lineage still resolves the deleted id (manifest and record stay).
+    assert exchange.store.get_manifest(cps[2].artifact_id).kind == 'checkpoint'
+    # The resume CP is the newest and still restorable.
+    assert chain.newest_checkpoint() == cps[5].artifact_id
+    # The run record line carries the facts.
+    run = Path(chain.state['generations'][1]['run'])
+    run.mkdir()
+    (run / 'plan.json').write_text(json.dumps(plan_for(cards=2)))
+    (run / 'learner-events.jsonl').write_text('')
+    assert chain.record(run, 'checkpoint')
+    line = json.loads((chain.dir / 'run-records.jsonl').read_text().splitlines()[-1])
+    assert line['chain']['checkpoint_retention']['deleted'] == 2
+    # A second pass deletes nothing more and never re-counts.
+    chain.retain()
+    assert chain.retention['deleted'] == 2 and chain.retention['deleted_bytes'] == 16
+
+
+def test_cp_retention_failed_delete_is_loud_counted_and_retried(tmp_path, monkeypatch,
+                                                               capsys):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    real = os.unlink
+
+    def refuse(path):
+        raise PermissionError(13, 'quota', str(path))
+    monkeypatch.setattr(cp_retention.os, 'unlink', refuse)
+    chain.retain()  # never raises: training goes on
+    # cp3's unique chunk failed (cp3 stays pending); cp4 has no unshared chunk to remove
+    assert chain.retention['delete_failed'] == 1 and chain.retention['deleted'] == 1
+    assert 'not deleted' in capsys.readouterr().err
+    assert any(e['kind'] == 'checkpoint_delete_failed' for e in chain.state['log'])
+    monkeypatch.setattr(cp_retention.os, 'unlink', real)
+    chain.retain()
+    assert chain.retention['deleted'] == 2 and chain.retention['delete_failed'] == 1
+
+
+def test_cp_retention_never_deletes_on_an_unreadable_claim(tmp_path, monkeypatch, capsys):
+    chain, exchange, cps = retention_chain(tmp_path, monkeypatch, checkpoint_keep_newest=2)
+    (chain.dir / 'eval-a0' / 'protected-checkpoints.json').write_text('{')
+    chain.retain()
+    assert 'error' in chain.retention and chain.retention['deleted'] == 0
+    assert chain.state['log'][-1]['kind'] == 'checkpoint_retention_failed'
+    assert 'CP retention skipped' in capsys.readouterr().err
+    for cp in cps:
+        exchange.store.bytes(cp.payload('checkpoint'))

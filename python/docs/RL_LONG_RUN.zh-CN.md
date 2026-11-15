@@ -177,6 +177,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `weights = node_cache_weights`。存档满时该行被响亮拒绝（`r7_max_games` 是第一道界）。
   普通局只留账本。已知产品缺口：fast env 的 `episode_open` 尚未带 `audit_retain_mu`，在补上
   之前 R7 局有原件但服务不存 mu（预检 WARN `r7_audit_mu`）。
+- CP 保留（#555，`supervise.py` + `cp_retention.py`）：每发布一个 CP，链按
+  `checkpoint_keep_newest`（默认 0 = 全留；开时 ≥ 2）留最新 N 个、评估看守在
+  `eval-*/protected-checkpoints.json` 里认领的、各代起点 CP，以及每
+  `checkpoint_milestone_hours` 小时窗口的第一个，其余只删 CP 自己独占的 payload 块
+  （manifest、索引和 CP 记录留着，读已删 CP 响亮报 `object_not_found`）。删失败记数、
+  stderr 报警、下个 CP 再试，不停训练；认领文件读不了就这一轮不删。运行记录
+  `chain.checkpoint_retention` 记 kept / deleted / delete_failed / bytes_on_disk。
 - 难度（#530 S-1）：`ascension_mix`（级别 → 权重，和为 1，默认 `{0 = 1.0}`）按最大余数
   分给每个节点的驱动，`env_driver.mjs --ascension` 必填（0–10，无默认）。段格式是独立旋钮
   `segment_format`（只许 `stpd/rl-fast-segment-3`，默认，或 `-4`；两者都带难度级别）。是混合

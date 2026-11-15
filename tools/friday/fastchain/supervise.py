@@ -59,6 +59,9 @@ learner publishes, before a resume and at the chain's end (`run-record.json`, th
 `run-records.jsonl`, one line per write; a failed write is noted, never stops the run).
 Both come from one readout.Readout per generation that reads only the new bytes each time
 (dropped after an error, so the next tick starts a fresh one),
+CP retention at every published CP (cp_retention.py; `checkpoint_keep_newest`, default
+0 = keep every CP): the newest N, evaluation claims, generation starts and milestones stay,
+the run record's `chain.checkpoint_retention` counts kept / deleted / bytes on disk,
 and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the
 run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
@@ -89,6 +92,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import cp_retention  # noqa: E402
 import launch  # noqa: E402
 import readout  # noqa: E402
 import run_profile  # noqa: E402
@@ -109,7 +113,8 @@ def identity(profile: Path, site: Path, overrides: list[str],
              src: dict[str, Any]) -> dict[str, Any]:
     """What a resume must not change: harness code, profile, site, overrides, source."""
     return {"harness": {name: digest(HERE / name)
-                        for name in (*launch.HARNESS, "launch.py", "supervise.py")},
+                        for name in (*launch.HARNESS, "launch.py", "supervise.py",
+                                     "cp_retention.py")},
             "profile": digest(profile), "site": digest(site), "overrides": list(overrides),
             "source": src}
 
@@ -176,6 +181,8 @@ class Chain:
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
         self.reader: readout.Readout | None = None  # the current generation's readout
+        self.deleter: cp_retention.Deleter | None = None  # CP retention (cp_retention.py)
+        self.retention: dict[str, Any] | None = None  # its facts for the next run record
 
     # ---------------- state ----------------
     def note(self, kind: str, **fields: Any) -> None:
@@ -339,6 +346,7 @@ class Chain:
                              f"{text}\n{self.eval_status()}\n")
             self.persist()
         if self.new_checkpoint(run):
+            self.retain()
             self.record(run, "checkpoint")
         for name, loop in list(self.eval_loops.items()):
             if loop.poll() is not None:
@@ -398,7 +406,8 @@ class Chain:
                 "generations": len(self.state["generations"]),
                 "resumes": len(self.state["resumes_at"]),
                 "start_checkpoint": self.state["start_checkpoint"],
-                "deadline_at": self.state["deadline_at"], "identity": self.state["identity"]}
+                "deadline_at": self.state["deadline_at"], "identity": self.state["identity"],
+                "checkpoint_retention": self.retention}
             text = json.dumps(record, ensure_ascii=False, default=str)
             tmp = self.dir / "run-record.json.tmp"
             tmp.write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str))
@@ -412,6 +421,58 @@ class Chain:
             return False
         self.persist()
         return True
+
+    # ---------------- checkpoint retention ----------------
+    def retain(self) -> None:
+        """After a published CP: apply cp_retention.select to this chain's CPs (delete only
+        with checkpoint_keep_newest > 0) and keep the facts for the run record. A failed
+        unlink is loud (stderr, state log) and counted, and is tried again next time; any
+        other error skips this round loudly. Neither ever stops the run."""
+        keep_newest = self.knobs["checkpoint_keep_newest"]
+        totals = self.state.setdefault("checkpoint_retention",
+                                       {"deleted": [], "deleted_bytes": 0, "delete_failed": 0})
+        try:
+            generations = {f"g-fc-{g['runtag']}" for g in self.state["generations"]}
+            records = [r for r in self.checkpoints(generations)
+                       if r.get("training_generation") in generations]
+            protected = {g["checkpoint"] for g in self.state["generations"] if g["checkpoint"]}
+            protected |= cp_retention.claims(self.dir)
+            kept, drop = cp_retention.select(
+                records, keep_newest=keep_newest,
+                milestone_hours=self.knobs["checkpoint_milestone_hours"],
+                started_at=self.state["started_at"], protected=protected)
+            if self.deleter is None:
+                from spireagent.rl_exchange import Exchange
+
+                self.deleter = cp_retention.Deleter(Exchange(
+                    {"kind": "local", "directory": self.site["peer_dir"]},
+                    self.site["run_name"]).store)
+            for artifact in (a for a in drop if a not in totals["deleted"]):
+                done = self.deleter.delete(artifact)
+                totals["deleted_bytes"] += done["freed_bytes"]
+                if done["failed"]:
+                    totals["delete_failed"] += len(done["failed"])
+                    print(f"*** CP retention: {len(done['failed'])} chunk(s) of {artifact} "
+                          f"not deleted: {done['failed'][:3]}", file=sys.stderr, flush=True)
+                    self.note("checkpoint_delete_failed", checkpoint=artifact,
+                              failed=done["failed"])
+                    continue  # tried again after the next CP
+                totals["deleted"].append(artifact)
+                self.note("checkpoint_deleted", checkpoint=artifact, **{
+                    k: v for k, v in done.items() if k != "failed"})
+            self.retention = {
+                "keep_newest": keep_newest,
+                "milestone_hours": self.knobs["checkpoint_milestone_hours"],
+                "kept": len(kept), "deleted": len(totals["deleted"]),
+                "delete_failed": totals["delete_failed"],
+                "deleted_bytes": totals["deleted_bytes"],
+                "bytes_on_disk": sum(self.deleter.payload_bytes(a) for a in kept)}
+        except Exception as error:  # noqa: BLE001 - retention never stops the run
+            print(f"*** CP retention skipped: {error!r}", file=sys.stderr, flush=True)
+            self.note("checkpoint_retention_failed", error=repr(error))
+            self.retention = {"error": repr(error), "deleted": len(totals["deleted"]),
+                              "delete_failed": totals["delete_failed"]}
+        self.persist()
 
     # ---------------- evaluation ----------------
     def watchers(self) -> dict[str, dict[str, Any]]:
