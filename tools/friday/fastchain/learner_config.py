@@ -5,9 +5,11 @@ the gate supplies the recipe, the run profile the speed levers and the run its
 operational values. `recipe_drift(effective, frozen)` compares it with the frozen
 long-run parameters (python/configs/rl5.json): every frozen key must be equal, except
 the ones in `ALLOWED_DRIFT`, each with the reason the launcher sets it on purpose.
-Recipe keys (the whole `loss` block, c_hp and its scope included) pass
-through unchanged from the gate and have no default here: a gate without one shows as
-`<missing>` drift (regenerate the gate, python/docs/RL_LONG_RUN.zh-CN.md).
+Recipe keys (the whole `loss` block, c_hp and its scope included) pass through unchanged
+from the gate and have no default here. `gate_recipe(base, frozen)` first adds the `loss`
+keys a gate made before them lacks (c_hp and its scope, #538), from the frozen config of
+the run's own source; a key the gate has stays the gate's and A9 still compares it. Every
+other missing key shows as `<missing>` drift.
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).
 """
 from __future__ import annotations
@@ -59,6 +61,20 @@ def window(chain_id: str, total_seconds: int, chain_deadline: float,
                          "operating budget: the learner cannot open a new window from it")
     return {"operating_budget": budget, "operating_budget_parent": None,
             "deadline_at": chain_deadline}
+
+
+def gate_recipe(base: dict[str, Any], frozen: dict[str, Any]
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The gate's learner-base.json with the `loss` keys it lacks taken from the frozen
+    config (`frozen`, python/configs/rl5.json of the run's source), and those filled keys.
+    One shared gate then serves every source: an older learner refuses unknown loss keys
+    (`LossConfig(**loss)`), so the gate itself must not gain them while one still runs."""
+    loss = base.get("loss") or {}
+    filled = {key: value for key, value in (frozen.get("loss") or {}).items()
+              if key not in loss}
+    if not filled:
+        return base, {}
+    return {**base, "loss": {**loss, **filled}}, filled
 
 
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
