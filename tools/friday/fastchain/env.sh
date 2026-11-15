@@ -85,8 +85,9 @@ ARM=($($PY -c "import json, sys; sys.path.insert(0, sys.argv[4]); import run_pro
 [ ${#ARM[@]} -eq $P ] || { echo "exploration plan failed: ${ARM[*]}"; kill "${AGGP[@]}" $ADM; exit 3; }
 R7=$(awk "BEGIN { print ($FC_R7_GAMES_PER_HOUR > 0) ? \"on\" : \"off\" }")
 echo "ascension per driver: ${ASC[*]} arm per driver: ${ARM[*]} replay_k=$FC_REPLAY_K r7=$R7"
-# Save starts (tickets.mjs): one pool per job on this node's own disk (/tmp is node-local;
-# TMPDIR is shared scratch), shared by this node's drivers, deleted when the job ends.
+# Save starts (tickets.mjs): one pool per job on this node's own disk (/tmp: local xfs, 106 and
+# 181 GB on two fc430 smp nodes 11-15; TMPDIR is shared scratch), shared by this node's
+# drivers, capped by save_starts.pool_gb, deleted when the job ends.
 SAVEPOOL=/tmp/fc-saves-$SLURM_JOB_ID
 trap 'rm -rf $SAVEPOOL' EXIT
 pids=()
