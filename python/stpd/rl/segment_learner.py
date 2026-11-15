@@ -3350,7 +3350,7 @@ class SegmentLearner:
             return active
 
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
-        if "game_end_lt128_selected_rows" in self.fast_counters:
+        if any("rows_to_game_end" in record.get("envelope", {}) for record in records):
             # "game" value targets: each record is checked (only "game" fast records carry
             # `rows_to_game_end`; a dataset need not start with one, #564).
             count_game_end(self.fast_counters, records, "selected")

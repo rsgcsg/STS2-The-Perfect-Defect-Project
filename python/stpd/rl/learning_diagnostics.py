@@ -94,7 +94,8 @@ def value_statistics(logits: Tensor, hp: Tensor, t: dict[str, Tensor]) -> Tensor
         features = torch.stack(columns, dim=1)
         sums = (buckets[:, :, None] * features[:, None, :]).sum(0).flatten()
         terminal = t["terminal_mask"] > 0
-        bins = (value.clamp(0, 1) * CALIBRATION_BINS).floor().clamp(
+        # NaN goes to bin 0 on every platform (the step then fails as non-finite).
+        bins = (value.nan_to_num(0.0).clamp(0, 1) * CALIBRATION_BINS).floor().clamp(
             max=CALIBRATION_BINS - 1).long()
         member = torch.nn.functional.one_hot(bins, CALIBRATION_BINS).float()
         member = torch.where(terminal[:, None], member, torch.zeros_like(member))

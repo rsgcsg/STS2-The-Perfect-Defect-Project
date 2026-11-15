@@ -424,10 +424,10 @@ def test_game_end_selected_counts_every_record_of_a_dataset():
     SegmentLearner._dataset_released(owner, records)
     assert owner.fast_counters["game_end_lt128_selected_rows"] == 7
     assert owner.fast_counters["game_end_384_767_selected_rows"] == 3
-    plain = type("Owner", (), {})()
-    plain.fast_counters, plain.wal = {}, None  # "segment" targets: no counters, no error
-    SegmentLearner._dataset_released(plain, records)
-    assert plain.fast_counters == {}
+    plain = type("Owner", (), {})()  # "segment" targets: no envelope distance, no counters
+    plain.wal = None  # and no `fast_counters` needed (partial owners in transport tests)
+    SegmentLearner._dataset_released(plain, [{"segment_id": "s", "rows": 4, "envelope": {}},
+                                             {"segment_id": "old", "rows": 5}])
 
 
 def test_a_lost_final_segment_is_its_own_end_and_a_lost_first_one_a_gap(tmp_path):
