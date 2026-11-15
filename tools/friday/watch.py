@@ -2857,7 +2857,7 @@ class SegmentWatcher(Watcher):
         snapshot = read_published(plan_path.parent / 'snapshot.json')
         if snapshot is None:
             raise FileNotFoundError('evaluation_snapshot_not_published')
-        if snapshot.get('full_readback') is not True:
+        if not evaluate.originals_retained(snapshot):
             raise ValueError('evaluation_full_snapshot_readback_required')
         plan, result, files = evaluate.read_observation_report(result_path, plan_path)
         # Card U4 B: unknowns and save failures never void a cohort; each is one excluded
@@ -2870,19 +2870,22 @@ class SegmentWatcher(Watcher):
         reference = slot.get('report')
         if not isinstance(reference, dict) or not reference.get('path'):
             return None, 'slot_only:no_attempt_report'
+        import tempfile
+
         path = Path(reference['path'])
         try:
-            if not path.exists() and result.get('scratch_retained'):
-                path = (plan_path.parent / 'evidence'
-                        / path.relative_to(result['scratch_retained']))
-            if hashed(path) != reference.get('sha256'):
-                return None, 'slot_only:attempt_report_changed'
-            row = json.loads(path.read_bytes())['episodes'][0]
-            from spireagent.workbench.rl_segment_producer import failure_facts
+            with tempfile.TemporaryDirectory() as workspace:
+                if not path.exists() and result.get('scratch_retained'):
+                    path = evaluate.retained_original(plan_path.parent, result['scratch_retained'],
+                                                      path, Path(workspace))
+                if hashed(path) != reference.get('sha256'):
+                    return None, 'slot_only:attempt_report_changed'
+                row = json.loads(path.read_bytes())['episodes'][0]
+                from spireagent.workbench.rl_segment_producer import failure_facts
 
-            facts = failure_facts(path.parent, row)
-            facts['wall_limit_reached'] = row.get('wall_limit_reached') is True
-            return facts, 'attempt_original'
+                facts = failure_facts(path.parent, row)
+                facts['wall_limit_reached'] = row.get('wall_limit_reached') is True
+                return facts, 'attempt_original'
         except Exception as error:  # noqa: BLE001 -- a diagnostic detail only
             return None, 'slot_only:' + type(error).__name__
 

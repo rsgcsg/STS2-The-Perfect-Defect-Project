@@ -4,7 +4,8 @@
 
     supervise.py start CHAIN --site S --cards N --card-type T [--layout L] [--set k=v]...
                  [--resume-checkpoint CP] [--eval-execution E --eval-manifest M
-                 [--eval-baseline-plan P] [--eval-a10-manifest M10] --eval-slot-registered]
+                 [--eval-baseline-plan P | --eval-no-baseline] [--eval-a10-manifest M10]
+                 --eval-slot-registered]
                  [--dry-run]
 
 One chain is one operating window: `long_wall_seconds` (<= 72000 s), one learner budget id
@@ -47,6 +48,11 @@ run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
 A10 suite when `eval_a10_enabled`. The watchers outlive the chain, so the last CP is
 evaluated on their next tick; FINAL.json names their pids (stop them after that report).
+Each watcher's baseline: --eval-baseline-plan (a0), else the site's `eval_baselines`
+entry; --eval-no-baseline: none (e.g. the first round on a new Host pin). Every
+watcher's start checks (`fast_eval.py --check`: manifest, baseline pins, settings) run
+before generation 0 (and in --dry-run), and a refusal stops the chain there. A watcher
+that dies later is DEAD in the readout.
 --eval-execution is a template (models, retention, pipeline): the chain writes its copy
 with `"storage_mode": "shared_local"` on the site's peer (no R2).
 """
@@ -137,7 +143,9 @@ class Chain:
                  squeue: Callable[[list[str]], set[str] | None] | None = None,
                  scancel: Callable[[list[str]], None] | None = None,
                  checkpoints: Callable[[set[str]], list[dict[str, Any]]] | None = None,
-                 spawn: Callable[[list[str], Path], Any] | None = None) -> None:
+                 spawn: Callable[[list[str], Path], Any] | None = None,
+                 check: Callable[[list[str]], subprocess.CompletedProcess] | None = None
+                 ) -> None:
         self.args, self.clock, self.sleep, self.launch_main = args, clock, sleep, launch_main
         self.squeue = squeue or live_jobs
         self.scancel = scancel or (lambda ids: subprocess.run(["scancel", *ids], check=False))
@@ -146,6 +154,8 @@ class Chain:
         self.checkpoints = checkpoints or self.peer_checkpoints
         self.spawn = spawn or (lambda cmd, log: subprocess.Popen(
             cmd, stdout=log.open("a"), stderr=subprocess.STDOUT, start_new_session=True))
+        self.check = check or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True,
+                                                          timeout=600))
         self.dir = Path(self.site["work_root"]) / f"chain-{args.chain}"
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
@@ -167,7 +177,7 @@ class Chain:
                      if (g.get("outcome") or {}).get("kind") not in (None, "normal")]
         record = {"ok": ok, "cause": cause, "first_cause": resumable[0] if resumable else None,
                   "generations": len(self.state["generations"]),
-                  "resumes": len(self.state["generations"]) - 1, "t": self.clock(),
+                  "resumes": max(0, len(self.state["generations"]) - 1), "t": self.clock(),
                   # standing watchers outlive the chain (the last CP is evaluated on
                   # their next tick); stop them with `kill PID` after its report.
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
@@ -297,19 +307,30 @@ class Chain:
             self.persist()
         for name, loop in list(self.eval_loops.items()):
             if loop.poll() is not None:
+                self.state.setdefault("eval_ended", {})[name] = loop.returncode
                 self.note("evaluation_loop_ended", watcher=name, code=loop.returncode)
+                print(f"*** evaluation watcher {name} DEAD (exit {loop.returncode}): "
+                      f"see {self.dir / f'eval-{name}.log'}", file=sys.stderr, flush=True)
                 del self.eval_loops[name]
 
     # ---------------- evaluation ----------------
     def watchers(self) -> dict[str, dict[str, Any]]:
         """Standing fast_eval.py watchers (#528): one per suite, each its own output."""
         out = {"a0": {"suite": self.knobs["eval_suite"], "manifest": self.args.eval_manifest,
-                      "seeds": self.knobs["eval_seeds"],
-                      "baseline": self.args.eval_baseline_plan}}
+                      "seeds": self.knobs["eval_seeds"]}}
         if self.knobs["eval_a10_enabled"]:
             out["a10"] = {"suite": self.knobs["eval_a10_suite"],
                           "manifest": self.args.eval_a10_manifest,
-                          "seeds": self.knobs["eval_a10_seeds"], "baseline": None}
+                          "seeds": self.knobs["eval_a10_seeds"]}
+        registered = self.site.get("eval_baselines") or {}
+        for name, watcher in out.items():
+            if name == "a0" and self.args.eval_baseline_plan:
+                watcher["baseline"] = {"plan": str(self.args.eval_baseline_plan),
+                                       "sha256": None, "source": "explicit"}
+            elif name in registered and not self.args.eval_no_baseline:
+                watcher["baseline"] = {**registered[name], "source": "site"}
+            else:  # refused at the start check unless --eval-no-baseline
+                watcher["baseline"] = None
         return out
 
     def eval_command(self, name: str, watcher: dict[str, Any]) -> list[str]:
@@ -332,9 +353,30 @@ class Chain:
                "--interval", str(self.knobs["eval_interval_seconds"]),
                "--seeds", str(watcher["seeds"])]
         cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
-        cmd += ["--baseline-plan", str(watcher["baseline"])] if watcher["baseline"] else []
+        baseline = watcher["baseline"]
+        if baseline is not None:
+            cmd += ["--baseline-plan", baseline["plan"], "--baseline-source", baseline["source"]]
+            cmd += ["--baseline-sha256", baseline["sha256"]] if baseline["sha256"] else []
+        elif self.args.eval_no_baseline:
+            cmd += ["--no-baseline"]
         cmd += ["--slot-registered"] if self.args.eval_slot_registered else ["--dry-run"]
         return cmd
+
+    def check_eval(self) -> str | None:
+        """Every watcher's start checks, before generation 0: training never runs with an
+        evaluation that cannot start. The refusal names the watcher and the reason."""
+        if not self.args.eval_execution:
+            return None
+        for name, watcher in self.watchers().items():
+            if watcher["baseline"] is None and not self.args.eval_no_baseline:
+                return (f"evaluation watcher {name}: no baseline (site eval_baselines.{name} "
+                        "or --eval-baseline-plan for a0); pass --eval-no-baseline for none")
+            done = self.check([*self.eval_command(name, watcher), "--check"])
+            if done.returncode != 0:
+                tail = (done.stderr or done.stdout or "").strip().splitlines()[-1:]
+                return f"evaluation watcher {name} refused at start: {' '.join(tail)}"
+            self.note("evaluation_watcher_checked", watcher=name, baseline=watcher["baseline"])
+        return None
 
     def start_eval(self) -> None:
         if not self.args.eval_execution or self.args.dry_run:
@@ -348,15 +390,18 @@ class Chain:
         if not self.args.eval_execution:
             return "evaluation: off"
         parts = []
+        ended = self.state.get("eval_ended", {})
         for name in self.watchers():
+            dead = f"DEAD (exit {ended[name]}) " if name in ended else ""
             path = self.dir / f"eval-{name}" / "state.json"
             if not path.exists():
-                parts.append(f"{name} no state yet")
+                parts.append(f"{name} {dead}no state yet")
                 continue
             stages: dict[str, int] = {}
             for item in json.loads(path.read_text()).get("evaluations", []):
                 stages[item["stage"]] = stages.get(item["stage"], 0) + 1
-            parts.append(f"{name} " + ", ".join(f"{k} {v}" for k, v in sorted(stages.items())))
+            parts.append(f"{name} {dead}" + ", ".join(f"{k} {v}"
+                                                     for k, v in sorted(stages.items())))
         return "evaluation: " + "; ".join(parts)
 
     # ---------------- the chain ----------------
@@ -373,6 +418,9 @@ class Chain:
                                  source_identity(self.site)),
             "generations": [], "resumes_at": [], "log": []}
         self.persist()
+        refused = self.check_eval()
+        if refused:
+            return self.final(False, refused)
         self.start_eval()
         checkpoint, number = self.args.resume_checkpoint, 0
         try:
@@ -444,7 +492,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eval-execution", type=Path)
     parser.add_argument("--eval-manifest", type=Path)
     parser.add_argument("--eval-baseline-plan", type=Path,
-                        help="plan.json of the reference round for the A0 watcher's report")
+                        help="plan.json of the reference round for the A0 watcher's report "
+                             "(default: the site's eval_baselines.a0)")
+    parser.add_argument("--eval-no-baseline", action="store_true",
+                        help="no baseline for any watcher, not even the site's registered "
+                             "ones (e.g. the first evaluation on a new Host pin)")
     parser.add_argument("--eval-a10-manifest", type=Path,
                         help="prepare-manifest output of eval_a10_suite (eval_a10_enabled)")
     parser.add_argument("--eval-slot-registered", action="store_true",
@@ -461,7 +513,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.eval_execution and bool(args.eval_a10_manifest) != bool(
             run_profile.values(run_profile.load_profile(args.profile, args.set))
             ["eval_a10_enabled"]):
-        parser.error("--eval-a10-manifest goes with eval_a10_enabled = true")
+        parser.error("--eval-a10-manifest goes with eval_a10_enabled = true "
+                     "(without A10: --set eval_a10_enabled=false)")
+    if args.eval_baseline_plan and args.eval_no_baseline:
+        parser.error("--eval-baseline-plan or --eval-no-baseline, not both")
     args.profile, args.site = args.profile.resolve(), args.site.resolve()
     return Chain(args).run()
 

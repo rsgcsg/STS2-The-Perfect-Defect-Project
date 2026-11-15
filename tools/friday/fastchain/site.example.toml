@@ -41,6 +41,14 @@ partition_max_minutes = { "PREP-PARTITION" = 0, "CPU-PARTITION" = 0, "GPU-PARTIT
 # sgd_compile.warmup (<= 8 offline-step dump directories), chosen by
 #   python -m stpd.rl.offline_step warmup-cover --bucket-rows <prepared_bucket_rows> DUMPS...
 compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
+# Optional: the registered reference round of each evaluation watcher (supervise --eval-*),
+# its plan.json pinned by sha256 (`sha256sum plan.json`). Keep the round (plan.json,
+# result.json, evidence/) in a stable directory, never a test directory, and keep the
+# peer that holds its originals (snapshot.json `peer`). The reference must be on the
+# execution template's Host and Runtime pins and the watcher's seed manifest, else the
+# watcher refuses at start; with no entry, supervise needs --eval-no-baseline.
+# eval_baselines.a0 = { plan = "/scratch/USER/eval-baselines/a0-CP-HOST/round/evaluation/plan.json", sha256 = "SHA256" }
+# eval_baselines.a10 = { plan = "/scratch/USER/eval-baselines/a10-CP-HOST/round/evaluation/plan.json", sha256 = "SHA256" }
 
 [site.gpu_types."A100-40"]
 gres = "a100"

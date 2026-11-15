@@ -86,7 +86,8 @@ def normal_result(quick, plan_path, scenario):
     save(plan_path.parent / 'result.json', {**source, 'observation_report': {
         'schema': 'spireagent/evaluation-observation-files-1', 'files': files,
         'ledger_report_sha256': hashlib.sha256(json_bytes(report)).hexdigest()}})
-    save(plan_path.parent / 'snapshot.json', {'full_readback': True})
+    save(plan_path.parent / 'snapshot.json',
+         {'schema': 'spireagent/friday-local-snapshot-v1', 'full_readback': True})
 
 
 def configured(quick, tmp_path, monkeypatch):
@@ -418,7 +419,8 @@ def test_baseline_continues_only_unoffered_and_never_upgrades_failed(quick, tmp_
             for key, value in [
                 ("plan", plan),
                 ("result", result),
-                ("snapshot", {"full_readback": True}),
+                ("snapshot", {"schema": "spireagent/friday-local-snapshot-v1",
+                              "full_readback": True}),
             ]
         }
         reports[str(tmp_path / name / "result.json")] = (
