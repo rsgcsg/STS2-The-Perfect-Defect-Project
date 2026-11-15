@@ -463,7 +463,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "hp_coef": loss.get("hp_coef"),
                    "c_hp": loss.get("hp_advantage_coef"),
                    "c_hp_scope": loss.get("hp_advantage_scope"),
-                   "hp_combat_weights": knobs.get("hp_combat_weights")}}
+                   "hp_combat_weights": knobs.get("hp_combat_weights"),
+                   "hp_potion_mode": knobs.get("hp_potion_mode")}}
 
 
 def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:

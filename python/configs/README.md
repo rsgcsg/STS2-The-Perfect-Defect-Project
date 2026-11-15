@@ -42,3 +42,7 @@ No source sends single-combat tickets yet (the fast env's `episode_open` names n
 the fast-chain preflight refuses c_hp > 0 with `"combat_ticket"` (#568).
 Both are frozen for a run. A fast-chain gate `learner-base.json` that has them must match;
 a gate made before them takes them from here (`learner_config.gate_recipe`).
+The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used from the
+row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
+row whose own choice is `potion.use` only the death points (no HP-change part), so using
+a potion is judged by the outcome advantage, not by the HP it saves; death points, combat weights and the HP-head baseline are unchanged.

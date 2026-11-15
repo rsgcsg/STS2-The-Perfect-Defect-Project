@@ -262,6 +262,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["segment_format_4"] = "segment format 4 + per-combat HP score (W2)"
     if any(w != 1 for w in k["hp_combat_weights"].values()):
         need["hp_combat_weights"] = "HP-change weight per combat type (RL5-METHODS A2)"
+    if k["hp_potion_mode"] != "points":
+        need["hp_potion_mode"] = "potions judged by the value head in the HP score (ticket H)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
         need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
     if k["eval_suite"] or k["eval_a10_enabled"]:
@@ -338,6 +340,7 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     (`loss.hp_advantage_scope`) comes from the gate the same way; a gate made before them
     gets both from the frozen config (`learner_config.gate_recipe`)."""
     base, fmt = facts.get("gate_learner_base"), plan["knobs"]["segment_format"]
+    potion = plan["knobs"]["hp_potion_mode"]
     if base is None:
         return Result("hp_score", False, "no gate learner-base.json")
     frozen = facts.get("frozen_recipe")
@@ -348,6 +351,13 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         return Result("hp_score", False, "neither the gate learner-base.json nor the frozen "
                       "config has a valid loss.hp_advantage_coef / loss.hp_advantage_scope "
                       "(a source before #538?)")
+    # Ticket H: the potion mode changes A_hp only; off the default it needs the HP score.
+    if potion != "points" and not coef > 0:
+        return Result("hp_score", False, f"hp_potion_mode {potion!r} needs c_hp > 0 (have "
+                      f"{coef}: no row receives A_hp)")
+    if potion != "points" and fmt != run_profile.SEGMENT_FORMAT_4:
+        return Result("hp_score", False, f"hp_potion_mode {potion!r} needs segment_format = "
+                      f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no HP score)")
     if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
         return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
                       f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
@@ -359,6 +369,7 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                       "nothing: the fast env sends no single-combat tickets, so no row gets "
                       'the HP term (#568); use loss.hp_advantage_scope = "all_combats" or c_hp 0')
     return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}"
+                  + (f", potions {potion}" if potion != "points" else "")
                   + (" (from the frozen config; not in the gate)"
                      if {"hp_advantage_coef", "hp_advantage_scope"} & set(filled) else ""))
 
