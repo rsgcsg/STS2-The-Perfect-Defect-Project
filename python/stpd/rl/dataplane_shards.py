@@ -60,6 +60,7 @@ from .segment_learner import (
     SegmentLearner,
     _pending_receipt,
     binary_preparer_arguments,
+    game_end_counters,
     value_target_options,
 )
 from .segments import AuxiliaryPool, SegmentQueue
@@ -955,6 +956,8 @@ class _ShardLearner(SegmentLearner):
             "excluded_trained_rows", "excluded_prefetched_rows",
             "excluded_admit_raced", "excluded_admit_raced_rows",
             "excluded_aux_rows")}
+        if settings.value_target == "game":
+            self.fast_counters.update(game_end_counters())
         self.fast_receivers = []
         self.source_prefetch_changed = threading.Event()
         self.source_prefetch_stopping = threading.Event()
@@ -1202,6 +1205,8 @@ class _ShardLearner(SegmentLearner):
         with self.condition:
             if not self.newlease_stopped:
                 raise ValueError("dataplane_shard_discard_before_stop")
+            if self.shard_intake.value_target == "game":
+                self.shard_intake.discard_held("stop")  # before the final status
             records = list(self.queue.pending)
             for record in records:
                 payload = self._member(record).payload

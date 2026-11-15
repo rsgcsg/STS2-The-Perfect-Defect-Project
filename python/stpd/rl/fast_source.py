@@ -144,7 +144,7 @@ ENVELOPE_KEYS = frozenset({"format", "payload_kind", "run", "training_generation
 VALUE_TARGETS = ("segment", "game")
 # Envelope fields added only under "game": the segment's stitched tail (None = its own
 # seal) and that tail's weight on the real outcome (diagnostic only).
-GAME_TARGET_KEYS = frozenset({"value_target_tail", "outcome_tail_weight"})
+GAME_TARGET_KEYS = frozenset({"value_target_tail", "outcome_tail_weight", "rows_to_game_end"})
 SPILL_SUFFIX = ".held"
 _REASON = re.compile(r"[a-z0-9_]{1,64}")
 LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
@@ -309,6 +309,8 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             tail = torch.tensor(envelope["value_target_tail"], dtype=torch.float32)
         if not 0 <= tail_weight <= 1:
             raise FastIntakeError("fast_game_tail_weight_invalid")
+        if type(envelope["rows_to_game_end"]) is not int or envelope["rows_to_game_end"] < 0:
+            raise FastIntakeError("fast_game_rows_to_end_invalid")
     # The game's own reward table (format 3 names the level; formats 1/2 are A0).
     targets, advantages = categorical_lambda_targets(
         probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
@@ -600,6 +602,19 @@ class FastSegment:
         return len(self.header["rows"])
 
 
+@dataclass(frozen=True)
+class _Held:
+    """A "game" segment held to the close: its bytes are on node-local disk, and only
+    what the read-back check and the stitching order need stays in RAM. The header
+    is parsed again from the read-back bytes."""
+
+    segment_id: str
+    index: int
+    rows: int
+    size: int
+    sha256: str
+
+
 @dataclass
 class _Instance:
     attestation: dict[str, Any] | None = None
@@ -613,10 +628,10 @@ class _Instance:
     segments: dict[str, tuple[int, str, int]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
     labelled: bool = False
-    # "game" value targets: attested segments spilled and held until the close
-    # (bytes on node-local disk, `FastSegment.data` empty here), and the reason the
-    # game can no longer be used (a failed spill write).
-    held: list[FastSegment] = field(default_factory=list)
+    # "game" value targets: attested segments spilled and held until the close,
+    # and the reason the game can no longer be used (a failed spill write: no
+    # later segment of it is written).
+    held: list[_Held] = field(default_factory=list)
     spill_failed: str | None = None
 
 
@@ -707,6 +722,7 @@ class FastSegmentIntake:
         self.spill = {"bytes": 0, "files": 0, "peak_bytes": 0, "written_bytes": 0,
                       "read_bytes": 0}
         self.held_rows = 0
+        self.stopped = False  # "game": set by `discard_held("stop")`, terminal
         if self.spill_dir is not None:
             os.makedirs(self.spill_dir, exist_ok=True)
             # Start/resume: held games of an earlier process are discarded (CP-only).
@@ -797,7 +813,8 @@ class FastSegmentIntake:
                     if self.value_target == "game":
                         # Rare path (segments before the attestation): spilled under
                         # the lock, so a close on the hand-off thread sees them held.
-                        self._spill_held(instance, segment)
+                        if not self._unwritable(instance, segment.rows):
+                            self._spill_held(instance, segment)
                     else:
                         decision.admit.append((segment, self._envelope(segment, attestation)))
                 self.counters["buffered_admitted"] += len(instance.buffered)
@@ -901,6 +918,8 @@ class FastSegmentIntake:
                 self._buffer(instance, segment)
                 return IntakeDecision()
             if self.value_target == "game":
+                if self._unwritable(instance, segment.rows):
+                    return IntakeDecision()
                 return IntakeDecision(spill=[segment])
             return IntakeDecision(admit=[(segment, self._envelope(segment,
                                                                   instance.attestation))])
@@ -1068,14 +1087,13 @@ class FastSegmentIntake:
             decision = IntakeDecision()
             if reason is not None:
                 decision = self._exclude(instance_id, reason, None)
-            release: list[FastSegment] = []
+            release: list[_Held] = []
             attestation = instance.attestation
             if instance.held:
                 if instance.spill_failed is not None:
                     self._drop_held(instance, "spill_failed")
                 elif instance.excluded is None:
-                    release, instance.held = sorted(
-                        instance.held, key=lambda s: s.header["segment_index"]), []
+                    release, instance.held = sorted(instance.held, key=lambda s: s.index), []
                     self.held_rows -= sum(s.rows for s in release)
                 else:  # `_exclude` dropped them already; nothing is left here
                     self._drop_held(instance, "excluded")
@@ -1089,7 +1107,7 @@ class FastSegmentIntake:
             self._finish(instance_id, instance)
         if release:
             assert attestation is not None
-            decision.admit.extend(self._release_game(instance_id, release, attestation))
+            decision.admit.extend(self._release_game(instance_id, release, attestation, sealed))
         return decision
 
     def report(self) -> dict[str, Any]:
@@ -1105,12 +1123,16 @@ class FastSegmentIntake:
     def held_segment_ids(self) -> set[str]:
         """Segments held for "game" value targets: not done yet (`fast_release`)."""
         with self.lock:
-            return {s.segment_id for i in self.instances.values() for s in i.held}
+            return {h.segment_id for i in self.instances.values() for h in i.held}
 
     def discard_held(self, reason: str = "stop") -> int:
         """Drop every held game now (learner stop): spill files deleted, rows counted
         (`game_target_<reason>_dropped_rows`) and reported loudly. Returns the rows."""
         with self.lock:
+            if reason == "stop":
+                # Terminal: a reader thread still offering after this is counted
+                # here too and never spills (`_unwritable`, `_spill_offered`).
+                self.stopped = True
             before = self.counters[f"game_target_{reason}_dropped_rows"]
             for instance in self.instances.values():
                 self._drop_held(instance, reason)
@@ -1144,26 +1166,48 @@ class FastSegmentIntake:
         """Write one segment's bytes; None (counted, loud) when the write failed."""
         path = self._spill_path(segment.segment_id)
         try:
-            with open(path, "xb") as handle:
+            handle = open(path, "xb")  # noqa: SIM115 - closed below, unlinked on failure
+        except OSError as error:
+            # Never ours (an existing file is never removed: a duplicate id is
+            # loud here and upstream), or the directory is unusable.
+            self._spill_write_failed(segment, error)
+            return None
+        try:
+            with handle:
                 handle.write(segment.data)
         except OSError as error:
             with contextlib.suppress(OSError):
                 os.unlink(path)
-            with self.lock:
-                self.counters["spill_write_failed"] += 1
-            _warn(f"fast_value_target_spill_write_failed segment={segment.segment_id} "
-                  f"error={type(error).__name__}: {error}")
+            self._spill_write_failed(segment, error)
             return None
         return path
 
+    def _spill_write_failed(self, segment: FastSegment, error: OSError) -> None:
+        with self.lock:
+            self.counters["spill_write_failed"] += 1
+        _warn(f"fast_value_target_spill_write_failed segment={segment.segment_id} "
+              f"error={type(error).__name__}: {error}")
+
+    def _unwritable(self, instance: _Instance, rows: int) -> bool:
+        """Under the lock: whether a new "game" segment is dropped instead of
+        spilled (after the stop, or after a failed write of its game), counted."""
+        if self.stopped:
+            self.counters["game_target_stop_dropped_rows"] += rows
+            return True
+        if instance.spill_failed is not None:
+            self.counters["game_target_spill_failed_rows"] += rows
+            return True
+        return False
+
     def _hold(self, instance: _Instance, segment: FastSegment, written: bool) -> None:
-        """Under the lock: record a held segment (header only) or the game's failure."""
+        """Under the lock: record a held segment (no bytes) or the game's failure."""
         if not written:
             instance.spill_failed = instance.spill_failed or "write"
             self.counters["game_target_spill_failed_rows"] += segment.rows
             return
         size = len(segment.data)
-        instance.held.append(FastSegment(segment.message, segment.header, b""))
+        instance.held.append(_Held(segment.segment_id, segment.header["segment_index"],
+                                   segment.rows, size, segment.message["sha256"]))
         self.held_rows += segment.rows
         self.spill["bytes"] += size
         self.spill["files"] += 1
@@ -1178,58 +1222,78 @@ class FastSegmentIntake:
         path = self._write_spill(segment)
         with self.lock:
             instance = self.instances.get(segment.instance)
-            if (instance is None or instance.excluded is not None
+            if (instance is None or instance.excluded is not None or self.stopped
+                    or instance.spill_failed is not None
                     or segment.header["mu"]["training_generation"] != self.generation):
-                # Excluded or a generation change while the bytes were written.
+                # Excluded, stopped, failed or a generation change while written.
                 if path is not None:
                     self._unlink(path, len(segment.data), counted=False)
-                self.counters["game_target_raced_dropped_rows"] += segment.rows
+                reason = ("stop" if self.stopped else "spill_failed"
+                          if instance is not None and instance.excluded is None
+                          and instance.spill_failed is not None else "raced")
+                self.counters[f"game_target_{reason}_dropped_rows"] += segment.rows
                 return
             self._hold(instance, segment, path is not None)
 
     def _unlink(self, path: str, size: int, *, counted: bool = True) -> None:
+        """Delete one spill file; the byte/file counters drop only when it is gone."""
         try:
             os.unlink(path)
         except OSError as error:
             self.counters["spill_unlink_failed"] += 1
             _warn(f"fast_value_target_spill_unlink_failed path_name={os.path.basename(path)} "
                   f"error={type(error).__name__}")
+            return
         if counted:
             self.spill["bytes"] -= size
             self.spill["files"] -= 1
 
     def _drop_held(self, instance: _Instance, reason: str) -> None:
         """Under the lock: delete a game's spill files and count its rows by reason."""
-        for segment in instance.held:
-            self._unlink(self._spill_path(segment.segment_id), int(segment.message["size"]))
-            self.held_rows -= segment.rows
-            self.counters[f"game_target_{reason}_dropped_rows"] += segment.rows
+        for held in instance.held:
+            self._unlink(self._spill_path(held.segment_id), held.size)
+            self.held_rows -= held.rows
+            self.counters[f"game_target_{reason}_dropped_rows"] += held.rows
         instance.held = []
 
-    def _release_game(self, instance_id: str, held: list[FastSegment],
-                      attestation: dict[str, Any]) -> list[tuple[FastSegment, dict[str, Any]]]:
-        """A closed game's held segments: read back (digest checked), stitched tails,
-        envelopes; spill files deleted. Outside the lock. A failed read or a digest
-        mismatch drops the whole game, loudly; nothing falls back."""
-        bodies: list[bytes] = []
+    def _release_game(self, instance_id: str, held: list[_Held],
+                      attestation: dict[str, Any], sealed: int
+                      ) -> list[tuple[FastSegment, dict[str, Any]]]:
+        """A closed game's held segments: read back (size and digest checked, header
+        parsed again), stitched tails, envelopes; spill files deleted. Outside the
+        lock. A failed read, a digest mismatch or a header that is not the held
+        segment drops the whole game, loudly; nothing falls back."""
+        segments: list[FastSegment] = []
         failure = None
-        for segment in held:
-            path = self._spill_path(segment.segment_id)
+        read = 0
+        for item in held:
+            path = self._spill_path(item.segment_id)
             try:
                 with open(path, "rb") as handle:
                     data = handle.read()
             except OSError as error:
                 failure = f"read {type(error).__name__}"
                 break
-            if len(data) != segment.message["size"] or sha256(data) != segment.message["sha256"]:
+            read += len(data)
+            if len(data) != item.size or sha256(data) != item.sha256:
                 failure = "digest"
                 break
-            bodies.append(data)
+            try:
+                header, _rows = decode_segment(data, header_only=True)
+            except Exception as error:  # the bytes matched their digest: never expected
+                failure = f"header {type(error).__name__}"
+                break
+            if (header["segment_id"] != item.segment_id
+                    or header["segment_index"] != item.index or len(header["rows"]) != item.rows):
+                failure = "header"
+                break
+            segments.append(FastSegment({"segment_id": item.segment_id, "sha256": item.sha256,
+                                         "size": item.size}, header, data))
         with self.lock:
-            for segment in held:
-                self._unlink(self._spill_path(segment.segment_id), int(segment.message["size"]))
-            self.spill["read_bytes"] += sum(len(body) for body in bodies)
-            rows = sum(s.rows for s in held)
+            for item in held:
+                self._unlink(self._spill_path(item.segment_id), item.size)
+            self.spill["read_bytes"] += read
+            rows = sum(item.rows for item in held)
             if failure is not None:
                 self.counters["spill_readback_failed"] += 1
                 self.counters["game_target_readback_dropped_rows"] += rows
@@ -1239,23 +1303,32 @@ class FastSegmentIntake:
         parts = [(s.header["segment_index"],
                   [meta["outcome_probabilities"] for meta in s.header["rows"]],
                   _seal_tail(s.header), s.header["seal"]["kind"] == "terminal")
-                 for s in held]
+                 for s in segments]
         tails = game_target_tails(parts, self.gae_lambda)
+        after = [0] * len(segments)  # rows of this game after each segment
+        for position in range(len(segments) - 2, -1, -1):
+            after[position] = after[position + 1] + segments[position + 1].rows
         admitted = []
         with self.lock:
-            for position, (segment, data, (tail, weight, chained)) in enumerate(
-                    zip(held, bodies, tails, strict=True)):
-                whole = FastSegment(segment.message, segment.header, data)
-                envelope = self._envelope(whole, attestation)
+            # A lost leading segment is a gap too (the chain never reached row 0).
+            self.counters["game_target_gaps"] += segments[0].header["segment_index"] != 0
+            for position, (segment, (tail, weight, chained)) in enumerate(
+                    zip(segments, tails, strict=True)):
+                envelope = self._envelope(segment, attestation)
                 envelope["value_target_tail"] = tail
                 envelope["outcome_tail_weight"] = weight
-                admitted.append((whole, envelope))
+                envelope["rows_to_game_end"] = after[position]
+                admitted.append((segment, envelope))
                 self.counters["game_target_chained_segments"] += chained
-                if (not chained and position + 1 < len(held)
-                        and held[position + 1].header["segment_index"]
+                if (not chained and position + 1 < len(segments)
+                        and segments[position + 1].header["segment_index"]
                         != segment.header["segment_index"] + 1):
                     self.counters["game_target_gaps"] += 1
-            end = "terminal" if held[-1].header["seal"]["kind"] == "terminal" else "bootstrap"
+            last = segments[-1].header
+            # The end the chain reached: the real outcome, the game's own bootstrap
+            # (stop/budget close), or the bootstrap before a lost final segment.
+            end = ("terminal" if last["seal"]["kind"] == "terminal"
+                   else "bootstrap" if last["segment_index"] == sealed - 1 else "lost")
             self.counters[f"game_target_{end}_end_rows"] += rows
             self.counters["game_target_released_games"] += 1
         return admitted
@@ -1287,8 +1360,8 @@ class FastSegmentIntake:
             return IntakeDecision(reply=reply)
         instance.excluded = reason
         self.excluded_by_reason[reason] += 1
-        for segment in instance.held:
-            self._count_excluded(reason, segment.rows, used=False)
+        for held in instance.held:
+            self._count_excluded(reason, held.rows, used=False)
         self._drop_held(instance, "excluded")
         for segment in instance.buffered:
             self.buffer.remove(segment)

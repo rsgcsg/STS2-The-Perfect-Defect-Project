@@ -1,6 +1,7 @@
 """RL5-METHODS V: "game" value targets stitched to the end of the game (fast chain)."""
 from __future__ import annotations
 
+import collections
 import dataclasses
 import os
 import random
@@ -25,6 +26,7 @@ from stpd.rl.fast_source import (
     GAME_TARGET_KEYS,
     SPILL_SUFFIX,
     FastIntakeError,
+    FastSegment,
     FastSegmentIntake,
     decode_fast_packet,
     game_target_tails,
@@ -159,8 +161,12 @@ def test_a_held_game_is_spilled_then_admitted_at_close_with_whole_game_targets(t
     assert report["spill_bytes"] == report["spill_written_bytes"] == total
     assert report["spill_files"] == 3
     assert i.held_segment_ids() == {s.segment_id for s in sealed}
-    # Held segments keep only the header in memory.
-    assert all(not s.data for s in i.instances["g1"].held)
+    # Held segments keep no bytes and no parsed header in memory (review S1).
+    held = i.instances["g1"].held
+    assert [dataclasses.asdict(h) for h in held] == [
+        {"segment_id": s.segment_id, "index": n, "rows": len(s.header["rows"]),
+         "size": len(s.data),
+         "sha256": message(s)["sha256"]} for n, s in enumerate(sealed)]
     decision = i.closed(closed(sealed))
     assert [s.segment_id for s, _ in decision.admit] == [s.segment_id for s in sealed]
     assert spilled(tmp_path) == []
@@ -173,6 +179,7 @@ def test_a_held_game_is_spilled_then_admitted_at_close_with_whole_game_targets(t
     # Decoded targets = one recursion over every recorded row of the game.
     rows = [meta["outcome_probabilities"] for s in sealed for meta in s.header["rows"]]
     whole = reference(rows, one_hot(sealed[-1].header["seal"]["terminal"]["class"]), 0.99)
+    assert [e["rows_to_game_end"] for _s, e in decision.admit] == [74, 10, 0]
     cursor, weights = 0, []
     for segment, envelope in decision.admit:
         assert segment.data == next(s.data for s in sealed if s.segment_id == segment.segment_id)
@@ -296,8 +303,10 @@ def test_a_failed_spill_write_drops_the_game_at_close_loudly(tmp_path, capsys):
     assert not decision.admit
     report = i.report()
     assert report["spill_write_failed"] == 1
-    assert report["game_target_spill_failed_rows"] == 64
-    assert report["game_target_spill_failed_dropped_rows"] == 64 + 10
+    # The failed segment and the later one, which is never written (review S6).
+    assert report["game_target_spill_failed_rows"] == 64 + 10
+    assert report["spill_written_bytes"] == len(sealed[0].data)
+    assert report["game_target_spill_failed_dropped_rows"] == 64
     assert report["spill_files"] == 0 and report["held_rows"] == 0
     os.rmdir(tmp_path / "spill" / (sealed[1].segment_id + SPILL_SUFFIX))
     assert spilled(tmp_path) == []
@@ -344,6 +353,83 @@ def test_stop_and_restart_discard_held_games_with_counts(tmp_path, capsys):
     assert "fast_value_target_spill_cleared files=2" in capsys.readouterr().err
 
 
+def test_after_the_stop_no_segment_is_spilled_and_each_is_counted(tmp_path):
+    """Review S2: a reader thread still offering after `discard_held("stop")`."""
+    sealed = three_segment_game()
+    i = game_intake(tmp_path)
+    i.attest(attest("g1"))
+    i.offer(message(sealed[0]), sealed[0].data)
+    i.discard_held("stop")
+    assert not i.offer(message(sealed[1], 2), sealed[1].data).admit
+    assert spilled(tmp_path) == []
+    report = i.report()
+    assert report["game_target_stop_dropped_rows"] == 128 and report["spill_files"] == 0
+    # A write already under way when the stop lands: deleted, counted as stop.
+    j = game_intake(tmp_path / "j")
+    j.attest(attest("g1"))
+    first = FastSegment(message(sealed[0]), sealed[0].header, sealed[0].data)
+    decision = j._place(first, first.message, [], None)
+    j.discard_held("stop")
+    j._spill_offered(decision.spill[0])
+    assert os.listdir(tmp_path / "j" / "spill") == []
+    assert j.report()["game_target_stop_dropped_rows"] == 64
+
+
+def test_a_lost_final_segment_is_its_own_end_and_a_lost_first_one_a_gap(tmp_path):
+    """Review S3."""
+    sealed = three_segment_game()
+    i = game_intake(tmp_path)
+    i.attest(attest("g1"))
+    for n, segment in enumerate(sealed[:2], 1):  # the terminal segment never arrived
+        i.offer(message(segment, n), segment.data)
+    assert len(i.closed(closed(sealed)).admit) == 2
+    report = i.report()
+    assert report["game_target_lost_end_rows"] == 128
+    assert "game_target_bootstrap_end_rows" not in report
+    assert report["closed_segment_count_short"] == 1
+    j = game_intake(tmp_path / "j")
+    j.attest(attest("g1"))
+    for n, segment in enumerate(sealed[1:], 2):  # the first one never arrived
+        j.offer(message(segment, n), segment.data)
+    assert len(j.closed(closed(sealed)).admit) == 2
+    report = j.report()
+    assert report["game_target_gaps"] == 1 and report["game_target_terminal_end_rows"] == 74
+
+
+def test_a_failed_delete_keeps_the_bytes_counted(tmp_path, monkeypatch, capsys):
+    """Review S6: `spill_bytes` drops only when the file is gone."""
+    from stpd.rl import fast_source
+
+    sealed = three_segment_game()
+    i = game_intake(tmp_path)
+    i.attest(attest("g1"))
+    i.offer(message(sealed[0]), sealed[0].data)
+
+    def refuse(path: Any) -> None:
+        raise PermissionError("refused")
+
+    monkeypatch.setattr(fast_source.os, "unlink", refuse)
+    i.discard_held("stop")
+    monkeypatch.undo()
+    report = i.report()
+    assert report["spill_unlink_failed"] == 1
+    assert report["spill_bytes"] == len(sealed[0].data) and report["spill_files"] == 1
+    assert "fast_value_target_spill_unlink_failed" in capsys.readouterr().err
+
+
+def test_a_spill_name_collision_fails_loudly_and_keeps_the_existing_file(tmp_path, capsys):
+    """Review S6: `open(..., "xb")` on an existing file never deletes that file."""
+    sealed = three_segment_game()
+    i = game_intake(tmp_path)
+    i.attest(attest("g1"))
+    existing = tmp_path / "spill" / (sealed[0].segment_id + SPILL_SUFFIX)
+    existing.write_bytes(b"keep")
+    i.offer(message(sealed[0]), sealed[0].data)
+    assert existing.read_bytes() == b"keep"
+    assert i.report()["spill_write_failed"] == 1
+    assert "FileExistsError" in capsys.readouterr().err
+
+
 def test_game_targets_need_the_spill_dir_and_a_known_rule(tmp_path):
     with pytest.raises(ValueError, match="spill_dir"):
         FastSegmentIntake(run="r", generation="g", value_target="game")
@@ -353,17 +439,23 @@ def test_game_targets_need_the_spill_dir_and_a_known_rule(tmp_path):
         FastSegmentIntake(run="r", generation="g", value_target="episode", spill_dir=tmp_path)
     with pytest.raises(ValueError, match="invalid_segment_configuration"):
         SegmentConfig(value_target="episode")
+    with pytest.raises(ValueError, match="invalid_segment_configuration"):
+        SegmentConfig(capacity_victim="newest")
 
 
 def test_decode_refuses_a_stitched_tail_on_a_terminal_segment():
     terminal = three_segment_game()[-1]
     envelope = {**envelope_for(terminal), "value_target_tail": one_hot(3),
-                "outcome_tail_weight": 1.0}
+                "outcome_tail_weight": 1.0, "rows_to_game_end": 0}
     with pytest.raises(FastIntakeError, match="terminal"):
         decode_fast_packet(terminal.data, envelope=envelope, compiler=COMPILER)
     envelope = {**envelope_for(terminal), "value_target_tail": None,
-                "outcome_tail_weight": 2.0}
+                "outcome_tail_weight": 2.0, "rows_to_game_end": 0}
     with pytest.raises(FastIntakeError, match="weight"):
+        decode_fast_packet(terminal.data, envelope=envelope, compiler=COMPILER)
+    envelope = {**envelope_for(terminal), "value_target_tail": None,
+                "outcome_tail_weight": 1.0, "rows_to_game_end": -1}
+    with pytest.raises(FastIntakeError, match="rows_to_end"):
         decode_fast_packet(terminal.data, envelope=envelope, compiler=COMPILER)
     with pytest.raises(FastIntakeError, match="fields"):
         decode_fast_packet(terminal.data, envelope={**envelope_for(terminal),
@@ -379,6 +471,10 @@ def test_the_default_rule_leaves_the_resume_recipe_as_before():
     assert _resume_config(old) == _resume_config(new)
     game = {"loss": {}, "segments": {**base, "value_target": "game"}}
     assert _resume_config(game) != _resume_config(new)
+    # The victim rule is operational (the queue is never restored): free at resume.
+    assert base["capacity_victim"] == "oldest"
+    hashed = {"loss": {}, "segments": {**base, "capacity_victim": "hash"}}
+    assert _resume_config(hashed) == _resume_config(new)
 
 
 def test_lag_summary_gives_mean_and_p95():
@@ -394,7 +490,8 @@ def test_intake_mu_publication_unchanged_for_game_targets(tmp_path):
 
 
 # -- the learner: a small local chain with "game" targets --------------------------------
-def game_learner(tmp_path: Any, monkeypatch: Any, value_target: str = "game") -> Any:
+def game_learner(tmp_path: Any, monkeypatch: Any, value_target: str = "game",
+                 capacity_victim: str = "oldest", **dataplane_extra: Any) -> Any:
     from test_rl41_w1 import configuration
 
     from stpd.p1.local_inference import AUTH_ENV
@@ -405,10 +502,11 @@ def game_learner(tmp_path: Any, monkeypatch: Any, value_target: str = "game") ->
     monkeypatch.setenv(AUTH_ENV, "ab" * 32)
     config = dataclasses.replace(config, segments=dataclasses.replace(
         config.segments, steps=64, dataset_rows=64, episode_rows=128, capacity_rows=1024,
-        value_target=value_target, target_kl=0.9))
+        value_target=value_target, capacity_victim=capacity_victim, target_kl=0.9))
     dataplane = {"lanes": 1, "root": str(tmp_path / "live"), "source_slots": 8,
                  "prepare_slots": 2, "source_bytes": 16 * 1024**2,
-                 "preparation_workers": 1, "assembly_workers": 1, "fast_chain": True}
+                 "preparation_workers": 1, "assembly_workers": 1, "fast_chain": True,
+                 **dataplane_extra}
     return SegmentLearner(config, tmp_path / "owner", dataclasses.replace(io, dataplane=dataplane))
 
 
@@ -494,6 +592,111 @@ def test_learner_stop_discards_held_games_and_a_restart_empties_the_spill(
         again.close()
 
 
+def test_a_stop_drops_held_games_before_the_final_status_and_spills_nothing_after(
+        tmp_path, monkeypatch):
+    """Review S2: the run's stop discard (`_discard_stopped_queue`, before the last
+    status of `_run`) drops held games, so the run record has them."""
+    from test_rl_fast_learner import admission
+
+    owner = game_learner(tmp_path, monkeypatch)
+    try:
+        sealed = learner_game(owner, "g1")
+        admission(owner, "g1", 1)
+        owner._fast_apply(owner.fast_intake.offer(message(sealed[0]), sealed[0].data))
+        with owner.condition:
+            owner.newlease_stopped = True
+            owner._discard_stopped_queue()
+        owner._fast_apply(owner.fast_intake.offer(message(sealed[1], 2), sealed[1].data))
+        intake = owner.fast_status()["fast_chain"]["intake"]
+        assert intake["game_target_stop_dropped_rows"] == 128
+        assert intake["spill_files"] == 0
+        assert os.listdir(tmp_path / "live" / "value-target-spill") == []
+    finally:
+        owner.close()
+
+
+def test_release_never_marks_a_held_segment_done(tmp_path, monkeypatch):
+    """Review S5: `fast_release` sees held segments as not done."""
+    from test_rl_fast_learner import admission
+
+    owner = game_learner(tmp_path, monkeypatch, release_trained_segments=True)
+    try:
+        sealed = learner_game(owner, "g1")
+        admission(owner, "g1", 1)
+        owner._fast_apply(owner.fast_intake.offer(message(sealed[0]), sealed[0].data))
+        assert owner.queue.pending == collections.deque()  # held, not queued
+        assert sealed[0].segment_id in owner.segment_release.held()
+    finally:
+        owner.close()
+
+
+def overflow_victims(tmp_path: Any, monkeypatch: Any,
+                     victim: str) -> tuple[Any, list[Any], set[str]]:
+    """Nine 138-row games into a 1,024-row queue: about one game is evicted."""
+    from test_rl_fast_learner import admission
+
+    owner = game_learner(tmp_path, monkeypatch, capacity_victim=victim)
+    order: list[Any] = []
+    for index in range(1, 10):
+        name = f"g{index}"
+        sealed = learner_game(owner, name)
+        admission(owner, name, index)
+        for n, segment in enumerate(sealed, 1):
+            owner._fast_apply(owner.fast_intake.offer(message(segment, n), segment.data))
+        owner._fast_apply(owner.fast_intake.closed(closed(sealed)))
+        order.extend(sealed)
+    queued = {record["segment_id"] for record in owner.queue.pending}
+    return owner, order, {s.segment_id for s in order} - queued
+
+
+def expected_victims(order: list[Any], key: Any) -> set[str]:
+    """The queue model: admit in order; when full, drop by `key` until it fits."""
+    queue: list[Any] = []
+    evicted: set[str] = set()
+    for segment in order:
+        while sum(len(s.header["rows"]) for s in queue) + len(segment.header["rows"]) > 1024:
+            victim = min(queue, key=key)
+            queue.remove(victim)
+            evicted.add(victim.segment_id)
+        queue.append(segment)
+    return evicted
+
+
+@pytest.mark.parametrize("victim", ["oldest", "hash"])
+def test_a_full_queue_drops_by_the_configured_victim_rule(tmp_path, monkeypatch, victim):
+    """Review M1. "oldest" (default, the 11-09 rule) drops the queue head; "hash"
+    drops the lowest packet digest, whatever its age or place in its game. Both
+    count selected/evicted rows by distance to the game's end under "game"."""
+    owner, order, evicted = overflow_victims(tmp_path, monkeypatch, victim)
+    try:
+        position = {s.segment_id: n for n, s in enumerate(order)}
+        key = ((lambda s: position[s.segment_id]) if victim == "oldest"
+               else (lambda s: message(s)["sha256"][:16]))
+        assert evicted and evicted == expected_victims(order, key)
+        counters = owner.fast_status()["fast_chain"]["learner"]
+        evicted_rows = sum(len(s.header["rows"]) for s in order if s.segment_id in evicted)
+        assert counters["capacity_evicted_rows"] == evicted_rows
+        assert sum(counters[f"game_end_{b}_evicted_rows"]
+                   for b in ("lt128", "128_383", "384_767", "ge768")) == evicted_rows
+        while owner._prepare():
+            while owner.active is not None:
+                owner._step()
+        assert counters is not owner.fast_status()["fast_chain"]["learner"]
+        after = owner.fast_status()["fast_chain"]["learner"]
+        assert after["game_end_lt128_selected_rows"] > 0
+    finally:
+        owner.close()
+
+
+def test_the_default_victim_rule_is_oldest_first_and_adds_no_counters(tmp_path, monkeypatch):
+    assert SegmentConfig().capacity_victim == "oldest"
+    owner = game_learner(tmp_path, monkeypatch, value_target="segment")
+    try:
+        assert not any(k.startswith("game_end_") for k in owner.fast_counters)
+    finally:
+        owner.close()
+
+
 def test_segment_rule_learner_has_no_spill(tmp_path, monkeypatch):
     owner = game_learner(tmp_path, monkeypatch, value_target="segment")
     try:
@@ -531,5 +734,7 @@ def test_two_shards_hold_spill_and_release_games_in_their_own_scratch(tmp_path, 
         requests, steps = train(owner, 2)
         assert len(requests) == 2 and owner.updates > 0 and steps
         assert not owner.input_fenced
+        learner = owner.fast_status()["fast_chain"]["learner"]
+        assert learner["game_end_lt128_selected_rows"] > 0  # summed over the shards
     finally:
         owner.close()

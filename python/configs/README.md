@@ -48,4 +48,8 @@ closes, spilling their bytes to `<live work>/value-target-spill` (node-local, sh
 checked on read-back), then stitches each segment's lambda tail to the next one, so
 the real outcome reaches every row. Rows get older (a whole game) and `hp_share` reads
 lower. A game that never closes, fails a spill or is held at stop is dropped and counted.
-The KL stop is the same under both rules.
+The KL stop is the same under both rules. Under `"game"` set `segments.capacity_victim`
+to `"hash"`: a whole game enters the queue at its close and a dataset takes at most
+`episode_rows` of it, so the default `"oldest"` drops the later segments of long games
+first. `"hash"` drops the lowest packet digest instead. The run record counts selected
+and evicted rows by distance to the game's end (`game_end_*_rows`).

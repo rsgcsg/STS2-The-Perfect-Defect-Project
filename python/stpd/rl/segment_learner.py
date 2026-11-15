@@ -539,6 +539,27 @@ def value_target_options(settings: Any, live_work: Path) -> dict[str, Any]:
             "spill_dir": str(Path(live_work) / "value-target-spill")}
 
 
+# Distance of a segment's last row to its game's end ("game" value targets only):
+# selected-into-a-dataset and capacity-evicted rows by bucket, so a drop that
+# favours some part of the game shows in the run record.
+GAME_END_BUCKETS = ((128, "lt128"), (384, "128_383"), (768, "384_767"), (None, "ge768"))
+
+
+def game_end_counters() -> dict[str, int]:
+    return {f"game_end_{name}_{kind}_rows": 0 for _, name in GAME_END_BUCKETS
+            for kind in ("selected", "evicted")}
+
+
+def count_game_end(counters: dict[str, int], records: Any, kind: str) -> None:
+    for record in records:
+        distance = record.get("envelope", {}).get("rows_to_game_end")
+        if distance is None:
+            continue
+        name = next(name for bound, name in GAME_END_BUCKETS
+                    if bound is None or distance < bound)
+        counters[f"game_end_{name}_{kind}_rows"] += record["rows"]
+
+
 def lag_summary(values: list[int]) -> dict[str, Any]:
     """n, mean and p95 (nearest rank) of row lags."""
     ordered = sorted(values)
@@ -1036,6 +1057,8 @@ class SegmentLearner:
                     "excluded_trained_rows", "excluded_prefetched_rows",
                     "excluded_admit_raced", "excluded_admit_raced_rows",
                     "excluded_aux_rows")}
+                if settings.value_target == "game":
+                    self.fast_counters.update(game_end_counters())
                 if self.fast_sources is not None:
                     provider = RoutedSources(self.binary_sources, self.fast_sources)
             if self.shard_count and not fast_chain:
@@ -1652,6 +1675,10 @@ class SegmentLearner:
     def _discard_stopped_queue(self) -> None:
         """Terminal training discard; original accepted facts and World ledger stay intact."""
         assert self.wal is not None
+        if self.fast_intake is not None and self.fast_intake.value_target == "game":
+            # Held games never close now: dropped here, before the final status,
+            # so the run record has them (`game_target_stop_dropped_rows`).
+            self.fast_intake.discard_held("stop")
         records = list(self.queue.pending)
         if not records:
             return
@@ -2589,6 +2616,8 @@ class SegmentLearner:
                   "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
                   "episode": envelope["episode"], "actor": envelope["actor"],
                   "envelope": envelope}
+        if self.settings.capacity_victim == "hash":
+            record["victim_key"] = envelope["packet_sha256"][:16]  # same width: str order
         # The copy `SegmentQueue.admit` would make under the lock, made here.
         return ref, "ppo:" + segment.segment_id, copy.deepcopy(record)
 
@@ -2633,7 +2662,17 @@ class SegmentLearner:
             # holds skipped in C (they are usually the queue's head).
             unheld = itertools.compress(pending, map(operator.not_, map(
                 held.__contains__, map(operator.itemgetter("segment_id"), pending))))
-            for record in unheld:
+            if self.settings.capacity_victim == "hash":
+                # Lowest digest first: which segment goes does not depend on its
+                # age or its place in the game. Usually one victim: one C-level min.
+                candidates = [record for record in unheld if "victim_key" in record]
+                key = operator.itemgetter("victim_key")
+                while overflow > 0 and candidates:
+                    victim = min(candidates, key=key)
+                    candidates.remove(victim)
+                    victims.add(victim["segment_id"])
+                    overflow -= victim["rows"]
+            for record in unheld if self.settings.capacity_victim == "oldest" else ():
                 if overflow <= 0:
                     break
                 # Only fast records: an old-chain lease's segment has its own
@@ -2651,6 +2690,8 @@ class SegmentLearner:
             changed.append("evicted")
         for record in evicted:
             self._fast_forget(record, counters=("capacity_dropped", "capacity_evicted"))
+        if "game_end_lt128_evicted_rows" in self.fast_counters:
+            count_game_end(self.fast_counters, evicted, "evicted")
         ref, owner, record = (prepared if prepared is not None
                               else self._fast_record(segment, envelope))
         self.fast_sources.put(ref, envelope, segment.data, owner)
@@ -3270,6 +3311,8 @@ class SegmentLearner:
             return active
 
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
+        if "game_end_lt128_selected_rows" in self.fast_counters:
+            count_game_end(self.fast_counters, records, "selected")
         if self.wal is not None:
             for record in records:
                 if not record.get("fast"):
