@@ -375,6 +375,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
         "source_dirty": (facts.get("src_checkout") or {}).get("dirty"),
         "env_package_revision": facts.get("env_pkg_rev"),
         "env_candidate_sha256": facts.get("env_candidate_sha256"),
+        # package_sha256 + training_identity (a CP export's binding, a random init's seed)
+        "start_model": facts.get("start_model"),
         "resume_checkpoint": plan.get("resume_checkpoint"),
         "placement": plan.get("placement"),
         "recipe": {"exploration_ladder": knobs.get("exploration_ladder"),
@@ -966,6 +968,12 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"{recipe.get('segment_format')}, K {recipe.get('replay_k')}, ascension mix "
                    f"{recipe.get('ascension_mix')}, c_hp {recipe.get('c_hp')} "
                    f"({recipe.get('c_hp_scope')})")
+        start = i.get("start_model") or {}
+        if start:
+            made = start.get("training_identity") or {}
+            out.append(f"start model: {str(start.get('package_sha256'))[:12]}"
+                       + "".join(f", {key} {made[key]}" for key in ("schema", "seed",
+                                 "checkpoint_artifact_id") if key in made))
     p = r.get("throughput") or {}
     if p:
         out.append(f"training rows/h, run mean: {fmt(p['run_training_rows_per_h_incl_aux'])} "

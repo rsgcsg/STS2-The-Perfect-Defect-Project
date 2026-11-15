@@ -128,11 +128,15 @@ def learner() -> None:
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
                                              "checkpoint_window": cp_config, **window})
+    start = json.loads((Path(site("start_package")) / "model.json").read_bytes())
     base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
-        "start_package": site("start_package"), "wall_seconds": os.environ["FC_WALL"],
+        "start_package": site("start_package"), "start_model_sha256": start["package_sha256"],
+        "wall_seconds": os.environ["FC_WALL"],
         "device": os.environ["FC_LEARNER_DEVICE"], "generation": os.environ["FC_GENERATION"],
-        "warmup_artifact_id": Path(site("warmup_file")).read_text().strip(),
+        # "" = no fitted heads (a random-init start; preflight check_warmup_artifact)
+        "warmup_artifact_id": (Path(site("warmup_file")).read_text().strip()
+                               if site("warmup_file") else None),
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
         "resume_checkpoint": resume, "window": window})

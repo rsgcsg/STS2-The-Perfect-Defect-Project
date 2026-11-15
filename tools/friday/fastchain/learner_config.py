@@ -64,7 +64,8 @@ def window(chain_id: str, total_seconds: int, chain_deadline: float,
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     """`run`: run_name, peer_dir, start_package, wall_seconds, device, generation,
     warmup_artifact_id, rendezvous_path, ranks, resume_checkpoint (or None) and, in a
-    resume chain, window (`window(...)`)."""
+    resume chain, window (`window(...)`). Optional start_model_sha256: the start package's
+    package_sha256, which the learner then verifies and every CP's config keeps (lineage)."""
     config = copy.deepcopy(base)
     config.pop("peer", None)  # never carry the gate's archive subtree
     config.update({
@@ -72,7 +73,8 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         "operating_budget_parent": None, "resume_checkpoint": run["resume_checkpoint"],
         "peer": {"kind": "local", "directory": run["peer_dir"]},
         "start_package": run["start_package"], "start_artifact_id": None,
-        "start_model_sha256": None, "wall_seconds": float(run["wall_seconds"]),
+        "start_model_sha256": run.get("start_model_sha256"),
+        "wall_seconds": float(run["wall_seconds"]),
         "device": run["device"], "max_versions": knobs["max_versions"]})
     # h100i: the offline 1,866-1,934 wan/h step ran with compile, the kernel set and one
     # bucket per group; the gate base had them off.

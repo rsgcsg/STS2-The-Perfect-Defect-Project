@@ -61,6 +61,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   （1–8 个 dump，由 `python -m stpd.rl.offline_step warmup-cover` 选，文件须存在），另有
   `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
   首值时报警，探针开时报 gc 秒数。
+- 起点模型：站点 `start_package`（含 `model.json` 的模型包）。学习者配置的 `start_model_sha256`
+  取该包的 `package_sha256`，学习者加载时核对、每个 CP 的 config 都带上；run 目录 `facts.json`
+  与运行记录 `identity.start_model` 记包哈希和它的 `training_identity`（CP 导出的绑定或随机初始化的
+  种子）。从零开始：`python -m stpd.rl.random_start --template <当前起点包> --seed N --out DIR`
+  按模板的词表、执行配置和尺寸（q3-m-std-1）用 MStd 自身的初始化生成新权重，站点写
+  `start_package = DIR/package`、`warmup_file = ""`（拟合好的 RL4 头绑定原包，学习者会拒绝；
+  空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。随机包配了预热件时预检拒绝。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：

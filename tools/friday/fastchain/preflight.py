@@ -38,6 +38,7 @@ GIB = 1024**3
 # and the "UNKNOWN (0x...)" that BeeGFS/Ceph mounts print, is refused.
 LOCAL_FS = ("tmpfs", "xfs", "ext2/ext3", "ext4", "btrfs", "overlayfs", "overlay", "zfs")
 HEX12 = re.compile(r"^[0-9a-f]{12,64}$")
+RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned by a test)
 # sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
@@ -348,8 +349,23 @@ def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
 
 def check_warmup_artifact(facts: dict[str, Any]) -> Result:
     """The learner loads the fitted heads (site warmup_file) from peer_dir at start; a new
-    empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found)."""
+    empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found).
+
+    Site warmup_file = "" loads none: the RL4 heads start from their constructor init. A
+    random-init start package (python -m stpd.rl.random_start) needs that, since fitted
+    heads are bound to the package they were fitted on (the learner refuses them)."""
     warmup = facts.get("warmup_artifact") or {}
+    start = facts.get("start_model") or {}
+    identity = start.get("training_identity") or {}
+    random_init = (f"random-init start {str(start.get('package_sha256'))[:12]} seed "
+                   f"{identity.get('seed')}" if identity.get("schema") == RANDOM_START else None)
+    if warmup.get("none"):
+        return Result("warmup_artifact", True, 'none (site warmup_file = ""): RL4 heads start '
+                      "from their constructor init" + (f"; {random_init}" if random_init else ""))
+    if random_init:
+        return Result("warmup_artifact", False, f"{random_init} has no fitted heads: set site "
+                      'warmup_file = "" (warmup artifact '
+                      f"{str(warmup.get('id'))[:12]} was fitted on another package)")
     ok = bool(warmup.get("present"))
     return Result("warmup_artifact", ok, f"{str(warmup.get('id'))[:12]} in peer_dir" if ok else
                   f"warmup artifact {warmup.get('id')} has no manifest in site peer_dir "
