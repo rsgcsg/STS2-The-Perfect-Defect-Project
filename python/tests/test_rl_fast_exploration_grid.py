@@ -60,6 +60,8 @@ from stpd.rl.learning_diagnostics import (  # noqa: E402
     decision_codes,
     exploration_fields,
     exploration_row,
+    policy_by_arm,
+    row_arms,
 )
 from stpd.rl.prepared_batch import BatchMember, PrepareRequest  # noqa: E402
 
@@ -283,12 +285,30 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
     doses = {"control", "bold", "hot", f"{drivers[-1]}+save"}
     assert {key.split("|")[0] for key in counts} == doses
 
+    # RL5-METHODS R: each row's arm, derived from the tables (no new field), is its
+    # source's; the learner folds the step's per-row facts per arm.
+    arms, start = row_arms(batch.metadata, [m.rows for m in request.members]), 0
+    for source in sources:
+        assert set(arms[start:start + len(source.frames)]) == {games[source.run_id]["dose"]}
+        start += len(source.frames)
+    policy_rows = [i for i, multi in enumerate(batch.policy_mask.tolist()) if multi]
+    samples = [{"row": i, "ratio": 1.25 if n % 2 else 1.0, "outside_clip": bool(n % 2)}
+               for n, i in enumerate(policy_rows)]
+    by_arm = policy_by_arm(arms, samples)
+    assert set(by_arm) == doses
+    assert {arm: v[0] for arm, v in by_arm.items()} == {
+        arm: sum(c[0] for key, c in counts.items() if key.split("|")[0] == arm)
+        for arm in doses}  # every multi-choice row is attributed, none unattributed
+
     run = tmp_path / "run-t1"
     write_run(run, cards=1)
+    # a non-default rolling window beside the headline one (#556)
+    (run / "effective-profile.json").write_text(json.dumps({"knobs": {
+        "readout_rolling_games": {"value": [2, 1000]}}}))
     events = run / "learner-events.jsonl"
     events.write_text(events.read_text() + jsonl_text([{
         "t": 2299.5, "kind": "progress", "stepped": True, "rows": count,
-        "seconds": 1.0, "exploration": counts}]))
+        "seconds": 1.0, "exploration": counts, "policy_by_arm": by_arm}]))
     lines = []
     for index, (game, record) in enumerate(games.items()):
         lines += [{"event": "admission", "game_ref": game, "ok": True, "code": None},
@@ -315,15 +335,26 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
     for arm, results in played.items():
         floors = [r["floor"] for r in games.values() if r["arm"] == arm and not r["save"]]
         run_all = results["run"]["all"]
-        assert run_all["games"] == len(floors) == results["rolling"]["all"]["games"]
+        assert run_all["games"] == len(floors) == results["rolling_windows"]["1000"]["all"][
+            "games"]
         assert run_all["mean_floor"] == pytest.approx(sum(floors) / len(floors))
         assert run_all["act3_reached_rate"] == sum(f > 33 for f in floors) / len(floors)
         assert run_all["win_rate"] == 0
     assert record["training_games"]["run"] == played["control"]["run"]
+    for results in played.values():
+        assert results["rolling"]["all"]["games"] == min(results["run"]["all"]["games"], 2)
+        assert results["rolling_windows"]["1000"]["all"] == results["run"]["all"]
+    ppo = record["learning"]["latest"]["policy_by_arm"]
+    assert set(ppo) == doses
+    for arm, (rows, kl, clipped, _) in by_arm.items():
+        assert ppo[arm]["rows"] == rows and ppo[arm]["clip_fraction"] == clipped / rows
+        assert ppo[arm]["approx_kl"] == pytest.approx(kl / rows)
     text = readout.render(record)
     for arm in doses:
         assert f"exploration arm {arm}:" in text
     assert "training games arm bold A0" in text and "act 3 reached" in text
+    assert "(full, last 2)" in text and "(full, last 1000)" in text
+    assert "PPO update per arm (rows, clip, approx KL): bold " in text
 
 
 def test_the_default_single_control_arm_is_today(tmp_path):

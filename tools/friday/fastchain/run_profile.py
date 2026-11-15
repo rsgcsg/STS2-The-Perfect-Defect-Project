@@ -72,6 +72,14 @@ def _strs(value: Any) -> str | None:
     return None if ok else "list of strings"
 
 
+def _rolling_games(value: Any) -> str | None:
+    """Readout rolling windows in complete games: 1-4 distinct ints in [10, 100000]; the
+    first is the headline window, the rest are shown beside it (#556)."""
+    ok = (isinstance(value, list) and 1 <= len(value) <= 4 and len(set(value)) == len(value)
+          and all(type(n) is int and 10 <= n <= 100_000 for n in value))
+    return None if ok else "list of 1-4 distinct ints in [10, 100000]"
+
+
 def _table_of(check: Callable[[Any], str | None], keys: frozenset[str] | None = None,
               what: str = "values") -> Callable[[Any], str | None]:
     """A table whose every value passes `check` (and, with `keys`, only those keys)."""
@@ -405,6 +413,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "min_generation_seconds": _int(300),
     "supervise_poll_seconds": _int(10, 600),
     "readout_every_seconds": _int(600),
+    "readout_rolling_games": _rolling_games,
     "eval_interval_seconds": _int(600, 86400),
     "eval_seeds": _int(1, 100),
     "disk_sample_seconds": _int(5, 3600),
@@ -501,8 +510,11 @@ def _baseline(value: Any) -> str | None:
 
 # Optional site keys. eval_baselines: the registered reference round per evaluation
 # watcher (supervise: a0, a10), its plan.json pinned by sha256 (fast_eval --baseline-*).
+# trained_start_without_warmup (default false): a fresh start from a trained package with
+# warmup_file = "" is meant (heads from their constructor init); preflight refuses it otherwise.
 OPTIONAL_SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "eval_baselines": _table_of(_baseline, frozenset({"a0", "a10"}), "baselines"),
+    "trained_start_without_warmup": _bool,
 }
 
 

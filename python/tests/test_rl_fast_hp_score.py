@@ -200,10 +200,11 @@ def test_each_combat_is_scored_from_its_public_facts_into_the_format_4_column():
     assert header["group_id"] == "g" and header["ticket"] == {"start": "new_run", "end": "game"}
     # Per encounter (A2): net HP change (58-70) + (82-80) = -10, then a death from 58: -58.
     none = {"battles": 0, "deaths": 0, "hp_change": 0}
+    by_encounter = {"normal": {"battles": 2, "deaths": 1, "hp_change": -68},
+                    "elite": none, "boss": none, "unknown": none}
     assert g.scores() == {"battles": 2, "battles_unscored": 0, "potions": 1, "deaths": 1,
-                          "rows_unscored": 0, "ticket_ends": 0, "by_encounter": {
-                              "normal": {"battles": 2, "deaths": 1, "hp_change": -68},
-                              "elite": none, "boss": none, "unknown": none}}
+                          "rows_unscored": 0, "ticket_ends": 0, "by_encounter": by_encounter,
+                          "by_arm": {"control": by_encounter}}  # RL5-METHODS R: per arm
 
 
 def test_format_4_round_trip_is_format_3_plus_the_three_fields():
@@ -585,8 +586,22 @@ def test_the_learner_admits_prepares_and_steps_a_short_combat_ticket_segment(
         raw = torch.cat([outcome_advantages(ticket) + coef * hp_column(ticket),
                          outcome_advantages(bootstrap)])
         assert torch.allclose(prepared.advantages[ppo], normalised(raw), atol=1e-6)
+        published: list[dict[str, Any]] = []
+        publish = owner.exchange.publish_event
+        monkeypatch.setattr(owner.exchange, "publish_event", lambda kind, **fields: (
+            published.append({"kind": kind, **fields}), publish(kind, **fields))[1])
         result = owner._step()
         assert result["rows"] > 0 and result["approx_kl_mu_theta"] > 0
+        # RL5-METHODS R: the same step's clip and KL per arm, from the step's per-row
+        # facts and the sources' exploration tables (both games are the control arm).
+        for future in list(owner.telemetry_futures):
+            future.result()
+        progress = [e for e in published if e["kind"] == "progress"]
+        rows, kl, clipped, bad = progress[-1]["policy_by_arm"]["control"]
+        assert set(progress[-1]["policy_by_arm"]) == {"control"}
+        assert rows == result["multi_rows"] > 0 and bad == 0
+        assert kl / rows == pytest.approx(result["approx_kl_mu_theta"], rel=1e-3)
+        assert clipped / rows == pytest.approx(result["clip_fraction"], abs=1e-6)
     finally:
         owner.close()
 
@@ -740,6 +755,22 @@ def test_a_save_start_loaded_into_a_boss_fight_starts_at_its_first_rows_public_h
         "battles": 1, "deaths": 1, "hp_change": -70}
     assert bare.sealed[0].header["hp_adv"] == [None, None]
     assert (bare.scores()["battles"], bare.scores()["battles_unscored"]) == (0, 1)
+    # Per arm (RL5-METHODS R): a save start's combats count apart from the arm's new runs.
+    assert set(save.scores()["by_arm"]) == {"control+save"}
+    assert set(run.scores()["by_arm"]) == {"control"}
+    assert save.scores()["by_arm"]["control+save"]["boss"] == {
+        "battles": 1, "deaths": 1, "hp_change": -70}
+
+
+def test_only_a_save_start_takes_its_first_combat_start_from_the_row():
+    """#553 should-fix 2: the first-row public HP start is for `from_save` only; a new run
+    whose first row were in combat stays unscored, as before the save starts."""
+    g = HpGame()
+    g.open("n")
+    boss_fight(g, "n", public_hp={"hp": 70, "max_hp": 80})
+    assert g.sealed[0].header["hp_adv"] == [None, None]
+    assert (g.scores()["battles"], g.scores()["battles_unscored"]) == (0, 1)
+    assert g.scores()["by_arm"] == {}
 
 
 @pytest.mark.parametrize("public_hp", [

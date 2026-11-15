@@ -82,6 +82,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。合法类随楼层变，所以初始价值是
   楼层的函数（A0 约 floor 0 时 0.28、floor 48 时 0.85，审查探针），早期优势近似以楼层为势的
   整形：同层约 0、每上一层约 +0.006、死亡处约 −0.28。随机包配了预热件时预检拒绝。
+  受训起点配 `warmup_file = ""` 时预检拒绝，除非站点写 `trained_start_without_warmup = true`；
+  新起点的预热件按其 `model_package_sha256` 与起点包比对，不一致在提交前拒绝（续跑从 CP 取头，不比）。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
@@ -127,11 +129,18 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、每臂探索剂量（RL5-METHODS A3：
   训练行中所选动作在模型自己排序里的名次 头号/二选/三选及以后、模型头号概率 > 0.99 的比例、
   非头号选择归一前优势 > 0 的比例；按决策类型与幕；学习端从已记录的 q、applied 与解码优势算，
-  只进 metadata，不改训练数值；存档开局的行记在「臂名+save」下，不混进该臂从头开的局）、对照臂
+  只进 metadata，不改训练数值；存档开局的行记在「臂名+save」下，不混进该臂从头开的局）、每臂
+  PPO 更新的 clip 比例与近似 KL（`policy_by_arm`；学习端用每步已有的逐行 ratio/越界事实，行的臂
+  由各来源首行的探索表推出，不加新字段、不改训练数值；没有探索表的来源记为 `unattributed`，
+  读数单列一行警告与行数；近似 KL 按行合并，全程标量是每次尝试均值的均值，两者不必相等）、对照臂
   整局训练局滚动结果与 `arms` 下每臂同样的结果（只算从头开的局；每难度
-  平均层数、胜率、各幕 Boss 通过率、到第三幕比例）、SGD 边界分段、停止/拒绝/未知按原因计数、
-  CP id。每类战斗（普通/精英/首领）的死亡率与净血量变化用 A2 的 `hp_score`（只在格式 4，
-  全部臂合计、不分臂；格式 3 下为空，首领战每场死亡率另可看 1 − `clear_rate_given_reached`）。
+  平均层数、胜率、各幕 Boss 通过率、到第三幕比例；滚动窗口按配置 `readout_rolling_games`，默认
+  `[100]` 与以前相同，第二个起的窗口并列在 `rolling_windows`，如 `[100, 1000]`；自动续跑后
+  新一代的滚动窗口先装入本链前几代的局，最多最大窗口那么多，记 `rolling_seed_runs`，`run`
+  仍只算本代；每臂 HP 表仍只算本代）、SGD 边界分段、
+  停止/拒绝/未知按原因计数、CP id。每类战斗（普通/精英/首领）的死亡率与净血量变化用 A2 的
+  `hp_score`（只在格式 4，全部臂合计），`hp_score_arms` 为每臂同表（「臂名+save」另列；格式 3
+  下为空，首领战每场死亡率另可看 1 − `clear_rate_given_reached`）。
   只解析完整行（写到一半的末行等下次读，坏的完整行报错并给出字节位置）；对照臂完整局没有自然
   结局（无 victory/defeat 或无整数层/难度）计入 `unscored_closes`，不计分、不报错。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
@@ -221,7 +230,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     0.001–0.01。
   - 范围（owner：血点分用于单战斗练习）：`"combat_ticket"`（默认）只给 `ticket.end ==
     "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
-    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
+    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行，
+    预检 `hp_score` 因此拒绝 c_hp > 0 配 `combat_ticket`（#568）。
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
     对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
     再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。

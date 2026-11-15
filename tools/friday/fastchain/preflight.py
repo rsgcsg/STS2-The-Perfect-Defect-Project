@@ -361,6 +361,13 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
         return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
                       f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
+    if coef > 0 and scope == "combat_ticket":
+        # fast_source adds c_hp * A_hp only to segments whose ticket.end == "combat". No
+        # source sends one: the fast env's episode_open names no ticket (kernel.ts), so the
+        # assembler ends every game as {"end": "game"} and the term would add nothing.
+        return Result("hp_score", False, f"c_hp {coef} > 0 with scope combat_ticket adds "
+                      "nothing: the fast env sends no single-combat tickets, so no row gets "
+                      'the HP term (#568); use loss.hp_advantage_scope = "all_combats" or c_hp 0')
     return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}"
                   + (f", potions {potion}" if potion != "points" else "")
                   + (" (from the frozen config; not in the gate)"
@@ -379,29 +386,57 @@ def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   f"{len(dumps)} listed, missing {missing})")
 
 
-def check_warmup_artifact(facts: dict[str, Any]) -> Result:
+def check_warmup_artifact(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     """The learner loads the fitted heads (site warmup_file) from peer_dir at start; a new
     empty peer_dir failed V4 smoke-h1a at learner setup (object_not_found).
 
     Site warmup_file = "" loads none: the RL4 heads start from their constructor init. A
     random-init start package (python -m stpd.rl.random_start) needs that, since fitted
-    heads are bound to the package they were fitted on (the learner refuses them)."""
+    heads are bound to the package they were fitted on (the learner refuses them). A
+    trained start with no fitted heads changes the recipe (early values and advantages
+    come from the constructor init, REVIEW-550 O1): refused unless the site says so with
+    `trained_start_without_warmup = true`. A fresh start compares the package the heads
+    were fitted on with the start package, as the learner does (`_start_model`). A resume
+    restores its heads from the CP and loads neither."""
     warmup = facts.get("warmup_artifact") or {}
     start = facts.get("start_model") or {}
     identity = start.get("training_identity") or {}
+    fresh = not plan.get("resume_checkpoint")
+    opt_out = plan["site"].get("trained_start_without_warmup", False)
     random_init = (f"random-init start {str(start.get('package_sha256'))[:12]} seed "
                    f"{identity.get('seed')}" if identity.get("schema") == RANDOM_START else None)
     if warmup.get("none"):
+        if fresh and start and not random_init and not opt_out:
+            return Result("warmup_artifact", False, 'site warmup_file = "" with trained start '
+                          f"{str(start.get('package_sha256'))[:12]}: its RL4 heads would start "
+                          "from their constructor init; set warmup_file to the heads fitted on "
+                          "it, or set site trained_start_without_warmup = true to mean it")
         return Result("warmup_artifact", True, 'none (site warmup_file = ""): RL4 heads start '
-                      "from their constructor init" + (f"; {random_init}" if random_init else ""))
+                      "from their constructor init" + (f"; {random_init}" if random_init else
+                      "; site trained_start_without_warmup = true" if opt_out else ""))
+    if opt_out and fresh:
+        return Result("warmup_artifact", False, "site trained_start_without_warmup = true "
+                      f"but warmup_file names {str(warmup.get('id'))[:12]}: set one of them")
     if random_init:
         return Result("warmup_artifact", False, f"{random_init} has no fitted heads: set site "
                       'warmup_file = "" (warmup artifact '
                       f"{str(warmup.get('id'))[:12]} was fitted on another package)")
-    ok = bool(warmup.get("present"))
-    return Result("warmup_artifact", ok, f"{str(warmup.get('id'))[:12]} in peer_dir" if ok else
-                  f"warmup artifact {warmup.get('id')} has no manifest in site peer_dir "
-                  "(copy its manifest, payload index and chunks there)")
+    if not warmup.get("present"):
+        return Result("warmup_artifact", False, f"warmup artifact {warmup.get('id')} has no "
+                      "manifest in site peer_dir (copy its manifest, payload index and chunks "
+                      "there)")
+    fitted, error = warmup.get("package_sha256"), warmup.get("package_error")
+    if fresh and start and error:
+        return Result("warmup_artifact", False, f"warmup artifact {str(warmup.get('id'))[:12]}: "
+                      f"cannot read the package its heads were fitted on ({error})")
+    if fresh and start and fitted != start.get("package_sha256"):
+        return Result("warmup_artifact", False, f"warmup artifact {str(warmup.get('id'))[:12]} "
+                      f"was fitted on package {fitted}, the start package is "
+                      f"{start.get('package_sha256')} (the learner refuses it: "
+                      "fitted_heads_start_policy_changed_use_explicit_CP_conversion)")
+    return Result("warmup_artifact", True, f"{str(warmup.get('id'))[:12]} in peer_dir"
+                  + (f", fitted on the start package {str(fitted)[:12]}" if fresh and start
+                     else ""))
 
 
 def check_prepared_batch_cap(plan: dict[str, Any]) -> Result:
@@ -605,7 +640,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
             check_frozen_recipe(plan, facts), check_hp_score(plan, facts),
-            check_compile_warmup(plan, facts), check_warmup_artifact(facts),
+            check_compile_warmup(plan, facts), check_warmup_artifact(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),

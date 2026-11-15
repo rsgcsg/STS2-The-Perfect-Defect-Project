@@ -598,12 +598,14 @@ class FastSegmentAssembler:
             # combats, combat rows sealed trainable without a score (game ended first),
             # single-combat episodes sealed on their post-combat row; per encounter
             # the scored combats, their deaths and the sum of their net HP change
-            # (H_T - H_0 + M_T - M_0, death: -H_0; unweighted) for the run record.
+            # (H_T - H_0 + M_T - M_0, death: -H_0; unweighted) for the run record;
+            # `by_arm` the same per exploration arm (`<arm>+save` for save starts).
             self.counters["hp_score"] = {
                 "battles": 0, "battles_unscored": 0, "potions": 0, "deaths": 0,
                 "rows_unscored": 0, "ticket_ends": 0,
                 "by_encounter": {kind: {"battles": 0, "deaths": 0, "hp_change": 0}
-                                 for kind in ENCOUNTERS}}
+                                 for kind in ENCOUNTERS},
+                "by_arm": {}}
             if self.hp_potion_mode == "value_head":
                 # Only off the default (its record is unchanged): potion rows of scored
                 # combats given A_hp 0 (ticket H).
@@ -1166,9 +1168,11 @@ class FastSegmentAssembler:
         """Track the finished row's combat; a non-combat row ends the open one."""
         if meta["in_combat"]:
             if not game.battles or game.battles[-1].ended:
+                # Only a save start's first combat takes its start from the descriptor
+                # (#553 should-fix 2): a new run always has a row before its first combat.
                 game.battles.append(_Battle(game.last_row, str(encounter), first=(
-                    None if game.last_row is not None or public_hp is None
-                    else dict(public_hp))))
+                    dict(public_hp) if game.last_row is None and public_hp is not None
+                    and game.start.get("kind") == "from_save" else None)))
             game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
                                           potion))
             segment.hp_open += 1
@@ -1206,11 +1210,17 @@ class FastSegmentAssembler:
                 if self.hp_potion_mode == "value_head":
                     counters["potion_rows_exempt"] += sum(row[4] for row in battle.rows)
                 end = battle.rows[-1][2]["outcome"]["public_facts"]  # scored: all there
-                by = counters["by_encounter"][battle.encounter]
-                by["battles"] += 1
-                by["deaths"] += death
-                by["hp_change"] += (-start["hp"] if death else end["hp"] - start["hp"]
-                                    + end["max_hp"] - start["max_hp"])
+                change = (-start["hp"] if death else end["hp"] - start["hp"]
+                          + end["max_hp"] - start["max_hp"])
+                arm = game.sampling["arm_id"] + (
+                    "+save" if game.start.get("kind") == "from_save" else "")
+                arms = counters["by_arm"].setdefault(arm, {
+                    kind: {"battles": 0, "deaths": 0, "hp_change": 0} for kind in ENCOUNTERS})
+                for by in (counters["by_encounter"][battle.encounter],
+                           arms[battle.encounter]):
+                    by["battles"] += 1
+                    by["deaths"] += death
+                    by["hp_change"] += change
             for index, (segment, row, *_rest) in enumerate(battle.rows):
                 segment.hp_adv[row] = None if scores is None else scores[index]
                 segment.hp_open -= 1
