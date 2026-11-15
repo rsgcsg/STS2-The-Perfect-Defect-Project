@@ -5,6 +5,7 @@ Two halves, both decided by the pure functions below:
 - login side (`checks(plan, facts)`), before anything is submitted: layout placement,
   the GPU request (sinfo snapshot and --test-only printed only), machine types, prep
   scratch, prep jobs, speed switches, source features the knobs need, producer identity,
+  declared recipe changes against the CP they name (RL5-METHODS C),
   env package identity and memo, env nodes and shard balance, memory budget, per-batch
   prepared cap, service CPUs, cross-node identity, hot path, secret files, time limits,
   core cap, the queue (printed only);
@@ -268,6 +269,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
     if k["lr_warmup_steps"]:
         need["lr_warmup_steps"] = "lr warm-up (ticket K)"
+    if k.get("declared_changes"):
+        need["declared_changes"] = "declared recipe changes at a continuation (RL5-METHODS C)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
         need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
     if k["eval_suite"] or k["eval_a10_enabled"]:
@@ -328,13 +331,71 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         "generation": "-", "warmup_artifact_id": base["segments"].get("warmup_artifact_id"),
         "rendezvous_path": "-", "ranks": plan["placement"]["ranks"],
         "resume_checkpoint": None})
-    drift = learner_config.recipe_drift(effective, frozen)
+    declared = frozenset((plan["knobs"].get("declared_changes") or {}).get("changes") or {})
+    drift = learner_config.recipe_drift(effective, frozen, declared=declared)
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
                   + "; ".join(drift)) if drift else
                   f"effective learner config = {plan['knobs']['frozen_learner_config']} "
                   f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})"
+                  + (f"; declared changes (check declared_changes): {', '.join(sorted(declared))}"
+                     if declared else "")
                   + (f"; not in the gate, from the frozen config: loss.{', loss.'.join(filled)}"
                      if filled else ""))
+
+
+def check_declared_changes(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """RL5-METHODS C (#573): a declared recipe change is checked against the CP it names
+    before anything is submitted, with the learner's rules (stpd.rl.recipe_changes): each
+    declared key's old value is the CP's, its new value this run's, the two differ, and no
+    other declarable key differs. Keys outside DECLARABLE are compared by the learner at
+    start (as without a declaration). Nothing declared: nothing read, nothing refused."""
+    declared = plan["knobs"].get("declared_changes") or {}
+    cp, chain = plan.get("resume_checkpoint"), plan.get("chain")
+    if not declared:
+        return Result("declared_changes", True, "none: the recipe must equal the CP's"
+                      if cp else "none")
+    named = declared["checkpoint"]
+    if not cp:
+        return Result("declared_changes", False, f"declared changes from CP {named} need "
+                      "--resume-checkpoint (a fresh start has no recipe to change)")
+    if cp != named:
+        if chain is not None and chain.get("generation", 0) > 0:
+            return Result("declared_changes", True, f"declared for CP {named}, this "
+                          f"generation resumes {cp}: inactive, the recipe is locked to the "
+                          "CP's (the declared new values)")
+        return Result("declared_changes", False, f"declared for CP {named} but this run "
+                      f"starts from {cp}")
+    old = facts.get("resume_checkpoint_config")
+    if old is None:
+        return Result("declared_changes", False, f"cannot read CP {cp}'s config from the "
+                      f"site peer: {facts.get('resume_checkpoint_config_error', 'not read')}")
+    base, frozen = facts.get("gate_learner_base"), facts.get("frozen_recipe")
+    if base is None or frozen is None:
+        return Result("declared_changes", False, "no gate learner-base.json or frozen config")
+    new, _ = learner_config.learner_base(base, frozen, plan["knobs"], {
+        "run_name": "preflight", "peer_dir": "-", "start_package": "-",
+        "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
+        "generation": "-", "warmup_artifact_id": None, "rendezvous_path": "-",
+        "ranks": plan["placement"]["ranks"], "resume_checkpoint": cp})
+    bad, shown = [], []
+    for key in learner_config.DECLARABLE:
+        have_old = learner_config.config_value(old, key)
+        have_new = learner_config.config_value(new, key)
+        change = declared["changes"].get(key)
+        if change is None:
+            if have_old != have_new:
+                bad.append(f"{key} changes {have_old!r} -> {have_new!r} undeclared")
+            continue
+        shown.append(f"{key} {change['old']!r} -> {change['new']!r}")
+        if change["old"] != have_old:
+            bad.append(f"{key}: declared old {change['old']!r}, CP has {have_old!r}")
+        if change["new"] != have_new:
+            bad.append(f"{key}: declared new {change['new']!r}, this run has {have_new!r}")
+        if have_old == have_new:
+            bad.append(f"{key}: {have_old!r} in both the CP and this run")
+    return Result("declared_changes", not bad, "; ".join(bad) if bad else
+                  f"from CP {cp}: " + ", ".join(shown) + " (model and optimizer state kept; "
+                  "the learner checks the full recipe again at start)")
 
 
 def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
@@ -349,6 +410,8 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         return Result("hp_score", False, "no gate learner-base.json")
     frozen = facts.get("frozen_recipe")
     base, filled = learner_config.gate_recipe(base, frozen) if frozen else (base, {})
+    # A declared change of c_hp or its scope (RL5-METHODS C) is this run's value.
+    base = learner_config.apply_declared(base, plan["knobs"].get("declared_changes") or {})
     loss = base.get("loss") or {}
     coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
     if type(coef) not in (int, float) or scope not in ("combat_ticket", "all_combats"):
@@ -643,7 +706,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_request(plan, facts), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
-            check_frozen_recipe(plan, facts), check_hp_score(plan, facts),
+            check_frozen_recipe(plan, facts), check_declared_changes(plan, facts),
+            check_hp_score(plan, facts),
             check_compile_warmup(plan, facts), check_warmup_artifact(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),

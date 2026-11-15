@@ -116,6 +116,9 @@ class LearnerConfig:
     # Exact prior producer and exact critic old/new values for an intentional upgrade.
     resume_source: dict[str, str] | None = None
     resume_critic_changes: dict[str, Any] | None = None
+    # Segment learner (RL5-METHODS C): the CP a continuation starts from and each declared
+    # recipe change old -> new (stpd.rl.recipe_changes); None = the exact recipe check.
+    resume_recipe_changes: dict[str, Any] | None = None
     # Explicitly publish restored weights before actors receive another version.
     republish_on_resume: bool = False
     tensorboard_steps: int = 10

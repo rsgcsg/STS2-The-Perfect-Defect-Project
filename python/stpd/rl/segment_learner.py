@@ -123,6 +123,7 @@ from .prepared_batch import (
     PreparedBatch,
     PrepareRequest,
 )
+from . import recipe_changes
 from .reward import REWARD_SPEC
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
 from .sgd_process import (
@@ -504,6 +505,7 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         "max_versions",
         "resume_checkpoint",
         "resume_source",
+        "resume_recipe_changes",
         "republish_on_resume",
         "start_package",
         "start_artifact_id",
@@ -880,14 +882,39 @@ class SegmentLearner:
             wall_seconds=min(config.wall_seconds,
                              max(0, budget["total_seconds"] - budget["consumed_seconds"]))
             if budget is not None else config.wall_seconds)
-        if restored is not None:
+        # RL5-METHODS C: a declared recipe change applies only to a restore of exactly the
+        # CP it names; any other restore (the new run's own automatic resume) stays exact.
+        declaration = config.resume_recipe_changes
+        if declaration is not None:
+            recipe_changes.validate(declaration)
+            if not config.resume_checkpoint:
+                raise ValueError("declared_recipe_changes_require_resume_checkpoint")
+        declared = (declaration is not None
+                    and declaration["checkpoint_artifact_id"] == config.resume_checkpoint)
+        self.recipe_changes: dict[str, Any] | None = None
+        if restored is not None and not declared:
             if (
                 restored.identity.run != config.run
                 or restored.identity.training_generation == self.generation
                 or _resume_config(restored.config) != _resume_config(asdict(config))
                 or restored.producer != (config.resume_source or self.producer.to_dict())
             ):
+                if (declaration is not None and _resume_config(restored.config)
+                        != _resume_config(asdict(config))):
+                    raise ValueError("declared_recipe_changes_name_another_checkpoint: "
+                                     f"{declaration['checkpoint_artifact_id']} is not the "
+                                     f"restored {config.resume_checkpoint}")
                 raise ValueError("self_contained_resume_source_config_or_generation_changed")
+        elif restored is not None:
+            if (
+                restored.identity.run != config.run
+                or restored.identity.training_generation == self.generation
+                or restored.producer != (config.resume_source or self.producer.to_dict())
+            ):
+                raise ValueError("self_contained_resume_source_config_or_generation_changed")
+            self.recipe_changes = recipe_changes.check(
+                declaration, _resume_config(restored.config), _resume_config(asdict(config)))
+        if restored is not None:
             # Caller has stopped the old learner/preparers. This only revokes
             # the old generation's new hot slots, never original CAS/assets.
             discarded_generations = {restored.identity.training_generation}
@@ -931,6 +958,14 @@ class SegmentLearner:
             if self._optimizer_names() != restored.optimizer_parameter_names:
                 raise ValueError("checkpoint_optimizer_parameter_order_changed")
             self.optimizer.load_state_dict(restored.optimizer)
+            # load_state_dict restores each group's lr from the CP. A declared change sets
+            # the configured rates (the Adam moments and step counts stay the CP's); the
+            # lr warm-up, if any, still counts the restored update count.
+            self.restored_lr = [group["lr"] for group in self.optimizer.param_groups]
+            if self.recipe_changes is not None:
+                for group, rate in zip(self.optimizer.param_groups,
+                                       (config.lr, settings.head_lr), strict=True):
+                    group["lr"] = rate
             self.ema = {name: value.to(self.device) for name, value in restored.ema.items()}
             counters = restored.counters
             for name, value in (
@@ -1167,6 +1202,25 @@ class SegmentLearner:
             self._capture_model(), self.version, self.updates
         ).result()
         self.published_updates = initial["updates"]
+        # Which CP this learner actually restored (RL4.2 resumed from a stale CP unnoticed)
+        # and, at a declared continuation, each change and the lr applied. The fast chain
+        # writes it into the run's learner-events.jsonl (roles.py) for the run record.
+        self.restored_checkpoint: dict[str, Any] | None = None
+        if restored is not None:
+            self.restored_checkpoint = {
+                "checkpoint_artifact_id": config.resume_checkpoint,
+                "run": restored.identity.run,
+                "training_generation": restored.identity.training_generation,
+                "sequence": restored.identity.sequence,
+                "mu_version": restored.counters.mu_version,
+                "updates": restored.counters.updates, "producer": restored.producer,
+                "recipe_changes": self.recipe_changes,
+                "optimizer_lr": {"restored": self.restored_lr,
+                                 "applied": [group["lr"] for group in
+                                             self.optimizer.param_groups]}}
+            self._event("checkpoint_restored", **{
+                ("restored_training_generation" if key == "training_generation" else key): value
+                for key, value in self.restored_checkpoint.items()})
         if self.sgd_options is not None:
             # Before any listener or attachment: a refused budget or a failed
             # child start means this learner never accepts a connection.
@@ -4002,6 +4056,9 @@ class SegmentLearner:
                 tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda"
                 else self.cuda_rng))
         configuration = asdict(self.config)
+        if configuration["resume_recipe_changes"] is None:
+            # Not declared: the CP config stays what it was before the field existed.
+            del configuration["resume_recipe_changes"]
         if configuration["operating_budget"] is not None:
             active = (time.monotonic() - self.active_training_began
                       if self.active_training_began is not None else self.active_training_seconds)

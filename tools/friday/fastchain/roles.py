@@ -275,6 +275,11 @@ def learner() -> None:
     owner = SegmentLearner(config, work / "owner", SegmentLearnerIO(
         None, publish_detached_p1_model, dataplane=dataplane))
     events = RUN / "learner-events.jsonl"
+    if getattr(owner, "restored_checkpoint", None) is not None:
+        # The CP the learner actually restored, and any declared recipe change (RL5-METHODS
+        # C): the run record checks it against the plan's resume CP.
+        jline(events, {"t": time.time(), "kind": "checkpoint_restored",
+                       **owner.restored_checkpoint})
     original = owner._event
 
     # c3c17: the event log no longer opens/appends/closes an NFS file on the learner
