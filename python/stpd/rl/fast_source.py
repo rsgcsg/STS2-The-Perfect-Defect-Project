@@ -248,6 +248,10 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             advantages = advantages + hp_part
     if decisions is not None:
         arm, signs = header["sampling"]["arm_id"], (advantages > 0).tolist()
+        if header["start"]["kind"] == "from_save":
+            # Apart from the arm's new runs (#553 review H): a save start begins mid-run, so
+            # its rows would skew the arm's per-act dose. Arm ids never contain "+".
+            arm += "+save"
         counts: dict[str, list[int]] = {}
         for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
             q = meta["behavior_q"]

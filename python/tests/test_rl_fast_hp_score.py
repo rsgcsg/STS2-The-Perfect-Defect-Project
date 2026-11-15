@@ -123,9 +123,11 @@ class HpGame:
 
     def step(self, game: str, *, combat: bool, hp: int | None = None, max_hp: int = 80,
              predicted: float = 0.5, potion: bool = False, terminal: str | None = None,
-             status: str = "completed", encounter: str | None = "normal") -> dict[str, Any]:
+             status: str = "completed", encounter: str | None = "normal",
+             public_hp: Any = None) -> dict[str, Any]:
         """One decision; `hp=None` sends no step outcome (the row is never played).
-        A combat row carries `encounter` as the aggregator sends it (A2)."""
+        A combat row carries `encounter` as the aggregator sends it (A2), and
+        `public_hp` (its own state's public HP, B) when one is given."""
         self.request += 1
         step = self.steps[game]
         self.steps[game] += 1
@@ -135,6 +137,8 @@ class HpGame:
                "in_combat": combat, "floor": 1, "encounter": encounter if combat else None,
                "payload": {"offset": 0, "length": len(self.raw),
                            "row_sha256": hashlib.sha256(self.raw).hexdigest()}}
+        if public_hp is not None:
+            row["public_hp"] = public_hp
         plan = self.assembler.begin_row(row, self.raw)
         q = [0.0] * self.width
         q[0], q[-1] = 0.25, 0.75
@@ -706,6 +710,46 @@ def test_a_format_4_combat_row_must_name_its_public_encounter(encounter):
     three.step("g", combat=True, hp=60, encounter=encounter)
 
 
+SAVE_START = {"kind": "from_save", "save_sha256": "d" * 64, "act": 1, "floor": 16}
+
+
+def boss_fight(g: HpGame, game: str, public_hp: Any = None) -> None:
+    g.step(game, combat=True, encounter="boss", hp=60, predicted=0.625, public_hp=public_hp)
+    g.step(game, combat=True, encounter="boss", hp=0, predicted=0.25, terminal="defeat")
+    g.close(game, "terminal")
+
+
+def test_a_save_start_loaded_into_a_boss_fight_starts_at_its_first_rows_public_hp():
+    """#553 review B: a pre-Boss save loads onto the map, the Boss node is a forced
+    step, so the fight has no row before it; its first row's public HP is the start,
+    and it scores as the same fight after a row in a new run."""
+    run, save, bare = HpGame(), HpGame(), HpGame()
+    run.open("r")
+    run.step("r", combat=False, hp=70)               # the rest site: the Boss starts at 70/80
+    boss_fight(run, "r")
+    save.open("s", start=SAVE_START)
+    boss_fight(save, "s", public_hp={"hp": 70, "max_hp": 80})
+    bare.open("b", start=SAVE_START)
+    boss_fight(bare, "b")                            # no public_hp: no start fact
+    # Death from 70: D = -70 - 30, baselines 62.5-70 and 25-60.
+    assert run.sealed[0].header["hp_adv"] == [None, -92.5, -55.0]
+    assert save.sealed[0].header["hp_adv"] == [-92.5, -55.0]
+    assert save.scores()["by_encounter"]["boss"] == run.scores()["by_encounter"]["boss"] == {
+        "battles": 1, "deaths": 1, "hp_change": -70}
+    assert bare.sealed[0].header["hp_adv"] == [None, None]
+    assert (bare.scores()["battles"], bare.scores()["battles_unscored"]) == (0, 1)
+
+
+@pytest.mark.parametrize("public_hp", [
+    {"hp": -1, "max_hp": 80}, {"hp": 70, "max_hp": 0}, {"hp": "70", "max_hp": 80},
+    {"hp": 70}, {"hp": 70, "max_hp": 80, "block": 5}, [70, 80]])
+def test_a_row_with_a_malformed_public_hp_is_refused(public_hp):
+    g = HpGame()
+    g.open("g", start=SAVE_START)
+    with pytest.raises(AssemblyError, match="invalid_row"):
+        g.step("g", combat=True, encounter="boss", hp=60, public_hp=public_hp)
+
+
 @pytest.fixture(scope="module")
 def link_model() -> Any:
     from stpd.p1.input import V2_INPUT_SPEC
@@ -719,7 +763,7 @@ def link_model() -> Any:
     return model.eval().requires_grad_(False)
 
 
-def test_the_aggregator_hands_the_service_each_combat_rows_public_encounter(link_model):
+def test_the_aggregator_hands_the_service_each_combat_rows_encounter_and_hp(link_model):
     """Env line -> node aggregator (encoder pool) -> service -> assembler.begin_row."""
     import os
     import tempfile
@@ -748,6 +792,7 @@ def test_the_aggregator_hands_the_service_each_combat_rows_public_encounter(link
                   "start": {"kind": "new_run"}})
         fight = public_state()
         fight["combat"] = {"availability": "available", "content": {"encounter_type": "elite"}}
+        fight["player"] = {"content": {"hp": 50, "max_hp": 70}}
         lines = [link._decision_line(1, "g1", 0, public_state()),
                  link._decision_line(2, "g1", 1, fight).replace(b'"in_combat":false',
                                                                  b'"in_combat":true')]
@@ -762,8 +807,9 @@ def test_the_aggregator_hands_the_service_each_combat_rows_public_encounter(link
         stats = aggregator.close()
         service.close()
     assert stats["failure"] is None
-    assert [(row["in_combat"], row["encounter"]) for row in assembler.rows] == [
-        (False, None), (True, "elite")]
+    assert [(row["in_combat"], row["encounter"], row["public_hp"])
+            for row in assembler.rows] == [
+        (False, None, None), (True, "elite", {"hp": 50, "max_hp": 70})]
     assert all(type(hp) is float for _, hp, _ in assembler.hp)  # the HP head, for format 4
 
 
