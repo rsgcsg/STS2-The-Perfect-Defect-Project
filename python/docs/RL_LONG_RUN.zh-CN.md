@@ -67,6 +67,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   行/h、首用比与入队/丢弃、学习者价值/HP 诊断（EV 对 λ 回报与终局、MSE、HP MAE，按幕与 Boss 层
   分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、对照臂整局训练局滚动结果（每难度
   平均层数、胜率、各幕 Boss 通过率）、SGD 边界分段、停止/拒绝/未知按原因计数、CP id。
+  只解析完整行（写到一半的末行等下次读，坏的完整行报错并给出字节位置）；对照臂完整局没有自然
+  结局（无 victory/defeat 或无整数层/难度）计入 `unscored_closes`，不计分、不报错。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
   空闲 < `disk_warn_free_pct`（20%）写一行 WARN，< `disk_stop_free_pct`（10%）写 `DRAIN`
   （env 节点停止接新局），再过 `env_drain_seconds` 写 STOP「disk stop」让学习者停下（不空等
@@ -89,11 +91,14 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   原因响亮停止（`FINAL.json`）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
   每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；学习者每发布一个 CP、续跑前
   和链结束时写运行记录 `chain-CHAIN/run-record.json`（最新）并追加 `run-records.jsonl`（写失败
-  记日志、不停跑）。带 `--eval-*` 时每个套件
+  记日志、不停跑）。两者共用每代一个 `readout.Readout`：只读上次之后新增的字节（学习者事件、
+  学习者状态、各 driver 日志累加成运行总和；小采样文件整读），出错后丢弃、下次重建。带
+  `--eval-*` 时每个套件
   一个常驻 `tools/friday/fast_eval.py` 看守（#528，不带 `--checkpoint/--once`）：每
   `eval_interval_seconds` 评最新 CP，`eval_seeds` 局 `eval_suite`（空 = 固定 A0 100），
   `--eval-baseline-plan` 给配对报告，报告旁写 `eval-record.json`（阶段秒数、同时在跑局数、
-  逐种子结果、配对比较）；`eval_a10_enabled`（默认关，#530 S-2 后开）再起一个
+  逐种子结果、配对比较；写不出时响亮记 `evaluation_record_failed`，报告照常计入配对）；
+  `eval_a10_enabled`（默认关，#530 S-2 后开）再起一个
   A10 50 局看守。`--eval-execution` 是模板，链写一份 `storage_mode = "shared_local"`
   （站点 peer，不走 R2）。看守在链结束后继续，下一拍评到最后的 CP；`FINAL.json` 记它们的
   pid，看到那份报告后再停。
