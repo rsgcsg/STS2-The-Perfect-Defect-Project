@@ -143,9 +143,11 @@ def summary(statistics: dict[str, dict[str, list[float]]]) -> dict[str, dict[str
 def advantage_fields(normalization: Any) -> dict[str, Any]:
     """A dataset's multi-choice advantages before the one normalization
     (`prepared_batch.AdvantageNormalization`: mean and population std, floor 1e-8);
-    with c_hp > 0 that advantage already includes c_hp * A_hp (fast_source)."""
+    with c_hp > 0 that advantage already includes c_hp * A_hp (fast_source), and
+    `hp_std` / `hp_share` give that part's std and its share of Var(A) (None at c_hp 0)."""
     return {"multi_rows": normalization.multi_rows, "mean": normalization.mean,
-            "std": normalization.scale}
+            "std": normalization.scale, "hp_std": normalization.hp_std,
+            "hp_share": normalization.hp_share}
 
 
 def headline(statistics: dict[str, dict[str, list[float]]]) -> dict[str, float | None]:
