@@ -287,7 +287,7 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
 
     # RL5-METHODS R: each row's arm, derived from the tables (no new field), is its
     # source's; the learner folds the step's per-row facts per arm.
-    arms, start = row_arms(batch.metadata), 0
+    arms, start = row_arms(batch.metadata, [m.rows for m in request.members]), 0
     for source in sources:
         assert set(arms[start:start + len(source.frames)]) == {games[source.run_id]["dose"]}
         start += len(source.frames)

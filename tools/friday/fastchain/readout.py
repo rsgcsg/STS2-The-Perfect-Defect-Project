@@ -58,6 +58,7 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
+UNATTRIBUTED = "unattributed"  # learning_diagnostics: rows of a source without a table
 POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
 ROLLING_GAMES = 100  # the training-game rolling mean: the last N complete games
 # effective-profile knob `readout_rolling_games` (#556): [headline, windows shown beside it]
@@ -701,17 +702,25 @@ class _Results:
         self.rolling.append(game)
         self.rolling_level.setdefault(level, deque(maxlen=max(self.windows))).append(game)
 
+    def seed(self, earlier: _Results) -> None:
+        """Take an earlier generation's rolling games (older than any of this one's): the
+        windows run on across a resume; the whole-run tables stay this generation's."""
+        self.rolling.extend(earlier.rolling)
+        for level, games in earlier.rolling_level.items():
+            self.rolling_level.setdefault(level, deque(maxlen=max(self.windows))).extend(games)
+
     def _rolling(self, n: int, levels: list[int]) -> dict[str, Any]:
         return {"all": _Games(_last(self.rolling, n)).result(),
                 **{f"A{a}": _Games(_last(self.rolling_level[a], n)).result() for a in levels}}
 
     def result(self) -> dict[str, Any]:
-        levels = sorted(self.level)
-        out = {"rolling": self._rolling(self.windows[0], levels),
+        levels, rolling = sorted(self.level), sorted(self.rolling_level)
+        out = {"rolling": self._rolling(self.windows[0], rolling),
                "run": {"all": self.all.result(),
                        **{f"A{a}": self.level[a].result() for a in levels}}}
         if len(self.windows) > 1:
-            out["rolling_windows"] = {str(n): self._rolling(n, levels) for n in self.windows[1:]}
+            out["rolling_windows"] = {str(n): self._rolling(n, rolling)
+                                      for n in self.windows[1:]}
         return out
 
 
@@ -734,7 +743,7 @@ class Readout:
     discarded by its owner (supervise starts a fresh one), never updated again."""
 
     def __init__(self, run: Path, window: float = 1200.0, plan_path: Path | None = None,
-                 rolling: Iterable[int] | None = None):
+                 rolling: Iterable[int] | None = None, seed: Iterable[Path] = ()):
         self.run, self.window = Path(run), float(window)
         self.plan_path = plan_path or self.run / "plan.json"
         # rolling windows in complete games: given, else the run's effective-profile knob,
@@ -788,6 +797,14 @@ class Readout:
         # save counters (cumulative, #553 review C)
         self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {},
                                       "opened": {}, "counters": {}}
+        # a resumed chain generation: the earlier generations' run dirs, oldest first; their
+        # drivers' scored games start the rolling windows (bounded by the largest window)
+        self.seed_runs = [Path(earlier) for earlier in seed]
+        for earlier in self.seed_runs:
+            prior = Readout(earlier, self.window, rolling=self.rolling)
+            prior._fold_drivers()
+            for arm, results in prior.arms.items():
+                self.arms.setdefault(arm, _Results(self.rolling)).seed(results)
 
     @property
     def read_bytes(self) -> int:
@@ -802,6 +819,10 @@ class Readout:
         for records in self.status.chunks():
             for x in records:
                 self._status(x)
+        self._fold_drivers()
+        return self
+
+    def _fold_drivers(self) -> None:
         games: list[dict[str, Any]] = []
         for path in sorted(glob.glob(str(self.run / "env-n*" / "p*" / "driver.jsonl"))):
             tail, admitted = self.drivers.setdefault(path, (Tail(path), set()))
@@ -810,7 +831,6 @@ class Readout:
                     self._driver(path, r, admitted, games)
         for game in sorted(games, key=lambda g: g["t"]):  # rolling = last N by close time
             self._game(game)
-        return self
 
     # ---------------- folding ----------------
     def _event(self, e: dict[str, Any]) -> None:
@@ -1147,20 +1167,24 @@ class Readout:
         window; its other windows under `rolling_windows`, only when set). A Boss on floor b is
         cleared iff the game was won or ended above b (natural layout). Other complete
         closes are `unscored_closes` (counted, never scored). `arms`: the same for every
-        exploration arm's full games (control included)."""
-        if not any(r.all.games or r.unscored for r in self.arms.values()):
+        exploration arm's full games (control included). In a resumed chain generation the
+        rolling windows start from the earlier generations' games (`rolling_seed_runs`);
+        `run` stays this generation's."""
+        if not any(r.all.games or r.unscored or r.rolling for r in self.arms.values()):
             return {}
         first, last = self.games_t or (0.0, 0.0)
         count = self.control.all.games
         return {"filter": "arm control, start new_run, complete (terminal, admitted, "
                           "evidence ok), result victory/defeat",
                 "unscored_closes": self.control.unscored, "rolling_games": self.rolling[0],
+                **({"rolling_seed_runs": [p.name for p in self.seed_runs]}
+                   if self.seed_runs else {}),
                 "complete_games_per_h": (count / (max(last - first, 1) / 3_600_000)
                                          if count > 1 else None),
                 **self.control.result(),
                 "arms": {arm: {**results.result(), "unscored_closes": results.unscored}
                          for arm, results in sorted(self.arms.items())
-                         if results.all.games or results.unscored}}
+                         if results.all.games or results.unscored or results.rolling}}
 
     def recipe(self) -> dict[str, Any]:
         if not self.tables["arm"]:
@@ -1295,11 +1319,15 @@ def render_record(r: dict[str, Any]) -> list[str]:
                 "(top% / p>0.99%): " + ", ".join(
                     f"{name} {100 * d['top']:.0f}/{100 * d['top_p_over_099']:.0f}"
                     for name, d in dose["by_decision"].items()))
-        arms = x.get("policy_by_arm") or {}
+        arms = dict(x.get("policy_by_arm") or {})
+        lost = arms.pop(UNATTRIBUTED, None)
         if key == "latest" and set(arms) - {"control"}:
             out.append("  PPO update per arm (rows, clip, approx KL): " + ", ".join(
                 f"{arm} {a['rows']:,} / {fmt(a['clip_fraction'], 3)} / "
                 f"{fmt(a['approx_kl'], 4)}" for arm, a in arms.items()))
+        if lost:
+            out.append(f"  WARNING ({key}): {lost['rows']:,} PPO rows unattributed (a source "
+                       "without an exploration table), left out of the per-arm line")
     games = r.get("training_games") or {}
     windows = [(games.get("rolling_games"), games.get("rolling") or {}),
                *((int(n), part) for n, part in (games.get("rolling_windows") or {}).items())]

@@ -374,9 +374,12 @@ class Chain:
 
     def read(self, run: Path) -> dict[str, Any]:
         """The readout record of `run`, folding only what was appended since the last read
-        (a new generation, or an error last time, starts a fresh Readout)."""
+        (a new generation, or an error last time, starts a fresh Readout). The rolling
+        windows run on across resumes: the chain's earlier generations seed them."""
         if self.reader is None or self.reader.run != run:
-            self.reader = readout.Readout(run, 1200.0)
+            runs = [Path(g["run"]) for g in self.state["generations"]]
+            earlier = runs[:runs.index(run)] if run in runs else []
+            self.reader = readout.Readout(run, 1200.0, seed=earlier)
         reader, self.reader = self.reader, None
         result = reader.update().record()
         self.reader = reader

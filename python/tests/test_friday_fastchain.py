@@ -1314,6 +1314,8 @@ def test_readout_rolling_window_defaults_to_the_last_100_and_takes_the_profile_w
     assert games['rolling']['all']['mean_floor'] == pytest.approx(sum(newest[-30:]) / 30)
     wide = games['rolling_windows']['1000']['all']
     assert wide['games'] == games['run']['all']['games'] == 174
+    # per ascension the deque holds the largest window too, not the first
+    assert games['rolling_windows']['1000']['A0']['games'] == games['run']['A0']['games'] > 30
     assert games['arms']['control']['rolling_windows'] == games['rolling_windows']
     assert games['arms']['explore']['rolling_windows']['1000']['all']['games'] == 1
     text = readout.render(r)
@@ -1322,6 +1324,39 @@ def test_readout_rolling_window_defaults_to_the_last_100_and_takes_the_profile_w
     assert 'training games arm explore A0 (full, last 1000): 1 games' in text
     with pytest.raises(ValueError, match='positive ints'):
         readout.Readout(run, 1200, rolling=[0])
+
+
+def test_readout_rolling_windows_run_on_across_a_resumed_generation(tmp_path):
+    """A resumed chain generation starts its rolling windows from the earlier generations'
+    games (bounded by the largest window); its whole-run section stays its own."""
+    first, second = tmp_path / 'run-t1', tmp_path / 'run-t1-r1'
+    for run in (first, second):
+        write_run(run)
+        write_record_inputs(run)
+        _set_knob(run, 'readout_rolling_games', [30, 1000])
+    _many_control_games(first, 150)
+    _many_control_games(second, 20, start_t=20_000)
+    alone = readout.build(second, 1200)['training_games']
+    assert alone['rolling_windows']['1000']['all']['games'] == 24
+    assert 'rolling_seed_runs' not in alone
+    reader = readout.Readout(second, 1200, seed=[first])
+    games = reader.update().record()['training_games']
+    assert games['rolling_seed_runs'] == ['run-t1']
+    assert games['run'] == alone['run']  # this generation's own
+    assert games['rolling_windows']['1000']['all']['games'] == 154 + 24
+    first_a0 = readout.build(first, 1200)['training_games']['run']['A0']['games']
+    assert games['rolling_windows']['1000']['A0']['games'] == (
+        first_a0 + alone['run']['A0']['games'])
+    assert games['rolling']['all']['games'] == 30
+    assert games['arms']['explore']['rolling_windows']['1000']['all']['games'] == 2
+    bounded = readout.Readout(second, 1200, rolling=[30, 100], seed=[first]).update()
+    assert len(bounded.control.rolling) == 100
+    # A seeded generation with no game closed yet already shows the windows.
+    empty = tmp_path / 'run-t1-r2'
+    write_run(empty)
+    games = readout.Readout(empty, 1200, rolling=[100], seed=[first, second]).update(
+        ).record()['training_games']
+    assert games['rolling']['all']['games'] == 100 and games['run']['all']['games'] == 0
 
 
 def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
@@ -1354,7 +1389,8 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
               (run / 'learner-events.jsonl').read_text().splitlines()]
     for event in events:
         if event.get('kind') == 'progress':  # 4 rows of control (1 clipped), 2 of hot
-            event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1]}
+            event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1],
+                                      'unattributed': [3, 0.0, 0, 0]}
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     r = readout.build(run, 1200)
     arms = r['hp_score_arms']
@@ -1377,6 +1413,10 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
     text = readout.render(r)
     assert 'PPO update per arm (rows, clip, approx KL): control ' in text
     assert '/ 0.250 / 0.0010, hot ' in text
+    assert 'unattributed' not in text.split('PPO update per arm')[1].splitlines()[0]
+    lost = r['learning']['latest']['policy_by_arm']['unattributed']['rows']
+    assert lost % 3 == 0 and f'  WARNING (latest): {lost:,} PPO rows unattributed (a source ' \
+        'without an exploration table), left out of the per-arm line' in text
     assert '  arm control+save: normal 0 / 0 / -, elite 0 / 0 / -, boss 1 / 1 / -60.0' in text
     events[-5]['policy_by_arm'] = {'hot': [2, 0.01]}
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
@@ -1772,6 +1812,7 @@ def test_chain_writes_the_run_record_at_checkpoints_resume_and_end(tmp_path):
     assert [c['checkpoint_artifact_id'] for c in last['checkpoints']] == ['cp-x', 'cp-y']
     # One readout per generation: each record read only what was appended since the last.
     assert chain.reader.run == run and chain.reader.read_bytes == events.stat().st_size
+    assert chain.reader.seed_runs == [tmp_path / 'run-lr1']  # windows run on (#556)
     (run / 'plan.json').write_text('{')  # a broken record is noted, never stops the run
     assert not chain.record(run, 'checkpoint')
     assert chain.state['log'][-1]['kind'] == 'run_record_failed'

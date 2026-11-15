@@ -237,15 +237,18 @@ POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
 UNATTRIBUTED = "unattributed"
 
 
-def row_arms(metadata: Any) -> list[str | None]:
-    """Per dataset row, its source's arm (None before the first exploration table)."""
-    arm: str | None = None
+def row_arms(metadata: Any, sources: Any) -> list[str | None]:
+    """Per dataset row, its source's arm: the exploration table on the source's first row
+    (fast_source), None for a source without one. `sources` = each source's row count, in
+    dataset order (the batch request's members); they must cover the metadata exactly."""
     out: list[str | None] = []
-    for row in metadata:
-        counts = row.get("exploration")
-        if counts:
-            arm = next(iter(counts)).split("|", 1)[0]
-        out.append(arm)
+    for rows in sources:
+        counts = metadata[len(out)].get("exploration") if rows else None
+        arm = next(iter(counts)).split("|", 1)[0] if counts else None
+        out.extend([arm] * rows)
+    if len(out) != len(metadata):
+        raise ValueError(f"row_arms: sources cover {len(out)} rows, metadata has "
+                         f"{len(metadata)}")
     return out
 
 

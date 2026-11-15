@@ -3554,7 +3554,8 @@ class SegmentLearner:
         """The single successful-use owner: first use, aux uses, counters, events."""
         build: Callable[[], dict[str, Any]] | None = None
         if self.row_arm_cache is None or self.row_arm_cache[0] is not batch:
-            derived = row_arms(batch.metadata)  # once per dataset
+            derived = row_arms(batch.metadata,  # once per dataset
+                               [m.rows for m in batch.request.members])
             self.row_arm_cache = batch, (derived if any(derived) else None)
         arms = self.row_arm_cache[1]
         if result["stepped"]:
