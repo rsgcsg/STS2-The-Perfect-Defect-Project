@@ -304,7 +304,7 @@ def job_env(plan: dict[str, Any]) -> str:
 
 
 CHECKPOINT_MAGIC = b"STPDCKP1"  # = stpd.rl.checkpoint_codec.MAGIC (pinned by a test)
-WARMUP_SCHEMA = "stpd/rl4-head-warmup-1"  # = what segment_learner._start_model accepts
+WARMUP_SCHEMA = "stpd/rl4-head-warmup-1"  # = stpd.rl.warmup.HEAD_WARMUP_SCHEMA (pinned by a test)
 
 
 def warmup_package(peer_dir: Path, artifact_id: str) -> str:

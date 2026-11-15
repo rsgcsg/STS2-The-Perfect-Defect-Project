@@ -1390,6 +1390,8 @@ def test_a_trained_start_without_fitted_heads_needs_the_site_to_say_so():
     assert passed.ok and passed.detail.endswith('site trained_start_without_warmup = true')
     both = preflight.check_warmup_artifact(meant, good_facts(plan))  # opt-out + a warm-up
     assert not both.ok and 'set one of them' in both.detail
+    assert preflight.check_warmup_artifact({**meant, 'resume_checkpoint': 'cp-1'},
+                                           good_facts(plan)).ok  # never refuses a resume
     # fitted heads: compared with the start package on a fresh start
     other = {**good_facts(plan), 'warmup_artifact': {'id': 'f' * 64, 'present': True,
                                                      'package_sha256': 'd' * 64}}

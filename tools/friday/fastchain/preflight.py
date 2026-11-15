@@ -355,7 +355,7 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         # assembler ends every game as {"end": "game"} and the term would add nothing.
         return Result("hp_score", False, f"c_hp {coef} > 0 with scope combat_ticket adds "
                       "nothing: the fast env sends no single-combat tickets, so no row gets "
-                      'the HP term; use loss.hp_advantage_scope = "all_combats" or c_hp 0')
+                      'the HP term (#568); use loss.hp_advantage_scope = "all_combats" or c_hp 0')
     return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}"
                   + (" (from the frozen config; not in the gate)"
                      if {"hp_advantage_coef", "hp_advantage_scope"} & set(filled) else ""))
@@ -401,7 +401,7 @@ def check_warmup_artifact(plan: dict[str, Any], facts: dict[str, Any]) -> Result
         return Result("warmup_artifact", True, 'none (site warmup_file = ""): RL4 heads start '
                       "from their constructor init" + (f"; {random_init}" if random_init else
                       "; site trained_start_without_warmup = true" if opt_out else ""))
-    if opt_out:
+    if opt_out and fresh:
         return Result("warmup_artifact", False, "site trained_start_without_warmup = true "
                       f"but warmup_file names {str(warmup.get('id'))[:12]}: set one of them")
     if random_init:

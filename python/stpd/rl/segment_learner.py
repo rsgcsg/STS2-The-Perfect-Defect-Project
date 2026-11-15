@@ -130,6 +130,7 @@ from .sgd_process import (
     weights_digest,
     write_tree,
 )
+from .warmup import HEAD_WARMUP_SCHEMA
 
 # The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
 WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
@@ -1723,7 +1724,7 @@ class SegmentLearner:
         if self.settings.warmup_artifact_id:
             artifact = self.exchange.store.get_manifest(self.settings.warmup_artifact_id)
             fitted = decode_checkpoint(self.exchange.store.bytes(artifact.payload("checkpoint")))
-            if fitted.get("schema") != "stpd/rl4-head-warmup-1":
+            if fitted.get("schema") != HEAD_WARMUP_SCHEMA:
                 raise ValueError("explicit_fitted_RL4_heads_required")
             if fitted["model_package_sha256"] != descriptor["package_sha256"]:
                 raise ValueError("fitted_heads_start_policy_changed_use_explicit_CP_conversion")

@@ -210,7 +210,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     0.001–0.01。
   - 范围（owner：血点分用于单战斗练习）：`"combat_ticket"`（默认）只给 `ticket.end ==
     "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
-    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
+    env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行，
+    预检 `hp_score` 因此拒绝 c_hp > 0 配 `combat_ticket`（#568）。
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
     对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
     再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。

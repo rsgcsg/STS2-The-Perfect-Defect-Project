@@ -291,18 +291,21 @@ def test_a_resume_takes_its_start_from_the_checkpoint_not_the_site_package(tmp_p
     assert fc.learner_config.start_fields(site, cp.config) == fresh  # and every later one
 
 
-def warmup_artifact(peer: Path, package_sha256: str, schema: str = "stpd/rl4-head-warmup-1",
-                    heads: dict | None = None) -> str:
+def warmup_artifact(peer: Path, package_sha256: str, schema: str | None = None,
+                    heads: dict | None = None, report: dict | None = None) -> str:
     """A fitted-heads artifact in a local peer store, as the learner reads it (_start_model)."""
     from spireagent.artifact_contracts import Manifest
     from spireagent.storage.local import LocalBlobStore
     from spireagent.storage.store import ManifestArtifactStore
     from stpd.rl.checkpoint_codec import encode_checkpoint
+    from stpd.rl.warmup import HEAD_WARMUP_SCHEMA
 
     store = ManifestArtifactStore(LocalBlobStore(peer))
-    raw = encode_checkpoint({"schema": schema, "model_package_sha256": package_sha256,
+    raw = encode_checkpoint({"schema": schema or HEAD_WARMUP_SCHEMA,
+                             "model_package_sha256": package_sha256,
                              "feature_manifest_sha256": "c" * 64,
-                             "heads": heads or {"w": torch.ones(3)}, "report": {"epochs": 1}})
+                             "heads": heads or {"w": torch.ones(3)},
+                             "report": report or {"epochs": 1}})
     payload = store.put_bytes("checkpoint", raw, "application/octet-stream")
     return store.publish(Manifest("checkpoint", SOURCE_PRODUCER, payloads=(payload,)))
 
@@ -353,9 +356,22 @@ def test_an_existing_start_keeps_its_launcher_facts_and_warmup_check(tmp_path, m
     assert "stpd/other-1" in facts["warmup_artifact"]["package_error"]
     unread = fc.by_name(fc.preflight.checks(plan, {**fc.good_facts(plan), **facts}))
     assert not unread["warmup_artifact"].ok and "cannot read" in unread["warmup_artifact"].detail
+    resumed_unread = fc.by_name(fc.preflight.checks(resumed, {**fc.good_facts(plan), **facts}))
+    assert resumed_unread["warmup_artifact"].ok  # a resume never reads the heads: not refused
+    # a header longer than one 8 MiB store chunk is read across chunks
+    from spireagent.storage.store import CHUNK_BYTES
+
+    long = warmup_artifact(peer, sha, report={"note": "x" * (CHUNK_BYTES + 1024)})
+    (tmp_path / "warmup.id").write_text(long + "\n")
+    payload = json.loads((peer / "manifests" / f"{long}.json").read_text())["payloads"][0]
+    index = json.loads((peer / "payload-indexes" / "v1" / f"{payload['sha256']}.json").read_text())
+    assert len(index["chunks"]) > 1
+    assert fc.launch.warmup_package(peer, long) == sha
     from stpd.rl.checkpoint_codec import MAGIC
+    from stpd.rl.warmup import HEAD_WARMUP_SCHEMA
 
     assert fc.launch.CHECKPOINT_MAGIC == MAGIC
+    assert fc.launch.WARMUP_SCHEMA == HEAD_WARMUP_SCHEMA
     run = {"run_name": "r", "peer_dir": "/p", "start_package": "/s", "wall_seconds": 60,
            "device": "cuda", "generation": "g", "warmup_artifact_id": "w",
            "rendezvous_path": "/r", "ranks": 1, "resume_checkpoint": None}
