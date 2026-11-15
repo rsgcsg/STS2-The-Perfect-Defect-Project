@@ -1697,7 +1697,7 @@ class _SgdWorker:
             self.send("staged", dataset=dataset, **fields)
 
     def run_dataset(self, start: dict[str, Any], next_message: Any) -> None:
-        from .learning_diagnostics import advantage_fields
+        from .learning_diagnostics import advantage_fields, exploration_fields
         from .loss import prepared_update
 
         torch = self.torch
@@ -1768,6 +1768,7 @@ class _SgdWorker:
                 result = self.gather_step(result, diagnostics)
             if minibatch == epoch == 0:  # once per dataset, before its normalization
                 result["advantage_raw"] = advantage_fields(device_batch.normalization)
+                result["exploration"] = exploration_fields(device_batch.metadata)
             ema_seconds = 0.0
             if result["stepped"]:
                 self.state["stage"] = "ema"

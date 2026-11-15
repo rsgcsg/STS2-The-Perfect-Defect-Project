@@ -19,7 +19,7 @@ import { FastActionEvidenceSink, readFastGameEvidence } from "../src/global-fast
 import { StreamDecisionLink } from "../src/fast-env/link.js";
 import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
-import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
+import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, TEMPERATURE_FLOOR, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
   type FastEnvConfig } from "../src/fast-env/contracts.js";
 import { HostSlotNative, SampledCheckFailure, SaveMapFailure, captureSampleOffset, fastGameInstanceId, captureSampleSchedule, type NativeEpisode,
   type SaveMapResult, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
@@ -908,6 +908,21 @@ describe("fast-env failure paths", () => {
     expect(() => parseFastEnvConfig(raw({ receipt_canonical: { check_interval: 1025 } }))).toThrow(/memo.receipt_canonical.check_interval/u);
     expect(() => parseFastEnvConfig(raw({ native_card: { deck: true } }))).toThrow(/memo.native_card.hud/u);
     expect(() => parseFastEnvConfig(raw({ projection: {} }))).toThrow(/memo.projection/u);
+  });
+
+  it("A3 temperature minimum: absent = the original [1, 3]; inference.temperature_min in [0.25, 1] admits a cold arm", () => {
+    const bold = { ...SAMPLING, arm_id: "bold", classes: { combat: { temperature: 0.7, uniform_mix: 0 }, noncombat: { temperature: 2, uniform_mix: 0.02 } } };
+    const raw = (inference: Record<string, unknown>) => ({ schema: "sts2.policy-runtime/fast-env-config-1", env_process_id: "e", slots: 1,
+      host: { package: "p", candidate_directory: "c", game_directory: null, character: "Defect", language: "en", ascension: 0, request_timeout_ms: 30000 },
+      agent_manifest: "m", compact: { enabled: false, reconcile_interval: 64 }, checks: { sample_rate: 0 }, decision_link: { kind: "unix", path: "/l" },
+      inference: { timeout_ms: 1000, actor_id: "a", single_choice: "omit", ...inference },
+      budget: { max_decisions_per_game: 1, max_native_steps_per_game: 1, game_wall_ms: 1 }, no_progress: null, evidence: { directory: "/e" } });
+    expect(parseFastEnvConfig(raw({ sampling: SAMPLING })).inference).not.toHaveProperty("temperature_min");
+    expect(() => parseFastEnvConfig(raw({ sampling: bold }))).toThrow(/inference.sampling.classes.combat.temperature/u);
+    expect(parseFastEnvConfig(raw({ sampling: bold, temperature_min: 0.7 })).inference.sampling).toEqual(bold);
+    expect(() => parseFastEnvConfig(raw({ sampling: bold, temperature_min: 0.8 }))).toThrow(/inference.sampling.classes.combat.temperature/u);
+    for (const bad of [0.2, 1.5, "0.7"]) expect(() => parseFastEnvConfig(raw({ sampling: SAMPLING, temperature_min: bad }))).toThrow(/inference.temperature_min/u);
+    expect(TEMPERATURE_FLOOR).toBe(0.25);
   });
 
   it("C1 reduce_light config: off unless named, strict_interval 1..1024, unknown keys refused", () => {

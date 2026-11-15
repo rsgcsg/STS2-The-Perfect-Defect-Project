@@ -479,6 +479,7 @@ def service() -> None:
         training_generation=first["training_generation"], prepare_workers=workers,
         prepare_cpus=mine, max_rows=K["service_max_rows"], device="cuda",
         failure_dir=str(RUN / f"failures{tag}"),
+        temperature_min=float(K["sampling_temperature_min"]),
         **{"window_ms": float(K["service_window_ms"]),
            "max_job_rows": K["service_max_job_rows"],
            "compile": K["service_compile"], **kwargs}, **exit_option)

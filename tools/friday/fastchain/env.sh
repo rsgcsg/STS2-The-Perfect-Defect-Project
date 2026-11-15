@@ -95,7 +95,8 @@ for p in $(seq 1 $P); do
     --inference-timeout-ms $FC_DRIVER_INFERENCE_TIMEOUT_MS --reopen-backoff-start-ms $FC_DRIVER_REOPEN_BACKOFF_START_MS \
     --reopen-backoff-cap-ms $FC_DRIVER_REOPEN_BACKOFF_CAP_MS --reopen-backoff-jitter $FC_DRIVER_REOPEN_BACKOFF_JITTER \
     --reduce-light-interval $FC_DRIVER_REDUCE_LIGHT_INTERVAL $GC --ascension ${ASC[$((p - 1))]} --r7 $R7 \
-    --exploration-ladder "$FC_EXPLORATION_LADDER" --arm ${ARM[$((p - 1))]} --replay-k $FC_REPLAY_K > $O/p$p.driver.log 2>&1 &
+    --exploration-ladder "$FC_EXPLORATION_LADDER" --arm ${ARM[$((p - 1))]} --replay-k $FC_REPLAY_K \
+    --temperature-min $FC_SAMPLING_TEMPERATURE_MIN > $O/p$p.driver.log 2>&1 &
   pids+=($!)
 done
 drain() { cat $RUN/STOP > $O/stop-at-drain.txt 2>/dev/null; echo "drain $1 $(date -Is) stop=$(cat $O/stop-at-drain.txt 2>/dev/null)"; kill -USR1 "${pids[@]}" 2>/dev/null; }

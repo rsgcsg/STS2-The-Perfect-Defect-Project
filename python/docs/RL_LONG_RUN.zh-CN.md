@@ -103,8 +103,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   不是上界，不算。`--json` 给运行记录（`spireagent/friday-fastchain-run-record-1`，与表同数）：
   身份（源码版本、配置摘要、`N卡 · 布局 · 卡型`、配方旋钮含 c_hp/scope）、含/不含 aux 的训练
   行/h、首用比与入队/丢弃、学习者价值/HP 诊断（EV 对 λ 回报与终局、MSE、HP MAE，按幕与 Boss 层
-  分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、对照臂整局训练局滚动结果（每难度
-  平均层数、胜率、各幕 Boss 通过率）、SGD 边界分段、停止/拒绝/未知按原因计数、CP id。
+  分桶；优势归一前均值/标准差）与 PPO 量（最近窗口与全程）、每臂探索剂量（RL5-METHODS A3：
+  训练行中所选动作在模型自己排序里的名次 头号/二选/三选及以后、模型头号概率 > 0.99 的比例、
+  非头号选择归一前优势 > 0 的比例；按决策类型与幕；学习端从已记录的 q、applied 与解码优势算，
+  只进 metadata，不改训练数值）、对照臂整局训练局滚动结果与 `arms` 下每臂同样的结果（每难度
+  平均层数、胜率、各幕 Boss 通过率、到第三幕比例）、SGD 边界分段、停止/拒绝/未知按原因计数、
+  CP id。每类战斗（普通/精英/首领）的死亡率与掉血不在内：段和 driver.jsonl 不带房间类型和
+  单场战斗边界（首领战每场死亡率 = 1 − `clear_rate_given_reached`）。
   只解析完整行（写到一半的末行等下次读，坏的完整行报错并给出字节位置）；对照臂完整局没有自然
   结局（无 victory/defeat 或无整数层/难度）计入 `unscored_closes`，不计分、不报错。
 - 磁盘水位（A2）：GPU 作业每 `disk_sample_seconds` 采样 run 目录与节点本地 tmp（`disk.txt`）；
@@ -186,8 +191,10 @@ python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = j
   源码 `rl5.json`，再跑同一命令。
 - env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
   - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
-    `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，
-    即原行为）。一个驱动一个臂（fast env 一进程一个 `inference.sampling`，`open` 不带每局
+    `temperature`[`sampling_temperature_min`,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂
+    `control` = T 1 / mix 0，即原行为）。温度下限 `sampling_temperature_min`（[0.25, 1]，默认 1
+    = 原 [1,3] 校验）：低于 1 的臂（如战斗 T 0.7）要先把它调低；档案、fast env 配置
+    `inference.temperature_min`（=1 时不写）、推理服务三处用同一个值。一个驱动一个臂（fast env 一进程一个 `inference.sampling`，`open` 不带每局
     采样），按全 run 驱动号 `节点号 × P + p` 平滑加权轮转，任意前缀各臂份额误差 ≤ 1 个驱动；
     `env_driver.mjs --exploration-ladder --arm` 必填。fast env、服务、组装逐行核 applied 与
     该臂一致，behavior_q 即实际采样分布（I4）。
@@ -199,7 +206,8 @@ python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = j
   - 读数「recipe」表：按臂、难度、起点种类、K 给局数（完整 = 终局、已录取、证据完好）、平均层数、
     胜场、行数（已录取且证据完好局的模型行）；K > 1 另给组数、满组数、组内层数极差均值。
   - 链内换配方只在代际边界：`chain-CHAIN/env-recipe.txt`，每行一个 `name=value`（同
-    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
+    `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`sampling_temperature_min`，
+    下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
     可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
 
 ## 以下为旧部署操作史
