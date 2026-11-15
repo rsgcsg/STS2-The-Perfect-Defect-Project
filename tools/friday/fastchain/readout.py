@@ -54,7 +54,9 @@ VALUE_FIELDS = ("rows", "target_sum", "target_square_sum", "error_sum", "error_s
                 "abs_error_sum")
 LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
                     "clip_fraction", "acting_kl_theta_mu", "terminal_loss", "hp_loss",
-                    "gradient_norm")
+                    "gradient_norm",
+                    # ticket K: control-arm KL (kl_stop_scope "control" only) and the lr used
+                    "approx_kl_control", "lr")
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
@@ -766,6 +768,7 @@ class Readout:
         self.learning_latest: deque[tuple[float, Any]] = deque()
         self.boundary_latest: deque[tuple[float, Any]] = deque()
         self.kl_stopped = self.handoff_lost = 0
+        self.kl_no_control = 0  # ticket K: attempts whose KL stop had no control-arm row
         self.checkpoints: list[dict[str, Any]] = []
         # stepped attempts: run sums, the best window and the latest window
         self.steps: dict[str, Any] = {"count": 0, "td": 0, "aux": 0, "complete": True,
@@ -853,6 +856,7 @@ class Readout:
         _window(self.learning_latest, e["t"], {k: e[k] for k in LEARNING_KEYS if k in e},
                 self.window)
         self.kl_stopped += bool(e.get("kl_stopped"))
+        self.kl_no_control += e.get("kl_stop_basis") == "all_rows_no_control"
         timing = e.get("sgd_timing")
         if isinstance(timing, dict) and isinstance(timing.get("boundary_sections"), dict):
             self.boundary.add(timing)
@@ -1118,6 +1122,7 @@ class Readout:
             "run_training_rows_td_only": s["td"],
             "run_training_rows_aux": s["aux"] if complete else None,
             "updates": s["count"], "kl_stopped_attempts": self.kl_stopped,
+            "kl_stop_no_control_attempts": self.kl_no_control,
             "first_use_rows_total": last.get("first_use"),
             "first_use_multi_rows_total": last.get("first_use_multi"),
             "first_use_rows": first_use,
@@ -1285,7 +1290,9 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    + (f", {100 * ratio:.1f}% of admitted" if ratio is not None else "")
                    + f"; admitted {fmt(p.get('admitted_rows_total'))}, dropped "
                    f"{fmt(p.get('dropped_rows_total'))} rows; KL-stopped attempts "
-                   f"{p.get('kl_stopped_attempts')}")
+                   f"{p.get('kl_stopped_attempts')}"
+                   + (f" ({p['kl_stop_no_control_attempts']} without a control-arm row: "
+                      "all-rows KL)" if p.get("kl_stop_no_control_attempts") else ""))
     learning = r.get("learning") or {}
     for label, key in (("latest", "latest"), ("run mean", "run_mean")):
         x = learning.get(key)
@@ -1302,7 +1309,10 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"HP MAE {fmt((value.get('hp') or {}).get('mae'), 2)} HP; KL "
                    f"{fmt(x.get('approx_kl_mu_theta'), 4)}, clip "
                    f"{fmt(x.get('clip_fraction'), 3)}, entropy {fmt(x.get('entropy'), 3)}; "
-                   f"advantage mean {fmt(adv.get('mean'), 4)} std {fmt(adv.get('std'), 4)}")
+                   f"advantage mean {fmt(adv.get('mean'), 4)} std {fmt(adv.get('std'), 4)}"
+                   + (f"; KL control arm {fmt(x['approx_kl_control'], 4)}"
+                      if x.get("approx_kl_control") is not None else "")
+                   + (f"; lr {x['lr']:.3g}" if x.get("lr") is not None else ""))
         if adv.get("hp_share") is not None:
             out.append(f"  HP term (c_hp A_hp) {label}: {100 * adv['hp_share']:.1f}% of "
                        f"advantage variance, std {fmt(adv['hp_std'], 4)}")

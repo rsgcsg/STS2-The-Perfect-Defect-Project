@@ -1324,6 +1324,10 @@ class _SgdWorker:
         self.compile_facts = (self.prepare_compile(init.get("compile"))
                               if self.performance.prepared_compile else None)
         self.target_kl, self.ema_decay = init["target_kl"], init["ema_decay"]
+        # RL5-METHODS K (absent from an older controller's init = the defaults).
+        self.kl_stop_scope = init.get("kl_stop_scope", "all")
+        self.lr_warmup_steps = init.get("lr_warmup_steps", 0)
+        self.base_rates = (init["lr"], init["head_lr"])  # the configured, not the CP's
         self.diagnostics_every = init["diagnostics_every"]
         self.root = Path(init["root"])
         self.pinned = _PinnedBuffers(init["pinned_bytes"], slots=2)
@@ -1712,9 +1716,10 @@ class _SgdWorker:
         from .learning_diagnostics import (
             advantage_fields,
             exploration_fields,
+            row_arms,
             value_target_fields,
         )
-        from .loss import prepared_update
+        from .loss import minibatch_control_rows, prepared_update, warmup_learning_rates
 
         torch = self.torch
         dataset = start["dataset"]
@@ -1724,6 +1729,10 @@ class _SgdWorker:
             _, (plan, device_batch) = self.staged.popitem(last=False)
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
+        arms = None
+        if self.kl_stop_scope == "control":  # once per dataset (every rank holds it whole)
+            arms = row_arms(device_batch.metadata,
+                            [m.rows for m in device_batch.request.members])
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
         boundary: float | None = None
@@ -1773,12 +1782,16 @@ class _SgdWorker:
                 events = (torch.cuda.Event(enable_timing=True),
                           torch.cuda.Event(enable_timing=True))
                 events[0].record()
+            warmup_learning_rates(self.optimizer, self.base_rates, self.updates,
+                                  self.lr_warmup_steps)
             result = prepared_update(
                 self.model, self.optimizer, batch, config=self.loss,
                 performance=self.performance, target_kl=self.target_kl,
                 diagnostics=diagnostics, collect_policy_rows=True,
                 gradient_sync=self.sync,
-                shard=(self.rank, self.parallel.world) if self.parallel is not None else None)
+                shard=(self.rank, self.parallel.world) if self.parallel is not None else None,
+                control_rows=(minibatch_control_rows(device_batch, batch, arms)
+                              if self.kl_stop_scope == "control" else None))
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
                 result = self.gather_step(result, diagnostics)

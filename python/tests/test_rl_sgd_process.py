@@ -10,6 +10,7 @@ import dataclasses as dc
 import json
 import math
 import os
+import shutil
 import signal
 import socket
 import time
@@ -37,9 +38,10 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="real spawned SGD pro
 
 
 def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None,
-                   dataplane=None, generation="g-sgd-equal", device="cpu"):
+                   dataplane=None, generation="g-sgd-equal", device="cpu", resume=None):
     """Each episode: two 2-row segments, the second terminal, so terminal aux rows
-    are verified, sampled and charged exactly like the in-process owner."""
+    are verified, sampled and charged exactly like the in-process owner. `resume`: a CP
+    artifact id in this tmp_path's peer to restore (work and live dirs of their own)."""
     from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
 
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -48,19 +50,23 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
     config = dc.replace(config, device=device, segments=dc.replace(
         config.segments, **{"minibatches": 2, "episode_rows": 8, "archive_min_free_bytes": 0,
                             "archive_min_free_inodes": 0, **(segments or {})}))
+    if resume is not None:
+        config = dc.replace(config, start_package=None, resume_checkpoint=resume)
     io = dc.replace(io, dataplane={
-        "lanes": 1, "root": str(tmp_path / "live"), "source_slots": 32,
+        "lanes": 1, "root": str(tmp_path / ("live" if resume is None else "live-resumed")),
+        "source_slots": 32,
         "prepare_slots": 6, "source_bytes": 64 * 1024**2, "preparation_workers": 2,
         "assembly_workers": 2, "prepared_batches": 3,
         # Helpers here step the lockstep protocol; prestart is tested explicitly.
         **({**SGD_PROCESS, "sgd_prestart": False} if sgd else {}), **(dataplane or {})})
-    owner = SegmentLearner(config, tmp_path / "owner", io)
+    owner = SegmentLearner(config, tmp_path / ("owner" if resume is None else "resumed"), io)
     for key, value in owner.pool.environment().items():
         monkeypatch.setenv(key, value)
     endpoint = owner.pool.attachment()
     connection = SegmentConnection(endpoint)
-    cache = NodeMuCache(endpoint, tmp_path / "node")
-    scorer = LocalMuScorer(owner.exchange, tmp_path / "mu")
+    local = "" if resume is None else "-resumed"
+    cache = NodeMuCache(endpoint, tmp_path / f"node{local}")
+    scorer = LocalMuScorer(owner.exchange, tmp_path / f"mu{local}")
     try:
         for e in range(episodes):
             actor, episode = f"p{e}", f"episode-{e}"
@@ -69,7 +75,7 @@ def terminal_owner(tmp_path, monkeypatch, *, episodes=3, sgd=True, segments=None
                 vocabulary=owner.input_preparer.vocabulary,
                 compiler_identity=owner.compiler_identity,
                 recipe={**owner.pool.binary_profile["binary_recipe"], "actor": actor},
-                spool=tmp_path / f"spool-{e}")
+                spool=tmp_path / f"spool{local}-{e}")
             values, records = [], []
             for i in range(2):
                 with cache.latest() as identity:
@@ -1120,3 +1126,49 @@ def test_checkpoint_with_a_staged_ahead_dataset_keeps_it_unreleased_and_learning
     for left, right in zip(events, events_t, strict=True):
         for key in ("dataset", "update", "first_use", "td_loss", "policy_loss", "stepped"):
             assert left[key] == right[key], key
+
+
+def test_lr_warmup_and_control_kl_scope_in_both_owners_and_across_resume(tmp_path,
+                                                                         monkeypatch):
+    """RL5-METHODS K end to end: the warm-up ramps lr and head_lr from the update count in
+    the in-process owner and the SGD child alike (same learning state), a resume mid
+    ramp continues it, and scope "control" on sources without an arm table falls back
+    to the all-rows KL on every attempt, saying so."""
+    knobs = {"lr_warmup_steps": 10, "kl_stop_scope": "control"}
+    results = {}
+    for sgd in (False, True):
+        owner, config, io = terminal_owner(tmp_path / ("split" if sgd else "inproc"),
+                                           monkeypatch, sgd=sgd, segments=knobs)
+        try:
+            events = train(owner, 3)
+            owner.checkpoint(final=True)
+            record, cp = read_cp(owner)
+        finally:
+            owner.close()
+        results[sgd] = events, cp, record, config, io
+    (base, base_cp, *_), (split, split_cp, record, config, io) = results[False], results[True]
+    lr, head_lr = config.lr, config.segments.head_lr
+    stepped = [event for event in base if event["stepped"]]
+    assert len(stepped) == base_cp.counters.updates == 6
+    for k, event in enumerate(stepped, 1):
+        assert event["lr"] == pytest.approx(lr * k / 10)
+        assert event["head_lr"] == pytest.approx(head_lr * k / 10)
+    for left, right in zip(base, split, strict=True):
+        assert left["lr"] == right["lr"] and left["head_lr"] == right["head_lr"]
+        assert left["kl_stop_basis"] == right["kl_stop_basis"] == "all_rows_no_control"
+        assert left["kl_control_rows"] == 0 and left["approx_kl_control"] is None
+    for name in ("weights", "optimizer", "ema"):
+        assert_tree(getattr(base_cp, name), getattr(split_cp, name))
+    # Resume (split) mid ramp: the next step uses lr x 7/10, not lr / 10 again. The fixture
+    # writes its start package again; a resume does not load it.
+    shutil.rmtree(tmp_path / "split" / "package")
+    restored, _, _ = terminal_owner(tmp_path / "split", monkeypatch, sgd=True, segments=knobs,
+                                    generation="g-restore-k", episodes=1,
+                                    resume=record["checkpoint_artifact_id"])
+    try:
+        assert restored.updates == 6
+        more = [event for event in train(restored, 1) if event["stepped"]]
+    finally:
+        restored.close()
+    assert more and more[0]["lr"] == pytest.approx(lr * 7 / 10)
+    assert more[0]["head_lr"] == pytest.approx(head_lr * 7 / 10)

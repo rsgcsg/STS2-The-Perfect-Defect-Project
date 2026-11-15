@@ -152,6 +152,12 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         "diagnostics_every": knobs["diagnostics_every"],
         **({"checkpoint_seconds": float(knobs["checkpoint_seconds"])}
            if knobs["checkpoint_seconds"] else {})})
+    # Ticket K: written only off their default, so the default learner.json (and an older
+    # source, which refuses unknown segment keys) is unchanged; resume-locked in the recipe.
+    if knobs.get("kl_stop_scope", "all") != "all":
+        config["segments"]["kl_stop_scope"] = knobs["kl_stop_scope"]
+    if knobs.get("lr_warmup_steps", 0):
+        config["segments"]["lr_warmup_steps"] = knobs["lr_warmup_steps"]
     if run.get("window"):
         config.update(run["window"])
     return config
