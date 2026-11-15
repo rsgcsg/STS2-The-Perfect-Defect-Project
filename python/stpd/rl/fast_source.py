@@ -1338,7 +1338,10 @@ class FastSegmentIntake:
             last = segments[-1].header
             # The end the chain reached: the real outcome, the game's own bootstrap
             # (stop/budget close), or the bootstrap before a lost final segment.
-            # `indexed` = the game's sealed trainable plus rejected segments.
+            # `indexed` = the game's sealed trainable plus rejected segments. A segment
+            # truncated mid-game (generation discard on a CP restore) also takes an
+            # index, so such a game's clean end counts as "lost"; the counter does
+            # not hold across a CP restore (#564).
             end = ("terminal" if last["seal"]["kind"] == "terminal"
                    else "bootstrap" if last["segment_index"] == indexed - 1 else "lost")
             self.counters[f"game_target_{end}_end_rows"] += rows

@@ -1501,11 +1501,14 @@ def test_readout_reports_the_learning_settings_diagnostics(tmp_path):
         'learner': {'game_end_lt128_selected_rows': 11}}
     text = readout.render(r)
     assert '  settings run mean: grad clip bound 25.' in text
-    assert 'value target entropy 2.000 nats, outcome weight 0.300 (noncombat 0.500)' in text
-    assert 'row age 3.25 versions (p95 9), 1.50 updates (p95 3), model age 35 s (p95 <= 60 s)' \
-        in text
-    assert '  value calibration (games ended; predicted -> realised, rows): 0.05 -> 0.00' in text
-    assert '  policy entropy (nats / of max) by decision: combat 0.50/0.25, rest 0.20/0.10' in text
+    assert ('value target entropy 2.000 nats (mean of dataset means), outcome weight 0.300 '
+            '(noncombat 0.500)') in text
+    assert ('row age 3.25 versions (p95 9), 1.50 updates (p95 3), behaviour-model age since '
+            'publication (upper bound on row age) 35 s (p95 <= 60 s)') in text
+    assert ('  value calibration (terminal training rows, in-sample, row visits incl. KL-stopped '
+            'attempts, all arms; predicted -> realised, visits): 0.05 -> 0.00') in text
+    assert ('  behaviour-model entropy, T/mix removed (nats / of ln N) by decision: combat '
+            '0.50/0.25, rest 0.20/0.10') in text
     assert 'game value targets: held 500 rows, spill 4,096 bytes in 2 files (peak 8,192), ' \
         "dropped rows {'stop': 7}" in text
     progress[3]['value_calibration'] = [[1, 0.5]]

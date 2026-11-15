@@ -1471,12 +1471,14 @@ def _settings_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
                      f"{fmt(clip['pre_clip_norm_mean'], 3)} p95 <= "
                      f"{fmt(clip['pre_clip_norm_p95_at_most'], 3)}")
     if target:
-        parts.append(f"value target entropy {fmt(target.get('target_entropy_mean'), 3)} nats, "
+        parts.append(f"value target entropy {fmt(target.get('target_entropy_mean'), 3)} nats "
+                     f"(mean of dataset means), "
                      f"outcome weight {fmt(target.get('outcome_weight_mean'), 3)} (noncombat "
                      f"{fmt(target.get('noncombat_outcome_weight_mean'), 3)})")
     if version.get("n"):
         parts.append(f"row age {fmt(version['mean'], 2)} versions (p95 {version['p95']}), "
-                     f"{fmt(sgd.get('mean'), 2)} updates (p95 {sgd.get('p95')}), model age "
+                     f"{fmt(sgd.get('mean'), 2)} updates (p95 {sgd.get('p95')}), "
+                     f"behaviour-model age since publication (upper bound on row age) "
                      f"{fmt(seconds.get('mean'), 0)} s (p95 <= "
                      f"{fmt(seconds.get('p95_at_most'), 0)} s)")
     adv = x.get("advantage_raw") or {}
@@ -1486,12 +1488,14 @@ def _settings_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
         out.append(f"  settings {label}: " + "; ".join(parts))
     calibration = x.get("value_calibration") or []
     if key == "run_mean" and calibration:
-        out.append("  value calibration (games ended; predicted -> realised, rows): " + ", ".join(
+        out.append("  value calibration (terminal training rows, in-sample, row visits incl. "
+                   "KL-stopped attempts, all arms; predicted -> realised, visits): " + ", ".join(
             f"{fmt(b['mean_predicted'], 2)} -> {fmt(b['mean_realised'], 2)} ({b['rows']:,})"
             for b in calibration if b["rows"]))
     entropy = x.get("policy_entropy") or {}
     if key == "latest" and entropy:
-        out.append("  policy entropy (nats / of max) by decision: " + ", ".join(
+        out.append("  behaviour-model entropy, T/mix removed (nats / of ln N) by decision: "
+                   + ", ".join(
             f"{name} {fmt(d['entropy_mean'], 2)}/{fmt(d['normalized_entropy_mean'], 2)}"
             for name, d in entropy["by_decision"].items()) + "; by act: " + ", ".join(
             f"{name} {fmt(d['entropy_mean'], 2)}/{fmt(d['normalized_entropy_mean'], 2)}"

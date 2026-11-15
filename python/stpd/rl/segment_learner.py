@@ -360,8 +360,10 @@ def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
                       published_at: dict[int, float] | None = None) -> dict[str, Any]:
     """Progress-event first-use summaries from values captured at accounting time.
 
-    Pure: the same inputs give the same event wherever it runs (the controller
-    in process, the telemetry thread on the SGD-process path)."""
+    The same inputs give the same event wherever it runs (the controller in
+    process, the telemetry thread on the SGD-process path). `published_at` is the
+    learner's live dict, read with `.get` only; the main thread pops only versions
+    `PUBLISHED_AT_VERSIONS` back, so the versions read here are stable."""
     rows = [metadata[i] for i in newly_used]
     ages = sorted(now - row["generated_timestamp"] for row in rows
                   if row["generated_timestamp"] is not None)
