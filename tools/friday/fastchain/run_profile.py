@@ -217,6 +217,9 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["disk_stop_free_pct"] >= values["disk_warn_free_pct"]:
         out.append(f"disk_stop_free_pct {values['disk_stop_free_pct']} must be below "
                    f"disk_warn_free_pct {values['disk_warn_free_pct']}")
+    if values["checkpoint_keep_newest"] == 1:
+        out.append("checkpoint_keep_newest is 0 (keep every CP) or >= 2: the newest is the "
+                   "resume CP, the one before covers an evaluation's claim (cp_retention.py)")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if (any(w != 1 for w in values["hp_combat_weights"].values())
@@ -312,6 +315,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "prepare_slots": _int(1),
     "capacity_rows": _int(1),
     "wal_max_gib": _int(1, 512),
+    "learner_local_keep_models": _int(0, 100000),
+    "learner_local_keep_checkpoints": _int(0, 10000),
     "lanes": _int(1, 64),
     "sgd_start_seconds": _num(1),
     "checkpoint_seconds": _num(0),
@@ -405,6 +410,9 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "eval_a10_seeds": _int(1, 100),
     # retention and R7 audit games (#529)
     "release_trained_segments": _bool,
+    "checkpoint_keep_newest": _int(0, 10000),
+    "checkpoint_milestone_hours": _num(0, 1000),
+    "model_keep_newest": _int(0, 1000000),
     "r7_games_per_hour": _num(0, 100),
     "r7_max_games": _int(0),
     "r7_expected_games_per_node_hour": _int(1),
