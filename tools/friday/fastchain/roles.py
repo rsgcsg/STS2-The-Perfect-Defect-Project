@@ -466,9 +466,13 @@ def service() -> None:
         audit["mu_archive"] = local_mu_archive(
             RUN / f"mu-archive{tag}",
             max_bytes=int(K["mu_archive_gb"] * 1e9 / K["services"]))
+    # RL5-METHODS A2: passed only when not 1 / 1 / 1 (preflight then needs the feature),
+    # so the default runs on any source as before.
+    combat_weights = K["hp_combat_weights"]
+    hp = {"hp_weights": combat_weights} if any(w != 1 for w in combat_weights.values()) else {}
     assembler = FastSegmentAssembler(
         assembler_id=f"fc{tag}", compiler_identity=compiler.identity,
-        segment_format=K["segment_format"], **audit,
+        segment_format=K["segment_format"], **hp, **audit,
         emit=lambda segment: holder["h"].submit(segment),
         on_closed=lambda item: holder["h"].submit_closed(item))
     auth = bytes.fromhex(os.environ["STPD_P1_LOCAL_INFERENCE_AUTH"])

@@ -171,6 +171,17 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
     对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
     再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。
+  - 按战斗类型权重（RL5-METHODS A2）：配置旋钮 `hp_combat_weights`（`normal`/`elite`/`boss`，
+    默认 1/1/1 = 不加权）只乘 A_hp 的净血量变化部分及其基线，药水 −5 与死亡 −30 不乘。战斗类型
+    = 该战斗首行的公开 `combat.content.encounter_type`：聚合器随行发 `encounter`，格式 4 的战斗行
+    缺它时组装拒收（`hp_encounter_required`）；`unknown`（如事件战）按 normal。非 1/1/1 要求格式 4
+    （载入配置时核对），预检要求源码特性 `hp_combat_weights`。实验起点
+    `--set 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'`。
+  - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额
+    （多选行上 Cov(c_hp A_hp, A) / Var(A)，各数据集均值），`hp_std` 是它的标准差；c_hp 0 时两者
+    为 null。`hp_score` 按战斗类型给格式 4 组装器累计的战斗数、死亡数与死亡率、每场平均净血量
+    变化（H_T − H_0 + M_T − M_0，死亡记 −H_0，不加权）。毛伤害不进段（段里只有决策时刻的 HP），
+    不记。
   - 闸门不用补（RL5-METHODS F）：共享闸门的 `learner-base.json` 生成于 #538 之前，没有这两个键；
     预检和学习者启动都先经 `learner_config.gate_recipe`，从运行源码的 `rl5.json` 补上闸门缺的
     `loss` 键（预检 `frozen_recipe` 的 PASS 行列出补了哪些，学习者事件记 `harness_gate_filled`）。

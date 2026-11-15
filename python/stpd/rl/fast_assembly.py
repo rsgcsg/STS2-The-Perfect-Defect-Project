@@ -89,7 +89,10 @@ so holding never pins mu. `episode_open` may name `group_id` and
 `ticket.end` (`game` | `combat`); both need format 4. A `combat` ticket closed
 `ticket_end` right after its post-combat row was scored seals its last
 segment `bootstrap` on that row's value (I3: a truncation, no new class); the
-post-combat row itself is no training row.
+post-combat row itself is no training row. A combat's type is the public
+`encounter` its first row carries (required on every format-4 combat row,
+`hp_encounter_required`); `hp_weights` (normal / elite / boss, default 1 / 1 / 1)
+scales its HP-change part, never the potion or death points (A2).
 
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
@@ -204,10 +207,18 @@ def public_terminal_label(context: Mapping[str, Any]) -> dict[str, Any]:
 
 POTION_POINTS = 5
 DEATH_POINTS = 30
+# The combat types of the HP weight (`hp_weights`, one per type) and every
+# `combat.content.encounter_type` the game names (the model's own public input;
+# Managed: RoomType Monster / Elite / Boss, anything else "unknown", e.g. an
+# event's combat). An "unknown" combat takes the normal weight.
+HP_WEIGHT_TYPES = ("normal", "elite", "boss")
+ENCOUNTERS = (*HP_WEIGHT_TYPES, "unknown")
+DEFAULT_HP_WEIGHTS = {kind: 1.0 for kind in HP_WEIGHT_TYPES}
 
 
 def hp_advantages(start: Mapping[str, Any] | None,
-                  steps: list[tuple[Mapping[str, Any], float, bool]]) -> list[float] | None:
+                  steps: list[tuple[Mapping[str, Any], float, bool]],
+                  weight: float = 1.0) -> list[float] | None:
     """A_hp (HP points) of every decision of one ended combat, from public facts only.
 
     `start`: the public facts of the combat's first decision state (the step
@@ -220,6 +231,12 @@ def hp_advantages(start: Mapping[str, Any] | None,
     q_t = (H_{t+1} - H_t) + (M_{t+1} - M_t) - 5 p_t; death sets H_T = 0 and adds
     -30 - (M_T - M_0) on the last step; D_t = sum_{j >= t} q_j;
     A_hp_t = D_t - (100 HP(s_t) - H_t). None when a fact it needs is missing.
+
+    `weight` (the combat type's, RL5-METHODS A2) multiplies the HP-change part
+    and its baseline: A_hp_t = w (h_t - (100 HP(s_t) - H_t)) - 5 P_t - 30 death,
+    with h_t = (H_T - H_t) + (M_T - M_t) - death (M_T - M_0) the net HP change
+    (death: H_T = 0) and P_t the potions used from t on. The potion and the -30
+    death points are not scaled. w = 1 gives the same float as before.
     """
     facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
     checked = [fact for fact in facts if isinstance(fact, Mapping)
@@ -230,12 +247,15 @@ def hp_advantages(start: Mapping[str, Any] | None,
     max_hp = [fact["max_hp"] for fact in checked]
     death = ((steps[-1][0] or {}).get("terminal") or {}).get("result") == "defeat"
     end_hp = 0 if death else hp[-1]
-    extra = -DEATH_POINTS - (max_hp[-1] - max_hp[0]) if death else 0
+    lost_max = max_hp[-1] - max_hp[0] if death else 0
     scores: list[float] = []
     potions = sum(potion for _, _, potion in steps)
     for t, (_, predicted, potion) in enumerate(steps):
-        returned = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - POTION_POINTS * potions + extra
-        scores.append(float(returned - (predicted - hp[t])))
+        change = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - lost_max
+        unscaled = -POTION_POINTS * potions - (DEATH_POINTS if death else 0)
+        # Left to right: (w h + unscaled) is exact in float, so w = 1 rounds once,
+        # as the unweighted `returned - (predicted - H_t)` did.
+        scores.append(float(weight * change + unscaled - weight * (predicted - hp[t])))
         potions -= potion
     return scores
 
@@ -462,6 +482,8 @@ class _Battle:
 
     # The row whose step outcome is the combat's first state (None: the game began in it).
     before: dict[str, Any] | None
+    # Its first row's public `encounter` (ENCOUNTERS).
+    encounter: str
     # (segment, row index, row meta, 100 x HP prediction, potion used), in order.
     rows: list[tuple[_Segment, int, dict[str, Any], float, bool]] = field(default_factory=list)
     ended: bool = False
@@ -479,10 +501,21 @@ class FastSegmentAssembler:
                  ledger: MuLedger | None = None, closed_memory: int = 65536,
                  mu_archive: MuArchive | None = None,
                  on_closed: Callable[[InstanceClosed], None] | None = None,
-                 segment_format: str = FORMAT, verify_every: int = 64) -> None:
+                 segment_format: str = FORMAT, verify_every: int = 64,
+                 hp_weights: Mapping[str, float] | None = None) -> None:
         if (not isinstance(assembler_id, str) or not assembler_id or len(assembler_id) > 64
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
+        # RL5-METHODS A2: the HP-change weight per combat type (format 4 only); the
+        # default 1 / 1 / 1 is the unweighted score.
+        weights = dict(DEFAULT_HP_WEIGHTS if hp_weights is None else hp_weights)
+        if (set(weights) != set(HP_WEIGHT_TYPES)
+                or any(type(w) not in (int, float) or not 0 <= w < math.inf
+                       for w in weights.values())):
+            raise AssemblyError("invalid_hp_weights")
+        if weights != DEFAULT_HP_WEIGHTS and segment_format != FORMAT_4:
+            raise AssemblyError("hp_weights_need_segment_format_4")
+        self.hp_weights = {kind: float(w) for kind, w in weights.items()}
         # T3 (fast_chain only, default off): `stpd/rl-fast-segment-2` seals the same
         # logical segment columnar. Every `verify_every`-th format-2 segment (1 = every
         # one) is decoded again and compared in full with the format-1 logical content;
@@ -533,9 +566,14 @@ class FastSegmentAssembler:
         if self.hp_score:
             # combats scored / without a needed fact, potions and deaths in scored
             # combats, combat rows sealed trainable without a score (game ended first),
-            # single-combat episodes sealed on their post-combat row.
-            self.counters["hp_score"] = {"battles": 0, "battles_unscored": 0, "potions": 0,
-                                         "deaths": 0, "rows_unscored": 0, "ticket_ends": 0}
+            # single-combat episodes sealed on their post-combat row; per encounter
+            # the scored combats, their deaths and the sum of their net HP change
+            # (H_T - H_0 + M_T - M_0, death: -H_0; unweighted) for the run record.
+            self.counters["hp_score"] = {
+                "battles": 0, "battles_unscored": 0, "potions": 0, "deaths": 0,
+                "rows_unscored": 0, "ticket_ends": 0,
+                "by_encounter": {kind: {"battles": 0, "deaths": 0, "hp_change": 0}
+                                 for kind in ENCOUNTERS}}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -686,6 +724,11 @@ class FastSegmentAssembler:
                 raise AssemblyError("row_payload_binding")
             if type(row.get("request_id")) is not int or type(row.get("floor")) is not int:
                 raise AssemblyError("invalid_row")
+            # Format 4 weighs and counts a combat by its type: the aggregator sends the
+            # observation's public encounter_type with every combat row.
+            if (self.hp_score and row.get("in_combat") is True
+                    and row.get("encounter") not in ENCOUNTERS):
+                raise AssemblyError("hp_encounter_required")
             if game.single_choice == "omit" and row.get("catalog_len") == 1:
                 raise AssemblyError("single_option_row_under_omit")
             current = game.segments[-1] if game.segments else None
@@ -780,7 +823,8 @@ class FastSegmentAssembler:
         self.counters["rows"] += 1
         if self.hp_score:
             segment.hp_adv.append(None)
-            self._battle_row(game, segment, meta, 100.0 * hp, potion)  # type: ignore[operator]
+            self._battle_row(game, segment, meta, 100.0 * hp, potion,  # type: ignore[operator]
+                             row.get("encounter"))
         if plan.tail is not None:
             previous = next((s for s in game.segments
                              if s.segment_id == plan.tail.segment_id), None)
@@ -1074,11 +1118,11 @@ class FastSegmentAssembler:
                 and len(segment.rows) == MAX_ROWS and segment.completed())
 
     def _battle_row(self, game: _Game, segment: _Segment, meta: dict[str, Any],
-                    predicted: float, potion: bool) -> None:
+                    predicted: float, potion: bool, encounter: str | None) -> None:
         """Track the finished row's combat; a non-combat row ends the open one."""
         if meta["in_combat"]:
             if not game.battles or game.battles[-1].ended:
-                game.battles.append(_Battle(game.last_row))
+                game.battles.append(_Battle(game.last_row, str(encounter)))
             game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
                                           potion))
             segment.hp_open += 1
@@ -1098,16 +1142,25 @@ class FastSegmentAssembler:
             game.battles.pop(0)
             start = None if battle.before is None else battle.before["outcome"].get(
                 "public_facts")
-            scores = hp_advantages(start, [(meta["outcome"], predicted, potion)
-                                           for _, _, meta, predicted, potion in battle.rows])
+            steps = [(meta["outcome"], predicted, potion)
+                     for _, _, meta, predicted, potion in battle.rows]
+            kind = battle.encounter if battle.encounter in HP_WEIGHT_TYPES else "normal"
+            scores = hp_advantages(start, steps, self.hp_weights[kind])
             counters = self.counters["hp_score"]
-            if scores is None:
+            if scores is None or start is None:  # no start fact: never scored
                 counters["battles_unscored"] += 1
             else:
+                death =((battle.rows[-1][2]["outcome"].get("terminal") or {})
+                         .get("result") == "defeat")
                 counters["battles"] += 1
                 counters["potions"] += sum(row[4] for row in battle.rows)
-                counters["deaths"] += ((battle.rows[-1][2]["outcome"].get("terminal") or {})
-                                       .get("result") == "defeat")
+                counters["deaths"] += death
+                end = battle.rows[-1][2]["outcome"]["public_facts"]  # scored: all there
+                by = counters["by_encounter"][battle.encounter]
+                by["battles"] += 1
+                by["deaths"] += death
+                by["hp_change"] += (-start["hp"] if death else end["hp"] - start["hp"]
+                                    + end["max_hp"] - start["max_hp"])
             for index, (segment, row, *_rest) in enumerate(battle.rows):
                 segment.hp_adv[row] = None if scores is None else scores[index]
                 segment.hp_open -= 1
