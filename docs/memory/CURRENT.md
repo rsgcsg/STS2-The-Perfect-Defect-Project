@@ -1,7 +1,7 @@
-# 当前：RL5 新产出链编码完成，WP8 整合在做
+# 当前：RL5 快链代码已合齐，先冒烟再开发新方法
 
 RL4.2 长训 11-08 结束：两个窗口共训练 35.4 h（55,364 s + 71,982 s），单张 GPU、约 190–260 个 actor，产出约 45–64 万决策/h，瓶颈在产出端。最终检查点 a46afd12（seq 434，update 16604，已冷读核对）是 RL5 的起点。
-RL5 现行两件事：P-REWRITE 把产出链重写在 `fast_chain` 开关后面（默认关，旧链不变）；C-SCALE 把训练端做到能吃下这个量。P-REWRITE 五条线（原生、Host、对局管理、编码+推理、切片+存证）已全部合进整合分支 `claude/prewrite-int-20261109`（6a065b5e），编码阶段完成；现在是 WP8 整合。操作仍走 [RL 接口与 SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md) 与 [长训指南](../../python/docs/RL_LONG_RUN.zh-CN.md)。
+RL5 快链（`fast_chain` 开关，默认关，旧链不变）代码已合进整合分支 `claude/prewrite-int-20261109`，顶端 18a56576。11-14/15 合入 #534–#542：配方旋钮、边界分段计时和内存保护、存档开局第一块、单战斗血量分（默认关）、冒烟修复、启动器提交顺序、评估提速、运行记录、边界 GC 修复。C-SCALE（#417、#435）已合进 develop。操作仍走 [RL 接口与 SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md) 与 [长训指南](../../python/docs/RL_LONG_RUN.zh-CN.md)。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
@@ -21,14 +21,14 @@ RL4.2 最终评估：Managed、A0、argmax、100 个固定种子（1–50 是长
 
 ## 在跑与下一步
 
-- WP8 整合（RL5 卡 1）：统一升一次版本号；单节点整链实测，≤35 ms/步必须过、目标 ≤22 ms，同时按环境核利用率 ≥90% 调每核局数；先修好去单选行（omit）丢强制步奖励的问题再测吞吐；unknown、compact_state_divergence、evidence_failed 的局在拼装器/学习器侧排除出训练；学习器消费快链分段；多卡配置测量。
-- 下面是分项实测，整链还没测：原生每步 CPU 约 81→38 ms（作业 1454489；卡牌缓存影子比对 1454488 为 0 不一致）；Host 侧每步 16.0→12.8 ms（1454479）；推理单卡 5,835 行/s、P95 452 ms（1454597，同节点 20 个准备进程、2,048 在途），设备单独前向上限约 7.3k 行/s（compile 约 8.5k）。
-- C-SCALE：离线 SGD 0.329 s/步、离线双卡 ×1.96；在线未测（旧在线 0.52 s/步，约 714 万/h）。代码在 [#417](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/417) → [#435](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/435)（草稿，目标 develop）；DDP 和编译预热接进 SGD 进程归 WP8。
-- WP8 之后：整臂扩到 ≤300 核，第一次快链长跑；GPU 怎么分（推理/训练各几张）看 WP8 实测，由用户选。
+- 已实测：2 卡（1 推理 + 1 训练，A100-40）11-13 约 1,310–1,380 万训练行/h（含辅助行）。单张 H100 功能冒烟（推理训练共用一张卡）跑了 32 分钟训练、6 个存档点（占位身份，不可评测），因每批备料字节上限停机，#539 已修。
+- 评估：100 个固定种子的 A0 现约 1 h 26 min（原约 3 h），逐种子结果和旧路径相同；A10 基线（a46afd12，50 局）49 局计分、0 胜、均层 21.1。
+- 还没做：顶端 18a56576 的冒烟；2 卡冒烟和 1 h 稳定性；#542 修复的 GPU 实测。没有开始任何配方实验或长跑。
+- 方向：RL5 总体方案 = 量 + 单战斗血量分 + 探索格子 + 存档开局，一个模型。先开发这几块，再做 5 h 三组对比（白纸 / 接着练 / 接着练 + 新方法），然后长跑。长跑和用 GPU 要用户批。
 
 ## 不做
 
-不开新的正式训练、不加第三张卡、不离开 Friday、不花钱，这些都要用户另批。整合分支合回 develop 之前，develop 上的旧链照常可用。
+不开新的正式训练、不离开 Friday、不花钱，这些都要用户另批。整合分支合回 develop 之前，develop 上的旧链照常可用。
 
 ## 其他已派工作入口
 
@@ -37,4 +37,4 @@ CARD-1A 仍待用户试局与原件/入库；[STATUS](../STATUS.md) 路由原安
 ## Remaining Platform non-claims（运行与证据边界）
 
 unknown 不重试、不当负局；CI/合并、owner 排空、R2 可读、数据资格和模型效果各看原收据。
-快链整链速度、在线双卡训练和快链数据的学习效果都还没有实测；平台其他未完项归 [STATUS](../STATUS.md) 及原 Issues。
+快链数据的学习效果还没有实测；合并后顶端的整链速度还没量；平台其他未完项归 [STATUS](../STATUS.md) 及原 Issues。
