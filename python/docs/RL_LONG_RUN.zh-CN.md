@@ -55,16 +55,21 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   与 `--smoke` 互斥。分区时限表 `partition_max_minutes` 必须列出用到的每个分区（0 = 不限，
   漏写即拒绝）；每个作业须 ≥ 运行时长 + 余量，env 节点可加入的窗口（时长 − 排空 − 最短加入）
   须 > 0。长跑的备料放在不限时分区（不放 60 分钟的 debug）。
-- 冻结参数核对（A9）：`learner_config.build` 是 roles.py 与预检共用的同一函数；预检用闸门
-  `learner-base.json` 算出生效学习者配置，与源码里的 `frozen_learner_config`（`rl5.json`）逐键
-  比较，除 `ALLOWED_DRIFT`（设备、提速开关、诊断频率、预热件、内存预算）外有差异即拒绝；
+- 冻结参数核对（A9）：`learner_config.learner_base`（`gate_recipe` 补键 + `build`）是 roles.py
+  与预检共用的同一函数；预检用闸门 `learner-base.json` 算出生效学习者配置，与源码里的
+  `frozen_learner_config`（`rl5.json`）逐键比较，除 `ALLOWED_DRIFT`（设备、提速开关、诊断频率、
+  预热件、内存预算）外有差异即拒绝；闸门 `loss` 里有、`rl5.json` 没有的键（如拼错的
+  `hp_advantage_coeff`）也拒绝，否则要到 GPU 排完队学习者 `LossConfig` 才崩；
   `max_versions` 由运行配置给（900000，同冻结值）。
 - 编译预热：`compile_warmup = true` 时 `sgd_compile.warmup` 取站点 `compile_warmup_dumps`
   （1–8 个 dump，由 `python -m stpd.rl.offline_step warmup-cover` 选，文件须存在），另有
   `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
-  首值时报警，探针开时报 gc 秒数。`sgd_gc_refreeze_objects`（代码默认 200000，配置 25000）：
-  边界 collect 后未冻结对象达到它就再冻结一次；每次在线重编译永久留下 1.9万–9.6万个对象，
-  默认值下它们越积越多，边界 collect 从 4.4 ms 涨到 65 ms（V5 冒烟）。
+  首值时报警，探针开时报 gc 秒数。`sgd_gc_refreeze_objects`（代码默认 200000，配置 40000）：
+  边界 collect 后未冻结对象达到它就再冻结一次；每次在线重编译永久留下 2.8万–9.6万个对象
+  （V5 冒烟按低点到低点 +9.59万/+5.88万/+2.78万），默认值下它们越积越多，边界 collect 从
+  4.4 ms 涨到 65 ms。两次重编译之间的残留：c2q 最后一次冻结后 1,790 个边界，中位 13,049、
+  p99 15,804、最大 19,086；V5 在 0 与约 1.1万之间。40000 约为观测最大值的 2 倍，稳态多扫的
+  几 ms（0.33–0.6 µs/对象，推断，未量）换来少冻结。
 - 起点模型：站点 `start_package`（含 `model.json` 的模型包）。新起时学习者配置的
   `start_model_sha256` 取该包的 `package_sha256`，学习者加载时核对；包缺失时预检拒绝。续跑不读
   起点包（学习者恢复 CP），起点字段取被恢复 CP 的 config，包删了或原地换了照样续、记的仍是真实
@@ -197,7 +202,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     变化（H_T − H_0 + M_T − M_0，死亡记 −H_0，不加权）。毛伤害不进段（段里只有决策时刻的 HP），
     不记。
   - 闸门不用补（RL5-METHODS F）：共享闸门的 `learner-base.json` 生成于 #538 之前，没有这两个键；
-    预检和学习者启动都先经 `learner_config.gate_recipe`，从运行源码的 `rl5.json` 补上闸门缺的
+    预检和学习者启动都经同一个 `learner_config.learner_base`，从运行源码的 `rl5.json` 补上闸门缺的
     `loss` 键（预检 `frozen_recipe` 的 PASS 行列出补了哪些，学习者事件记 `harness_gate_filled`）。
     闸门已有的键仍是闸门的值，A9 照样逐键比较，所以补过键的私有闸门副本照用，值须等于
     `rl5.json`。以后新增的 `loss` 键同样从 `rl5.json` 补，不用重做闸门。
