@@ -958,21 +958,29 @@ def test_potion_mode_points_is_the_default_to_the_byte():
         play_two_combats(g)
     assert absent.sealed[0].data == points.sealed[0].data
     assert absent.sealed[0].header["hp_adv"] == [None, -7.5, 5.0, 3.75, None, -55.0]
-    assert "potion_rows_exempt" not in absent.scores()
+    assert set(absent.scores()) == set(points.scores()) == {
+        "battles", "battles_unscored", "potions", "deaths", "rows_unscored", "ticket_ends",
+        "by_encounter", "by_arm"}
 
 
 def test_value_head_mode_drops_potion_points_and_the_potion_rows_hp_term():
     g = HpGame(potion_mode="value_head")
     play_two_combats(g)
     # First combat (70 -> 58, M 80 -> 82; row 2 drinks): rows 1 and 3 lose the -5 they
-    # carried (row 1: -7.5 -> -2.5; row 3 had none: 3.75); row 2 is exempt: 0.
-    # Second combat (death, no potion): unchanged.
+    # carried (row 1: -7.5 -> -2.5; row 3 had none: 3.75); row 2 has no HP-change part
+    # and no death: 0. Second combat (death, no potion): unchanged.
     assert g.sealed[0].header["hp_adv"] == [None, -2.5, 0.0, 3.75, None, -55.0]
-    assert g.scores()["potion_rows_exempt"] == 1 and g.scores()["potions"] == 1
-    # the weight and the death points are untouched; a potion as the last row: 0
+    assert g.scores()["potions"] == 1 and "potion_rows_exempt" not in g.scores()
+    # the weight is untouched; a potion row of a lost combat keeps the -30 every other
+    # row pays (#572 review M1), as the last row and in the middle (review case B:
+    # 40/80 -> 30 -> 10 drinking -> death, M 82, w 0.5)
     died = [(outcome(60), 62.5, False), (outcome(0, terminal="defeat"), 25.0, True)]
     assert hp_advantages(facts(70), died, 0.5, "value_head") == [
-        0.5 * (-70) - 30 - 0.5 * (62.5 - 70), 0.0]
+        0.5 * (-70) - 30 - 0.5 * (62.5 - 70), -30.0]
+    middle = [(outcome(30, 82), 20.0, False), (outcome(10, 82), 15.0, True),
+              (outcome(0, 82, terminal="defeat"), 5.0, False)]
+    assert hp_advantages(facts(40), middle, 0.5) == [-45.0, -43.5, -33.5]
+    assert hp_advantages(facts(40), middle, 0.5, "value_head") == [-40.0, -30.0, -33.5]
     assert hp_advantages(facts(70), died, 0.5) == [
         0.5 * (-70) - 30 - 5 - 0.5 * (62.5 - 70), 0.5 * (-60) - 30 - 5 - 0.5 * (25 - 60)]
 

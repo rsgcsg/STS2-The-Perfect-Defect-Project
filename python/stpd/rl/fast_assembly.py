@@ -97,8 +97,9 @@ scales its HP-change part, never the potion or death points (A2). A combat with
 no row before it (a save start loaded into a Boss fight) starts at the public HP
 its first row carries (`public_hp`, B); without that it is never scored.
 `hp_potion_mode` (ticket H): "points" (default) is the above; "value_head" gives no
-potion points and a row whose own choice is `potion.use` A_hp 0, so using a potion
-is judged by the outcome advantage (the value head) alone.
+potion points, and a row whose own choice is `potion.use` loses its HP-change part
+(it keeps the combat's death points, as every row does), so using a potion is judged
+by the outcome advantage (the value head), not by the HP it saves.
 
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
@@ -221,7 +222,8 @@ HP_WEIGHT_TYPES = ("normal", "elite", "boss")
 ENCOUNTERS = (*HP_WEIGHT_TYPES, "unknown")
 DEFAULT_HP_WEIGHTS = {kind: 1.0 for kind in HP_WEIGHT_TYPES}
 # Ticket H: how A_hp treats potions. "points": -5 per potion used from the row on
-# (card §6.5). "value_head": no potion points, and a potion row's own A_hp is 0.
+# (card §6.5). "value_head": no potion points, and a potion row keeps only the death
+# points (its HP-change part is 0).
 HP_POTION_MODES = ("points", "value_head")
 
 
@@ -249,7 +251,8 @@ def hp_advantages(start: Mapping[str, Any] | None,
     death points are not scaled. w = 1 gives the same float as before.
 
     `potion_mode` "value_head" (ticket H): P_t is not scored (no potion points) and a
-    row whose own choice was `potion.use` gets 0 (no HP term, nor the death points).
+    row whose own choice was `potion.use` gets only -30 death (no HP-change part): the
+    death points stay the same constant on every row of the combat (#572 review M1).
     """
     facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
     checked = [fact for fact in facts if isinstance(fact, Mapping)
@@ -264,8 +267,9 @@ def hp_advantages(start: Mapping[str, Any] | None,
     scores: list[float] = []
     if potion_mode == "value_head":
         for t, (_, predicted, potion) in enumerate(steps):
+            dead = -float(DEATH_POINTS if death else 0)
             change = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - lost_max
-            scores.append(0.0 if potion else float(
+            scores.append(dead if potion else float(
                 weight * change - (DEATH_POINTS if death else 0)
                 - weight * (predicted - hp[t])))
         return scores
@@ -606,10 +610,6 @@ class FastSegmentAssembler:
                 "by_encounter": {kind: {"battles": 0, "deaths": 0, "hp_change": 0}
                                  for kind in ENCOUNTERS},
                 "by_arm": {}}
-            if self.hp_potion_mode == "value_head":
-                # Only off the default (its record is unchanged): potion rows of scored
-                # combats given A_hp 0 (ticket H).
-                self.counters["hp_score"]["potion_rows_exempt"] = 0
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -1207,8 +1207,6 @@ class FastSegmentAssembler:
                 counters["battles"] += 1
                 counters["potions"] += sum(row[4] for row in battle.rows)
                 counters["deaths"] += death
-                if self.hp_potion_mode == "value_head":
-                    counters["potion_rows_exempt"] += sum(row[4] for row in battle.rows)
                 end = battle.rows[-1][2]["outcome"]["public_facts"]  # scored: all there
                 change = (-start["hp"] if death else end["hp"] - start["hp"]
                           + end["max_hp"] - start["max_hp"])

@@ -2960,7 +2960,7 @@ def test_cp_retention_claims_evaluated_cps_and_other_chain_starts(tmp_path):
         cp_retention.claims(chain_dir)
 
 
-def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing(tmp_path):
+def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing():
     """Ticket H: "value_head" needs format 4 (profile and preflight) and c_hp > 0
     (preflight); off the default it needs a source that knows it, roles passes it on."""
     profile = run_profile.load_profile(PROFILE)
@@ -2997,10 +2997,3 @@ def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing(
         cards=3, segment_format=four, hp_potion_mode='value_head'))
     roles = (FASTCHAIN / 'roles.py').read_text()
     assert 'hp["hp_potion_mode"] = K["hp_potion_mode"]' in roles
-    run = tmp_path / 'run'
-    run.mkdir()
-    assert readout.hp_potion_rows_exempt(run) is None
-    for n, count in enumerate((3, 4)):
-        (run / f'service-status-{n}.jsonl').write_text(jsonl_text([
-            {'t': 1, 'assembler': {'hp_score': {'potion_rows_exempt': count}}}]))
-    assert readout.hp_potion_rows_exempt(run) == 7

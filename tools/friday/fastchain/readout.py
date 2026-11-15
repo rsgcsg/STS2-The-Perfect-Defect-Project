@@ -263,15 +263,6 @@ def hp_score_arm_edge(run: Path, scores: list[dict[str, Any]] | None = None) -> 
             for arm in names}
 
 
-def hp_potion_rows_exempt(run: Path, scores: list[dict[str, Any]] | None = None) -> int | None:
-    """Ticket H (`hp_potion_mode = "value_head"`): potion rows of scored combats given
-    A_hp 0, summed over each service's latest cumulative `assembler.hp_score`; None when
-    no service reports it (the default "points")."""
-    scores = _hp_scores(run) if scores is None else scores
-    counts = [score["potion_rows_exempt"] for score in scores if "potion_rows_exempt" in score]
-    return sum(counts) if counts else None
-
-
 def gpu_cards(run: Path, window: tuple[float, float] | None) -> dict[str, dict[str, float]]:
     cards: dict[str, list[tuple[float, float]]] = {}
     try:
@@ -1245,7 +1236,6 @@ class Readout:
                 "learning": self.learning_result(),
                 "hp_score": hp_score_edge(self.run, scores),
                 "hp_score_arms": hp_score_arm_edge(self.run, scores),
-                "hp_potion_rows_exempt": hp_potion_rows_exempt(self.run, scores),
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
@@ -1378,8 +1368,6 @@ def render_record(r: dict[str, Any]) -> list[str]:
     hp_arms = r.get("hp_score_arms") or {}
     for arm, table in hp_arms.items() if set(hp_arms) - {"control"} else ():
         out.append(f"  arm {arm}: " + hp_line(table))
-    if r.get("hp_potion_rows_exempt") is not None:
-        out.append(f"HP score potion rows exempt (value_head): {r['hp_potion_rows_exempt']}")
     if games.get("unscored_closes"):
         out.append(f"training games: {games['unscored_closes']} complete control closes "
                    "without a natural end (no victory/defeat or floor) not scored")
