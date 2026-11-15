@@ -42,6 +42,17 @@ No source sends single-combat tickets yet (the fast env's `episode_open` names n
 the fast-chain preflight refuses c_hp > 0 with `"combat_ticket"` (#568).
 Both are frozen for a run. A fast-chain gate `learner-base.json` that has them must match;
 a gate made before them takes them from here (`learner_config.gate_recipe`).
+`segments.value_target` (fast chain only) is `"segment"` (default: each 64-row segment
+ends on its own seal) or `"game"`: the learner holds a game's segments until the game
+closes, spilling their bytes to `<live work>/value-target-spill` (node-local, sha256
+checked on read-back), then stitches each segment's lambda tail to the next one, so
+the real outcome reaches every row. Rows get older (a whole game) and `hp_share` reads
+lower. A game that never closes, fails a spill or is held at stop is dropped and counted.
+The KL stop is the same under both rules. Under `"game"` set `segments.capacity_victim`
+to `"hash"`: a whole game enters the queue at its close and a dataset takes at most
+`episode_rows` of it, so the default `"oldest"` drops the later segments of long games
+first. `"hash"` drops the lowest packet digest instead. The run record counts selected
+and evicted rows by distance to the game's end (`game_end_*_rows`).
 The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used from the
 row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
 row whose own choice is `potion.use` only the death points (no HP-change part), so using

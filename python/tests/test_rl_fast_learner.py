@@ -530,7 +530,8 @@ def _stub_owner(capacity: int, excluded: set[str]) -> SegmentLearner:
     owner.queue = SegmentQueue(cast(Any, types.SimpleNamespace(
         steps=64, capacity_rows=capacity, episode_rows=10**9, dataset_rows=64)))
     owner.condition = owner.queue.condition = _CountingCondition()
-    owner.settings = cast(Any, types.SimpleNamespace(capacity_rows=capacity))
+    owner.settings = cast(Any, types.SimpleNamespace(capacity_rows=capacity,
+                                                          capacity_victim="oldest"))
     owner.config = cast(Any, types.SimpleNamespace(run="run"))
     owner.generation = "gen"
     owner.compiler_identity = {"compiler": 1}

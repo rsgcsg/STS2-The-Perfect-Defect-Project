@@ -147,8 +147,8 @@ def advantage_fields(normalization: Any) -> dict[str, Any]:
     with c_hp > 0 that advantage already includes c_hp * A_hp (fast_source), and
     `hp_std` / `hp_share` give that part's std and its share of Var(A) (None at c_hp 0)."""
     return {"multi_rows": normalization.multi_rows, "mean": normalization.mean,
-            "std": normalization.scale, "hp_std": normalization.hp_std,
-            "hp_share": normalization.hp_share}
+            "std": normalization.scale, "variance": normalization.scale ** 2,
+            "hp_std": normalization.hp_std, "hp_share": normalization.hp_share}
 
 
 def headline(statistics: dict[str, dict[str, list[float]]]) -> dict[str, float | None]:
@@ -213,6 +213,23 @@ def add_exploration(counts: dict[str, list[int]], arm: str, act: int, decision: 
     row[2] += rank == 2
     row[3] += top
     row[4] += rank > 0 and positive
+
+
+def value_target_fields(metadata: Any) -> dict[str, Any]:
+    """One dataset's share of target weight on the real outcome (RL5-METHODS V): the
+    sum of its sources' `metadata["value_target"]` ([rows, weight sum, noncombat rows,
+    noncombat weight sum], fast_source.decode_fast_packet); per row the weight is the
+    target's mass on the terminal one-hot (lambda^(rows to the trace end), 0 when the
+    trace ends in a bootstrap). Means are None without rows."""
+    total = [0.0, 0.0, 0.0, 0.0]
+    for row in metadata:
+        counts = row.get("value_target")
+        for i, value in enumerate(counts or ()):
+            total[i] += value
+    return {"rows": int(total[0]),
+            "outcome_weight_mean": total[1] / total[0] if total[0] else None,
+            "noncombat_rows": int(total[2]),
+            "noncombat_outcome_weight_mean": total[3] / total[2] if total[2] else None}
 
 
 def exploration_fields(metadata: Any) -> dict[str, list[int]]:

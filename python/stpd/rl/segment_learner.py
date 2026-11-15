@@ -110,6 +110,7 @@ from .learning_diagnostics import (
     exploration_fields,
     policy_by_arm,
     row_arms,
+    value_target_fields,
 )
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
@@ -346,6 +347,11 @@ def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
         "first_use_floors": [row["floor"] for row in rows],
         "first_use_version_lag": [version - row["mu_version"] for row in rows],
         "first_use_pre_update_SGD_lag": [updates - 1 - row["mu_updates"] for row in rows],
+        # V: row age when trained, in published model versions / SGD updates.
+        "first_use_version_lag_summary": lag_summary(
+            [version - row["mu_version"] for row in rows]),
+        "first_use_pre_update_SGD_lag_summary": lag_summary(
+            [updates - 1 - row["mu_updates"] for row in rows]),
         "first_use_policy_bias": _first_use_policy_bias(
             cast(Any, _BiasRows(metadata)), newly_used, samples, now=policy_observed_at,
             version=policy_version, updates=policy_updates, policy_mask=policy_mask),
@@ -512,12 +518,54 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     # scope then changes nothing; the default one stands in).
     value["loss"].setdefault("hp_advantage_coef", 0.0)
     value["loss"].setdefault("hp_advantage_scope", "combat_ticket")
+    # V: the default rule is left out, so a pre-V checkpoint and today's default
+    # configuration give the same recipe (and recipe digest) as before.
+    if value["segments"].get("value_target", "segment") == "segment":
+        value["segments"].pop("value_target", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
         value["performance"] = {key: value["performance"][key]
                                 for key in PREPARED_PERFORMANCE_FIELDS}
     return value
+
+
+def value_target_options(settings: Any, live_work: Path) -> dict[str, Any]:
+    """Intake options of `segments.value_target`: nothing for "segment" (the intake's
+    default), the node-local spill directory under the learner's live work for "game"."""
+    if settings.value_target == "segment":
+        return {}
+    return {"value_target": settings.value_target,
+            "spill_dir": str(Path(live_work) / "value-target-spill")}
+
+
+# Distance of a segment's last row to its game's end ("game" value targets only):
+# selected-into-a-dataset and capacity-evicted rows by bucket, so a drop that
+# favours some part of the game shows in the run record.
+GAME_END_BUCKETS = ((128, "lt128"), (384, "128_383"), (768, "384_767"), (None, "ge768"))
+
+
+def game_end_counters() -> dict[str, int]:
+    return {f"game_end_{name}_{kind}_rows": 0 for _, name in GAME_END_BUCKETS
+            for kind in ("selected", "evicted")}
+
+
+def count_game_end(counters: dict[str, int], records: Any, kind: str) -> None:
+    for record in records:
+        distance = record.get("envelope", {}).get("rows_to_game_end")
+        if distance is None:
+            continue
+        name = next(name for bound, name in GAME_END_BUCKETS
+                    if bound is None or distance < bound)
+        counters[f"game_end_{name}_{kind}_rows"] += record["rows"]
+
+
+def lag_summary(values: list[int]) -> dict[str, Any]:
+    """n, mean and p95 (nearest rank) of row lags."""
+    ordered = sorted(values)
+    return {"n": len(ordered), "mean": sum(ordered) / len(ordered) if ordered else None,
+            "p95": ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+            if ordered else None}
 
 
 def bind_dataplane_capacity(config: LearnerConfig, lanes: int) -> LearnerConfig:
@@ -985,7 +1033,8 @@ class SegmentLearner:
                         buffer_segments=self.dataplane.get("fast_buffer_segments", 512),
                         gae_lambda=settings.gae_lambda, aux_labels=frozenset(aux_labels),
                         hp_advantage_coef=config.loss.hp_advantage_coef,
-                        hp_advantage_scope=config.loss.hp_advantage_scope)
+                        hp_advantage_scope=config.loss.hp_advantage_scope,
+                        **value_target_options(settings, self.live_work))
                     if self.release_segments:
                         self.segment_release = self._segment_release()
                 verify_workers = self.dataplane.get("fast_verify_workers", 0)
@@ -1008,6 +1057,8 @@ class SegmentLearner:
                     "excluded_trained_rows", "excluded_prefetched_rows",
                     "excluded_admit_raced", "excluded_admit_raced_rows",
                     "excluded_aux_rows")}
+                if settings.value_target == "game":
+                    self.fast_counters.update(game_end_counters())
                 if self.fast_sources is not None:
                     provider = RoutedSources(self.binary_sources, self.fast_sources)
             if self.shard_count and not fast_chain:
@@ -1624,6 +1675,11 @@ class SegmentLearner:
     def _discard_stopped_queue(self) -> None:
         """Terminal training discard; original accepted facts and World ledger stay intact."""
         assert self.wal is not None
+        intake = getattr(self, "fast_intake", None)  # as in `close()`
+        if intake is not None and intake.value_target == "game":
+            # Held games never close now: dropped here, before the final status,
+            # so the run record has them (`game_target_stop_dropped_rows`).
+            intake.discard_held("stop")
         records = list(self.queue.pending)
         if not records:
             return
@@ -2561,6 +2617,8 @@ class SegmentLearner:
                   "run_id": envelope["run_id"], "rows": envelope["rows"], "mu": envelope["mu"],
                   "episode": envelope["episode"], "actor": envelope["actor"],
                   "envelope": envelope}
+        if self.settings.capacity_victim == "hash":
+            record["victim_key"] = envelope["packet_sha256"][:16]  # same width: str order
         # The copy `SegmentQueue.admit` would make under the lock, made here.
         return ref, "ppo:" + segment.segment_id, copy.deepcopy(record)
 
@@ -2605,7 +2663,17 @@ class SegmentLearner:
             # holds skipped in C (they are usually the queue's head).
             unheld = itertools.compress(pending, map(operator.not_, map(
                 held.__contains__, map(operator.itemgetter("segment_id"), pending))))
-            for record in unheld:
+            if self.settings.capacity_victim == "hash":
+                # Lowest digest first: which segment goes does not depend on its
+                # age or its place in the game. Usually one victim: one C-level min.
+                candidates = [record for record in unheld if "victim_key" in record]
+                key = operator.itemgetter("victim_key")
+                while overflow > 0 and candidates:
+                    victim = min(candidates, key=key)
+                    candidates.remove(victim)
+                    victims.add(victim["segment_id"])
+                    overflow -= victim["rows"]
+            for record in unheld if self.settings.capacity_victim == "oldest" else ():
                 if overflow <= 0:
                     break
                 # Only fast records: an old-chain lease's segment has its own
@@ -2623,6 +2691,8 @@ class SegmentLearner:
             changed.append("evicted")
         for record in evicted:
             self._fast_forget(record, counters=("capacity_dropped", "capacity_evicted"))
+        if "game_end_lt128_evicted_rows" in self.fast_counters:
+            count_game_end(self.fast_counters, evicted, "evicted")
         ref, owner, record = (prepared if prepared is not None
                               else self._fast_record(segment, envelope))
         self.fast_sources.put(ref, envelope, segment.data, owner)
@@ -2692,6 +2762,7 @@ class SegmentLearner:
                 ids = {entry["envelope"]["segment_id"] for entry in sources.entries.values()}
             with intake.lock:
                 ids.update(segment.segment_id for segment in intake.buffer)
+            ids.update(intake.held_segment_ids())  # "game" value targets: held to close
             return ids
 
         return SegmentRelease(held=held, fenced=lambda: self.input_fenced,
@@ -3241,6 +3312,9 @@ class SegmentLearner:
             return active
 
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
+        if records and "rows_to_game_end" in records[0].get("envelope", {}):
+            # Only "game" fast records carry it (old-chain records have no envelope).
+            count_game_end(self.fast_counters, records, "selected")
         if self.wal is not None:
             for record in records:
                 if not record.get("fast"):
@@ -3555,6 +3629,7 @@ class SegmentLearner:
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
             result["exploration"] = exploration_fields(self.device_batch.metadata)
+            result["value_target"] = value_target_fields(self.device_batch.metadata)
         policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         return self._account_step(active, batch, index, len(batch.minibatches), result,
@@ -4083,6 +4158,9 @@ class SegmentLearner:
             release = getattr(self, "segment_release", None)
             if release is not None:
                 cleanup.callback(release.close)  # finishes the deletions already due
+            intake = getattr(self, "fast_intake", None)
+            if intake is not None and intake.value_target == "game":
+                cleanup.callback(intake.discard_held, "stop")  # counted and loud
             shards = getattr(self, "shards", None)
             if shards is not None:
                 # Stops each shard's readers, prefetch and preparer and joins the

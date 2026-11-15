@@ -60,6 +60,8 @@ from .segment_learner import (
     SegmentLearner,
     _pending_receipt,
     binary_preparer_arguments,
+    game_end_counters,
+    value_target_options,
 )
 from .segments import AuxiliaryPool, SegmentQueue
 from .sgd_process import _parent_death_signal
@@ -937,7 +939,8 @@ class _ShardLearner(SegmentLearner):
             buffer_segments=dataplane.get("fast_buffer_segments", 512),
             gae_lambda=settings.gae_lambda, aux_labels=frozenset(init["aux_labels"]),
             hp_advantage_coef=config.loss.hp_advantage_coef,
-            hp_advantage_scope=config.loss.hp_advantage_scope)
+            hp_advantage_scope=config.loss.hp_advantage_scope,
+            **value_target_options(settings, self.work))
         if self.shard_count > 1:
             intake.notify = send
         self.fast_intake = self.shard_intake = intake
@@ -953,6 +956,8 @@ class _ShardLearner(SegmentLearner):
             "excluded_trained_rows", "excluded_prefetched_rows",
             "excluded_admit_raced", "excluded_admit_raced_rows",
             "excluded_aux_rows")}
+        if settings.value_target == "game":
+            self.fast_counters.update(game_end_counters())
         self.fast_receivers = []
         self.source_prefetch_changed = threading.Event()
         self.source_prefetch_stopping = threading.Event()
@@ -1200,6 +1205,8 @@ class _ShardLearner(SegmentLearner):
         with self.condition:
             if not self.newlease_stopped:
                 raise ValueError("dataplane_shard_discard_before_stop")
+            if self.shard_intake.value_target == "game":
+                self.shard_intake.discard_held("stop")  # before the final status
             records = list(self.queue.pending)
             for record in records:
                 payload = self._member(record).payload
@@ -1282,6 +1289,8 @@ class _ShardLearner(SegmentLearner):
         self._check_releases(wait=True)
         if self.segment_release is not None:
             self.segment_release.close()
+        if self.shard_intake.value_target == "game":
+            self.shard_intake.discard_held("stop")  # counted and loud
         return self._on_status(message)
 
 

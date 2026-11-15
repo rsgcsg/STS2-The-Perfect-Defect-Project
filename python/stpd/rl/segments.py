@@ -23,7 +23,7 @@ OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min
                       "prepare_ahead", "inference_stream", "preparation_workers",
                       "preparation_threads", "prepared_bytes", "training_generation",
                       "rendezvous_path", "central_scoring", "checkpoint_seconds", "capacity_rows",
-                      "capacity_limit_rows")
+                      "capacity_limit_rows", "capacity_victim")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -32,6 +32,16 @@ class SegmentConfig:
     minibatches: int = 4
     epochs: int = 1
     gae_lambda: float = 0.99
+    # Value-target rule (RL5-METHODS V): "segment" = lambda-targets end at each 64-row
+    # segment's own seal (the behaviour before V); "game" = traces stitched to the
+    # game's end (fast chain only; `fast_source.game_target_tails`). Resume-locked.
+    value_target: str = "segment"
+    # Which queued fast segments a full queue drops (operational: the queue is not
+    # restored): "oldest" (the 11-09 rule) or "hash" (lowest packet sha256 first,
+    # independent of age and position in the game). "game" admits a whole game at
+    # its close and a dataset takes at most `episode_rows` of it, so "oldest" drops
+    # the later segments of long games first; "hash" is the unbiased choice there.
+    capacity_victim: str = "oldest"
     episode_rows: int = 128
     capacity_rows: int = 4608
     capacity_limit_rows: int | None = None
@@ -76,6 +86,8 @@ class SegmentConfig:
                 or self.dataset_rows < self.minibatches
                 or type(self.auxiliary_rows) is not int or self.auxiliary_rows < 0
                 or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
+                or self.value_target not in ("segment", "game")
+                or self.capacity_victim not in ("oldest", "hash")
                 or any(type(v) not in (int, float) or not math.isfinite(v)
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,

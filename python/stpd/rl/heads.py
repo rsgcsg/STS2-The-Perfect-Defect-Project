@@ -142,7 +142,10 @@ def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *
 
     probabilities contains only the T current states. A nonterminal segment also
     supplies its confirmed successor distribution; a real terminal supplies its
-    checked class instead. No trace is stitched across segments or behavior mu.
+    checked class instead. Nothing is stitched here: under the fast chain's "game"
+    value targets (`fast_source.game_target_tails`) the boundary of a non-final
+    segment is the stitched tail computed from the later segments' recorded values
+    (each row's own mu, no extra rho); otherwise it is the confirmed successor.
     """
     p = probabilities.detach().float()
     if (p.ndim != 2 or p.shape[1] != OUTCOME_CLASSES or not 1 <= len(p) <= 64
