@@ -262,6 +262,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "source_slots": _int(1),
     "prepared_batches": _int(1, 256),
     "prepared_gib": _num(1, 512),
+    "prepared_batch_expected_max_gb": _num(0.01, 64),
     "preparation_workers": _int(1, 128),
     "assembly_workers": _int(1, 128),
     "dispatch_workers": _int(1, 64),
