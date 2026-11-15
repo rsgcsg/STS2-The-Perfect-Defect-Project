@@ -722,8 +722,10 @@ class Readout:
         self.control = self.arms["control"] = _Results()
         self.games_t: tuple[float, float] | None = None
         # save starts (tickets.mjs): pooled saves per act; complete save-start games per
-        # start act and per use of the save
-        self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {}}
+        # start act and per use of the save; opened games per start; each driver's latest
+        # save counters (cumulative, #553 review C)
+        self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {},
+                                      "opened": {}, "counters": {}}
 
     @property
     def read_bytes(self) -> int:
@@ -835,6 +837,10 @@ class Readout:
         elif kind == "save_pooled":
             _count(self.saves["pooled"], r.get("act"))
             self.saves["problem"] += r.get("problem") is True
+        elif kind == "opened":
+            _count(self.saves["opened"], r.get("start"))
+        elif kind == "save_counters":
+            self.saves["counters"][path] = r
         elif kind in ("slot_failed", "build_output_stopped", "fatal", "evidence_failed"):
             _count(self.failures, kind)
 
@@ -919,10 +925,27 @@ class Readout:
         last save before its source died in that act); complete save-start games per start
         act and per use of their save (1st, 2nd, 3-4th ...): mean end floor, mean floors
         gained over the save, wins, and of those whose source died, the share that got past
-        the source's death floor. Rolling training-game results never include them."""
+        the source's death floor. Rolling training-game results never include them.
+        While the run goes (#553 review C): games opened per start and the effective share
+        (from_save / all opened), and the drivers' latest save counters summed (fallback
+        new runs, load failures, paused families, claim conflicts, evictions; the node pool
+        views `pool_*` are left out, several drivers share one pool)."""
         s = self.saves
-        if not s["pooled"] and not s["act"]:
+        if not s["pooled"] and not s["act"] and not s["counters"]:
             return {}
+        opened = s["opened"]
+        total = sum(opened.values())
+        counters: dict[str, Any] = {}
+        for line in s["counters"].values():
+            for key, value in line.items():
+                if key.startswith("pool_") or key in ("t", "event"):
+                    continue
+                if type(value) is int:
+                    counters[key] = counters.get(key, 0) + value
+                elif isinstance(value, dict):
+                    part = counters.setdefault(key, {})
+                    for name, n in value.items():
+                        part[name] = part.get(name, 0) + n
 
         def rows(table: dict[str, Any]) -> dict[str, Any]:
             return {key: {"games": b["games"], "mean_floor": b["floor_sum"] / b["games"],
@@ -931,7 +954,11 @@ class Readout:
                           "pass_rate": b["passed"] / b["source_died"] if b["source_died"] else None}
                     for key, b in sorted(table.items())}
         return {"pooled_by_act": dict(sorted(s["pooled"].items())), "problem_saves": s["problem"],
-                "by_start_act": rows(s["act"]), "by_use": rows(s["use"])}
+                "by_start_act": rows(s["act"]), "by_use": rows(s["use"]),
+                "opened_by_start": dict(sorted(opened.items())),
+                "effective_share": opened.get("from_save", 0) / total if total else None,
+                "drivers_reporting": len(s["counters"]),
+                "driver_counters": dict(sorted(counters.items()))}
 
     def _game(self, game: dict[str, Any]) -> None:
         self.arms.setdefault(game["arm"], _Results()).add(game)
@@ -1311,8 +1338,16 @@ def render(r: dict[str, Any]) -> str:
                               f"{fmt(row['mean_floor_range'], 1):>7}" if grouped else ""))
     saves = r.get("save_starts") or {}
     if saves:
+        configured = ((r.get("identity") or {}).get("recipe") or {}).get("save_starts") or {}
+        c = saves.get("driver_counters") or {}
         out += ["", f"save starts: pooled per act {saves['pooled_by_act']}, problem saves "
-                f"{saves['problem_saves']} (complete games; pass = past the source's death floor)"]
+                f"{saves['problem_saves']} (complete games; pass = past the source's death floor)",
+                f"  opened {saves.get('opened_by_start')}, effective share "
+                f"{fmt(saves.get('effective_share'), 3)} (configured {configured.get('share')}); "
+                f"{saves.get('drivers_reporting')} drivers: new run without ticket "
+                f"{c.get('new_run_without_ticket', {})}, load failed {c.get('load_failed', 0)}, "
+                f"families paused {c.get('families_paused', 0)}, claim conflicts "
+                f"{c.get('claim_conflicts', 0)}, evicted {c.get('evicted', {})}"]
         for key, label in (("by_start_act", "act"), ("by_use", "use")):
             for name, row in saves[key].items():
                 out.append(f"  {label + ' ' + name:<12}{row['games']:>8,} games  floor "

@@ -2270,7 +2270,36 @@ def test_env_driver_save_starts_pool_draw_refusals_and_readout(tmp_path):
     played = reader.training_games()
     assert played['run']['all']['games'] == 0 and set(played['arms']) == {'hot'}
     assert played['arms']['hot']['run']['all']['games'] == recipe['arm']['hot']['games']
-    assert 'save starts: pooled per act' in readout.render(readout.build(run, 1200))
+    text = readout.render(readout.build(run, 1200))
+    assert 'save starts: pooled per act' in text and 'effective share' in text
+    # #553 review C: cumulative counters on every status, the last one at exit = summary;
+    # the readout shows the effective share and the counters while the driver still runs.
+    lines = [r for r in log if r['event'] == 'save_counters']
+    assert len(lines) >= 3
+    assert {k: v for k, v in lines[-1].items() if k not in ('t', 'event')} == summary
+    assert all(a['tickets_claimed'] <= b['tickets_claimed']
+               and a['from_save_opened'] <= b['from_save_opened']
+               for a, b in zip(lines, lines[1:], strict=False))
+    opened = {}
+    for r in log:
+        if r['event'] == 'opened':
+            opened[r['start']] = opened.get(r['start'], 0) + 1
+    assert saves['opened_by_start'] == opened and opened['from_save'] == len(started)
+    assert saves['effective_share'] == pytest.approx(len(started) / sum(opened.values()))
+    assert saves['drivers_reporting'] == 1
+    assert saves['driver_counters']['load_failed'] == summary['load_failed'] == len(refused)
+    assert saves['driver_counters']['new_run_without_ticket'] == summary[
+        'new_run_without_ticket']
+    assert not any(key.startswith('pool_') for key in saves['driver_counters'])
+    running = tmp_path / 'run-running'
+    write_run(running, cards=1)
+    cut = next(i for i, r in enumerate(log) if r['event'] == 'save_counters'
+               and r['from_save_opened'] > 0)
+    (running / 'env-n0-1' / 'p1').mkdir(parents=True)
+    (running / 'env-n0-1' / 'p1' / 'driver.jsonl').write_text(jsonl_text(log[:cut + 1]))
+    early = readout.build(running, 1200)['save_starts']
+    assert early['drivers_reporting'] == 1 and early['effective_share'] > 0
+    assert early['driver_counters']['from_save_opened'] == log[cut]['from_save_opened']
 
 
 def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):

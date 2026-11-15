@@ -9,7 +9,8 @@
 // `inference.sampling` per fast-env process) and K games per start in its own slots (one
 // assembler), each game logged in driver.jsonl with arm, ascension, group and outcome.
 // Save starts (RL5-METHODS B, tickets.mjs): with `save_starts.share` > 0 new runs save at
-// map screens into the node pool and that share of starts opens from a pool save.
+// map screens into the node pool and that share of starts opens from a pool save; the
+// driver's save counters go to driver.jsonl on every status and at exit.
 import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -219,6 +220,9 @@ createInterface({ input: env.stdout }).on("line", line => {
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);
   else if (event.event === "status") {
     summary.statuses.push({ t: Date.now(), counters: event.counters, slots: event.slots });
+    // #553 review C: the save-start counters so far on every status (cumulative), so the
+    // run record shows the effective share while the run goes, not only at driver exit.
+    if (saves) log({ event: "save_counters", ...saves.counters() });
     if (summary.final_status && !stopSent) { stopping = true; stopSent = true; send({ cmd: "stop" }); }
   } else if (event.event === "stopped" || event.event === "fatal") summary.end = event;
 });
@@ -231,7 +235,7 @@ process.on("SIGUSR1", () => {
 });
 const code = await new Promise(resolve => env.on("exit", resolve));
 summary.exit = code;
-if (saves) summary.save_starts = saves.counters();
+if (saves) { summary.save_starts = saves.counters(); log({ event: "save_counters", ...summary.save_starts }); }
 ADMIT.end();
 const a = summary.statuses[0], b = summary.statuses[summary.statuses.length - 1];
 if (a && b) {

@@ -5,7 +5,8 @@ profile (ladder + sampling_temperature_min) -> arm per env driver (exploration_p
 episode open over the link (real NodeAggregator) -> real FastInferenceService with the
 profile's temperature minimum -> real FastSegmentAssembler, segment format 3 -> decode
 with the vocabulary's decision codes -> one prepared batch's exploration counts in a
-learner progress event, the arms' closes in driver.jsonl -> the readout per arm.
+learner progress event, the arms' closes in driver.jsonl -> the readout per arm. One game
+opens from a save: its rows count under "<arm>+save" and its close is no arm result.
 """
 from __future__ import annotations
 
@@ -76,6 +77,9 @@ CATALOGS = {"combat": ("combat.play_card", "combat.play_card", "combat.end_turn"
             "card_reward": ("reward.take_card", "reward.take_card", "reward.proceed")}
 # The floor of each step: games that die in act 1, 2 and 3 (public acts pass every Boss).
 GAME_FLOORS = ((1, 2, 3, 4, 5, 6), (1, 9, 17, 18, 21, 22), (1, 17, 18, 34, 40, 41))
+# The last driver's act-3 game opens from a save (#553 review H): its rows count under
+# "<arm>+save", apart from the arm's new runs, and its close is not an arm result.
+SAVE_GAME = f"g{DRIVERS - 1}-{GAME_FLOORS[2][-1]}"
 
 
 @pytest.fixture(scope="module")
@@ -173,9 +177,12 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
                       "p1_revision": "x", "input_spec": AGENT_SPEC})
             for floors in GAME_FLOORS[index % 3:index % 3 + 2]:
                 game = f"g{index}-{floors[-1]}"
+                save = game == SAVE_GAME
                 env.send({"type": "episode_open", "ascension": 0, "game_instance_id": game,
                           "actor_id": f"actor-{index}", "sampling": samplings[arm],
-                          "single_choice": "score", "start": {"kind": "new_run"}})
+                          "single_choice": "score",
+                          "start": ({"kind": "from_save", "act": 1, "floor": 1} if save
+                                    else {"kind": "new_run"})})
                 steps = []
                 for step, (kind, combat) in enumerate(SCREENS):
                     row_id += 1
@@ -195,7 +202,8 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
                               "terminal": {"result": "defeat"} if last else None})
                 env.send({"type": "episode_close", "game_instance_id": game,
                           "reason": "terminal", "last_step_index": len(SCREENS) - 1})
-                games[game] = {"arm": arm, "steps": steps, "floor": floor}
+                games[game] = {"arm": arm, "steps": steps, "floor": floor, "save": save,
+                               "dose": arm + "+save" if save else arm}
         for _ in range(400):
             if len(sealed) == len(games):
                 break
@@ -248,7 +256,7 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             rank = min(sum(value > chosen for value in reply["behavior_q"]), 2)
             act = 1 if floor <= 17 else 2 if floor <= 33 else 3
             counts = expected.setdefault(
-                f"{record['arm']}|act{act}|{DECISIONS[0 if combat else DECISIONS.index(kind)]}",
+                f"{record['dose']}|act{act}|{DECISIONS[0 if combat else DECISIONS.index(kind)]}",
                 [0, 0, 0, 0, 0])
             counts[0] += 1
             counts[1] += rank == 1
@@ -272,7 +280,8 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
                         prepared_layout="rows-v2")
     counts = exploration_fields(batch.metadata)
     assert sum(c[0] for c in counts.values()) == count
-    assert {key.split("|")[0] for key in counts} == {"control", "bold", "hot"}
+    doses = {"control", "bold", "hot", f"{drivers[-1]}+save"}
+    assert {key.split("|")[0] for key in counts} == doses
 
     run = tmp_path / "run-t1"
     write_run(run, cards=1)
@@ -284,7 +293,8 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
     for index, (game, record) in enumerate(games.items()):
         lines += [{"event": "admission", "game_ref": game, "ok": True, "code": None},
                   {"event": "closed", "t": 10_000 + index, "game_ref": game,
-                   "reason": "terminal", "arm": record["arm"], "start": "new_run",
+                   "reason": "terminal", "arm": record["arm"],
+                   "start": "from_save" if record["save"] else "new_run",
                    "floor": record["floor"], "replay_k": 1, "group": game,
                    "ascension": 0, "terminal": "defeat"}]
     driver = run / "env-n0" / "p0"
@@ -293,9 +303,9 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
 
     record = readout.build(run, 1200)
     dose = record["learning"]["latest"]["exploration"]
-    assert set(dose) == {"control", "bold", "hot"}
+    assert set(dose) == doses
     for arm, part in dose.items():
-        rows = [x for r in games.values() if r["arm"] == arm for x in r["ranks"]]
+        rows = [x for r in games.values() if r["dose"] == arm for x in r["ranks"]]
         assert part["all"]["rows"] == len(rows)
         assert part["all"]["top"] == pytest.approx(sum(x[1] == 0 for x in rows) / len(rows))
         assert set(part["by_decision"]) == {"combat", "map", "card_reward"}
@@ -303,7 +313,7 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
     played = record["training_games"]["arms"]
     assert set(played) == {"control", "bold", "hot"}
     for arm, results in played.items():
-        floors = [r["floor"] for r in games.values() if r["arm"] == arm]
+        floors = [r["floor"] for r in games.values() if r["arm"] == arm and not r["save"]]
         run_all = results["run"]["all"]
         assert run_all["games"] == len(floors) == results["rolling"]["all"]["games"]
         assert run_all["mean_floor"] == pytest.approx(sum(floors) / len(floors))
@@ -311,7 +321,7 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
         assert run_all["win_rate"] == 0
     assert record["training_games"]["run"] == played["control"]["run"]
     text = readout.render(record)
-    for arm in ("control", "bold", "hot"):
+    for arm in doses:
         assert f"exploration arm {arm}:" in text
     assert "training games arm bold A0" in text and "act 3 reached" in text
 
