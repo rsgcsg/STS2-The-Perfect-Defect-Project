@@ -286,8 +286,9 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
     assert len(reports) == len(firsts) >= 2  # every dataset after the first
     assert reports[0]["froze"] and reports[0]["freezes"] == 1
     assert reports[0]["frozen"] > 10_000 and reports[0]["objects"] > 10_000
-    for report in reports[1:]:  # what came after the freeze stays small
+    for report in reports[1:]:  # what came after the freeze stays small; no frozen walk
         assert not report["froze"] and report["objects"] < 10_000, report
+        assert "frozen" not in report, report
     # Automatic full collections are off; the CPU staging path's explicit
     # per-batch collect (the CUDA direct path has none) scans only post-freeze objects.
     frozen_at = next(i for i, e in enumerate(two_events) if "gc_boundary" in e["sgd_timing"])
@@ -298,7 +299,7 @@ def test_two_ranks_with_every_stage_option_match_the_earlier_path(tmp_path, monk
         timing = event["sgd_timing"]
         assert list(timing["boundary_sections"]) == [
             "last_step", "replica_check", "snapshot_capture", "snapshot_write",
-            "snapshot_send", "gc", "idle"]
+            "snapshot_send", "gc_collect", "gc_freeze", "gc_other", "idle"]
         assert sum(timing["boundary_sections"].values()) == pytest.approx(
             timing["boundary_seconds"], abs=1e-9)
 
