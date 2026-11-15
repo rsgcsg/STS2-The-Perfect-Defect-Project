@@ -255,6 +255,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["segment_format_3"] = "segment format 3 (#530 S-1)"
     if k["segment_format"] == run_profile.SEGMENT_FORMAT_4:
         need["segment_format_4"] = "segment format 4 + per-combat HP score (W2)"
+    if any(w != 1 for w in k["hp_combat_weights"].values()):
+        need["hp_combat_weights"] = "HP-change weight per combat type (RL5-METHODS A2)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
         need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
     if k["eval_suite"] or k["eval_a10_enabled"]:
