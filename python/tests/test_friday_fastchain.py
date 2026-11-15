@@ -3022,6 +3022,13 @@ def test_kl_stop_scope_and_lr_warmup_default_off_and_reach_the_learner_only_when
             'kl_stop_scope="control"', 'exploration_ladder={ hot = { share = 1.0, combat = '
             '{ temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, '
             'uniform_mix = 0.0 } } }'])
+    for altered in ('{ temperature = 1.2, uniform_mix = 0.0 }',
+                    '{ temperature = 1.0, uniform_mix = 0.01 }'):
+        with pytest.raises(run_profile.ProfileError, match='control arm unaltered'):
+            run_profile.load_profile(PROFILE, [
+                'kl_stop_scope="control"', 'exploration_ladder={ control = { share = 1.0, '
+                f'combat = {altered}, noncombat = '
+                '{ temperature = 1.0, uniform_mix = 0.0 } } }'])
     with pytest.raises(run_profile.ProfileError, match='lr_warmup_steps'):
         run_profile.load_profile(PROFILE, ['lr_warmup_steps=-1'])
     need = preflight.required_features(plan_for(cards=3))

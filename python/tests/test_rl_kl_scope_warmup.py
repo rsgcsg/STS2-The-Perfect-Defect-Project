@@ -14,6 +14,7 @@ import torch
 from test_rl41_w1 import model as model
 from test_rl41_w1 import ready, segment
 
+from stpd.rl.learning_diagnostics import policy_by_arm
 from stpd.rl.loss import (
     LossConfig,
     minibatch_control_rows,
@@ -55,14 +56,20 @@ def _run(model, minibatch, **kwargs):
     return result, model, optimizer
 
 
-def test_control_rows_follow_tensor_order_and_only_multi_choice_control_rows(model):
+def _control(batch, arms=ARMS):
+    return minibatch_control_rows(batch.minibatches[0], arms, batch.policy_mask.tolist())
+
+
+def test_control_rows_follow_tensor_order_and_only_policy_rows_of_control_and_its_saves(model):
     batch = _batch(model)
-    minibatch = batch.minibatches[0]
-    order = [row for group in minibatch.groups for row in group.rows]
-    assert minibatch_control_rows(batch, minibatch, ARMS) == [row < 3 for row in order]
-    assert not any(minibatch_control_rows(batch, minibatch, None))
+    order = [row for group in batch.minibatches[0].groups for row in group.rows]
+    assert _control(batch) == [row < 3 for row in order]
+    assert not any(_control(batch, None))
+    # save starts of the control drivers count as control (#578 review, lead decision)
+    saved = ["control+save"] * 3 + ["hot+save"] * 3
+    assert _control(batch, saved) == [row < 3 for row in order]
     forced = ready(model, [segment(model, rows=4, forced=True)])
-    flags = minibatch_control_rows(forced, forced.minibatches[0], ["control"] * 4)
+    flags = _control(forced, ["control"] * 4)
     policy = forced.policy_mask.tolist()
     assert flags == [policy[row] for group in forced.minibatches[0].groups
                      for row in group.rows] and not all(flags)  # forced rows excluded
@@ -87,13 +94,30 @@ def test_default_scope_is_unchanged_and_all_control_rows_reproduce_it(model):
         assert all(torch.equal(left[key], right[key]) for key in left)
 
 
+def test_control_kl_is_the_mean_over_control_rows_only(model):
+    """#578 review mutation M5: one control row and one hot row deviate, so the control
+    KL (sum over control rows / 3) differs from the same sum / 6 or the all-rows KL."""
+    batch = _batch(model)
+    minibatch = _skewed(batch, {0, 3})
+    measured, _, _ = _run(model, minibatch, target_kl=100, control_rows=_control(batch),
+                          collect_policy_rows=True)
+    by_arm = policy_by_arm(ARMS, measured["_policy_rows"])
+    assert by_arm["control"][0] == 3 and by_arm["hot"][0] == 3
+    control_sum, hot_sum = by_arm["control"][1], by_arm["hot"][1]
+    assert control_sum > 1e-3 and hot_sum > 1e-3
+    assert measured["approx_kl_control"] == pytest.approx(control_sum / 3, rel=1e-4)
+    assert measured["approx_kl_mu_theta"] == pytest.approx((control_sum + hot_sum) / 6,
+                                                           rel=1e-4)
+
+
 def test_control_scope_ignores_exploration_rows_and_records_both_kls(model):
     batch = _batch(model)
     minibatch = _skewed(batch, {3, 4, 5})  # the "hot" arm deviates on purpose
-    control = minibatch_control_rows(batch, minibatch, ARMS)
+    control = _control(batch)
     measured, _, _ = _run(model, minibatch, target_kl=100, control_rows=control)
     all_rows, control_kl = measured["approx_kl_mu_theta"], measured["approx_kl_control"]
-    assert measured["kl_control_rows"] == 3 and 0 <= control_kl < all_rows / 10
+    # control rows sit at r = 1: their KL is 0 up to float32 rounding
+    assert measured["kl_control_rows"] == 3 and -1e-6 <= control_kl < all_rows / 10
     target = (all_rows + control_kl) / 2
     default, _, _ = _run(model, minibatch, target_kl=target)
     assert default["kl_stopped"] and not default["stepped"]
@@ -159,7 +183,7 @@ def test_control_kl_rides_the_data_parallel_reduction(model):
 
     batch = _batch(model)
     minibatch = _skewed(batch, {3, 4, 5})
-    control = minibatch_control_rows(batch, minibatch, ARMS)
+    control = _control(batch)
     seen = []
 
     def halve(_model, totals, valid):  # stands in for a reduce that rescales everything

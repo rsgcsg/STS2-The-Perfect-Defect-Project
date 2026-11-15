@@ -246,10 +246,15 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
     if values["sgd_gc_refreeze_objects"] != 200_000 and not values["sgd_gc_freeze"]:
         out.append("sgd_gc_refreeze_objects other than 200000 needs sgd_gc_freeze")
-    if (values["kl_stop_scope"] == "control"
-            and not values["exploration_ladder"].get("control", {}).get("share")):
-        out.append('kl_stop_scope "control" needs an exploration_ladder arm named control '
-                   "with share > 0 (the KL stop measures that arm's rows only)")
+    if values["kl_stop_scope"] == "control":
+        control = values["exploration_ladder"].get("control")
+        if not control or not control["share"]:
+            out.append('kl_stop_scope "control" needs an exploration_ladder arm named '
+                       "control with share > 0 (the KL stop measures that arm's rows only)")
+        elif any(control[name] != {"temperature": 1, "uniform_mix": 0}
+                 for name in ("combat", "noncombat")):
+            out.append('kl_stop_scope "control" needs the control arm unaltered (combat and '
+                       "noncombat temperature 1, uniform_mix 0): its rows are the stop basis")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
         for name in ("combat", "noncombat"):

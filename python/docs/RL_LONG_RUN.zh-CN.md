@@ -250,11 +250,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     预检要求源码特性 `hp_potion_mode`。这种模式下免血量变化的药水行数
     就是 `hp_score.potions`；血量项占优势方差的份额照旧看 `advantage_raw.hp_share`。
   - KL 刹车范围和学习率预热（票 K）：旋钮 `kl_stop_scope`，默认 `"all"`（现行为：小批里所有
-    多选行的 KL 和 `target_kl` 比）；`"control"` 只算名为 `control` 的臂的行（探索臂故意偏离，
-    不该触发刹车），这个小批没有对照行时退回全部行，并在该次记 `kl_stop_basis:
+    多选行的 KL 和 `target_kl` 比）；`"control"` 只算名为 `control` 的臂的行，含它的存档开局
+    `control+save`（存档只改起点、不改采样；探索臂故意偏离，不该触发刹车），这个小批没有对照行时退回全部行，并在该次记 `kl_stop_basis:
     "all_rows_no_control"`、读数计数。`"control"` 下每次都记全部行 KL 和对照行 KL
-    （`approx_kl_control`、`kl_control_rows`）。要求阶梯里有份额 > 0 的 `control` 臂（载入配置时
-    核对）。旋钮 `lr_warmup_steps`，默认 0（无预热）；N > 0 时前 N 步学习率从 lr/N 线性升到 lr，
+    （`approx_kl_control`、`kl_control_rows`）。要求阶梯里有份额 > 0 且 T 1 / mix 0 的 `control` 臂
+    （载入配置时核对）。旋钮 `lr_warmup_steps`，默认 0（无预热）；N > 0 时前 N 步学习率从 lr/N 线性升到 lr，
     head_lr 同比例；步数取恢复的更新数，续跑接着升，升完后续跑不重来。两个都进学习者配方
     （续跑锁死，默认值不进配方摘要），预检要求同名源码特性。
   - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额

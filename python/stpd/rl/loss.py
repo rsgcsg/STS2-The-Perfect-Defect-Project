@@ -51,18 +51,19 @@ class AuxiliarySample:
 # KL over every policy row of a minibatch (the rule before K). "control": over the rows
 # of the control arm only, the arm without exploration change (fast chain:
 # `exploration_ladder.control`; arms as `learning_diagnostics.row_arms` derives them).
+# Its save starts (`control+save`, fast_source; arm ids never contain "+") count too:
+# a save start changes the starting state, not the sampling policy (lead, #578 review).
 KL_STOP_SCOPES = ("all", "control")
-CONTROL_ARM = "control"
+CONTROL_ARMS = frozenset(("control", "control+save"))
 
 
-def minibatch_control_rows(batch: Any, minibatch: Any, arms: list[str | None] | None
-                           ) -> list[bool]:
-    """Per row of `minibatch` in its tensor order (its groups' rows): True for a
-    multi-choice PPO row of the control arm. `arms` = `row_arms` of the dataset
-    (None: no row has an arm, so none is a control row)."""
-    return [arms is not None and row < len(arms) and arms[row] == CONTROL_ARM
-            and batch.kinds[row] == "ppo" and len(batch.frames[row].choices) > 1
-            for group in minibatch.groups for row in group.rows]
+def minibatch_control_rows(minibatch: Any, arms: list[str | None] | None,
+                           policy_mask: list[bool]) -> list[bool]:
+    """Per row of `minibatch` in its tensor order (its groups' rows): True for a policy
+    row (`policy_mask` = the dataset's `PreparedBatch.policy_mask` as a list) of the
+    control arm. `arms` = `row_arms` of the dataset (None: no row has an arm)."""
+    return [arms is not None and row < len(arms) and arms[row] in CONTROL_ARMS
+            and policy_mask[row] for group in minibatch.groups for row in group.rows]
 
 
 def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],

@@ -3636,8 +3636,8 @@ class SegmentLearner:
             gpu_lock=self.gpu_lock,
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
             collect_policy_rows=True,
-            control_rows=(minibatch_control_rows(self.device_batch, minibatch,
-                                                 self._dataset_arms(batch))
+            control_rows=(minibatch_control_rows(minibatch, self._dataset_arms(batch),
+                                                 self._policy_mask(batch))
                           if self.settings.kl_stop_scope == "control" else None),
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
@@ -3695,9 +3695,7 @@ class SegmentLearner:
             used = set(active["used"])  # was a list scan per row: O(rows x used) per step
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in used]
             self.first_use += len(newly_used)
-            if self.policy_mask_cache is None or self.policy_mask_cache[0] is not batch:
-                self.policy_mask_cache = batch, batch.policy_mask.tolist()  # once per dataset
-            policy_mask = self.policy_mask_cache[1]
+            policy_mask = self._policy_mask(batch)
             self.first_use_multi += sum(policy_mask[i] for i in newly_used)
             active["used"].extend(newly_used)
             if self.shards is not None:
@@ -3786,6 +3784,11 @@ class SegmentLearner:
                 self.updates,
             )
         return result
+
+    def _policy_mask(self, batch: Any) -> list[bool]:
+        if self.policy_mask_cache is None or self.policy_mask_cache[0] is not batch:
+            self.policy_mask_cache = batch, batch.policy_mask.tolist()  # once per dataset
+        return self.policy_mask_cache[1]
 
     def _dataset_arms(self, batch: Any) -> list[str | None] | None:
         """Per row of `batch`, its exploration arm (`row_arms`, once per dataset);

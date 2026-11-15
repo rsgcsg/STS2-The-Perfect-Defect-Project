@@ -61,7 +61,9 @@ Ticket K adds two `segments` keys, both absent here (= default), resume-locked a
 out of the recipe at their default; the fast chain sets them from the profile knobs of
 the same name (`learner_config.build`). `kl_stop_scope`: `"all"` (default, the stop
 compares the KL over every policy row of a minibatch with `target_kl`) or `"control"`
-(over the rows of the arm named `control` only; a minibatch without one uses all rows
+(over the rows of the arm named `control` only, its save starts `control+save` included:
+a save start changes the starting state, not the sampling; the profile requires that arm
+at T 1 / uniform_mix 0; a minibatch without one uses all rows
 and the attempt records `kl_stop_basis: "all_rows_no_control"`). Under `"control"` every
 attempt also records `approx_kl_control` and `kl_control_rows` beside the all-rows
 `approx_kl_mu_theta`. `lr_warmup_steps` (default 0 = none): before optimizer step k the

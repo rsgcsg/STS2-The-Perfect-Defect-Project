@@ -1729,10 +1729,11 @@ class _SgdWorker:
             _, (plan, device_batch) = self.staged.popitem(last=False)
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
-        arms = None
+        arms, policy = None, []
         if self.kl_stop_scope == "control":  # once per dataset (every rank holds it whole)
             arms = row_arms(device_batch.metadata,
                             [m.rows for m in device_batch.request.members])
+            policy = device_batch.policy_mask.tolist()
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
         boundary: float | None = None
@@ -1790,7 +1791,7 @@ class _SgdWorker:
                 diagnostics=diagnostics, collect_policy_rows=True,
                 gradient_sync=self.sync,
                 shard=(self.rank, self.parallel.world) if self.parallel is not None else None,
-                control_rows=(minibatch_control_rows(device_batch, batch, arms)
+                control_rows=(minibatch_control_rows(batch, arms, policy)
                               if self.kl_stop_scope == "control" else None))
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
