@@ -17,8 +17,10 @@ dotnet_dir = "dotnet-sdk9.0.117"                 # relative to node_release
 inference_auth_file = "/scratch/USER/fastchain/auth.hex"       # 0600, never printed
 prepare_auth_file = "/scratch/USER/fastchain/prep-auth.hex"    # 0600, never printed
 gate_dir = "/scratch/USER/gate"                  # learner-base.json + dataplane.json
-warmup_file = "/scratch/USER/fastchain/warmup.id"
+warmup_file = "/scratch/USER/fastchain/warmup.id"    # "" = no fitted heads (random-init start)
 start_package = "/scratch/USER/fastchain/start-package"
+# From scratch: start_package = DIR/package of `python -m stpd.rl.random_start --template
+# <current start package> --seed N --out DIR`, with warmup_file = "".
 peer_dir = "/scratch/USER/fastchain/peer"        # local peer only; never an R2 archive
 inductor_cache = "/scratch/USER/fastchain/inductor-cache"
 seeds_file = "/scratch/USER/fastchain/seeds.txt"

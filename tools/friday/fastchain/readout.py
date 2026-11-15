@@ -387,11 +387,25 @@ def _sha256(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
 
+def _start_model(learner: dict[str, Any], at_submit: dict[str, Any]) -> dict[str, Any] | None:
+    """The start the learner was given (learner.json): a fresh start's package sha, which
+    the learner verified, or a resume's, from the restored CP. The training_identity (a CP
+    export's binding, a random init's seed) is read at submit (facts.json), so it is shown
+    only for that same package; the submit-time sha stays in the record either way."""
+    sha = learner.get("start_model_sha256")
+    if not sha:
+        return None
+    same = at_submit.get("package_sha256") == sha
+    return {"package_sha256": sha,
+            "training_identity": at_submit.get("training_identity") if same else None,
+            "site_package_at_submit": at_submit.get("package_sha256")}
+
+
 def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
     """What this run is: plan/profile digests, source, layout name and recipe knobs.
 
     Source facts come from facts.json (launch.py, at freeze); the loss keys (c_hp and its
-    scope included) from the learner config the learner actually read."""
+    scope included) and the start model from the learner config the learner actually read."""
     profile = _json(run / "effective-profile.json") or {}
     knobs = {name: knob.get("value") for name, knob in (profile.get("knobs") or {}).items()}
     facts = _json(run / "facts.json") or {}
@@ -409,6 +423,7 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
         "source_dirty": (facts.get("src_checkout") or {}).get("dirty"),
         "env_package_revision": facts.get("env_pkg_rev"),
         "env_candidate_sha256": facts.get("env_candidate_sha256"),
+        "start_model": _start_model(learner, facts.get("start_model") or {}),
         "resume_checkpoint": plan.get("resume_checkpoint"),
         "placement": plan.get("placement"),
         "recipe": {"exploration_ladder": knobs.get("exploration_ladder"),
@@ -1011,6 +1026,15 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"{recipe.get('segment_format')}, K {recipe.get('replay_k')}, ascension mix "
                    f"{recipe.get('ascension_mix')}, c_hp {recipe.get('c_hp')} "
                    f"({recipe.get('c_hp_scope')})")
+        start = i.get("start_model") or {}
+        if start:
+            made = start.get("training_identity") or {}
+            sha, submit = start.get("package_sha256"), start.get("site_package_at_submit")
+            out.append(f"start model: {str(sha)[:12]}"
+                       + "".join(f", {key} {made[key]}" for key in ("schema", "seed",
+                                 "checkpoint_artifact_id") if key in made)
+                       + ("" if submit == sha else
+                          f"; site start_package at submit was {str(submit)[:12]}"))
     p = r.get("throughput") or {}
     if p:
         out.append(f"training rows/h, run mean: {fmt(p['run_training_rows_per_h_incl_aux'])} "

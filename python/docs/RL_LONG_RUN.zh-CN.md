@@ -70,6 +70,18 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   4.4 ms 涨到 65 ms。两次重编译之间的残留：c2q 最后一次冻结后 1,790 个边界，中位 13,049、
   p99 15,804、最大 19,086；V5 在 0 与约 1.1万之间。40000 约为观测最大值的 2 倍，稳态多扫的
   几 ms（0.33–0.6 µs/对象，推断，未量）换来少冻结。
+- 起点模型：站点 `start_package`（含 `model.json` 的模型包）。新起时学习者配置的
+  `start_model_sha256` 取该包的 `package_sha256`，学习者加载时核对；包缺失时预检拒绝。续跑不读
+  起点包（学习者恢复 CP），起点字段取被恢复 CP 的 config，包删了或原地换了照样续、记的仍是真实
+  起点。每个 CP 的 config 都带这两个字段。run 目录 `facts.json` 记提交时站点包的哈希和
+  `training_identity`（CP 导出的绑定或随机初始化的种子）；运行记录 `identity.start_model` 的哈希取
+  学习者配置（`learner/learner.json`），与提交时的包一致才带 `training_identity`，不一致时写出来。
+  从零开始：`python -m stpd.rl.random_start --template <当前起点包> --seed N --out DIR`
+  按模板的词表、执行配置和尺寸（q3-m-std-1）用 MStd 自身的初始化生成新权重，站点写
+  `start_package = DIR/package`、`warmup_file = ""`（拟合好的 RL4 头绑定原包，学习者会拒绝；
+  空值时两个头用构造初值：outcome 在合法类上均匀、HP 为 0）。合法类随楼层变，所以初始价值是
+  楼层的函数（A0 约 floor 0 时 0.28、floor 48 时 0.85，审查探针），早期优势近似以楼层为势的
+  整形：同层约 0、每上一层约 +0.006、死亡处约 −0.28。随机包配了预热件时预检拒绝。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
   `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
   backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
