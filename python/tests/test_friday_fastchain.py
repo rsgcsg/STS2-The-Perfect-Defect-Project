@@ -1074,7 +1074,8 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
         'segment_format': 'stpd/rl-fast-segment-4',
         'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
         'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3},
-        'hp_potion_mode': None}  # a plan without the knob (ticket H)
+        'hp_potion_mode': None,  # a plan without the knob (ticket H)
+        'kl_stop_scope': None, 'lr_warmup_steps': None}  # nor the ticket K knobs
     p = r['throughput']
     assert p['run_training_rows_per_h_incl_aux'] == pytest.approx(9000 * 3600, rel=1e-3)
     assert p['run_training_rows_per_h_td_only'] == pytest.approx(8000 * 3600, rel=1e-3)
@@ -1422,6 +1423,98 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
     events[-5]['policy_by_arm'] = {'hot': [2, 0.01]}
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     with pytest.raises(ValueError, match='2 fields, expected 4'):
+        readout.build(run, 1200)
+
+
+def test_readout_reports_the_learning_settings_diagnostics(tmp_path):
+    """RL5-METHODS R: clip bind rate and pre-clip norm, value-target entropy and outcome
+    weight, value calibration, policy entropy by decision and act, row age (versions,
+    updates, model seconds) and the game-target intake fields (#564)."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    r = readout.build(run, 1200)
+    run_mean = r['learning']['run_mean']
+    assert run_mean['gradient_clip'] is None and run_mean['value_calibration'] is None
+    assert run_mean['policy_entropy'] is None and run_mean['row_age']['mu_age_seconds'] is None
+    assert r['value_target_intake'] == {}
+    assert 'settings run mean' not in readout.render(r)
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    progress = [e for e in events if e.get('kind') == 'progress' and e.get('stepped')]
+    for n, event in enumerate(progress):
+        norm = 2.0 if n % 4 == 0 else 0.5  # a quarter of the steps above max_grad_norm 1
+        event.update(gradient_norm=norm, gradient_clipped=norm > 1.0,
+                     value_calibration=[[2, 0.1, 0.0]] + [[0, 0.0, 0.0]] * 8 + [[1, 0.95, 1.0]],
+                     policy_entropy={'control|act1|combat': [3, 1.5, 0.75],
+                                     'hot|act2|rest': [1, 0.2, 0.1]},
+                     first_use_version_lag=[1, 1, 2, 9], first_use_pre_update_SGD_lag=[0, 3],
+                     first_use_mu_age_seconds={'n': 2, 'missing': 1, 'sum': 70.0,
+                                               'histogram': [0, 0, 0, 1, 0, 0, 1] + [0] * 12})
+        if 'advantage_raw' in event:
+            event['advantage_raw']['variance'] = 0.04
+            event['value_target'] = {'rows': 10, 'outcome_weight_mean': 0.3,
+                                     'noncombat_rows': 4, 'noncombat_outcome_weight_mean': 0.5,
+                                     'target_entropy_mean': 2.0}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    status = [json.loads(line) for line in
+              (run / 'learner-status.jsonl').read_text().splitlines()]
+    status[-1]['fast_chain']['intake'] = {
+        'value_target': 'game', 'held_rows': 500, 'held_instances': 3, 'spill_bytes': 4096,
+        'spill_files': 2, 'spill_peak_bytes': 8192, 'game_target_stop_dropped_rows': 7,
+        'game_target_terminal_end_rows': 90, 'closed_terminal': 4}
+    status[-1]['fast_chain']['learner']['game_end_lt128_selected_rows'] = 11
+    (run / 'learner-status.jsonl').write_text(jsonl_text(status))
+    r = readout.build(run, 1200)
+    x = r['learning']['run_mean']
+    clip = x['gradient_clip']
+    assert clip['steps'] == len(progress) and clip['bound'] == len(range(0, len(progress), 4))
+    assert clip['bind_rate'] == pytest.approx(clip['bound'] / clip['steps'])
+    assert clip['pre_clip_norm_mean'] == pytest.approx(
+        (2.0 * clip['bound'] + 0.5 * (clip['steps'] - clip['bound'])) / clip['steps'])
+    assert clip['pre_clip_norm_p95_at_most'] == pytest.approx(2 ** (1 / 8) * 2.0)
+    assert x['value_target']['target_entropy_mean'] == 2.0
+    assert x['value_target']['noncombat_outcome_weight_mean'] == 0.5
+    assert x['advantage_raw']['variance'] == pytest.approx(0.04)
+    calibration = x['value_calibration']
+    assert len(calibration) == 10 and calibration[0]['rows'] == 2 * len(progress)
+    assert calibration[0]['mean_predicted'] == pytest.approx(0.05)
+    assert calibration[0]['mean_realised'] == 0.0 and calibration[5]['rows'] == 0
+    assert calibration[9] == {'bin': [0.9, 1.0], 'rows': len(progress),
+                              'mean_predicted': pytest.approx(0.95), 'mean_realised': 1.0}
+    entropy = x['policy_entropy']
+    assert entropy['by_decision']['combat']['entropy_mean'] == pytest.approx(0.5)
+    assert entropy['by_act']['act2']['normalized_entropy_mean'] == pytest.approx(0.1)
+    assert entropy['all']['entropy_mean'] == pytest.approx(1.7 / 4)
+    age = x['row_age']
+    assert age['version_lag'] == {'n': 4 * len(progress), 'mean': 3.25, 'p95': 9}
+    assert age['pre_update_SGD_lag']['mean'] == 1.5
+    seconds = age['mu_age_seconds']
+    assert seconds['n'] == 2 * len(progress) and seconds['missing'] == len(progress)
+    assert seconds['mean'] == 35.0 and seconds['p95_at_most'] == 60
+    latest = r['learning']['latest']
+    assert latest['row_age']['version_lag']['p95'] == 9  # kept as counts in the window
+    assert latest['gradient_clip']['steps'] < clip['steps']
+    assert r['value_target_intake'] == {
+        'intake': {'game_target_stop_dropped_rows': 7, 'game_target_terminal_end_rows': 90,
+                   'held_instances': 3, 'held_rows': 500, 'spill_bytes': 4096,
+                   'spill_files': 2, 'spill_peak_bytes': 8192},
+        'learner': {'game_end_lt128_selected_rows': 11}}
+    text = readout.render(r)
+    assert '  settings run mean: grad clip bound 25.' in text
+    assert ('value target entropy 2.000 nats (mean of dataset means), outcome weight 0.300 '
+            '(noncombat 0.500)') in text
+    assert ('row age 3.25 versions (p95 9), 1.50 updates (p95 3), behaviour-model age since '
+            'publication (upper bound on row age) 35 s (p95 <= 60 s)') in text
+    assert ('  value calibration (terminal training rows, in-sample, row visits incl. KL-stopped '
+            'attempts, all arms; predicted -> realised, visits): 0.05 -> 0.00') in text
+    assert ('  behaviour-model entropy, T/mix removed (nats / of ln N) by decision: combat '
+            '0.50/0.25, rest 0.20/0.10') in text
+    assert 'game value targets: held 500 rows, spill 4,096 bytes in 2 files (peak 8,192), ' \
+        "dropped rows {'stop': 7}" in text
+    progress[3]['value_calibration'] = [[1, 0.5]]
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    with pytest.raises(ValueError, match='value_calibration bin 0: 2 fields, expected 3'):
         readout.build(run, 1200)
 
 

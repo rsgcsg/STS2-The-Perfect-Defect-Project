@@ -121,6 +121,9 @@ def test_prepared_update_reports_value_sums_in_the_synced_totals(model):
     assert whole["terminal"][0] == minibatch.terminal_rows
     assert whole["hp"][0] == minibatch.hp_rows
     assert set(result["value_statistics"]) == set(ld.BUCKETS)
+    calibration = result["value_calibration"]  # R: terminal rows by predicted value
+    assert len(calibration) == ld.CALIBRATION_BINS
+    assert sum(row[0] for row in calibration) == minibatch.terminal_rows
     for key in ("value_explained_variance", "outcome_explained_variance", "value_mse",
                 "hp_mae_points"):
         assert key in result
@@ -329,3 +332,74 @@ def test_policy_rows_fold_per_arm_by_the_source_tables():
     assert out["hot"][1] == pytest.approx(0.5 - math.log(1.5) - 0.2 - math.log(0.8))
     assert out["control+save"] == [2, 0.0, 1, 2]
     assert policy_by_arm(arms, []) == {}
+
+
+def test_value_calibration_bins_terminal_rows_by_predicted_value():
+    """RL5-METHODS R: terminal aux rows only, binned by the predicted scalar value (width
+    0.1), with their predicted and realised (one-hot class x table) sums; pools exactly."""
+    logits, hp, t = tensors([0.0] * 5, [0.0] * 5)
+    values = class_reward_values()
+    vector = ld.value_statistics(logits, hp, t).tolist()
+    assert len(vector) == ld.SIZE == ld.STATISTICS_SIZE + ld.CALIBRATION_SIZE
+    bins = ld.calibration_fields(vector)
+    predicted = [scalar(row, values) for row in logits]
+    target = [float((row * values).sum()) for row in t["targets"]]
+    want = [[0.0, 0.0, 0.0] for _ in range(ld.CALIBRATION_BINS)]
+    for i in (2, 4):  # the terminal rows
+        b = min(int(predicted[i] * 10), 9)
+        want[b][0] += 1
+        want[b][1] += predicted[i]
+        want[b][2] += target[i]
+    for got, expected in zip(bins, want, strict=True):
+        assert got == pytest.approx(expected, rel=1e-5, abs=1e-6)
+    # the statistics part is unchanged by the tail
+    assert ld.statistics_fields(vector)["all"]["terminal"][0] == 2
+    with pytest.raises(ValueError, match="size_mismatch"):
+        ld.calibration_fields(vector[:-1])
+    # A one-hot target is a realised reward; a value of exactly 1 goes in the last bin.
+    t2 = {k: v[4:5] for k, v in t.items()}
+    win = torch.full((1, 51), -torch.inf)
+    win[0, 49] = 0.0  # all mass on the win class: value 1.0
+    t2["targets"] = torch.zeros(1, 51)
+    t2["targets"][0, 49] = 1.0
+    t2["outcome_valid"] = torch.ones(1, 51, dtype=torch.bool)
+    last = ld.calibration_fields(ld.value_statistics(win, hp[4:5], t2).tolist())
+    assert last[9] == [1.0, 1.0, 1.0] and all(row[0] == 0 for row in last[:9])
+
+
+def test_policy_and_target_entropy_and_model_age_helpers():
+    # p = q at T 1, eps 0; tempered/mixed q recovers the model's p first.
+    h, normalized = ld.row_entropy([0.5, 0.5], 1.0, 0.0)
+    assert h == pytest.approx(math.log(2)) and normalized == pytest.approx(1.0)
+    p = [0.7, 0.2, 0.1]
+    eps, temperature = 0.3, 2.0
+    tempered = [x ** (1 / temperature) for x in p]
+    q = [(1 - eps) * x / sum(tempered) + eps / 3 for x in tempered]
+    h, normalized = ld.row_entropy(q, temperature, eps)
+    want = -sum(x * math.log(x) for x in p)
+    assert h == pytest.approx(want, rel=1e-9) and normalized == pytest.approx(
+        want / math.log(3), rel=1e-9)
+    counts: dict[str, list[float]] = {}
+    ld.add_entropy(counts, "control", 1, 0, (1.0, 0.5))
+    ld.add_entropy(counts, "control", 1, 0, (0.5, 0.25))
+    ld.add_entropy(counts, "hot", 3, 4, (0.1, 0.1))
+    assert counts == {"control|act1|combat": [2, 1.5, 0.75], "hot|act3|rest": [1, 0.1, 0.1]}
+    metadata = [{"policy_entropy": counts, "value_target": [4, 2.0, 2, 1.5],
+                 "target_entropy": [4, 6.0]}, {},
+                {"policy_entropy": {"hot|act3|rest": [1, 0.3, 0.2]},
+                 "value_target": [2, 0.0, 0, 0.0], "target_entropy": [2, 3.0]}]
+    assert ld.entropy_fields(metadata) == {"control|act1|combat": [2, 1.5, 0.75],
+                                           "hot|act3|rest": [2, pytest.approx(0.4),
+                                                             pytest.approx(0.3)]}
+    fields = ld.value_target_fields(metadata)
+    assert fields["target_entropy_mean"] == 1.5 and fields["outcome_weight_mean"] == 2 / 6
+    assert ld.value_target_fields([{}])["target_entropy_mean"] is None
+
+    from stpd.rl.segment_learner import MU_AGE_EDGES, mu_age_fields
+
+    rows = [{"mu_version": 3}, {"mu_version": 4}, {"mu_version": 4}, {"mu_version": 1}]
+    age = mu_age_fields(rows, 1000.0, {3: 900.0, 4: 995.0})
+    assert age["n"] == 3 and age["missing"] == 1 and age["sum"] == 110.0
+    assert len(age["histogram"]) == len(MU_AGE_EDGES) + 1
+    assert age["histogram"][0] == 2  # 5 s: equal to the first edge, in that bin
+    assert age["histogram"][MU_AGE_EDGES.index(120)] == 1  # 100 s

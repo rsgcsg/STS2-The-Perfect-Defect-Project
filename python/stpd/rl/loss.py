@@ -394,6 +394,8 @@ def prepared_update(
             "hp_rows": minibatch.hp_rows,
             "value_statistics": learning_diagnostics.statistics_fields(
                 measured[values_end - learning_diagnostics.SIZE:values_end]),
+            "value_calibration": learning_diagnostics.calibration_fields(
+                measured[values_end - learning_diagnostics.SIZE:values_end]),
             "seconds": time.perf_counter() - began,
             "host_timing": {
                 **phases,

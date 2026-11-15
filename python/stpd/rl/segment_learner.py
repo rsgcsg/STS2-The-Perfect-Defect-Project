@@ -107,6 +107,7 @@ from .fast_verify import FastVerifyClosed, FastVerifyPool
 from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import (
     advantage_fields,
+    entropy_fields,
     exploration_fields,
     policy_by_arm,
     row_arms,
@@ -327,14 +328,43 @@ def _with_policy_by_arm(build: Callable[[], dict[str, Any]] | None,
             "policy_by_arm": policy_by_arm(arms, samples)}
 
 
+# R: first-use rows' behaviour-model age, histogram upper edges in seconds (last bin open).
+MU_AGE_EDGES = (5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 450, 600, 900, 1200,
+                1800, 3600)
+PUBLISHED_AT_VERSIONS = 65536  # versions whose publication time the learner keeps
+
+
+def mu_age_fields(rows: list[dict[str, Any]], now: float,
+                  published_at: dict[int, float]) -> dict[str, Any]:
+    """Seconds from the publication of each row's behaviour model (`mu_version`) to its
+    first use: n, rows without a known publication (an earlier generation's model, or
+    one older than PUBLISHED_AT_VERSIONS), sum and counts per bin of MU_AGE_EDGES (a
+    value equal to an edge falls in that edge's bin). An upper bound on the row's own
+    age: the row was generated after its model was published."""
+    counts = [0] * (len(MU_AGE_EDGES) + 1)
+    total, missing = 0.0, 0
+    for row in rows:
+        published = published_at.get(row["mu_version"])
+        if published is None:
+            missing += 1
+            continue
+        age = now - published
+        total += age
+        counts[bisect.bisect_left(MU_AGE_EDGES, age)] += 1
+    return {"n": len(rows) - missing, "missing": missing, "sum": total, "histogram": counts}
+
+
 def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
                       newly_used: list[int], samples: list[dict[str, Any]], *, now: float,
                       version: int, updates: int, policy_observed_at: float,
-                      policy_version: int, policy_updates: int) -> dict[str, Any]:
+                      policy_version: int, policy_updates: int,
+                      published_at: dict[int, float] | None = None) -> dict[str, Any]:
     """Progress-event first-use summaries from values captured at accounting time.
 
-    Pure: the same inputs give the same event wherever it runs (the controller
-    in process, the telemetry thread on the SGD-process path)."""
+    The same inputs give the same event wherever it runs (the controller in
+    process, the telemetry thread on the SGD-process path). `published_at` is the
+    learner's live dict, read with `.get` only; the main thread pops only versions
+    `PUBLISHED_AT_VERSIONS` back, so the versions read here are stable."""
     rows = [metadata[i] for i in newly_used]
     ages = sorted(now - row["generated_timestamp"] for row in rows
                   if row["generated_timestamp"] is not None)
@@ -356,6 +386,8 @@ def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
         "first_use_policy_bias": _first_use_policy_bias(
             cast(Any, _BiasRows(metadata)), newly_used, samples, now=policy_observed_at,
             version=policy_version, updates=policy_updates, policy_mask=policy_mask),
+        **({"first_use_mu_age_seconds": mu_age_fields(rows, now, published_at)}
+           if published_at is not None else {}),
     }
 
 
@@ -769,6 +801,9 @@ class SegmentLearner:
         self.input_anchor = config.resume_checkpoint
         self.updates = self.datasets = self.version = self.checkpoint_sequence = 0
         self.published_updates = self.first_use = self.first_use_multi = 0
+        # R: wall time each model version became available to the services (diagnostic:
+        # the age of a row's behaviour model when the row is first trained).
+        self.published_at: dict[int, float] = {}
         self.active: dict[str, Any] | None = None
         self.active_batch: PreparedBatch | None = None
         # SGD process + `sgd_prestart`: the next dataset, taken and started while
@@ -1202,6 +1237,7 @@ class SegmentLearner:
             self._capture_model(), self.version, self.updates
         ).result()
         self.published_updates = initial["updates"]
+        self.published_at[self.version] = time.time()
         # Which CP this learner actually restored (RL4.2 resumed from a stale CP unnoticed)
         # and, at a declared continuation, each change and the lr applied. The fast chain
         # writes it into the run's learner-events.jsonl (roles.py) for the run record.
@@ -2019,11 +2055,13 @@ class SegmentLearner:
                     self.pool.publish(publication["identity"])
                 self.published_updates = publication["updates"]
                 self.pending_publication = None
+                version = publication["identity"]["version"]
+                self.published_at[version] = time.time()
+                self.published_at.pop(version - PUBLISHED_AT_VERSIONS, None)
                 self.pool.retire(
                     {owner["mu"]["snapshot_sha256"] for owner in self.lease_owners.values()}
                 )
                 if self.local_retention is not None:
-                    version = publication["identity"]["version"]
                     self.local_retention.published(publication["identity"], str(
                         self.live_work / "versions" / self.generation / f"{version:06d}"))
             self._event("model_published", version=publication["identity"]["version"],
@@ -3375,8 +3413,9 @@ class SegmentLearner:
             return active
 
     def _dataset_released(self, records: list[dict[str, Any]]) -> None:
-        if records and "rows_to_game_end" in records[0].get("envelope", {}):
-            # Only "game" fast records carry it (old-chain records have no envelope).
+        if any("rows_to_game_end" in record.get("envelope", {}) for record in records):
+            # "game" value targets: each record is checked (only "game" fast records carry
+            # `rows_to_game_end`; a dataset need not start with one, #564).
             count_game_end(self.fast_counters, records, "selected")
         if self.wal is not None:
             for record in records:
@@ -3698,6 +3737,7 @@ class SegmentLearner:
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
             result["exploration"] = exploration_fields(self.device_batch.metadata)
             result["value_target"] = value_target_fields(self.device_batch.metadata)
+            result["policy_entropy"] = entropy_fields(self.device_batch.metadata)
         policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         return self._account_step(active, batch, index, len(batch.minibatches), result,
@@ -3762,7 +3802,7 @@ class SegmentLearner:
             captured: dict[str, Any] = dict(
                 now=time.time(), version=self.version, updates=self.updates,
                 policy_observed_at=policy_observed_at, policy_version=policy_version,
-                policy_updates=policy_updates)
+                policy_updates=policy_updates, published_at=self.published_at)
             metadata = batch.metadata
             if self.sgd is None:
                 result.update(_first_use_fields(metadata, policy_mask, newly_used,
@@ -3772,6 +3812,10 @@ class SegmentLearner:
                 # these captured values; nothing here feeds a learning decision.
                 build = partial(_first_use_fields, metadata, policy_mask, newly_used,
                                 policy_samples, **captured)
+        if isinstance(result.get("gradient_norm"), (int, float)):
+            # R: the clip at max_grad_norm bound this attempt (pre-clip total norm above it).
+            result["gradient_clipped"] = (result["gradient_norm"]
+                                          > self.config.loss.max_grad_norm)
         lr, head_lr = self._learning_rates()
         result.update(
             update=self.updates,
