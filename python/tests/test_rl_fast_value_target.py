@@ -33,7 +33,12 @@ from stpd.rl.fast_source import (
 )
 from stpd.rl.heads import OUTCOME_CLASSES, categorical_lambda_targets, class_reward_values
 from stpd.rl.learning_diagnostics import value_target_fields
-from stpd.rl.segment_learner import _resume_config, lag_summary
+from stpd.rl.segment_learner import (
+    SegmentLearner,
+    _resume_config,
+    game_end_counters,
+    lag_summary,
+)
 from stpd.rl.segments import SegmentConfig
 
 LAMBDAS = (0.99, 0.997, 0.5, 1.0, 0.0)
@@ -217,6 +222,17 @@ def test_the_segment_rule_is_unchanged_and_reports_its_own_outcome_weight(tmp_pa
         weights.append(source.metadata[0]["value_target"])
     # Only the terminal segment's 10 rows carry the outcome (lambda^k); 0 elsewhere.
     assert [w[0] for w in weights] == [64, 64, 10]
+    # R: per source, the rows and the summed entropy (nats) of their value targets.
+    for segment in sealed:
+        source, _ = decode_fast_packet(segment.data, envelope=envelope_for(segment),
+                                       compiler=COMPILER)
+        t = source.targets.double()
+        rows, total = source.metadata[0]["target_entropy"]
+        assert rows == len(segment.header["rows"])
+        assert total == pytest.approx(float(-(t[t > 0] * t[t > 0].log()).sum()), rel=1e-5)
+    terminal = decode_fast_packet(sealed[-1].data, envelope=envelope_for(sealed[-1]),
+                                  compiler=COMPILER)[0]
+    assert terminal.metadata[0]["target_entropy"][1] / 10 < 3.93  # below uniform (ln 51)
     assert weights[0][1] == weights[1][1] == 0
     assert weights[2][1] == pytest.approx(sum(0.99 ** k for k in range(10)))
 
@@ -373,6 +389,45 @@ def test_after_the_stop_no_segment_is_spilled_and_each_is_counted(tmp_path):
     j._spill_offered(decision.spill[0])
     assert os.listdir(tmp_path / "j" / "spill") == []
     assert j.report()["game_target_stop_dropped_rows"] == 64
+
+
+def test_a_rejected_middle_segment_of_a_stop_closed_game_is_not_a_lost_end(tmp_path):
+    """#564: a rejected segment keeps its segment_index, so the game's last bootstrap is
+    index bootstrap + terminal + rejected - 1; that is the game's own end, not "lost"."""
+    g = Game()
+    g.open("g1")
+    for _ in range(64 * 3 + 3):
+        g.step("g1")
+    g.close("g1", "stop")
+    trainable = [s for s in g.sealed if s.kind == "bootstrap"]
+    assert len(trainable) == 3
+    kept = [trainable[0], trainable[2]]  # index 1 was rejected by the assembler
+    i = game_intake(tmp_path)
+    i.attest(attest("g1"))
+    for n, segment in enumerate(kept, 1):
+        i.offer(message(segment, n), segment.data)
+    decision = i.closed(closed_for(kept, close_reason="stop", segments={
+        "bootstrap": 2, "terminal": 0, "truncated": 1, "rejected": 1}))
+    assert len(decision.admit) == 2
+    report = i.report()
+    assert report["game_target_bootstrap_end_rows"] == 128
+    assert "game_target_lost_end_rows" not in report and report["game_target_gaps"] == 1
+
+
+def test_game_end_selected_counts_every_record_of_a_dataset():
+    """#564: a dataset whose first record has no `rows_to_game_end` still counts the rest."""
+    owner = type("Owner", (), {})()
+    owner.fast_counters, owner.wal = game_end_counters(), None
+    records = [{"segment_id": "old", "rows": 5},  # no envelope (not a "game" fast record)
+               {"segment_id": "a", "rows": 7, "envelope": {"rows_to_game_end": 10}},
+               {"segment_id": "b", "rows": 3, "envelope": {"rows_to_game_end": 500}}]
+    SegmentLearner._dataset_released(owner, records)
+    assert owner.fast_counters["game_end_lt128_selected_rows"] == 7
+    assert owner.fast_counters["game_end_384_767_selected_rows"] == 3
+    plain = type("Owner", (), {})()
+    plain.fast_counters, plain.wal = {}, None  # "segment" targets: no counters, no error
+    SegmentLearner._dataset_released(plain, records)
+    assert plain.fast_counters == {}
 
 
 def test_a_lost_final_segment_is_its_own_end_and_a_lost_first_one_a_gap(tmp_path):
@@ -562,6 +617,15 @@ def test_a_local_chain_with_game_targets_trains_several_updates(tmp_path, monkey
         assert first["value_target"]["outcome_weight_mean"] > 0  # stitched: 0 under segment
         assert first["advantage_raw"]["variance"] == pytest.approx(
             first["advantage_raw"]["std"] ** 2)
+        # R: the learning-settings diagnostics ride on the same progress results.
+        assert first["value_target"]["target_entropy_mean"] > 0
+        assert first["gradient_clipped"] == (first["gradient_norm"]
+                                             > owner.config.loss.max_grad_norm)
+        assert len(first["value_calibration"]) == 10
+        assert isinstance(first["policy_entropy"], dict)
+        if first["stepped"]:
+            age = first["first_use_mu_age_seconds"]
+            assert age["missing"] == 0 and age["n"] > 0 and age["sum"] >= 0
     finally:
         owner.close()
 

@@ -120,7 +120,7 @@ from .fast_handoff import (
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, sha256
 from .heads import OUTCOME_CLASSES, categorical_lambda_targets
-from .learning_diagnostics import add_exploration, exploration_row
+from .learning_diagnostics import add_entropy, add_exploration, exploration_row, row_entropy
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id", "close_reason",
@@ -333,6 +333,9 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     noncombat = [w for w, meta in zip(weights, header["rows"], strict=True)
                  if not meta["in_combat"]]
     metadata[0]["value_target"] = [len(weights), sum(weights), len(noncombat), sum(noncombat)]
+    # R: entropy of the categorical value targets, per source [rows, sum in nats].
+    metadata[0]["target_entropy"] = [len(rows), float(
+        -(targets * targets.clamp_min(1e-30).log()).sum())]
     if decisions is not None:
         arm, signs = header["sampling"]["arm_id"], (advantages > 0).tolist()
         if header["start"]["kind"] == "from_save":
@@ -340,6 +343,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             # its rows would skew the arm's per-act dose. Arm ids never contain "+".
             arm += "+save"
         counts: dict[str, list[int]] = {}
+        entropies: dict[str, list[float]] = {}
         for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
             q = meta["behavior_q"]
             if len(q) < 2:
@@ -348,12 +352,15 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             rank, top = exploration_row(q, meta["selected_index"], applied["temperature"],
                                         applied["uniform_mix"])
             floor = meta["floor"]
+            act = 1 if floor <= 17 else 2 if floor <= 33 else 3
             decision = 0 if meta["in_combat"] else min(
                 decisions[action] for action in frame.tensors["actions"].tolist())
-            add_exploration(counts, arm, 1 if floor <= 17 else 2 if floor <= 33 else 3,
-                            decision, rank, top, signs[index])
+            add_exploration(counts, arm, act, decision, rank, top, signs[index])
+            add_entropy(entropies, arm, act, decision, row_entropy(
+                q, applied["temperature"], applied["uniform_mix"]))
         if counts:  # once per source, not per row (the transport walks every row)
             metadata[0]["exploration"] = counts
+            metadata[0]["policy_entropy"] = entropies
     labels = {"segment_id": header["segment_id"], "run_id": header["game_instance_id"],
               "terminal": terminal, "hp_battles": []}
     source = bp.PreparedSource(
@@ -1107,7 +1114,11 @@ class FastSegmentIntake:
             self._finish(instance_id, instance)
         if release:
             assert attestation is not None
-            decision.admit.extend(self._release_game(instance_id, release, attestation, sealed))
+            # Rejected segments are kept by the assembler but still take a segment_index:
+            # the last index of a game that lost none is sealed + rejected - 1 (#564).
+            decision.admit.extend(self._release_game(
+                instance_id, release, attestation,
+                sealed + message["segments"]["rejected"]))
         return decision
 
     def report(self) -> dict[str, Any]:
@@ -1257,7 +1268,7 @@ class FastSegmentIntake:
         instance.held = []
 
     def _release_game(self, instance_id: str, held: list[_Held],
-                      attestation: dict[str, Any], sealed: int
+                      attestation: dict[str, Any], indexed: int
                       ) -> list[tuple[FastSegment, dict[str, Any]]]:
         """A closed game's held segments: read back (size and digest checked, header
         parsed again), stitched tails, envelopes; spill files deleted. Outside the
@@ -1327,8 +1338,9 @@ class FastSegmentIntake:
             last = segments[-1].header
             # The end the chain reached: the real outcome, the game's own bootstrap
             # (stop/budget close), or the bootstrap before a lost final segment.
+            # `indexed` = the game's sealed trainable plus rejected segments.
             end = ("terminal" if last["seal"]["kind"] == "terminal"
-                   else "bootstrap" if last["segment_index"] == sealed - 1 else "lost")
+                   else "bootstrap" if last["segment_index"] == indexed - 1 else "lost")
             self.counters[f"game_target_{end}_end_rows"] += rows
             self.counters["game_target_released_games"] += 1
         return admitted

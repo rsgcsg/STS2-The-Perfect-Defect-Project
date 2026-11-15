@@ -22,6 +22,13 @@ not carry directly; for classes 0-48 `outcome_valid` is `class >= min(floor, 48)
 observed floor is 49 minus the valid count (capped at 48). There is no in-combat tensor,
 so "boss_floor" is every row on a Boss floor (17, 33, 48+): the Boss fight and the other
 rows of that floor (its reward screen), not the fight alone.
+
+Calibration (RL5-METHODS R): after those sums, `value_statistics` appends per bin of
+the predicted scalar value (10 equal bins over [0, 1), the last one closed) the terminal
+aux rows, their predicted-value sum and their realised-reward sum (the one-hot final
+class x the same table). Terminal aux rows are rows of games that have ended (64 per
+clean-closed game, uniform depth), so this exists under both `segments.value_target`
+settings; it is empty when no terminal pool runs (terminal_coef 0).
 """
 from __future__ import annotations
 
@@ -35,7 +42,11 @@ BUCKETS = ("all", "act1", "act2", "act3", "boss_floor")
 HEADS = ("td", "terminal", "hp")
 FIELDS = ("rows", "target_sum", "target_square_sum", "error_sum", "error_square_sum",
           "abs_error_sum")
-SIZE = len(BUCKETS) * len(HEADS) * len(FIELDS)
+STATISTICS_SIZE = len(BUCKETS) * len(HEADS) * len(FIELDS)
+CALIBRATION_BINS = 10
+CALIBRATION_FIELDS = ("rows", "predicted_sum", "realised_sum")
+CALIBRATION_SIZE = CALIBRATION_BINS * len(CALIBRATION_FIELDS)
+SIZE = STATISTICS_SIZE + CALIBRATION_SIZE  # value_statistics' vector: sums, then calibration
 _VALUES: dict[Any, Tensor] = {}
 
 
@@ -81,11 +92,23 @@ def value_statistics(logits: Tensor, hp: Tensor, t: dict[str, Tensor]) -> Tensor
             error = torch.where(mask > 0, predicted - truth, torch.zeros_like(truth))
             columns += [mask, truth, truth * truth, error, error * error, error.abs()]
         features = torch.stack(columns, dim=1)
-        return (buckets[:, :, None] * features[:, None, :]).sum(0).flatten()
+        sums = (buckets[:, :, None] * features[:, None, :]).sum(0).flatten()
+        terminal = t["terminal_mask"] > 0
+        bins = (value.clamp(0, 1) * CALIBRATION_BINS).floor().clamp(
+            max=CALIBRATION_BINS - 1).long()
+        member = torch.nn.functional.one_hot(bins, CALIBRATION_BINS).float()
+        member = torch.where(terminal[:, None], member, torch.zeros_like(member))
+        predicted = torch.where(terminal, value, torch.zeros_like(value))
+        realised = torch.where(terminal, target, torch.zeros_like(target))
+        calibration = torch.stack((member.sum(0), (member * predicted[:, None]).sum(0),
+                                   (member * realised[:, None]).sum(0)), dim=1).flatten()
+        return torch.cat((sums, calibration))
 
 
 def statistics_fields(values: list[float]) -> dict[str, dict[str, list[float]]]:
-    """The event form: {bucket: {head: [FIELDS...]}}, 8 significant digits (float32)."""
+    """The event form: {bucket: {head: [FIELDS...]}}, 8 significant digits (float32), of
+    the first STATISTICS_SIZE values of a SIZE vector (the calibration tail is
+    `calibration_fields`)."""
     if len(values) != SIZE:
         raise ValueError("value_statistics_size_mismatch")
     width = len(FIELDS)
@@ -96,6 +119,16 @@ def statistics_fields(values: list[float]) -> dict[str, dict[str, list[float]]]:
             start = (b * len(HEADS) + h) * width
             out[bucket][head] = [float(f"{v:.8g}") for v in values[start:start + width]]
     return out
+
+
+def calibration_fields(values: list[float]) -> list[list[float]]:
+    """The calibration tail of a SIZE vector: per bin [CALIBRATION_FIELDS...]."""
+    if len(values) != SIZE:
+        raise ValueError("value_statistics_size_mismatch")
+    width = len(CALIBRATION_FIELDS)
+    tail = values[STATISTICS_SIZE:]
+    return [[float(f"{v:.8g}") for v in tail[b * width:(b + 1) * width]]
+            for b in range(CALIBRATION_BINS)]
 
 
 def add(total: dict[str, dict[str, list[float]]] | None,
@@ -204,6 +237,42 @@ def exploration_row(q: list[float], selected: int, temperature: float, uniform_m
     return rank, max(tempered) > 0.99 * sum(tempered)
 
 
+def row_entropy(q: list[float], temperature: float, uniform_mix: float
+                ) -> tuple[float, float]:
+    """(entropy in nats, entropy / ln N) of the model's own p over a row's N >= 2 choices,
+    recovered from the recorded q as in `exploration_row` (T = 1, eps = 0: p = q)."""
+    share = uniform_mix / len(q)
+    tempered = [max(value - share, 0.0) ** temperature for value in q]
+    total = sum(tempered)
+    entropy = -sum(x / total * math.log(x / total) for x in tempered if x > 0)
+    return entropy, entropy / math.log(len(q))
+
+
+# Policy entropy (RL5-METHODS R) per "arm|actN|decision", the exploration key: the
+# multi-choice rows, the sum of the model's entropy (nats) and of entropy / ln N.
+ENTROPY_FIELDS = ("rows", "entropy_sum", "normalized_entropy_sum")
+
+
+def add_entropy(counts: dict[str, list[float]], arm: str, act: int, decision: int,
+                entropy: tuple[float, float]) -> None:
+    row = counts.setdefault(f"{arm}|act{act}|{DECISIONS[decision]}", [0, 0.0, 0.0])
+    row[0] += 1
+    row[1] += entropy[0]
+    row[2] += entropy[1]
+
+
+def entropy_fields(metadata: Any) -> dict[str, list[float]]:
+    """One dataset's policy entropy sums: the sum of its sources'
+    `metadata["policy_entropy"]` (fast_source.decode_fast_packet)."""
+    out: dict[str, list[float]] = {}
+    for row in metadata:
+        for key, values in (row.get("policy_entropy") or {}).items():
+            total = out.setdefault(key, [0, 0.0, 0.0])
+            for i, value in enumerate(values):
+                total[i] += value
+    return out
+
+
 def add_exploration(counts: dict[str, list[int]], arm: str, act: int, decision: int,
                     rank: int, top: bool, positive: bool) -> None:
     """Count one multi-choice row into {"arm|actN|decision": [EXPLORATION_FIELDS...]}."""
@@ -220,16 +289,24 @@ def value_target_fields(metadata: Any) -> dict[str, Any]:
     sum of its sources' `metadata["value_target"]` ([rows, weight sum, noncombat rows,
     noncombat weight sum], fast_source.decode_fast_packet); per row the weight is the
     target's mass on the terminal one-hot (lambda^(rows to the trace end), 0 when the
-    trace ends in a bootstrap). Means are None without rows."""
+    trace ends in a bootstrap). Means are None without rows.
+
+    RL5-METHODS R: `target_entropy_mean` = the mean entropy (nats; ln 51 = 3.93 is
+    uniform) of the rows' categorical value targets, from each source's
+    `metadata["target_entropy"]` ([rows, entropy sum])."""
     total = [0.0, 0.0, 0.0, 0.0]
+    entropy = [0.0, 0.0]
     for row in metadata:
         counts = row.get("value_target")
         for i, value in enumerate(counts or ()):
             total[i] += value
+        for i, value in enumerate(row.get("target_entropy") or ()):
+            entropy[i] += value
     return {"rows": int(total[0]),
             "outcome_weight_mean": total[1] / total[0] if total[0] else None,
             "noncombat_rows": int(total[2]),
-            "noncombat_outcome_weight_mean": total[3] / total[2] if total[2] else None}
+            "noncombat_outcome_weight_mean": total[3] / total[2] if total[2] else None,
+            "target_entropy_mean": entropy[1] / entropy[0] if entropy[0] else None}
 
 
 def exploration_fields(metadata: Any) -> dict[str, list[int]]:
