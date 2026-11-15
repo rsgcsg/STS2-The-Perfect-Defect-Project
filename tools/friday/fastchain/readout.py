@@ -23,7 +23,10 @@ advantage; by decision type and act) and the PPO update's clip fraction and appr
 KL per arm, per combat type the format-4 HP score counters (all arms together and per
 arm), training-game results of the control arm's full games and of every arm's (rolling
 over the profile's `readout_rolling_games` windows, default the last 100, and whole run,
-per ascension), the SGD boundary sections,
+per ascension), the learning-settings diagnostics (gradient-clip bind rate and pre-clip
+norm mean/p95, value-target entropy, value-head calibration on terminal rows, policy
+entropy by decision type/act/arm, row age as version lag and behaviour-model age), the
+game value-target intake and end counters, the SGD boundary sections,
 stops/refusals/unknowns with cause counts and the checkpoint ids.
 supervise.py writes it as run-record.json at every checkpoint and at the end.
 
@@ -41,6 +44,7 @@ import contextlib
 import glob
 import hashlib
 import json
+import math
 from collections import deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -62,6 +66,14 @@ EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
 UNATTRIBUTED = "unattributed"  # learning_diagnostics: rows of a source without a table
 POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
+# RL5-METHODS R, learning settings (stpd.rl.learning_diagnostics / segment_learner):
+ENTROPY_FIELDS = ("rows", "entropy_sum", "normalized_entropy_sum")  # per "arm|actN|decision"
+CALIBRATION_FIELDS = ("rows", "predicted_sum", "realised_sum")  # per bin of predicted value
+MU_AGE_EDGES = (5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 450, 600, 900, 1200,
+                1800, 3600)  # segment_learner.MU_AGE_EDGES: bin upper edges, seconds
+NORM_BINS_PER_OCTAVE = 8  # pre-clip gradient norm histogram: 2^(1/8) wide bins (9%)
+VALUE_TARGET_MEANS = ("outcome_weight_mean", "noncombat_outcome_weight_mean",
+                      "target_entropy_mean")
 ROLLING_GAMES = 100  # the training-game rolling mean: the last N complete games
 # effective-profile knob `readout_rolling_games` (#556): [headline, windows shown beside it]
 ROLLING_KNOB = "readout_rolling_games"
@@ -443,6 +455,7 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
     facts = _json(run / "facts.json") or {}
     learner = _json(run / "learner" / "learner.json") or {}
     loss = learner.get("loss") or {}
+    segments = learner.get("segments") or {}
     segment_format = knobs.get("segment_format") or (
         knobs.get("service_kwargs") or {}).get("segment_format")
     return {
@@ -466,7 +479,11 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "c_hp": loss.get("hp_advantage_coef"),
                    "c_hp_scope": loss.get("hp_advantage_scope"),
                    "hp_combat_weights": knobs.get("hp_combat_weights"),
-                   "hp_potion_mode": knobs.get("hp_potion_mode")}}
+                   "hp_potion_mode": knobs.get("hp_potion_mode"),
+                   # ticket K (#577): as the learner read them, else the profile knob
+                   "kl_stop_scope": segments.get("kl_stop_scope", knobs.get("kl_stop_scope")),
+                   "lr_warmup_steps": segments.get("lr_warmup_steps",
+                                                   knobs.get("lr_warmup_steps"))}}
 
 
 def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
@@ -489,7 +506,55 @@ def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
 
 
 LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advantage_raw",
-                 "exploration", "policy_by_arm")
+                 "exploration", "policy_by_arm", "gradient_clipped", "value_target",
+                 "value_calibration", "policy_entropy", "first_use_mu_age_seconds")
+# first-use lag lists, kept in the latest window as {lag: rows} only
+LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
+
+
+def _counts(values: Iterable[Any]) -> dict[int, int]:
+    out: dict[int, int] = {}
+    for value in values:
+        out[value] = out.get(value, 0) + 1
+    return out
+
+
+def _slim(e: dict[str, Any]) -> dict[str, Any]:
+    """A progress event as the latest window keeps it: LEARNING_KEYS, lag lists counted."""
+    out = {k: e[k] for k in LEARNING_KEYS if k in e}
+    for key in LAG_KEYS:
+        if isinstance(e.get(key), list):
+            out[key] = _counts(e[key])
+    return out
+
+
+def _lag_summary(counts: dict[int, int]) -> dict[str, Any]:
+    """n, mean and p95 (nearest rank, as segment_learner.lag_summary) of pooled lags."""
+    n = sum(counts.values())
+    if not n:
+        return {"n": 0, "mean": None, "p95": None}
+    rank, seen, p95 = min(n - 1, int(n * 0.95)), 0, None
+    for lag in sorted(counts):
+        seen += counts[lag]
+        if seen > rank:
+            p95 = lag
+            break
+    return {"n": n, "mean": sum(lag * c for lag, c in counts.items()) / n, "p95": p95}
+
+
+def _histogram_p95(counts: list[int] | dict[int, int], upper: Any) -> Any:
+    """The upper edge (`upper(bin)`) of the bin holding the 95th percentile (nearest rank):
+    the p95 is at most this; None without rows or when it is in an open last bin."""
+    items = sorted(counts.items()) if isinstance(counts, dict) else list(enumerate(counts))
+    n = sum(c for _, c in items)
+    if not n:
+        return None
+    rank, seen = min(n - 1, int(n * 0.95)), 0
+    for index, c in items:
+        seen += c
+        if seen > rank:
+            return upper(index)
+    return None
 
 
 def _shares(counts: list[int]) -> dict[str, Any]:
@@ -519,6 +584,32 @@ def exploration_summary(counts: dict[str, list[int]]) -> dict[str, Any] | None:
             for arm, part in arms.items()} or None
 
 
+def _entropy_shares(values: list[float]) -> dict[str, Any]:
+    rows, entropy, normalized = values
+    return {"rows": round(rows), "entropy_mean": entropy / rows if rows else None,
+            "normalized_entropy_mean": normalized / rows if rows else None}
+
+
+def entropy_summary(counts: dict[str, list[float]]) -> dict[str, Any] | None:
+    """The acting model's own policy entropy (temperature and uniform mix removed) over
+    multi-choice training rows: mean nats and mean entropy / ln(choices), all arms
+    together by decision type and by act, and per arm."""
+    if not counts:
+        return None
+    total = [0, 0.0, 0.0]
+    by: dict[str, dict[str, list[float]]] = {"by_decision": {}, "by_act": {}, "by_arm": {}}
+    for key, values in sorted(counts.items()):
+        arm, act, decision = key.split("|")
+        for row in (total, by["by_decision"].setdefault(decision, [0, 0.0, 0.0]),
+                    by["by_act"].setdefault(act, [0, 0.0, 0.0]),
+                    by["by_arm"].setdefault(arm, [0, 0.0, 0.0])):
+            for i, value in enumerate(values):
+                row[i] += value
+    return {"all": _entropy_shares(total),
+            **{name: {k: _entropy_shares(v) for k, v in part.items()}
+               for name, part in by.items()}}
+
+
 class _Learning:
     """PPO scalars (mean per attempt) and pooled value/HP sums of progress attempts."""
 
@@ -531,6 +622,16 @@ class _Learning:
         self.hp = [0.0, 0.0, 0]  # A2, c_hp > 0: sum of hp_share, of hp_std, datasets
         self.exploration: dict[str, list[int]] = {}
         self.policy_arms: dict[str, list[float]] = {}
+        self.raw_variance = [0.0, 0]  # sum, datasets that report it (#564)
+        # R: optimizer steps with a finite norm, of them clip-bound, norm sum; norm bins
+        self.clip = [0, 0, 0.0]
+        self.norms: dict[int, int] = {}
+        self.value_target: dict[str, list[float]] = {k: [0.0, 0] for k in VALUE_TARGET_MEANS}
+        self.value_target_last: dict[str, Any] | None = None
+        self.calibration: list[list[float]] = []
+        self.entropy: dict[str, list[float]] = {}
+        self.lags: dict[str, dict[int, int]] = {key: {} for key in LAG_KEYS}
+        self.mu_age = [0, 0, 0.0, [0] * (len(MU_AGE_EDGES) + 1)]  # n, missing, sum, bins
 
     def add(self, e: dict[str, Any]) -> None:
         self.attempts += 1
@@ -572,6 +673,94 @@ class _Learning:
             row = self.policy_arms.setdefault(arm, [0] * len(POLICY_ARM_FIELDS))
             for i, value in enumerate(values):
                 row[i] += value
+        self._settings(e)
+
+    def _settings(self, e: dict[str, Any]) -> None:
+        """RL5-METHODS R: the folds that judge the learning settings."""
+        raw = e.get("advantage_raw")
+        if isinstance(raw, dict) and isinstance(raw.get("variance"), (int, float)):
+            self.raw_variance[0] += raw["variance"]
+            self.raw_variance[1] += 1
+        norm = e.get("gradient_norm")
+        if (e.get("stepped") and "gradient_clipped" in e and isinstance(norm, (int, float))
+                and math.isfinite(norm)):
+            self.clip[0] += 1
+            self.clip[1] += bool(e["gradient_clipped"])
+            self.clip[2] += norm
+            index = (math.floor(math.log2(norm) * NORM_BINS_PER_OCTAVE) if norm > 0
+                     else -(1 << 20))
+            self.norms[index] = self.norms.get(index, 0) + 1
+        target = e.get("value_target")
+        if isinstance(target, dict):
+            self.value_target_last = target
+            for key, total in self.value_target.items():
+                if isinstance(target.get(key), (int, float)):
+                    total[0] += target[key]
+                    total[1] += 1
+        for b, values in enumerate(e.get("value_calibration") or ()):
+            if len(values) != len(CALIBRATION_FIELDS):
+                raise ValueError(f"value_calibration bin {b}: {len(values)} fields, expected "
+                                 f"{len(CALIBRATION_FIELDS)}")
+            while len(self.calibration) <= b:
+                self.calibration.append([0.0] * len(CALIBRATION_FIELDS))
+            for i, value in enumerate(values):
+                self.calibration[b][i] += value
+        for key, values in (e.get("policy_entropy") or {}).items():
+            if len(values) != len(ENTROPY_FIELDS):
+                raise ValueError(f"policy_entropy {key}: {len(values)} fields, expected "
+                                 f"{len(ENTROPY_FIELDS)}")
+            row = self.entropy.setdefault(key, [0, 0.0, 0.0])
+            for i, value in enumerate(values):
+                row[i] += value
+        for key, total in self.lags.items():
+            lags = e.get(key)
+            for lag, count in (_counts(lags) if isinstance(lags, list)
+                               else lags if isinstance(lags, dict) else {}).items():
+                total[int(lag)] = total.get(int(lag), 0) + count
+        age = e.get("first_use_mu_age_seconds")
+        if isinstance(age, dict):
+            self.mu_age[0] += age["n"]
+            self.mu_age[1] += age["missing"]
+            self.mu_age[2] += age["sum"]
+            for i, count in enumerate(age["histogram"]):
+                self.mu_age[3][i] += count
+
+    def settings_result(self) -> dict[str, Any]:
+        """Gradient clip, value targets and calibration, policy entropy, row age."""
+        steps, bound, norm_sum = self.clip
+        out: dict[str, Any] = {"gradient_clip": {
+            "steps": steps, "bound": bound, "bind_rate": bound / steps if steps else None,
+            "pre_clip_norm_mean": norm_sum / steps if steps else None,
+            # upper edge of the 2^(1/8)-wide bin holding the p95: within 9% above it
+            "pre_clip_norm_p95_at_most": _histogram_p95(
+                self.norms, lambda i: 2 ** ((i + 1) / NORM_BINS_PER_OCTAVE))} if steps else None}
+        out["value_target"] = {
+            "datasets": max((n for _, n in self.value_target.values()), default=0),
+            **{key: total / n if n else None for key, (total, n) in self.value_target.items()},
+            "last": self.value_target_last} if self.value_target_last is not None else None
+        # Terminal aux rows (games that ended), binned by the value head's predicted reward:
+        # mean predicted vs mean realised reward v2.1 per bin of width 0.1.
+        out["value_calibration"] = [
+            {"bin": [b / len(self.calibration), (b + 1) / len(self.calibration)],
+             "rows": round(rows),
+             "mean_predicted": predicted / rows if rows else None,
+             "mean_realised": realised / rows if rows else None}
+            for b, (rows, predicted, realised) in enumerate(self.calibration)
+        ] if any(rows for rows, _, _ in self.calibration) else None
+        out["policy_entropy"] = entropy_summary(self.entropy)
+        n, missing, total, bins = self.mu_age
+        out["row_age"] = {
+            "version_lag": _lag_summary(self.lags["first_use_version_lag"]),
+            "pre_update_SGD_lag": _lag_summary(self.lags["first_use_pre_update_SGD_lag"]),
+            # seconds from the row's behaviour model's publication to the row's first use:
+            # an upper bound on the row's own age (the row came after that publication)
+            "mu_age_seconds": {
+                "n": n, "missing": missing, "mean": total / n if n else None,
+                "p95_at_most": _histogram_p95(
+                    bins, lambda i: MU_AGE_EDGES[i] if i < len(MU_AGE_EDGES) else None),
+                "histogram_edges": MU_AGE_EDGES, "histogram": list(bins)}
+            if n or missing else None}
+        return out
 
     def result(self) -> dict[str, Any]:
         out: dict[str, Any] = {"attempts": self.attempts, "stepped": self.stepped}
@@ -587,7 +776,9 @@ class _Learning:
             "std": self.raw_std / self.datasets, "last": self.raw_last,
             # c_hp * A_hp's share of Var(A) and its std, mean over datasets (None: c_hp 0)
             "hp_share": hp_share / hp_datasets if hp_datasets else None,
-            "hp_std": hp_std / hp_datasets if hp_datasets else None} if self.datasets else None
+            "hp_std": hp_std / hp_datasets if hp_datasets else None,
+            "variance": (self.raw_variance[0] / self.raw_variance[1]
+                         if self.raw_variance[1] else None)} if self.datasets else None
         out["exploration"] = exploration_summary(self.exploration)
         # Per arm, pooled over its policy rows of every attempt (KL-stopped included):
         # share outside the clip range and mean r - 1 - log r. The run-wide scalars above
@@ -597,6 +788,7 @@ class _Learning:
                   "approx_kl": kl / (rows - bad) if rows > bad else None,
                   "ratio_nonfinite": round(bad)}
             for arm, (rows, kl, clipped, bad) in sorted(self.policy_arms.items())} or None
+        out.update(self.settings_result())
         return out
 
 
@@ -781,6 +973,7 @@ class Readout:
         self.timed: list[dict[str, Any]] = []
         self.counted: list[dict[str, Any]] = []
         self.learner_last: dict[str, Any] = {}
+        self.intake_last: dict[str, Any] = {}
         # drivers
         self.tables: dict[str, dict[str, dict[str, Any]]] = {
             "arm": {}, "ascension": {}, "start": {}, "k": {}}
@@ -853,8 +1046,7 @@ class Readout:
     def _progress(self, e: dict[str, Any]) -> None:
         """Every attempt (KL-stopped included: their numbers are pre-step)."""
         self.learning.add(e)
-        _window(self.learning_latest, e["t"], {k: e[k] for k in LEARNING_KEYS if k in e},
-                self.window)
+        _window(self.learning_latest, e["t"], _slim(e), self.window)
         self.kl_stopped += bool(e.get("kl_stopped"))
         self.kl_no_control += e.get("kl_stop_basis") == "all_rows_no_control"
         timing = e.get("sgd_timing")
@@ -905,6 +1097,9 @@ class Readout:
         if learner:
             self.counted.append({"t": x["t"], **counts})
             self.learner_last = learner
+        intake = (x.get("fast_chain") or {}).get("intake")
+        if isinstance(intake, dict):
+            self.intake_last = intake
 
     def _driver(self, path: str, r: dict[str, Any], admitted: set[Any],
                 games: list[dict[str, Any]]) -> None:
@@ -1154,6 +1349,19 @@ class Readout:
         return {"latest_window_seconds": self.window, "latest": latest.result(),
                 "run_mean": self.learning.result()}
 
+    def value_target_intake(self) -> dict[str, Any]:
+        """"game" value targets (#564), latest learner status: the intake's held rows and
+        node-local spill, rows dropped per cause, chain ends, and the learner's selected /
+        capacity-evicted rows by distance to the game's end. Empty under "segment"."""
+        intake, learner = self.intake_last, self.learner_last
+        if intake.get("value_target") != "game":
+            return {}
+        return {"intake": {k: v for k, v in sorted(intake.items())
+                           if k in ("held_rows", "held_instances") or k.startswith(
+                               ("spill_", "game_target_"))},
+                "learner": {k: v for k, v in sorted(learner.items())
+                            if k.startswith("game_end_")}}
+
     def boundary_result(self) -> dict[str, Any]:
         """Once per dataset on its first step: total and mean per dataset, latest window
         and whole run."""
@@ -1239,6 +1447,7 @@ class Readout:
                 "identity": identity_edge(self.run, plan, self.plan_path),
                 "throughput": self.throughput(train),
                 "learning": self.learning_result(),
+                "value_target_intake": self.value_target_intake(),
                 "hp_score": hp_score_edge(self.run, scores),
                 "hp_score_arms": hp_score_arm_edge(self.run, scores),
                 "training_games": self.training_games(),
@@ -1258,6 +1467,52 @@ def fmt(value: Any, digits: int = 0) -> str:
     return f"{value:,.{digits}f}" if isinstance(value, (int, float)) else str(value)
 
 
+def _settings_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
+    """RL5-METHODS R lines of one learning block (latest window or run mean)."""
+    out = []
+    clip, target = x.get("gradient_clip") or {}, x.get("value_target") or {}
+    age = x.get("row_age") or {}
+    version, sgd = age.get("version_lag") or {}, age.get("pre_update_SGD_lag") or {}
+    seconds = age.get("mu_age_seconds") or {}
+    parts = []
+    if clip:
+        parts.append(f"grad clip bound {fmt(clip['bind_rate'] and 100 * clip['bind_rate'], 1)}%"
+                     f" of {clip['steps']:,} steps, pre-clip norm mean "
+                     f"{fmt(clip['pre_clip_norm_mean'], 3)} p95 <= "
+                     f"{fmt(clip['pre_clip_norm_p95_at_most'], 3)}")
+    if target:
+        parts.append(f"value target entropy {fmt(target.get('target_entropy_mean'), 3)} nats "
+                     f"(mean of dataset means), "
+                     f"outcome weight {fmt(target.get('outcome_weight_mean'), 3)} (noncombat "
+                     f"{fmt(target.get('noncombat_outcome_weight_mean'), 3)})")
+    if version.get("n"):
+        parts.append(f"row age {fmt(version['mean'], 2)} versions (p95 {version['p95']}), "
+                     f"{fmt(sgd.get('mean'), 2)} updates (p95 {sgd.get('p95')}), "
+                     f"behaviour-model age since publication (upper bound on row age) "
+                     f"{fmt(seconds.get('mean'), 0)} s (p95 <= "
+                     f"{fmt(seconds.get('p95_at_most'), 0)} s)")
+    adv = x.get("advantage_raw") or {}
+    if adv.get("variance") is not None:
+        parts.append(f"advantage variance {fmt(adv['variance'], 5)}")
+    if parts:
+        out.append(f"  settings {label}: " + "; ".join(parts))
+    calibration = x.get("value_calibration") or []
+    if key == "run_mean" and calibration:
+        out.append("  value calibration (terminal training rows, in-sample, row visits incl. "
+                   "KL-stopped attempts, all arms; predicted -> realised, visits): " + ", ".join(
+            f"{fmt(b['mean_predicted'], 2)} -> {fmt(b['mean_realised'], 2)} ({b['rows']:,})"
+            for b in calibration if b["rows"]))
+    entropy = x.get("policy_entropy") or {}
+    if key == "latest" and entropy:
+        out.append("  behaviour-model entropy, T/mix removed (nats / of ln N) by decision: "
+                   + ", ".join(
+            f"{name} {fmt(d['entropy_mean'], 2)}/{fmt(d['normalized_entropy_mean'], 2)}"
+            for name, d in entropy["by_decision"].items()) + "; by act: " + ", ".join(
+            f"{name} {fmt(d['entropy_mean'], 2)}/{fmt(d['normalized_entropy_mean'], 2)}"
+            for name, d in entropy["by_act"].items()))
+    return out
+
+
 def render_record(r: dict[str, Any]) -> list[str]:
     """The run-record sections as table lines (the JSON carries the same numbers)."""
     out: list[str] = []
@@ -1269,7 +1524,8 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    + f", profile {str(i.get('profile_sha256'))[:12]}, segment "
                    f"{recipe.get('segment_format')}, K {recipe.get('replay_k')}, ascension mix "
                    f"{recipe.get('ascension_mix')}, c_hp {recipe.get('c_hp')} "
-                   f"({recipe.get('c_hp_scope')})")
+                   f"({recipe.get('c_hp_scope')}), KL stop {recipe.get('kl_stop_scope')}, "
+                   f"lr warm-up {recipe.get('lr_warmup_steps')} steps")
         start = i.get("start_model") or {}
         if start:
             made = start.get("training_identity") or {}
@@ -1316,6 +1572,7 @@ def render_record(r: dict[str, Any]) -> list[str]:
         if adv.get("hp_share") is not None:
             out.append(f"  HP term (c_hp A_hp) {label}: {100 * adv['hp_share']:.1f}% of "
                        f"advantage variance, std {fmt(adv['hp_std'], 4)}")
+        out += _settings_lines(label, key, x)
         if key == "latest" and x.get("value"):
             out.append("  EV vs lambda-return by bucket: " + ", ".join(
                 f"{bucket} {ev('td', heads)}" for bucket, heads in x["value"].items()
@@ -1339,6 +1596,14 @@ def render_record(r: dict[str, Any]) -> list[str]:
         if lost:
             out.append(f"  WARNING ({key}): {lost['rows']:,} PPO rows unattributed (a source "
                        "without an exploration table), left out of the per-arm line")
+    game_targets = r.get("value_target_intake") or {}
+    if game_targets:
+        intake = game_targets["intake"]
+        dropped = {k[len("game_target_"):-len("_dropped_rows")]: v for k, v in intake.items()
+                   if k.endswith("_dropped_rows") and v}
+        out.append(f"game value targets: held {fmt(intake.get('held_rows'))} rows, spill "
+                   f"{fmt(intake.get('spill_bytes'))} bytes in {fmt(intake.get('spill_files'))} "
+                   f"files (peak {fmt(intake.get('spill_peak_bytes'))}), dropped rows {dropped}")
     games = r.get("training_games") or {}
     windows = [(games.get("rolling_games"), games.get("rolling") or {}),
                *((int(n), part) for n, part in (games.get("rolling_windows") or {}).items())]

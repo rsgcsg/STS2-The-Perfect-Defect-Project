@@ -198,3 +198,19 @@ def test_control_kl_rides_the_data_parallel_reduction(model):
     assert synced["approx_kl_control"] == pytest.approx(plain["approx_kl_control"] / 2)
     assert synced["approx_kl_mu_theta"] == pytest.approx(plain["approx_kl_mu_theta"] / 2)
     assert synced["value_statistics"] == default["value_statistics"]
+
+
+def test_control_scope_keeps_value_statistics_and_calibration_aligned(model):
+    """#580 x #578: the scope scalar rides after the value sums, so both slices must end
+    at `values_end`; ending at the decision size would shift them by one."""
+    batch = _batch(model)
+    minibatch = _skewed(batch, {3, 4, 5})
+    terminal = torch.zeros_like(minibatch.tensors["terminal_mask"])
+    terminal[:3] = 1  # three terminal rows so calibration is not all zeros
+    minibatch = replace(minibatch, tensors={**minibatch.tensors, "terminal_mask": terminal})
+    default, _, _ = _run(model, minibatch, target_kl=100)
+    scoped, _, _ = _run(model, minibatch, target_kl=100, control_rows=_control(batch))
+    assert scoped["kl_stop_basis"] == "control"
+    assert sum(rows for rows, _, _ in default["value_calibration"]) == 3
+    assert scoped["value_calibration"] == default["value_calibration"]
+    assert scoped["value_statistics"] == default["value_statistics"]

@@ -11,6 +11,7 @@ opens from a save: its rows count under "<arm>+save" and its close is no arm res
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import tempfile
@@ -58,6 +59,7 @@ from stpd.rl.fast_source import decode_fast_packet  # noqa: E402
 from stpd.rl.learning_diagnostics import (  # noqa: E402
     DECISIONS,
     decision_codes,
+    entropy_fields,
     exploration_fields,
     exploration_row,
     policy_by_arm,
@@ -248,11 +250,11 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             assert getattr(source, name) == getattr(plain, name), name
         for name in ("probabilities", "targets", "raw_advantages"):
             assert torch.equal(getattr(source, name), getattr(plain, name)), name
-        assert [{k: v for k, v in m.items() if k != "exploration"} for m in source.metadata] \
-            == list(plain.metadata)
+        assert [{k: v for k, v in m.items() if k not in ("exploration", "policy_entropy")}
+                for m in source.metadata] == list(plain.metadata)
         # One count table per source, on its first row only (not a tuple per row).
         assert all("exploration" not in m for m in source.metadata[1:])
-        record, expected = games[game], {}
+        record, expected, entropy = games[game], {}, {}
         for row, (kind, combat, floor, reply) in enumerate(record["steps"]):
             chosen = reply["behavior_q"][reply["selected_index"]]
             rank = min(sum(value > chosen for value in reply["behavior_q"]), 2)
@@ -266,7 +268,22 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             counts[3] += max(record["p"][row]) > 0.99
             counts[4] += rank > 0 and bool(source.raw_advantages[row] > 0)
             record.setdefault("ranks", []).append((act, rank))
+            # R: the model's own entropy (p, not the tempered/mixed q) per the same key
+            p = list(record["p"][row])
+            h = -sum(x * math.log(x) for x in p if x > 0)
+            row_entropy = entropy.setdefault(
+                f"{record['dose']}|act{act}|{DECISIONS[0 if combat else DECISIONS.index(kind)]}",
+                [0, 0.0, 0.0])
+            row_entropy[0] += 1
+            row_entropy[1] += h
+            row_entropy[2] += h / math.log(len(p))
         assert source.metadata[0]["exploration"] == expected
+        got = source.metadata[0]["policy_entropy"]
+        assert set(got) == set(entropy)
+        for key, (rows, h, normalized) in entropy.items():
+            assert got[key][0] == rows
+            assert got[key][1] == pytest.approx(h, abs=1e-4)
+            assert got[key][2] == pytest.approx(normalized, abs=1e-4)
         sources.append(source)
 
     # The learner's dataset: assembled metadata -> the progress event's counts.
@@ -282,6 +299,8 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
                         prepared_layout="rows-v2")
     counts = exploration_fields(batch.metadata)
     assert sum(c[0] for c in counts.values()) == count
+    assert {key: values[0] for key, values in entropy_fields(batch.metadata).items()} == {
+        key: values[0] for key, values in counts.items()}
     doses = {"control", "bold", "hot", f"{drivers[-1]}+save"}
     assert {key.split("|")[0] for key in counts} == doses
 
