@@ -307,9 +307,9 @@ CHECKPOINT_MAGIC = b"STPDCKP1"  # = stpd.rl.checkpoint_codec.MAGIC (pinned by a 
 WARMUP_SCHEMA = "stpd/rl4-head-warmup-1"  # = stpd.rl.warmup.HEAD_WARMUP_SCHEMA (pinned by a test)
 
 
-def warmup_package(peer_dir: Path, artifact_id: str) -> str:
-    """`model_package_sha256` of the fitted heads in a local peer store, read from the JSON
-    header at the front of the warm-up artifact's checkpoint payload (no torch, no tensor
+def checkpoint_tree(peer_dir: Path, artifact_id: str) -> dict[str, Any]:
+    """The tensor-tree header (`tree`) of an artifact's checkpoint payload in a local peer
+    store: only the chunks up to the end of the JSON header are read (no torch, no tensor
     bytes; the learner still verifies the whole payload at start)."""
     manifest = json.loads((peer_dir / "manifests" / f"{artifact_id}.json").read_bytes())
     payload, = (p for p in manifest["payloads"] if p["role"] == "checkpoint")
@@ -321,10 +321,51 @@ def warmup_package(peer_dir: Path, artifact_id: str) -> str:
         if len(raw) >= 16 and len(raw) >= 16 + int.from_bytes(raw[8:16], "little"):
             break
     if raw[:8] != CHECKPOINT_MAGIC:
-        raise ValueError("warm-up payload is not a tensor-tree checkpoint")
+        raise ValueError("payload is not a tensor-tree checkpoint")
     tree = json.loads(raw[16:16 + int.from_bytes(raw[8:16], "little")])["tree"]
     if tree["kind"] != "mapping":
-        raise ValueError("warm-up payload is not a mapping")
+        raise ValueError("payload is not a mapping")
+    return tree
+
+
+def tree_value(node: dict[str, Any]) -> Any:
+    """A tensor-tree node as plain JSON values (a tensor inside is refused)."""
+    kind, value = node["kind"], node["value"]
+    if kind == "scalar":
+        return value
+    if kind == "mapping":
+        return {key: tree_value(item) for key, item in value}
+    if kind in ("list", "tuple"):
+        return [tree_value(item) for item in value]
+    raise ValueError(f"unexpected {kind} node")
+
+
+def checkpoint_config(peer_dir: Path, artifact_id: str) -> dict[str, Any]:
+    """A self-contained learner CP's `config` (its recipe), for preflight's declared-change
+    check (RL5-METHODS C)."""
+    fields = dict(checkpoint_tree(peer_dir, artifact_id)["value"])
+    if "config" not in fields:
+        raise ValueError(f"checkpoint {artifact_id} has no config")
+    return tree_value(fields["config"])
+
+
+def resume_checkpoint_facts(plan: dict[str, Any], peer_dir: Path) -> dict[str, Any]:
+    """RL5-METHODS C: the CP's recipe, only when a declared change needs it (none = today).
+    A failed read names the CP and the error type, never the store path."""
+    declared = plan["knobs"].get("declared_changes") or {}
+    if not declared or plan.get("resume_checkpoint") != declared["checkpoint"]:
+        return {}
+    try:
+        return {"resume_checkpoint_config": checkpoint_config(peer_dir, declared["checkpoint"])}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {"resume_checkpoint_config_error": f"{type(error).__name__} reading checkpoint "
+                f"{declared['checkpoint']} (missing or not a self-contained learner CP)"}
+
+
+def warmup_package(peer_dir: Path, artifact_id: str) -> str:
+    """`model_package_sha256` of the fitted heads in a local peer store, read from the JSON
+    header at the front of the warm-up artifact's checkpoint payload."""
+    tree = checkpoint_tree(peer_dir, artifact_id)
     fields = {key: node["value"] for key, node in tree["value"] if node["kind"] == "scalar"}
     if fields.get("schema") != WARMUP_SCHEMA:
         raise ValueError(f"warm-up payload schema {fields.get('schema')!r} is not "
@@ -370,6 +411,7 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["start_model"] = ({"package_sha256": descriptor["package_sha256"],
                              "training_identity": descriptor.get("training_identity")}
                             if descriptor else None)
+    facts.update(resume_checkpoint_facts(plan, Path(site["peer_dir"])))
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL
@@ -411,6 +453,8 @@ FEATURES = {
                           "hp_weights_need_segment_format_4"),
     "hp_potion_mode": ("python/stpd/rl/fast_assembly.py",  # ticket H
                        "hp_potion_mode_needs_segment_format_4"),
+    "declared_changes": ("python/stpd/rl/segment_learner.py",  # RL5-METHODS C
+                         "resume_recipe_changes"),
     "kl_stop_scope": ("python/stpd/rl/segments.py", "kl_stop_scope"),  # ticket K
     "lr_warmup_steps": ("python/stpd/rl/segments.py", "lr_warmup_steps"),  # ticket K
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530

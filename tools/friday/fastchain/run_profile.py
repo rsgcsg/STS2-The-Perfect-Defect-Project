@@ -31,6 +31,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from learner_config import DECLARABLE  # noqa: E402
+
 SCHEMA = "spireagent/friday-fastchain-profile-1"
 SITE_SCHEMA = "spireagent/friday-fastchain-site-1"
 FIELDS = ("value", "default", "why", "measured")
@@ -223,6 +226,27 @@ def _hp_combat_weights(value: Any) -> str | None:
     return _table_of(_num(0))(value)
 
 
+def _declared_changes(value: Any) -> str | None:
+    """RL5-METHODS C: {} (nothing declared) or {checkpoint = CP id, changes = {key = {old,
+    new}}} with keys from learner_config.DECLARABLE, scalar values and old != new."""
+    if value == {}:
+        return None
+    if (not isinstance(value, dict) or set(value) != {"checkpoint", "changes"}
+            or not isinstance(value["checkpoint"], str) or not value["checkpoint"]
+            or not isinstance(value["changes"], dict) or not value["changes"]):
+        return ("{} or { checkpoint = CP id, changes = { key = { old = .., new = .. } } } "
+                "with at least one change")
+    for key, change in value["changes"].items():
+        if key not in DECLARABLE:
+            return f"changes key {key!r} not declarable (allowed: {', '.join(DECLARABLE)})"
+        if (not isinstance(change, dict) or set(change) != {"old", "new"}
+                or any(type(change[k]) not in (bool, int, float, str) for k in change)):
+            return f"changes.{key}: exactly old and new, each a number or string"
+        if change["old"] == change["new"] and type(change["old"]) is type(change["new"]):
+            return f"changes.{key}: old and new are both {change['old']!r} (nothing changes)"
+    return None
+
+
 def cross_problems(values: dict[str, Any]) -> list[str]:
     """Relations between knobs (a profile that breaks one is refused)."""
     out = []
@@ -255,6 +279,10 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                  for name in ("combat", "noncombat")):
             out.append('kl_stop_scope "control" needs the control arm unaltered (combat and '
                        "noncombat temperature 1, uniform_mix 0): its rows are the stop basis")
+    scope = (values["declared_changes"].get("changes") or {}).get("segments.kl_stop_scope")
+    if scope and scope["new"] != values["kl_stop_scope"]:
+        out.append(f"declared_changes segments.kl_stop_scope new {scope['new']!r} needs the "
+                   f"kl_stop_scope knob at the same value (have {values['kl_stop_scope']!r})")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
         for name in ("combat", "noncombat"):
@@ -397,6 +425,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # RL5-METHODS K: the learner's segments.kl_stop_scope / lr_warmup_steps (learner_config)
     "kl_stop_scope": _choice(*KL_STOP_SCOPES),
     "lr_warmup_steps": _int(0, 1_000_000),
+    # RL5-METHODS C: declared recipe changes at a continuation from a CP (learner_config)
+    "declared_changes": _declared_changes,
     "service_window_ms": _num(0),
     "service_compile": _bool,
     "service_prepare_workers": _int(1, 64),

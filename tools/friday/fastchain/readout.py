@@ -470,6 +470,8 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
         "env_candidate_sha256": facts.get("env_candidate_sha256"),
         "start_model": _start_model(learner, facts.get("start_model") or {}),
         "resume_checkpoint": plan.get("resume_checkpoint"),
+        # RL5-METHODS C: the declared recipe changes the learner was given (learner.json)
+        "declared_changes": learner.get("resume_recipe_changes"),
         "placement": plan.get("placement"),
         "recipe": {"exploration_ladder": knobs.get("exploration_ladder"),
                    "ascension_mix": knobs.get("ascension_mix"),
@@ -484,6 +486,20 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "kl_stop_scope": segments.get("kl_stop_scope", knobs.get("kl_stop_scope")),
                    "lr_warmup_steps": segments.get("lr_warmup_steps",
                                                    knobs.get("lr_warmup_steps"))}}
+
+
+def restored_edge(plan: dict[str, Any], restored: dict[str, Any] | None) -> dict[str, Any]:
+    """Which CP the learner actually restored, checked against the plan's resume CP, and
+    the declared changes it applied. The learner restores the CP named by
+    FC_RESUME_CHECKPOINT (the plan's) and the store checks its bytes against that content
+    id, so a mismatch can only be a plumbing bug: it is an incident, not a stop. It does not
+    catch a stale CP the plan itself chose (RL4.2); that one matches."""
+    want = plan.get("resume_checkpoint")
+    if restored is None:
+        return {"expected": want, "restored": None,
+                "matches_plan": None if want else True}
+    return {"expected": want, **restored,
+            "matches_plan": restored.get("checkpoint_artifact_id") == want}
 
 
 def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
@@ -962,6 +978,7 @@ class Readout:
         self.kl_stopped = self.handoff_lost = 0
         self.kl_no_control = 0  # ticket K: attempts whose KL stop had no control-arm row
         self.checkpoints: list[dict[str, Any]] = []
+        self.restored: dict[str, Any] | None = None  # the learner's checkpoint_restored
         # stepped attempts: run sums, the best window and the latest window
         self.steps: dict[str, Any] = {"count": 0, "td": 0, "aux": 0, "complete": True,
                                       "first": None, "last": None}
@@ -1042,6 +1059,8 @@ class Readout:
                                      "sequence": e.get("sequence"), "t": e.get("t")})
         elif kind == "fast_handoff_lost":
             self.handoff_lost += 1
+        elif kind == "checkpoint_restored":
+            self.restored = {k: v for k, v in e.items() if k not in ("t", "kind")}
 
     def _progress(self, e: dict[str, Any]) -> None:
         """Every attempt (KL-stopped included: their numbers are pre-step)."""
@@ -1429,7 +1448,15 @@ class Readout:
                 "disk_stop": ((run / "disk-stop").read_text().strip()
                               if (run / "disk-stop").exists() else None),
                 "gpu_rc": int(text) if text and text.lstrip("-").isdigit() else text,
-                "handoff_lost": self.handoff_lost}
+                "handoff_lost": self.handoff_lost,
+                "restored_checkpoint_mismatch": self._restored_mismatch()}
+
+    def _restored_mismatch(self) -> dict[str, Any] | None:
+        """The learner restored a CP other than the plan's resume CP (RL5-METHODS C)."""
+        edge = restored_edge(json.loads(self.plan_path.read_text()), self.restored)
+        if edge.get("checkpoint_artifact_id") is None or edge["matches_plan"]:
+            return None
+        return {"expected": edge["expected"], "restored": edge["checkpoint_artifact_id"]}
 
     def record(self) -> dict[str, Any]:
         plan = json.loads(self.plan_path.read_text())
@@ -1453,6 +1480,7 @@ class Readout:
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
+                "restored_checkpoint": restored_edge(plan, self.restored),
                 "checkpoints": list(self.checkpoints)}
 
 
@@ -1535,6 +1563,30 @@ def render_record(r: dict[str, Any]) -> list[str]:
                                  "checkpoint_artifact_id") if key in made)
                        + ("" if submit == sha else
                           f"; site start_package at submit was {str(submit)[:12]}"))
+    restored = r.get("restored_checkpoint") or {}
+    if restored.get("expected") or restored.get("checkpoint_artifact_id"):
+        if restored.get("checkpoint_artifact_id") is None:
+            out.append(f"restored CP: not yet reported (plan resumes {restored.get('expected')})")
+        else:
+            out.append(f"restored CP: {restored['checkpoint_artifact_id']} (generation "
+                       f"{restored.get('training_generation')}, CP {restored.get('sequence')}, "
+                       f"mu {restored.get('mu_version')}, {restored.get('updates')} updates)"
+                       + ("" if restored.get("matches_plan") else
+                          f"; NOT the plan's resume CP {restored.get('expected')}"))
+        changes = restored.get("recipe_changes")
+        if changes:
+            lr = restored.get("optimizer_lr") or {}
+            out.append("declared recipe changes: " + ", ".join(
+                f"{key} {change['old']!r} -> {change['new']!r}"
+                for key, change in changes.items())
+                + f"; optimizer lr restored {lr.get('restored')}, base {lr.get('base')}, "
+                f"next step {lr.get('applied')}")
+    declared = i.get("declared_changes") if i else None
+    if declared and not (restored.get("recipe_changes")):
+        out.append(f"declared changes for CP {declared.get('checkpoint_artifact_id')}: "
+                   + ", ".join(sorted(declared.get("changes") or {}))
+                   + (" (not applied: this run restored another CP, recipe locked)"
+                      if restored.get("checkpoint_artifact_id") else ""))
     p = r.get("throughput") or {}
     if p:
         out.append(f"training rows/h, run mean: {fmt(p['run_training_rows_per_h_incl_aux'])} "
@@ -1652,6 +1704,10 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    f"{inc['env_close_details']}, admission refused "
                    f"{inc['admission_refused_by_code']}, failures "
                    f"{inc['driver_failures_by_kind']}, hand-offs lost {inc['handoff_lost']}")
+        bad = inc.get("restored_checkpoint_mismatch")
+        if bad:
+            out.append(f"INCIDENT: the learner restored CP {bad['restored']}, the plan's resume "
+                       f"CP is {bad['expected']}")
     boundary = ((r.get("boundary_sections") or {}).get("run") or {})
     mean = boundary.get("boundary_sections_seconds_mean") or {}
     if mean:

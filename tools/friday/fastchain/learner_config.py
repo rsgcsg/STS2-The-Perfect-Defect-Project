@@ -15,6 +15,9 @@ child's GC keys roles.py adds to dataplane.json.
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).
 `start_fields(...)` is the start a run records: the restored CP's on a resume, the site
 package's (its model.json, the only file read here) on a fresh start.
+`declared_changes` (RL5-METHODS C, #573): the profile knob naming a CP and each recipe key
+old -> new for a continuation from it; `build` writes the new values and the declaration
+(`resume_recipe_changes`), the learner accepts them only on a restore of exactly that CP.
 """
 from __future__ import annotations
 
@@ -34,6 +37,45 @@ ALLOWED_DRIFT = {
     "segments.prepared_bytes": "prepared-output memory budget (run profile)",
     "segments.preparation_workers": "local prepare pools (run profile; idle under remote)",
 }
+
+
+# = stpd.rl.recipe_changes.DECLARABLE (pinned by a test): the only recipe keys a
+# continuation may change; the learner owns the rule and the reason per key.
+DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
+              "loss.hp_advantage_coef", "loss.hp_advantage_scope", "segments.target_kl",
+              "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda")
+# A key missing from a learner config (a CP's or this run's) means this value: the learner's
+# own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
+CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
+                   "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket"}
+MISSING = "<missing>"
+
+
+def config_value(config: dict[str, Any], key: str) -> Any:
+    """A learner config's value at a dotted path (its default when left out)."""
+    node: Any = config
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return CONFIG_DEFAULTS.get(key, MISSING)
+        node = node[part]
+    return node
+
+
+def apply_declared(config: dict[str, Any], declared: dict[str, Any]) -> dict[str, Any]:
+    """`config` with each declared key at its new value and the learner's declaration
+    (`resume_recipe_changes`); unchanged when nothing is declared."""
+    if not declared:
+        return config
+    config = copy.deepcopy(config)
+    for key, change in declared["changes"].items():
+        *parents, last = key.split(".")
+        node = config
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[last] = change["new"]
+    config["resume_recipe_changes"] = {"checkpoint_artifact_id": declared["checkpoint"],
+                                       "changes": copy.deepcopy(declared["changes"])}
+    return config
 
 
 def window(chain_id: str, total_seconds: int, chain_deadline: float,
@@ -160,7 +202,8 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         config["segments"]["lr_warmup_steps"] = knobs["lr_warmup_steps"]
     if run.get("window"):
         config.update(run["window"])
-    return config
+    # RL5-METHODS C: written only when declared (an older learner refuses the key).
+    return apply_declared(config, knobs.get("declared_changes") or {})
 
 
 def input_cause(failure: Any) -> str | None:
@@ -181,16 +224,17 @@ def input_cause(failure: Any) -> str | None:
 
 
 def recipe_drift(effective: dict[str, Any], frozen: dict[str, Any],
-                 prefix: str = "") -> list[str]:
-    """Frozen keys whose effective value differs (and is not an allowed drift)."""
+                 prefix: str = "", declared: frozenset[str] = frozenset()) -> list[str]:
+    """Frozen keys whose effective value differs (and is not an allowed drift, or a key the
+    run's `declared_changes` changes on purpose)."""
     out = []
     for key, value in frozen.items():
         name = prefix + key
-        if name in ALLOWED_DRIFT:
+        if name in ALLOWED_DRIFT or name in declared:
             continue
         have = effective.get(key, "<missing>") if isinstance(effective, dict) else "<missing>"
         if isinstance(value, dict) and isinstance(have, dict):
-            out += recipe_drift(have, value, name + ".")
+            out += recipe_drift(have, value, name + ".", declared)
         elif have != value:
             out.append(f"{name}: frozen {value!r}, effective {have!r}")
     return out

@@ -357,6 +357,8 @@ def _old_inline_learning_state(owner):
     validate_optimizer_order(optimizer, names, weights)
     configuration = asdict(owner.config)
     assert configuration["operating_budget"] is None
+    # Undeclared (RL5-METHODS C): the CP config is what it was before the field existed.
+    assert configuration.pop("resume_recipe_changes") is None
     return SelfContainedCheckpoint(
         RunSequence(owner.config.run, owner.generation, owner.checkpoint_sequence),
         replace(owner.construction_template, text_digest=text_digest(weights)),

@@ -3129,3 +3129,173 @@ def test_kl_stop_scope_and_lr_warmup_default_off_and_reach_the_learner_only_when
     need = preflight.required_features(plan_for(cards=3, kl_stop_scope='control',
                                                 lr_warmup_steps=2000))
     assert {'kl_stop_scope', 'lr_warmup_steps'} <= set(need)
+
+
+# ---------------- RL5-METHODS C: declared recipe changes at a continuation ----------------
+
+LR_DOWN = {'checkpoint': 'cp-src', 'changes': {
+    'lr': {'old': 0.000113, 'new': 0.00005},
+    'segments.value_target': {'old': 'segment', 'new': 'game'}}}
+RUN = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+       'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+       'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': 'cp-src'}
+
+
+def test_declarable_keys_match_the_learner_allow_list():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from stpd.rl import recipe_changes
+    assert tuple(recipe_changes.DECLARABLE) == learner_config.DECLARABLE
+    assert run_profile.DECLARABLE == learner_config.DECLARABLE
+    for key, value in recipe_changes.RECIPE_DEFAULTS.items():
+        assert learner_config.CONFIG_DEFAULTS[key] == value
+
+
+def test_declared_changes_default_off_and_build_writes_the_declaration_only_when_set():
+    profile = run_profile.load_profile(PROFILE)
+    assert profile['declared_changes']['value'] == profile['declared_changes']['default'] == {}
+    plain = learner_config.build(gate_base(), knobs(), RUN)
+    assert 'resume_recipe_changes' not in plain  # an older learner refuses unknown keys
+    assert learner_config.recipe_drift(plain, FROZEN) == []
+    built = learner_config.build(gate_base(), knobs(declared_changes=LR_DOWN), RUN)
+    assert built['lr'] == 0.00005 and built['segments']['value_target'] == 'game'
+    assert built['resume_recipe_changes'] == {'checkpoint_artifact_id': 'cp-src',
+                                              'changes': LR_DOWN['changes']}
+    assert learner_config.recipe_drift(built, FROZEN) == ['lr: frozen 0.000113, effective 5e-05']
+    assert learner_config.recipe_drift(built, FROZEN, declared=frozenset(LR_DOWN['changes'])) == []
+    assert learner_config.apply_declared(plain, LR_DOWN) == built
+    assert learner_config.apply_declared(plain, {}) is plain
+
+
+def test_declared_changes_knob_is_validated_at_load():
+    good = ('declared_changes={ checkpoint = "cp-src", changes = { "lr" = { old = 0.000113, '
+            'new = 0.00005 } } }')
+    assert run_profile.values(run_profile.load_profile(PROFILE, [good]))[
+        'declared_changes']['changes']['lr']['new'] == 0.00005
+    for bad, message in (
+            ('declared_changes={ checkpoint = "cp", changes = { "segments.steps" = '
+             '{ old = 2, new = 4 } } }', 'not declarable'),
+            ('declared_changes={ checkpoint = "cp", changes = { "lr" = '
+             '{ old = 0.1, new = 0.1 } } }', 'nothing changes'),
+            ('declared_changes={ checkpoint = "cp", changes = {} }', 'at least one change'),
+            ('declared_changes={ changes = { "lr" = { old = 0.1, new = 0.2 } } }',
+             'at least one change'),
+            ('declared_changes={ checkpoint = "cp", changes = { "lr" = { new = 0.2 } } }',
+             'exactly old and new'),
+            ('declared_changes={ checkpoint = "cp", changes = { "segments.kl_stop_scope" = '
+             '{ old = "all", new = "control" } } }', 'kl_stop_scope knob')):
+        with pytest.raises(run_profile.ProfileError, match=message):
+            run_profile.load_profile(PROFILE, [bad])
+
+
+def declared_plan(declared, resume='cp-src', generation=None):
+    chain = None if generation is None else {'id': 'c-t1', 'deadline_at': 10**10,
+                                             'total_seconds': 72000, 'generation': generation}
+    return launch.build_plan('t1-r1', knobs(declared_changes=declared),
+                             run_profile.load_site(SITE), cards=2, card_type='A100-40',
+                             layout_spec=None, env_cores=None, smoke=False,
+                             probe_rows=[probe_row()], long_run=True,
+                             resume_checkpoint=resume, chain=chain)
+
+
+def cp_config(**changes):
+    """A CP's config as the learner stores it: the built learner config (no declaration)."""
+    config = learner_config.build(gate_base(), knobs(), RUN)
+    for key, value in changes.items():
+        *parents, last = key.split('.')
+        node = config
+        for part in parents:
+            node = node[part]
+        node[last] = value
+    return config
+
+
+@pytest.mark.parametrize('declared,resume,generation,old,ok,detail', [
+    ({}, 'cp-src', None, None, True, 'none: the recipe must equal'),
+    (LR_DOWN, 'cp-src', None, cp_config(), True, "lr 0.000113 -> 5e-05, "
+     "segments.value_target 'segment' -> 'game'"),
+    (LR_DOWN, None, None, cp_config(), False, 'need --resume-checkpoint'),
+    (LR_DOWN, 'cp-other', None, cp_config(), False, 'but this run starts from cp-other'),
+    (LR_DOWN, 'cp-newer', 2, cp_config(), True, 'inactive'),
+    (LR_DOWN, 'cp-src', None, None, False, 'cannot read CP cp-src'),
+    (LR_DOWN, 'cp-src', None, cp_config(lr=0.0002), False,
+     'lr: declared old 0.000113, CP has 0.0002'),
+    (LR_DOWN, 'cp-src', None, cp_config(**{'loss.entropy_coef': 0.02}), False,
+     'loss.entropy_coef changes 0.02 -> 0.01 undeclared'),
+    ({'checkpoint': 'cp-src', 'changes': {'lr': {'old': 0.000113, 'new': 0.00005}}},
+     'cp-src', None, cp_config(**{'segments.value_target': 'game'}), False,
+     "segments.value_target changes 'game' -> 'segment' undeclared"),
+    (LR_DOWN, 'cp-src', None, cp_config(lr=0.00005), False,
+     'lr: declared old 0.000113, CP has 5e-05; lr: 5e-05 in both'),
+])
+def test_preflight_checks_a_declaration_against_the_cp_it_names(
+        declared, resume, generation, old, ok, detail):
+    plan = declared_plan(declared, resume, generation)
+    facts = {**good_facts(plan), **({} if old is None else {'resume_checkpoint_config': old})}
+    result = preflight.check_declared_changes(plan, facts)
+    assert result.ok is ok and detail in result.detail, result.detail
+    results = by_name(preflight.checks(plan, facts))
+    assert results['declared_changes'].ok is ok
+    if declared and ok:
+        assert results['frozen_recipe'].ok, results['frozen_recipe'].detail
+        assert 'declared_changes' in preflight.required_features(plan)
+
+
+def test_readout_shows_the_restored_cp_and_the_declared_changes(tmp_path):
+    run = tmp_path / 'run-t1'
+    plan = write_run(run)
+    write_record_inputs(run)
+    plan['resume_checkpoint'] = 'cp-src'
+    (run / 'plan.json').write_text(json.dumps(plan))
+    learner = json.loads((run / 'learner' / 'learner.json').read_text())
+    learner['resume_recipe_changes'] = {'checkpoint_artifact_id': 'cp-src',
+                                        'changes': LR_DOWN['changes']}
+    (run / 'learner' / 'learner.json').write_text(json.dumps(learner))
+    restored = {'t': 1000.5, 'kind': 'checkpoint_restored', 'checkpoint_artifact_id': 'cp-src',
+                'run': 'r', 'training_generation': 'g-old', 'sequence': 7,
+                'mu_version': 40, 'updates': 900, 'producer': {}, 'recipe_changes':
+                LR_DOWN['changes'], 'optimizer_lr': {'restored': [0.000113, 0.0001],
+                                                     'base': [0.00005, 0.0001],
+                                                     'applied': [0.00005, 0.0001]}}
+    with (run / 'learner-events.jsonl').open('a') as out:
+        out.write(json.dumps(restored) + '\n')
+    r = readout.build(run, 1200)
+    assert r['identity']['declared_changes']['checkpoint_artifact_id'] == 'cp-src'
+    edge = r['restored_checkpoint']
+    assert edge['matches_plan'] is True and edge['updates'] == 900
+    text = readout.render(r)
+    for line in ('restored CP: cp-src (generation g-old, CP 7, mu 40, 900 updates)',
+                 "declared recipe changes: lr 0.000113 -> 5e-05, segments.value_target "
+                 "'segment' -> 'game'; optimizer lr restored [0.000113, 0.0001], base "
+                 "[5e-05, 0.0001], next step [5e-05, 0.0001]"):
+        assert line in text, text
+    assert r['incidents']['restored_checkpoint_mismatch'] is None
+    plan['resume_checkpoint'] = 'cp-expected'  # the learner restored another CP: an incident
+    (run / 'plan.json').write_text(json.dumps(plan))
+    r = readout.build(run, 1200)
+    assert r['incidents']['restored_checkpoint_mismatch'] == {'expected': 'cp-expected',
+                                                              'restored': 'cp-src'}
+    text = readout.render(r)
+    assert "NOT the plan's resume CP cp-expected" in text
+    assert 'INCIDENT: the learner restored CP cp-src, the plan\'s resume CP is cp-expected' \
+        in text
+
+
+def test_a_failed_cp_read_names_the_cp_not_the_store_path(tmp_path):
+    peer = tmp_path / 'secret-site-peer'
+    plan = declared_plan(LR_DOWN)
+    facts = launch.resume_checkpoint_facts(plan, peer)
+    error = facts['resume_checkpoint_config_error']
+    assert 'cp-src' in error and 'FileNotFoundError' in error and str(peer) not in error
+    assert 'secret-site-peer' not in error
+    result = preflight.check_declared_changes(plan, {**good_facts(plan), **facts})
+    assert not result.ok and 'secret-site-peer' not in result.detail
+    assert launch.resume_checkpoint_facts(declared_plan({}), peer) == {}  # nothing read
+
+
+def test_preflight_compares_declared_values_type_strict_like_the_learner():
+    declared = {'checkpoint': 'cp-src', 'changes': {
+        'loss.hp_advantage_coef': {'old': False, 'new': 0.003}}}
+    plan = declared_plan(declared)
+    facts = {**good_facts(plan), 'resume_checkpoint_config': cp_config()}  # c_hp 0.0
+    result = preflight.check_declared_changes(plan, facts)
+    assert not result.ok and 'declared old False, CP has 0.0' in result.detail

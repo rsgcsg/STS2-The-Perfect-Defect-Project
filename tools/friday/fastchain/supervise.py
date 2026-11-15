@@ -32,7 +32,8 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - environment-side recipe at a generation boundary (I8): `chain-CHAIN/env-recipe.txt`, one
   `name=value` per line as `--set` takes it, only `ENV_RECIPE_KNOBS` (exploration ladder,
   ascension mix, K, the ladder's lowest temperature, save starts); read when a later
-  generation is submitted and recorded with it. The learner recipe never changes in a chain.
+  generation is submitted and recorded with it. The learner recipe never changes in a chain
+  (a new chain from a CP may declare changes, `declared_changes`, RL5-METHODS C).
   Another knob or a refused value ends the chain. No automatic curriculum: a generation
   boundary is a resume, not a schedule;
 - the restore itself is the learner's: CP-only restore (fresh generation, in-flight input

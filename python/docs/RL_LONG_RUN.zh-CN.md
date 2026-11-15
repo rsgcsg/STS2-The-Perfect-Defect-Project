@@ -305,6 +305,37 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     `--set`），只许 `exploration_ladder`、`ascension_mix`、`replay_k`、`sampling_temperature_min`、
     `save_starts`，下一代提交时读、记入该代；别的键或值不合法 → 链停。代际边界只在
     可续失败时出现，所以计划内改配方 = 停链、从最新 CP 起新链。
+  - 新链换学习配方（RL5-METHODS C，#573）：从 CP 起新链时可以声明改学习者配方，模型和
+    优化器状态照留。步骤：
+    1. 停旧链（STOP），在读数或 `run-record.json` 的 `checkpoints` 里取要接的 CP id。
+    2. 写声明：`--set 'declared_changes={ checkpoint = "CP", changes = { "lr" = { old = 0.000113,
+       new = 0.00005 } } }'`。每个和 CP 不同的配方键都要写，`old` = CP 里的值，`new` = 新值。
+       只许 `lr`、`segments.head_lr`、`loss.entropy_coef`、`loss.hp_coef`、
+       `loss.hp_advantage_coef`（c_hp，血量优势系数；不是 HP 头损失权重 `loss.hp_coef`）、`loss.hp_advantage_scope`、`segments.target_kl`、
+       `segments.kl_stop_scope`、`segments.value_target`、`segments.gae_lambda`；每个键为什么
+       可以改，写在 `python/stpd/rl/recipe_changes.py`。改 `segments.kl_stop_scope` 时，旋钮
+       `kl_stop_scope` 也要设成同一个新值。模型结构、奖励表、片段格式、批几何和
+       `lr_warmup_steps` 都不许改。
+    3. 起新链：`supervise.py start NEWCHAIN ... --resume-checkpoint CP --set 'declared_changes=...'`。
+       预检（`declared_changes` 项）会从站点 peer 读 CP 的配置头（不用 torch），列出每个
+       `键 旧 -> 新`。预检只比许可单里的 10 个键；别的配方键不同，要等学习者启动时才拒绝，
+       那时 GPU 作业已经开始（#582）。以下情况在提交前拒绝：许可单里漏声明的改动、`old` 和 CP 不符、`new` 和本次
+       配方不符、新旧相同、不在许可单里的键、没给 `--resume-checkpoint`、声明的 CP 和本次起点
+       不是同一个。学习者启动时会用同样的规则再核一遍完整配方，错误码以 `declared_recipe_`
+       或 `undeclared_recipe_change` 开头。
+    4. 读数：`restored CP:` 行写实际加载的 CP（代、序号、mu 版本、更新数）；不是计划里的
+       resume CP 时会写 `NOT the plan's resume CP`。`declared recipe changes:` 行写每个改动，
+       以及优化器学习率：CP 里的（restored）、本次配置的（base）、下一步实际用的（next step，
+       预热没走完时 = base × 预热比例）。实际加载的 CP 和计划的不是同一个时，记为事故
+       （`incidents.restored_checkpoint_mismatch`，读数里 `INCIDENT:` 一行）。学习者按计划给的 CP id
+       加载，存储会按内容 id 核对字节，所以这只会是传参出错；它查不出计划本身选了旧 CP 的情况。运行记录里对应 `restored_checkpoint` 和
+       `identity.declared_changes` 两项。
+    - 语义：Adam 的一阶、二阶矩和步数照留（它们和学习率无关）；只把两组的学习率设成新值。
+      `lr_warmup_steps` 按恢复的更新数接着算，不会重新预热。新代会丢掉旧代的队列、在途批和
+      value-target 暂存，所以改 `value_target` 或 `gae_lambda` 时不会有按旧值算好的行。
+    - 锁定：只有恢复的正好是声明里那个 CP 时，声明才生效。链内自动续跑恢复的是新链自己的
+      CP，按原来的精确核对来，所以锁在新配方上。不写声明时行为和以前完全一样：配方不同就
+      拒绝（`self_contained_resume_source_config_or_generation_changed`）。
 
 ## 以下为旧部署操作史
 
