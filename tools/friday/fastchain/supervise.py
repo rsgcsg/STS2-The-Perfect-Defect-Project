@@ -44,7 +44,9 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
 its run record (`readout.py --json` plus this chain's facts) at every checkpoint the
 learner publishes, before a resume and at the chain's end (`run-record.json`, the latest;
-`run-records.jsonl`, one line per write; a failed write is noted, never stops the run),
+`run-records.jsonl`, one line per write; a failed write is noted, never stops the run).
+Both come from one readout.Readout per generation that reads only the new bytes each time
+(dropped after an error, so the next tick starts a fresh one),
 and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#528) on the
 run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
@@ -152,6 +154,7 @@ class Chain:
         self.dir = Path(self.site["work_root"]) / f"chain-{args.chain}"
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
+        self.reader: readout.Readout | None = None  # the current generation's readout
 
     # ---------------- state ----------------
     def note(self, kind: str, **fields: Any) -> None:
@@ -294,7 +297,7 @@ class Chain:
         if now >= self.state.get("next_readout", 0) and (run / "plan.json").exists():
             self.state["next_readout"] = now + self.knobs["readout_every_seconds"]
             try:
-                text = readout.render(readout.build(run, 1200.0))
+                text = readout.render(self.read(run))
             except Exception as error:  # noqa: BLE001 - a readout never stops the run
                 text = f"readout failed: {error!r}"
             with (self.dir / "readout.txt").open("a") as handle:
@@ -324,13 +327,23 @@ class Chain:
         offsets[run.name] = offset + len(whole)
         return b'"checkpoint_published"' in whole
 
+    def read(self, run: Path) -> dict[str, Any]:
+        """The readout record of `run`, folding only what was appended since the last read
+        (a new generation, or an error last time, starts a fresh Readout)."""
+        if self.reader is None or self.reader.run != run:
+            self.reader = readout.Readout(run, 1200.0)
+        reader, self.reader = self.reader, None
+        result = reader.update().record()
+        self.reader = reader
+        return result
+
     def record(self, run: Path, why: str) -> bool:
         """Write the run record of `run`: readout's `--json` result plus this chain's facts.
         True when written; a failure is noted (state log, stderr), never stops the run."""
         if not (run / "plan.json").exists():
             return False
         try:
-            record = readout.build(run, 1200.0)
+            record = self.read(run)
             generation = next((g for g in self.state["generations"] if g["run"] == str(run)),
                               {})
             record["chain"] = {
