@@ -57,3 +57,16 @@ The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used fro
 row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
 row whose own choice is `potion.use` only the death points (no HP-change part), so using
 a potion is judged by the outcome advantage, not by the HP it saves; death points, combat weights and the HP-head baseline are unchanged.
+Ticket K adds two `segments` keys, both absent here (= default), resume-locked and left
+out of the recipe at their default; the fast chain sets them from the profile knobs of
+the same name (`learner_config.build`). `kl_stop_scope`: `"all"` (default, the stop
+compares the KL over every policy row of a minibatch with `target_kl`) or `"control"`
+(over the rows of the arm named `control` only, its save starts `control+save` included:
+a save start changes the starting state, not the sampling; the profile requires that arm
+at T 1 / uniform_mix 0; a minibatch without one uses all rows
+and the attempt records `kl_stop_basis: "all_rows_no_control"`). Under `"control"` every
+attempt also records `approx_kl_control` and `kl_control_rows` beside the all-rows
+`approx_kl_mu_theta`. `lr_warmup_steps` (default 0 = none): before optimizer step k the
+lr of both groups is the configured one times min(1, k / N); k is the restored update
+count, so a resume continues the ramp and a resume after it stays at the full lr. The
+lr used is already in every progress event (`lr`, `head_lr`).

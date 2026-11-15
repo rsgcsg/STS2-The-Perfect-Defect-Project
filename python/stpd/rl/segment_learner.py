@@ -114,7 +114,7 @@ from .learning_diagnostics import (
 )
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
-from .loss import prepared_update
+from .loss import minibatch_control_rows, prepared_update, warmup_learning_rates
 from .performance import PerformanceConfig
 from .prepared_batch import (
     AuxiliaryInput,
@@ -522,6 +522,11 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     # configuration give the same recipe (and recipe digest) as before.
     if value["segments"].get("value_target", "segment") == "segment":
         value["segments"].pop("value_target", None)
+    # K: the same for the KL stop scope and the lr warm-up.
+    if value["segments"].get("kl_stop_scope", "all") == "all":
+        value["segments"].pop("kl_stop_scope", None)
+    if value["segments"].get("lr_warmup_steps", 0) == 0:
+        value["segments"].pop("lr_warmup_steps", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
@@ -1423,6 +1428,10 @@ class SegmentLearner:
             "lr": self.config.lr, "head_lr": settings.head_lr,
             "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
             "performance": asdict(self.performance), "target_kl": settings.target_kl,
+            **({"kl_stop_scope": settings.kl_stop_scope}
+               if settings.kl_stop_scope != "all" else {}),
+            **({"lr_warmup_steps": settings.lr_warmup_steps}
+               if settings.lr_warmup_steps else {}),
             "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
             "pinned_bytes": pinned_bytes, "offline_dump": self._offline_dump_init(),
             **({"data_parallel": dict(options.data_parallel)}
@@ -3615,6 +3624,8 @@ class SegmentLearner:
             terminal_rows, hp_rows = minibatch.epoch_auxiliary_counts[epoch]
             minibatch = replace(minibatch, terminal_rows=terminal_rows, hp_rows=hp_rows,
                                 tensors={**minibatch.tensors, **minibatch.epoch_auxiliary[epoch]})
+        warmup_learning_rates(self.optimizer, (self.config.lr, self.settings.head_lr),
+                              self.updates, self.settings.lr_warmup_steps)
         result = prepared_update(
             self.model,
             self.optimizer,
@@ -3625,6 +3636,9 @@ class SegmentLearner:
             gpu_lock=self.gpu_lock,
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
             collect_policy_rows=True,
+            control_rows=(minibatch_control_rows(minibatch, self._dataset_arms(batch),
+                                                 self._policy_mask(batch))
+                          if self.settings.kl_stop_scope == "control" else None),
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
@@ -3676,18 +3690,12 @@ class SegmentLearner:
                       policy_updates: int) -> dict[str, Any]:
         """The single successful-use owner: first use, aux uses, counters, events."""
         build: Callable[[], dict[str, Any]] | None = None
-        if self.row_arm_cache is None or self.row_arm_cache[0] is not batch:
-            derived = row_arms(batch.metadata,  # once per dataset
-                               [m.rows for m in batch.request.members])
-            self.row_arm_cache = batch, (derived if any(derived) else None)
-        arms = self.row_arm_cache[1]
+        arms = self._dataset_arms(batch)
         if result["stepped"]:
             used = set(active["used"])  # was a list scan per row: O(rows x used) per step
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in used]
             self.first_use += len(newly_used)
-            if self.policy_mask_cache is None or self.policy_mask_cache[0] is not batch:
-                self.policy_mask_cache = batch, batch.policy_mask.tolist()  # once per dataset
-            policy_mask = self.policy_mask_cache[1]
+            policy_mask = self._policy_mask(batch)
             self.first_use_multi += sum(policy_mask[i] for i in newly_used)
             active["used"].extend(newly_used)
             if self.shards is not None:
@@ -3776,6 +3784,19 @@ class SegmentLearner:
                 self.updates,
             )
         return result
+
+    def _policy_mask(self, batch: Any) -> list[bool]:
+        if self.policy_mask_cache is None or self.policy_mask_cache[0] is not batch:
+            self.policy_mask_cache = batch, batch.policy_mask.tolist()  # once per dataset
+        return self.policy_mask_cache[1]
+
+    def _dataset_arms(self, batch: Any) -> list[str | None] | None:
+        """Per row of `batch`, its exploration arm (`row_arms`, once per dataset);
+        None when no source names one."""
+        if self.row_arm_cache is None or self.row_arm_cache[0] is not batch:
+            derived = row_arms(batch.metadata, [m.rows for m in batch.request.members])
+            self.row_arm_cache = batch, (derived if any(derived) else None)
+        return self.row_arm_cache[1]
 
     def _charge_auxiliary(self, active: dict[str, Any], request: PrepareRequest,
                           index: int) -> None:

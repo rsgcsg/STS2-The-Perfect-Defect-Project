@@ -264,6 +264,10 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["hp_combat_weights"] = "HP-change weight per combat type (RL5-METHODS A2)"
     if k["hp_potion_mode"] != "points":
         need["hp_potion_mode"] = "potions judged by the value head in the HP score (ticket H)"
+    if k["kl_stop_scope"] != "all":
+        need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
+    if k["lr_warmup_steps"]:
+        need["lr_warmup_steps"] = "lr warm-up (ticket K)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):
         need["ascension"] = "Managed sessions at ascension > 0 (#530 S-1)"
     if k["eval_suite"] or k["eval_a10_enabled"]:

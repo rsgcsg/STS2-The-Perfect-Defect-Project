@@ -51,6 +51,13 @@ class SegmentConfig:
     terminal_uses: int = 2
     hp_uses: int = 1
     target_kl: float = 0.03
+    # RL5-METHODS K, both resume-locked and left out of the recipe at their default.
+    # Which policy rows the KL stop measures: "all" (the rule before K) or "control"
+    # (the control arm's rows only; exploration arms deviate from theta on purpose).
+    kl_stop_scope: str = "all"
+    # Linear lr warm-up over this many optimizer steps, both groups (lr and head_lr)
+    # in proportion; 0 = none (the behaviour before K).
+    lr_warmup_steps: int = 0
     ema_decay: float = 0.999
     head_lr: float = 1e-4
     checkpoint_seconds: float = 900
@@ -88,6 +95,8 @@ class SegmentConfig:
                 or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
                 or self.value_target not in ("segment", "game")
                 or self.capacity_victim not in ("oldest", "hash")
+                or self.kl_stop_scope not in ("all", "control")
+                or type(self.lr_warmup_steps) is not int or self.lr_warmup_steps < 0
                 or any(type(v) not in (int, float) or not math.isfinite(v)
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,

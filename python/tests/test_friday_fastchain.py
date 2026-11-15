@@ -2997,3 +2997,42 @@ def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing(
         cards=3, segment_format=four, hp_potion_mode='value_head'))
     roles = (FASTCHAIN / 'roles.py').read_text()
     assert 'hp["hp_potion_mode"] = K["hp_potion_mode"]' in roles
+
+
+def test_kl_stop_scope_and_lr_warmup_default_off_and_reach_the_learner_only_when_set():
+    """Ticket K: both knobs default to today's behaviour and then leave learner.json as it
+    was; set, they land in segments (resume-locked there); "control" needs a control arm."""
+    profile = run_profile.load_profile(PROFILE)
+    for name, default in (('kl_stop_scope', 'all'), ('lr_warmup_steps', 0)):
+        assert profile[name]['value'] == profile[name]['default'] == default
+    run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
+           'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
+           'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
+    built = learner_config.build(gate_base(), run_profile.values(profile), run)
+    assert not {'kl_stop_scope', 'lr_warmup_steps'} & set(built['segments'])
+    assert learner_config.recipe_drift(built, FROZEN) == []
+    set_ = run_profile.values(run_profile.load_profile(
+        PROFILE, ['kl_stop_scope="control"', 'lr_warmup_steps=2000']))
+    on = learner_config.build(gate_base(), set_, run)
+    assert on['segments']['kl_stop_scope'] == 'control'
+    assert on['segments']['lr_warmup_steps'] == 2000
+    assert learner_config.recipe_drift(on, FROZEN) == []  # not frozen keys: no drift
+    with pytest.raises(run_profile.ProfileError, match='control arm|named control'):
+        run_profile.load_profile(PROFILE, [
+            'kl_stop_scope="control"', 'exploration_ladder={ hot = { share = 1.0, combat = '
+            '{ temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, '
+            'uniform_mix = 0.0 } } }'])
+    for altered in ('{ temperature = 1.2, uniform_mix = 0.0 }',
+                    '{ temperature = 1.0, uniform_mix = 0.01 }'):
+        with pytest.raises(run_profile.ProfileError, match='control arm unaltered'):
+            run_profile.load_profile(PROFILE, [
+                'kl_stop_scope="control"', 'exploration_ladder={ control = { share = 1.0, '
+                f'combat = {altered}, noncombat = '
+                '{ temperature = 1.0, uniform_mix = 0.0 } } }'])
+    with pytest.raises(run_profile.ProfileError, match='lr_warmup_steps'):
+        run_profile.load_profile(PROFILE, ['lr_warmup_steps=-1'])
+    need = preflight.required_features(plan_for(cards=3))
+    assert not {'kl_stop_scope', 'lr_warmup_steps'} & set(need)
+    need = preflight.required_features(plan_for(cards=3, kl_stop_scope='control',
+                                                lr_warmup_steps=2000))
+    assert {'kl_stop_scope', 'lr_warmup_steps'} <= set(need)
