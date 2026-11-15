@@ -2073,7 +2073,11 @@ def test_env_driver_save_starts_pool_draw_refusals_and_readout(tmp_path):
                 and r['game_ref'] in admitted]
     assert sum(row['games'] for row in saves['by_start_act'].values()) == len(complete) > 0
     assert all(row['mean_floors_gained'] == 22 for row in saves['by_start_act'].values())
-    assert reader.recipe()['start']['from_save']['games'] == len(complete)
+    recipe = reader.recipe()
+    assert recipe['start']['from_save']['games'] == len(complete)
+    # Per-arm and K tables hold the new runs only (save starts: the start table).
+    assert recipe['arm'] == {'hot': recipe['start']['new_run']}
+    assert sum(row['games'] for row in recipe['k'].values()) == recipe['arm']['hot']['games']
     assert reader.training_games() == {}  # arm hot: no control-arm new runs to roll
     assert 'save starts: pooled per act' in readout.render(readout.build(run, 1200))
 
@@ -2082,15 +2086,19 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     driver = tmp_path / 'env-n0-1' / 'p1'
     driver.mkdir(parents=True)
 
-    def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid'):
+    def closed(ref, group, floor, reason='terminal', result='defeat', failed=False, arm='mid',
+               start='new_run'):
         return {'event': 'closed', 'game_ref': ref, 'reason': reason, 'arm': arm,
                 'ascension': 10, 'replay_k': 2, 'group': group, 'member': 0, 'seed': 's',
-                'start': 'new_run', 'decisions': 100, 'floor': floor, 'terminal': result,
+                'start': start, 'decisions': 100, 'floor': floor, 'terminal': result,
                 'evidence_failed': failed}
-    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': i != 4} for i in range(1, 7)]
+    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': i != 4} for i in range(1, 9)]
     records += [closed('g1', 'k1', 10), closed('g2', 'k1', 16, result='victory'),
                 closed('g3', 'k2', 12), closed('g4', 'k2', 30),  # g4 refused admission
-                closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True)]
+                closed('g5', 'k3', 5, reason='unknown'), closed('g6', 'k3', 9, failed=True),
+                # a save-start K group: the start table only (#553 review H)
+                closed('g7', 'k4', 40, start='from_save'),
+                closed('g8', 'k4', 25, start='from_save')]
     (driver / 'driver.jsonl').write_text(jsonl_text(records))
     recipe = readout.recipe_edge(tmp_path)
     mid = recipe['arm']['mid']
@@ -2099,6 +2107,8 @@ def test_readout_recipe_counts_only_admitted_games_with_evidence(tmp_path):
     k2 = recipe['k']['2']
     assert (k2['groups'], k2['full_groups'], k2['mean_floor_range']) == (3, 1, 6)
     assert recipe['ascension']['10']['games'] == 3 and recipe['start']['new_run']['rows'] == 400
+    assert recipe['start']['from_save']['games'] == 2
+    assert recipe['start']['from_save']['mean_floor'] == pytest.approx(32.5)
     assert readout.recipe_edge(tmp_path / 'nothing') == {}
 
 

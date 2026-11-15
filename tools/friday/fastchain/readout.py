@@ -785,9 +785,15 @@ class Readout:
                       "bosses": [(win or floor >= b, win or floor > b) for b in bosses]})
 
     def _recipe(self, path: str, r: dict[str, Any], counted: bool) -> None:
+        # The arm, ascension and K tables compare games started from scratch; a save start
+        # is counted in the start table (and save_starts) only, never mixed in.
+        scratch = r.get("start") != "from_save"
         for key, table in self.tables.items():
-            _add(table.setdefault(str(r.get("replay_k" if key == "k" else key)), _bucket()),
-                 r, counted)
+            if scratch or key == "start":
+                _add(table.setdefault(str(r.get("replay_k" if key == "k" else key)),
+                                      _bucket()), r, counted)
+        if not scratch:
+            return
         name = f"{Path(path).parent}/{r.get('group')}"
         group = self.groups.get(name)
         if group is None:
@@ -1180,7 +1186,8 @@ def render(r: dict[str, Any]) -> str:
     out += render_record(r)
     if r.get("recipe"):
         out += ["", "recipe, whole run so far (games = complete: terminal, admitted, evidence "
-                "ok; rows = model rows of admitted games):",
+                "ok; rows = model rows of admitted games; arm / ascension / k: games started "
+                "from scratch, start: all):",
                 f"  {'':<22}{'games':>8}{'other':>7}{'floor':>7}{'wins':>6}{'rows':>12}"
                 f"{'groups':>8}{'full':>6}{'range':>7}"]
         for key in ("arm", "ascension", "start", "k"):

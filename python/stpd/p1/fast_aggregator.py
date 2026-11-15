@@ -103,10 +103,15 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
     encoded = encoder.encode_parsed(source["observation"])
     # The combat's public type (the model's own input), for the format-4 HP weight (A2).
     combat = source["observation"].get("combat") if encoded.in_combat else None
+    # The player's public HP on a combat row (the model's own input; the kernel's
+    # public_facts read the same fields): a combat with no row before it starts there (B).
+    player = ((source["observation"].get("player") or {}).get("content") or {}) if combat else {}
     meta = {"row_sha256": encoded.row_sha256, "observation_sha256": encoded.observation_sha256,
             "catalog_sha256": encoded.catalog_sha256, "catalog_len": encoded.catalog_len,
             "in_combat": encoded.in_combat, "floor": message.get("floor"),
             "encounter": (combat.get("content") or {}).get("encounter_type") if combat else None,
+            "public_hp": ({"hp": player["hp"], "max_hp": player["max_hp"]}
+                          if "hp" in player and "max_hp" in player else None),
             "step_index": message.get("step_index"),
             "consumption_id": message.get("consumption_id"), "binding": None}
     # The line's own claims must equal what was encoded (no repair, no fallback).
@@ -314,6 +319,7 @@ class NodeAggregator:
                              "observation_sha256": meta["observation_sha256"],
                              "in_combat": meta["in_combat"], "floor": meta["floor"],
                              "encounter": meta["encounter"],
+                             "public_hp": meta["public_hp"],
                              "payload": {"offset": len(binary), "length": len(row),
                                          "row_sha256": meta["row_sha256"]}})
                 binary += row

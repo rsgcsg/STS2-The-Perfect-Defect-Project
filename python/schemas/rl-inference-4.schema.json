@@ -161,6 +161,15 @@
           "description": "Optional (RL5-METHODS A2): the observation's public combat.content.encounter_type on a combat row, null otherwise. Segment format 4 requires one of normal, elite, boss, unknown on every combat row (its per-type HP weight and counters).",
           "type": ["string", "null"]
         },
+        "public_hp": {
+          "description": "Optional (RL5-METHODS B): the observation's public player.content hp and max_hp on a combat row, null otherwise. Segment format 4 reads it only as the start of a combat with no row before it (a save start that loads straight into a Boss fight).",
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false, "required": ["hp", "max_hp"],
+             "properties": {"hp": {"type": "integer", "minimum": 0},
+                            "max_hp": {"type": "integer", "minimum": 1}}}
+          ]
+        },
         "payload": {
           "type": "object", "additionalProperties": false,
           "required": ["offset", "length", "row_sha256"],

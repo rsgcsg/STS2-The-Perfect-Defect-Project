@@ -57,7 +57,8 @@ def test_a10_loss_at_floor_49_is_refused_not_relabelled():
 
 
 def test_public_terminal_label_refuses_what_the_old_chain_refuses():
-    # From a save in act 2 nothing public shows Boss 1; the old chain refuses the class.
+    # Acts [2, 2, 2] alone show no Boss 1, so the old chain refuses the class (the
+    # assembler seeds a save start's earlier acts: see the save-start test below).
     with pytest.raises(ValueError, match="terminal_class_reward_mismatch"):
         public_terminal_label({"ascension": 0, "result": "defeat", "max_floor": 30,
                                "acts": [2, 2, 2]})
@@ -109,10 +110,48 @@ def test_default_labeler_seals_terminal_from_public_act_advances():
     assert two.header["seal"]["terminal"] == {
         "result": "defeat", **public_terminal_label(
             {"ascension": 0, "result": "defeat", "max_floor": 35, "acts": [1, 2, 3, 3]})}
-    # The old chain refuses this class too; kept as original, counted, never trained.
-    assert save.kind == "truncated"
-    assert save.header["seal"]["truncation"]["reason"] == "terminal_label_refused"
-    assert assembler.report()["terminal_label_refused"] == 1
+    # A save start in act 2 has beaten Boss 1 (its start act): the label of a new run.
+    # (A refused label seals truncated: the A10 floor-49 test below.)
+    assert save.kind == "terminal" and save.header["seal"]["terminal"]["class"] == 30
+    assert assembler.report()["terminal_label_refused"] == 0
+
+
+# A save start's end -> the class a new run with the same public end gets (#553 review A):
+# (start act, the public acts of its rows, result, last floor, class).
+SAVE_START_ENDS = [
+    (2, [2, 2], "defeat", 25, 25),
+    (2, [2, 2, 3], "defeat", 35, 35),     # not the Golden Compass class 50
+    (2, [2, 3, 3], "defeat", 40, 40),
+    (3, [3, 3], "defeat", 45, 45),
+    (3, [3, 3], "defeat", 48, 48),        # lost at the final Boss
+    (3, [3, 3], "victory", 48, 49),
+]
+
+
+@pytest.mark.parametrize("ascension", [0, 10])
+@pytest.mark.parametrize(("act", "acts", "result", "floor", "expected"), SAVE_START_ENDS)
+def test_a_save_start_seals_the_terminal_label_of_a_new_run_with_the_same_end(
+        act, acts, result, floor, expected, ascension):
+    from stpd.rl.fast_assembly import FastSegmentAssembler
+    from stpd.rl.fast_segment import FORMAT_3
+
+    sealed: list[Any] = []
+    assembler = FastSegmentAssembler(assembler_id="node-a",
+                                     compiler_identity={"compiler_sha256": "b" * 64},
+                                     emit=sealed.append, segment_format=FORMAT_3)
+    h = Harness()
+    h.assembler, h.sealed = assembler, sealed
+    assembler.offer_mu(mu(1))
+    _terminal_game(h, "save", acts, floor, result=result, ascension=ascension,
+                   start={"kind": "from_save", "save_sha256": "d" * 64, "act": act,
+                          "floor": 3})
+    [save] = sealed
+    assert save.kind == "terminal"
+    assert save.header["seal"]["terminal"] == {"result": result, **public_terminal_label(
+        {"ascension": ascension, "result": result, "max_floor": floor,
+         "acts": [*range(1, act), *acts]})}
+    assert save.header["seal"]["terminal"]["class"] == expected
+    assert assembler.report()["terminal_label_refused"] == 0
 
 
 def test_a10_terminals_seal_on_the_49_table_and_a_floor_49_loss_is_refused():
