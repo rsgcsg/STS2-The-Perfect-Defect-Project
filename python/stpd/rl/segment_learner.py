@@ -68,6 +68,7 @@ from stpd.p1.model import MStd
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
 
+from . import recipe_changes
 from .batch_preparation import (
     ROW_BUCKET_ROWS,
     BatchPreparer,
@@ -124,7 +125,6 @@ from .prepared_batch import (
     PreparedBatch,
     PrepareRequest,
 )
-from . import recipe_changes
 from .reward import REWARD_SPEC
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
 from .sgd_process import (

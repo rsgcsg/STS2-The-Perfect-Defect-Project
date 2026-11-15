@@ -3144,7 +3144,7 @@ RUN = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds':
 def test_declarable_keys_match_the_learner_allow_list():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from stpd.rl import recipe_changes
-    assert learner_config.DECLARABLE == tuple(recipe_changes.DECLARABLE)
+    assert tuple(recipe_changes.DECLARABLE) == learner_config.DECLARABLE
     assert run_profile.DECLARABLE == learner_config.DECLARABLE
     for key, value in recipe_changes.RECIPE_DEFAULTS.items():
         assert learner_config.CONFIG_DEFAULTS[key] == value
