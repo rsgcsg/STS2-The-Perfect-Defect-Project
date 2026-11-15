@@ -160,11 +160,12 @@ def headline(statistics: dict[str, dict[str, list[float]]]) -> dict[str, float |
             "hp_mae_points": whole["hp"]["mae"]}
 
 
-# Exploration dose (RL5-METHODS A3), one fold per training dataset. Every multi-choice
-# fast-chain row carries `metadata["exploration"]` (fast_source.decode_fast_packet): its
-# arm, act, decision type, the chosen action's rank in the model's own ordering, whether
-# the model's top probability exceeds 0.99 and whether the row's advantage (before the
-# one normalisation) is positive. Read from the public frame and the recorded q only:
+# Exploration dose (RL5-METHODS A3), one fold per training dataset. Each fast-chain
+# source counts its multi-choice rows once (fast_source.decode_fast_packet) and puts the
+# counts on its first row's `metadata["exploration"]`: per arm, act and decision type,
+# the chosen action's rank in the model's own ordering, whether the model's top
+# probability exceeds 0.99 and whether the row's advantage (before the one
+# normalisation) is positive. Read from the public frame and the recorded q only:
 # nothing reaches the model, the loss or the prepared digest.
 DECISIONS = ("combat", "card_reward", "map", "event", "rest", "shop", "treasure", "reward",
              "other")
@@ -202,18 +203,24 @@ def exploration_row(q: list[float], selected: int, temperature: float, uniform_m
     return rank, max(tempered) > 0.99 * sum(tempered)
 
 
+def add_exploration(counts: dict[str, list[int]], arm: str, act: int, decision: int,
+                    rank: int, top: bool, positive: bool) -> None:
+    """Count one multi-choice row into {"arm|actN|decision": [EXPLORATION_FIELDS...]}."""
+    row = counts.setdefault(f"{arm}|act{act}|{DECISIONS[decision]}", [0, 0, 0, 0, 0])
+    row[0] += 1
+    row[1] += rank == 1
+    row[2] += rank == 2
+    row[3] += top
+    row[4] += rank > 0 and positive
+
+
 def exploration_fields(metadata: Any) -> dict[str, list[int]]:
-    """{"arm|actN|decision": [EXPLORATION_FIELDS...]} counts of one dataset's rows."""
+    """One dataset's counts: the sum of its sources' `metadata["exploration"]`."""
     out: dict[str, list[int]] = {}
     for row in metadata:
-        x = row.get("exploration")
-        if x is None:
-            continue
-        arm, act, decision, rank, top, positive = x
-        counts = out.setdefault(f"{arm}|act{act}|{DECISIONS[decision]}", [0, 0, 0, 0, 0])
-        counts[0] += 1
-        counts[1] += rank == 1
-        counts[2] += rank == 2
-        counts[3] += top
-        counts[4] += rank > 0 and positive
+        counts = row.get("exploration")
+        for key, values in (counts or {}).items():
+            total = out.setdefault(key, [0, 0, 0, 0, 0])
+            for i, value in enumerate(values):
+                total[i] += value
     return out

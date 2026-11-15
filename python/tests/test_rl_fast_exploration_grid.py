@@ -224,7 +224,7 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
                                                    f"c-{game}-{step}")
             record.setdefault("p", []).append(distribution(scores, 1.0, 0.0)[0])
 
-    # Decode: the exploration tuple is metadata only; every training number is the same.
+    # Decode: the exploration counts are metadata only; every training number is the same.
     codes = decision_codes(vocabulary["actions"])
     sources = []
     for segment in sealed:
@@ -240,15 +240,23 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             assert torch.equal(getattr(source, name), getattr(plain, name)), name
         assert [{k: v for k, v in m.items() if k != "exploration"} for m in source.metadata] \
             == list(plain.metadata)
-        record = games[game]
-        for row, (meta, (kind, combat, floor, reply)) in enumerate(
-                zip(source.metadata, record["steps"], strict=True)):
+        # One count table per source, on its first row only (not a tuple per row).
+        assert all("exploration" not in m for m in source.metadata[1:])
+        record, expected = games[game], {}
+        for row, (kind, combat, floor, reply) in enumerate(record["steps"]):
             chosen = reply["behavior_q"][reply["selected_index"]]
-            assert meta["exploration"] == (
-                record["arm"], 1 if floor <= 17 else 2 if floor <= 33 else 3,
-                0 if combat else DECISIONS.index(kind),
-                min(sum(value > chosen for value in reply["behavior_q"]), 2),
-                max(record["p"][row]) > 0.99, bool(source.raw_advantages[row] > 0))
+            rank = min(sum(value > chosen for value in reply["behavior_q"]), 2)
+            act = 1 if floor <= 17 else 2 if floor <= 33 else 3
+            counts = expected.setdefault(
+                f"{record['arm']}|act{act}|{DECISIONS[0 if combat else DECISIONS.index(kind)]}",
+                [0, 0, 0, 0, 0])
+            counts[0] += 1
+            counts[1] += rank == 1
+            counts[2] += rank == 2
+            counts[3] += max(record["p"][row]) > 0.99
+            counts[4] += rank > 0 and bool(source.raw_advantages[row] > 0)
+            record.setdefault("ranks", []).append((act, rank))
+        assert source.metadata[0]["exploration"] == expected
         sources.append(source)
 
     # The learner's dataset: assembled metadata -> the progress event's counts.
@@ -287,12 +295,11 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
     dose = record["learning"]["latest"]["exploration"]
     assert set(dose) == {"control", "bold", "hot"}
     for arm, part in dose.items():
-        rows = [meta["exploration"] for s in sources for meta in s.metadata
-                if meta["exploration"][0] == arm]
+        rows = [x for r in games.values() if r["arm"] == arm for x in r["ranks"]]
         assert part["all"]["rows"] == len(rows)
-        assert part["all"]["top"] == pytest.approx(sum(x[3] == 0 for x in rows) / len(rows))
+        assert part["all"]["top"] == pytest.approx(sum(x[1] == 0 for x in rows) / len(rows))
         assert set(part["by_decision"]) == {"combat", "map", "card_reward"}
-        assert set(part["by_act"]) == {f"act{a}" for a in {x[1] for x in rows}}
+        assert set(part["by_act"]) == {f"act{a}" for a in {x[0] for x in rows}}
     played = record["training_games"]["arms"]
     assert set(played) == {"control", "bold", "hot"}
     for arm, results in played.items():
