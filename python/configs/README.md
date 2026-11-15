@@ -46,3 +46,4 @@ closes, spilling their bytes to `<live work>/value-target-spill` (node-local, sh
 checked on read-back), then stitches each segment's lambda tail to the next one, so
 the real outcome reaches every row. Rows get older (a whole game) and `hp_share` reads
 lower. A game that never closes, fails a spill or is held at stop is dropped and counted.
+The KL stop is the same under both rules.
