@@ -5,7 +5,9 @@ import dataclasses as dc
 import json
 import math
 import os
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -180,7 +182,8 @@ def test_the_launcher_starts_a_random_package_and_records_it(tmp_path, monkeypat
     start's warmup artifact is refused before submit (the learner would refuse the heads)."""
     import test_friday_fastchain as fc
 
-    descriptor = random_start_package(template(tmp_path), 5, tmp_path / "random")
+    shape = template(tmp_path)
+    descriptor = random_start_package(shape, 5, tmp_path / "random")
     package, sha = tmp_path / "random" / "package", descriptor["package_sha256"]
     plan = fc.plan_for(cards=3, wall_seconds=2400)
     plan["site"].update(start_package=str(package), warmup_file="")
@@ -214,14 +217,78 @@ def test_the_launcher_starts_a_random_package_and_records_it(tmp_path, monkeypat
     (tmp_path / "learner.json").write_text(json.dumps(built))  # roles.py writes, then reads
     read = LearnerConfig.read(tmp_path / "learner.json")
     assert read.start_model_sha256 == sha and read.segments.warmup_artifact_id is None
-    # the run record (readout) from the facts.json launch.py writes at freeze
+    # the run record (readout): the sha the learner was given (learner.json), the seed from
+    # the facts.json launch.py writes at freeze
     record = tmp_path / "run"
-    record.mkdir()
+    (record / "learner").mkdir(parents=True)
+    (record / "learner" / "learner.json").write_text(json.dumps(built))
     (record / "facts.json").write_text(json.dumps({"start_model": facts["start_model"]}))
     identity = fc.readout.identity_edge(record, plan, record / "plan.json")
-    assert identity["start_model"] == facts["start_model"]
-    lines = fc.readout.render_record({"identity": identity})
-    assert f"start model: {sha[:12]}, schema {SCHEMA}, seed 5" in lines
+    assert identity["start_model"] == {"package_sha256": sha,
+                                       "training_identity": descriptor["training_identity"],
+                                       "site_package_at_submit": sha}
+    assert f"start model: {sha[:12]}, schema {SCHEMA}, seed 5" in fc.readout.render_record(
+        {"identity": identity})
+    # the site package replaced between submit and GPU start: the learner's sha stands, the
+    # submit-time identity is not attached to it, the difference is written out
+    other = random_start_package(shape, 6, tmp_path / "other")
+    (record / "facts.json").write_text(json.dumps({"start_model": {
+        "package_sha256": other["package_sha256"],
+        "training_identity": other["training_identity"]}}))
+    identity = fc.readout.identity_edge(record, plan, record / "plan.json")
+    assert identity["start_model"] == {"package_sha256": sha, "training_identity": None,
+                                       "site_package_at_submit": other["package_sha256"]}
+    assert (f"start model: {sha[:12]}; site start_package at submit was "
+            f"{other['package_sha256'][:12]}") in fc.readout.render_record({"identity": identity})
+
+
+def test_a_resume_takes_its_start_from_the_checkpoint_not_the_site_package(tmp_path,
+                                                                          monkeypatch):
+    """roles.py on a resume: the learner restores the CP and never loads the start package,
+    so learner_config.start_fields takes the start from the restored CP's config (read as
+    roles.py reads it). (a) A resume (auto-resume, continuation chain) runs after the site's
+    package was removed; (b) another package exported to the same path is not recorded: the
+    resumed generation's CP keeps the sha the first generation verified."""
+    import test_friday_fastchain as fc
+
+    from spireagent.rl_exchange import Exchange
+    from stpd.rl.segment_learner import SegmentLearner
+
+    config, io = configuration(tmp_path, monkeypatch)
+    site = str(tmp_path / "site" / "package")
+    first = random_start_package(Path(config.start_package), 21, tmp_path / "site")
+    fresh = fc.learner_config.start_fields(site, None)
+    assert fresh == {"start_package": site, "start_model_sha256": first["package_sha256"]}
+    owner = SegmentLearner(dc.replace(config, **fresh), tmp_path / "first", io)
+    try:
+        owner.run(initialize_only=True)
+        resume = read_cp(owner)[0]["checkpoint_artifact_id"]
+    finally:
+        owner.close()
+
+    def restored_config():  # roles.py's reader
+        reader = SimpleNamespace(exchange=Exchange(config.peer, config.run))
+        return SegmentLearner._read_checkpoint(reader, resume).config
+
+    shutil.rmtree(tmp_path / "site")  # (a)
+    resumed = fc.learner_config.start_fields(site, restored_config())
+    assert resumed == fresh
+    second = SegmentLearner(dc.replace(
+        config, **resumed, resume_checkpoint=resume,
+        segments=dc.replace(config.segments, training_generation="g-resumed")),
+        tmp_path / "second", io)
+    try:
+        second.checkpoint(final=True)
+        cp = read_cp(second)[1]
+    finally:
+        second.close()
+    assert {key: cp.config[key] for key in fresh} == fresh
+    replaced = random_start_package(Path(config.start_package), 22, tmp_path / "site")  # (b)
+    assert replaced["package_sha256"] != first["package_sha256"]
+    assert fc.learner_config.start_fields(site, None)["start_model_sha256"] == replaced[
+        "package_sha256"]  # what reading the site package on a resume would have recorded
+    assert fc.learner_config.start_fields(site, restored_config()) == fresh
+    assert fc.learner_config.start_fields(site, cp.config) == fresh  # and every later one
 
 
 def test_an_existing_start_keeps_its_launcher_facts_and_warmup_check(tmp_path, monkeypatch):

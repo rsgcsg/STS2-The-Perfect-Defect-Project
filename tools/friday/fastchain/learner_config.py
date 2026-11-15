@@ -9,10 +9,14 @@ Recipe keys (the whole `loss` block, c_hp and its scope included) pass
 through unchanged from the gate and have no default here: a gate without one shows as
 `<missing>` drift (regenerate the gate, python/docs/RL_LONG_RUN.zh-CN.md).
 `window(...)` is the operating window of one generation of a resume chain (supervise.py).
+`start_fields(...)` is the start a run records: the restored CP's on a resume, the site
+package's (its model.json, the only file read here) on a fresh start.
 """
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
 # frozen key -> why the launcher may differ from rl5.json there. Speed levers change no
@@ -61,11 +65,25 @@ def window(chain_id: str, total_seconds: int, chain_deadline: float,
             "deadline_at": chain_deadline}
 
 
+def start_fields(start_package: str, checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    """`start_package` and `start_model_sha256` for `build`.
+
+    A resume never loads the start package (SegmentLearner restores the CP), so its start
+    comes from the restored CP's `config`: the real lineage, also after the site's package
+    was removed or replaced in place. Only a fresh start reads the site's package; the
+    learner then verifies that package_sha256. `checkpoint` = the restored CP's config."""
+    if checkpoint is not None:
+        return {key: checkpoint.get(key) for key in ("start_package", "start_model_sha256")}
+    descriptor = json.loads((Path(start_package) / "model.json").read_bytes())
+    return {"start_package": start_package, "start_model_sha256": descriptor["package_sha256"]}
+
+
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     """`run`: run_name, peer_dir, start_package, wall_seconds, device, generation,
     warmup_artifact_id, rendezvous_path, ranks, resume_checkpoint (or None) and, in a
-    resume chain, window (`window(...)`). Optional start_model_sha256: the start package's
-    package_sha256, which the learner then verifies and every CP's config keeps (lineage)."""
+    resume chain, window (`window(...)`). Optional start_model_sha256 (`start_fields`): the
+    start package's package_sha256, which the learner verifies on a fresh start and every
+    CP's config keeps (lineage)."""
     config = copy.deepcopy(base)
     config.pop("peer", None)  # never carry the gate's archive subtree
     config.update({

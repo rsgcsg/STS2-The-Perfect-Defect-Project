@@ -524,10 +524,15 @@ def check_cores(plan: dict[str, Any]) -> Result:
                   f"{plan['env_cores_max']} = {total} cores (cap {cap})")
 
 
-def check_resume(plan: dict[str, Any]) -> Result:
-    """A resume or chain generation: a real producer and enough window left."""
+def check_resume(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """A fresh start needs its start package (the learner loads it); a resume restores the
+    CP and never reads it. A resume or chain generation: a real producer and enough window
+    left."""
     k, chain, cp = plan["knobs"], plan.get("chain"), plan.get("resume_checkpoint")
     bad = []
+    if not cp and facts.get("start_model") is None:
+        bad.append(f"fresh start without a start package: no model.json in site "
+                   f"start_package {plan['site']['start_package']}")
     if chain is None:
         return Result("resume", not bad, "; ".join(bad) or
                       (f"start from CP {cp}" if cp else "fresh start from the start package"))
@@ -573,7 +578,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_cores(plan),
-            check_resume(plan), check_queue(facts)]
+            check_resume(plan, facts), check_queue(facts)]
 
 
 def report(results: list[Result]) -> str:

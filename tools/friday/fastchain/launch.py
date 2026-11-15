@@ -327,8 +327,9 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
             Path(site["peer_dir"]) / "manifests" / f"{warmup_id}.json").is_file()}
     else:  # site warmup_file = "": no fitted heads (a random-init start)
         facts["warmup_artifact"] = {"id": None, "present": False, "none": True}
-    # The start model as the learner will load it (its model.json): the run record's
-    # identity of the start, e.g. a CP export's binding or a random init's seed.
+    # The start model a fresh start's learner loads (its model.json; None = missing, refused
+    # by preflight check_resume unless resuming): e.g. a CP export's binding or a random
+    # init's seed, shown in the run record.
     start = Path(site["start_package"]) / "model.json"
     descriptor = json.loads(start.read_text()) if start.is_file() else None
     facts["start_model"] = ({"package_sha256": descriptor["package_sha256"],

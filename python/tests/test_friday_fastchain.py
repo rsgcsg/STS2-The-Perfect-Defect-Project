@@ -99,6 +99,7 @@ def good_facts(plan):
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
             'warmup_artifact': {'id': 'f' * 64, 'present': True},
+            'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'gpu_test_start_seconds': 0.0,
             'queue': {'fairshare': 0.5, 'priority_estimate': 15000, 'partitions': {
@@ -1290,13 +1291,16 @@ def test_chain_generation_plan_and_resume_preflight():
     assert plan['wall_seconds'] == 72000 and plan['resume_checkpoint'] == 'cp-0123456789'
     env = launch.job_env(plan)
     assert 'FC_RESUME_CHECKPOINT=cp-0123456789' in env and 'FC_CHAIN_ID=c-t1' in env
-    assert preflight.check_resume(plan).ok
+    assert preflight.check_resume(plan, {'start_model': None}).ok  # a resume reads no package
     late = launch.build_plan('t1-r2', knobs(), run_profile.load_site(SITE), cards=2,
                              card_type='A100-40', layout_spec=None, env_cores=None,
                              smoke=False, probe_rows=[probe_row()], long_run=True,
                              chain={**chain, 'deadline_at': __import__('time').time() + 600})
     assert late['wall_seconds'] <= 600
-    assert 'min_generation_seconds' in preflight.check_resume(late).detail
+    assert 'min_generation_seconds' in preflight.check_resume(late, good_facts(late)).detail
+    # a fresh start (generation 1, no CP) loads the start package: missing = refused at login
+    missing = preflight.check_resume(late, {**good_facts(late), 'start_model': None})
+    assert not missing.ok and 'fresh start without a start package' in missing.detail
     with pytest.raises(SystemExit):
         launch.build_plan('t1', knobs(), run_profile.load_site(SITE), cards=2,
                           card_type='A100-40', layout_spec=None, env_cores=None, smoke=True,
