@@ -291,9 +291,30 @@ def test_a_resume_takes_its_start_from_the_checkpoint_not_the_site_package(tmp_p
     assert fc.learner_config.start_fields(site, cp.config) == fresh  # and every later one
 
 
+def warmup_artifact(peer: Path, package_sha256: str, schema: str | None = None,
+                    heads: dict | None = None, report: dict | None = None) -> str:
+    """A fitted-heads artifact in a local peer store, as the learner reads it (_start_model)."""
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.storage.local import LocalBlobStore
+    from spireagent.storage.store import ManifestArtifactStore
+    from stpd.rl.checkpoint_codec import encode_checkpoint
+    from stpd.rl.warmup import HEAD_WARMUP_SCHEMA
+
+    store = ManifestArtifactStore(LocalBlobStore(peer))
+    raw = encode_checkpoint({"schema": schema or HEAD_WARMUP_SCHEMA,
+                             "model_package_sha256": package_sha256,
+                             "feature_manifest_sha256": "c" * 64,
+                             "heads": heads or {"w": torch.ones(3)},
+                             "report": report or {"epochs": 1}})
+    payload = store.put_bytes("checkpoint", raw, "application/octet-stream")
+    return store.publish(Manifest("checkpoint", SOURCE_PRODUCER, payloads=(payload,)))
+
+
 def test_an_existing_start_keeps_its_launcher_facts_and_warmup_check(tmp_path, monkeypatch):
-    """A trained start (a CP export with its fitted-heads artifact): the warmup check reads as
-    before; the start's binding goes to the run record; old callers of build pin nothing."""
+    """A trained start (a CP export with its fitted-heads artifact): the warmup check reads
+    the package the heads were fitted on from the peer store and compares it with the start
+    package, as the learner does; the start's binding goes to the run record; old callers of
+    build pin nothing."""
     import test_friday_fastchain as fc
 
     package = tmp_path / "start-package"
@@ -301,22 +322,56 @@ def test_an_existing_start_keeps_its_launcher_facts_and_warmup_check(tmp_path, m
     source = tmp_path / "raw-theta"
     source.write_bytes(b"engineering fixture")
     descriptor = export_model(MStd(public_vocabulary()).eval(), source, package, binding)
+    sha = descriptor["package_sha256"]
     peer = tmp_path / "peer"
-    (peer / "manifests").mkdir(parents=True)
-    (peer / "manifests" / f"{'f' * 64}.json").write_text("{}")
-    (tmp_path / "warmup.id").write_text("f" * 64 + "\n")
+    heads = warmup_artifact(peer, sha)
+    (tmp_path / "warmup.id").write_text(heads + "\n")
     plan = fc.plan_for(cards=3, wall_seconds=2400)
     plan["site"].update(start_package=str(package), warmup_file=str(tmp_path / "warmup.id"),
                         peer_dir=str(peer))
     monkeypatch.setattr(fc.launch, "test_start", lambda _cmd: None)
     monkeypatch.setattr(fc.launch, "queue_facts", lambda _partitions: {})
     facts = fc.launch.collect_facts(plan, {"gpu": ["sbatch", "gpu.sh"]})
-    assert facts["warmup_artifact"] == {"id": "f" * 64, "present": True}  # as before
-    assert facts["start_model"] == {"package_sha256": descriptor["package_sha256"],
-                                    "training_identity": binding}
+    assert facts["warmup_artifact"] == {"id": heads, "present": True, "package_sha256": sha}
+    assert facts["start_model"] == {"package_sha256": sha, "training_identity": binding}
     results = fc.by_name(fc.preflight.checks(plan, {**fc.good_facts(plan), **facts}))
     assert results["warmup_artifact"].ok
-    assert results["warmup_artifact"].detail == f"{'f' * 12} in peer_dir"
+    assert results["warmup_artifact"].detail == (f"{heads[:12]} in peer_dir, fitted on the "
+                                                 f"start package {sha[:12]}")
+    # heads fitted on another package: refused before submit, both identities named
+    other = warmup_artifact(peer, "d" * 64, heads={"w": torch.zeros(3)})
+    (tmp_path / "warmup.id").write_text(other + "\n")
+    facts = fc.launch.collect_facts(plan, {"gpu": ["sbatch", "gpu.sh"]})
+    refused = fc.by_name(fc.preflight.checks(plan, {**fc.good_facts(plan), **facts}))
+    detail = refused["warmup_artifact"].detail
+    assert not refused["warmup_artifact"].ok and "d" * 64 in detail and sha in detail
+    # a resume restores the heads from its CP: the start package is not compared
+    resumed = {**plan, "resume_checkpoint": "cp-1"}
+    assert fc.by_name(fc.preflight.checks(resumed, {**fc.good_facts(plan), **facts}))[
+        "warmup_artifact"].ok
+    # an artifact that is not fitted heads (or cannot be read) is refused, never passed
+    wrong = warmup_artifact(peer, sha, schema="stpd/other-1")
+    (tmp_path / "warmup.id").write_text(wrong + "\n")
+    facts = fc.launch.collect_facts(plan, {"gpu": ["sbatch", "gpu.sh"]})
+    assert "stpd/other-1" in facts["warmup_artifact"]["package_error"]
+    unread = fc.by_name(fc.preflight.checks(plan, {**fc.good_facts(plan), **facts}))
+    assert not unread["warmup_artifact"].ok and "cannot read" in unread["warmup_artifact"].detail
+    resumed_unread = fc.by_name(fc.preflight.checks(resumed, {**fc.good_facts(plan), **facts}))
+    assert resumed_unread["warmup_artifact"].ok  # a resume never reads the heads: not refused
+    # a header longer than one 8 MiB store chunk is read across chunks
+    from spireagent.storage.store import CHUNK_BYTES
+
+    long = warmup_artifact(peer, sha, report={"note": "x" * (CHUNK_BYTES + 1024)})
+    (tmp_path / "warmup.id").write_text(long + "\n")
+    payload = json.loads((peer / "manifests" / f"{long}.json").read_text())["payloads"][0]
+    index = json.loads((peer / "payload-indexes" / "v1" / f"{payload['sha256']}.json").read_text())
+    assert len(index["chunks"]) > 1
+    assert fc.launch.warmup_package(peer, long) == sha
+    from stpd.rl.checkpoint_codec import MAGIC
+    from stpd.rl.warmup import HEAD_WARMUP_SCHEMA
+
+    assert fc.launch.CHECKPOINT_MAGIC == MAGIC
+    assert fc.launch.WARMUP_SCHEMA == HEAD_WARMUP_SCHEMA
     run = {"run_name": "r", "peer_dir": "/p", "start_package": "/s", "wall_seconds": 60,
            "device": "cuda", "generation": "g", "warmup_artifact_id": "w",
            "rendezvous_path": "/r", "ranks": 1, "resume_checkpoint": None}

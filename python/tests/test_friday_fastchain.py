@@ -99,7 +99,7 @@ def good_facts(plan):
             'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
-            'warmup_artifact': {'id': 'f' * 64, 'present': True},
+            'warmup_artifact': {'id': 'f' * 64, 'present': True, 'package_sha256': 'e' * 64},
             'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
             'gpu_test_start_seconds': 0.0,
@@ -1253,6 +1253,177 @@ def test_readout_counts_closes_without_a_natural_end_apart(tmp_path):
     assert 'closes without a natural end' in readout.render(r)
 
 
+def _many_control_games(run, n, start_t=10_000):
+    """n more complete A0 control games (floor 10 + i % 30, every 7th a win) on driver p0."""
+    lines = []
+    for i in range(n):
+        ref = f'm{i}'
+        lines += [{'event': 'admission', 'game_ref': ref, 'ok': True},
+                  {'event': 'closed', 't': start_t + i, 'game_ref': ref, 'reason': 'terminal',
+                   'arm': 'control', 'start': 'new_run', 'floor': 10 + i % 30,
+                   'replay_k': 1, 'group': ref, 'ascension': 0,
+                   'terminal': 'victory' if i % 7 == 0 else 'defeat'}]
+    with (run / 'env-n0' / 'p0' / 'driver.jsonl').open('a') as handle:
+        handle.write(jsonl_text(lines))
+
+
+def _set_knob(run, name, value):
+    path = run / 'effective-profile.json'
+    profile = json.loads(path.read_text())
+    profile['knobs'][name] = {'value': value}
+    path.write_text(json.dumps(profile))
+
+
+def test_readout_rolling_window_defaults_to_the_last_100_and_takes_the_profile_windows(tmp_path):
+    """#556: `readout_rolling_games` [100] (the default) and a run frozen without the knob give
+    the same rolling section as before (last 100, no extra key); [30, 1000] puts the last 30
+    in `rolling` and the last 1000 beside it, per arm too, incrementally."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    _many_control_games(run, 150)
+    old = readout.build(run, 1200)  # no knob in the profile: a run frozen before #556
+    games = old['training_games']
+    assert games['rolling_games'] == 100 and 'rolling_windows' not in games
+    assert 'rolling_windows' not in games['arms']['control']
+    last = [10 + i % 30 for i in range(50, 150)]  # the newest 100 by close time
+    assert games['rolling']['all']['games'] == 100
+    assert games['rolling']['all']['mean_floor'] == pytest.approx(sum(last) / 100)
+    assert games['rolling']['all']['win_rate'] == pytest.approx(
+        sum(i % 7 == 0 for i in range(50, 150)) / 100)
+    assert games['run']['all']['games'] == 154
+    _set_knob(run, 'readout_rolling_games', [100])
+    new = readout.build(run, 1200)  # the default: the same record (bar the profile digest)
+
+    def lines(record):
+        return [line for line in readout.render(record).splitlines()
+                if not line.startswith('identity:')]
+    assert {**new, 'identity': None} == {**old, 'identity': None}
+    assert lines(new) == lines(old)
+    assert 'training games A0 (control, full, last 100): 100 games' in readout.render(old)
+
+    _set_knob(run, 'readout_rolling_games', [30, 1000])
+    reader = readout.Readout(run, 1200)
+    reader.update()
+    _many_control_games(run, 20, start_t=20_000)  # appended after the first read
+    r = reader.update().record()
+    assert r == readout.build(run, 1200)  # incremental == one fresh read
+    games = r['training_games']
+    assert games['rolling_games'] == 30 and games['rolling']['all']['games'] == 30
+    newest = [10 + i % 30 for i in range(130, 150)] + [10 + i % 30 for i in range(20)]
+    assert games['rolling']['all']['mean_floor'] == pytest.approx(sum(newest[-30:]) / 30)
+    wide = games['rolling_windows']['1000']['all']
+    assert wide['games'] == games['run']['all']['games'] == 174
+    # per ascension the deque holds the largest window too, not the first
+    assert games['rolling_windows']['1000']['A0']['games'] == games['run']['A0']['games'] > 30
+    assert games['arms']['control']['rolling_windows'] == games['rolling_windows']
+    assert games['arms']['explore']['rolling_windows']['1000']['all']['games'] == 1
+    text = readout.render(r)
+    assert 'training games A0 (control, full, last 30): 30 games' in text
+    assert 'training games all (control, full, last 1000): 174 games' in text
+    assert 'training games arm explore A0 (full, last 1000): 1 games' in text
+    with pytest.raises(ValueError, match='positive ints'):
+        readout.Readout(run, 1200, rolling=[0])
+
+
+def test_readout_rolling_windows_run_on_across_a_resumed_generation(tmp_path):
+    """A resumed chain generation starts its rolling windows from the earlier generations'
+    games (bounded by the largest window); its whole-run section stays its own."""
+    first, second = tmp_path / 'run-t1', tmp_path / 'run-t1-r1'
+    for run in (first, second):
+        write_run(run)
+        write_record_inputs(run)
+        _set_knob(run, 'readout_rolling_games', [30, 1000])
+    _many_control_games(first, 150)
+    _many_control_games(second, 20, start_t=20_000)
+    alone = readout.build(second, 1200)['training_games']
+    assert alone['rolling_windows']['1000']['all']['games'] == 24
+    assert 'rolling_seed_runs' not in alone
+    reader = readout.Readout(second, 1200, seed=[first])
+    games = reader.update().record()['training_games']
+    assert games['rolling_seed_runs'] == ['run-t1']
+    assert games['run'] == alone['run']  # this generation's own
+    assert games['rolling_windows']['1000']['all']['games'] == 154 + 24
+    first_a0 = readout.build(first, 1200)['training_games']['run']['A0']['games']
+    assert games['rolling_windows']['1000']['A0']['games'] == (
+        first_a0 + alone['run']['A0']['games'])
+    assert games['rolling']['all']['games'] == 30
+    assert games['arms']['explore']['rolling_windows']['1000']['all']['games'] == 2
+    bounded = readout.Readout(second, 1200, rolling=[30, 100], seed=[first]).update()
+    assert len(bounded.control.rolling) == 100
+    # A seeded generation with no game closed yet already shows the windows.
+    empty = tmp_path / 'run-t1-r2'
+    write_run(empty)
+    games = readout.Readout(empty, 1200, rolling=[100], seed=[first, second]).update(
+        ).record()['training_games']
+    assert games['rolling']['all']['games'] == 100 and games['run']['all']['games'] == 0
+
+
+def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
+    """RL5-METHODS R: per exploration arm the assemblers' per-encounter HP counters
+    (`<arm>+save` apart) and the learner's per-arm clip fraction and approx KL."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    r = readout.build(run, 1200)
+    assert r['hp_score_arms'] == {} and r['learning']['run_mean']['policy_by_arm'] is None
+    text = readout.render(r)
+    assert 'PPO update per arm' not in text and '  arm control:' not in text
+    zero = {'battles': 0, 'deaths': 0, 'hp_change': 0}
+
+    def table(normal, boss):
+        return {'normal': normal, 'elite': zero, 'boss': boss, 'unknown': zero}
+    hot = table({'battles': 10, 'deaths': 1, 'hp_change': -100}, zero)
+    control = table({'battles': 4, 'deaths': 0, 'hp_change': -20},
+                    {'battles': 2, 'deaths': 1, 'hp_change': -90})
+    saved = table(zero, {'battles': 1, 'deaths': 1, 'hp_change': -60})
+    statuses = [({'control': control, 'hot': hot}, 0), ({'control': control,
+                                                          'control+save': saved}, 1)]
+    for by_arm, index in statuses:
+        by_encounter = {kind: {key: sum(t[kind][key] for t in by_arm.values())
+                               for key in zero} for kind in control}
+        (run / f'service-status-{index}.jsonl').write_text(jsonl_text([
+            {'t': 2300, 'service': {'rows': 1}, 'assembler': {'hp_score': {
+                'by_encounter': by_encounter, 'by_arm': by_arm}}}]))
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    for event in events:
+        if event.get('kind') == 'progress':  # 4 rows of control (1 clipped), 2 of hot
+            event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1],
+                                      'unattributed': [3, 0.0, 0, 0]}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    r = readout.build(run, 1200)
+    arms = r['hp_score_arms']
+    assert sorted(arms) == ['control', 'control+save', 'hot']
+    assert arms['control']['normal'] == {'combats': 8, 'deaths': 0, 'death_rate': 0.0,
+                                         'mean_net_hp_change': -5.0}
+    assert arms['control']['boss'] == {'combats': 4, 'deaths': 2, 'death_rate': 0.5,
+                                       'mean_net_hp_change': -45.0}
+    assert arms['hot']['normal']['death_rate'] == 0.1
+    assert arms['hot']['elite']['death_rate'] is None
+    assert arms['control+save']['boss']['mean_net_hp_change'] == -60.0
+    assert r['hp_score']['boss']['combats'] == 5  # all arms together, as before
+    attempts = r['learning']['run_mean']['attempts']
+    ppo = r['learning']['run_mean']['policy_by_arm']
+    assert ppo['control'] == {'rows': 4 * attempts, 'clip_fraction': 0.25,
+                              'approx_kl': pytest.approx(0.001), 'ratio_nonfinite': 0}
+    assert ppo['hot'] == {'rows': 2 * attempts, 'clip_fraction': 1.0,
+                          'approx_kl': pytest.approx(0.01), 'ratio_nonfinite': attempts}
+    assert r['learning']['latest']['policy_by_arm']['hot']['clip_fraction'] == 1.0
+    text = readout.render(r)
+    assert 'PPO update per arm (rows, clip, approx KL): control ' in text
+    assert '/ 0.250 / 0.0010, hot ' in text
+    assert 'unattributed' not in text.split('PPO update per arm')[1].splitlines()[0]
+    lost = r['learning']['latest']['policy_by_arm']['unattributed']['rows']
+    assert lost % 3 == 0 and f'  WARNING (latest): {lost:,} PPO rows unattributed (a source ' \
+        'without an exploration table), left out of the per-arm line' in text
+    assert '  arm control+save: normal 0 / 0 / -, elite 0 / 0 / -, boss 1 / 1 / -60.0' in text
+    events[-5]['policy_by_arm'] = {'hot': [2, 0.01]}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    with pytest.raises(ValueError, match='2 fields, expected 4'):
+        readout.build(run, 1200)
+
+
 def test_readout_refuses_to_guess_missing_aux(tmp_path):
     run = tmp_path / 'run-t1'
     write_run(run)
@@ -1319,16 +1490,17 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     plan = plan_for(cards=3, wall_seconds=2400, segment_format='stpd/rl-fast-segment-4')
     facts = {**good_facts(plan), 'gate_learner_base': with_hp(gate_base(), 0.003),
              'frozen_recipe': with_hp(FROZEN, 0.003)}
-    results = preflight.checks(plan, facts)
-    assert all(r.ok for r in results), preflight.report(results)
-    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope combat_ticket, ' \
-        'segment format stpd/rl-fast-segment-4'
+    # scope combat_ticket: no source sends single-combat tickets, so no row gets the term
+    results = by_name(preflight.checks(plan, facts))
+    assert [r.name for r in results.values() if not r.ok] == ['hp_score']
+    assert 'scope combat_ticket adds nothing' in results['hp_score'].detail
     # the "all_combats" experiment arm: the same path, gate and frozen recipe agreeing
     arm = {**facts, 'gate_learner_base': with_hp(gate_base(), 0.003, 'all_combats'),
            'frozen_recipe': with_hp(FROZEN, 0.003, 'all_combats')}
     results = preflight.checks(plan, arm)
     assert all(r.ok for r in results), preflight.report(results)
-    assert 'scope all_combats' in by_name(results)['hp_score'].detail
+    assert by_name(results)['hp_score'].detail == 'c_hp 0.003, scope all_combats, ' \
+        'segment format stpd/rl-fast-segment-4'
     # build passes the gate's c_hp through; A9 compares it with the frozen value
     run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
            'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
@@ -1344,6 +1516,71 @@ def test_hp_score_coefficient_comes_from_the_gate_and_needs_segment_format_4():
     assert learner_config.recipe_drift(old, FROZEN) == [
         "loss.hp_advantage_coef: frozen 0.0, effective '<missing>'",
         "loss.hp_advantage_scope: frozen 'combat_ticket', effective '<missing>'"]
+
+
+def test_hp_score_refuses_a_coefficient_no_row_would_receive():
+    """G: c_hp > 0 with scope combat_ticket adds nothing (no source sends single-combat
+    tickets), and every c_hp > 0 needs format 4; c_hp 0 (today's default) passes as before."""
+    def hp(fmt, coef, scope):
+        plan = plan_for(cards=3, wall_seconds=2400, segment_format=fmt)
+        facts = {**good_facts(plan), 'gate_learner_base': with_hp(gate_base(), coef, scope),
+                 'frozen_recipe': with_hp(FROZEN, coef, scope)}
+        return preflight.check_hp_score(plan, facts)
+
+    three, four = 'stpd/rl-fast-segment-3', 'stpd/rl-fast-segment-4'
+    assert not hp(three, 0.003, 'all_combats').ok  # all_combats still needs format 4
+    assert 'needs segment_format' in hp(three, 0.003, 'all_combats').detail
+    assert not hp(three, 0.003, 'combat_ticket').ok
+    refused = hp(four, 0.003, 'combat_ticket')
+    assert not refused.ok and 'sends no single-combat tickets' in refused.detail
+    assert hp(four, 0.003, 'all_combats').ok
+    for fmt in (three, four):  # c_hp 0: the scope does not matter, as today
+        assert hp(fmt, 0.0, 'combat_ticket').ok and hp(fmt, 0.0, 'all_combats').ok
+    # the fact the refusal rests on: the fast env's episode_open names no ticket, so the
+    # assembler ends every game as {"end": "game"}; a ticket source must lift the refusal
+    kernel = (FASTCHAIN.parents[2] / 'components/policy-runtime/src/fast-env/kernel.ts')
+    opened = kernel.read_text().split('type: "episode_open"', 1)[1].split('});', 1)[0]
+    assert 'ticket' not in opened
+
+
+def test_a_trained_start_without_fitted_heads_needs_the_site_to_say_so():
+    """G / REVIEW-550 O1: a trained start with warmup_file = "" starts its RL4 heads from the
+    constructor init; refused unless site trained_start_without_warmup = true. A random-init
+    start and a resume (heads from the CP) pass as before."""
+    plan = plan_for(cards=3, wall_seconds=2400)
+    none = {**good_facts(plan), 'warmup_artifact': {'id': None, 'present': False, 'none': True}}
+    refused = preflight.check_warmup_artifact(plan, none)
+    assert not refused.ok and 'trained_start_without_warmup' in refused.detail
+    assert preflight.check_warmup_artifact({**plan, 'resume_checkpoint': 'cp-1'}, none).ok
+    random_init = {**none, 'start_model': {'package_sha256': 'e' * 64, 'training_identity': {
+        'schema': preflight.RANDOM_START, 'seed': 5}}}
+    assert preflight.check_warmup_artifact(plan, random_init).ok
+    meant = copy.deepcopy(plan)
+    meant['site']['trained_start_without_warmup'] = True
+    passed = preflight.check_warmup_artifact(meant, none)
+    assert passed.ok and passed.detail.endswith('site trained_start_without_warmup = true')
+    both = preflight.check_warmup_artifact(meant, good_facts(plan))  # opt-out + a warm-up
+    assert not both.ok and 'set one of them' in both.detail
+    assert preflight.check_warmup_artifact({**meant, 'resume_checkpoint': 'cp-1'},
+                                           good_facts(plan)).ok  # never refuses a resume
+    # fitted heads: compared with the start package on a fresh start
+    other = {**good_facts(plan), 'warmup_artifact': {'id': 'f' * 64, 'present': True,
+                                                     'package_sha256': 'd' * 64}}
+    mismatch = preflight.check_warmup_artifact(plan, other)
+    assert not mismatch.ok and 'd' * 64 in mismatch.detail and 'e' * 64 in mismatch.detail
+    assert preflight.check_warmup_artifact({**plan, 'resume_checkpoint': 'cp-1'}, other).ok
+
+
+def test_site_takes_trained_start_without_warmup_as_an_optional_bool(tmp_path):
+    assert 'trained_start_without_warmup' not in run_profile.load_site(SITE)  # default: off
+    site = tmp_path / 'site.toml'
+    text = SITE.read_text().replace('\n[site]\n', '\n[site]\ntrained_start_without_warmup = @\n')
+    site.write_text(text.replace('@', 'true'))
+    assert run_profile.load_site(site)['trained_start_without_warmup'] is True
+    site.write_text(text.replace('@', '"yes"'))
+    with pytest.raises(run_profile.ProfileError,
+                       match='trained_start_without_warmup: expected bool'):
+        run_profile.load_site(site)
 
 
 def test_a_gate_from_before_the_hp_score_takes_both_keys_from_the_frozen_config():
@@ -1416,7 +1653,7 @@ def test_roles_writes_the_learner_config_and_gc_keys_preflight_checked():
     run = {'run_name': 'r', 'peer_dir': '/p', 'start_package': '/s', 'wall_seconds': 60,
            'device': 'cuda', 'generation': 'g', 'warmup_artifact_id': 'w',
            'rendezvous_path': '/r', 'ranks': 1, 'resume_checkpoint': None}
-    frozen = with_hp(FROZEN, 0.003)
+    frozen = with_hp(FROZEN, 0.003, 'all_combats')
     run['start_model_sha256'] = 'a' * 64  # A1 start_fields pass through to build
     written, filled = learner_config.learner_base(gate_without_hp(), frozen, plan['knobs'], run)
     assert written['loss']['hp_advantage_coef'] == 0.003 and set(filled) == {
@@ -1642,6 +1879,7 @@ def test_chain_writes_the_run_record_at_checkpoints_resume_and_end(tmp_path):
     assert [c['checkpoint_artifact_id'] for c in last['checkpoints']] == ['cp-x', 'cp-y']
     # One readout per generation: each record read only what was appended since the last.
     assert chain.reader.run == run and chain.reader.read_bytes == events.stat().st_size
+    assert chain.reader.seed_runs == [tmp_path / 'run-lr1']  # windows run on (#556)
     (run / 'plan.json').write_text('{')  # a broken record is noted, never stops the run
     assert not chain.record(run, 'checkpoint')
     assert chain.state['log'][-1]['kind'] == 'run_record_failed'
@@ -1935,6 +2173,18 @@ def test_save_starts_knob_defaults_off_and_is_validated():
     assert 'save_starts' in supervise.ENV_RECIPE_KNOBS
 
 
+def test_readout_rolling_games_knob_defaults_to_100_and_is_validated():
+    """#556: [100] = the readout before the knob; a list of 1-4 distinct ints in [10, 1e5]."""
+    assert run_profile.values(run_profile.load_profile(PROFILE, []))[
+        'readout_rolling_games'] == [100]
+    on = run_profile.values(run_profile.load_profile(
+        PROFILE, ['readout_rolling_games=[100, 1000]']))
+    assert on['readout_rolling_games'] == [100, 1000]
+    for bad in ('[]', '[5]', '[100, 100]', '[100, 200, 300, 400, 500]', '100', '[1e3]'):
+        with pytest.raises(run_profile.ProfileError, match='readout_rolling_games'):
+            run_profile.load_profile(PROFILE, [f'readout_rolling_games={bad}'])
+
+
 def test_exploration_plan_interleaves_arms_over_the_run_drivers():
     ladder = run_profile.values(run_profile.load_profile(PROFILE, [THREE_ARMS]))[
         'exploration_ladder']
@@ -2182,7 +2432,8 @@ def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad
     try:
         for name, extra in (('none', ()), ('off', ('--save-starts', SAVE_STARTS_OFF,
                                                     '--save-pool', str(tmp_path / 'pool')))):
-            out = tmp_path / name
+            out = tmp_path / name / 'env-n0' / 'p0'
+            write_run(tmp_path / name, cards=1)
             done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON,
                               '--arm', 'hot', '--replay-k', '2', *extra)
             assert done.returncode == 0, done.stderr
@@ -2200,6 +2451,15 @@ def test_env_driver_with_save_starts_off_opens_exactly_as_before_and_refuses_bad
     assert [o['seed'] for o in runs['off'][:n]] == [f'S{i // 2}' for i in range(n)]
     assert all(o['start'] == {'kind': 'new_run'} for o in runs['off'])
     assert not (tmp_path / 'pool').exists()
+    # #553 should-fix 1: nor does the readout change: no save counters, no save-start table,
+    # every close in the arm tables.
+    off = readout.jsonl(tmp_path / 'off' / 'env-n0' / 'p0' / 'driver.jsonl')
+    assert not [r for r in off if r['event'] in ('save_counters', 'save_pooled')]
+    record = readout.build(tmp_path / 'off', 1200)
+    assert record['save_starts'] == {}
+    assert set(record['recipe']['start']) == {'new_run'}
+    assert record['recipe']['arm']['hot'] == record['recipe']['start']['new_run']
+    assert 'save starts:' not in readout.render(record)
     for flags, message in (
             (('--exploration-ladder', LADDER_JSON, '--arm', 'cold', '--replay-k', '1'), '--arm'),
             (('--exploration-ladder', LADDER_JSON, '--arm', 'hot'), '--replay-k'),

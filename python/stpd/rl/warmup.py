@@ -34,6 +34,10 @@ from .heads import (
     outcome_mask,
 )
 
+# The fitted-heads checkpoint schema the learner loads (segment_learner._start_model) and the
+# fast-chain preflight reads (launch.WARMUP_SCHEMA, pinned by a test).
+HEAD_WARMUP_SCHEMA = "stpd/rl4-head-warmup-1"
+
 
 @dataclass(frozen=True)
 class WarmupExample:
@@ -431,7 +435,7 @@ def main() -> None:
     model.enable_rl4_heads(arguments.seed, frequencies)
     arguments.output.mkdir(parents=True, exist_ok=False)
     report = warmup_heads(model, examples, config)
-    raw = encode_checkpoint({"schema": "stpd/rl4-head-warmup-1",
+    raw = encode_checkpoint({"schema": HEAD_WARMUP_SCHEMA,
         "model_package_sha256": package_sha,
         "feature_manifest_sha256": hashlib.sha256(arguments.features.read_bytes()).hexdigest(),
         "heads": model.rl4_heads.state_dict(), "report": report})

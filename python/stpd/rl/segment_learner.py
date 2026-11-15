@@ -105,7 +105,13 @@ from .fast_source import (
 )
 from .fast_verify import FastVerifyClosed, FastVerifyPool
 from .learner import ROOT, LearnerConfig, _device
-from .learning_diagnostics import advantage_fields, exploration_fields, value_target_fields
+from .learning_diagnostics import (
+    advantage_fields,
+    exploration_fields,
+    policy_by_arm,
+    row_arms,
+    value_target_fields,
+)
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
 from .loss import prepared_update
@@ -132,6 +138,7 @@ from .sgd_process import (
     weights_digest,
     write_tree,
 )
+from .warmup import HEAD_WARMUP_SCHEMA
 
 # The watcher's typed window-end stops (tools/friday/watch.py COMPLETED_WINDOW_STOPS).
 WINDOW_END_STOPS = frozenset({"run_budget_complete", "absolute_deadline"})
@@ -309,6 +316,14 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
         "all": summary(rows), "age_seconds": bins("age", (0., 5., 15., 30., 60., 120.)),
         "version_lag": bins("versions", (0., 1., 2., 4., 8., 16.)),
         "pre_update_SGD_lag": bins("SGD_updates", (0., 1., 2., 4., 8., 16.))}
+
+
+def _with_policy_by_arm(build: Callable[[], dict[str, Any]] | None,
+                        arms: list[str | None], samples: list[dict[str, Any]]
+                        ) -> dict[str, Any]:
+    """`build`'s fields (if any) and this attempt's `policy_by_arm` (learning_diagnostics)."""
+    return {**(build() if build is not None else {}),
+            "policy_by_arm": policy_by_arm(arms, samples)}
 
 
 def _first_use_fields(metadata: list[dict[str, Any]], policy_mask: list[bool],
@@ -567,6 +582,7 @@ def binary_preparer_arguments(dataplane: dict[str, Any], settings: Any,
 class SegmentLearner:
     memory_sample: tuple[float, dict[str, Any]] | None
     policy_mask_cache: tuple[Any, list[bool]] | None  # (batch, mask list): per dataset
+    row_arm_cache: tuple[Any, list[str | None] | None] | None  # (batch, arms): per dataset
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
@@ -1762,7 +1778,7 @@ class SegmentLearner:
         if self.settings.warmup_artifact_id:
             artifact = self.exchange.store.get_manifest(self.settings.warmup_artifact_id)
             fitted = decode_checkpoint(self.exchange.store.bytes(artifact.payload("checkpoint")))
-            if fitted.get("schema") != "stpd/rl4-head-warmup-1":
+            if fitted.get("schema") != HEAD_WARMUP_SCHEMA:
                 raise ValueError("explicit_fitted_RL4_heads_required")
             if fitted["model_package_sha256"] != descriptor["package_sha256"]:
                 raise ValueError("fitted_heads_start_policy_changed_use_explicit_CP_conversion")
@@ -3615,6 +3631,11 @@ class SegmentLearner:
                       policy_updates: int) -> dict[str, Any]:
         """The single successful-use owner: first use, aux uses, counters, events."""
         build: Callable[[], dict[str, Any]] | None = None
+        if self.row_arm_cache is None or self.row_arm_cache[0] is not batch:
+            derived = row_arms(batch.metadata,  # once per dataset
+                               [m.rows for m in batch.request.members])
+            self.row_arm_cache = batch, (derived if any(derived) else None)
+        arms = self.row_arm_cache[1]
         if result["stepped"]:
             used = set(active["used"])  # was a list scan per row: O(rows x used) per step
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in used]
@@ -3674,12 +3695,15 @@ class SegmentLearner:
             self.active = self.active_batch = None
             self.device_batch = None
             self.policy_mask_cache = None  # never retain a finished batch
+            self.row_arm_cache = None
             self._promote()  # before forgetting: its sources stay retained
             self._forget_unreferenced()
             if self.updates > active["start_updates"]:
                 self._schedule_publication()
         # Fallible IO follows the complete learning transition; CP never pairs
         # new Adam/theta with old successful-use counters.
+        if arms is not None:  # fast chain: PPO clip/KL per exploration arm, telemetry side
+            build = partial(_with_policy_by_arm, build, arms, policy_samples)
         self._event("progress", _build=build, **result, version=self.version)
         if self.metrics is not None and self.updates % self.config.tensorboard_steps == 0:
             self.metrics.scalars(
@@ -3803,6 +3827,7 @@ class SegmentLearner:
     def _init_progress_telemetry(self) -> None:
         self.memory_sample = None
         self.policy_mask_cache = None
+        self.row_arm_cache = None
 
     def _memory(self) -> dict[str, Any]:
         """Peak memory, sampled at most every MEMORY_SAMPLE_SECONDS (peaks only grow)."""

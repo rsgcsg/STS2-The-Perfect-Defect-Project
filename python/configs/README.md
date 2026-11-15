@@ -38,6 +38,8 @@ warm-up dumps chosen with `python -m stpd.rl.offline_step warmup-cover`.
 in HP points (tens), A_outcome in 0..1 reward units, so c_hp is expected around
 0.001-0.01. `loss.hp_advantage_scope` is `"combat_ticket"` (default: only single-combat
 ticket segments) or `"all_combats"` (an experiment arm: every combat, full games too).
+No source sends single-combat tickets yet (the fast env's `episode_open` names none), so
+the fast-chain preflight refuses c_hp > 0 with `"combat_ticket"` (#568).
 Both are frozen for a run. A fast-chain gate `learner-base.json` that has them must match;
 a gate made before them takes them from here (`learner_config.gate_recipe`).
 `segments.value_target` (fast chain only) is `"segment"` (default: each 64-row segment
