@@ -241,6 +241,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["residual"] = "prepared_kernels residual lever (#526)"
     if k["sgd_gc_freeze"]:
         need["gc_freeze"] = "sgd_gc_freeze (#525 b40d31db)"
+    if k["sgd_gc_refreeze_objects"] != 200_000:
+        need["gc_refreeze"] = "sgd_gc_refreeze_objects (RL5-METHODS F)"
     if k["sgd_step_probe"]:
         need["step_probe"] = "sgd_step_probe (#525)"
     if k["levers"] and k["compile_warmup"]:
@@ -305,6 +307,7 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
             ("frozen config " + plan["knobs"]["frozen_learner_config"], frozen),
             ("gate learner-base.json", base)) if value is None]
         return Result("frozen_recipe", False, "missing " + " and ".join(missing))
+    base, filled = learner_config.gate_recipe(base, frozen)
     effective = learner_config.build(base, plan["knobs"], {
         "run_name": "preflight", "peer_dir": "-", "start_package": "-",
         "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
@@ -315,26 +318,34 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
                   + "; ".join(drift)) if drift else
                   f"effective learner config = {plan['knobs']['frozen_learner_config']} "
-                  f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})")
+                  f"(allowed: {', '.join(sorted(learner_config.ALLOWED_DRIFT))})"
+                  + (f"; not in the gate, from the frozen config: loss.{', loss.'.join(filled)}"
+                     if filled else ""))
 
 
 def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     """c_hp (the gate's `loss.hp_advantage_coef`, equal to the frozen config's by A9) > 0
     needs segment format 4: the learner refuses every older segment
     (`fast_segment_without_hp_score`), so refuse the run before it starts. Its scope
-    (`loss.hp_advantage_scope`) comes from the gate the same way."""
+    (`loss.hp_advantage_scope`) comes from the gate the same way; a gate made before them
+    gets both from the frozen config (`learner_config.gate_recipe`)."""
     base, fmt = facts.get("gate_learner_base"), plan["knobs"]["segment_format"]
-    loss = (base or {}).get("loss") or {}
-    coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
     if base is None:
         return Result("hp_score", False, "no gate learner-base.json")
+    frozen = facts.get("frozen_recipe")
+    base, filled = learner_config.gate_recipe(base, frozen) if frozen else (base, {})
+    loss = base.get("loss") or {}
+    coef, scope = loss.get("hp_advantage_coef"), loss.get("hp_advantage_scope")
     if type(coef) not in (int, float) or scope not in ("combat_ticket", "all_combats"):
-        return Result("hp_score", False, "gate learner-base.json lacks loss.hp_advantage_coef "
-                      "/ loss.hp_advantage_scope: patch it once (RL_LONG_RUN.zh-CN.md, c_hp)")
+        return Result("hp_score", False, "neither the gate learner-base.json nor the frozen "
+                      "config has a valid loss.hp_advantage_coef / loss.hp_advantage_scope "
+                      "(a source before #538?)")
     if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
         return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
                       f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
-    return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}")
+    return Result("hp_score", True, f"c_hp {coef}, scope {scope}, segment format {fmt}"
+                  + (" (from the frozen config; not in the gate)"
+                     if {"hp_advantage_coef", "hp_advantage_scope"} & set(filled) else ""))
 
 
 def check_compile_warmup(plan: dict[str, Any], facts: dict[str, Any]) -> Result:

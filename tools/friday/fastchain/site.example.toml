@@ -51,6 +51,9 @@ compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
 # peer that holds its originals (snapshot.json `peer`). The reference must be on the
 # execution template's Host and Runtime pins and the watcher's seed manifest, else the
 # watcher refuses at start; with no entry, supervise needs --eval-no-baseline.
+# These lines belong to [site] (here, before the first [site.gpu_types] table); a table of
+# its own must be named [site.eval_baselines]. Every top-level key or table other than
+# `schema` and [site] (e.g. a bare [eval_baselines]) is refused.
 # eval_baselines.a0 = { plan = "/scratch/USER/eval-baselines/a0-CP-HOST/round/evaluation/plan.json", sha256 = "SHA256" }
 # eval_baselines.a10 = { plan = "/scratch/USER/eval-baselines/a10-CP-HOST/round/evaluation/plan.json", sha256 = "SHA256" }
 

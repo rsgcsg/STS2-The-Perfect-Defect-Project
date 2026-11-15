@@ -29,6 +29,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--set name=value`（记入 `overridden_from`）。bench 与整链读同一文件，生效值写入 run 目录。
 - 站点文件：集群相关的路径、分区、节点、凭据文件路径都在这里，真实值不进仓库；
   照 `site.example.toml` 在仓库外填一份。凭据只放 0600 文件，工具只检查存在和权限。
+  文件顶层只有 `schema` 和 `[site]`，其余顶层键或表一律拒绝；评估基线写在 `[site]` 里
+  （`eval_baselines.a0 = {...}`）或单独一张 `[site.eval_baselines]`，顶层 `[eval_baselines]` 会被拒绝。
   卡型 = 分区 + gres + `constraint`（只有该卡型节点才有的 feature，`sinfo -o "%N %f"` 查，
   `""` = 分区和 gres 已能区分）；`nodes` 只用于打印 sinfo 快照和 `--fallback` 选卡数，从不
   钉节点；只有站点显式写了可选的 `nodelist` 才加 `--nodelist`（CLUSTER-QUEUE-DIAG 11-14：
@@ -60,7 +62,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 - 编译预热：`compile_warmup = true` 时 `sgd_compile.warmup` 取站点 `compile_warmup_dumps`
   （1–8 个 dump，由 `python -m stpd.rl.offline_step warmup-cover` 选，文件须存在），另有
   `sgd_gc_freeze`、`sgd_step_probe` 与 #525 暂存键；读数在 `dynamo_unique_graphs` 高于预热后
-  首值时报警，探针开时报 gc 秒数。
+  首值时报警，探针开时报 gc 秒数。`sgd_gc_refreeze_objects`（代码默认 200000，配置 25000）：
+  边界 collect 后未冻结对象达到它就再冻结一次；每次在线重编译永久留下 1.9万–9.6万个对象，
+  默认值下它们越积越多，边界 collect 从 4.4 ms 涨到 65 ms（V5 冒烟）。
 - 起点模型：站点 `start_package`（含 `model.json` 的模型包）。新起时学习者配置的
   `start_model_sha256` 取该包的 `package_sha256`，学习者加载时核对；包缺失时预检拒绝。续跑不读
   起点包（学习者恢复 CP），起点字段取被恢复 CP 的 config，包删了或原地换了照样续、记的仍是真实
@@ -177,36 +181,29 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     "combat"` 的段加，整局里的战斗行不加；`"all_combats"` 是实验臂，整局所有战斗都加。
     env 还不发单战斗 ticket（W3），所以在那之前 `combat_ticket` 下 c_hp > 0 实际不加任何行。
   - c_hp > 0 要求 `segment_format = "stpd/rl-fast-segment-4"`，否则预检 `hp_score` 拒绝（学习者
-    对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值
-    并同步闸门（下面的命令），再 `--set segment_format=stpd/rl-fast-segment-4`。
+    对旧格式段会 `fast_segment_without_hp_score` 拒收）。做实验 = 改源码 `rl5.json` 的这两个值，
+    再 `--set segment_format=stpd/rl-fast-segment-4`；闸门不动。
   - 按战斗类型权重（RL5-METHODS A2）：配置旋钮 `hp_combat_weights`（`normal`/`elite`/`boss`，
     默认 1/1/1 = 不加权）只乘 A_hp 的净血量变化部分及其基线，药水 −5 与死亡 −30 不乘。战斗类型
     = 该战斗首行的公开 `combat.content.encounter_type`：聚合器随行发 `encounter`，格式 4 的战斗行
     缺它时组装拒收（`hp_encounter_required`）；`unknown`（如事件战）按 normal。非 1/1/1 要求格式 4
     （载入配置时核对），预检要求源码特性 `hp_combat_weights`。实验起点
     `--set 'hp_combat_weights={ normal = 1.0, elite = 1.0, boss = 0.3 }'`。
+    主管定的读法（2026-11-15，#548 审查）：死亡时降到 0 血（−H_t）和收回的最大血量都属于
+    被乘的血量变化部分，只有 −30 与药水项不乘。
   - 运行记录（A2）：`learning.*.advantage_raw.hp_share` = c_hp·A_hp 在归一前优势方差里的份额
     （多选行上 Cov(c_hp A_hp, A) / Var(A)，各数据集均值），`hp_std` 是它的标准差；c_hp 0 时两者
     为 null。`hp_score` 按战斗类型给格式 4 组装器累计的战斗数、死亡数与死亡率、每场平均净血量
     变化（H_T − H_0 + M_T − M_0，死亡记 −H_0，不加权）。毛伤害不进段（段里只有决策时刻的 HP），
     不记。
-  - 闸门须补一次：本改动之前生成的 `learner-base.json` 没有这两个键，预检 `frozen_recipe`
-    报 `effective '<missing>'`、`hp_score` 报缺键，一律拒绝。
-  - **还有旧代码（本改动之前）的链要再开一代时，不要补闸门**：旧代码的学习者
-    `LossConfig(**loss)` 遇到未知键直接 TypeError，起不来；旧预检只比较 frozen 里有的键，
-    多出的键不算漂移，拦不住，要到 GPU 作业提交后学习者才崩。supervise 每代都重读闸门。
-  - 命令在运行所用源码 checkout 根目录执行（`GATE` = 站点文件的 `gate_dir`）。值取自同一份
-    `rl5.json`，不是默认值；只在 `.pre-c_hp` 不存在时备份，所以换值再跑不会覆盖真正的旧闸门。
-    回滚 = 还原 `.pre-c_hp`（旧代码只能用它）。
-
-```sh
-GATE=/path/of/site/gate_dir
-[ -e "$GATE/learner-base.json.pre-c_hp" ] || cp -p "$GATE/learner-base.json" "$GATE/learner-base.json.pre-c_hp"
-python3 -c 'import json, sys; g, f = sys.argv[1:]; b = json.load(open(g)); l = json.load(open(f))["loss"]; b["loss"].update({k: l[k] for k in ("hp_advantage_coef", "hp_advantage_scope")}); open(g + ".new", "w").write(json.dumps(b, indent=2) + "\n")' "$GATE/learner-base.json" python/configs/rl5.json && mv "$GATE/learner-base.json.new" "$GATE/learner-base.json"
-```
-
-  之后 `launch.py preflight ...` 应见 `PASS frozen_recipe` 与 `PASS hp_score`。实验换值时先改
-  源码 `rl5.json`，再跑同一命令。
+  - 闸门不用补（RL5-METHODS F）：共享闸门的 `learner-base.json` 生成于 #538 之前，没有这两个键；
+    预检和学习者启动都先经 `learner_config.gate_recipe`，从运行源码的 `rl5.json` 补上闸门缺的
+    `loss` 键（预检 `frozen_recipe` 的 PASS 行列出补了哪些，学习者事件记 `harness_gate_filled`）。
+    闸门已有的键仍是闸门的值，A9 照样逐键比较，所以补过键的私有闸门副本照用，值须等于
+    `rl5.json`。以后新增的 `loss` 键同样从 `rl5.json` 补，不用重做闸门。
+  - **不要往共享闸门里加键**：旧代码（#538 之前）的学习者 `LossConfig(**loss)` 遇到未知键直接
+    TypeError，起不来；旧预检只比较 frozen 里有的键，拦不住，要到 GPU 作业提交后学习者才崩。
+    supervise 每代都重读闸门。
 - env 侧配方（NEW-METHODS-PLAN 11-14 I4–I6、I8），短跑用 `--set` 改：
   - 探索阶梯 `exploration_ladder`（臂名 → `share` 与 `combat`/`noncombat` 的
     `temperature`[1,3]、`uniform_mix`[0,0.1]，share 和为 1；默认单臂 `control` = T 1 / mix 0，

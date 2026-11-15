@@ -129,7 +129,15 @@ def learner() -> None:
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
                                              "checkpoint_window": cp_config, **window})
-    base = learner_config.build(json.loads((gate / "learner-base.json").read_bytes()), K, {
+    # The gate's recipe; loss keys it predates come from this source's frozen config, as
+    # preflight checked (A9 frozen_recipe).
+    gate_base, filled = learner_config.gate_recipe(
+        json.loads((gate / "learner-base.json").read_bytes()),
+        json.loads((Path(site("src_dir")) / K["frozen_learner_config"]).read_bytes()))
+    if filled:
+        jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
+                                             "loss": filled})
+    base = learner_config.build(gate_base, K, {
         "run_name": site("run_name"), "peer_dir": site("peer_dir"),
         **learner_config.start_fields(site("start_package"), restored_config),
         "wall_seconds": os.environ["FC_WALL"],
@@ -195,6 +203,8 @@ def learner() -> None:
         dataplane["release_trained_segments"] = True
     if K["sgd_gc_freeze"]:  # #525: one collect + gc.freeze after the first dataset
         dataplane["sgd_gc_freeze"] = True
+    if K["sgd_gc_refreeze_objects"] != 200_000:  # 200_000 = sgd_process.GC_REFREEZE_OBJECTS
+        dataplane["sgd_gc_refreeze_objects"] = K["sgd_gc_refreeze_objects"]
     if K["sgd_step_probe"]:  # #525: gc seconds/collections per step (diagnostics)
         dataplane["sgd_step_probe"] = True
     if K["shards_adopt_unsharded_checkpoint"]:  # #523 a437612d, first sharded start only
@@ -245,7 +255,7 @@ def learner() -> None:
                "sgd_stage_stream_reuse", "sgd_stage_lean_tree", "sgd_verify_split",
                "sgd_verify_threads", "sgd_switch_interval_seconds",
                "shards_adopt_unsharded_checkpoint", "sgd_compile", "sgd_gc_freeze",
-               "sgd_step_probe", "release_trained_segments")},
+               "sgd_gc_refreeze_objects", "sgd_step_probe", "release_trained_segments")},
            "diagnostics_every": K["diagnostics_every"],
            "remote_prepare": dataplane.get("remote_prepare"),
            "python_path": os.environ.get("PYTHONPATH")}

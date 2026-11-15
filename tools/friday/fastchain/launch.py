@@ -360,6 +360,7 @@ FEATURES = {
     "stage_options": ("python/stpd/rl/sgd_process.py", "sgd_stage_stream_reuse"),  # #525
     "residual": ("python/stpd/p1/rows_forward.py", "def residual_stream"),  # #526
     "gc_freeze": ("python/stpd/rl/sgd_process.py", '"sgd_gc_freeze"'),  # #525 b40d31db
+    "gc_refreeze": ("python/stpd/rl/sgd_process.py", '"sgd_gc_refreeze_objects"'),  # F
     "step_probe": ("python/stpd/rl/sgd_process.py", '"sgd_step_probe"'),  # #525
     "compile_warmup": ("python/stpd/rl/sgd_process.py", '"warmup"'),  # WP8 sgd_compile
     "retention": ("python/stpd/rl/fast_release.py", "release_trained_segments"),  # #529
