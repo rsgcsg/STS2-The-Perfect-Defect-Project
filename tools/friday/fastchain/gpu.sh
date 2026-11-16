@@ -10,8 +10,14 @@ set +u; source /etc/profile >/dev/null 2>&1
 source "$FC_RUN/job-env.sh"
 module load "$FC_SITE_MODULE_LOAD" >/dev/null 2>&1; set -u
 RUN=$FC_RUN; H=$FC_HARNESS; PY=$FC_SITE_PYTHON
+# --- exit code: ---
 # The job's exit code for supervise.py (review D1): absent = the node died or was preempted.
 trap 'echo $? > "$RUN/gpu-rc"' EXIT
+# A signal (scancel, preemption, time limit: Slurm sends SIGTERM before SIGKILL) ends the
+# job 128+N. Without these bash runs the EXIT trap with $? of the interrupted `wait`, 0:
+# V6 smoke attempt 2 had gpu-rc 0 8 ms after a scancel, read as a plain end, not resumed.
+trap 'exit 143' TERM; trap 'exit 129' HUP; trap 'exit 130' INT
+# --- end exit code ---
 stop_once() { ( set -o noclobber; echo "$1" > "$RUN/STOP" ) 2>/dev/null; }  # never overwrite a reason
 # --- launcher check: ---
 # The launcher (also inside supervise.py, which runs it in-process, for every generation)

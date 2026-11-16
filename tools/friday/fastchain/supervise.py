@@ -19,16 +19,22 @@ state; newest CP by published_at; re-freeze on code change).
 Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
 - normal = gpu.sh exited 0 (its `gpu-rc` file), the learner report has no failure and a
   window end, and STOP names no failure;
-- resumable = only the learner's own signal: its report failure names
+- resumable = the learner's own signal: its report failure names
   `input_owner_fenced_restore_last_checkpoint` (the product's instruction: the fenced
-  owner restores its last CP; `input_failure.operation` says why, e.g. a lost hand-off),
-  or there is neither a learner report nor a `gpu-rc` (node failure, preemption); the old
-  generation's jobs are cancelled first;
+  owner restores its last CP; `input_failure.operation` says why, e.g. a lost hand-off);
+  or the GPU job ended without any learner report, no STOP explains it, and gpu-rc says
+  why (lead 11-17): absent (node death), a signal exit 129/130/143 (Slurm kill,
+  preemption, time limit; before V6 attempt 2 a false 0) or 6 (the learner process died
+  without its report: OOM, segfault). Any other rc without a report is final. A bare
+  scancel of the GPU job is a kill and IS resumed: stop a chain only with
+  `supervise.py stop`. The old generation's jobs are cancelled first;
 - not resumed: any other learner failure, including a setup failure (an unrestorable CP
   writes a report too, so the chain stops at once), a "service failure" STOP alone (gpu
-  preflight, GPU count, MPS, memory guard: they would repeat), a refused preflight or
-  failed submit, a disk-watermark stop, a code/profile/site/source change since the
-  chain started (RL4.1 lesson: re-freeze on code change);
+  preflight, GPU count, MPS, memory guard: they would repeat), a "service stop" STOP
+  (operator stop, env_lost: ours; "stopped"), a "launcher gone" STOP or another gpu-rc
+  without a learner report, a refused preflight or failed submit, a disk-watermark stop,
+  a code/profile/site/source change since the chain started (RL4.1 lesson: re-freeze on
+  code change);
 - at most `resume_max_total` resumes (default 3);
 - environment-side recipe at a generation boundary (I8): `chain-CHAIN/env-recipe.txt`, one
   `name=value` per line as `--set` takes it, only `ENV_RECIPE_KNOBS` (exploration ladder,
@@ -127,6 +133,12 @@ import run_profile  # noqa: E402
 
 SCHEMA = "spireagent/friday-fastchain-chain-1"
 RESUMABLE = ("input_owner_fenced_restore_last_checkpoint",)
+# STOP first lines that explain a GPU job ending without a learner report: they repeat
+# (gpu preflight, GPU count, MPS, memory guard) or the launcher is gone; never resumed.
+NO_REPORT_FINAL = ("service failure", "learner failure", "launcher gone", "disk stop")
+# gpu-rc values that resume a generation without a learner report (lead 11-17): a signal
+# exit (gpu.sh: 128+N for HUP, INT, TERM) or 6, the learner process died without a report.
+NO_REPORT_RESUMABLE_RC = (129, 130, 143, 6)
 # Environment-side knobs a chain may change at a generation boundary (I8); not in the
 # frozen learner recipe, checked per game by the fast env and the assembler.
 ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k",
@@ -163,9 +175,14 @@ def outcome(run: Path) -> dict[str, Any]:
     """How a generation ended, from its own files only (review 11-14 D1/D2).
 
     normal: gpu.sh exit 0 (`gpu-rc`), a learner report without failure that reached its
-    window end, and no failure STOP. resumable: only the learner's own signal (its report
-    failure names `input_owner_fenced_restore_last_checkpoint`), or no learner report and
-    no `gpu-rc` (the node died or the job was preempted). Everything else repeats: stop.
+    window end, and no failure STOP. "stopped": our own "service stop" STOP (operator
+    stop) and no learner failure, with or without a report; never resumed. resumable:
+    the learner's own signal (its report failure names
+    `input_owner_fenced_restore_last_checkpoint`), or no learner report, no STOP that
+    explains the end (NO_REPORT_FINAL) and a `gpu-rc` of NO_REPORT_RESUMABLE_RC: absent
+    (node death), a signal exit (Slurm kill, preemption, time limit) or 6 (the learner
+    process died without a report: OOM, segfault; lead 11-17: worth one resume). Any other
+    rc without a report (gpu.sh's own error) is final. Everything else repeats: stop.
     """
     report_path, stop, rc_path = run / "learner-report.json", run / "STOP", run / "gpu-rc"
     report = json.loads(report_path.read_text()) if report_path.exists() else None
@@ -174,14 +191,17 @@ def outcome(run: Path) -> dict[str, Any]:
     first = stop.read_text().strip() if stop.exists() else None
     text = rc_path.read_text().strip() if rc_path.exists() else ""
     rc = int(text) if text.lstrip("-").isdigit() else None
+    rc_ok = rc in NO_REPORT_RESUMABLE_RC if rc_path.exists() else True  # absent: node death
     window_end = ((report or {}).get("summary") or {}).get("window_end")
     failed_stop = (first or "").startswith(("service failure", "learner failure"))
     if disk:
         kind = "disk_stop"
     elif rc == 0 and report is not None and failure is None and window_end and not failed_stop:
         kind = "normal"
+    elif failure is None and (first or "").startswith("service stop"):
+        kind = "stopped"  # our own stop (operator, env_lost): never resumed
     elif (failure and any(code in failure for code in RESUMABLE)) or (
-            report is None and rc is None):
+            report is None and rc_ok and not (first or "").startswith(NO_REPORT_FINAL)):
         kind = "resumable"
     else:
         kind = "failure"
@@ -714,8 +734,10 @@ class Chain:
         return out
 
     def eval_command(self, name: str, watcher: dict[str, Any]) -> list[str]:
-        """No --checkpoint/--once/--deadline-at: the newest CP every eval_interval_seconds,
-        and it keeps going after the chain so the last CP gets its evaluation too."""
+        """No --checkpoint/--once/--deadline-at: the newest CP of this chain (--chain:
+        its generations only, never another chain's on a shared peer) every
+        eval_interval_seconds, and it keeps going after the chain so the last CP gets its
+        evaluation too."""
         config = self.dir / "eval-learner.json"
         config.write_text(json.dumps({"peer": {"kind": "local",
                                                "directory": self.site["peer_dir"]},
@@ -731,7 +753,7 @@ class Chain:
                "--learner-config", str(config), "--execution", str(execution),
                "--manifest", str(watcher["manifest"]), "--output", str(self.dir / f"eval-{name}"),
                "--interval", str(self.knobs["eval_interval_seconds"]),
-               "--seeds", str(watcher["seeds"])]
+               "--seeds", str(watcher["seeds"]), "--chain", self.args.chain]
         cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
         baseline = watcher["baseline"]
         if baseline is not None:
