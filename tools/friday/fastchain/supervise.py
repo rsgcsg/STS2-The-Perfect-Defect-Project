@@ -50,8 +50,16 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
   supervisor would have to read it back);
 - the launcher (in this process) is the GPU job's liveness owner until gpu.sh confirmed
   its start: SIGTERM/SIGHUP cancel the generation's jobs, and gpu.sh refuses on a stale
-  launcher-alive (SIGKILL); after the start a dead supervisor leaves the generation
-  running without resume, readout or evaluation, as before;
+  launcher-alive (SIGKILL). After the start, SIGTERM/SIGHUP to supervise (V6 smoke) cancel
+  the generation's jobs (dependents first, the GPU job last) and end the evaluation
+  watchers, then FINAL.json names the signal; a signal this process ignores (nohup's
+  SIGHUP) stays ignored. SIGKILL still leaves the generation running without resume,
+  readout or evaluation;
+- an environment side that is gone while the GPU job runs, before the GPU side asked it to
+  leave (no DRAIN or STOP, not inside the late-join window before `env-drain-at`), for
+  `env_lost_grace_seconds` (V6 smoke: every driver died at start and two cards waited for
+  data) ends the generation: its jobs are cancelled and the chain stops with `env_lost`,
+  never resumed, the env array never resubmitted (0 = off);
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
   window exits 0.
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
@@ -85,6 +93,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -107,6 +116,10 @@ RESUMABLE = ("input_owner_fenced_restore_last_checkpoint",)
 ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k",
                     "sampling_temperature_min", "save_starts")
 CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 ends by its wall
+
+
+class Stopped(BaseException):
+    """SIGTERM/SIGHUP to supervise: not an Exception, so no `except Exception` keeps going."""
 
 
 def digest(path: Path) -> str:
@@ -169,8 +182,8 @@ class Chain:
                  scancel: Callable[[list[str]], None] | None = None,
                  checkpoints: Callable[[set[str]], list[dict[str, Any]]] | None = None,
                  spawn: Callable[[list[str], Path], Any] | None = None,
-                 check: Callable[[list[str]], subprocess.CompletedProcess] | None = None
-                 ) -> None:
+                 check: Callable[[list[str]], subprocess.CompletedProcess] | None = None,
+                 end_watcher: Callable[[Any], None] | None = None) -> None:
         self.args, self.clock, self.sleep, self.launch_main = args, clock, sleep, launch_main
         self.squeue = squeue or live_jobs
         self.scancel = scancel or (lambda ids: subprocess.run(["scancel", *ids], check=False))
@@ -181,6 +194,8 @@ class Chain:
             cmd, stdout=log.open("a"), stderr=subprocess.STDOUT, start_new_session=True))
         self.check = check or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True,
                                                           timeout=600))
+        # a watcher is its own session (spawn): end its whole process group
+        self.end_watcher = end_watcher or (lambda loop: os.killpg(loop.pid, signal.SIGTERM))
         self.dir = Path(self.site["work_root"]) / f"chain-{args.chain}"
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
@@ -277,6 +292,8 @@ class Chain:
         self.persist()  # the intent is durable before anything is submitted
         try:
             code = self.launch_main(argv)
+        except Stopped:
+            raise  # run() cancels what jobs.json names
         except BaseException as error:  # noqa: BLE001 - jobs may exist: never repeated
             generation["outcome"] = {"kind": "submit_failed", "failure": repr(error)}
             return f"generation {number} submit failed ({error!r}); not repeated"
@@ -330,6 +347,10 @@ class Chain:
         run = Path(generation["run"])
         while True:
             live = self.squeue(ids)
+            lost = self.env_lost(generation, live)
+            if lost:
+                left = self.cancel(generation)
+                return {"kind": "env_lost", "failure": lost + (f"; {left}" if left else "")}
             if live is not None and gpu not in live:
                 if live:  # GPU side ended: the env/prep jobs of this generation go too
                     self.scancel(sorted(live))
@@ -340,6 +361,47 @@ class Chain:
                 return outcome(run)
             self.tick(run)
             self.sleep(self.knobs["supervise_poll_seconds"])
+
+    def env_lost(self, generation: dict[str, Any], live: set[str] | None) -> str | None:
+        """Why the generation has no environment side while its GPU job runs, once that
+        lasted `env_lost_grace_seconds` (see the docstring); None otherwise."""
+        grace, run = self.knobs["env_lost_grace_seconds"], Path(generation["run"])
+        env = [str(job) for name, job in generation["jobs"].items() if name.startswith("env")]
+        gpu = str(generation["jobs"].get("gpu"))
+        if (not grace or not env or live is None or gpu not in live or live & set(env)
+                or (run / "DRAIN").exists() or (run / "STOP").exists()):
+            generation.pop("env_gone_at", None)
+            return None
+        now = self.clock()
+        try:  # a node may leave on its own this close to the env drain (env.sh)
+            drain_at = float((run / "env-drain-at").read_text())
+        except (OSError, ValueError):
+            drain_at = None
+        if drain_at is not None and drain_at - now < self.knobs["env_min_join_seconds"]:
+            return None
+        since = generation.setdefault("env_gone_at", now)
+        if now - since < grace:
+            return None
+        return (f"every env job ({', '.join(env)}) ended while GPU job {gpu} runs and the GPU "
+                f"side never asked them to leave (no DRAIN/STOP, {now - since:.0f} s): no "
+                "training data can arrive; see the run's slurm-env-*.out and driver logs")
+
+    def cancel(self, generation: dict[str, Any]) -> str:
+        """Cancel the generation's jobs (dependents first, the GPU job last, as
+        launch.cancel_all); '' when none is left after 30 s, else which still are."""
+        jobs = generation.get("jobs") or {}
+        if not jobs and (Path(generation["run"]) / "jobs.json").exists():
+            jobs = json.loads((Path(generation["run"]) / "jobs.json").read_text())
+        ids = [str(job) for job in jobs.values()]
+        if not ids:
+            return ""
+        dependents = [str(job) for name, job in jobs.items() if name != "gpu"]
+        for group in (dependents, [str(jobs["gpu"])] if "gpu" in jobs else []):
+            if group:
+                self.scancel(group)
+        self.sleep(30)
+        left = self.squeue(ids)
+        return f"jobs still alive after scancel: {sorted(left)}" if left else ""
 
     def tick(self, run: Path) -> None:
         now = self.clock()
@@ -646,12 +708,13 @@ class Chain:
                                  source_identity(self.site)),
             "generations": [], "resumes_at": [], "log": []}
         self.persist()
-        refused = self.check_eval()
-        if refused:
-            return self.final(False, refused)
-        self.start_eval()
-        checkpoint, number = self.args.resume_checkpoint, 0
+        handlers = self.catch_signals()
         try:
+            refused = self.check_eval()
+            if refused:
+                return self.final(False, refused)
+            self.start_eval()
+            checkpoint, number = self.args.resume_checkpoint, 0
             while True:
                 generation = self.submit(number, checkpoint)
                 if isinstance(generation, str):
@@ -673,8 +736,45 @@ class Chain:
                 checkpoint, number = self.newest_checkpoint(), number + 1
                 self.state["resumes_at"].append(self.clock())
                 self.note("resume", number=number, checkpoint=checkpoint)
+        except Stopped as stop:
+            return self.stopped(str(stop))
         finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
             self.persist()
+
+    def catch_signals(self) -> dict[int, Any]:
+        """SIGTERM/SIGHUP raise Stopped; a signal already ignored (nohup) stays ignored."""
+        def stop(signum: int, frame: Any) -> None:
+            raise Stopped(signal.Signals(signum).name)
+        handlers = {}
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is not signal.SIG_IGN:
+                handlers[sig] = signal.signal(sig, stop)
+        return handlers
+
+    def stopped(self, name: str) -> int:
+        """After SIGTERM/SIGHUP: cancel the running generation's jobs, end the watchers."""
+        for sig in (signal.SIGTERM, signal.SIGHUP):  # the cleanup itself is not interrupted
+            if signal.getsignal(sig) is not signal.SIG_IGN:
+                signal.signal(sig, signal.SIG_IGN)  # run() restores the handlers
+        generations = self.state["generations"]
+        current = generations[-1] if generations and "outcome" not in generations[-1] else None
+        left = self.cancel(current) if current and not self.args.dry_run else ""
+        if current:
+            current["outcome"] = {"kind": "stopped", "failure": f"supervise got {name}"}
+        ended = []
+        for watcher, loop in list(self.eval_loops.items()):
+            try:
+                self.end_watcher(loop)
+                ended.append(watcher)
+            except OSError as error:  # already gone
+                ended.append(f"{watcher} ({error!r})")
+            del self.eval_loops[watcher]
+        cause = (f"supervise got {name}: generation "
+                 f"{current['number'] if current else '-'} jobs cancelled"
+                 + (f" ({left})" if left else "") + f"; evaluation watchers ended: {ended}")
+        return self.final(False, cause)
 
     def refuse_resume(self) -> str | None:
         now = self.clock()

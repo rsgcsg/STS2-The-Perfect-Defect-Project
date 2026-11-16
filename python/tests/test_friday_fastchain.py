@@ -1801,6 +1801,59 @@ def test_learner_window_follows_the_learner_restore_rules():
         learner_config.window('c-x', 80000, 1e9, None, None)
 
 
+def harness_references(name):
+    """Fast-chain files `name` loads from its own directory: relative JS imports (static
+    and dynamic string literals), Python imports of a sibling module, `$H/<file>` in shell."""
+    import re
+    text = (FASTCHAIN / name).read_text()
+    found = set()
+    if name.endswith('.mjs'):
+        for ref in re.findall(r'''(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}/[^"']+)["']''', text):
+            found.add(os.path.normpath(ref))
+    if name.endswith(('.py', '.sh')):
+        for module in re.findall(r'^\s*(?:from|import)\s+(\w+)|\bimport\s+(\w+)', text, re.M):
+            module = module[0] or module[1]
+            if (FASTCHAIN / f'{module}.py').exists():
+                found.add(f'{module}.py')
+    if name.endswith('.sh'):
+        found.update(re.findall(r'\$\{?(?:H|FC_HARNESS)\}?/([\w.-]+)', text))
+    return found
+
+
+def test_every_file_a_shipped_harness_script_loads_is_shipped():
+    """V6 smoke: env_driver.mjs imported tickets.mjs, which launch.HARNESS did not copy, and
+    all 100 drivers died at start. Walk every reference from the job scripts launch.py
+    submits, transitively: each must be in the run's harness copy."""
+    entries = {cmd[-1].rsplit('/', 1)[1] for cmd in launch.commands(plan_for(cards=2)).values()}
+    assert entries <= {'gpu.sh', 'env.sh', 'prep.sh'} and {'gpu.sh', 'env.sh'} <= entries
+    seen, todo, missing = set(), [*entries, 'prep.sh', *launch.HARNESS], []
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        if name not in launch.HARNESS:
+            missing.append(name)
+            continue
+        todo.extend(harness_references(name))
+    assert not missing, f'loaded by shipped harness scripts but not in launch.HARNESS: {missing}'
+    assert {'tickets.mjs', 'elu_preload.mjs', 'gpu_job.sh', 'roles.py'} <= seen
+    assert harness_references('env_driver.mjs') == {'tickets.mjs'}
+
+
+def test_harness_references_finds_a_new_relative_import(tmp_path, monkeypatch):
+    for name, text in {'a.mjs': 'import { x } from "./b.mjs";\nconst y = await import("./c.mjs");\n'
+                                'import "node:fs";\n',
+                       'p.py': 'import layout  # noqa\nimport json\n',
+                       's.sh': 'source $H/gpu_job.sh\n$PY -u ${FC_HARNESS}/roles.py\n',
+                       'layout.py': ''}.items():
+        (tmp_path / name).write_text(text)
+    monkeypatch.setattr(sys.modules[__name__], 'FASTCHAIN', tmp_path)
+    assert harness_references('a.mjs') == {'b.mjs', 'c.mjs'}
+    assert harness_references('p.py') == {'layout.py'}
+    assert harness_references('s.sh') == {'gpu_job.sh', 'roles.py'}
+
+
 def test_chain_generation_plan_and_resume_preflight():
     chain = {'id': 'c-t1', 'deadline_at': 10**10, 'total_seconds': 72000, 'generation': 1}
     plan = launch.build_plan('t1-r1', knobs(), run_profile.load_site(SITE), cards=2,
@@ -3299,3 +3352,112 @@ def test_preflight_compares_declared_values_type_strict_like_the_learner():
     facts = {**good_facts(plan), 'resume_checkpoint_config': cp_config()}  # c_hp 0.0
     result = preflight.check_declared_changes(plan, facts)
     assert not result.ok and 'declared old False, CP has 0.0' in result.detail
+
+
+def env_side_chain(tmp_path, gpu_polls=None, drain=False, drain_at=None, env_dies=True,
+                   **sets):
+    """A chain whose env array is gone right after the start while the GPU job runs (V6
+    smoke), until `gpu_polls` squeue calls (None: until cancelled). STOP appears only when
+    the GPU job ends; DRAIN / env-drain-at as given."""
+    chain, cluster = chain_for(tmp_path, [{}], **sets)
+    calls, cancelled = [0], []
+    launch_main = cluster.launch_main
+
+    def launch(argv):
+        code = launch_main(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        (run / 'STOP').unlink()
+        if drain:
+            (run / 'DRAIN').write_text('1\n')
+        if drain_at is not None:
+            (run / 'env-drain-at').write_text(f'{drain_at(cluster.now):.0f}\n')
+        if env_dies:
+            cluster.alive.discard('101')
+        return code
+
+    def squeue(ids):
+        calls[0] += 1
+        if gpu_polls is not None and calls[0] > gpu_polls:
+            cluster.alive.discard('100')
+            (tmp_path / 'run-lr1' / 'STOP').write_text('learner ended')
+        return {i for i in cluster.alive if i in ids}
+
+    def scancel(ids):
+        cancelled.append(list(ids))
+        cluster.alive -= set(ids)
+
+    chain.launch_main, chain.squeue, chain.scancel = launch, squeue, scancel
+    return chain, cluster, cancelled
+
+
+def test_chain_stops_loudly_when_the_env_side_is_gone_while_the_gpu_job_runs(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path)
+    start = cluster.now
+    assert chain.run() == 1
+    assert len(cluster.argvs) == 1  # the env array is never resubmitted, nothing resumed
+    assert cancelled == [['101'], ['100']]  # dependents first, the GPU job last
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['cause'].startswith('generation 0 ended env_lost: every env job (101)')
+    assert 'GPU job 100' in final['cause']
+    # after the grace (default 180 s = 3 polls of 60 s), not at the first poll
+    grace = chain.knobs['env_lost_grace_seconds']
+    assert grace == 180 and cluster.now - start >= grace + 30
+
+
+def test_chain_waits_out_an_env_side_the_gpu_side_released_or_the_check_is_off(tmp_path):
+    # DRAIN: the env side left on request; the GPU job ends normally later.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'drain', gpu_polls=10, drain=True)
+    assert chain.run() == 0 and cancelled == []
+    # A node may leave on its own inside the late-join window before env-drain-at.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'late', gpu_polls=10,
+                                               drain_at=lambda now: now + 100)
+    assert chain.run() == 0 and cancelled == []
+    # 0 = off: the old behaviour (wait for the GPU job).
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'off', gpu_polls=10,
+                                               env_lost_grace_seconds=0)
+    assert chain.run() == 0 and cancelled == []
+    # Env jobs alive: nothing to see.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'alive', gpu_polls=10,
+                                               env_dies=False)
+    assert chain.run() == 0 and cancelled == [['101']]  # the usual end-of-GPU cleanup
+
+
+def test_sigterm_after_the_start_cancels_the_generation_and_ends_the_watchers(tmp_path):
+    """V6 smoke: SIGTERM after gpu.sh started left the jobs running and the watcher orphaned."""
+    chain, cluster = eval_chain(tmp_path, SITE_BASELINES)
+    chain.check = lambda cmd: subprocess.CompletedProcess(cmd, 0, '', '')
+    ended, cancelled, polls = [], [], [0]
+    chain.end_watcher = lambda loop: ended.append(loop.pid)
+
+    def squeue(ids):
+        polls[0] += 1
+        if polls[0] == 2:
+            os.kill(os.getpid(), signal.SIGTERM)  # the handler raises here
+        return {i for i in cluster.alive if i in ids}
+
+    def scancel(ids):
+        cancelled.append(list(ids))
+        cluster.alive -= set(ids)
+    chain.squeue, chain.scancel = squeue, scancel
+    before = signal.getsignal(signal.SIGTERM)
+    assert chain.run() == 1
+    assert cancelled == [['101'], ['100']] and cluster.alive == set()
+    assert ended == [7, 7] and chain.eval_loops == {}  # a0 and a10
+    final = json.loads((chain.dir / 'FINAL.json').read_text())
+    assert final['cause'].startswith('supervise got SIGTERM: generation 0 jobs cancelled')
+    assert "watchers ended: ['a0', 'a10']" in final['cause']
+    assert chain.state['generations'][0]['outcome']['kind'] == 'stopped'
+    assert signal.getsignal(signal.SIGTERM) == before  # handlers restored
+
+
+def test_an_ignored_sighup_stays_ignored(tmp_path):
+    chain, _ = chain_for(tmp_path, [])
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        handlers = chain.catch_signals()
+        assert signal.SIGHUP not in handlers and signal.SIGTERM in handlers
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    finally:
+        signal.signal(signal.SIGHUP, before)

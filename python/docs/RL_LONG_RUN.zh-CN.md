@@ -165,7 +165,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   原因响亮停止（`FINAL.json`）。GPU 排队时间算在窗口里（deadline 在链开始时定下，学习者跨 CP
   保持）：每代在 gpu.sh 确认开工时记 `queue_seconds` 和剩余窗口并打到 stderr，`FINAL.json` 记
   `queue_seconds_total`；没做“窗口从 learner.ready 起算”（要学习者自己定 deadline、supervise
-  再读回来，两处改动）。开工后 supervise 死掉，该代照跑但没有续跑、读数和评估（同以前）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
+  再读回来，两处改动）。开工后对 supervise 发 SIGTERM/SIGHUP（V6 冒烟）：取消该代作业（先依赖、后 GPU）、结束评估看守，`FINAL.json` 写明信号；已被忽略的信号（nohup 的 SIGHUP）仍忽略；SIGKILL 下该代照跑但没有续跑、读数和评估。GPU 作业还在、全部 env 作业却已结束且 GPU 侧没让它们走（无 DRAIN/STOP、不在 `env-drain-at` 前的迟到窗口内）持续 `env_lost_grace_seconds`（180 s，0 = 关）：取消该代作业，以 `env_lost` 停链，不续跑、不重交 env 数组（V6 冒烟：100 个驱动启动即崩，两张卡空等数据）。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
   每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；学习者每发布一个 CP、续跑前
   和链结束时写运行记录 `chain-CHAIN/run-record.json`（最新）并追加 `run-records.jsonl`（写失败
   记日志、不停跑）。两者共用每代一个 `readout.Readout`：只读上次之后新增的字节（学习者事件、

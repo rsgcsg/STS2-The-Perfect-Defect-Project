@@ -456,6 +456,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "resume_max_total": _int(0, 20),
     "min_generation_seconds": _int(300),
     "supervise_poll_seconds": _int(10, 600),
+    # supervise.py ends a generation whose env side is gone while the GPU job runs (0 = off)
+    "env_lost_grace_seconds": _int(0, 3600),
     "readout_every_seconds": _int(600),
     "readout_rolling_games": _rolling_games,
     "eval_interval_seconds": _int(600, 86400),

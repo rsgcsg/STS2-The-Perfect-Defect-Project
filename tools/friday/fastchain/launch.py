@@ -54,7 +54,7 @@ HARNESS = ("roles.py", "preflight.py", "run_profile.py", "layout.py", "readout.p
            "learner_config.py",
            "gpu.sh", "env.sh", "prep.sh", "gpu_job.sh", "env_driver.mjs", "env_aggregator.py",
            "env_admission.py", "proc_cpu.py", "proc_sampler.py", "native_nice.sh",
-           "elu_preload.mjs")
+           "elu_preload.mjs", "tickets.mjs")  # every relative import is shipped (a test pins it)
 CANDIDATE_DLL = "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
 TAG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 HEARTBEAT_SECONDS = 10.0  # launcher-alive; gpu.sh refuses past launcher_stale_seconds
