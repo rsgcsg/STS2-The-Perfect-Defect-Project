@@ -286,6 +286,57 @@ def test_an_actor_exclusion_while_held_drops_the_game(tmp_path):
     assert spilled(tmp_path) == []
 
 
+def labelled_game(tmp_path: Any) -> tuple[FastSegmentIntake, list[Any]]:
+    """A held three-segment game whose labels arrived (labels come before the close)."""
+    from stpd.rl.fast_source import build_instance_labels
+
+    sealed = three_segment_game()
+    i = game_intake(tmp_path, aux_labels=frozenset({"terminal", "hp"}))
+    i.attest(attest("g1"))
+    for n, segment in enumerate(sealed, 1):
+        i.offer(message(segment, n), segment.data)
+    fields, data = build_instance_labels(sealed)
+    assert not i.labels({**fields, "handoff_sequence": 9, "shm_name": "unused"},
+                        data).auxiliary  # held with the game
+    return i, sealed
+
+
+def test_label_rows_of_a_held_game_take_the_released_envelopes_at_the_close(tmp_path):
+    """V6 smoke (two shards, "game"): a label row and the PPO member of one packet
+    are one preparer reference; with two envelopes the preparer refused it
+    (`binary_same_reference_changed_envelope`). The close hands both out with the
+    one envelope each released segment gets."""
+    i, sealed = labelled_game(tmp_path)
+    decision = i.closed(closed(sealed))
+    released = {segment.segment_id: envelope for segment, envelope in decision.admit}
+    assert len(released) == 3
+    rows = [row for _kind, _identity, group in decision.auxiliary for row in group]
+    assert {kind for kind, _identity, _group in decision.auxiliary} == {"terminal", "hp"}
+    assert {row["segment"].segment_id for row in rows} == set(released)
+    for row in rows:
+        assert row["envelope"] is released[row["segment"].segment_id]
+        assert set(row["envelope"]) == ENVELOPE_KEYS | GAME_TARGET_KEYS
+
+
+def test_label_rows_of_an_excluded_held_game_leave_with_it(tmp_path):
+    i, sealed = labelled_game(tmp_path)
+    i.exclude({"actor": "actor-1", "game_instance_id": "g1", "reason": "seed_refused",
+               "run": "run-1", "training_generation": "gen-1"})
+    decision = i.closed(closed(sealed))
+    assert not decision.admit and not decision.auxiliary
+    assert i.report()["game_target_excluded_aux_rows"] > 0
+
+
+def test_label_rows_of_a_game_lost_on_read_back_keep_their_only_envelope(tmp_path, capsys):
+    i, sealed = labelled_game(tmp_path)
+    (tmp_path / "spill" / (sealed[1].segment_id + SPILL_SUFFIX)).write_bytes(b"x")
+    decision = i.closed(closed(sealed))
+    assert not decision.admit  # no PPO member: the plain label envelope is the only one
+    rows = [row for _kind, _identity, group in decision.auxiliary for row in group]
+    assert rows and all(set(row["envelope"]) == ENVELOPE_KEYS for row in rows)
+    assert "fast_value_target_readback_failed" in capsys.readouterr().err
+
+
 def test_a_digest_mismatch_on_read_back_drops_the_whole_game_loudly(tmp_path, capsys):
     sealed = three_segment_game()
     i = game_intake(tmp_path)
@@ -800,5 +851,42 @@ def test_two_shards_hold_spill_and_release_games_in_their_own_scratch(tmp_path, 
         assert not owner.input_fenced
         learner = owner.fast_status()["fast_chain"]["learner"]
         assert learner["game_end_lt128_selected_rows"] > 0  # summed over the shards
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("capacity_rows", [1024, 384])
+def test_two_shards_train_label_rows_and_stitched_rows_of_the_same_games(
+        tmp_path, monkeypatch, capacity_rows):
+    """The V6 smoke recipe in small: two shards, "game", hash victims, aux labels
+    on (the default whenever terminal/hp coefs are positive, as in rl5.json) and
+    two-segment games, four closes a shard. With room for every row (1024) the
+    unfixed intake fenced a shard with `binary_same_reference_changed_envelope`
+    within four datasets: a label row and its released PPO member met in one
+    preparer. The earlier two-shard test trained two datasets of one game a
+    shard and never got there. 384 rows also evict by hash before training."""
+    from test_rl_dataplane_shards import game, hand_off, parts, train
+
+    config, io = parts(tmp_path, monkeypatch, 2, prestart=True)
+    config = dataclasses.replace(config, segments=dataclasses.replace(
+        config.segments, value_target="game", capacity_victim="hash",
+        capacity_rows=capacity_rows))
+    from stpd.rl.segment_learner import SegmentLearner
+
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    try:
+        assert owner.fast_aux_labels == ["hp", "terminal"]
+        for index in range(1, 9):  # alternating shards
+            hand_off(owner, game(owner, index))
+        status = owner.fast_status()["fast_chain"]
+        per_shard = status["shards"]["per_shard"]
+        assert [s["intake"]["game_target_released_games"] for s in per_shard] == [4, 4]
+        assert all(s["intake"]["labels_received"] == 4 for s in per_shard)
+        evicted = status["learner"]["capacity_evicted"]
+        assert (evicted > 0) == (capacity_rows < 8 * 70)
+        requests, _steps = train(owner, 3 if evicted else 4)
+        assert not owner.input_fenced, owner.input_failure
+        assert owner.updates > 0
+        assert all(request.auxiliary for request, _ in requests)
     finally:
         owner.close()

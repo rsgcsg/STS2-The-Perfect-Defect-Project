@@ -640,6 +640,19 @@ class _Instance:
     # later segment of it is written).
     held: list[_Held] = field(default_factory=list)
     spill_failed: str | None = None
+    # "game": its verified label groups, handed out at the close with the
+    # released segments' own envelopes (one packet, one envelope: the preparer
+    # refuses one reference under two envelopes).
+    aux: list[tuple[str, str, list[dict[str, Any]]]] = field(default_factory=list)
+
+
+def _released_row(row: dict[str, Any],
+                  released: dict[str, tuple[FastSegment, dict[str, Any]]]) -> dict[str, Any]:
+    segment_id = row["segment"].segment_id
+    if segment_id not in released:
+        return row
+    segment, envelope = released[segment_id]
+    return {**row, "segment": segment, "envelope": envelope}
 
 
 @dataclass
@@ -1059,6 +1072,16 @@ class FastSegmentIntake:
             for battle in expected["hp_battles"]:
                 groups.append(("hp", battle["battle_id"],
                                rows(battle["states"], battle["post_hp"] / 100)))
+        if self.value_target == "game":
+            # The labelled segments are still held: their training envelopes
+            # (stitched tails) exist only at the close, which hands these out.
+            with self.lock:
+                if (self.instances.get(instance_id) is instance
+                        and instance.excluded is None):
+                    instance.aux = groups
+                else:
+                    self.counters["labels_untrained_instance"] += 1
+            return IntakeDecision()
         return IntakeDecision(auxiliary=groups)
 
     def closed(self, message: dict[str, Any]) -> IntakeDecision:
@@ -1096,6 +1119,7 @@ class FastSegmentIntake:
                 decision = self._exclude(instance_id, reason, None)
             release: list[_Held] = []
             attestation = instance.attestation
+            aux, instance.aux = instance.aux, []
             if instance.held:
                 if instance.spill_failed is not None:
                     self._drop_held(instance, "spill_failed")
@@ -1119,6 +1143,15 @@ class FastSegmentIntake:
             decision.admit.extend(self._release_game(
                 instance_id, release, attestation,
                 sealed + message["segments"]["rejected"]))
+        if aux:
+            # A label row of a released segment takes that segment's envelope; any
+            # other (its game's read-back failed, a spill write failed) never has a
+            # PPO member, so its plain envelope is the only one its packet gets.
+            released = {segment.segment_id: (segment, envelope)
+                        for segment, envelope in decision.admit}
+            decision.auxiliary = [
+                (kind, identity, [_released_row(row, released) for row in rows])
+                for kind, identity, rows in aux]
         return decision
 
     def report(self) -> dict[str, Any]:
@@ -1375,6 +1408,12 @@ class FastSegmentIntake:
             return IntakeDecision(reply=reply)
         instance.excluded = reason
         self.excluded_by_reason[reason] += 1
+        # "game" label rows held for the close leave with the game (counted as
+        # the learner counts label rows it drops from its pools on an exclusion).
+        if instance.aux:
+            self.counters["game_target_excluded_aux_rows"] += sum(
+                len(rows) for _kind, _identity, rows in instance.aux)
+            instance.aux = []
         for held in instance.held:
             self._count_excluded(reason, held.rows, used=False)
         self._drop_held(instance, "excluded")
