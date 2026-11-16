@@ -3455,7 +3455,6 @@ def test_a_failed_squeue_is_never_read_as_env_gone(tmp_path):
 
 def test_cancel_reports_a_failed_scancel_or_squeue_instead_of_cancelled(tmp_path):
     chain, cluster, cancelled = env_side_chain(tmp_path / 'rc', scancel_rc=1)
-    cluster_squeue = chain.squeue
     assert chain.run() == 1
     assert 'SCANCEL FAILED' in chain.state['final']['cause']
     assert 'STILL ALIVE' in chain.state['final']['cause']
