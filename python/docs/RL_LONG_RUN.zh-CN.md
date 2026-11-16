@@ -154,7 +154,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   [--eval-baseline-plan P] [--eval-a10-manifest M10] --eval-slot-registered]`，在登录节点上用
   `nohup python3 tools/friday/fastchain/supervise.py start CHAIN ... > chain-CHAIN.log 2>&1 &`
   起（ssh 掉线发的 SIGHUP 被 nohup 忽略，supervise 照常监督；不加 nohup 时掉线会让 supervise 死掉，
-  作业照跑但没有续跑、读数和评估）；链名不能以
+  作业照跑但没有续跑、读数和评估）；停链用 `supervise.py stop CHAIN --site S`（见下）；链名不能以
   `-rN` 结尾（那是别的链的代名）。一个链 = 一个运行窗口（`long_wall_seconds`，一个学习者预算 id
   `c-CHAIN` + 不可变 deadline，由学习者跨恢复保持）；第 0 代 = `launch.py submit CHAIN
   --long-run`，之后每代 `CHAIN-rN` 是新 run 目录、新训练代，从本链最新 CP（published_at）
@@ -168,7 +168,20 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   原因响亮停止（`FINAL.json`）。GPU 排队时间算在窗口里（deadline 在链开始时定下，学习者跨 CP
   保持）：每代在 gpu.sh 确认开工时记 `queue_seconds` 和剩余窗口并打到 stderr，`FINAL.json` 记
   `queue_seconds_total`；没做“窗口从 learner.ready 起算”（要学习者自己定 deadline、supervise
-  再读回来，两处改动）。开工后对 supervise 发 SIGTERM（V6 冒烟）= 操作员停链：结束评估看守并取消它们的 Slurm 作业，写 STOP（「service stop: …」，学习者和服务按它停），最多等 `stop_grace_seconds`（180 s，未量）让 GPU 作业自己结束，再取消剩下的（先依赖、后 GPU），`FINAL.json` 写明信号。SIGHUP 永不取消作业（ssh 掉线不能杀掉运行）：nohup 下被忽略，否则 supervise 死掉、作业照跑。SIGKILL 下该代照跑但没有续跑、读数和评估。GPU 作业还在、全部 env 作业却已结束，且 GPU 侧没让它们走（无 DRAIN/STOP、不在 `env-drain-at` 前的迟到窗口内）、也还没报告（无 `learner-report.json`、无 `gpu-rc`，否则按续跑规则判）持续 `env_lost_grace_seconds`（180 s，0 = 关）：同样写 STOP、等、取消，以 `env_lost` 停链，不续跑、不重交 env 数组（V6 冒烟：100 个驱动启动即崩，两张卡空等数据）。驱动自己的寿命 `driver_warm_seconds + driver_steady_seconds` 必须不短于本代墙钟（预检 time_limits 拒绝）：以前 4800 s 会让 20 h 长跑的驱动约 83 分钟后全部退出（#586 评审），现为 72000。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
+  再读回来，两处改动）。开工后任何信号都不取消作业（负责人 11-16：登录节点重启、登录服务在 ssh
+  退出时清理用户进程都发 SIGTERM，nohup 挡不住，20 h 长跑不能因此死掉）：supervise 收到 SIGTERM
+  只打一行醒目提示（本链已无人监督、怎么停）并退出（143），作业和评估看守照跑，但没有续跑、读数、
+  运行记录和 `FINAL.json`；SIGHUP 照旧（nohup 下忽略，否则 supervise 死掉、作业照跑）；SIGKILL
+  同样作业照跑。**重新接管一个在跑的链目前不支持**（`start` 拒绝已存在的链目录，#587）。若登录
+  服务开了 logind `KillUserProcesses=yes`，退出登录会杀掉 nohup 起的 supervise：用
+  `systemd-run --user --scope nohup …` 起，或请管理员为账户开 lingering（`loginctl
+  enable-linger`）。操作员停链 = `supervise.py stop CHAIN --site S`，不管 supervise 还在不在，
+  按链记下的作业号（`state.json`、各看守的 `state.json`）：写 `chain-CHAIN/STOP-REQUESTED`（还活着
+  的 supervise 此后不再续跑），按记下的 pid 结束评估看守的进程组（先核对仍是 `fast_eval.py`；在起链
+  的那台登录节点上跑）并取消它们还活着的 Slurm 作业，写 STOP（「service stop: operator stop …」，
+  学习者和服务按它停），最多等 `stop_grace_seconds`（180 s，未量）让 GPU 作业自己结束，再取消剩下的
+  （先依赖、后 GPU），结果写 `chain-CHAIN/stop-report.json` 并打印；有作业可能还活着、scancel
+  失败或 squeue 读不到时退出 1。GPU 作业还在、全部 env 作业却已结束，且 GPU 侧没让它们走（无 DRAIN/STOP、不在 `env-drain-at` 前的迟到窗口内）、也还没报告（无 `learner-report.json`、无 `gpu-rc`，否则按续跑规则判）持续 `env_lost_grace_seconds`（180 s，0 = 关）：同样写 STOP、等、取消，以 `env_lost` 停链，不续跑、不重交 env 数组（V6 冒烟：100 个驱动启动即崩，两张卡空等数据）。驱动自己的寿命 `driver_warm_seconds + driver_steady_seconds` 必须不短于本代墙钟（预检 time_limits 拒绝）：以前 4800 s 会让 20 h 长跑的驱动约 83 分钟后全部退出（#586 评审），现为 72000。env 节点自己也会走：GPU 作业从队列里消失（squeue 明确答结束/查无此作业；squeue 失败只算不知道、并清零计数）持续 `env_gpu_gone_grace_seconds`（300 s）而没有 DRAIN/STOP 时，`env.sh` 让驱动排空、打一行醒目提示（`gpu-gone.txt`）并以 6 退出，免得 GPU 作业硬死（不写 STOP）且无人监督时 env 核一直占到 `--time`。不覆盖：恢复失败的 CP 不会退回更旧的 CP（下一代失败，链停）。
   每 `readout_every_seconds` 追加读数到 `chain-CHAIN/readout.txt`；学习者每发布一个 CP、续跑前
   和链结束时写运行记录 `chain-CHAIN/run-record.json`（最新）并追加 `run-records.jsonl`（写失败
   记日志、不停跑）。两者共用每代一个 `readout.Readout`：只读上次之后新增的字节（学习者事件、

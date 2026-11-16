@@ -7,6 +7,7 @@
                  [--eval-baseline-plan P | --eval-no-baseline] [--eval-a10-manifest M10]
                  --eval-slot-registered]
                  [--dry-run]
+    supervise.py stop CHAIN --site S     (the operator's stop; see below)
 
 One chain is one operating window: `long_wall_seconds` (<= 72000 s), one learner budget id
 (`c-CHAIN`) and one immutable deadline, kept by the learner across restorations
@@ -50,20 +51,28 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
   supervisor would have to read it back);
 - the launcher (in this process) is the GPU job's liveness owner until gpu.sh confirmed
   its start: SIGTERM/SIGHUP cancel the generation's jobs, and gpu.sh refuses on a stale
-  launcher-alive (SIGKILL). After the start, SIGTERM to supervise (V6 smoke) is the
-  operator's stop: it ends the evaluation watchers and cancels their Slurm jobs, writes
-  STOP ("service stop: ...", which the learner and services take as their stop) and waits
-  up to `stop_grace_seconds` for the GPU job to end on its own, then cancels what is left
-  (dependents first, the GPU job last); FINAL.json names the signal. SIGHUP never cancels
-  anything (an ssh drop must not kill a run): supervise keeps the default action (it
-  dies; the generation runs on without resume, readout or evaluation) or, started under
-  nohup as RL_LONG_RUN says, ignores it and carries on. SIGKILL also leaves the
-  generation running without resume, readout or evaluation;
+  launcher-alive (SIGKILL). After the start no signal cancels anything (lead 11-16: a
+  login-node reboot or the login service's logout cleanup sends SIGTERM, nohup does not
+  block it, and a 20 h run must not die of it): on SIGTERM supervise prints one loud line
+  (the chain is now unsupervised; how to stop it) and exits 143; SIGHUP keeps its default
+  (supervise dies) or nohup's ignore. Either way the generation and the evaluation
+  watchers run on without resume, readout or new evaluations of later CPs being
+  supervised. Re-attaching a supervise to a running chain is not supported (#587);
+- the operator's stop is `supervise.py stop CHAIN --site S`, with or without a live
+  supervise, from the chain's recorded job ids (state.json, the watchers' state.json):
+  it writes `chain-CHAIN/STOP-REQUESTED` (a live supervise never resumes after it), ends
+  the evaluation watchers (process groups whose pid state.json recorded, checked to still
+  be fast_eval.py; run it on the login node that started the chain) and cancels their
+  live Slurm jobs, writes the run's STOP ("service stop: ...", which the learner and the
+  services take as their stop), waits up to `stop_grace_seconds` for the GPU job to end
+  on its own, then cancels what is left (dependents first, the GPU job last;
+  launch.cancel_all). It reports in `chain-CHAIN/stop-report.json`; exit 1 when a job may
+  still be alive or a cancel failed;
 - an environment side that is gone while the GPU job runs, before the GPU side asked it to
   leave (no DRAIN or STOP, not inside the late-join window before `env-drain-at`) and
   before the GPU side reported anything (no learner report, no `gpu-rc`: then the resume
   rules decide), for `env_lost_grace_seconds` (V6 smoke: every driver died at start and
-  two cards waited for data) ends the generation the same way (STOP, grace, cancel) and
+  two cards waited for data) ends the generation with the same STOP, grace and cancel and
   the chain stops with `env_lost`, never resumed, the env array never resubmitted (0 =
   off). A driver never ends by its own planned lifetime first: preflight refuses a
   driver_warm_seconds + driver_steady_seconds shorter than the generation's wall;
@@ -126,7 +135,7 @@ CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 end
 
 
 class Stopped(BaseException):
-    """SIGTERM to supervise: not an Exception, so no `except Exception` keeps going."""
+    """SIGTERM to supervise: not an Exception, so no `except Exception` swallows it."""
 
 
 def digest(path: Path) -> str:
@@ -190,7 +199,7 @@ class Chain:
                  checkpoints: Callable[[set[str]], list[dict[str, Any]]] | None = None,
                  spawn: Callable[[list[str], Path], Any] | None = None,
                  check: Callable[[list[str]], subprocess.CompletedProcess] | None = None,
-                 end_watcher: Callable[[Any], None] | None = None) -> None:
+                 end_watcher: Callable[[int], str] | None = None) -> None:
         self.args, self.clock, self.sleep, self.launch_main = args, clock, sleep, launch_main
         self.squeue = squeue or live_jobs
         self.scancel = scancel or (lambda ids: subprocess.run(["scancel", *ids],
@@ -202,8 +211,7 @@ class Chain:
             cmd, stdout=log.open("a"), stderr=subprocess.STDOUT, start_new_session=True))
         self.check = check or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True,
                                                           timeout=600))
-        # a watcher is its own session (spawn): end its whole process group
-        self.end_watcher = end_watcher or (lambda loop: os.killpg(loop.pid, signal.SIGTERM))
+        self.end_watcher = end_watcher or end_watcher_group
         self.dir = Path(self.site["work_root"]) / f"chain-{args.chain}"
         self.state_path = self.dir / "state.json"
         self.eval_loops: dict[str, Any] = {}
@@ -301,7 +309,7 @@ class Chain:
         try:
             code = self.launch_main(argv)
         except Stopped:
-            raise  # run() cancels what jobs.json names
+            raise  # run(): unsupervised; `supervise.py stop` reads jobs.json
         except BaseException as error:  # noqa: BLE001 - jobs may exist: never repeated
             generation["outcome"] = {"kind": "submit_failed", "failure": repr(error)}
             return f"generation {number} submit failed ({error!r}); not repeated"
@@ -433,25 +441,25 @@ class Chain:
                 "(squeue failed)"
         return f"{stop}; {cancelled}" + (f"; STILL ALIVE: {sorted(left)}" if left else "")
 
-    def end_watchers(self) -> list[str]:
-        """End each evaluation watcher (its process group) and cancel the Slurm jobs its
-        state names (prepare and evaluation jobs, fast_eval.py) that are still alive."""
+    def end_watchers(self, pids: dict[str, int]) -> list[str]:
+        """End each evaluation watcher (its process group) and cancel the live Slurm jobs
+        its state names (prepare and evaluation jobs, fast_eval.py)."""
         ended = []
-        for name, loop in list(self.eval_loops.items()):
+        for name, pid in pids.items():
+            if pid is None:
+                ended.append(f"{name} pid not recorded: may still be alive")
+                continue
             try:
-                self.end_watcher(loop)
-                ended.append(name)
+                ended.append(f"{name} {self.end_watcher(int(pid))}")
             except OSError as error:  # already gone
                 ended.append(f"{name} ({error!r})")
-            del self.eval_loops[name]
         ids = []
-        for name in self.watchers() if self.args.eval_execution else ():
-            path = self.dir / f"eval-{name}" / "state.json"
+        for path in sorted(self.dir.glob("eval-*/state.json")):
             try:
-                items = json.loads(path.read_text()).get("evaluations", []) \
-                    if path.exists() else []
+                items = json.loads(path.read_text()).get("evaluations", [])
             except (OSError, ValueError) as error:
-                ended.append(f"{name} state unreadable ({error!r}): its jobs not cancelled")
+                ended.append(f"{path.parent.name} state unreadable ({error!r}): its jobs may "
+                             "still be alive")
                 continue
             ids += [str(item[key]) for item in items for key in ("prepare_job", "evaluation_job")
                     if item.get(key)]
@@ -463,6 +471,27 @@ class Chain:
             ended.append(f"evaluation jobs {targets} " + ("cancelled" if rc == 0 else
                          f"SCANCEL rc {rc}: may still be alive"))
         return ended
+
+    def stop(self) -> int:
+        """`supervise.py stop CHAIN`: the operator's stop (see the docstring). Never writes
+        state.json (a live supervise owns it)."""
+        if not self.state_path.exists():
+            print(f"no chain at {self.dir}", file=sys.stderr)
+            return 2
+        self.state = json.loads(self.state_path.read_text())
+        (self.dir / "STOP-REQUESTED").write_text(f"{self.clock()}\n")
+        ended = self.end_watchers(self.state.get("eval_pids") or {})
+        generations = self.state["generations"]
+        done = (self.end_generation(generations[-1], "service stop: operator stop "
+                                    "(supervise.py stop)") if generations
+                else "no generation submitted")
+        report = {"t": self.clock(), "chain": self.args.chain,
+                  "generation": generations[-1]["number"] if generations else None,
+                  "generation_stop": done, "watchers": ended}
+        (self.dir / "stop-report.json").write_text(json.dumps(report, indent=1))
+        print(json.dumps(report), flush=True)
+        doubt = ("FAILED", "STILL ALIVE", "unknown", "may still be alive")
+        return 1 if any(word in text for text in [done, *ended] for word in doubt) else 0
 
     def tick(self, run: Path) -> None:
         now = self.clock()
@@ -735,6 +764,9 @@ class Chain:
         for name, watcher in self.watchers().items():
             self.eval_loops[name] = self.spawn(self.eval_command(name, watcher),
                                                self.dir / f"eval-{name}.log")
+            # `supervise.py stop` ends it by this pid (its own session: spawn)
+            self.state.setdefault("eval_pids", {})[name] = getattr(
+                self.eval_loops[name], "pid", None)
             self.note("evaluation_watcher_started", watcher=name, suite=watcher["suite"])
 
     def eval_status(self) -> str:
@@ -798,38 +830,31 @@ class Chain:
                 self.state["resumes_at"].append(self.clock())
                 self.note("resume", number=number, checkpoint=checkpoint)
         except Stopped as stop:
-            return self.stopped(str(stop))
+            self.note("supervisor_signal", signal=str(stop))
+            print(f"\n*** supervise got {stop}: chain {self.args.chain} is now UNSUPERVISED. Its "
+                  "jobs and evaluation watchers keep running, with no resume, readout or run "
+                  f"record. Stop it: supervise.py stop {self.args.chain} --site "
+                  f"{self.args.site}. Re-attaching a supervise is not supported (#587).\n",
+                  file=sys.stderr, flush=True)
+            return 143
         finally:
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
             self.persist()
 
     def catch_signals(self) -> dict[int, Any]:
-        """SIGTERM raises Stopped (unless already ignored). SIGHUP is left alone: an ssh drop
-        must never cancel a run (see the docstring)."""
+        """SIGTERM raises Stopped (unless already ignored): one loud line, then exit; no
+        cancel. SIGHUP is left alone (see the docstring)."""
         def stop(signum: int, frame: Any) -> None:
-            signal.signal(signum, signal.SIG_IGN)  # a second SIGTERM cannot skip the cleanup
+            signal.signal(signum, signal.SIG_IGN)
             raise Stopped(signal.Signals(signum).name)
         if signal.getsignal(signal.SIGTERM) is signal.SIG_IGN:
             return {}
         return {signal.SIGTERM: signal.signal(signal.SIGTERM, stop)}
 
-    def stopped(self, name: str) -> int:
-        """After SIGTERM: end the watchers and their jobs, then stop the running generation."""
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # run() restores the handler
-        ended = self.end_watchers()
-        generations = self.state["generations"]
-        current = generations[-1] if generations and "outcome" not in generations[-1] else None
-        done = "no generation running"
-        if current and not self.args.dry_run:
-            done = self.end_generation(current, f"service stop: supervise got {name}")
-        if current:
-            current["outcome"] = {"kind": "stopped", "failure": f"supervise got {name}"}
-        return self.final(False, f"supervise got {name}: generation "
-                          f"{current['number'] if current else '-'}: {done}; evaluation "
-                          f"watchers ended: {ended}")
-
     def refuse_resume(self) -> str | None:
+        if (self.dir / "STOP-REQUESTED").exists():
+            return "operator stop requested (supervise.py stop): never resumed"
         now = self.clock()
         done = self.state["resumes_at"]
         if len(done) >= self.knobs["resume_max_total"]:
@@ -844,6 +869,16 @@ class Chain:
             return "code/profile changed since the chain started (" + ", ".join(changed) \
                 + "): never resumed across a change"
         return None
+
+
+def end_watcher_group(pid: int) -> str:
+    """End a watcher's process group (its own session) if `pid` is still fast_eval.py."""
+    out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True,
+                         text=True)
+    if "fast_eval.py" not in out.stdout:
+        return f"pid {pid} not running here (already ended, or another login node)"
+    os.killpg(pid, signal.SIGTERM)
+    return f"pid {pid} ended"
 
 
 def live_jobs(ids: list[str]) -> set[str] | None:
@@ -862,12 +897,12 @@ def live_jobs(ids: list[str]) -> set[str] | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("command", choices=("start",))
+    parser.add_argument("command", choices=("start", "stop"))
     parser.add_argument("chain")
     parser.add_argument("--profile", type=Path, default=HERE / "rl5-fastchain.toml")
     parser.add_argument("--site", type=Path, required=True)
-    parser.add_argument("--cards", type=int, required=True)
-    parser.add_argument("--card-type", required=True)
+    parser.add_argument("--cards", type=int)
+    parser.add_argument("--card-type")
     parser.add_argument("--layout")
     parser.add_argument("--set", action="append", default=[])
     parser.add_argument("--resume-checkpoint")
@@ -886,6 +921,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="generation 0 preflight only; nothing is submitted")
     args = parser.parse_args(argv)
+    if args.command == "stop":
+        # the chain's own knobs (stop_grace_seconds): its recorded --set overrides
+        site = run_profile.load_site(args.site.resolve())
+        state = Path(site["work_root"]) / f"chain-{args.chain}" / "state.json"
+        if state.exists():
+            args.set = json.loads(state.read_text())["identity"]["overrides"]
+        args.profile, args.site = args.profile.resolve(), args.site.resolve()
+        return Chain(args).stop()
+    if args.cards is None or not args.card_type:
+        parser.error("start needs --cards and --card-type")
     if not launch.TAG.match(args.chain) or len(args.chain) > 30:
         parser.error("chain: lowercase letters, digits and '-', at most 30")
     if re.search(r"-r\d+$", args.chain):  # generation names are CHAIN-rN (review D4)

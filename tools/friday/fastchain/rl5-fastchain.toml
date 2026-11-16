@@ -137,6 +137,7 @@ env_slow_type_nodes = { value = 0, default = 0, why = "c8220 opt-in node count, 
 env_core_budget = { value = { "1" = 215, "2" = 290, "3" = 304 }, default = { "1" = 215, "2" = 290, "3" = 380 }, why = "env cores per card count at ~50-58 core-ms/decision", measured = "fc-launch tiers; c3s1/c3s2 304" }
 env_wait_seconds = { value = 1800, default = 1800, why = "an env element may wait this long for the services, plus remote_prepare_wait_seconds when remote prepare is on (env starts only after the GPU job started; the services wait for the learner, which waits for the prep hosts)", measured = "s1f" }
 env_min_join_seconds = { value = 300, default = 300, why = "a node arriving later than this before the env drain does not start", measured = "s2c-smoke" }
+env_gpu_gone_grace_seconds = { value = 300, default = 300, why = "an env node leaves (exit 6) when the GPU job has been gone from squeue this long with no DRAIN/STOP (hard GPU death while no supervise runs; drivers otherwise live until DRAIN); a failed squeue never counts; 5 min rides out squeue lag at a cost of at most 5 min of env cores", measured = "#586 delta review S1" }
 env_procs_fraction = { value = 0.625, default = 0.75, why = "drivers per node = cores x 5/8 (16 -> 10, 20 -> 12); 8x15 was not cheaper", measured = "V3-wu, V3-shen 17:35 rerun" }
 env_slots = { value = 12, default = 8, why = "slots per driver (product cap 16)", measured = "V3-shen" }
 env_aggregators = { value = 3, default = 3, why = "aggregators per node, each to its own service", measured = "s1d onward" }

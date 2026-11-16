@@ -107,7 +107,30 @@ for p in $(seq 1 $P); do
 done
 drain() { cat $RUN/STOP > $O/stop-at-drain.txt 2>/dev/null; echo "drain $1 $(date -Is) stop=$(cat $O/stop-at-drain.txt 2>/dev/null)"; kill -USR1 "${pids[@]}" 2>/dev/null; }
 trap "drain slurm_signal" USR1
-( while :; do if [ -e $RUN/DRAIN ] || [ -e $RUN/STOP ]; then cat $RUN/STOP > $O/stop-at-drain.txt 2>/dev/null; echo "drain file $(date -Is) stop=$(cat $O/stop-at-drain.txt 2>/dev/null)"; kill -USR1 "${pids[@]}" 2>/dev/null; exit 0; fi; sleep 2; done ) &
+# --- drain watch: ---
+# Leave on DRAIN/STOP, or when the GPU job has been gone from the queue for
+# FC_ENV_GPU_GONE_GRACE_SECONDS (a hard GPU death writes no STOP, and drivers live until
+# DRAIN: without this a node held its cores until --time while no supervise was running).
+# gpu_job_state every 30 s; a failed squeue is unknown, never gone, and restarts the count.
+drain_watch() {
+  local i=0 gone=0 need=$(( (FC_ENV_GPU_GONE_GRACE_SECONDS + 29) / 30 )) V D
+  [ $need -ge 1 ] || need=1
+  while :; do
+    if [ -e $RUN/DRAIN ] || [ -e $RUN/STOP ]; then cat $RUN/STOP > $O/stop-at-drain.txt 2>/dev/null; echo "drain file $(date -Is) stop=$(cat $O/stop-at-drain.txt 2>/dev/null)"; kill -USR1 "${pids[@]}" 2>/dev/null; return 0; fi
+    i=$(( i + 1 ))
+    if [ $(( i % 15 )) = 0 ]; then
+      read -r V D <<< "$(gpu_job_state "$(cat $RUN/gpu-job.txt 2>/dev/null)")"
+      if [ "$V" = gone ]; then gone=$(( gone + 1 )); else gone=0; fi
+      if [ $gone -ge $need ]; then
+        echo "GPU job gone from the queue for $gone checks (>= $FC_ENV_GPU_GONE_GRACE_SECONDS s) without DRAIN/STOP: leaving $(date -Is) $D" | tee $O/gpu-gone.txt
+        kill -USR1 "${pids[@]}" 2>/dev/null; return 0
+      fi
+    fi
+    sleep 2
+  done
+}
+# --- end drain watch ---
+( drain_watch ) &
 WATCH=$!
 FAIL=0
 for pid in "${pids[@]}"; do
@@ -122,6 +145,9 @@ kill $ADM $SAMPLER $PSAMP $NICER 2>/dev/null
 STOPTXT=$(cat $O/stop-at-drain.txt 2>/dev/null || cat $RUN/STOP 2>/dev/null)
 if [ $FAIL -ne 0 ] && [[ "$STOPTXT" == "service failure"* ]]; then
   echo "end=$(date -Is) fail=$FAIL ended by GPU-side failure: $STOPTXT"; exit 4
+fi
+if [ -e $O/gpu-gone.txt ]; then
+  echo "end=$(date -Is) fail=$FAIL LEFT BECAUSE THE GPU JOB IS GONE without DRAIN/STOP: $(cat $O/gpu-gone.txt)"; exit 6
 fi
 echo "end=$(date -Is) fail=$FAIL"
 exit $FAIL

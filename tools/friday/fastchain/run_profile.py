@@ -495,6 +495,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "env_core_budget": _per_cards(_int(1)),
     "env_wait_seconds": _int(0),
     "env_min_join_seconds": _int(0),
+    # env.sh leaves when the GPU job has been gone from squeue this long (no DRAIN/STOP)
+    "env_gpu_gone_grace_seconds": _int(30, 3600),
     "env_procs_fraction": _num(0.05, 2),
     "env_slots": _int(1, 16),  # MAX_SLOTS = 16 in the fast env (V3-shen)
     "env_aggregators": _int(1, 64),
