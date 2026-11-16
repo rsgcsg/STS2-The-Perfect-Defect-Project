@@ -55,7 +55,15 @@ loop starts), so an evaluation that cannot run is refused before any GPU or CPU 
 - the execution template's `agent_adapter` equals this source's
   `export.adapter_identity()` (the executor's own `frozen_agent_implementation_changed`
   check, run early; re-freeze a stale template with `tools/friday/eval_template.py
-  refreeze`, never by hand).
+  refreeze`, never by hand); an interpreter that cannot import it is refused too;
+- a baseline round frozen under another agent adapter pairs only through the re-freeze
+  record named by this template's `refrozen_from` that links exactly the baseline's
+  adapter to this one; both adapters and producers, `adapter_differs` and the record
+  are written into summary.json, eval-record.json and the report (`adapter_pairing`).
+
+A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summary.json,
+eval-record.json and the report say "smoke, not a decision result", and no reference is
+paired (no paired-delta line).
 
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
@@ -109,6 +117,8 @@ CLOSE_SECONDS = evaluate.CLOSE_RESERVE_SECONDS
 MAX_WALL_SECONDS = 21600  # evaluate.prepare's bound
 # Compared at start: the execution's pins against the baseline round's own execution.
 START_PINS = ("host_pin", "runtime_pin", "initial_progress")
+DECISION_GAMES = 100  # fewer games: a smoke, not a decision result (lead decision 11-17)
+REFREEZE_SCHEMA = "spireagent/evaluation-template-refreeze-1"  # eval_template.py
 PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
 RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
@@ -165,9 +175,59 @@ def round_execution(plan: Path) -> dict[str, Any]:
     return json.loads(path.read_bytes())
 
 
+def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any],
+                    template: Path) -> dict[str, Any]:
+    """Which agent adapter and producer each side was frozen with. When the adapter
+    differs, the re-freeze record named by the template's `refrozen_from` (beside it)
+    must link exactly the baseline's adapter to this one and be the record of this
+    template; otherwise the pairing is refused."""
+    def side(value: dict[str, Any]) -> dict[str, Any]:
+        return {"agent_adapter": (value.get("agent_adapter") or {}).get("code_sha256"),
+                "producer": value.get("producer")}
+
+    theirs, ours = side(baseline_execution), side(execution)
+    pairing: dict[str, Any] = {
+        "baseline": theirs, "current": ours,
+        "adapter_differs": theirs["agent_adapter"] != ours["agent_adapter"],
+        "refreeze_record": None}
+    if not pairing["adapter_differs"]:
+        return pairing
+    named = (execution.get("refrozen_from") or {}).get("record")
+    path = template.parent / Path(named).name if isinstance(named, str) else None
+    record = json.loads(path.read_bytes()) if path is not None and path.is_file() else {}
+    linked = record.get("agent_adapter") or {}
+    if (record.get("schema") != REFREEZE_SCHEMA
+            or (linked.get("old") or {}).get("code_sha256") != theirs["agent_adapter"]
+            or (linked.get("new") or {}).get("code_sha256") != ours["agent_adapter"]
+            or (record.get("template_out") or {}).get("sha256") != hashed(template)):
+        raise ValueError(
+            f"baseline_adapter_differs_without_refreeze_record: the baseline round ran "
+            f"agent_adapter {theirs['agent_adapter']}, this template pins "
+            f"{ours['agent_adapter']}; no eval_template.py refreeze record beside the "
+            "template links exactly these two")
+    assert path is not None
+    pairing["refreeze_record"] = {"path": str(path), "sha256": hashed(path),
+                                  "reason": record.get("reason")}
+    return pairing
+
+
+def pairing_note(pairing: dict[str, Any] | None) -> str:
+    """The report's line on which adapter each side ran."""
+    if pairing is None:
+        return "Agent adapter pairing: not checked (watcher started before this check)."
+    base, current = pairing["baseline"]["agent_adapter"], pairing["current"]["agent_adapter"]
+    if not pairing["adapter_differs"]:
+        return f"Agent adapter: baseline and current both {current}."
+    record = pairing["refreeze_record"]
+    return (f"Agent adapter DIFFERS: baseline {base}, current {current}; paired through "
+            f"re-freeze record sha256 {record['sha256']} ({record['reason']}).")
+
+
 def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
-                     execution: dict[str, Any], manifest: Path) -> dict[str, Any] | None:
-    """`{plan, sha256, source}` of the baseline round, or None (`--no-baseline`).
+                     execution: dict[str, Any], manifest: Path,
+                     template: Path) -> dict[str, Any] | None:
+    """`{plan, sha256, source, adapter_pairing}` of the baseline round, or None
+    (`--no-baseline`).
 
     Refused at start, never dropped later without a word: a plan that is missing or not
     the pinned sha256, or a round on other Host/Runtime pins, initial progress or seed
@@ -184,7 +244,8 @@ def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
         differing.append("seed_manifest")
     if differing:
         raise ValueError("baseline_round_differs_from_this_watcher: " + ", ".join(differing))
-    return {"plan": str(plan), "sha256": hashed(plan), "source": source}
+    return {"plan": str(plan), "sha256": hashed(plan), "source": source,
+            "adapter_pairing": adapter_pairing(theirs, execution, template)}
 
 
 def code_adapter_identity() -> dict[str, str]:
@@ -206,7 +267,11 @@ def start_problems(settings: dict[str, Any], execution: dict[str, Any]) -> list[
         evaluate.require_actor_layout(actor)
     except ValueError as error:
         problems.append(str(error))
-    pinned, current = execution.get("agent_adapter"), code_adapter_identity()
+    try:
+        current = code_adapter_identity()
+    except ImportError as error:
+        return [*problems, f"evaluation_interpreter_cannot_import_the_adapter: {error}"]
+    pinned = execution.get("agent_adapter")
     if pinned != current:
         shown = (pinned or {}).get("code_sha256") if isinstance(pinned, dict) else pinned
         problems.append(f"frozen_agent_implementation_changed: the execution template pins "
@@ -553,8 +618,17 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     skipped: dict[str, Any] = {}
     references = (("baseline", baseline["plan"] if baseline else None),
                   ("previous", previous_plan))
+    smoke = current["planned"] < DECISION_GAMES
+    not_compared = [name for name, reference in references if reference] if smoke else []
+    pairing = baseline.get("adapter_pairing") if baseline else None
+    notes = []
+    if smoke:
+        notes.append(f"SMOKE: {current['planned']} games < {DECISION_GAMES}: smoke, not a "
+                     "decision result; no reference is paired.")
+    if baseline:
+        notes.append(pairing_note(pairing))
     for name, reference in references:
-        if reference is None:
+        if reference is None or smoke:
             continue
         group, frozen = cohort(Path(reference), pinned=baseline["sha256"]
                                if name == "baseline" and baseline else None)
@@ -569,14 +643,18 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         cohorts[name] = group
     cohorts["current"] = current
     output = root / "report"
-    report = write_report(cohorts, output, scope_note=(
+    report = write_report(cohorts, output, scope_note=" ".join([*notes, (
         "Managed fixed pool, argmax; unknown/failed games are excluded per pair and listed, "
         "never retried; the round is never voided."
         + (" Skipped references (different protocol or seeds): "
-           + json.dumps(skipped, sort_keys=True) if skipped else "")))
-    summary: dict[str, Any] = {"schema": SCHEMA + "/report", "report_directory": str(output),
-                               "baseline": baseline, "skipped_references": skipped,
-                               "cohorts": {}, "paired": {}}
+           + json.dumps(skipped, sort_keys=True) if skipped else ""))]))
+    summary: dict[str, Any] = {
+        "schema": SCHEMA + "/report", "report_directory": str(output),
+        "baseline": baseline, "adapter_pairing": pairing if baseline else None,
+        "smoke": smoke, "decision": ("smoke, not a decision result" if smoke
+                                     else f"decision size (>= {DECISION_GAMES} games)"),
+        "references_not_compared": not_compared, "skipped_references": skipped,
+        "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
         reward = report["rewards"][name]
@@ -672,6 +750,8 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                    "reward": official.get(row["seed"]),
                    "conservative_reward": conservative.get(row["seed"])}
                   for row in current["rows"]],
+        "smoke": summary["smoke"], "decision": summary["decision"],
+        "adapter_pairing": summary["adapter_pairing"],
         "paired": summary["paired"], "skipped_references": summary["skipped_references"],
         "value_predictions": {"recorded": False,
                               "reason": "evaluated_package_strips_auxiliary_heads"}}
@@ -690,7 +770,7 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     execution = json.loads(args.execution.read_bytes())
     live = min(args.workers, args.pending_limit)
     baseline = resolve_baseline(args.baseline_plan, args.baseline_sha256, args.baseline_source,
-                                execution, args.manifest.resolve())
+                                execution, args.manifest.resolve(), args.execution.resolve())
     # Only when given: the default (the source parent) keeps earlier state.json settings.
     actor = ({"actor_root": str(args.actor_root.resolve())}
              if getattr(args, "actor_root", None) is not None else {})
@@ -793,7 +873,7 @@ def main() -> None:
         check_manifest(args.manifest.resolve(), args.suite, args.seeds)
         settings = settings_from(args)
         problems = start_problems(settings, json.loads(args.execution.read_bytes()))
-    except (ValueError, OSError, KeyError) as error:
+    except (ValueError, OSError, KeyError, ImportError) as error:
         problems = [f"{type(error).__name__}: {error}"]
     if problems:  # one line: supervise shows the last stderr line of a refused check
         print("fast_eval check refused: " + " | ".join(problems), file=sys.stderr, flush=True)

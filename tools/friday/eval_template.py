@@ -5,19 +5,25 @@ The Managed executor refuses an execution whose `agent_adapter` is not this sour
 `stpd.p1.export.adapter_identity()` (`frozen_agent_implementation_changed`). That check
 stays exact. When the adapter code closure changed, the template is re-frozen here, the
 same rule as `release_swap.build_execution`: only `agent_adapter` and `producer` are
-recomputed; every other key (Host/Runtime/candidate pins, initial progress, models,
-retention, pipeline, storage) is copied unchanged, so a baseline round on the same Host
-and Runtime pins stays pairable (`fast_eval.resolve_baseline` compares those pins).
+recomputed and every other key is copied unchanged (refused otherwise), so a baseline
+round on the same Host and Runtime pins stays pairable. The pairing is not silent:
+fast_eval pairs a baseline round under another adapter only through this record, and
+writes both fingerprints into summary.json, eval-record.json and the report.
 
-    eval_template.py refreeze --template OLD.json --output NEW.json [--previous-revision REV]
+    eval_template.py refreeze --template OLD.json --output NEW.json \
+        --previous-revision REV --reason TEXT
 
-Run it with the evaluation interpreter and the clean source the evaluation will run
-(`PYTHONPATH=<source>/python:<source>/components/evidence`), like fast_eval.py. NEW.json
-must not exist (an existing template is never overwritten). Beside it,
-`NEW.json.refreeze.json` records both templates' sha256, the old and new adapter and
-producer, the unchanged pins, and with `--previous-revision` (the commit the old template
-was frozen on, e.g. its `producer.source_revision`): whether that commit reproduces the
-old pinned adapter, and which adapter closure files differ from it to this source.
+Run it with the evaluation interpreter from the clean checkout the evaluation will run
+(`PYTHONPATH=<checkout>/python:<checkout>/components/evidence`), like fast_eval.py.
+Refused: an existing NEW.json (never overwritten); a template that is itself a re-freeze
+(re-freeze the original, so one record links the baseline's adapter to this one); a REV
+(the commit OLD was frozen on, e.g. its `producer.source_revision`) that does not
+reproduce OLD's pinned adapter; a checkout whose HEAD files are not the source the
+interpreter imports (dirty tree, or another checkout on PYTHONPATH). NEW.json carries
+`refrozen_from` (OLD's sha256, the record's file name, the old adapter, the reason) so it
+cannot pass for an original freeze; beside it `NEW.json.refreeze.json` records both
+templates' sha256, the old and new adapter and producer, the unchanged keys, the reason,
+and the closure files that differ from REV to this source.
 """
 from __future__ import annotations
 
@@ -33,8 +39,8 @@ from typing import Any
 FRIDAY = Path(__file__).resolve().parent
 ROOT = FRIDAY.parents[1]
 SCHEMA = "spireagent/evaluation-template-refreeze-1"
-# Copied unchanged; fast_eval compares these with the baseline round at start.
-PINS = ("host_pin", "runtime_pin", "initial_progress")
+# The only keys a re-freeze writes; every other key must come through unchanged.
+RECOMPUTED = ("agent_adapter", "producer", "refrozen_from")
 # The files `stpd.p1.export._adapter_identity` hashes, keyed as it keys them. A test
 # rebuilds the identity from this list and compares it with export.adapter_identity().
 _P1 = ("agent.py", "agent_driver.py", "local_inference.py", "local_mu.py", "export.py",
@@ -84,42 +90,62 @@ def current_identities() -> dict[str, Any]:
             "producer": source_identity(managed_evaluation.ROOT).to_dict()}
 
 
-def refreeze(template: Path, output: Path, *, previous_revision: str | None = None,
-             identities: dict[str, Any] | None = None) -> dict[str, Any]:
+def refreeze(template: Path, output: Path, *, previous_revision: str, reason: str,
+             identities: dict[str, Any] | None = None,
+             revision: Any = at_revision) -> dict[str, Any]:
     from release_swap import build_execution
 
-    if output.exists() or Path(str(output) + ".refreeze.json").exists():
+    if not reason.strip():
+        raise ValueError("refreeze_reason_required")
+    record_path = Path(str(output) + ".refreeze.json")
+    if output.exists() or record_path.exists():
         raise ValueError("refreeze_output_exists_never_overwritten")
-    old = json.loads(template.read_bytes())
+    template_raw = template.read_bytes()
+    old = json.loads(template_raw)
     if old.get("schema") != "spireagent/managed-evaluation-execution-v1":
         raise ValueError("managed_evaluation_execution_template_required")
+    if "refrozen_from" in old:
+        raise ValueError("refreeze_from_an_original_template_required")
     new_ids = identities or current_identities()
     if old.get("agent_adapter") == new_ids["agent_adapter"]:
         raise ValueError("template_adapter_already_current")
-    new = build_execution(old, new_ids)
-    if any(new.get(key) != old.get(key) for key in PINS):
-        raise ValueError("refreeze_changed_a_pin")
+    old_code = (old.get("agent_adapter") or {}).get("code_sha256")
+    previous = revision(previous_revision)
+    if previous["code_sha256"] != old_code:
+        raise ValueError(f"previous_revision_does_not_reproduce_the_old_pin: "
+                         f"{previous['revision']} computes {previous['code_sha256']}, "
+                         f"the template pins {old_code}")
+    head = revision("HEAD")
+    if head["code_sha256"] != new_ids["agent_adapter"]["code_sha256"]:
+        raise ValueError(f"checkout_head_is_not_the_imported_source: HEAD files compute "
+                         f"{head['code_sha256']}, the imported adapter is "
+                         f"{new_ids['agent_adapter']['code_sha256']} (dirty tree or "
+                         "another checkout on PYTHONPATH)")
+    new = {**build_execution(old, new_ids), "refrozen_from": {
+        "template_sha256": hashlib.sha256(template_raw).hexdigest(),
+        "record": record_path.name, "agent_adapter_code_sha256": old_code,
+        "reason": reason}}
+    changed = sorted(k for k in old.keys() | new.keys()
+                     if k not in RECOMPUTED and old.get(k) != new.get(k))
+    if changed:
+        raise ValueError("refreeze_changed_other_keys: " + ", ".join(changed))
     raw = (json.dumps(new, indent=1, sort_keys=True) + "\n").encode()
     output.parent.mkdir(parents=True, exist_ok=True)
     with open(output, "xb") as stream:
         stream.write(raw)
     output.chmod(0o600)
     record = {
-        "schema": SCHEMA, "written_at": time.time(),
-        "template_in": {"path": str(template), "sha256": hashlib.sha256(
-            template.read_bytes()).hexdigest()},
+        "schema": SCHEMA, "written_at": time.time(), "reason": reason,
+        "template_in": {"path": str(template),
+                        "sha256": hashlib.sha256(template_raw).hexdigest()},
         "template_out": {"path": str(output), "sha256": hashlib.sha256(raw).hexdigest()},
         "agent_adapter": {"old": old.get("agent_adapter"), "new": new_ids["agent_adapter"]},
         "producer": {"old": old.get("producer"), "new": new_ids["producer"]},
-        "unchanged": sorted(k for k in old if k not in ("agent_adapter", "producer")),
+        "unchanged": sorted(k for k in old if k not in RECOMPUTED),
+        "previous": {**previous, "reproduces_old_pin": True},
+        "head": head["revision"],
         "rule": "release_swap.build_execution: only agent_adapter and producer recomputed",
     }
-    if previous_revision is not None:
-        previous = at_revision(previous_revision)
-        previous["reproduces_old_pin"] = (
-            previous["code_sha256"] == (old.get("agent_adapter") or {}).get("code_sha256"))
-        record["previous"] = previous
-    record_path = Path(str(output) + ".refreeze.json")
     with open(record_path, "x", encoding="utf-8") as stream:
         json.dump(record, stream, indent=1, sort_keys=True)
         stream.write("\n")
@@ -134,18 +160,20 @@ def main() -> None:
     command = commands.add_parser("refreeze")
     command.add_argument("--template", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
-    command.add_argument("--previous-revision",
+    command.add_argument("--previous-revision", required=True,
                          help="commit the old template was frozen on (git, in this checkout)")
+    command.add_argument("--reason", required=True,
+                         help="why play is unchanged, e.g. the PR or review that showed it")
     args = parser.parse_args()
     sys.path.insert(0, str(FRIDAY))
     try:
         record = refreeze(args.template.resolve(), args.output.resolve(),
-                          previous_revision=args.previous_revision)
+                          previous_revision=args.previous_revision, reason=args.reason)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"eval_template refused: {type(error).__name__}: {error}", file=sys.stderr)
         raise SystemExit(2) from None
-    print(json.dumps({k: record[k] for k in ("template_out", "agent_adapter", "previous")
-                      if k in record}, sort_keys=True))
+    print(json.dumps({k: record[k] for k in ("template_out", "agent_adapter", "previous")},
+                     sort_keys=True))
 
 
 if __name__ == "__main__":
