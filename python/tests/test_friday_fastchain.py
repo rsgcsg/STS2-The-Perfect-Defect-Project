@@ -1983,15 +1983,23 @@ def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
              ({'stop': 'service failure handoff EOF', 'rc': 0}, 'failure'),
              ({'rc': 5}, 'failure'), ({'window_end': None}, 'failure'),
              ({'disk': True}, 'disk_stop'), ({'failure': fence, 'disk': True}, 'disk_stop'),
-             # V6 smoke attempt 2: a GPU job that ended without the learner's report is
-             # resumed: a Slurm kill (gpu-rc 143 now; it was a false 0), a learner killed
-             # or crashed without its report (gpu.sh: rc 6, STOP "gpu job end"), node death
-             ({'report': False, 'rc': 0, 'stop': 'gpu job end'}, 'resumable'),
+             # V6 smoke attempt 2 / lead 11-17: a GPU job that ended without the learner's
+             # report is resumed only for a node death (no gpu-rc), a signal exit
+             # (129/130/143: Slurm kill, preemption) or rc 6 (the learner died alone)
              ({'report': False, 'rc': 143, 'stop': 'gpu job end'}, 'resumable'),
+             ({'report': False, 'rc': 129}, 'resumable'), ({'report': False, 'rc': 130},
+                                                              'resumable'),
              ({'report': False, 'rc': 6, 'stop': 'gpu job end'}, 'resumable'),
              ({'report': False, 'rc': None}, 'resumable'),
-             # ...but never our own stop, nor a STOP that says why (it would repeat)
+             # any other rc without a report is gpu.sh's own error: final
+             ({'report': False, 'rc': 0, 'stop': 'gpu job end'}, 'failure'),
+             ({'report': False, 'rc': 1}, 'failure'), ({'report': False, 'rc': 'x'}, 'failure'),
+             # never our own stop, with or without the learner's report (#589 review S3)
              ({'report': False, 'rc': 143, 'stop': 'service stop: operator stop'}, 'stopped'),
+             ({'rc': 0, 'window_end': None, 'stop': 'service stop: operator stop'}, 'stopped'),
+             ({'rc': 143, 'window_end': None, 'stop': 'service stop: operator stop'}, 'stopped'),
+             ({'failure': 'BoundaryError: x', 'stop': 'service stop: operator stop'}, 'failure'),
+             # nor a STOP that says why (it would repeat)
              ({'report': False, 'rc': 3, 'stop': 'launcher gone before GPU start'}, 'failure'),
              ({'report': False, 'rc': 143, 'stop': 'learner failure x'}, 'failure')]
     for i, (kw, kind) in enumerate(cases):
@@ -2000,7 +2008,7 @@ def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
 
 
 def test_a_killed_gpu_job_resumes_and_an_operator_stop_does_not(tmp_path):
-    killed = {'report': False, 'rc': 0, 'stop': 'gpu job end'}
+    killed = {'report': False, 'rc': 143, 'stop': 'gpu job end'}
     chain, cluster = chain_for(tmp_path / 'kill', [killed, {}])
     assert chain.run() == 0 and len(cluster.argvs) == 2
     assert chain.state['generations'][0]['outcome']['kind'] == 'resumable'
@@ -2008,6 +2016,11 @@ def test_a_killed_gpu_job_resumes_and_an_operator_stop_does_not(tmp_path):
     stopped = {'report': False, 'rc': 143, 'stop': 'service stop: operator stop (supervise.py '
                'stop)'}
     chain, cluster = chain_for(tmp_path / 'stop', [stopped, {}])
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'ended stopped' in chain.state['final']['cause']
+    # the common ending now (prep hosts wait for the learner): a clean report, no window end
+    reported = {'rc': 0, 'window_end': None, 'stop': 'service stop: operator stop'}
+    chain, cluster = chain_for(tmp_path / 'reported', [reported, {}])
     assert chain.run() == 1 and len(cluster.argvs) == 1
     assert 'ended stopped' in chain.state['final']['cause']
 
@@ -2049,6 +2062,17 @@ def test_prep_hosts_serve_until_the_learner_reported_not_until_stop(tmp_path):
                            'return $rc; }\n')
     assert out.returncode == 0, out.stderr
     assert calls == 3 and out.stdout.strip().endswith('RC=0')
+    # STOP before the learner was ready (it never started): stop at once, no squeue check.
+    # The answers end in "gone", so a loop that missed this ends by assertion, never hangs.
+    early = tmp_path / 'early'
+    (early / 'run').mkdir(parents=True)
+    (early / 'run' / 'load.txt').write_text('1 load\n')
+    (early / 'run' / 'STOP').write_text('service failure: gpu preflight\n')
+    out, calls = run_block(early, 'prep.sh', '# --- serve:', '# --- end serve ---',
+                           ['RUNNING', 'RUNNING', 'COMPLETED'], env={'FC_PREP_GROUP': '0'},
+                           prefix=f'source {FASTCHAIN}/gpu_job.sh; GPU=77\n')
+    assert out.returncode == 0, out.stderr
+    assert calls == 0 and out.stdout.strip().endswith('RC=0')
 
 
 class FakeCluster:

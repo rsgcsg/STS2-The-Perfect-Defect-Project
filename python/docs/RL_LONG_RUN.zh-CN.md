@@ -161,10 +161,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   起步（学习者自己的 CP-only 恢复，CP 记分片数）。正常 = `gpu.sh` 退出码文件 `gpu-rc` 为 0、
   学习者报告无失败且有 `window_end`、STOP 不是失败。可续：学习者报告失败含
   `input_owner_fenced_restore_last_checkpoint`（`input_failure.operation` 说明原因，如
-  `fast_handoff_lost`），或 GPU 作业结束时根本没有学习者报告、且 STOP 没说明原因（节点死：无
-  `gpu-rc`；Slurm 取消、抢占、超时：`gpu.sh` 收到 SIGTERM 记 143，以前会误记 0；学习者被杀或崩溃
-  没写报告）；STOP 是我们自己的「service stop」（操作员停、env_lost）时判 `stopped`，不续；
-  不续：其他学习者
+  `fast_handoff_lost`），或 GPU 作业结束时根本没有学习者报告、STOP 没说明原因、且 `gpu-rc` 说明是
+  硬死（负责人 11-17）：没有 `gpu-rc`（节点死）、信号退出 129/130/143（Slurm 取消、抢占、超时：
+  `gpu.sh` 收到 SIGTERM 记 143，以前会误记 0），或 6（学习者进程单独死了、没写报告：OOM、段错误）；
+  没有报告时其他退出码（如 `gpu.sh` 自己的脚本错误 1）是终态、响亮停链。STOP 是我们自己的
+  「service stop」（操作员停）且学习者没报失败时判 `stopped`（有没有报告都一样），不续。
+  **停链只用 `supervise.py stop`**：直接 `scancel` GPU 作业和被杀分不出来，会被当成硬死自动续跑
+  （占一次续跑次数）；不续：其他学习者
   失败（含启动失败：恢复不了的 CP 也写报告，链立即停）、只有 STOP「service failure」（GPU
   预检、GPU 数、MPS、内存守卫，会重复）、提交失败或预检拒绝、磁盘停止、代码/配置/站点/源码
   有变。最多 `resume_max_total`（3）次，用完以第一
