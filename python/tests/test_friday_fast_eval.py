@@ -231,25 +231,145 @@ def test_baseline_is_explicit_pinned_and_compared_at_start(fast_eval, tmp_path):
     assert fast_eval.settings_from(args)['baseline'] is None
 
 
+ADAPTER = {'id': 'stpd-p1-mstd-agent', 'version': '1',
+           'protocol': 'sts2.policy-runtime/agent-session-ndjson-1', 'code_sha256': 'c' * 64}
+
+
+def make_actor(root):
+    """A complete evaluation actor root (evaluate.ACTOR_LAYOUT) of empty stand-ins."""
+    for entry in ('env/bin/python', 'node22.23.4/bin/node'):
+        (root / entry).parent.mkdir(parents=True, exist_ok=True)
+        (root / entry).write_text('#!/bin/sh\n')
+        (root / entry).chmod(0o755)
+    for entry in ('game', 'dotnet-sdk9.0.117'):
+        (root / entry).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def check_argv(args, tmp_path, *extra):
+    return ['fast_eval.py', '--learner-config', str(args.learner_config),
+            '--execution', str(args.execution), '--manifest', str(args.manifest),
+            '--output', str(tmp_path / 'out'), '--slot-registered', '--check', *extra]
+
+
+def run_check(fast_eval, argv, capsys):
+    with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
+          patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as done):
+        fast_eval.main()
+    out = capsys.readouterr()
+    return done.value.code, out.out, out.err
+
+
 def test_check_mode_runs_the_start_checks_and_writes_nothing(fast_eval, tmp_path, capsys):
     """M1: supervise runs `--check` before generation 0; a refusal exits non-zero."""
     args = args_for(tmp_path)
     args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
     base = round_on(tmp_path, 'base', args.manifest, host_pin={'version': 'rc.64'})
-    argv = ['fast_eval.py', '--learner-config', str(args.learner_config),
-            '--execution', str(args.execution), '--manifest', str(args.manifest),
-            '--output', str(tmp_path / 'out'), '--slot-registered', '--check']
+    argv = check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor')))
     with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
           patch.object(sys, 'argv', [*argv, '--no-baseline']),
           pytest.raises(SystemExit) as done):
         fast_eval.main()
     assert done.value.code == 0 and json.loads(capsys.readouterr().out)['check'] == 'ok'
     with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
           patch.object(sys, 'argv', [*argv, '--baseline-plan', str(base)]),
           pytest.raises(SystemExit) as done):
         fast_eval.main()
     assert done.value.code == 2 and 'host_pin' in capsys.readouterr().err
     assert not (tmp_path / 'out').exists()
+
+
+def test_check_refuses_an_incomplete_actor_root_and_names_what_is_missing(
+        fast_eval, tmp_path, capsys):
+    """V6 smoke blocker 1, caught before generation 0: the evaluation jobs' actor root
+    (default the source parent; --actor-root names it) must hold env, Node, game, .NET."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    actor = make_actor(tmp_path / 'release')
+    code, out, _ = run_check(fast_eval, [*check_argv(args, tmp_path, '--actor-root', str(actor)),
+                                         '--no-baseline'], capsys)
+    assert code == 0 and json.loads(out)['settings']['actor_root'] == str(actor.resolve())
+    import shutil
+    shutil.rmtree(actor / 'dotnet-sdk9.0.117')
+    (actor / 'env/bin/python').unlink()
+    code, _, err = run_check(fast_eval, [*check_argv(args, tmp_path, '--actor-root', str(actor)),
+                                         '--no-baseline'], capsys)
+    assert code == 2 and 'evaluation_actor_layout_incomplete' in err
+    assert 'lacks env/bin/python, dotnet-sdk9.0.117' in err and len(err.splitlines()) == 1
+    assert not (tmp_path / 'out').exists()
+    # The default actor root is the source checkout's parent (unchanged behaviour).
+    settings = fast_eval.settings_from(args_for(tmp_path))
+    assert 'actor_root' not in settings
+    with patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER):
+        [problem] = fast_eval.start_problems({**settings, 'runtime_source': str(tmp_path / 'src')},
+                                             {'agent_adapter': ADAPTER})
+    assert problem.startswith(f'evaluation_actor_layout_incomplete: {tmp_path} lacks')
+
+
+def test_check_refuses_a_template_whose_adapter_is_not_this_source(fast_eval, tmp_path, capsys):
+    """V6 smoke blocker 3, caught before generation 0: the executor's exact
+    frozen_agent_implementation_changed comparison, run early; nothing is relaxed."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    stale = {**ADAPTER, 'code_sha256': '7' * 64}
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': stale}))
+    argv = [*check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor'))),
+            '--no-baseline']
+    code, _, err = run_check(fast_eval, argv, capsys)
+    assert code == 2 and 'frozen_agent_implementation_changed' in err
+    assert '7' * 64 in err and 'c' * 64 in err and 'eval_template.py refreeze' in err
+    for other in ({**ADAPTER, 'version': '2'}, None):  # any difference, or none pinned
+        args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                              'agent_adapter': other}))
+        assert run_check(fast_eval, argv, capsys)[0] == 2
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    assert run_check(fast_eval, argv, capsys)[0] == 0
+    assert not (tmp_path / 'out').exists()
+
+
+@pytest.mark.parametrize('seeds,code', [(8, 0), (32, 0), (100, 0), (200, 0), (0, 2), (300, 2)])
+def test_seed_count_is_a_setting_from_a_smoke_count_up_to_one_jobs_200(
+        fast_eval, tmp_path, capsys, seeds, code):
+    """V6 smoke blocker 2: eval_seeds=32 was refused (old 50..100 guard in prepare-checkpoint).
+    A small smoke count runs; 300 (the owner's decision count) is refused at start with
+    the reason (one job admits <= 200 games: 300 needs batches), never mid-chain."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    argv = [*check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor')),
+                        '--seeds', str(seeds)), '--no-baseline']
+    result, out, err = run_check(fast_eval, argv, capsys)
+    assert result == code
+    if code == 0:
+        assert json.loads(out)['settings']['seeds'] == seeds
+    else:
+        assert '--seeds 1..200' in err and 'batches' in err
+    assert fast_eval.evaluate.MAX_DISPATCH_SLOTS == 200
+
+
+def test_prepare_command_carries_the_actor_root_and_a_small_seed_count(fast_eval, tmp_path):
+    world = World()
+    world.record('cp-a', 10)
+    actor = str(tmp_path / 'release')
+    runner = loop(fast_eval, world, tmp_path, seeds=8, actor_root=actor)
+    runner.tick()
+    script = (tmp_path / 'evaluation-0001/prepare.sh').read_text()
+    assert f'actor_root={actor}' in script and f'--actor-root {actor}' in script
+    assert '--seeds 8' in script
+    plain = loop(fast_eval, world, tmp_path / 'plain')
+    plain.tick()
+    script = (tmp_path / 'plain/evaluation-0001/prepare.sh').read_text()
+    assert '--actor-root' not in script and 'actor_root=/src\n' in script
 
 
 def test_busy_failed_and_deadline_skip_without_stopping(fast_eval, tmp_path):

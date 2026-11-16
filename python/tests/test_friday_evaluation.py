@@ -49,10 +49,30 @@ def execution(tmp_path):
     return file
 
 
+def make_actor(root):
+    """A complete evaluation actor root (evaluate.ACTOR_LAYOUT) of empty stand-ins."""
+    for entry in ('env/bin/python', 'node22.23.4/bin/node'):
+        (root / entry).parent.mkdir(parents=True, exist_ok=True)
+        (root / entry).write_text('#!/bin/sh\n')
+        (root / entry).chmod(0o755)
+    for entry in ('game', 'dotnet-sdk9.0.117'):
+        (root / entry).mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
+def with_actor(plan_path, actor):
+    """The plan names an explicit actor root (as prepare-checkpoint --actor-root does)."""
+    plan = json.loads(plan_path.read_bytes())
+    plan['actor_root'] = str(actor)
+    plan_path.write_text(json.dumps(plan))
+    return plan
+
+
 def prepared(evaluate, execution, tmp_path, **keywords):
     selections = {f'checkpoint-{index}': f'model-{index}' for index in range(1, 4)}
     directory = (tmp_path / 'evaluation').resolve()
     plan = evaluate.prepare(execution, directory, selections=selections, **keywords)
+    plan = with_actor(directory / 'plan.json', make_actor(tmp_path / 'actor'))
     return plan, directory
 
 
@@ -195,6 +215,48 @@ def test_shared_local_launcher_reads_no_R2_environment(evaluate, tmp_path):
         remote.replace(evaluate.R2_ENVIRONMENT, '')
     assert evaluate.needs_r2({}) and evaluate.needs_r2({'storage_mode': 'remote'})
     assert not evaluate.needs_r2({'storage_mode': 'shared_local'})
+
+
+def test_actor_root_is_explicit_and_an_incomplete_layout_is_refused_before_sbatch(
+        evaluate, execution, tmp_path):
+    """V6 smoke blocker 1: the actor root needed env/node/game/dotnet beside the source and
+    a job failed after submission; now the plan may name it and submit refuses loudly."""
+    source = tmp_path / 'src'
+    assert evaluate.actor_root({'source_root': str(source)}) == tmp_path  # default unchanged
+    actor = make_actor(tmp_path / 'release')
+    plan = {'source_root': str(source), 'actor_root': str(actor)}
+    script = evaluate.launcher(tmp_path / 'plan.json', plan, credentials=False)
+    assert f'actor_root={actor}' in script and f'source_root={source}' in script
+    assert evaluate.actor_layout_missing(actor) == []
+    (actor / 'game').rmdir()
+    (actor / 'node22.23.4/bin/node').chmod(0o644)
+    assert evaluate.actor_layout_missing(actor) == ['node22.23.4/bin/node', 'game']
+    _plan, directory = prepared(evaluate, execution, tmp_path)
+    with_actor(directory / 'plan.json', actor)
+    lock = tmp_path / 'configuration/friday-submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', '']),
+          pytest.raises(ValueError, match='actor_layout_incomplete.*node22.23.4/bin/node, game')):
+        evaluate.submit(directory / 'plan.json', dry_run=True)
+    assert not (directory / 'launch.sh').exists()
+    with_actor(directory / 'plan.json', 'relative/actor')
+    with pytest.raises(ValueError, match='absolute_evaluation_actor_root_required'):
+        evaluate.load_plan(directory / 'plan.json')
+
+
+@pytest.mark.parametrize('seeds', [0, 201, 50.0])
+def test_checkpoint_seed_count_is_bounded_by_one_job_not_fifty_to_one_hundred(
+        evaluate, tmp_path, seeds):
+    """V6 smoke blocker 2: 32 seeds were refused by an old 50..100 guard. Any count of
+    1..200 (one job's slots; the manifest bounds it further) passes this check."""
+    with pytest.raises(ValueError, match='bounded_evaluation_seed_count_required'):
+        evaluate.prepare_checkpoint(tmp_path / 'learner.json', 'cp', tmp_path / 'e.json',
+                                    tmp_path / 'm.json', tmp_path / 'out', seeds=seeds)
+    for fine in (1, 8, 32, 200):  # past the count check: the missing learner config is next
+        with pytest.raises(FileNotFoundError):
+            evaluate.prepare_checkpoint(tmp_path / 'learner.json', 'cp', tmp_path / 'e.json',
+                                        tmp_path / 'm.json', tmp_path / 'out', seeds=fine)
+    assert not (tmp_path / 'out').exists()
 
 
 def test_fixed20_seed_tampering_stays_rejected_by_original_reader(evaluate, execution, tmp_path):
@@ -539,6 +601,7 @@ def test_job_memory_is_a_plan_setting_with_the_old_default(evaluate, execution, 
                                 selections={f'checkpoint-{i}': f'model-{i}' for i in range(1, 4)},
                                 **keywords)
         assert plan['memory_gb'] == int(expected[6:-1])
+        with_actor(tmp_path / name / 'plan.json', make_actor(tmp_path / 'actor'))
         with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
               patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', ''])):
             result = evaluate.submit(tmp_path / name / 'plan.json', dry_run=True)

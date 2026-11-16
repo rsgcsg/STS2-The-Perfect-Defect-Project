@@ -46,6 +46,17 @@ Rules (RL4.1 long-run lessons, lead 11-12):
   report and the evidence; a job that had to skip its in-job report is
   `report_deferred` here (loud): `evaluate.py project-report` writes it later.
 
+Start checks (`--check`, which supervise runs before generation 0, and again before the
+loop starts), so an evaluation that cannot run is refused before any GPU or CPU job:
+- the seed manifest has the seeds; 1 <= seeds <= `evaluate.MAX_DISPATCH_SLOTS` (one job
+  admits at most 200 games; 300 seeds need a manifest and batches, #591);
+- the actor root (`--actor-root`, default the source checkout's parent; supervise passing
+  it is #590) holds `evaluate.ACTOR_LAYOUT` (env, Node, game, .NET);
+- the execution template's `agent_adapter` equals this source's
+  `export.adapter_identity()` (the executor's own `frozen_agent_implementation_changed`
+  check, run early; re-freeze a stale template with `tools/friday/eval_template.py
+  refreeze`, never by hand).
+
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
 
@@ -176,10 +187,40 @@ def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
     return {"plan": str(plan), "sha256": hashed(plan), "source": source}
 
 
+def code_adapter_identity() -> dict[str, str]:
+    """This source's agent adapter identity: what the Managed executor compares the frozen
+    execution's `agent_adapter` with (needs the evaluation interpreter: torch)."""
+    from stpd.p1 import export
+
+    return export.adapter_identity()
+
+
+def start_problems(settings: dict[str, Any], execution: dict[str, Any]) -> list[str]:
+    """Why an evaluation of these settings cannot run, found before any job is submitted:
+    the actor layout and the frozen adapter identity (the seed count and manifest are
+    checked by `main` and `check_manifest`). Empty = it can start."""
+    problems = []
+    actor = evaluate.actor_root({"source_root": settings["runtime_source"],
+                                 "actor_root": settings.get("actor_root")})
+    try:
+        evaluate.require_actor_layout(actor)
+    except ValueError as error:
+        problems.append(str(error))
+    pinned, current = execution.get("agent_adapter"), code_adapter_identity()
+    if pinned != current:
+        shown = (pinned or {}).get("code_sha256") if isinstance(pinned, dict) else pinned
+        problems.append(f"frozen_agent_implementation_changed: the execution template pins "
+                        f"agent_adapter code_sha256 {shown}, this source computes "
+                        f"{current['code_sha256']}; re-freeze the template with "
+                        "tools/friday/eval_template.py refreeze (records both)")
+    return problems
+
+
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
     """The watcher's preparation command, for one CP (no R2 environment when shared_local)."""
     launcher = evaluate.launcher(root / "not-offered-plan.json",
-                                 {"source_root": settings["runtime_source"]},
+                                 {"source_root": settings["runtime_source"],
+                                  "actor_root": settings.get("actor_root")},
                                  credentials=settings.get("r2", True))
     if launcher.count(SPLIT) != 1:
         raise ValueError("evaluation_launcher_layout_changed")
@@ -198,6 +239,8 @@ def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str
                "--memory-gb", str(settings["memory_gb"])]
     if settings.get("deadline_at") is not None:
         command += ["--deadline-at", str(settings["deadline_at"])]
+    if settings.get("actor_root") is not None:
+        command += ["--actor-root", shlex.quote(settings["actor_root"])]
     return prefix + "exec " + " ".join(command) + "\n"
 
 
@@ -648,7 +691,10 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     live = min(args.workers, args.pending_limit)
     baseline = resolve_baseline(args.baseline_plan, args.baseline_sha256, args.baseline_source,
                                 execution, args.manifest.resolve())
-    return {"learner_config": str(args.learner_config.resolve()),
+    # Only when given: the default (the source parent) keeps earlier state.json settings.
+    actor = ({"actor_root": str(args.actor_root.resolve())}
+             if getattr(args, "actor_root", None) is not None else {})
+    return {**actor, "learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
@@ -704,6 +750,10 @@ def main() -> None:
     parser.add_argument("--deadline-at", type=float)
     parser.add_argument("--checkpoint",
                         help="evaluate exactly this CP artifact id (else the newest CP)")
+    parser.add_argument("--actor-root", type=Path,
+                        help="directory holding env/, node22.23.4/, game/ and "
+                             "dotnet-sdk9.0.117/ for the evaluation jobs, e.g. the release "
+                             "the source was built for (default: the source checkout's parent)")
     parser.add_argument("--baseline-plan", type=Path,
                         help="plan.json of the reference round (e.g. the baseline CP's own "
                              "fast_eval round) for the paired report: same Host/Runtime "
@@ -736,17 +786,21 @@ def main() -> None:
         parser.error("--baseline-sha256 goes with --baseline-plan")
     if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
         parser.error("--memory-gb and --wall-seconds are positive (omit for the defaults)")
-    if args.check:  # supervise runs this before generation 0: a refusal stops the chain
-        try:
-            check_manifest(args.manifest.resolve(), args.suite, args.seeds)
-            settings = settings_from(args)
-        except (ValueError, OSError, KeyError) as error:
-            print(f"fast_eval check refused: {type(error).__name__}: {error}", file=sys.stderr,
-                  flush=True)
-            sys.exit(2)
+    if not 1 <= args.seeds <= evaluate.MAX_DISPATCH_SLOTS:
+        parser.error(f"--seeds 1..{evaluate.MAX_DISPATCH_SLOTS}: one evaluation job admits at "
+                     "most that many games; more seeds (e.g. 300) need batches (#591)")
+    try:  # supervise runs --check before generation 0: a refusal stops the chain
+        check_manifest(args.manifest.resolve(), args.suite, args.seeds)
+        settings = settings_from(args)
+        problems = start_problems(settings, json.loads(args.execution.read_bytes()))
+    except (ValueError, OSError, KeyError) as error:
+        problems = [f"{type(error).__name__}: {error}"]
+    if problems:  # one line: supervise shows the last stderr line of a refused check
+        print("fast_eval check refused: " + " | ".join(problems), file=sys.stderr, flush=True)
+        sys.exit(2)
+    if args.check:
         print(json.dumps({"check": "ok", "settings": settings}, sort_keys=True), flush=True)
         sys.exit(0)
-    check_manifest(args.manifest.resolve(), args.suite, args.seeds)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     import contextlib
@@ -759,7 +813,7 @@ def main() -> None:
             stack.enter_context(instance_lock(output / "loop.lock"))
         except BoundaryError:
             parser.error("another fast_eval loop owns this --output")
-        loop = Loop(settings_from(args), output, dry_run=args.dry_run)
+        loop = Loop(settings, output, dry_run=args.dry_run)
         while True:
             loop.tick()
             stages = [e["stage"] for e in loop.state["evaluations"]]
