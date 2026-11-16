@@ -648,6 +648,13 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
                         f"{k['env_drain_seconds']} s - min join {k['env_min_join_seconds']} s")
     if plan["env_minutes"] * 60 < plan["wall_seconds"] + plan["env_wait_seconds"]:
         problems.append("env job shorter than the GPU wall plus the env wait")
+    # A driver stops on its own warm + steady after its fast env is ready (env_driver.mjs);
+    # the GPU side expects it until DRAIN, so it must outlive the wall (#586 review M2).
+    life = k["driver_warm_seconds"] + k["driver_steady_seconds"]
+    if life < plan["wall_seconds"]:
+        problems.append(f"env drivers end by design after driver_warm_seconds + "
+                        f"driver_steady_seconds = {life} s, before the GPU wall "
+                        f"{plan['wall_seconds']} s: raise driver_steady_seconds")
     shown.append(f"env nodes may join for {max(window, 0) // 60} min")
     if problems:
         problems.append("shorten wall_seconds (--set) or use a partition without that limit")

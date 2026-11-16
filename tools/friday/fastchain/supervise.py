@@ -50,16 +50,23 @@ Resume rules (user 11-13 C5: automatic; lead 11-14: the simple version):
   supervisor would have to read it back);
 - the launcher (in this process) is the GPU job's liveness owner until gpu.sh confirmed
   its start: SIGTERM/SIGHUP cancel the generation's jobs, and gpu.sh refuses on a stale
-  launcher-alive (SIGKILL). After the start, SIGTERM/SIGHUP to supervise (V6 smoke) cancel
-  the generation's jobs (dependents first, the GPU job last) and end the evaluation
-  watchers, then FINAL.json names the signal; a signal this process ignores (nohup's
-  SIGHUP) stays ignored. SIGKILL still leaves the generation running without resume,
-  readout or evaluation;
+  launcher-alive (SIGKILL). After the start, SIGTERM to supervise (V6 smoke) is the
+  operator's stop: it ends the evaluation watchers and cancels their Slurm jobs, writes
+  STOP ("service stop: ...", which the learner and services take as their stop) and waits
+  up to `stop_grace_seconds` for the GPU job to end on its own, then cancels what is left
+  (dependents first, the GPU job last); FINAL.json names the signal. SIGHUP never cancels
+  anything (an ssh drop must not kill a run): supervise keeps the default action (it
+  dies; the generation runs on without resume, readout or evaluation) or, started under
+  nohup as RL_LONG_RUN says, ignores it and carries on. SIGKILL also leaves the
+  generation running without resume, readout or evaluation;
 - an environment side that is gone while the GPU job runs, before the GPU side asked it to
-  leave (no DRAIN or STOP, not inside the late-join window before `env-drain-at`), for
-  `env_lost_grace_seconds` (V6 smoke: every driver died at start and two cards waited for
-  data) ends the generation: its jobs are cancelled and the chain stops with `env_lost`,
-  never resumed, the env array never resubmitted (0 = off);
+  leave (no DRAIN or STOP, not inside the late-join window before `env-drain-at`) and
+  before the GPU side reported anything (no learner report, no `gpu-rc`: then the resume
+  rules decide), for `env_lost_grace_seconds` (V6 smoke: every driver died at start and
+  two cards waited for data) ends the generation the same way (STOP, grace, cancel) and
+  the chain stops with `env_lost`, never resumed, the env array never resubmitted (0 =
+  off). A driver never ends by its own planned lifetime first: preflight refuses a
+  driver_warm_seconds + driver_steady_seconds shorter than the generation's wall;
 - the chain ends loudly with the first cause (FINAL.json, exit 1); a normal end of the
   window exits 0.
 Schedules: readout of the current generation every `readout_every_seconds` (readout.txt),
@@ -119,7 +126,7 @@ CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 end
 
 
 class Stopped(BaseException):
-    """SIGTERM/SIGHUP to supervise: not an Exception, so no `except Exception` keeps going."""
+    """SIGTERM to supervise: not an Exception, so no `except Exception` keeps going."""
 
 
 def digest(path: Path) -> str:
@@ -186,7 +193,8 @@ class Chain:
                  end_watcher: Callable[[Any], None] | None = None) -> None:
         self.args, self.clock, self.sleep, self.launch_main = args, clock, sleep, launch_main
         self.squeue = squeue or live_jobs
-        self.scancel = scancel or (lambda ids: subprocess.run(["scancel", *ids], check=False))
+        self.scancel = scancel or (lambda ids: subprocess.run(["scancel", *ids],
+                                                              capture_output=True, text=True))
         self.site = run_profile.load_site(args.site)
         self.knobs = run_profile.values(run_profile.load_profile(args.profile, args.set))
         self.checkpoints = checkpoints or self.peer_checkpoints
@@ -349,8 +357,8 @@ class Chain:
             live = self.squeue(ids)
             lost = self.env_lost(generation, live)
             if lost:
-                left = self.cancel(generation)
-                return {"kind": "env_lost", "failure": lost + (f"; {left}" if left else "")}
+                done = self.end_generation(generation, f"service stop: env side lost: {lost}")
+                return {"kind": "env_lost", "failure": f"{lost}; {done}"}
             if live is not None and gpu not in live:
                 if live:  # GPU side ended: the env/prep jobs of this generation go too
                     self.scancel(sorted(live))
@@ -369,7 +377,8 @@ class Chain:
         env = [str(job) for name, job in generation["jobs"].items() if name.startswith("env")]
         gpu = str(generation["jobs"].get("gpu"))
         if (not grace or not env or live is None or gpu not in live or live & set(env)
-                or (run / "DRAIN").exists() or (run / "STOP").exists()):
+                or any((run / name).exists() for name in (
+                    "DRAIN", "STOP", "learner-report.json", "gpu-rc"))):
             generation.pop("env_gone_at", None)
             return None
         now = self.clock()
@@ -386,22 +395,74 @@ class Chain:
                 f"side never asked them to leave (no DRAIN/STOP, {now - since:.0f} s): no "
                 "training data can arrive; see the run's slurm-env-*.out and driver logs")
 
-    def cancel(self, generation: dict[str, Any]) -> str:
-        """Cancel the generation's jobs (dependents first, the GPU job last, as
-        launch.cancel_all); '' when none is left after 30 s, else which still are."""
+    def end_generation(self, generation: dict[str, Any], why: str) -> str:
+        """Stop the generation: STOP (never over an earlier reason; a text starting with
+        "service" is what the learner and services stop on, roles.py), up to
+        `stop_grace_seconds` for the GPU job to end, then launch.cancel_all on what is left.
+        Returns what happened; "unknown" when squeue cannot tell."""
         jobs = generation.get("jobs") or {}
-        if not jobs and (Path(generation["run"]) / "jobs.json").exists():
-            jobs = json.loads((Path(generation["run"]) / "jobs.json").read_text())
-        ids = [str(job) for job in jobs.values()]
-        if not ids:
-            return ""
-        dependents = [str(job) for name, job in jobs.items() if name != "gpu"]
-        for group in (dependents, [str(jobs["gpu"])] if "gpu" in jobs else []):
-            if group:
-                self.scancel(group)
+        run = Path(generation["run"])
+        if not jobs and (run / "jobs.json").exists():
+            jobs = json.loads((run / "jobs.json").read_text())
+        if not jobs:
+            return "no jobs recorded"
+        stop = "STOP written"
+        try:
+            with open(run / "STOP", "x") as handle:
+                handle.write(why + "\n")
+        except FileExistsError:  # an earlier reason stays
+            stop = "STOP already there"
+        ids, gpu = [str(job) for job in jobs.values()], str(jobs.get("gpu"))
+        waited = 0.0
+        live = self.squeue(ids)
+        while live is None or gpu in live:
+            if waited >= self.knobs["stop_grace_seconds"]:
+                break
+            self.sleep(10)
+            waited += 10
+            live = self.squeue(ids)
+        if live is not None and not live:
+            return f"{stop}; every job ended within {waited:.0f} s"
+        cancelled = launch.cancel_all(
+            {name: job for name, job in jobs.items() if live is None or str(job) in live},
+            run_scancel=self.scancel)
         self.sleep(30)
         left = self.squeue(ids)
-        return f"jobs still alive after scancel: {sorted(left)}" if left else ""
+        if left is None:
+            return f"{stop}; {cancelled}; whether any job is still alive is unknown " \
+                "(squeue failed)"
+        return f"{stop}; {cancelled}" + (f"; STILL ALIVE: {sorted(left)}" if left else "")
+
+    def end_watchers(self) -> list[str]:
+        """End each evaluation watcher (its process group) and cancel the Slurm jobs its
+        state names (prepare and evaluation jobs, fast_eval.py) that are still alive."""
+        ended = []
+        for name, loop in list(self.eval_loops.items()):
+            try:
+                self.end_watcher(loop)
+                ended.append(name)
+            except OSError as error:  # already gone
+                ended.append(f"{name} ({error!r})")
+            del self.eval_loops[name]
+        ids = []
+        for name in self.watchers() if self.args.eval_execution else ():
+            path = self.dir / f"eval-{name}" / "state.json"
+            try:
+                items = json.loads(path.read_text()).get("evaluations", []) \
+                    if path.exists() else []
+            except (OSError, ValueError) as error:
+                ended.append(f"{name} state unreadable ({error!r}): its jobs not cancelled")
+                continue
+            ids += [str(item[key]) for item in items for key in ("prepare_job", "evaluation_job")
+                    if item.get(key)]
+        live = self.squeue(ids) if ids else set()
+        targets = sorted(set(ids) if live is None else live)
+        if targets:
+            out = self.scancel(targets)
+            rc = getattr(out, "returncode", 0)
+            ended.append(f"evaluation jobs {targets} " + ("cancelled" if rc == 0 else
+                         f"SCANCEL rc {rc}: may still be alive"))
+        return ended
 
     def tick(self, run: Path) -> None:
         now = self.clock()
@@ -744,37 +805,29 @@ class Chain:
             self.persist()
 
     def catch_signals(self) -> dict[int, Any]:
-        """SIGTERM/SIGHUP raise Stopped; a signal already ignored (nohup) stays ignored."""
+        """SIGTERM raises Stopped (unless already ignored). SIGHUP is left alone: an ssh drop
+        must never cancel a run (see the docstring)."""
         def stop(signum: int, frame: Any) -> None:
+            signal.signal(signum, signal.SIG_IGN)  # a second SIGTERM cannot skip the cleanup
             raise Stopped(signal.Signals(signum).name)
-        handlers = {}
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            if signal.getsignal(sig) is not signal.SIG_IGN:
-                handlers[sig] = signal.signal(sig, stop)
-        return handlers
+        if signal.getsignal(signal.SIGTERM) is signal.SIG_IGN:
+            return {}
+        return {signal.SIGTERM: signal.signal(signal.SIGTERM, stop)}
 
     def stopped(self, name: str) -> int:
-        """After SIGTERM/SIGHUP: cancel the running generation's jobs, end the watchers."""
-        for sig in (signal.SIGTERM, signal.SIGHUP):  # the cleanup itself is not interrupted
-            if signal.getsignal(sig) is not signal.SIG_IGN:
-                signal.signal(sig, signal.SIG_IGN)  # run() restores the handlers
+        """After SIGTERM: end the watchers and their jobs, then stop the running generation."""
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # run() restores the handler
+        ended = self.end_watchers()
         generations = self.state["generations"]
         current = generations[-1] if generations and "outcome" not in generations[-1] else None
-        left = self.cancel(current) if current and not self.args.dry_run else ""
+        done = "no generation running"
+        if current and not self.args.dry_run:
+            done = self.end_generation(current, f"service stop: supervise got {name}")
         if current:
             current["outcome"] = {"kind": "stopped", "failure": f"supervise got {name}"}
-        ended = []
-        for watcher, loop in list(self.eval_loops.items()):
-            try:
-                self.end_watcher(loop)
-                ended.append(watcher)
-            except OSError as error:  # already gone
-                ended.append(f"{watcher} ({error!r})")
-            del self.eval_loops[watcher]
-        cause = (f"supervise got {name}: generation "
-                 f"{current['number'] if current else '-'} jobs cancelled"
-                 + (f" ({left})" if left else "") + f"; evaluation watchers ended: {ended}")
-        return self.final(False, cause)
+        return self.final(False, f"supervise got {name}: generation "
+                          f"{current['number'] if current else '-'}: {done}; evaluation "
+                          f"watchers ended: {ended}")
 
     def refuse_resume(self) -> str | None:
         now = self.clock()

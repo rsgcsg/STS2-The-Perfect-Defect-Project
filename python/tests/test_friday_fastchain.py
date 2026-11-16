@@ -920,6 +920,18 @@ def test_time_limits_refuse_a_prep_job_longer_than_its_partition_allows():
     assert 'join window' in preflight.check_time_limits(nojoin).detail
 
 
+def test_time_limits_refuse_drivers_that_end_by_design_before_the_gpu_wall():
+    """#586 review M2: driver_steady_seconds 4800 made every driver leave a 20 h run after
+    ~83 min with no DRAIN; env_lost would then stop the chain."""
+    long = plan_for(cards=2, long_run=True)
+    assert long['knobs']['driver_warm_seconds'] + long['knobs']['driver_steady_seconds'] \
+        >= long['wall_seconds'] == 72000  # the shipped profile can run the 20 h wall
+    old = plan_for(cards=2, long_run=True, driver_steady_seconds=4800)
+    result = preflight.check_time_limits(old)
+    assert not result.ok and 'drivers end by design' in result.detail and '4980 s' in result.detail
+    assert preflight.check_time_limits(plan_for(cards=2, driver_steady_seconds=4800)).ok  # 3000 s
+
+
 def test_memory_budget_does_not_count_idle_local_pools():
     remote = plan_for(cards=3)
     local = plan_for(cards=3, remote_prepare=False, preparation_workers=24,
@@ -1941,6 +1953,7 @@ class FakeCluster:
 
     def scancel(self, ids):
         self.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], 0, '', '')
 
     def sleep(self, seconds):
         self.now += seconds
@@ -3355,10 +3368,11 @@ def test_preflight_compares_declared_values_type_strict_like_the_learner():
 
 
 def env_side_chain(tmp_path, gpu_polls=None, drain=False, drain_at=None, env_dies=True,
-                   **sets):
+                   squeue_fails=(), gpu_files=(), scancel_rc=0, **sets):
     """A chain whose env array is gone right after the start while the GPU job runs (V6
     smoke), until `gpu_polls` squeue calls (None: until cancelled). STOP appears only when
-    the GPU job ends; DRAIN / env-drain-at as given."""
+    the GPU job ends; DRAIN / env-drain-at / GPU-side report files as given; squeue fails
+    (None) on the calls numbered in `squeue_fails`."""
     chain, cluster = chain_for(tmp_path, [{}], **sets)
     calls, cancelled = [0], []
     launch_main = cluster.launch_main
@@ -3366,7 +3380,9 @@ def env_side_chain(tmp_path, gpu_polls=None, drain=False, drain_at=None, env_die
     def launch(argv):
         code = launch_main(argv)
         run = tmp_path / f'run-{argv[1]}'
-        (run / 'STOP').unlink()
+        for name in ('STOP', 'learner-report.json', 'gpu-rc'):
+            if name not in gpu_files:
+                (run / name).unlink()
         if drain:
             (run / 'DRAIN').write_text('1\n')
         if drain_at is not None:
@@ -3379,12 +3395,16 @@ def env_side_chain(tmp_path, gpu_polls=None, drain=False, drain_at=None, env_die
         calls[0] += 1
         if gpu_polls is not None and calls[0] > gpu_polls:
             cluster.alive.discard('100')
-            (tmp_path / 'run-lr1' / 'STOP').write_text('learner ended')
+            write_outcome(tmp_path / 'run-lr1')
+        if calls[0] in squeue_fails:
+            return None
         return {i for i in cluster.alive if i in ids}
 
     def scancel(ids):
         cancelled.append(list(ids))
-        cluster.alive -= set(ids)
+        if scancel_rc == 0:
+            cluster.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], scancel_rc, '', 'boom')
 
     chain.launch_main, chain.squeue, chain.scancel = launch, squeue, scancel
     return chain, cluster, cancelled
@@ -3395,19 +3415,73 @@ def test_chain_stops_loudly_when_the_env_side_is_gone_while_the_gpu_job_runs(tmp
     start = cluster.now
     assert chain.run() == 1
     assert len(cluster.argvs) == 1  # the env array is never resubmitted, nothing resumed
-    assert cancelled == [['101'], ['100']]  # dependents first, the GPU job last
+    assert cancelled == [['100']]  # STOP first, the grace, then only what is still alive
+    assert (tmp_path / 'run-lr1' / 'STOP').read_text().startswith(
+        'service stop: env side lost: every env job (101)')
     final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
     assert final['cause'].startswith('generation 0 ended env_lost: every env job (101)')
-    assert 'GPU job 100' in final['cause']
-    # after the grace (default 180 s = 3 polls of 60 s), not at the first poll
+    assert 'GPU job 100' in final['cause'] and "cancelled ['100']" in final['cause']
+    assert 'STILL ALIVE' not in final['cause'] and 'unknown' not in final['cause']
+    # after the env grace (default 180 s = 3 polls of 60 s) and the stop grace (180 s)
     grace = chain.knobs['env_lost_grace_seconds']
-    assert grace == 180 and cluster.now - start >= grace + 30
+    assert grace == 180 and chain.knobs['stop_grace_seconds'] == 180
+    assert cluster.now - start >= grace + 180 + 30
+
+
+def test_env_lost_stop_ends_without_scancel_when_the_gpu_job_obeys_stop(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path)
+    squeue = chain.squeue
+
+    def obeying(ids):  # the GPU job ends once STOP exists
+        if (tmp_path / 'run-lr1' / 'STOP').exists():
+            cluster.alive.discard('100')
+        return squeue(ids)
+    chain.squeue = obeying
+    assert chain.run() == 1 and cancelled == []
+    assert 'every job ended within 0 s' in chain.state['final']['cause']
+
+
+def test_a_failed_squeue_is_never_read_as_env_gone(tmp_path):
+    """Lesson 56: an unreadable squeue is no answer; it resets the env_lost timer."""
+    # Polls 2, 4, 6... fail: the env side is never seen gone for 180 s in a row.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'flaky', gpu_polls=20,
+                                               squeue_fails=set(range(2, 21, 2)))
+    assert chain.run() == 0 and cancelled == []
+    # squeue fails for a long stretch: never a stop.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'down', gpu_polls=20,
+                                               squeue_fails=set(range(1, 20)))
+    assert chain.run() == 0 and cancelled == []
+
+
+def test_cancel_reports_a_failed_scancel_or_squeue_instead_of_cancelled(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'rc', scancel_rc=1)
+    cluster_squeue = chain.squeue
+    assert chain.run() == 1
+    assert 'SCANCEL FAILED' in chain.state['final']['cause']
+    assert 'STILL ALIVE' in chain.state['final']['cause']
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'sq')
+    squeue = chain.squeue
+
+    def failing_after_scancel(ids):
+        return None if cancelled else squeue(ids)
+    chain.squeue = failing_after_scancel
+    assert chain.run() == 1
+    assert 'unknown (squeue failed)' in chain.state['final']['cause']
 
 
 def test_chain_waits_out_an_env_side_the_gpu_side_released_or_the_check_is_off(tmp_path):
     # DRAIN: the env side left on request; the GPU job ends normally later.
     chain, cluster, cancelled = env_side_chain(tmp_path / 'drain', gpu_polls=10, drain=True)
     assert chain.run() == 0 and cancelled == []
+    # STOP from the GPU side (e.g. a service failure) already asked them to leave.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'stop', gpu_polls=10,
+                                               gpu_files=('STOP',))
+    assert chain.run() == 0 and cancelled == []
+    # The GPU side already reported (learner report, gpu-rc): the resume rules decide.
+    for name in ('learner-report.json', 'gpu-rc'):
+        chain, cluster, cancelled = env_side_chain(tmp_path / name, gpu_polls=10,
+                                                   gpu_files=(name,))
+        assert chain.run() == 0 and cancelled == [], name
     # A node may leave on its own inside the late-join window before env-drain-at.
     chain, cluster, cancelled = env_side_chain(tmp_path / 'late', gpu_polls=10,
                                                drain_at=lambda now: now + 100)
@@ -3422,7 +3496,7 @@ def test_chain_waits_out_an_env_side_the_gpu_side_released_or_the_check_is_off(t
     assert chain.run() == 0 and cancelled == [['101']]  # the usual end-of-GPU cleanup
 
 
-def test_sigterm_after_the_start_cancels_the_generation_and_ends_the_watchers(tmp_path):
+def test_sigterm_after_the_start_stops_the_generation_and_ends_the_watchers(tmp_path):
     """V6 smoke: SIGTERM after gpu.sh started left the jobs running and the watcher orphaned."""
     chain, cluster = eval_chain(tmp_path, SITE_BASELINES)
     chain.check = lambda cmd: subprocess.CompletedProcess(cmd, 0, '', '')
@@ -3432,32 +3506,66 @@ def test_sigterm_after_the_start_cancels_the_generation_and_ends_the_watchers(tm
     def squeue(ids):
         polls[0] += 1
         if polls[0] == 2:
+            for name, job in (('a0', '901'), ('a10', '902')):  # the watchers' own jobs
+                (chain.dir / f'eval-{name}').mkdir(exist_ok=True)
+                (chain.dir / f'eval-{name}' / 'state.json').write_text(json.dumps(
+                    {'evaluations': [{'stage': 'preparing', 'prepare_job': job},
+                                     {'stage': 'reported', 'evaluation_job': '800'}]}))
+            cluster.alive |= {'901', '902'}
+            (tmp_path / 'run-lr1' / 'STOP').unlink()  # the fake wrote its ending at launch
             os.kill(os.getpid(), signal.SIGTERM)  # the handler raises here
         return {i for i in cluster.alive if i in ids}
 
     def scancel(ids):
         cancelled.append(list(ids))
         cluster.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], 0, '', '')
     chain.squeue, chain.scancel = squeue, scancel
     before = signal.getsignal(signal.SIGTERM)
     assert chain.run() == 1
-    assert cancelled == [['101'], ['100']] and cluster.alive == set()
+    # watchers' live jobs first (800 is gone), then the generation after the stop grace
+    assert cancelled == [['901', '902'], ['101'], ['100']] and cluster.alive == set()
     assert ended == [7, 7] and chain.eval_loops == {}  # a0 and a10
+    assert (tmp_path / 'run-lr1' / 'STOP').read_text() == 'service stop: supervise got SIGTERM\n'
     final = json.loads((chain.dir / 'FINAL.json').read_text())
-    assert final['cause'].startswith('supervise got SIGTERM: generation 0 jobs cancelled')
-    assert "watchers ended: ['a0', 'a10']" in final['cause']
+    assert final['cause'].startswith('supervise got SIGTERM: generation 0: STOP written')
+    assert "evaluation jobs ['901', '902'] cancelled" in final['cause']
     assert chain.state['generations'][0]['outcome']['kind'] == 'stopped'
-    assert signal.getsignal(signal.SIGTERM) == before  # handlers restored
+    assert signal.getsignal(signal.SIGTERM) == before  # handler restored
 
 
-def test_an_ignored_sighup_stays_ignored(tmp_path):
-    chain, _ = chain_for(tmp_path, [])
-    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+def test_sighup_never_cancels_the_run(tmp_path):
+    """#586 review M1: an ssh drop (SIGHUP) must leave the Slurm jobs running. supervise
+    keeps whatever SIGHUP does (default: it dies; under nohup: ignored)."""
+    chain, cluster = chain_for(tmp_path, [{}])
+    got, cancelled, polls = [], [], [0]
+    before = signal.signal(signal.SIGHUP, lambda signum, frame: got.append(signum))
+    squeue = cluster.squeue
+
+    def hup_then_end(ids):
+        polls[0] += 1
+        if polls[0] == 1:
+            os.kill(os.getpid(), signal.SIGHUP)
+            return {i for i in cluster.alive if i in ids}  # GPU still running this poll
+        return squeue(ids)
+    chain.squeue = hup_then_end
+    chain.scancel = lambda ids: cancelled.append(list(ids)) or cluster.scancel(ids)
     try:
-        handlers = chain.catch_signals()
-        assert signal.SIGHUP not in handlers and signal.SIGTERM in handlers
-        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
-        for sig, handler in handlers.items():
-            signal.signal(sig, handler)
+        assert signal.SIGHUP not in chain.catch_signals()
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        assert chain.run() == 0  # the chain went on to its normal end
     finally:
         signal.signal(signal.SIGHUP, before)
+    assert got == [signal.SIGHUP] and not (tmp_path / 'run-lr1' / 'STOP').read_text().startswith(
+        'service stop')
+    assert cancelled == [['101']]  # only the usual end-of-GPU cleanup
+
+
+def test_an_ignored_sigterm_stays_ignored(tmp_path):
+    chain, _ = chain_for(tmp_path, [])
+    before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        assert chain.catch_signals() == {}
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGTERM, before)
