@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shlex
 import subprocess
 import sys
@@ -107,9 +108,17 @@ WAITING = ("preparing", "submitted")
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 
 
-def newest_checkpoint(peer: dict[str, Any], run: str,
-                      generation: str | None = None) -> dict[str, Any] | None:
-    """Newest CP record in the learner peer and its archive (watcher rule)."""
+def chain_generation(chain: str) -> re.Pattern[str]:
+    """The training generations of one fast chain: g-fc-CHAIN and g-fc-CHAIN-rN (a chain
+    name never ends in -rN, supervise.py), so no other chain's CP matches."""
+    return re.compile(rf"g-fc-{re.escape(chain)}(-r\d+)?")
+
+
+def newest_checkpoint(peer: dict[str, Any], run: str, generation: str | None = None,
+                      chain: str | None = None) -> dict[str, Any] | None:
+    """Newest CP record in the learner peer and its archive (watcher rule), of one
+    generation or of one fast chain's generations when given (V6 smoke attempt 2: chains
+    sharing a peer evaluated each other's CPs)."""
     from spireagent.rl_exchange import Exchange
 
     records = Exchange(peer, run).checkpoint_records()
@@ -117,6 +126,9 @@ def newest_checkpoint(peer: dict[str, Any], run: str,
         records += Exchange(peer["archive"], run).checkpoint_records()
     if generation is not None:
         records = [r for r in records if r.get("training_generation") == generation]
+    if chain is not None:
+        own = chain_generation(chain)
+        records = [r for r in records if own.fullmatch(str(r.get("training_generation")))]
     return max(records, key=lambda r: r["published_at"]) if records else None
 
 
@@ -241,7 +253,8 @@ class Loop:
         fixed = settings.get("checkpoint")
         self.newest = newest or ((lambda: {"checkpoint_artifact_id": fixed, "published_at": None})
                                  if fixed else (lambda: newest_checkpoint(
-            settings["peer"], settings["run"], settings.get("training_generation"))))
+            settings["peer"], settings["run"], settings.get("training_generation"),
+            settings.get("chain"))))
         self.run_command = run_command or (lambda c: subprocess.check_output(c, text=True)
                                            .strip())
         self.jobs, self.submit = jobs, submit
@@ -650,7 +663,7 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
                                 execution, args.manifest.resolve())
     return {"learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
-            "training_generation": args.training_generation,
+            "training_generation": args.training_generation, "chain": args.chain,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
             "runtime_source": str(Path(__file__).resolve().parents[2]),
             "workers": args.workers, "seeds": args.seeds,
@@ -683,6 +696,8 @@ def main() -> None:
     parser.add_argument("--suite", help="frozen suite id (default: the fixed A0 100 seeds)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--training-generation")
+    parser.add_argument("--chain", help="only CPs of this fast chain's generations "
+                        "(g-fc-CHAIN, g-fc-CHAIN-rN; supervise.py passes it)")
     parser.add_argument("--interval", type=int, default=INTERVAL_SECONDS)
     parser.add_argument("--workers", type=int, default=WORKERS)
     parser.add_argument("--seeds", type=int, default=SEEDS)

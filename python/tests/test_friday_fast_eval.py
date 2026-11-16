@@ -131,7 +131,8 @@ def args_for(tmp_path, **overrides):
     learner.write_text(json.dumps({'peer': {'kind': 'local', 'directory': '/p'}, 'run': 'r'}))
     execution.write_text(json.dumps({'storage_mode': 'shared_local'}))
     values = dict(learner_config=learner, execution=execution, manifest=tmp_path / 'm.json',
-                  suite=None, training_generation=None, interval=7200, workers=16, seeds=100,
+                  suite=None, training_generation=None, chain=None, interval=7200,
+                  workers=16, seeds=100,
                   pending_limit=16, save_workers=4, memory_gb=None, expected_steps=1200,
                   wall_seconds=None, episode_seconds=1800, max_live=2, partition='general',
                   prepare_partition='debug', exclude_node=None, deadline_at=None,
@@ -633,3 +634,25 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
     assert record['outcome']['wins'] == 1 and record['stage_seconds']['report'] >= 0
     assert record['value_predictions'] == {
         'recorded': False, 'reason': 'evaluated_package_strips_auxiliary_heads'}
+
+
+def test_the_newest_cp_is_only_this_chains_on_a_shared_peer(fast_eval, tmp_path):
+    """V6 smoke attempt 2: chain v6c's watcher evaluated v6b's and v6cd's CPs (shared peer)."""
+    records = [{'checkpoint_artifact_id': cp, 'published_at': at, 'training_generation': g}
+               for cp, at, g in (('a', 1, 'g-fc-v6c'), ('b', 2, 'g-fc-v6c-r1'),
+                                 ('c', 3, 'g-fc-v6b'), ('d', 4, 'g-fc-v6cd'),
+                                 ('e', 5, 'g-fc-v6c-r1x'), ('f', 6, None))]
+
+    class Exchange:
+        def __init__(self, peer, run):
+            pass
+
+        def checkpoint_records(self):
+            return list(records)
+    peer = {'kind': 'local', 'directory': '/p'}
+    with patch('spireagent.rl_exchange.Exchange', Exchange):
+        assert fast_eval.newest_checkpoint(peer, 'r', chain='v6c')['checkpoint_artifact_id'] == 'b'
+        assert fast_eval.newest_checkpoint(peer, 'r', chain='v6b')['checkpoint_artifact_id'] == 'c'
+        assert fast_eval.newest_checkpoint(peer, 'r', chain='v6x') is None
+        assert fast_eval.newest_checkpoint(peer, 'r')['checkpoint_artifact_id'] == 'f'
+    assert fast_eval.settings_from(args_for(tmp_path, chain='v6c'))['chain'] == 'v6c'
