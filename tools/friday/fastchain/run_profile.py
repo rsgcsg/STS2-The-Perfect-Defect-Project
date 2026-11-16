@@ -456,6 +456,10 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "resume_max_total": _int(0, 20),
     "min_generation_seconds": _int(300),
     "supervise_poll_seconds": _int(10, 600),
+    # supervise.py ends a generation whose env side is gone while the GPU job runs (0 = off)
+    "env_lost_grace_seconds": _int(0, 3600),
+    # supervise.py: after its STOP, how long the GPU job may take to end before scancel
+    "stop_grace_seconds": _int(0, 3600),
     "readout_every_seconds": _int(600),
     "readout_rolling_games": _rolling_games,
     "eval_interval_seconds": _int(600, 86400),
@@ -491,6 +495,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "env_core_budget": _per_cards(_int(1)),
     "env_wait_seconds": _int(0),
     "env_min_join_seconds": _int(0),
+    # env.sh leaves when the GPU job has been gone from squeue this long (no DRAIN/STOP)
+    "env_gpu_gone_grace_seconds": _int(30, 3600),
     "env_procs_fraction": _num(0.05, 2),
     "env_slots": _int(1, 16),  # MAX_SLOTS = 16 in the fast env (V3-shen)
     "env_aggregators": _int(1, 64),

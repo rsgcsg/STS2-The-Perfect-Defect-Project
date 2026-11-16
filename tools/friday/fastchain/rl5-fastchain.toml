@@ -99,6 +99,8 @@ launcher_stale_seconds = { value = 120, default = 120, why = "the launcher (also
 resume_max_total = { value = 3, default = 3, why = "automatic resumes per chain (user 11-13 C5: automatic; lead 11-14 default 3); then a loud final stop with the first cause", measured = "LONG-RUN-CHECK §五 C5; RL4.1 long-run log (2 continuations in 36 h)" }
 min_generation_seconds = { value = 1800, default = 1800, why = "a generation shorter than this cannot reach its first CP after warm-up: the chain ends instead", measured = "c2k (warm-up + first CP ~20 min)" }
 supervise_poll_seconds = { value = 60, default = 60, why = "supervisor checks the GPU job and the schedules once per poll", measured = "watcher cadence" }
+env_lost_grace_seconds = { value = 180, default = 180, why = "supervisor stops the chain when every env job is gone while the GPU job runs and no DRAIN/STOP asked them to leave, after this long (V6 smoke: 100 drivers died at start, 2 H100 waited for data); 3 polls covers squeue and NFS lag of DRAIN; 0 = off", measured = "V6 combined smoke 11-16: env array FAILED 2-2.5 min after start, GPU held unaware" }
+stop_grace_seconds = { value = 180, default = 180, why = "on SIGTERM or env_lost supervise writes STOP (the learner and services stop on it) and waits this long for the GPU job to end on its own before scancel; the time a clean stop takes is unmeasured, 180 s is a guess with room", measured = "unmeasured" }
 readout_every_seconds = { value = 3600, default = 3600, why = "hourly readout of the current generation (lead 11-13 item 5)", measured = "RL4.2 hourly check" }
 readout_rolling_games = { value = [100], default = [100], why = "training-game rolling windows of the readout in complete games (first = headline, others shown beside it); e.g. [100, 1000] so a stall rule (~6 h without a rise) or an A0 30% rolling win rate rests on more than a few minutes of games (#556)", measured = "100 = the readout before #556; games per hour at production speed: see the readout (not measured for this knob)" }
 eval_interval_seconds = { value = 7200, default = 7200, why = "a 100-game evaluation of the newest CP every 2 h (fast_eval.py)", measured = "lead 11-12; user C3" }
@@ -135,6 +137,7 @@ env_slow_type_nodes = { value = 0, default = 0, why = "c8220 opt-in node count, 
 env_core_budget = { value = { "1" = 215, "2" = 290, "3" = 304 }, default = { "1" = 215, "2" = 290, "3" = 380 }, why = "env cores per card count at ~50-58 core-ms/decision", measured = "fc-launch tiers; c3s1/c3s2 304" }
 env_wait_seconds = { value = 1800, default = 1800, why = "an env element may wait this long for the services, plus remote_prepare_wait_seconds when remote prepare is on (env starts only after the GPU job started; the services wait for the learner, which waits for the prep hosts)", measured = "s1f" }
 env_min_join_seconds = { value = 300, default = 300, why = "a node arriving later than this before the env drain does not start", measured = "s2c-smoke" }
+env_gpu_gone_grace_seconds = { value = 300, default = 300, why = "an env node leaves (exit 6) when the GPU job has been gone from squeue this long with no DRAIN/STOP (hard GPU death while no supervise runs; drivers otherwise live until DRAIN); a failed squeue never counts; 5 min rides out squeue lag at a cost of at most 5 min of env cores", measured = "#586 delta review S1" }
 env_procs_fraction = { value = 0.625, default = 0.75, why = "drivers per node = cores x 5/8 (16 -> 10, 20 -> 12); 8x15 was not cheaper", measured = "V3-wu, V3-shen 17:35 rerun" }
 env_slots = { value = 12, default = 8, why = "slots per driver (product cap 16)", measured = "V3-shen" }
 env_aggregators = { value = 3, default = 3, why = "aggregators per node, each to its own service", measured = "s1d onward" }
@@ -149,7 +152,7 @@ driver_reopen_backoff_cap_ms = { value = 10000, default = 0, why = "backoff cap"
 driver_reopen_backoff_jitter = { value = 0.5, default = 0, why = "backoff jitter", measured = "c3b" }
 driver_cold_start = { value = 10, default = 0, why = "max concurrent native cold starts", measured = "E8" }
 driver_warm_seconds = { value = 180, default = 90, why = "warm-up before the first status", measured = "s1 series" }
-driver_steady_seconds = { value = 4800, default = 240, why = "longer than any GPU wall; DRAIN ends it", measured = "s1f" }
+driver_steady_seconds = { value = 72000, default = 240, why = "longer than any GPU wall, the 20 h long run included (preflight refuses warm + steady < wall); DRAIN ends it. Was 4800: drivers left a long run after ~83 min (#586 review)", measured = "s1f; long-run wall 72000" }
 driver_status_seconds = { value = 300, default = 300, why = "driver status period", measured = "s1 series" }
 driver_single_threaded_gc = { value = false, default = false, why = "V8 --single-threaded-gc: -0.3..-1 core-ms in benches, not yet on a whole chain", measured = "V3-shen 1469903" }
 driver_reduce_light_interval = { value = 0, default = 0, why = "C1 checks.reduce_light strict_interval (0 = off): -1.3 once, not reproduced", measured = "V3-wu, V3-shen" }

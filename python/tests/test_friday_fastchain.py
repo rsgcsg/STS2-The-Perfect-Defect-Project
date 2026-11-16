@@ -783,7 +783,7 @@ esac
 """
 
 
-def run_block(tmp_path, script, start, end, answers, env=(), prefix=''):
+def run_block(tmp_path, script, start, end, answers, env=(), prefix='', suffix=''):
     """One marked block of a job script as it runs, with a scripted squeue and no sleep."""
     text = (FASTCHAIN / script).read_text()
     block = text[text.index(start):text.index(end)]
@@ -797,7 +797,7 @@ def run_block(tmp_path, script, start, end, answers, env=(), prefix=''):
     (tmp_path / 'answers').write_text('\n'.join(answers) + '\n')
     out = subprocess.run(
         ['bash', '-c', prefix + block.replace('sleep 15', 'true').replace('sleep 5', 'true')
-         + 'echo "block done RC=${RC:-}"'],
+         + suffix + 'echo "block done RC=${RC:-}"'],
         env={'PATH': f'{bin_dir}:/usr/bin:/bin', 'RUN': str(run), 'H': str(FASTCHAIN),
              'SQ_SCRIPT': str(tmp_path / 'answers'), 'SQ_COUNT': str(tmp_path / 'count'),
              **dict(env)},
@@ -841,6 +841,47 @@ def test_prep_serve_loop_reads_squeue_stdout_only_and_falls_back_to_the_gpu_hear
     out, calls = run_prep_serve(tmp_path / 'f', ['RUNNING', 'fail'], beat_age=700)
     assert calls == 2 and out.strip().endswith('RC=4')
     assert 'prep group 0 stopped' in (tmp_path / 'f/run/prep-stopped-0').read_text()
+
+
+def run_drain_watch(root, answers, grace=60):
+    """env.sh's drain watch (no sleep): returns (stdout, squeue calls, gpu-gone.txt or None)."""
+    out, calls = run_block(root, 'env.sh', '# --- drain watch:', '# --- end drain watch ---',
+                           answers, env={'FC_ENV_GPU_GONE_GRACE_SECONDS': str(grace),
+                                         'O': str(root / 'o')},
+                           prefix=f'source {FASTCHAIN}/gpu_job.sh; sleep() {{ :; }}; '
+                           f'mkdir -p $O; pids=()\n', suffix='drain_watch\n')
+    assert out.returncode == 0, out.stderr
+    gone = root / 'o' / 'gpu-gone.txt'
+    return out.stdout, calls, gone.read_text() if gone.exists() else None
+
+
+def test_env_node_leaves_when_the_gpu_job_stays_gone_and_never_on_a_failed_squeue(tmp_path):
+    """#586 delta review 2: drivers live until DRAIN, so a GPU job that died without STOP
+    (and no supervise to cancel) would hold env cores until --time."""
+    # gone for 2 checks (60 s at one check per 30 s): leave, loudly, with the marker
+    out, calls, gone = run_drain_watch(tmp_path / 'a', ['RUNNING', 'empty', 'COMPLETED'])
+    assert calls == 3 and gone.startswith('GPU job gone from the queue for 2 checks (>= 60 s)')
+    assert 'rc=0 out=[COMPLETED]' in gone and 'drain file' not in out
+    # a failed squeue is unknown, never gone, and restarts the count; so does a live answer
+    out, calls, gone = run_drain_watch(tmp_path / 'b', ['empty', 'fail', 'empty', 'RUNNING',
+                                                        'empty', 'fail', 'empty', 'purged'])
+    assert calls == 8 and 'Invalid job id' in gone
+    # squeue down for a long stretch, then a live GPU job that writes STOP: never "gone"
+    out, calls, gone = run_drain_watch(tmp_path / 'c', ['fail'] * 30 + ['RUNNING', 'stopfail'])
+    assert calls == 32 and gone is None and 'drain file' in out
+    # DRAIN before any check: leave on the file
+    (tmp_path / 'd' / 'run').mkdir(parents=True)
+    (tmp_path / 'd' / 'run' / 'DRAIN').write_text('1\n')
+    out, calls, gone = run_drain_watch(tmp_path / 'd', ['empty'])
+    assert calls == 0 and gone is None and 'drain file' in out
+    # a longer grace needs more checks in a row (300 s = 10)
+    out, calls, gone = run_drain_watch(tmp_path / 'e', ['empty'] * 9 + ['fail'] + ['empty'] * 10,
+                                       grace=300)
+    assert calls == 20 and 'for 10 checks (>= 300 s)' in gone
+    # the job's end: exit 6 with a loud line when it left for this reason
+    text = (FASTCHAIN / 'env.sh').read_text()
+    assert 'if [ -e $O/gpu-gone.txt ]; then' in text and 'LEFT BECAUSE THE GPU JOB IS GONE' \
+        in text and 'exit 6' in text
 
 
 def test_env_node_leaves_within_a_minute_when_the_gpu_job_is_gone(tmp_path):
@@ -918,6 +959,18 @@ def test_time_limits_refuse_a_prep_job_longer_than_its_partition_allows():
     assert preflight.check_time_limits(long).ok  # 20 h fits a 48 h partition
     nojoin = plan_for(cards=2, env_min_join_seconds=3000)
     assert 'join window' in preflight.check_time_limits(nojoin).detail
+
+
+def test_time_limits_refuse_drivers_that_end_by_design_before_the_gpu_wall():
+    """#586 review M2: driver_steady_seconds 4800 made every driver leave a 20 h run after
+    ~83 min with no DRAIN; env_lost would then stop the chain."""
+    long = plan_for(cards=2, long_run=True)
+    assert long['knobs']['driver_warm_seconds'] + long['knobs']['driver_steady_seconds'] \
+        >= long['wall_seconds'] == 72000  # the shipped profile can run the 20 h wall
+    old = plan_for(cards=2, long_run=True, driver_steady_seconds=4800)
+    result = preflight.check_time_limits(old)
+    assert not result.ok and 'drivers end by design' in result.detail and '4980 s' in result.detail
+    assert preflight.check_time_limits(plan_for(cards=2, driver_steady_seconds=4800)).ok  # 3000 s
 
 
 def test_memory_budget_does_not_count_idle_local_pools():
@@ -1801,6 +1854,59 @@ def test_learner_window_follows_the_learner_restore_rules():
         learner_config.window('c-x', 80000, 1e9, None, None)
 
 
+def harness_references(name):
+    """Fast-chain files `name` loads from its own directory: relative JS imports (static
+    and dynamic string literals), Python imports of a sibling module, `$H/<file>` in shell."""
+    import re
+    text = (FASTCHAIN / name).read_text()
+    found = set()
+    if name.endswith('.mjs'):
+        for ref in re.findall(r'''(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}/[^"']+)["']''', text):
+            found.add(os.path.normpath(ref))
+    if name.endswith(('.py', '.sh')):
+        for module in re.findall(r'^\s*(?:from|import)\s+(\w+)|\bimport\s+(\w+)', text, re.M):
+            module = module[0] or module[1]
+            if (FASTCHAIN / f'{module}.py').exists():
+                found.add(f'{module}.py')
+    if name.endswith('.sh'):
+        found.update(re.findall(r'\$\{?(?:H|FC_HARNESS)\}?/([\w.-]+)', text))
+    return found
+
+
+def test_every_file_a_shipped_harness_script_loads_is_shipped():
+    """V6 smoke: env_driver.mjs imported tickets.mjs, which launch.HARNESS did not copy, and
+    all 100 drivers died at start. Walk every reference from the job scripts launch.py
+    submits, transitively: each must be in the run's harness copy."""
+    entries = {cmd[-1].rsplit('/', 1)[1] for cmd in launch.commands(plan_for(cards=2)).values()}
+    assert entries <= {'gpu.sh', 'env.sh', 'prep.sh'} and {'gpu.sh', 'env.sh'} <= entries
+    seen, todo, missing = set(), [*entries, 'prep.sh', *launch.HARNESS], []
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        if name not in launch.HARNESS:
+            missing.append(name)
+            continue
+        todo.extend(harness_references(name))
+    assert not missing, f'loaded by shipped harness scripts but not in launch.HARNESS: {missing}'
+    assert {'tickets.mjs', 'elu_preload.mjs', 'gpu_job.sh', 'roles.py'} <= seen
+    assert harness_references('env_driver.mjs') == {'tickets.mjs'}
+
+
+def test_harness_references_finds_a_new_relative_import(tmp_path, monkeypatch):
+    for name, text in {'a.mjs': 'import { x } from "./b.mjs";\nconst y = await import("./c.mjs");\n'
+                                'import "node:fs";\n',
+                       'p.py': 'import layout  # noqa\nimport json\n',
+                       's.sh': 'source $H/gpu_job.sh\n$PY -u ${FC_HARNESS}/roles.py\n',
+                       'layout.py': ''}.items():
+        (tmp_path / name).write_text(text)
+    monkeypatch.setattr(sys.modules[__name__], 'FASTCHAIN', tmp_path)
+    assert harness_references('a.mjs') == {'b.mjs', 'c.mjs'}
+    assert harness_references('p.py') == {'layout.py'}
+    assert harness_references('s.sh') == {'gpu_job.sh', 'roles.py'}
+
+
 def test_chain_generation_plan_and_resume_preflight():
     chain = {'id': 'c-t1', 'deadline_at': 10**10, 'total_seconds': 72000, 'generation': 1}
     plan = launch.build_plan('t1-r1', knobs(), run_profile.load_site(SITE), cards=2,
@@ -1888,6 +1994,7 @@ class FakeCluster:
 
     def scancel(self, ids):
         self.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], 0, '', '')
 
     def sleep(self, seconds):
         self.now += seconds
@@ -3299,3 +3406,296 @@ def test_preflight_compares_declared_values_type_strict_like_the_learner():
     facts = {**good_facts(plan), 'resume_checkpoint_config': cp_config()}  # c_hp 0.0
     result = preflight.check_declared_changes(plan, facts)
     assert not result.ok and 'declared old False, CP has 0.0' in result.detail
+
+
+def env_side_chain(tmp_path, gpu_polls=None, drain=False, drain_at=None, env_dies=True,
+                   squeue_fails=(), gpu_files=(), scancel_rc=0, **sets):
+    """A chain whose env array is gone right after the start while the GPU job runs (V6
+    smoke), until `gpu_polls` squeue calls (None: until cancelled). STOP appears only when
+    the GPU job ends; DRAIN / env-drain-at / GPU-side report files as given; squeue fails
+    (None) on the calls numbered in `squeue_fails`."""
+    chain, cluster = chain_for(tmp_path, [{}], **sets)
+    calls, cancelled = [0], []
+    launch_main = cluster.launch_main
+
+    def launch(argv):
+        code = launch_main(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        for name in ('STOP', 'learner-report.json', 'gpu-rc'):
+            if name not in gpu_files:
+                (run / name).unlink()
+        if drain:
+            (run / 'DRAIN').write_text('1\n')
+        if drain_at is not None:
+            (run / 'env-drain-at').write_text(f'{drain_at(cluster.now):.0f}\n')
+        if env_dies:
+            cluster.alive.discard('101')
+        return code
+
+    def squeue(ids):
+        calls[0] += 1
+        if gpu_polls is not None and calls[0] > gpu_polls:
+            cluster.alive.discard('100')
+            write_outcome(tmp_path / 'run-lr1')
+        if calls[0] in squeue_fails:
+            return None
+        return {i for i in cluster.alive if i in ids}
+
+    def scancel(ids):
+        cancelled.append(list(ids))
+        if scancel_rc == 0:
+            cluster.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], scancel_rc, '', 'boom')
+
+    chain.launch_main, chain.squeue, chain.scancel = launch, squeue, scancel
+    return chain, cluster, cancelled
+
+
+def test_chain_stops_loudly_when_the_env_side_is_gone_while_the_gpu_job_runs(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path)
+    start = cluster.now
+    assert chain.run() == 1
+    assert len(cluster.argvs) == 1  # the env array is never resubmitted, nothing resumed
+    assert cancelled == [['100']]  # STOP first, the grace, then only what is still alive
+    assert (tmp_path / 'run-lr1' / 'STOP').read_text().startswith(
+        'service stop: env side lost: every env job (101)')
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['cause'].startswith('generation 0 ended env_lost: every env job (101)')
+    assert 'GPU job 100' in final['cause'] and "cancelled ['100']" in final['cause']
+    assert 'STILL ALIVE' not in final['cause'] and 'unknown' not in final['cause']
+    # after the env grace (default 180 s = 3 polls of 60 s) and the stop grace (180 s)
+    grace = chain.knobs['env_lost_grace_seconds']
+    assert grace == 180 and chain.knobs['stop_grace_seconds'] == 180
+    assert cluster.now - start >= grace + 180 + 30
+
+
+def test_env_lost_stop_ends_without_scancel_when_the_gpu_job_obeys_stop(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path)
+    squeue = chain.squeue
+
+    def obeying(ids):  # the GPU job ends once STOP exists
+        if (tmp_path / 'run-lr1' / 'STOP').exists():
+            cluster.alive.discard('100')
+        return squeue(ids)
+    chain.squeue = obeying
+    assert chain.run() == 1 and cancelled == []
+    assert 'every job ended within 0 s' in chain.state['final']['cause']
+
+
+def test_a_failed_squeue_is_never_read_as_env_gone(tmp_path):
+    """Lesson 56: an unreadable squeue is no answer; it resets the env_lost timer."""
+    # Polls 2, 4, 6... fail: the env side is never seen gone for 180 s in a row.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'flaky', gpu_polls=20,
+                                               squeue_fails=set(range(2, 21, 2)))
+    assert chain.run() == 0 and cancelled == []
+    # squeue fails for a long stretch: never a stop.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'down', gpu_polls=20,
+                                               squeue_fails=set(range(1, 20)))
+    assert chain.run() == 0 and cancelled == []
+
+
+def test_cancel_reports_a_failed_scancel_or_squeue_instead_of_cancelled(tmp_path):
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'rc', scancel_rc=1)
+    assert chain.run() == 1
+    assert 'SCANCEL FAILED' in chain.state['final']['cause']
+    assert 'STILL ALIVE' in chain.state['final']['cause']
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'sq')
+    squeue = chain.squeue
+
+    def failing_after_scancel(ids):
+        return None if cancelled else squeue(ids)
+    chain.squeue = failing_after_scancel
+    assert chain.run() == 1
+    assert chain.state['final']['cause'].endswith(
+        "cancelled ['100']; whether any job is still alive is unknown (squeue failed)")
+
+
+def test_chain_waits_out_an_env_side_the_gpu_side_released_or_the_check_is_off(tmp_path):
+    # DRAIN: the env side left on request; the GPU job ends normally later.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'drain', gpu_polls=10, drain=True)
+    assert chain.run() == 0 and cancelled == []
+    # STOP from the GPU side (e.g. a service failure) already asked them to leave.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'stop', gpu_polls=10,
+                                               gpu_files=('STOP',))
+    assert chain.run() == 0 and cancelled == []
+    # The GPU side already reported (learner report, gpu-rc): the resume rules decide.
+    for name in ('learner-report.json', 'gpu-rc'):
+        chain, cluster, cancelled = env_side_chain(tmp_path / name, gpu_polls=10,
+                                                   gpu_files=(name,))
+        assert chain.run() == 0 and cancelled == [], name
+    # A node may leave on its own inside the late-join window before env-drain-at.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'late', gpu_polls=10,
+                                               drain_at=lambda now: now + 100)
+    assert chain.run() == 0 and cancelled == []
+    # 0 = off: the old behaviour (wait for the GPU job).
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'off', gpu_polls=10,
+                                               env_lost_grace_seconds=0)
+    assert chain.run() == 0 and cancelled == []
+    # Env jobs alive: nothing to see.
+    chain, cluster, cancelled = env_side_chain(tmp_path / 'alive', gpu_polls=10,
+                                               env_dies=False)
+    assert chain.run() == 0 and cancelled == [['101']]  # the usual end-of-GPU cleanup
+
+
+def test_sigterm_leaves_the_chain_running_unsupervised_with_one_loud_line(tmp_path, capsys):
+    """Lead 11-16: a login-node reboot or the logout cleanup sends SIGTERM; a 20 h run must
+    not die of it. supervise exits 143 and says how to stop the chain; nothing is cancelled."""
+    chain, cluster = eval_chain(tmp_path, SITE_BASELINES)
+    chain.check = lambda cmd: subprocess.CompletedProcess(cmd, 0, '', '')
+    cancelled, polls = [], [0]
+
+    def squeue(ids):
+        polls[0] += 1
+        if polls[0] == 2:
+            os.kill(os.getpid(), signal.SIGTERM)  # the handler raises here
+        return {i for i in cluster.alive if i in ids}
+    chain.squeue = squeue
+    chain.scancel = lambda ids: cancelled.append(list(ids))
+    chain.end_watcher = lambda pid: pytest.fail('a watcher was ended')
+    before = signal.getsignal(signal.SIGTERM)
+    assert chain.run() == 143
+    assert cancelled == [] and cluster.alive == {'100', '101'}
+    assert not (chain.dir / 'FINAL.json').exists()
+    assert 'outcome' not in chain.state['generations'][0]
+    err = capsys.readouterr().err
+    assert 'supervise got SIGTERM: chain lr1 is now UNSUPERVISED' in err
+    assert f'supervise.py stop lr1 --site {chain.args.site}' in err and '(#587)' in err
+    assert chain.state['log'][-1]['kind'] == 'supervisor_signal'
+    assert chain.state['eval_pids'] == {'a0': 7, 'a10': 7}  # what `stop` ends later
+    assert signal.getsignal(signal.SIGTERM) == before  # handler restored
+
+
+def stopped_chain(tmp_path, gpu_obeys=False):
+    """A chain whose supervise is gone (SIGTERM) while its generation and both watchers,
+    each with one live Slurm job, run on; then a fresh `supervise.py stop`."""
+    chain, cluster = eval_chain(tmp_path, SITE_BASELINES)
+    chain.check = lambda cmd: subprocess.CompletedProcess(cmd, 0, '', '')
+    chain.squeue = lambda ids: (os.kill(os.getpid(), signal.SIGTERM)
+                                or {i for i in cluster.alive if i in ids})
+    assert chain.run() == 143
+    for name, job in (('a0', '901'), ('a10', '902')):  # the watchers' own jobs
+        (chain.dir / f'eval-{name}').mkdir(exist_ok=True)
+        (chain.dir / f'eval-{name}' / 'state.json').write_text(json.dumps(
+            {'evaluations': [{'stage': 'preparing', 'prepare_job': job},
+                             {'stage': 'reported', 'evaluation_job': '800'}]}))
+    cluster.alive |= {'901', '902'}
+    (tmp_path / 'run-lr1' / 'STOP').unlink()  # the fake wrote its ending at launch
+    ended, cancelled = [], []
+
+    def squeue(ids):
+        if gpu_obeys and (tmp_path / 'run-lr1' / 'STOP').exists():
+            cluster.alive -= {'100', '101'}  # the whole generation leaves on STOP
+        return {i for i in cluster.alive if i in ids}
+
+    def scancel(ids):
+        cancelled.append(list(ids))
+        cluster.alive -= set(ids)
+        return subprocess.CompletedProcess(['scancel', *ids], 0, '', '')
+    stopper = supervise.Chain(chain.args, clock=lambda: cluster.now, sleep=cluster.sleep,
+                              squeue=squeue, scancel=scancel,
+                              end_watcher=lambda pid: ended.append(pid) or f'pid {pid} ended')
+    return stopper, cluster, ended, cancelled
+
+
+def test_the_stop_command_ends_a_chain_without_a_live_supervise(tmp_path, capsys):
+    stopper, cluster, ended, cancelled = stopped_chain(tmp_path)
+    start = cluster.now
+    assert stopper.stop() == 0
+    # watchers (by recorded pid) and their live jobs first (800 is gone), then STOP, the
+    # stop grace, then the generation's jobs (dependents first, GPU last)
+    assert ended == [7, 7]
+    assert cancelled == [['901', '902'], ['101'], ['100']] and cluster.alive == set()
+    assert cluster.now - start >= stopper.knobs['stop_grace_seconds']
+    assert (tmp_path / 'run-lr1' / 'STOP').read_text() == \
+        'service stop: operator stop (supervise.py stop)\n'
+    assert (stopper.dir / 'STOP-REQUESTED').exists()
+    report = json.loads((stopper.dir / 'stop-report.json').read_text())
+    assert report['generation'] == 0 and report['generation_stop'].startswith('STOP written')
+    assert "evaluation jobs ['901', '902'] cancelled" in report['watchers']
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == report
+    # STOP obeyed: nothing of the generation is cancelled
+    stopper, cluster, ended, cancelled = stopped_chain(tmp_path / 'obeys', gpu_obeys=True)
+    assert stopper.stop() == 0 and cancelled == [['901', '902']]
+    assert 'every job ended within 0 s' in json.loads(
+        (stopper.dir / 'stop-report.json').read_text())['generation_stop']
+
+
+def test_the_stop_command_exits_1_when_a_job_may_still_be_alive(tmp_path):
+    stopper, cluster, ended, cancelled = stopped_chain(tmp_path)
+    stopper.scancel = lambda ids: subprocess.CompletedProcess(['scancel'], 1, '', 'boom')
+    assert stopper.stop() == 1
+    report = json.loads((stopper.dir / 'stop-report.json').read_text())
+    assert 'SCANCEL FAILED' in report['generation_stop'] and 'STILL ALIVE' in \
+        report['generation_stop']
+    assert any('SCANCEL rc 1' in line for line in report['watchers'])
+    # squeue fails after the cancel: "unknown", never "every job ended" (delta review 3)
+    stopper, cluster, ended, cancelled = stopped_chain(tmp_path / 'sq')
+    squeue = stopper.squeue
+    stopper.squeue = lambda ids: None if len(cancelled) > 1 else squeue(ids)
+    assert stopper.stop() == 1
+    assert json.loads((stopper.dir / 'stop-report.json').read_text())['generation_stop'] == (
+        "STOP written; cancelled ['101', '100']; whether any job is still alive is unknown "
+        "(squeue failed)")
+
+
+def test_the_stop_command_cli_reads_the_chains_recorded_overrides(tmp_path, monkeypatch):
+    chain, cluster = chain_for(tmp_path, [{}], stop_grace_seconds=40)
+    chain.squeue = lambda ids: (os.kill(os.getpid(), signal.SIGTERM)
+                                or {i for i in cluster.alive if i in ids})
+    assert chain.run() == 143
+    seen = {}
+
+    def fake_stop(self):
+        seen['grace'] = self.knobs['stop_grace_seconds']
+        return 0
+    monkeypatch.setattr(supervise.Chain, 'stop', fake_stop)
+    assert supervise.main(['stop', 'lr1', '--site', str(chain.args.site)]) == 0
+    assert seen == {'grace': 40}
+    assert supervise.main(['stop', 'nochain', '--site', str(chain.args.site)]) == 0
+    monkeypatch.undo()
+    assert supervise.main(['stop', 'nochain', '--site', str(chain.args.site)]) == 2
+
+
+def test_a_live_supervise_never_resumes_after_an_operator_stop(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    chain.launch_main = lambda argv: (cluster.launch_main(argv)  # stop comes in mid-run
+                                      + (chain.dir / 'STOP-REQUESTED').write_text('1\n') * 0)
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'operator stop requested' in chain.state['final']['cause']
+
+
+def test_sighup_never_cancels_the_run(tmp_path):
+    """#586 review M1: an ssh drop (SIGHUP) must leave the Slurm jobs running. supervise
+    keeps whatever SIGHUP does (default: it dies; under nohup: ignored)."""
+    chain, cluster = chain_for(tmp_path, [{}])
+    got, cancelled, polls = [], [], [0]
+    before = signal.signal(signal.SIGHUP, lambda signum, frame: got.append(signum))
+    squeue = cluster.squeue
+
+    def hup_then_end(ids):
+        polls[0] += 1
+        if polls[0] == 1:
+            os.kill(os.getpid(), signal.SIGHUP)
+            return {i for i in cluster.alive if i in ids}  # GPU still running this poll
+        return squeue(ids)
+    chain.squeue = hup_then_end
+    chain.scancel = lambda ids: cancelled.append(list(ids)) or cluster.scancel(ids)
+    try:
+        assert signal.SIGHUP not in chain.catch_signals()
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        assert chain.run() == 0  # the chain went on to its normal end
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert got == [signal.SIGHUP] and not (tmp_path / 'run-lr1' / 'STOP').read_text().startswith(
+        'service stop')
+    assert cancelled == [['101']]  # only the usual end-of-GPU cleanup
+
+
+def test_an_ignored_sigterm_stays_ignored(tmp_path):
+    chain, _ = chain_for(tmp_path, [])
+    before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        assert chain.catch_signals() == {}
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGTERM, before)
