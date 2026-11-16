@@ -68,6 +68,26 @@ def check_prep_env(own: str, hosts: int) -> None:
                          f"different from {own[:12]}: {sorted(bad)}")
 
 
+def event_capture(original, put):  # type: ignore[no-untyped-def]
+    """The learner's `_event` wrapped: every event also becomes one learner-events.jsonl
+    line (`put`). An event with `_build` (fields the learner computes on its telemetry
+    thread: first-use row age, policy_by_arm) is written there, with those fields (V6
+    smoke attempt 2: they were dropped and the readout's row_age block stayed empty)."""
+    def capture(kind: str, _build=None, **fields) -> None:  # type: ignore[no-untyped-def]
+        record = {"t": time.time(), "kind": kind, **fields}
+        if _build is None:
+            put(json.dumps(record, default=str) + "\n")
+            original(kind, **fields)
+            return
+
+        def build() -> dict:
+            built = _build()
+            put(json.dumps({**record, **built}, default=str) + "\n")
+            return built
+        original(kind, _build=build, **fields)
+    return capture
+
+
 def stop_once(text: str) -> bool:
     """Write STOP only if no STOP exists: the first reason (a failure) is never overwritten
     by a later "learner ended" (review B2). True when this call wrote it."""
@@ -307,11 +327,7 @@ def learner() -> None:
 
     threading.Thread(target=event_writer, name="harness-event-writer", daemon=True).start()
 
-    def capture(kind: str, **fields) -> None:  # type: ignore[no-untyped-def]
-        record = {"t": time.time(), "kind": kind,
-                  **{k: v for k, v in fields.items() if k != "_build"}}
-        event_lines.put(json.dumps(record, default=str) + "\n")
-        original(kind, **fields)
+    capture = event_capture(original, event_lines.put)
 
     owner._event = capture  # type: ignore[method-assign]
     auth = bytes.fromhex(os.environ["STPD_P1_LOCAL_INFERENCE_AUTH"])

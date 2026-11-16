@@ -32,13 +32,18 @@ for h in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
   n=$((n+1))
 done
 echo "prep group $FC_PREP_GROUP hosts up to index $((n-1)) start=$(date -Is)"
-# --- serve: until the GPU side stops (STOP) or its job is gone ---
+# --- serve: until the learner is done (its report) or the GPU job is gone ---
+# Not until STOP: after STOP the learner still finishes its frozen dataset, drains and
+# publishes its final CP, reading from these hosts (V6 smoke attempt 2: the hosts stopped
+# on an operator STOP, the learner's shard 2 got EOFError and fenced, no final CP). A STOP
+# before the learner was ready (it never started) also ends the serving.
 # squeue decides while it answers (gpu_job.sh: stdout only, a failure is unknown, never
 # gone). While it cannot (slurmctld outage), the GPU job's own heartbeat decides: gpu.sh
 # rewrites load.txt every 5 s while it lives. The hosts stop only when squeue cannot answer
 # AND that heartbeat is older than 600 s; prep-stopped-<group> then says why (#540 review).
 SERVE_START=$(date +%s); RC=0
-while [ ! -e $RUN/STOP ]; do
+learner_done() { [ -e $RUN/learner-report.json ] || { [ -e $RUN/STOP ] && [ ! -e $RUN/learner.ready ]; }; }
+while ! learner_done; do
   sleep 15
   read -r V D <<< "$(gpu_job_state $GPU)"
   case $V in

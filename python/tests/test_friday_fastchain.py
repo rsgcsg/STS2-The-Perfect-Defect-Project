@@ -1790,6 +1790,28 @@ def test_a_gate_loss_key_the_frozen_config_lacks_is_refused_before_the_queue():
         'gate learner-base.json has loss keys the frozen config lacks: hp_advantage_coeff')
 
 
+def test_learner_events_keep_the_fields_built_on_the_telemetry_thread():
+    """V6 smoke attempt 2: the readout's row_age (and policy_by_arm) stayed empty because
+    roles.py wrote each event without the learner's `_build` fields."""
+    import ast
+    tree = ast.parse((FASTCHAIN / 'roles.py').read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                and n.name == 'event_capture')
+    space = {'json': json, 'time': time}
+    exec(compile(ast.Module([node], []), 'roles.py', 'exec'), space)
+    lines, seen = [], []
+
+    def original(kind, _build=None, **fields):  # the learner's _event: build runs later
+        seen.append((kind, fields, _build() if _build else None))
+    capture = space['event_capture'](original, lines.append)
+    capture('heartbeat', updates=3)
+    capture('progress', _build=lambda: {'first_use_version_lag': [0, 1]}, update=4)
+    first, second = (json.loads(line) for line in lines)
+    assert first['kind'] == 'heartbeat' and first['updates'] == 3
+    assert second['first_use_version_lag'] == [0, 1] and second['update'] == 4
+    assert seen[1] == ('progress', {'update': 4}, {'first_use_version_lag': [0, 1]})
+
+
 def test_roles_writes_the_learner_config_and_gc_keys_preflight_checked():
     """#551 review S4: roles.py (a job script, not importable here) takes its learner.json
     from `learner_base`, the one function preflight checks, and its GC keys from
@@ -1954,15 +1976,79 @@ def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
              # review D2: a "service failure" STOP alone would repeat (gpu preflight, MPS...)
              ({'failure': 'BoundaryError: unresolved_worlds_after_drain',
                'stop': 'service failure 2 exited'}, 'failure'),
-             ({'report': False}, 'resumable'), ({'report': False, 'rc': 9}, 'failure'),
+             ({'report': False}, 'resumable'),
+             ({'report': False, 'rc': 9, 'stop': 'service failure: gpu preflight'}, 'failure'),
              # review D1: the learner stopped cleanly on a service STOP, the job exits 5
              ({'stop': 'service failure handoff EOF', 'rc': 5}, 'failure'),
              ({'stop': 'service failure handoff EOF', 'rc': 0}, 'failure'),
              ({'rc': 5}, 'failure'), ({'window_end': None}, 'failure'),
-             ({'disk': True}, 'disk_stop'), ({'failure': fence, 'disk': True}, 'disk_stop')]
+             ({'disk': True}, 'disk_stop'), ({'failure': fence, 'disk': True}, 'disk_stop'),
+             # V6 smoke attempt 2: a GPU job that ended without the learner's report is
+             # resumed: a Slurm kill (gpu-rc 143 now; it was a false 0), a learner killed
+             # or crashed without its report (gpu.sh: rc 6, STOP "gpu job end"), node death
+             ({'report': False, 'rc': 0, 'stop': 'gpu job end'}, 'resumable'),
+             ({'report': False, 'rc': 143, 'stop': 'gpu job end'}, 'resumable'),
+             ({'report': False, 'rc': 6, 'stop': 'gpu job end'}, 'resumable'),
+             ({'report': False, 'rc': None}, 'resumable'),
+             # ...but never our own stop, nor a STOP that says why (it would repeat)
+             ({'report': False, 'rc': 143, 'stop': 'service stop: operator stop'}, 'stopped'),
+             ({'report': False, 'rc': 3, 'stop': 'launcher gone before GPU start'}, 'failure'),
+             ({'report': False, 'rc': 143, 'stop': 'learner failure x'}, 'failure')]
     for i, (kw, kind) in enumerate(cases):
         write_outcome(tmp_path / str(i), **kw)
         assert supervise.outcome(tmp_path / str(i))['kind'] == kind, kw
+
+
+def test_a_killed_gpu_job_resumes_and_an_operator_stop_does_not(tmp_path):
+    killed = {'report': False, 'rc': 0, 'stop': 'gpu job end'}
+    chain, cluster = chain_for(tmp_path / 'kill', [killed, {}])
+    assert chain.run() == 0 and len(cluster.argvs) == 2
+    assert chain.state['generations'][0]['outcome']['kind'] == 'resumable'
+    # the operator's stop ended the generation (scancel after the grace): never resumed
+    stopped = {'report': False, 'rc': 143, 'stop': 'service stop: operator stop (supervise.py '
+               'stop)'}
+    chain, cluster = chain_for(tmp_path / 'stop', [stopped, {}])
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'ended stopped' in chain.state['final']['cause']
+
+
+def run_gpu_exit_block(root, tail, signal_after=None):
+    """gpu.sh's exit-code block with `tail` after it; gpu-rc as written."""
+    text = (FASTCHAIN / 'gpu.sh').read_text()
+    block = text[text.index('# --- exit code:'):text.index('# --- end exit code ---')]
+    root.mkdir(parents=True)
+    proc = subprocess.Popen(['bash', '-c', f'RUN={root}\n' + block + tail])
+    if signal_after is not None:
+        time.sleep(signal_after)
+        proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=30)
+    return (root / 'gpu-rc').read_text().strip()
+
+
+def test_gpu_rc_is_128_plus_n_when_a_signal_ends_the_job(tmp_path):
+    """V6 smoke attempt 2: scancel left gpu-rc 0 (bash's EXIT trap took $? of the
+    interrupted wait), read as an end instead of a resumable kill."""
+    assert run_gpu_exit_block(tmp_path / 'term', 'sleep 30 & wait $!\n', 0.5) == '143'
+    assert run_gpu_exit_block(tmp_path / 'clean', 'true\n') == '0'
+    assert run_gpu_exit_block(tmp_path / 'six', 'exit 6\n') == '6'
+
+
+def test_prep_hosts_serve_until_the_learner_reported_not_until_stop(tmp_path):
+    """V6 smoke attempt 2: the hosts stopped on the operator's STOP while the learner was
+    still finishing, its shard got EOFError and it fenced without a final CP."""
+    run = tmp_path / 'run'
+    run.mkdir(parents=True)
+    (run / 'load.txt').write_text('1 load\n')
+    (run / 'learner.ready').write_text('{}')
+    (run / 'STOP').write_text('service stop: operator stop\n')
+    script = 'n=$(cat "$SQ_COUNT"); [ "$n" -ge 3 ] && touch "$RUN/learner-report.json"; '
+    out, calls = run_block(tmp_path, 'prep.sh', '# --- serve:', '# --- end serve ---',
+                           ['RUNNING'], env={'FC_PREP_GROUP': '0'},
+                           prefix=f'source {FASTCHAIN}/gpu_job.sh; GPU=77\n'
+                           f'squeue() {{ command squeue "$@"; local rc=$?; {script}'
+                           'return $rc; }\n')
+    assert out.returncode == 0, out.stderr
+    assert calls == 3 and out.stdout.strip().endswith('RC=0')
 
 
 class FakeCluster:
@@ -2825,6 +2911,8 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
     assert a0[a0.index('--suite') + 1] == 'rl3-a0-100' and '--baseline-plan' in a0
     assert a10[a10.index('--suite') + 1] == 'a10-50' and a10[a10.index('--seeds') + 1] == '50'
     assert '--baseline-plan' not in a10 and '--dry-run' in a0
+    for cmd in started:  # only this chain's CPs (V6 smoke attempt 2: shared peer)
+        assert cmd[cmd.index('--chain') + 1] == 'lr1'
     assert a0[a0.index('--baseline-source') + 1] == 'explicit' and '--baseline-sha256' not in a0
     execution = json.loads((chain.dir / 'eval-execution.json').read_text())
     assert execution['storage_mode'] == 'shared_local' and execution['peer'] == {
