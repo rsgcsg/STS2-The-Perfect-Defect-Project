@@ -52,6 +52,37 @@ CLOSE_RESERVE_SECONDS = 900
 # The in-job report starts only with this much wall left (else `project-report` later),
 # so the evidence is always kept before the Slurm end (USR1 at wall end, kill 300 s on).
 REPORT_MIN_SECONDS = 600
+# The evaluation actor root (the launcher's `actor_root`): what each Slurm job runs with,
+# beside the clean source. Missing entries are refused before any job is submitted.
+ACTOR_LAYOUT = {"env/bin/python": "evaluation Python env", "node22.23.4/bin/node": "pinned Node",
+                "game": "deployed game (STS2_GAME_DIR)", "dotnet-sdk9.0.117": ".NET SDK"}
+# One evaluation job admits at most this many games (`EvaluationLedger.run_managed`).
+MAX_DISPATCH_SLOTS = 200
+
+
+def actor_layout_missing(actor: Path) -> list[str]:
+    """The ACTOR_LAYOUT entries `actor` lacks (executables must be executable files)."""
+    missing = []
+    for entry in ACTOR_LAYOUT:
+        path = actor / entry
+        present = (path.is_file() and os.access(path, os.X_OK)) if entry.endswith(
+            ("/python", "/node")) else path.is_dir()
+        if not present:
+            missing.append(entry)
+    return missing
+
+
+def actor_root(plan: dict[str, Any]) -> Path:
+    """The plan's explicit actor root (`--actor-root`), else the source checkout's parent."""
+    return Path(plan.get("actor_root") or Path(plan["source_root"]).parent)
+
+
+def require_actor_layout(actor: Path) -> None:
+    missing = actor_layout_missing(actor)
+    if missing:
+        raise ValueError("evaluation_actor_layout_incomplete: " + str(actor) + " lacks "
+                         + ", ".join(missing) + " (pass --actor-root DIR holding "
+                         + ", ".join(ACTOR_LAYOUT) + ")")
 
 
 def validate_execution(execution: dict[str, Any], selections: dict[str, str]) -> None:
@@ -199,6 +230,9 @@ def load_plan(path: Path) -> dict[str, Any]:
             or type(value.get("observation_report", False)) is not bool
             or value.get("unknown_policy", "stop") not in ('stop', 'continue_cleaned')):
         raise ValueError("frozen_friday_evaluation_plan_required")
+    if 'actor_root' in value and not (isinstance(value['actor_root'], str)
+                                      and Path(value['actor_root']).is_absolute()):
+        raise ValueError('absolute_evaluation_actor_root_required')
     validate_execution(read_pinned(value["execution"]), value["selections"])
     if value.get('deadline_at') is not None and (
             type(value['deadline_at']) not in (int, float)
@@ -247,16 +281,24 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
                        construction_package: Path | None = None,
                        deadline_at: float | None = None,
                        pending_limit: int | None = None, save_workers: int | None = None,
-                       memory_gb: int | None = None) -> dict[str, Any]:
+                       memory_gb: int | None = None,
+                       actor: Path | None = None) -> dict[str, Any]:
     """`pending_limit`/`save_workers` (given together) replace the execution template's
-    pipeline; `memory_gb` is the evaluation job's memory request (fast_eval settings)."""
+    pipeline; `memory_gb` is the evaluation job's memory request (fast_eval settings);
+    `actor`: the evaluation job's actor root (default: the source checkout's parent).
+
+    `seeds`: the first N seeds of the frozen manifest, 1..MAX_DISPATCH_SLOTS and at most
+    the manifest's length (`prepare`). The old 50..100 floor/ceiling was the RL4.1
+    watcher's setting on the 100-seed A0 suite, not a limit of this code."""
     from spireagent.source import source_identity
     from spireagent.storage.config import open_peer
     from spireagent.workbench.global_evidence_store import publish_detached_p1_model
     from stpd.evaluation.rl_checkpoint import export_checkpoint
 
-    if type(seeds) is not int or not 50 <= seeds <= 100:
-        raise ValueError('fixed_fifty_to_one_hundred_evaluation_seeds_required')
+    if type(seeds) is not int or not 1 <= seeds <= MAX_DISPATCH_SLOTS:
+        raise ValueError('bounded_evaluation_seed_count_required')
+    if actor is not None and not actor.is_absolute():
+        raise ValueError('absolute_evaluation_actor_root_required')
     config = json.loads(configuration.read_bytes())
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     store = open_peer(config['peer'])
@@ -283,6 +325,8 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
         unknown_policy='continue_cleaned', deadline_at=deadline_at, memory_gb=memory_gb)
     plan['checkpoint_binding'] = {'path': str(output / 'checkpoint-binding.json'),
                                  'sha256': hashed(output / 'checkpoint-binding.json')}
+    if actor is not None:
+        plan['actor_root'] = str(actor)
     save(output / 'evaluation/plan.json', plan)
     return plan
 
@@ -298,7 +342,7 @@ def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.
     if program not in {'evaluate.py', 'quick.py'}:
         raise ValueError('normal_evaluation_entrypoint_required')
     source = Path(plan["source_root"])
-    actor = source.parent
+    actor = actor_root(plan)
     replacements = {"__ACTOR__": shlex.quote(str(actor)),
                     "__SOURCE__": shlex.quote(str(source)),
                     "__PLAN__": shlex.quote(str(plan_path)), "__SLOT_MODE__": "evaluation",
@@ -383,6 +427,7 @@ def submit(plan_path: Path, *, constraint: str | None = None,
             ['squeue', '-h', '-p', partition, '-t', 'PD', '-o', '%i']).splitlines())
         if capacity(idle, queued, plan['workers']) < plan['workers']:
             raise ValueError('requested_evaluation_workers_exceed_current_fair_share')
+        require_actor_layout(actor_root(plan))
         script = root / 'launch.sh'
         script.write_text(launcher(plan_path, plan,
                                    credentials=needs_r2(read_pinned(plan['execution']))),
@@ -1109,6 +1154,8 @@ def main():
     cp_parser.add_argument('--save-workers', type=int)
     cp_parser.add_argument('--memory-gb', type=int,
                            help='job memory request (default 4 GB per worker)')
+    cp_parser.add_argument('--actor-root', type=Path,
+                           help='evaluation actor root (default: the source parent)')
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--execution', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
@@ -1169,7 +1216,7 @@ def main():
             wall_seconds=args.wall_seconds, episode_seconds=args.episode_seconds,
             construction_package=args.construction_package, deadline_at=args.deadline_at,
             pending_limit=args.pending_limit, save_workers=args.save_workers,
-            memory_gb=args.memory_gb)
+            memory_gb=args.memory_gb, actor=args.actor_root)
     elif args.command == 'prepare':
         pairs = [value.split('=', 1) for value in args.selection]
         if any(len(pair) != 2 or not all(pair) for pair in pairs):

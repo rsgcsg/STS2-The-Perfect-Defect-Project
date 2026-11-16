@@ -46,6 +46,25 @@ Rules (RL4.1 long-run lessons, lead 11-12):
   report and the evidence; a job that had to skip its in-job report is
   `report_deferred` here (loud): `evaluate.py project-report` writes it later.
 
+Start checks (`--check`, which supervise runs before generation 0, and again before the
+loop starts), so an evaluation that cannot run is refused before any GPU or CPU job:
+- the seed manifest has the seeds; 1 <= seeds <= `evaluate.MAX_DISPATCH_SLOTS` (one job
+  admits at most 200 games; 300 seeds need a manifest and batches, #591);
+- the actor root (`--actor-root`, default the source checkout's parent; supervise passing
+  it is #590) holds `evaluate.ACTOR_LAYOUT` (env, Node, game, .NET);
+- the execution template's `agent_adapter` equals this source's
+  `export.adapter_identity()` (the executor's own `frozen_agent_implementation_changed`
+  check, run early; re-freeze a stale template with `tools/friday/eval_template.py
+  refreeze`, never by hand); an interpreter that cannot import it is refused too;
+- a baseline round frozen under another agent adapter pairs only through the re-freeze
+  record named by this template's `refrozen_from` that links exactly the baseline's
+  adapter to this one; both adapters and producers, `adapter_differs` and the record
+  are written into summary.json, eval-record.json and the report (`adapter_pairing`).
+
+A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summary.json,
+eval-record.json and the report say "smoke, not a decision result", and no reference is
+paired (no paired-delta line).
+
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
 
@@ -99,6 +118,8 @@ CLOSE_SECONDS = evaluate.CLOSE_RESERVE_SECONDS
 MAX_WALL_SECONDS = 21600  # evaluate.prepare's bound
 # Compared at start: the execution's pins against the baseline round's own execution.
 START_PINS = ("host_pin", "runtime_pin", "initial_progress")
+DECISION_GAMES = 100  # fewer games: a smoke, not a decision result (lead decision 11-17)
+REFREEZE_SCHEMA = "spireagent/evaluation-template-refreeze-1"  # eval_template.py
 PLAN_GRACE_SECONDS = 300  # shared disk: a job's last write can trail its end (#403)
 RESULT_GRACE_SECONDS = 900  # #398: an ended evaluation job without a result
 PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
@@ -166,9 +187,59 @@ def round_execution(plan: Path) -> dict[str, Any]:
     return json.loads(path.read_bytes())
 
 
+def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any],
+                    template: Path) -> dict[str, Any]:
+    """Which agent adapter and producer each side was frozen with. When the adapter
+    differs, the re-freeze record named by the template's `refrozen_from` (beside it)
+    must link exactly the baseline's adapter to this one and be the record of this
+    template; otherwise the pairing is refused."""
+    def side(value: dict[str, Any]) -> dict[str, Any]:
+        return {"agent_adapter": (value.get("agent_adapter") or {}).get("code_sha256"),
+                "producer": value.get("producer")}
+
+    theirs, ours = side(baseline_execution), side(execution)
+    pairing: dict[str, Any] = {
+        "baseline": theirs, "current": ours,
+        "adapter_differs": theirs["agent_adapter"] != ours["agent_adapter"],
+        "refreeze_record": None}
+    if not pairing["adapter_differs"]:
+        return pairing
+    named = (execution.get("refrozen_from") or {}).get("record")
+    path = template.parent / Path(named).name if isinstance(named, str) else None
+    record = json.loads(path.read_bytes()) if path is not None and path.is_file() else {}
+    linked = record.get("agent_adapter") or {}
+    if (record.get("schema") != REFREEZE_SCHEMA
+            or (linked.get("old") or {}).get("code_sha256") != theirs["agent_adapter"]
+            or (linked.get("new") or {}).get("code_sha256") != ours["agent_adapter"]
+            or (record.get("template_out") or {}).get("sha256") != hashed(template)):
+        raise ValueError(
+            f"baseline_adapter_differs_without_refreeze_record: the baseline round ran "
+            f"agent_adapter {theirs['agent_adapter']}, this template pins "
+            f"{ours['agent_adapter']}; no eval_template.py refreeze record beside the "
+            "template links exactly these two")
+    assert path is not None
+    pairing["refreeze_record"] = {"path": str(path), "sha256": hashed(path),
+                                  "reason": record.get("reason")}
+    return pairing
+
+
+def pairing_note(pairing: dict[str, Any] | None) -> str:
+    """The report's line on which adapter each side ran."""
+    if pairing is None:
+        return "Agent adapter pairing: not checked (watcher started before this check)."
+    base, current = pairing["baseline"]["agent_adapter"], pairing["current"]["agent_adapter"]
+    if not pairing["adapter_differs"]:
+        return f"Agent adapter: baseline and current both {current}."
+    record = pairing["refreeze_record"]
+    return (f"Agent adapter DIFFERS: baseline {base}, current {current}; paired through "
+            f"re-freeze record sha256 {record['sha256']} ({record['reason']}).")
+
+
 def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
-                     execution: dict[str, Any], manifest: Path) -> dict[str, Any] | None:
-    """`{plan, sha256, source}` of the baseline round, or None (`--no-baseline`).
+                     execution: dict[str, Any], manifest: Path,
+                     template: Path) -> dict[str, Any] | None:
+    """`{plan, sha256, source, adapter_pairing}` of the baseline round, or None
+    (`--no-baseline`).
 
     Refused at start, never dropped later without a word: a plan that is missing or not
     the pinned sha256, or a round on other Host/Runtime pins, initial progress or seed
@@ -185,13 +256,48 @@ def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
         differing.append("seed_manifest")
     if differing:
         raise ValueError("baseline_round_differs_from_this_watcher: " + ", ".join(differing))
-    return {"plan": str(plan), "sha256": hashed(plan), "source": source}
+    return {"plan": str(plan), "sha256": hashed(plan), "source": source,
+            "adapter_pairing": adapter_pairing(theirs, execution, template)}
+
+
+def code_adapter_identity() -> dict[str, str]:
+    """This source's agent adapter identity: what the Managed executor compares the frozen
+    execution's `agent_adapter` with (needs the evaluation interpreter: torch)."""
+    from stpd.p1 import export
+
+    return export.adapter_identity()
+
+
+def start_problems(settings: dict[str, Any], execution: dict[str, Any]) -> list[str]:
+    """Why an evaluation of these settings cannot run, found before any job is submitted:
+    the actor layout and the frozen adapter identity (the seed count and manifest are
+    checked by `main` and `check_manifest`). Empty = it can start."""
+    problems = []
+    actor = evaluate.actor_root({"source_root": settings["runtime_source"],
+                                 "actor_root": settings.get("actor_root")})
+    try:
+        evaluate.require_actor_layout(actor)
+    except ValueError as error:
+        problems.append(str(error))
+    try:
+        current = code_adapter_identity()
+    except ImportError as error:
+        return [*problems, f"evaluation_interpreter_cannot_import_the_adapter: {error}"]
+    pinned = execution.get("agent_adapter")
+    if pinned != current:
+        shown = (pinned or {}).get("code_sha256") if isinstance(pinned, dict) else pinned
+        problems.append(f"frozen_agent_implementation_changed: the execution template pins "
+                        f"agent_adapter code_sha256 {shown}, this source computes "
+                        f"{current['code_sha256']}; re-freeze the template with "
+                        "tools/friday/eval_template.py refreeze (records both)")
+    return problems
 
 
 def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str:
     """The watcher's preparation command, for one CP (no R2 environment when shared_local)."""
     launcher = evaluate.launcher(root / "not-offered-plan.json",
-                                 {"source_root": settings["runtime_source"]},
+                                 {"source_root": settings["runtime_source"],
+                                  "actor_root": settings.get("actor_root")},
                                  credentials=settings.get("r2", True))
     if launcher.count(SPLIT) != 1:
         raise ValueError("evaluation_launcher_layout_changed")
@@ -210,6 +316,8 @@ def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str
                "--memory-gb", str(settings["memory_gb"])]
     if settings.get("deadline_at") is not None:
         command += ["--deadline-at", str(settings["deadline_at"])]
+    if settings.get("actor_root") is not None:
+        command += ["--actor-root", shlex.quote(settings["actor_root"])]
     return prefix + "exec " + " ".join(command) + "\n"
 
 
@@ -523,8 +631,17 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     skipped: dict[str, Any] = {}
     references = (("baseline", baseline["plan"] if baseline else None),
                   ("previous", previous_plan))
+    smoke = current["planned"] < DECISION_GAMES
+    not_compared = [name for name, reference in references if reference] if smoke else []
+    pairing = baseline.get("adapter_pairing") if baseline else None
+    notes = []
+    if smoke:
+        notes.append(f"SMOKE: {current['planned']} games < {DECISION_GAMES}: smoke, not a "
+                     "decision result; no reference is paired.")
+    if baseline:
+        notes.append(pairing_note(pairing))
     for name, reference in references:
-        if reference is None:
+        if reference is None or smoke:
             continue
         group, frozen = cohort(Path(reference), pinned=baseline["sha256"]
                                if name == "baseline" and baseline else None)
@@ -539,14 +656,18 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         cohorts[name] = group
     cohorts["current"] = current
     output = root / "report"
-    report = write_report(cohorts, output, scope_note=(
+    report = write_report(cohorts, output, scope_note=" ".join([*notes, (
         "Managed fixed pool, argmax; unknown/failed games are excluded per pair and listed, "
         "never retried; the round is never voided."
         + (" Skipped references (different protocol or seeds): "
-           + json.dumps(skipped, sort_keys=True) if skipped else "")))
-    summary: dict[str, Any] = {"schema": SCHEMA + "/report", "report_directory": str(output),
-                               "baseline": baseline, "skipped_references": skipped,
-                               "cohorts": {}, "paired": {}}
+           + json.dumps(skipped, sort_keys=True) if skipped else ""))]))
+    summary: dict[str, Any] = {
+        "schema": SCHEMA + "/report", "report_directory": str(output),
+        "baseline": baseline, "adapter_pairing": pairing if baseline else None,
+        "smoke": smoke, "decision": ("smoke, not a decision result" if smoke
+                                     else f"decision size (>= {DECISION_GAMES} games)"),
+        "references_not_compared": not_compared, "skipped_references": skipped,
+        "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
         reward = report["rewards"][name]
@@ -642,6 +763,8 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                    "reward": official.get(row["seed"]),
                    "conservative_reward": conservative.get(row["seed"])}
                   for row in current["rows"]],
+        "smoke": summary["smoke"], "decision": summary["decision"],
+        "adapter_pairing": summary["adapter_pairing"],
         "paired": summary["paired"], "skipped_references": summary["skipped_references"],
         "value_predictions": {"recorded": False,
                               "reason": "evaluated_package_strips_auxiliary_heads"}}
@@ -660,8 +783,11 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     execution = json.loads(args.execution.read_bytes())
     live = min(args.workers, args.pending_limit)
     baseline = resolve_baseline(args.baseline_plan, args.baseline_sha256, args.baseline_source,
-                                execution, args.manifest.resolve())
-    return {"learner_config": str(args.learner_config.resolve()),
+                                execution, args.manifest.resolve(), args.execution.resolve())
+    # Only when given: the default (the source parent) keeps earlier state.json settings.
+    actor = ({"actor_root": str(args.actor_root.resolve())}
+             if getattr(args, "actor_root", None) is not None else {})
+    return {**actor, "learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation, "chain": args.chain,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
@@ -719,6 +845,10 @@ def main() -> None:
     parser.add_argument("--deadline-at", type=float)
     parser.add_argument("--checkpoint",
                         help="evaluate exactly this CP artifact id (else the newest CP)")
+    parser.add_argument("--actor-root", type=Path,
+                        help="directory holding env/, node22.23.4/, game/ and "
+                             "dotnet-sdk9.0.117/ for the evaluation jobs, e.g. the release "
+                             "the source was built for (default: the source checkout's parent)")
     parser.add_argument("--baseline-plan", type=Path,
                         help="plan.json of the reference round (e.g. the baseline CP's own "
                              "fast_eval round) for the paired report: same Host/Runtime "
@@ -751,17 +881,21 @@ def main() -> None:
         parser.error("--baseline-sha256 goes with --baseline-plan")
     if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
         parser.error("--memory-gb and --wall-seconds are positive (omit for the defaults)")
-    if args.check:  # supervise runs this before generation 0: a refusal stops the chain
-        try:
-            check_manifest(args.manifest.resolve(), args.suite, args.seeds)
-            settings = settings_from(args)
-        except (ValueError, OSError, KeyError) as error:
-            print(f"fast_eval check refused: {type(error).__name__}: {error}", file=sys.stderr,
-                  flush=True)
-            sys.exit(2)
+    if not 1 <= args.seeds <= evaluate.MAX_DISPATCH_SLOTS:
+        parser.error(f"--seeds 1..{evaluate.MAX_DISPATCH_SLOTS}: one evaluation job admits at "
+                     "most that many games; more seeds (e.g. 300) need batches (#591)")
+    try:  # supervise runs --check before generation 0: a refusal stops the chain
+        check_manifest(args.manifest.resolve(), args.suite, args.seeds)
+        settings = settings_from(args)
+        problems = start_problems(settings, json.loads(args.execution.read_bytes()))
+    except (ValueError, OSError, KeyError, ImportError) as error:
+        problems = [f"{type(error).__name__}: {error}"]
+    if problems:  # one line: supervise shows the last stderr line of a refused check
+        print("fast_eval check refused: " + " | ".join(problems), file=sys.stderr, flush=True)
+        sys.exit(2)
+    if args.check:
         print(json.dumps({"check": "ok", "settings": settings}, sort_keys=True), flush=True)
         sys.exit(0)
-    check_manifest(args.manifest.resolve(), args.suite, args.seeds)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     import contextlib
@@ -774,7 +908,7 @@ def main() -> None:
             stack.enter_context(instance_lock(output / "loop.lock"))
         except BoundaryError:
             parser.error("another fast_eval loop owns this --output")
-        loop = Loop(settings_from(args), output, dry_run=args.dry_run)
+        loop = Loop(settings, output, dry_run=args.dry_run)
         while True:
             loop.tick()
             stages = [e["stage"] for e in loop.state["evaluations"]]

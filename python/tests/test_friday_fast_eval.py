@@ -206,8 +206,12 @@ def test_baseline_is_explicit_pinned_and_compared_at_start(fast_eval, tmp_path):
     plan = round_on(tmp_path, 'base', args.manifest)
     args.baseline_plan, args.baseline_source = plan, 'site'
     args.baseline_sha256 = fast_eval.hashed(plan)
+    same = {'baseline': {'agent_adapter': None, 'producer': None},
+            'current': {'agent_adapter': None, 'producer': None},
+            'adapter_differs': False, 'refreeze_record': None}
     assert fast_eval.settings_from(args)['baseline'] == {
-        'plan': str(plan.resolve()), 'sha256': fast_eval.hashed(plan), 'source': 'site'}
+        'plan': str(plan.resolve()), 'sha256': fast_eval.hashed(plan), 'source': 'site',
+        'adapter_pairing': same}
     # Copied to a stable place: the execution is read beside the plan, by its sha256.
     stable = tmp_path / 'stable/round'
     shutil.copytree(plan.parent, stable)
@@ -232,25 +236,209 @@ def test_baseline_is_explicit_pinned_and_compared_at_start(fast_eval, tmp_path):
     assert fast_eval.settings_from(args)['baseline'] is None
 
 
+ADAPTER = {'id': 'stpd-p1-mstd-agent', 'version': '1',
+           'protocol': 'sts2.policy-runtime/agent-session-ndjson-1', 'code_sha256': 'c' * 64}
+PAIRING = {'baseline': {'agent_adapter': '7' * 64, 'producer': {'source_revision': 'a'}},
+           'current': {'agent_adapter': '2' * 64, 'producer': {'source_revision': 'b'}},
+           'adapter_differs': True,
+           'refreeze_record': {'path': '/t.json.refreeze.json', 'sha256': 'r' * 64,
+                               'reason': 'PR #592'}}
+
+
+def make_actor(root):
+    """A complete evaluation actor root (evaluate.ACTOR_LAYOUT) of empty stand-ins."""
+    for entry in ('env/bin/python', 'node22.23.4/bin/node'):
+        (root / entry).parent.mkdir(parents=True, exist_ok=True)
+        (root / entry).write_text('#!/bin/sh\n')
+        (root / entry).chmod(0o755)
+    for entry in ('game', 'dotnet-sdk9.0.117'):
+        (root / entry).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def check_argv(args, tmp_path, *extra):
+    return ['fast_eval.py', '--learner-config', str(args.learner_config),
+            '--execution', str(args.execution), '--manifest', str(args.manifest),
+            '--output', str(tmp_path / 'out'), '--slot-registered', '--check', *extra]
+
+
+def run_check(fast_eval, argv, capsys):
+    with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
+          patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as done):
+        fast_eval.main()
+    out = capsys.readouterr()
+    return done.value.code, out.out, out.err
+
+
 def test_check_mode_runs_the_start_checks_and_writes_nothing(fast_eval, tmp_path, capsys):
     """M1: supervise runs `--check` before generation 0; a refusal exits non-zero."""
     args = args_for(tmp_path)
     args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
     base = round_on(tmp_path, 'base', args.manifest, host_pin={'version': 'rc.64'})
-    argv = ['fast_eval.py', '--learner-config', str(args.learner_config),
-            '--execution', str(args.execution), '--manifest', str(args.manifest),
-            '--output', str(tmp_path / 'out'), '--slot-registered', '--check']
+    argv = check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor')))
     with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
           patch.object(sys, 'argv', [*argv, '--no-baseline']),
           pytest.raises(SystemExit) as done):
         fast_eval.main()
     assert done.value.code == 0 and json.loads(capsys.readouterr().out)['check'] == 'ok'
     with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER),
           patch.object(sys, 'argv', [*argv, '--baseline-plan', str(base)]),
           pytest.raises(SystemExit) as done):
         fast_eval.main()
     assert done.value.code == 2 and 'host_pin' in capsys.readouterr().err
     assert not (tmp_path / 'out').exists()
+
+
+def test_check_refuses_an_incomplete_actor_root_and_names_what_is_missing(
+        fast_eval, tmp_path, capsys):
+    """V6 smoke blocker 1, caught before generation 0: the evaluation jobs' actor root
+    (default the source parent; --actor-root names it) must hold env, Node, game, .NET."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    actor = make_actor(tmp_path / 'release')
+    code, out, _ = run_check(fast_eval, [*check_argv(args, tmp_path, '--actor-root', str(actor)),
+                                         '--no-baseline'], capsys)
+    assert code == 0 and json.loads(out)['settings']['actor_root'] == str(actor.resolve())
+    import shutil
+    shutil.rmtree(actor / 'dotnet-sdk9.0.117')
+    (actor / 'env/bin/python').unlink()
+    code, _, err = run_check(fast_eval, [*check_argv(args, tmp_path, '--actor-root', str(actor)),
+                                         '--no-baseline'], capsys)
+    assert code == 2 and 'evaluation_actor_layout_incomplete' in err
+    assert 'lacks env/bin/python, dotnet-sdk9.0.117' in err and len(err.splitlines()) == 1
+    assert not (tmp_path / 'out').exists()
+    # The default actor root is the source checkout's parent (unchanged behaviour).
+    settings = fast_eval.settings_from(args_for(tmp_path))
+    assert 'actor_root' not in settings
+    with patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER):
+        [problem] = fast_eval.start_problems({**settings, 'runtime_source': str(tmp_path / 'src')},
+                                             {'agent_adapter': ADAPTER})
+    assert problem.startswith(f'evaluation_actor_layout_incomplete: {tmp_path} lacks')
+
+
+def test_check_refuses_a_template_whose_adapter_is_not_this_source(fast_eval, tmp_path, capsys):
+    """V6 smoke blocker 3, caught before generation 0: the executor's exact
+    frozen_agent_implementation_changed comparison, run early; nothing is relaxed."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    stale = {**ADAPTER, 'code_sha256': '7' * 64}
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': stale}))
+    argv = [*check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor'))),
+            '--no-baseline']
+    code, _, err = run_check(fast_eval, argv, capsys)
+    assert code == 2 and 'frozen_agent_implementation_changed' in err
+    assert '7' * 64 in err and 'c' * 64 in err and 'eval_template.py refreeze' in err
+    for other in ({**ADAPTER, 'version': '2'}, None):  # any difference, or none pinned
+        args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                              'agent_adapter': other}))
+        assert run_check(fast_eval, argv, capsys)[0] == 2
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    assert run_check(fast_eval, argv, capsys)[0] == 0
+    assert not (tmp_path / 'out').exists()
+
+
+def test_a_baseline_under_another_adapter_pairs_only_through_its_refreeze_record(
+        fast_eval, tmp_path):
+    """Review #592 must-fix 1: cross-adapter pairing is refused without the record that
+    links exactly the baseline's adapter to this template's, and recorded when allowed."""
+    args = args_for(tmp_path, no_baseline=False)
+    args.manifest.write_text('{"seeds": ["s1"]}')
+    old, new = {**ADAPTER, 'code_sha256': '7' * 64}, ADAPTER
+    args.baseline_plan = round_on(tmp_path, 'base', args.manifest, agent_adapter=old,
+                                  producer={'source_revision': 'a'})
+    template = {'storage_mode': 'shared_local', **PINS, 'agent_adapter': new,
+                'producer': {'source_revision': 'b'},
+                'refrozen_from': {'record': 'execution.json.refreeze.json'}}
+    args.execution.write_text(json.dumps(template))
+    with pytest.raises(ValueError, match='adapter_differs_without_refreeze_record'):
+        fast_eval.settings_from(args)  # the record is missing
+    record = tmp_path / 'execution.json.refreeze.json'
+
+    def write_record(**changes):
+        value = {'schema': fast_eval.REFREEZE_SCHEMA, 'reason': 'PR #592',
+                 'agent_adapter': {'old': old, 'new': new},
+                 'template_out': {'sha256': fast_eval.hashed(args.execution)}}
+        record.write_text(json.dumps({**value, **changes}))
+
+    for wrong in ({'agent_adapter': {'old': {**old, 'code_sha256': '9' * 64}, 'new': new}},
+                  {'agent_adapter': {'old': old, 'new': {**new, 'code_sha256': '9' * 64}}},
+                  {'template_out': {'sha256': 'f' * 64}}, {'schema': 'other'}):
+        write_record(**wrong)
+        with pytest.raises(ValueError, match='adapter_differs_without_refreeze_record'):
+            fast_eval.settings_from(args)
+    write_record()
+    pairing = fast_eval.settings_from(args)['baseline']['adapter_pairing']
+    assert pairing == {
+        'baseline': {'agent_adapter': '7' * 64, 'producer': {'source_revision': 'a'}},
+        'current': {'agent_adapter': 'c' * 64, 'producer': {'source_revision': 'b'}},
+        'adapter_differs': True,
+        'refreeze_record': {'path': str(record), 'sha256': fast_eval.hashed(record),
+                            'reason': 'PR #592'}}
+
+
+def test_check_refuses_an_interpreter_that_cannot_import_the_adapter(fast_eval, tmp_path,
+                                                                     capsys):
+    """Review #592: an ImportError at start is a one-line refusal, not a traceback."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    argv = [*check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor'))),
+            '--no-baseline']
+
+    def missing():
+        raise ImportError("No module named 'torch'")
+
+    with (patch.object(fast_eval, 'check_manifest', lambda *_: None),
+          patch.object(fast_eval, 'code_adapter_identity', missing),
+          patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as done):
+        fast_eval.main()
+    err = capsys.readouterr().err
+    assert done.value.code == 2 and 'Traceback' not in err and len(err.splitlines()) == 1
+    assert "evaluation_interpreter_cannot_import_the_adapter: No module named 'torch'" in err
+
+
+@pytest.mark.parametrize('seeds,code', [(8, 0), (32, 0), (100, 0), (200, 0), (0, 2), (300, 2)])
+def test_seed_count_is_a_setting_from_a_smoke_count_up_to_one_jobs_200(
+        fast_eval, tmp_path, capsys, seeds, code):
+    """V6 smoke blocker 2: eval_seeds=32 was refused (old 50..100 guard in prepare-checkpoint).
+    A small smoke count runs; 300 (the owner's decision count) is refused at start with
+    the reason (one job admits <= 200 games: 300 needs batches), never mid-chain."""
+    args = args_for(tmp_path)
+    args.manifest.write_text('{}')
+    args.execution.write_text(json.dumps({'storage_mode': 'shared_local',
+                                          'agent_adapter': ADAPTER}))
+    argv = [*check_argv(args, tmp_path, '--actor-root', str(make_actor(tmp_path / 'actor')),
+                        '--seeds', str(seeds)), '--no-baseline']
+    result, out, err = run_check(fast_eval, argv, capsys)
+    assert result == code
+    if code == 0:
+        assert json.loads(out)['settings']['seeds'] == seeds
+    else:
+        assert '--seeds 1..200' in err and 'batches' in err
+    assert fast_eval.evaluate.MAX_DISPATCH_SLOTS == 200
+
+
+def test_prepare_command_carries_the_actor_root_and_a_small_seed_count(fast_eval, tmp_path):
+    world = World()
+    world.record('cp-a', 10)
+    actor = str(tmp_path / 'release')
+    runner = loop(fast_eval, world, tmp_path, seeds=8, actor_root=actor)
+    runner.tick()
+    script = (tmp_path / 'evaluation-0001/prepare.sh').read_text()
+    assert f'actor_root={actor}' in script and f'--actor-root {actor}' in script
+    assert '--seeds 8' in script
+    plain = loop(fast_eval, world, tmp_path / 'plain')
+    plain.tick()
+    script = (tmp_path / 'plain/evaluation-0001/prepare.sh').read_text()
+    assert '--actor-root' not in script and 'actor_root=/src\n' in script
 
 
 def test_busy_failed_and_deadline_skip_without_stopping(fast_eval, tmp_path):
@@ -604,8 +792,10 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
         value = plans[str(plan)]
         return {'manifest': {'sha256': 'm'}}, {}, {'cohort': value}
 
-    baseline = {'plan': str(pinned), 'sha256': fast_eval.hashed(pinned), 'source': 'site'}
-    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+    baseline = {'plan': str(pinned), 'sha256': fast_eval.hashed(pinned), 'source': 'site',
+                'adapter_pairing': PAIRING}
+    with (patch.object(fast_eval.evaluate, 'read_observation_report', read),
+          patch.object(fast_eval, 'DECISION_GAMES', 3)):
         summary = fast_eval.write_evaluation_report(tmp_path / 'eval', baseline,
                                                     '/old/plan.json')
         with pytest.raises(ValueError, match='baseline_plan_changed'):
@@ -634,6 +824,36 @@ def test_report_pairs_matching_references_and_names_skipped_ones(fast_eval, tmp_
     assert record['outcome']['wins'] == 1 and record['stage_seconds']['report'] >= 0
     assert record['value_predictions'] == {
         'recorded': False, 'reason': 'evaluated_package_strips_auxiliary_heads'}
+    # The adapter pairing travels with the round: summary, record and the rendered report.
+    assert summary['adapter_pairing'] == record['adapter_pairing'] == PAIRING
+    assert summary['smoke'] is record['smoke'] is False
+    assert f"Agent adapter DIFFERS: baseline {'7' * 64}, current {'2' * 64}" in readme
+
+
+def test_a_round_below_the_decision_size_is_a_smoke_without_pairing(fast_eval, tmp_path):
+    """Lead decision: under 100 games is 'smoke, not a decision result', no paired line."""
+    current = cohort(tmp_path, 'cur', [('s1', 'finished', 33, 'loss')])
+    base = cohort(tmp_path, 'base', [('s1', 'finished', 17, 'loss')])
+    pinned = tmp_path / 'base/plan.json'
+    pinned.parent.mkdir()
+    pinned.write_text('{}')
+    plans = {str(tmp_path / 'eval/round/evaluation/plan.json'): current, str(pinned): base}
+
+    def read(result, plan, validate_plan=True):
+        return {'manifest': {'sha256': 'm'}}, {}, {'cohort': plans[str(plan)]}
+
+    baseline = {'plan': str(pinned), 'sha256': fast_eval.hashed(pinned), 'source': 'site'}
+    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', baseline, str(pinned))
+    record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
+    assert summary['smoke'] is record['smoke'] is True
+    assert summary['decision'] == record['decision'] == 'smoke, not a decision result'
+    assert summary['paired'] == {} and summary['references_not_compared'] == [
+        'baseline', 'previous']
+    readme = (tmp_path / 'eval/report/README.md').read_text()
+    assert 'SMOKE: 1 games < 100' in readme and 'Mean floor delta' not in readme
+    # A baseline from a watcher started before the adapter check is named as unchecked.
+    assert summary['adapter_pairing'] is None and 'not checked' in readme
 
 
 def test_the_newest_cp_is_only_this_chains_on_a_shared_peer(fast_eval, tmp_path):
