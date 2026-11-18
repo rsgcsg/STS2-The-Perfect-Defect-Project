@@ -297,13 +297,17 @@ def test_commands_and_job_env_carry_layout_without_secrets():
     # The card type is partition + gres + constraint, never a node pinned from sinfo.
     assert '--constraint=A100-40-NODE-FEATURE' in cmds['gpu']
     assert not any(c.startswith('--nodelist') for c in cmds['gpu'])
-    # One plain job per prep group (never heterogeneous), GPU first, env last.
+    # One array per prep group, one single-node element per host (never heterogeneous,
+    # never one multi-node job); no dependency here (submit adds them).
     assert list(cmds) == ['gpu', 'prep-0', 'prep-1', 'env']
     for i, group in enumerate(plan['knobs']['prep_groups']):
         prep = cmds[f'prep-{i}']
         assert ':' not in prep and f'--constraint={group["type"]}' in prep
         assert prep[-2] == f'--export=ALL,FC_RUN={plan["run"]},FC_PREP_GROUP={i}'
-        assert prep[-1].endswith('/prep.sh') and f'--nodes={group["nodes"]}' in prep
+        assert prep[-1].endswith('/prep.sh') and '--nodes=1' in prep
+        assert f'--array=0-{group["nodes"] - 1}' in prep
+        assert f'--cpus-per-task={group["cpus"]}' in prep
+        assert not any(c.startswith('--dependency') for c in prep)
     env = launch.job_env(plan)
     assert 'export FC_LEARNER_DEVICE=cuda:1' in env and 'export FC_RANKS=2' in env
     assert 'STPD_' not in env
@@ -487,10 +491,17 @@ def scancel_log(failing=()):
     return calls, run
 
 
-def test_submit_puts_the_gpu_job_first_and_cancels_everything_on_a_later_failure(tmp_path):
+def prep_started(elements, limit, run):
+    """A wait_prep for submit: every prep host runs at once."""
+    return time.monotonic()
+
+
+def test_submit_queues_prep_first_and_the_gpu_job_after_every_prep_host(tmp_path):
+    """hwcheck 11-19: the GPU job queues only once every prep host runs; env after the GPU
+    job; a later failure cancels env, then GPU, then prep (dependents first)."""
     plan = plan_for(cards=3, wall_seconds=2400)
     cmds = launch.commands(plan)
-    sent, waited = [], []
+    sent, waited, prep_waited = [], [], []
     cancelled, run_scancel = scancel_log()
     ids = iter(['11', '12', '13', '14'])
 
@@ -499,17 +510,40 @@ def test_submit_puts_the_gpu_job_first_and_cancels_everything_on_a_later_failure
         return next(ids)
 
     def wait(job, limit, run):
-        beat = run / 'launcher-alive'  # touched before the GPU submit, kept fresh meanwhile
+        beat = run / 'launcher-alive'  # touched before the first submit, kept fresh meanwhile
         waited.append((job, limit, beat.exists() and time.time() - beat.stat().st_mtime < 60))
 
-    jobs = launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd, wait=wait,
+    def wait_prep(elements, limit, run):
+        prep_waited.append((elements, limit, (run / 'gpu-job.txt').read_text()))
+        return time.monotonic()
+
+    jobs = launch.submit(tmp_path, plan, cmds, run_cmd=run_cmd, wait=wait, wait_prep=wait_prep,
                          run_scancel=run_scancel)
-    assert jobs == {'gpu': '11', 'prep-0': '12', 'prep-1': '13', 'env': '14'}
-    assert sent[0] == cmds['gpu'] and (tmp_path / 'gpu-job.txt').read_text() == '11\n'
-    for cmd, name in zip(sent[1:], ['prep-0', 'prep-1', 'env'], strict=True):  # after GPU
-        assert cmd == [*cmds[name][:-1], '--dependency=after:11', cmds[name][-1]]
-    assert waited == [('11', plan['gpu_pending_max_seconds'], True)] and not cancelled
+    assert jobs == {'prep-0': '11', 'prep-1': '12', 'gpu': '13', 'env': '14'}
+    groups = plan['knobs']['prep_groups']
+    elements = [f'11_{i}' for i in range(groups[0]['nodes'])] + \
+        [f'12_{i}' for i in range(groups[1]['nodes'])]
+    assert len(elements) == plan['prep_hosts'] == 8
+    assert sent[0] == cmds['prep-0'] and sent[1] == cmds['prep-1']  # no dependency
+    assert sent[2] == [*cmds['gpu'][:-1], '--dependency=after:' + ':'.join(elements),
+                       cmds['gpu'][-1]]
+    assert sent[3] == [*cmds['env'][:-1], '--dependency=after:13', cmds['env'][-1]]
+    assert (tmp_path / 'gpu-job.txt').read_text() == '13\n'
+    assert prep_waited == [(elements, plan['prep_pending_max_seconds'], '13\n')]
+    # the GPU queue bound is the smaller of gpu_pending_max and the prep hosts' lead left
+    assert plan['prep_lead_seconds'] < plan['gpu_pending_max_seconds']
+    (job, limit, beat), = waited
+    assert job == '13' and beat and plan['prep_lead_seconds'] - 5 < limit \
+        <= plan['prep_lead_seconds'] and not cancelled
     assert json.loads((tmp_path / 'jobs.json').read_text()) == jobs
+
+    # prep hosts that started long ago leave the GPU job only what they can still serve
+    waited.clear()
+    ids = iter(['15', '16', '17', '18'])
+    launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids), wait=wait,
+                  wait_prep=lambda *a: time.monotonic() - plan['prep_lead_seconds'] - 50,
+                  run_scancel=run_scancel)
+    assert waited[0][1] == 0.0
 
     ids = iter(['21', '22', '23'])
 
@@ -520,21 +554,96 @@ def test_submit_puts_the_gpu_job_first_and_cancels_everything_on_a_later_failure
 
     with pytest.raises(launch.subprocess.CalledProcessError):
         launch.submit(tmp_path, plan, cmds, run_cmd=env_fails, wait=lambda *a: None,
+                      wait_prep=prep_started, run_scancel=run_scancel)
+    # GPU before the prep jobs it depends on (after: holds once they are cancelled).
+    assert cancelled == [['23'], ['21', '22']]
+    assert "cancelled ['23', '21', '22']" in (tmp_path / 'submit-failed.txt').read_text()
+
+    cancelled.clear()
+    ids = iter(['31', '32', '33', '34'])
+    with pytest.raises(SystemExit, match='prep hosts still PENDING'):
+        launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids),
+                      wait=lambda *a: pytest.fail('no GPU wait after a prep bound'),
+                      wait_prep=lambda *a: (_ for _ in ()).throw(
+                          SystemExit('prep hosts still PENDING after 7200 s')),
                       run_scancel=run_scancel)
-    # Dependents first, the GPU job last (after: holds once the GPU job is cancelled).
-    assert cancelled == [['22', '23'], ['21']]
-    assert "cancelled ['22', '23', '21']" in (tmp_path / 'submit-failed.txt').read_text()
+    assert cancelled == [['34'], ['33'], ['31', '32']]
 
     cancelled.clear()
 
     def interrupted(*args):
         raise KeyboardInterrupt
 
-    ids = iter(['31', '32', '33', '34'])
+    ids = iter(['41', '42', '43', '44'])
     with pytest.raises(KeyboardInterrupt):
         launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids), wait=interrupted,
-                      run_scancel=run_scancel)
-    assert cancelled == [['32', '33', '34'], ['31']]
+                      wait_prep=prep_started, run_scancel=run_scancel)
+    assert cancelled == [['44'], ['43'], ['41', '42']]
+
+
+def test_without_prep_hosts_the_gpu_job_goes_first(tmp_path):
+    plan = plan_for(cards=3, wall_seconds=2400, remote_prepare=False, preparation_workers=24,
+                    assembly_workers=24)
+    cmds = launch.commands(plan)
+    sent, waited = [], []
+    ids = iter(['11', '12'])
+    jobs = launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: sent.append(cmd) or next(ids),
+                         wait=lambda job, limit, run: waited.append((job, limit)),
+                         wait_prep=lambda *a: pytest.fail('no prep hosts to wait for'))
+    assert jobs == {'gpu': '11', 'env': '12'} and sent[0] == cmds['gpu']
+    assert sent[1] == [*cmds['env'][:-1], '--dependency=after:11', cmds['env'][-1]]
+    assert waited == [('11', plan['gpu_pending_max_seconds'])]
+    assert plan['prep_minutes'] == plan['gpu_minutes'] and plan['prep_lead_seconds'] == 0
+
+
+def test_prep_start_wait_bounds_the_queue_and_never_reads_an_ended_host_as_started(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(launch.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(launch, 'pending_jobs', lambda: launch.parse_pending(
+        '7_1|9000|Resources|PREP\n'))
+    elements = ['7_0', '7_1', '8_0']
+
+    def scripted(answers):
+        seen = iter(answers)
+        return lambda arrays: (arrays == ['7', '8'] or pytest.fail(arrays)) and next(seen)
+
+    # a failed squeue (None) is read again; CONFIGURING counts as running
+    states = scripted([{'7_0': 'PENDING', '7_1': 'PENDING', '8_0': 'RUNNING'}, None,
+                       {'7_0': 'CONFIGURING', '7_1': 'PENDING', '8_0': 'RUNNING'},
+                       {'7_0': 'RUNNING', '7_1': 'RUNNING', '8_0': 'RUNNING'}])
+    before = time.monotonic()
+    first = launch.wait_prep_start(elements, 3600, tmp_path, poll=10, states=states)
+    assert before - 10 - 1 < first <= time.monotonic() - 10
+    assert '1 of 3 hosts running' in capsys.readouterr().out
+    # an element that ended (or is no longer listed) before the GPU job started
+    for gone in ({'7_0': 'FAILED', '7_1': 'RUNNING', '8_0': 'RUNNING'},
+                 {'7_1': 'RUNNING', '8_0': 'RUNNING'}):
+        with pytest.raises(SystemExit, match='prep element 7_0 ended before the GPU job'):
+            launch.wait_prep_start(elements, 3600, tmp_path, states=scripted([gone]))
+    # still PENDING at the bound: the queue position, no GPU, not resubmitted
+    with pytest.raises(SystemExit) as error:
+        launch.wait_prep_start(elements, 0, tmp_path, states=lambda arrays: {
+            '7_0': 'RUNNING', '7_1': 'PENDING', '8_0': 'RUNNING'})
+    text = str(error.value)
+    assert 'prep hosts still PENDING after 0 s (prep_pending_max_seconds): 2 of 3' in text
+    assert 'job 7_1 PENDING, Reason=Resources' in text and 'never started' in text
+    # a refusing host ends the wait at once
+    (tmp_path / 'prep-refused').mkdir()
+    (tmp_path / 'prep-refused' / '2').write_text('host-x scratch too small\n')
+    with pytest.raises(SystemExit, match='prep host refused before the GPU job started: '
+                       'host-x scratch too small'):
+        launch.wait_prep_start(elements, 3600, tmp_path, states=lambda arrays: {})
+
+
+def test_element_states_reads_array_elements(monkeypatch):
+    def fake(cmd, **kw):
+        assert cmd == ['squeue', '-h', '-r', '-j', '7,8', '-o', '%i|%T']
+        return subprocess.CompletedProcess(cmd, 0, '7_0|RUNNING\n7_1|PENDING\n', '')
+    monkeypatch.setattr(launch.subprocess, 'run', fake)
+    assert launch.element_states(['7', '8']) == {'7_0': 'RUNNING', '7_1': 'PENDING'}
+    monkeypatch.setattr(launch.subprocess, 'run', lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, '', 'slurm_load_jobs error: Socket timed out'))
+    assert launch.element_states(['7']) is None
 
 
 @pytest.mark.parametrize('sig', ['SIGTERM', 'SIGHUP'])
@@ -551,8 +660,9 @@ def test_submit_cancels_on_sigterm_and_sighup_and_restores_the_handlers(tmp_path
 
     with pytest.raises(SystemExit, match=f'launcher got {sig}'):
         launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids),
-                      wait=killed_while_pending, run_scancel=run_scancel)
-    assert cancelled == [['52', '53', '54'], ['51']]
+                      wait=killed_while_pending, wait_prep=prep_started,
+                      run_scancel=run_scancel)
+    assert cancelled == [['54'], ['53'], ['51', '52']]
     assert {s: signal.getsignal(s) for s in before} == before
 
 
@@ -563,11 +673,15 @@ def test_a_failed_scancel_says_which_jobs_may_still_be_alive(tmp_path):
         "SCANCEL FAILED (scancel 61: rc 1 scancel: error: Socket timed out), jobs may "
         "still be alive: ['62', '61']")
     assert cancelled == [['62'], ['61']]
-    ids = iter(['61', '62', '63', '64'])
+    cancelled.clear()
+    assert launch.cancel_all({'prep-0': '60', 'gpu': '61', 'env': '62'},
+                             run_scancel=run_scancel).startswith('SCANCEL FAILED')
+    assert cancelled == [['62'], ['61'], ['60']]
+    ids = iter(['63', '64', '61', '65'])
     with pytest.raises(SystemExit):
         launch.submit(tmp_path, plan, launch.commands(plan), run_cmd=lambda cmd: next(ids),
                       wait=lambda *a: (_ for _ in ()).throw(SystemExit('bound')),
-                      run_scancel=run_scancel)
+                      wait_prep=prep_started, run_scancel=run_scancel)
     text = (tmp_path / 'submit-failed.txt').read_text()
     assert 'SCANCEL FAILED' in text and 'cancelled' not in text
 
@@ -630,9 +744,9 @@ def test_gpu_pending_bound_reports_the_queue_and_never_resubmits(tmp_path, monke
     with pytest.raises(SystemExit, match='still PENDING'):
         launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: sent.append(cmd) or next(ids),
                       wait=lambda job, limit, run: launch.wait_gpu_start(job, 0, run, poll=0),
-                      run_scancel=run_scancel)
-    assert len(sent) == len(cmds)
-    assert cancelled == [[str(42 + i) for i in range(len(cmds) - 1)], ['41']]
+                      wait_prep=prep_started, run_scancel=run_scancel)
+    assert len(sent) == len(cmds) == 4  # prep-0 41, prep-1 42, GPU 43, env 44
+    assert cancelled == [['44'], ['43'], ['41', '42']]
     assert 'still PENDING' in (tmp_path / 'submit-failed.txt').read_text()
 
 
@@ -688,8 +802,8 @@ def test_gpu_running_without_gpu_sh_confirmation_is_bounded(tmp_path, monkeypatc
         launch.submit(tmp_path, plan, cmds, run_cmd=lambda cmd: next(ids),
                       wait=lambda job, limit, run: launch.wait_gpu_start(
                           job, limit, run, poll=0, ack_limit=250),
-                      run_scancel=run_scancel)
-    assert cancelled == [[str(42 + i) for i in range(len(cmds) - 1)], ['41']]
+                      wait_prep=lambda *a: launch.time.monotonic(), run_scancel=run_scancel)
+    assert cancelled == [['44'], ['43'], ['41', '42']]
     assert 'never confirmed' in (tmp_path / 'submit-failed.txt').read_text()
 
 
@@ -755,13 +869,16 @@ def test_site_card_type_is_a_constraint_and_a_pin_only_when_set(tmp_path):
 
 
 def test_start_order_adds_the_prep_wait_to_the_gpu_prep_and_env_jobs():
-    """GPU first, prep and env after it started: the learner's prep wait comes before its
-    wall, the services and env nodes wait for the learner."""
+    """Prep first, GPU once every prep host runs, env after the GPU start: the learner's
+    prep wait (host start) comes before its wall, the services and env nodes wait for the
+    learner; a prep host may wait prep_lead_seconds for the GPU start, then outlives it."""
     plan = plan_for(cards=3, wall_seconds=2400)
     k = plan['knobs']
     wait = k['remote_prepare_wait_seconds']
     assert plan['prep_wait_seconds'] == wait
-    assert plan['gpu_minutes'] == (2400 + 240 + wait) // 60 + 1 == plan['prep_minutes']
+    assert plan['gpu_minutes'] == (2400 + 240 + wait) // 60 + 1
+    assert plan['prep_minutes'] == plan['gpu_minutes'] + math.ceil(k['prep_lead_seconds'] / 60)
+    assert plan['prep_pending_max_seconds'] == k['prep_pending_max_seconds']
     assert plan['env_wait_seconds'] == k['env_wait_seconds'] + wait
     assert plan['env_minutes'] == (k['env_wait_seconds'] + wait + 2400 + 600) // 60
     assert f'export FC_WAIT_N={(k["env_wait_seconds"] + wait) // 5}' in launch.job_env(plan)
@@ -4435,18 +4552,17 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
     listed = set(tomllib.loads(LONG_RUN.read_text())['knobs'])
     assert {n for n in base if base[n] != long[n]} == listed
     assert {n for n in long if long[n] != check[n]} == {
-        'train_target_seconds', 'long_wall_seconds', 'eval_seeds', 'eval_a10_seeds',
+        'train_target_seconds', 'long_wall_seconds', 'eval_a10_seeds',
         'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest',
-        'eval_wall_seconds'}
-    # #614: the check keeps the long run's cap and an explicit wall (same evaluation path);
-    # the start window (wall - cap - close reserve) still holds the check's 32-game round
+        'env_wait_seconds', 'prep_pending_max_seconds', 'prep_lead_seconds'}
+    # #614: the check keeps the long run's cap and explicit wall (same evaluation path) and
+    # its 100-seed A0 round: a decision round, paired per seed (fast_eval DECISION_GAMES)
     assert check['eval_episode_seconds'] == long['eval_episode_seconds'] == 3600
-    assert long['eval_wall_seconds'] == 17000
-    assert check['eval_wall_seconds'] - check['eval_episode_seconds'] \
-        - run_profile.EVAL_CLOSE_RESERVE_SECONDS >= 1800
-    # GPU test jobs <= 1 h; one resume can start; >= 4 CPs at 300 s so keep-newest 3
-    # deletes one; at least one evaluation round while training runs
-    assert check['train_target_seconds'] <= 1800 and check['long_wall_seconds'] <= 3600
+    assert check['eval_wall_seconds'] == long['eval_wall_seconds'] == 17000
+    assert check['eval_seeds'] == 100
+    # one resume can start; >= 4 CPs at 300 s so keep-newest 3 deletes one; at least one
+    # evaluation round while training runs (every job <= 60 min: the next test)
+    assert check['train_target_seconds'] <= 1800 and check['min_generation_seconds'] == 600
     assert check['min_generation_seconds'] < check['train_target_seconds']
     assert check['train_target_seconds'] // LONG_FROZEN['segments']['checkpoint_seconds'] \
         > check['checkpoint_keep_newest'] >= 2 and check['checkpoint_seconds'] == 0
@@ -4467,6 +4583,28 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
         "segments.value_target: frozen 'game', effective '<missing>'",
         "segments.capacity_victim: frozen 'hash', effective '<missing>'",
         "segments.kl_stop_scope: frozen 'control', effective '<missing>'"])
+
+
+def test_hwcheck_jobs_fit_a_60_minute_partition_and_the_long_run_a_24_hour_one(tmp_path):
+    """Generation 0 asks the most (a resumed generation asks less training): every job of the
+    check fits a 60 min partition; the long run's fit 24 h, never 60 min (preflight)."""
+    site = long_run_site(tmp_path)
+    check = long_run_plan(HW_CHECK, site)
+    times = {role: check[f'{role}_minutes'] for role in ('gpu', 'prep', 'env')}
+    assert times == {'gpu': 45, 'prep': 60, 'env': 55}
+    assert all(minutes <= 60 for minutes in times.values())
+    capped = copy.deepcopy(check)
+    capped['partition_max_minutes'] = {'gpu': 60, 'env': 60, 'prep': 60}
+    assert preflight.check_time_limits(capped).ok, preflight.check_time_limits(capped).detail
+    long = long_run_plan(LONG_RUN, site)
+    assert {role: long[f'{role}_minutes'] for role in ('gpu', 'prep', 'env')} == \
+        {'gpu': 1220, 'prep': 1340, 'env': 1255}
+    long['partition_max_minutes'] = {'gpu': 1440, 'env': 1440, 'prep': 1440}
+    assert preflight.check_time_limits(long).ok
+    long['partition_max_minutes'] = {'gpu': 1440, 'env': 60, 'prep': 60}
+    detail = preflight.check_time_limits(long).detail
+    assert 'env job needs 1255 min > partition limit 60' in detail
+    assert 'prep job needs 1340 min > partition limit 60' in detail
 
 
 def test_profile_overlay_rules(tmp_path):

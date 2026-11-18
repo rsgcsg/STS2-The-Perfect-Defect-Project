@@ -85,31 +85,44 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   受训起点配 `warmup_file = ""` 时预检拒绝，除非站点写 `trained_start_without_warmup = true`；
   新起点的预热件按其 `model_package_sha256` 与起点包比对，不一致在提交前拒绝（续跑从 CP 取头，不比）。
 - `submit` 每次用新 run 目录，冻结一份 harness（带 sha256）+ `effective-profile.json` +
-  `plan.json`；先交 GPU 作业，再把每个备料组各交成一个普通作业（不用异构作业：Slurm 只让
-  backfill 启动异构作业，11-14 一直起不来）和 env 数组，全部带 `--dependency=after:<GPU作业>`：
-  GPU 开始前它们只是 Dependency 排队，不占 CPU 节点、不扣 fairshare（`plan.json` 里的命令不含
+  `plan.json`；先交备料：每个备料组一个作业数组、每台主机一个单节点元素（不用异构作业：Slurm
+  只让 backfill 启动异构作业，11-14 一直起不来；也不用一个多节点作业：5 台整机要同时空出来，
+  11-19 上机总验在 general 和 debug 都排不上）；再交 GPU 作业，带
+  `--dependency=after:<每个备料元素>`（备料全部开工后 GPU 才开始排队，GPU 不再白等备料）；
+  最后交 env 数组，带 `--dependency=after:<GPU作业>`（GPU 开始前只是 Dependency 排队，不占 CPU
+  节点、不扣 fairshare）。`plan.json` 里的命令不含依赖项，作业号见 `jobs.json`。先等全部备料开工，
+  最多 `prep_pending_max_seconds`（7200 s）；再等 gpu.sh 确认开工（写 `gpu-started`），PENDING
+  最多 `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min），
+  且不超过第一台备料开工后 `prep_lead_seconds`（7200 s）。
   这一项，作业号见 `jobs.json`）。然后等 gpu.sh 确认开工（写 `gpu-started`），PENDING 最多
   `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印
-  Slurm Reason、优先级和同分区排在前面的排队作业数，取消本 run 全部作业，非零退出，不自动重交。
+  任一上限到时打印 Slurm Reason、优先级和同分区排在前面的排队作业数，取消本 run 全部作业，非零
+  退出，不自动重交，也从不少几台备料就开跑；备料上限到时 GPU 一秒没花。备料元素在 GPU 开工前就结束、
+  或有主机写了 `prep-refused/*`，同样当场全部取消。
   GPU 作业没确认就结束（FAILED、TIMEOUT、NODE_FAIL、BOOT_FAIL、OUT_OF_MEMORY、CANCELLED、已清除）
   一样算失败；RUNNING 满 300 s 仍没有 `gpu-started`（gpu.sh 卡在检查之前，或共享盘看不到该
   文件）也算失败；squeue 读不到不算回答，下一拍再读。中途任一提交失败、Ctrl-C、SIGTERM、SIGHUP
-  （ssh 断开）都全部取消再报错（`submit-failed.txt`），不自动重试。取消顺序：先依赖作业、最后
-  GPU 作业（`after:` 在 GPU 作业开始或被取消时都成立，先取消 GPU 会放出依赖作业）；scancel
+  （ssh 断开）都全部取消再报错（`submit-failed.txt`），不自动重试。取消顺序：env、GPU、备料
+  （`after:` 在被依赖的作业开始或被取消时都成立，先取消被依赖者会放出依赖它的作业）；scancel
   失败时写明 `SCANCEL FAILED ... jobs may still be alive: [作业号]`，要手动 `scancel`。
-  launcher 是 GPU 作业开工前的存活负责人：从交 GPU 作业前到 gpu.sh 确认，每 10 s 摸一次
+  launcher 是 GPU 作业开工前的存活负责人：从交第一个作业前到 gpu.sh 确认，每 10 s 摸一次
   `launcher-alive`；gpu.sh 开工时它比 `launcher_stale_seconds`（120 s）旧（或不存在），先等 30 s
   打开文件再读一次（NFS 属性缓存可让它看着旧约 60 s，误拒会白等整段排队），仍旧才拒绝（launcher 被
   SIGKILL、崩溃或登录节点没了），写 STOP 并以 3 退出，不会无人看管地跑 20 h。supervise 在自己
   进程里调 launcher，每一代（含自动续跑）都是同一个检查。
-- 启动握手（GPU 先开始）：备料组作业在 GPU 开始后才排队；学习者从开始起最多等
-  `remote_prepare_wait_seconds`（900 s，= 以前“备料先起”的总预算 600 + 300）等全部备料主机
-  `prep-ready/ready-*`，任一台写 `prep-refused/*` 立即失败；服务等学习者 `learner.ready`，env 节点
-  等服务。所以这段等待加进 GPU 作业时长（运行时长 + 240 s + 备料等待）、备料作业时长（= GPU 作业
-  时长，备料不会早于 GPU 开始）和 env 等待（`env_wait_seconds` + 备料等待）。GPU 等了很久终于开始、
-  备料却 900 s 内没全起来：学习者以“remote prepare hosts not ready”退出，GPU 作业 rc 6、写 STOP，
-  run 结束（supervise 下按失败停链），不自动重交；先看预检里备料分区的排队数，必要时调大
-  `remote_prepare_wait_seconds`（时长会跟着加）。
+- 启动握手（备料先开始，11-19 起；以前 GPU 先开始、备料后排队，上机总验两次都是 GPU 开工后
+  备料排不齐：general 900 s 0/8、debug 300 s 3/8，GPU 时间白等，链停）：GPU 开工时备料主机都已在跑；
+  学习者从开始起最多等 `remote_prepare_wait_seconds`（300 s，只剩主机启动和自检，不含排队）等全部
+  备料主机 `prep-ready/ready-*`，从不少几台就开跑，任一台写 `prep-refused/*` 立即失败；服务等学习者
+  `learner.ready`，env 节点等服务。所以这段等待加进 GPU 作业时长（运行时长 + 240 s + 备料等待）和
+  env 等待（`env_wait_seconds` + 备料等待）；备料作业时长 = GPU 作业时长 + `prep_lead_seconds`
+  （最早开工的主机最多等 GPU 这么久，之后还要撑完整个 GPU 作业）。代价：GPU 排队时备料主机空等并
+  计 fairshare，最多 `prep_lead_seconds`；排队时的作业不计费。繁忙分区上长跑的起法：备料排队（最多
+  2 h，不花 GPU），全部开工后 GPU 排队（最多 2 h，备料空等），GPU 开工后 env 排队、按弹性加入；
+  任一上限到时链以 `generation N submit failed (... still PENDING ...)` 停（`FINAL.json`），不续跑、不
+  重交。两段上限都吃链的墙钟（`long_wall_seconds` 比训练目标多出的约 4 h）。续跑的每一代走同一顺序。
+  预检 `time_limits` 按站点 `partition_max_minutes` 查三类作业时长：20 h 长跑第 0 代 GPU 1220、备料
+  1340、env 1255 分钟，要 24 h 分区（60 分钟的 debug 会被拒）；hwcheck 档案三者都 ≤ 60 分钟（测试钉住）。
 - GPU 作业是否还活着（prep.sh、env.sh 共用 `gpu_job.sh`）：只看 `squeue` 的 stdout（rc 0 时 stderr
   的警告不算回答）；空回答、已结束状态或 `Invalid job id` 算结束，PENDING/REQUEUED/SUSPENDED 等
   其余状态算活，squeue 失败算不知道、从不算结束。开工前已没有 GPU 作业的备料或 env 作业（被取消的
@@ -373,7 +386,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
        new = 0.00005 } } }'`。每个和 CP 不同的配方键都要写，`old` = CP 里的值，`new` = 新值。
        只许 `lr`、`segments.head_lr`、`loss.entropy_coef`、`loss.hp_coef`、
        `loss.hp_advantage_coef`（c_hp，血量优势系数；不是 HP 头损失权重 `loss.hp_coef`）、`loss.hp_advantage_scope`、`segments.target_kl`、
-       `segments.kl_stop_scope`、`segments.value_target`、`segments.gae_lambda`；每个键为什么
+       `segments.kl_stop_scope`、`segments.value_target`、`segments.gae_lambda`、
+       `loss.explore_ratio_floor`；每个键为什么
        可以改，写在 `python/stpd/rl/recipe_changes.py`。改 `segments.kl_stop_scope` 时，旋钮
        `kl_stop_scope` 也要设成同一个新值。模型结构、奖励表、片段格式、批几何和
        `lr_warmup_steps` 都不许改。
@@ -457,14 +471,18 @@ gae_lambda 0.99、dataset_rows 4096 / 4 个小批 / 1 epoch、`lr_warmup_steps` 
   自己评估认领/点过的 CP，没评估过的较旧 CP 可能在新链读到之前被删掉。
 
 短体检（`rl5-long-run-1-hwcheck.toml`）：
-- 规则：GPU 测试作业每个 ≤ 1 小时。训练目标 1800 s、链墙钟 3600 s，GPU 作业连预热和一次续跑都在
-  1 小时内；`min_generation_seconds` 600，续跑后剩余训练 ≥ 600 s 时才再起一代。
-- CP 每 300 s 一个（冻结配方锁定，A9 不许改），1800 s 训练约 6 个 CP，多于留 3 个，保留和删除都会真跑到；
-  评估每 900 s 一轮（A0 32 局 + A10 16 局），训练期间至少一轮链内评估，评估认领保护也会被跑到。
+- 规则：每个作业都能进 60 分钟分区（测试钉住）：第 0 代 GPU 45、备料 60（45 + `prep_lead_seconds`
+  900 s）、env 55 分钟（训练目标 1500 s，`env_wait_seconds` 和 `remote_prepare_wait_seconds` 各 300 s）。
+  链墙钟上限 7200 s 不是作业时长（有训练目标时每代作业只要剩余训练 + 预留），留给备料排队（≤ 1800 s）、
+  GPU 排队（≤ 900 s）、两次启动和被杀那代丢的尾巴；`min_generation_seconds` 600，续跑后剩余训练
+  ≥ 600 s 时才再起一代。GPU 排队超过 900 s（11-19 第二次是 941 s）会按上限停、不花 GPU。
+- CP 每 300 s 一个（冻结配方锁定，A9 不许改），1500 s 训练约 5 个 CP，多于留 3 个，保留和删除都会真跑到；
+  评估每 900 s 一轮（A0 100 局，是决策轮、按种子和登记基线配对，`DECISION_GAMES` 100；A10 16 局），
+  训练期间至少一轮链内评估，评估认领保护也会被跑到。
 - 操作步骤：第 2 个 CP 落盘后，`scancel` GPU 作业一次（不是 `supervise.py stop`），看三件事：
   链自动续跑且从最新 CP 接上；peer 上超出最新 3 个的旧 CP 被删；评估认领过的 CP 没被删。
-- 预计时间（两个数分开）：GPU 时间约 40–50 分钟（30 分钟训练 + 预热 + 一次续跑），链墙钟上限 60 分钟；
-  总墙钟（排队 + 备料 + 链 + 收尾那轮评估，32 局一轮约 27 分钟，推出）约 75–90 分钟，**超过 1 小时**。
+- 预计时间（两个数分开）：GPU 时间约 35–45 分钟（25 分钟训练 + 预热 + 一次续跑）；总墙钟（排队 +
+  备料 + 链 + 收尾那轮评估：A0 100 局作业墙钟上限 17000 s，16 核上约 1.4 小时（RL5-eval-baselines 实测 5,133 s））约 2–3 小时。
 - 要读的：两个文件系统剩余空间斜率（核对上面每版字节推出值）、续跑耗时、评估作业时长、新配方键
   （`explore_ratio_floor` 0.3、三个 `segments` 键）第一次上硬件是否正常。
 
@@ -474,7 +492,9 @@ gae_lambda 0.99、dataset_rows 4096 / 4 个小批 / 1 epoch、`lr_warmup_steps` 
 - 闸门 `learner-base.json` 必须带 `segments.value_target = "game"` 和 `segments.capacity_victim =
   "hash"`：闸门缺的键只补 `loss` 块（`gate_recipe`），`segments` 不补，所以用一份私有闸门副本（V6
   冒烟同样做法），否则 A9 拒绝（`effective '<missing>'`）。闸门里没有的 loss 键（如
-  `explore_ratio_floor`）从冻结配方补；闸门里有的必须等于冻结值。
+  `explore_ratio_floor`）从冻结配方补；闸门里有的必须等于冻结值。闸门副本若取自冻结学习率的跑（如
+  价格跑的 lr 1e-12），`lr` / `segments.head_lr` 要改回冻结配方的值（1.13e-4 / 1e-4），否则预检
+  `frozen_recipe` 拒绝。
 - 评估节点类：站点 `eval_constraint` 填快节点类的 feature（预检 `evaluation_jobs` 不填只警告）。
 - GPU 卡型的 `node_cores` 照实填（32 核节点放得下 16 + 16）。
 - 短体检要 SGD 离线 dump 时：`sgd_offline_dump_every` 不是运行配置旋钮，由闸门 `dataplane.json`
