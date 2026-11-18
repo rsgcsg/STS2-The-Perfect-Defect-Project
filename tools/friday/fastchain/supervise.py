@@ -117,6 +117,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -147,6 +148,9 @@ NO_REPORT_RESUMABLE_RC = (129, 130, 143, 6)
 # frozen learner recipe, checked per game by the fast env and the assembler.
 ENV_RECIPE_KNOBS = ("exploration_ladder", "ascension_mix", "replay_k",
                     "sampling_temperature_min", "save_starts")
+# #603: the learner keeps up to 30 s for its last dataset (finish_reserve), so a run that
+# trained to its budget ends at most this short of the target
+TARGET_TOLERANCE_SECONDS = 60
 # The evaluation execution keys supervise writes over the template (fast_eval checks it)
 DERIVED_KEYS = ("storage_mode", "store", "peer")
 CHAIN_SLACK_SECONDS = 900  # deadline = start + window + slack: generation 0 ends by its wall
@@ -286,7 +290,9 @@ class Chain:
                   # and exit on their own (#598; their peer view may lag this one).
                   **self.final_checkpoint(),
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
-                                          for name, loop in self.eval_loops.items()}}
+                                          for name, loop in self.eval_loops.items()},
+                  "clock": self.clock_facts(),
+                  "seed_overlaps": self.state.get("seed_overlaps", 0)}
         if self.state["generations"] and self.record(
                 Path(self.state["generations"][-1]["run"]), "final"):
             record["run_record"] = str(self.dir / "run-record.json")
@@ -299,13 +305,83 @@ class Chain:
                   flush=True)
         return 0 if ok else 1
 
+    def clock_facts(self) -> dict[str, Any]:
+        """Training and wall seconds of the chain (#603): the learner's training count
+        from the last generation's report (operating budget consumed at its start + its
+        own training window; a resume continues the count of the CP it restored), the
+        chain's wall seconds since it started, and the target (None = off)."""
+        target = self.state.get("train_target_seconds") or None
+        training = None
+        if self.state["generations"]:
+            path = Path(self.state["generations"][-1]["run"]) / "learner-report.json"
+            if path.exists():
+                training = ((json.loads(path.read_text()).get("clock") or {})
+                            .get("chain_training_seconds"))
+        return {"training_seconds": training, "train_target_seconds": target,
+                "train_target_reached": (None if target is None or training is None
+                                         else training >= target - TARGET_TOLERANCE_SECONDS),
+                "wall_seconds": round(self.clock() - self.state["started_at"], 1),
+                "wall_limit_seconds": self.knobs["long_wall_seconds"]}
+
     # ---------------- generations ----------------
     def runtag(self, number: int) -> str:
         return self.args.chain if number == 0 else f"{self.args.chain}-r{number}"
 
-    def chain_facts(self, number: int) -> dict[str, Any]:
+    def chain_facts(self, number: int, checkpoint: str | None) -> dict[str, Any]:
+        target = self.state.get("train_target_seconds") or 0
         return {"id": f"c-{self.args.chain}", "deadline_at": self.state["deadline_at"],
-                "total_seconds": self.knobs["long_wall_seconds"], "generation": number}
+                "total_seconds": target or self.knobs["long_wall_seconds"],
+                "train_target_seconds": target, "generation": number,
+                # #604 M1: the job is sized to the training left, not the whole wall left
+                "train_left_seconds": (max(0, math.ceil(
+                    target - self.checkpoint_consumed(checkpoint))) if target else None),
+                "seed_start": self.seed_start()}
+
+    def checkpoint_consumed(self, checkpoint: str | None) -> float:
+        """Training seconds the chain's budget had consumed in the CP a generation resumes
+        from (0: the start package, or a CP of another window, which opens a new one)."""
+        if checkpoint is None:
+            return 0
+        budget = launch.checkpoint_config(Path(self.site["peer_dir"]), checkpoint).get(
+            "operating_budget")
+        return (budget["consumed_seconds"]
+                if budget and budget.get("id") == f"c-{self.args.chain}" else 0)
+
+    def seed_overlap(self, run: Path, rounds: int) -> None:
+        """#604 S2: a driver of the previous generation that took more seeds than the
+        rounds the next start skips (real rate above seed_games_per_driver_hour) means the
+        next streams revisit some of its lines. Said loudly and counted; never a stop."""
+        taken = [json.loads(path.read_text()).get("seed_stream", {}).get("taken", 0)
+                 for path in sorted(run.glob("env-*/p*/summary.json"))]
+        over = [t for t in taken if t > rounds]
+        if over:
+            self.state["seed_overlaps"] = self.state.get("seed_overlaps", 0) + 1
+            self.note("seed_streams_overlap", run=str(run), rounds_skipped=rounds,
+                      drivers_over=len(over), drivers_read=len(taken), max_taken=max(over),
+                      rate_bound=self.knobs["seed_games_per_driver_hour"])
+            print(f"*** SEED STREAMS OVERLAP: {len(over)} of {len(taken)} drivers of {run.name} "
+                  f"took up to {max(over)} seeds > {rounds} rounds skipped; the next "
+                  "generation revisits some of their lines (raise "
+                  "seed_games_per_driver_hour)", file=sys.stderr, flush=True)
+
+    def seed_start(self) -> int:
+        """#603: the seeds-file line where this generation's streams begin: 0 for the
+        first; else the previous generation's start + its stride x the most games one of
+        its drivers can have started since its submission (seed_games_per_driver_hour, an
+        upper bound), so streams never revisit a line an earlier generation reached until
+        the file wraps. Nothing is read back from env nodes. A previous generation without
+        its plan.json raises: the start would be a guess."""
+        if not self.state["generations"]:
+            return 0
+        prev = self.state["generations"][-1]
+        plan_path = Path(prev["run"]) / "plan.json"
+        if not plan_path.exists():
+            raise ValueError(f"no {plan_path}: the previous generation's seed stream is unknown")
+        plan = json.loads(plan_path.read_text())
+        hours = max(0.0, self.clock() - prev["submitted_at"]) / 3600
+        rounds = math.ceil(hours * self.knobs["seed_games_per_driver_hour"])
+        self.seed_overlap(Path(prev["run"]), rounds)
+        return plan["seed_start"] + rounds * plan["seed_stride"]
 
     def env_recipe(self) -> list[str]:
         """The `env-recipe.txt` lines for the next generation ([] without the file)."""
@@ -331,7 +407,11 @@ class Chain:
         except (ValueError, run_profile.ProfileError) as error:
             return f"generation {number} not submitted: {error}"
         chain_json = self.dir / f"chain-{number}.json"
-        chain_json.write_text(json.dumps(self.chain_facts(number)))
+        try:
+            facts = self.chain_facts(number, checkpoint)
+        except (OSError, ValueError, KeyError) as error:
+            return f"generation {number} not submitted: {error!r}"
+        chain_json.write_text(json.dumps(facts))
         argv = ["preflight" if self.args.dry_run else "submit", tag,
                 "--profile", str(self.args.profile), "--site", str(self.args.site),
                 "--cards", str(self.args.cards), "--card-type", self.args.card_type,
@@ -851,6 +931,7 @@ class Chain:
             "schema": SCHEMA, "chain": self.args.chain, "started_at": self.clock(),
             "deadline_at": self.clock() + self.knobs["long_wall_seconds"]
             + CHAIN_SLACK_SECONDS,
+            "train_target_seconds": self.knobs["train_target_seconds"],
             "start_checkpoint": self.args.resume_checkpoint,
             "identity": identity(self.args.profile, self.args.site, self.args.set,
                                  source_identity(self.site)),
@@ -873,7 +954,7 @@ class Chain:
                 generation["outcome"], generation["ended_at"] = result, self.clock()
                 self.note("generation_ended", number=number, outcome=result)
                 if result["kind"] == "normal":
-                    return self.final(True, f"window complete ({result['window_end']})")
+                    return self.final(True, self.normal_cause(result))
                 if result["kind"] != "resumable":
                     return self.final(False, f"generation {number} ended {result['kind']}: "
                                       f"{result.get('failure') or result.get('stop')}")
@@ -897,6 +978,21 @@ class Chain:
                 signal.signal(sig, handler)
             self.persist()
 
+    def normal_cause(self, result: dict[str, Any]) -> str:
+        return f"window complete ({result['window_end']})" + self.target_words()
+
+    def target_words(self) -> str:
+        """With a target: training and wall seconds used and whether it was reached, the
+        same words on a normal end and on a chain whose wall ran out (#604)."""
+        clock = self.clock_facts()
+        if clock["train_target_seconds"] is None:
+            return ""
+        trained = clock["training_seconds"]
+        shown = "unknown" if trained is None else f"{trained:.0f}"
+        verdict = "target reached" if clock["train_target_reached"] else "TARGET NOT REACHED"
+        return (f"; training {shown} of {clock['train_target_seconds']} s: {verdict}; "
+                f"wall {clock['wall_seconds']:.0f} s")
+
     def catch_signals(self) -> dict[int, Any]:
         """SIGTERM raises Stopped (unless already ignored): one loud line, then exit; no
         cancel. SIGHUP is left alone (see the docstring)."""
@@ -916,7 +1012,8 @@ class Chain:
             return f"resume budget exhausted ({len(done)} of {self.knobs['resume_max_total']})"
         left = self.state["deadline_at"] - now
         if left < self.knobs["min_generation_seconds"]:
-            return f"only {left:.0f} s of the window left (< min_generation_seconds)"
+            return (f"only {left:.0f} s of the window left (< min_generation_seconds)"
+                    + self.target_words())
         current = identity(self.args.profile, self.args.site, self.args.set,
                            source_identity(self.site))
         changed = sorted(k for k in current if current[k] != self.state["identity"][k])

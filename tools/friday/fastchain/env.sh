@@ -90,11 +90,15 @@ echo "ascension per driver: ${ASC[*]} arm per driver: ${ARM[*]} replay_k=$FC_REP
 # drivers, capped by save_starts.pool_gb, deleted when the job ends.
 SAVEPOOL=/tmp/fc-saves-$SLURM_JOB_ID
 trap 'rm -rf $SAVEPOOL' EXIT
+# #603: disjoint seed streams. Driver d = NODEIDX x P + p - 1 of the run's FC_ENV_NODES x P
+# takes seed lines FC_SEED_START + d, + stride, ... (FC_SEED_START > 0: a resumed generation
+# starts past an earlier one's lines); a wrap past the file's end is allowed and counted.
+SEED_STRIDE=$(( FC_ENV_NODES * P ))
 pids=()
 for p in $(seq 1 $P); do
   node $H/env_driver.mjs --pkg $FC_SITE_ENV_PKG --memo "$FC_ENV_MEMO" --out $O/p$p --tag n$NODEIDX-p$p --slots $K --single-choice omit --compact on \
     --warm-s $FC_DRIVER_WARM_SECONDS --steady-s $FC_DRIVER_STEADY_SECONDS --status-s $FC_DRIVER_STATUS_SECONDS --link $TMPDIR/agg-$(( (p - 1) % AGGS )).sock --admit $TMPDIR/admit.sock \
-    --seeds $FC_SITE_SEEDS_FILE --seed-offset $(( (NODEIDX * 32 + p - 1) * 600 )) \
+    --seeds $FC_SITE_SEEDS_FILE --seed-offset $(( FC_SEED_START + NODEIDX * P + p - 1 )) --seed-stride $SEED_STRIDE \
     --input-spec $FC_SITE_INPUT_SPEC_FILE --initial-progress $FC_SITE_INITIAL_PROGRESS_FILE --candidate $FC_SITE_ENV_CANDIDATE \
     --cold-start $FC_DRIVER_COLD_START --elu-preload $H/elu_preload.mjs \
     --inference-timeout-ms $FC_DRIVER_INFERENCE_TIMEOUT_MS --reopen-backoff-start-ms $FC_DRIVER_REOPEN_BACKOFF_START_MS \

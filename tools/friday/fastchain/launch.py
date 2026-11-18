@@ -106,14 +106,22 @@ def split_slow(env_nodes: int, slow_opt_in: int) -> tuple[int, int]:
     return max(0, env_nodes - (slow + 1) // 2), slow
 
 
+def drivers_per_node(knobs: dict[str, Any]) -> int:
+    """Env drivers per node, as env.sh computes P from the node's requested cores."""
+    return max(1, int(knobs["env_node_cores"] * knobs["env_procs_fraction"]))
+
+
 def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, cards: int,
                card_type: str, layout_spec: str | None, env_cores: int | None, smoke: bool,
                probe_rows: list[dict[str, Any]], fallback: bool = False,
                probe_only: bool = False, long_run: bool = False,
                resume_checkpoint: str | None = None,
                chain: dict[str, Any] | None = None) -> dict[str, Any]:
-    """`chain` (supervise.py): {"id", "deadline_at", "total_seconds", "generation"}; the
-    wall is then what is left of the chain's window."""
+    """`chain` (supervise.py): {"id", "deadline_at", "total_seconds", "generation"[,
+    "train_target_seconds"]}; the wall is then what is left of the chain's window (its
+    wall limit). With a training target (#603) the learner gets no absolute deadline, so
+    the GPU and env job times add `train_target_end_reserve_seconds` for its drain and
+    final CP (the deadline's 600 s reserve did that inside the window)."""
     if card_type not in site["gpu_types"]:
         raise SystemExit(f"card type {card_type} not in the site profile")
     gpu = site["gpu_types"][card_type]
@@ -161,6 +169,10 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         if smoke:
             raise SystemExit("--smoke is never a chain generation")
         wall = max(0, min(wall, int(chain["deadline_at"] - time.time())))
+    wall_left = wall  # the chain's wall left (with a target, the wall limit only)
+    targeted = chain is not None and bool(chain.get("train_target_seconds"))
+    if targeted:  # #604 M1: the job asks for the training left, not the whole wall left
+        wall = min(wall, chain["train_left_seconds"])
     limit = mem * preflight.GIB
     target = layouts.target(count, knobs["targets_rows_h"], knobs["ready_rows_h"])
     cap_rows = knobs["card_capacity_rows_h"].get(card_type)
@@ -176,13 +188,19 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
     # env nodes wait for the learner: that wait is added to the GPU job's time and to the
     # env wait. A prep job never runs before the GPU job, so it needs no longer than it.
     prep_wait = int(math.ceil(knobs["remote_prepare_wait_seconds"])) if prep_hosts else 0
-    gpu_minutes = (wall + 240 + prep_wait) // 60 + 1
+    end_reserve = knobs["train_target_end_reserve_seconds"] if targeted else 0
+    gpu_minutes = (wall + 240 + prep_wait + end_reserve) // 60 + 1
     return {
         "schema": "spireagent/friday-fastchain-plan-1", "runtag": runtag, "t": time.time(),
         "run": str(Path(site["work_root"]) / f"run-{runtag}"),
         "requested": {"cards": cards, "card_type": card_type, "layout": layout_spec,
                       "env_cores": env_cores, "fallback": fallback},
         "why": tried, "smoke": smoke, "long_run": long_run, "wall_seconds": wall,
+        "chain_wall_left_seconds": wall_left if chain is not None else None,
+        # #604 S1: with a target the drivers live at least the generation's wall (DRAIN
+        # still ends them); otherwise the knob, and preflight refuses one shorter than it
+        "driver_steady_seconds": (max(knobs["driver_steady_seconds"], wall) if targeted
+                                  else knobs["driver_steady_seconds"]),
         "producer_identity": knobs["producer_identity"], "probe_only": probe_only,
         "resume_checkpoint": resume_checkpoint, "chain": chain,
         "checkpoints_void": knobs["producer_identity"] == "placeholder",
@@ -200,10 +218,16 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "env_cores_max": fast * knobs["env_node_cores"]
         + (slow + 1) // 2 * knobs["env_node_cores"],
         "env_node_index_ranges": {"fast": [0, fast], "c8220": [fast, slow]},
+        # #603 seed streams: driver d = node index x drivers per node + p - 1 takes seed
+        # lines seed_start + d, + stride, + 2 x stride, ... (supervise sets seed_start for a
+        # resumed generation past every line an earlier one could have reached)
+        "seed_stride": (fast + slow) * drivers_per_node(knobs),
+        "seed_start": (chain or {}).get("seed_start", 0),
         "prep_hosts": prep_hosts, "prep_wait_seconds": prep_wait,
         "env_wait_seconds": knobs["env_wait_seconds"] + prep_wait,
         "gpu_minutes": gpu_minutes,
-        "env_minutes": (knobs["env_wait_seconds"] + prep_wait + wall + 600) // 60,
+        "env_minutes": (knobs["env_wait_seconds"] + prep_wait + wall + 600 + end_reserve)
+        // 60, "end_reserve_seconds": end_reserve,
         "prep_minutes": gpu_minutes,
         "partition_max_minutes": {
             role: site["partition_max_minutes"].get(part) for role, part in (
@@ -291,8 +315,12 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
         "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
+        "FC_SEED_START": plan["seed_start"],
+        "FC_DRIVER_STEADY_SECONDS": plan["driver_steady_seconds"],
         **({"FC_CHAIN_ID": plan["chain"]["id"],
-            "FC_CHAIN_DEADLINE": repr(float(plan["chain"]["deadline_at"])),
+            # empty with a training target: the learner gets no absolute deadline (#603)
+            "FC_CHAIN_DEADLINE": ("" if plan["chain"].get("train_target_seconds")
+                                  else repr(float(plan["chain"]["deadline_at"]))),
             "FC_CHAIN_TOTAL_SECONDS": plan["chain"]["total_seconds"]}
            if plan.get("chain") else {}),
         # remote_prepare --scratch-min-free-bytes (#523 a437612d) = the in-flight budget.
@@ -384,6 +412,10 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["src_features"] = source_features(src)
     frozen = src / plan["knobs"]["frozen_learner_config"]
     facts["frozen_recipe"] = json.loads(frozen.read_text()) if frozen.exists() else None
+    seeds = Path(site["seeds_file"])
+    # the driver's split: env_driver.mjs reads the file as trim().split("\n")
+    facts["seeds_file_count"] = (len(seeds.read_text().strip().split("\n")) if seeds.is_file()
+                                 else None)
     gate = Path(site["gate_dir"]) / "learner-base.json"
     facts["gate_learner_base"] = json.loads(gate.read_text()) if gate.exists() else None
     # A dump is a directory; sgd_process warm() loads offline_step.TREE inside it.

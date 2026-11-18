@@ -64,7 +64,20 @@ createInterface({ input: ADMIT }).on("line", line => { const done = admitQueue.s
 const admitCall = (request) => new Promise(resolve => { admitQueue.push(resolve); ADMIT.write(`${JSON.stringify(request)}\n`); });
 const games = new Map(), admission = { sent: 0, admitted: 0, refused: {}, closed_after_refusal: 0, excluded: 0, exclusion_failed: {} };
 const SEEDS = readFileSync(arg("seeds"), "utf8").trim().split("\n");
+// #603: this driver's stream is offset, offset + stride, ... (env.sh: disjoint over the
+// run's drivers until the file wraps); a seed taken past the file's end is counted.
 let seedIndex = Number(arg("seed-offset", "0"));
+const SEED_STRIDE = Number(arg("seed-stride", "1"));
+const seedStream = { offset: seedIndex, stride: SEED_STRIDE, taken: 0, wrapped: 0, file_seeds: SEEDS.length };
+const nextSeed = () => {
+  const index = seedIndex;
+  seedIndex += SEED_STRIDE;
+  seedStream.taken += 1;
+  if (index >= SEEDS.length) {
+    if (seedStream.wrapped++ === 0) log({ event: "seed_stream_wrapped", index, file_seeds: SEEDS.length });
+  }
+  return SEEDS[index % SEEDS.length];
+};
 const gameFacts = (ref) => { const g = games.get(ref); return { game_ref: ref, ...(g ?? {}) }; };
 const initialProgress = JSON.parse(readFileSync(arg("initial-progress"), "utf8"));
 mkdirSync(OUT, { recursive: true, mode: 0o700 });
@@ -82,7 +95,7 @@ const nextStart = () => {
   if (group === null || group.member >= group.size) {
     const id = `${arg("tag")}-k${++groupCount}`;
     const plan = saves ? saves.plan(id, REPLAY_K) : { seed: null, start: { kind: "new_run" }, save_points: null, tickets: null };
-    group = { id, plan, member: 0, size: plan.tickets?.length ?? REPLAY_K, seed: plan.seed ?? SEEDS[seedIndex++ % SEEDS.length] };
+    group = { id, plan, member: 0, size: plan.tickets?.length ?? REPLAY_K, seed: plan.seed ?? nextSeed() };
   }
   return { group, member: group.member++ };
 };
@@ -235,6 +248,7 @@ process.on("SIGUSR1", () => {
 });
 const code = await new Promise(resolve => env.on("exit", resolve));
 summary.exit = code;
+summary.seed_stream = seedStream;
 if (saves) { summary.save_starts = saves.counters(); log({ event: "save_counters", ...summary.save_starts }); }
 ADMIT.end();
 const a = summary.statuses[0], b = summary.statuses[summary.statuses.length - 1];

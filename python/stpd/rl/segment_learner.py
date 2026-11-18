@@ -898,9 +898,10 @@ class SegmentLearner:
             # consumed_seconds is the new window's own ledger: 0 for its first attempt,
             # or the seconds its earlier attempts charged when they died before the
             # window's first CP and this one re-enters from the same parent. It never
-            # inherits the parent's seconds and can only shorten the new budget.
-            if (config.operating_budget_parent != expected_parent
-                    or config.deadline_at is None):
+            # inherits the parent's seconds and can only shorten the new budget. The new
+            # window may have no absolute deadline (a training-time budget only, #603):
+            # the parent's deadline is recorded above and never inherited either way.
+            if config.operating_budget_parent != expected_parent:
                 raise ValueError("checkpoint_operating_budget_cannot_be_reset")
         if (not new_window and cp_deadline is not None
                 and config.deadline_at not in {None, cp_deadline}):
