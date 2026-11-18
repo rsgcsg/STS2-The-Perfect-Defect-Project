@@ -100,6 +100,9 @@ its first row carries (`public_hp`, B); without that it is never scored.
 potion points, and a row whose own choice is `potion.use` loses its HP-change part
 (it keeps the combat's death points, as every row does), so using a potion is judged
 by the outcome advantage (the value head), not by the HP it saves.
+"value_head_neutral" (#608) is "value_head" except that a potion row's HP-change part
+is the mean HP-change part of the non-potion rows of its own combat (0 when the combat
+has none), so the HP score pushes neither for nor against potions.
 
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
@@ -223,8 +226,9 @@ ENCOUNTERS = (*HP_WEIGHT_TYPES, "unknown")
 DEFAULT_HP_WEIGHTS = {kind: 1.0 for kind in HP_WEIGHT_TYPES}
 # Ticket H: how A_hp treats potions. "points": -5 per potion used from the row on
 # (card §6.5). "value_head": no potion points, and a potion row keeps only the death
-# points (its HP-change part is 0).
-HP_POTION_MODES = ("points", "value_head")
+# points (its HP-change part is 0). "value_head_neutral" (#608): as "value_head", but a
+# potion row's HP-change part is the mean of the non-potion rows' in its combat (0 if none).
+HP_POTION_MODES = ("points", "value_head", "value_head_neutral")
 
 
 def hp_advantages(start: Mapping[str, Any] | None,
@@ -253,6 +257,9 @@ def hp_advantages(start: Mapping[str, Any] | None,
     `potion_mode` "value_head" (ticket H): P_t is not scored (no potion points) and a
     row whose own choice was `potion.use` gets only -30 death (no HP-change part): the
     death points stay the same constant on every row of the combat (#572 review M1).
+    "value_head_neutral" (#608): the same, except that a potion row's HP-change part is
+    the mean of w (h_t - (100 HP(s_t) - H_t)) over the combat's non-potion rows (0 when
+    there is none); non-potion rows are exactly as under "value_head".
     """
     facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
     checked = [fact for fact in facts if isinstance(fact, Mapping)
@@ -270,6 +277,17 @@ def hp_advantages(start: Mapping[str, Any] | None,
             dead = -float(DEATH_POINTS if death else 0)
             change = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - lost_max
             scores.append(dead if potion else float(
+                weight * change - (DEATH_POINTS if death else 0)
+                - weight * (predicted - hp[t])))
+        return scores
+    if potion_mode == "value_head_neutral":
+        parts = [weight * ((end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - lost_max)
+                 - weight * (predicted - hp[t])
+                 for t, (_, predicted, potion) in enumerate(steps) if not potion]
+        neutral = sum(parts) / len(parts) if parts else 0.0
+        for t, (_, predicted, potion) in enumerate(steps):
+            change = (end_hp - hp[t]) + (max_hp[-1] - max_hp[t]) - lost_max
+            scores.append(float(neutral - (DEATH_POINTS if death else 0)) if potion else float(
                 weight * change - (DEATH_POINTS if death else 0)
                 - weight * (predicted - hp[t])))
         return scores

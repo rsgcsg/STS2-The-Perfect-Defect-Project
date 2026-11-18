@@ -3361,6 +3361,19 @@ def test_hp_potion_mode_defaults_to_points_and_is_refused_where_it_does_nothing(
     assert 'hp_potion_mode' not in preflight.required_features(plan_for(cards=3))
     assert 'hp_potion_mode' in preflight.required_features(plan_for(
         cards=3, segment_format=four, hp_potion_mode='value_head'))
+    assert 'hp_potion_neutral' not in preflight.required_features(plan_for(
+        cards=3, segment_format=four, hp_potion_mode='value_head'))
+    # #608: the neutral mode is accepted where value_head is and needs its own feature
+    assert run_profile.values(run_profile.load_profile(PROFILE, [
+        'hp_potion_mode="value_head_neutral"', f'segment_format={four}']))['hp_potion_mode'] \
+        == 'value_head_neutral'
+    with pytest.raises(run_profile.ProfileError, match='hp_potion_mode.*segment_format'):
+        run_profile.load_profile(PROFILE, ['hp_potion_mode="value_head_neutral"'])
+    neutral = hp(four, 0.003, 'value_head_neutral')
+    assert neutral.ok and neutral.detail.endswith('potions value_head_neutral')
+    assert not hp(four, 0.0, 'value_head_neutral').ok
+    assert {'hp_potion_mode', 'hp_potion_neutral'} <= set(preflight.required_features(
+        plan_for(cards=3, segment_format=four, hp_potion_mode='value_head_neutral')))
     roles = (FASTCHAIN / 'roles.py').read_text()
     assert 'hp["hp_potion_mode"] = K["hp_potion_mode"]' in roles
 
