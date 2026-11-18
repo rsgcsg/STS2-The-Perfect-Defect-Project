@@ -483,6 +483,8 @@ class Chain:
                 continue
             ids += [str(item[key]) for item in items for key in ("prepare_job", "evaluation_job")
                     if item.get(key)]
+            ids += [str(job) for item in items  # a batched round's jobs (#591)
+                    for job in (item.get("evaluation_jobs") or {}).values() if job]
         live = self.squeue(ids) if ids else set()
         targets = sorted(set(ids) if live is None else live)
         if targets:
@@ -717,11 +719,12 @@ class Chain:
     def watchers(self) -> dict[str, dict[str, Any]]:
         """Standing fast_eval.py watchers (#528): one per suite, each its own output."""
         out = {"a0": {"suite": self.knobs["eval_suite"], "manifest": self.args.eval_manifest,
-                      "seeds": self.knobs["eval_seeds"]}}
+                      "seeds": self.knobs["eval_seeds"],
+                      "batch_seeds": self.knobs["eval_batch_seeds"]}}
         if self.knobs["eval_a10_enabled"]:
             out["a10"] = {"suite": self.knobs["eval_a10_suite"],
                           "manifest": self.args.eval_a10_manifest,
-                          "seeds": self.knobs["eval_a10_seeds"]}
+                          "seeds": self.knobs["eval_a10_seeds"], "batch_seeds": 0}
         registered = self.site.get("eval_baselines") or {}
         for name, watcher in out.items():
             if name == "a0" and self.args.eval_baseline_plan:
@@ -753,7 +756,10 @@ class Chain:
                "--learner-config", str(config), "--execution", str(execution),
                "--manifest", str(watcher["manifest"]), "--output", str(self.dir / f"eval-{name}"),
                "--interval", str(self.knobs["eval_interval_seconds"]),
-               "--seeds", str(watcher["seeds"]), "--chain", self.args.chain]
+               "--seeds", str(watcher["seeds"]), "--chain", self.args.chain,
+               # the site release dir with env/, node, game/, dotnet (#590)
+               "--actor-root", self.site.get("eval_actor_root") or self.site["node_release"]]
+        cmd += ["--batch-seeds", str(watcher["batch_seeds"])] if watcher["batch_seeds"] else []
         cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
         baseline = watcher["baseline"]
         if baseline is not None:

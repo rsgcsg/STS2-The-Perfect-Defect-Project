@@ -31,11 +31,13 @@ from spireagent.workbench.p1_recording_storage import (
 from stpd.evaluation.suites import (
     FOUR_AGENT_SUITE_ID,
     RL3_LEARNING_CURVE_SUITE_ID,
+    RL5_A0_CURVE_300_SUITE_ID,
     RL5_A10_CURVE_SUITE_ID,
     checkpoint_reference_manifest,
     diagnostic_reference_manifest,
     four_agent_reference_manifest,
     rl3_learning_curve_manifest,
+    rl5_a0_curve_300_manifest,
     rl5_a10_curve_manifest,
     t2_managed_manifest,
 )
@@ -65,6 +67,8 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
             _reject("manifest_configuration_changed")
         expected_t2 = (rl3_learning_curve_manifest(version)
                        if value.get("suite_id") == RL3_LEARNING_CURVE_SUITE_ID
+                       else rl5_a0_curve_300_manifest(version)
+                       if value.get("suite_id") == RL5_A0_CURVE_300_SUITE_ID
                        else rl5_a10_curve_manifest(version)
                        if value.get("suite_id") == RL5_A10_CURVE_SUITE_ID
                        else t2_managed_manifest(version, ascension))

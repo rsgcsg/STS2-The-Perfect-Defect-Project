@@ -463,7 +463,10 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "readout_every_seconds": _int(600),
     "readout_rolling_games": _rolling_games,
     "eval_interval_seconds": _int(600, 86400),
-    "eval_seeds": _int(1, 100),
+    # games per A0 round, at most the manifest length (the A0 300 manifest: #591) ...
+    "eval_seeds": _int(1, 300),
+    # ... in parallel jobs of this many (0 = one job; one job admits <= 200)
+    "eval_batch_seeds": _int(0, 200),
     "disk_sample_seconds": _int(5, 3600),
     "disk_warn_free_pct": _int(1, 99),
     "disk_stop_free_pct": _int(1, 99),
@@ -560,10 +563,13 @@ def _baseline(value: Any) -> str | None:
 
 # Optional site keys. eval_baselines: the registered reference round per evaluation
 # watcher (supervise: a0, a10), its plan.json pinned by sha256 (fast_eval --baseline-*).
+# eval_actor_root (default node_release): the evaluation jobs' actor root (env/, node,
+# game/, dotnet; #590), fast_eval --actor-root.
 # trained_start_without_warmup (default false): a fresh start from a trained package with
 # warmup_file = "" is meant (heads from their constructor init); preflight refuses it otherwise.
 OPTIONAL_SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
     "eval_baselines": _table_of(_baseline, frozenset({"a0", "a10"}), "baselines"),
+    "eval_actor_root": _str,
     "trained_start_without_warmup": _bool,
 }
 

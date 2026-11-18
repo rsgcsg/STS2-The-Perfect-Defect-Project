@@ -48,10 +48,10 @@ Rules (RL4.1 long-run lessons, lead 11-12):
 
 Start checks (`--check`, which supervise runs before generation 0, and again before the
 loop starts), so an evaluation that cannot run is refused before any GPU or CPU job:
-- the seed manifest has the seeds; 1 <= seeds <= `evaluate.MAX_DISPATCH_SLOTS` (one job
-  admits at most 200 games; 300 seeds need a manifest and batches, #591);
-- the actor root (`--actor-root`, default the source checkout's parent; supervise passing
-  it is #590) holds `evaluate.ACTOR_LAYOUT` (env, Node, game, .NET);
+- the seed manifest has the seeds; 1 <= seeds <= `evaluate.MAX_DISPATCH_SLOTS` in one job
+  (one job admits at most 200 games), any number up to the manifest with `--batch-seeds`;
+- the actor root (`--actor-root`, default the source checkout's parent; supervise passes
+  the site release directory, #590) holds `evaluate.ACTOR_LAYOUT` (env, Node, game, .NET);
 - the execution template's `agent_adapter` equals this source's
   `export.adapter_identity()` (the executor's own `frozen_agent_implementation_changed`
   check, run early; re-freeze a stale template with `tools/friday/eval_template.py
@@ -60,6 +60,17 @@ loop starts), so an evaluation that cannot run is refused before any GPU or CPU 
   record named by this template's `refrozen_from` that links exactly the baseline's
   adapter to this one; both adapters and producers, `adapter_differs` and the record
   are written into summary.json, eval-record.json and the report (`adapter_pairing`).
+
+Batches (#591): with `--batch-seeds B` a round of `--seeds N` games (e.g. the A0 300 suite)
+is one preparation (one export) and ceil(N/B) evaluation jobs of manifest ordinals 1..B,
+B+1..2B, ... run in parallel, each with the wall of its own games; `round/batches.json`
+(written last) names their plans. The round is reported once every job has ended: one
+merged cohort, report, summary.json and eval-record.json (per-batch times inside). A batch
+that ends without a report, or could not be submitted, is named with its game count in
+the report and summary and its games are absent from the cohort; it is never retried.
+Unknown games stay excluded and counted as in one job. A reference (baseline or previous
+round) pairs by seed when one round's seed manifest is a prefix of the other's (the A0 300
+starts with the A0 100 seeds), and may be named by its `batches.json`.
 
 A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summary.json,
 eval-record.json and the report say "smoke, not a decision result", and no reference is
@@ -187,6 +198,69 @@ def round_execution(plan: Path) -> dict[str, Any]:
     return json.loads(path.read_bytes())
 
 
+def round_reference(root: Path) -> Path:
+    """A finished round's reference file: `round/batches.json` (batched) or its plan."""
+    batches = root / "round" / evaluate.BATCHES
+    return batches if batches.is_file() else root / "round/evaluation/plan.json"
+
+
+def reference_plans(path: Path) -> list[Path]:
+    """The plans a reference names: itself, or each plan of a `batches.json` (by sha256)."""
+    if path.name != evaluate.BATCHES:
+        return [path]
+    plans = []
+    for entry in json.loads(path.read_bytes())["batches"]:
+        plan = path.parent / entry["directory"] / "plan.json"
+        if not plan.is_file() or hashed(plan) != entry["plan_sha256"]:
+            raise ValueError("round_batch_plan_changed")
+        plans.append(plan)
+    return plans
+
+
+SUBMISSION_FAILURE = "submission-failure.json"  # beside a batch plan never delivered
+
+
+def reported_plans(path: Path) -> tuple[list[Path], list[dict[str, Any]]]:
+    """The plans of a reference that have an observation report, and the batches that
+    have none: `{batch, games, status, reason}` (a refused or unknown submission: its
+    stage and reason; else the job's status, or `no_result`). A single plan is taken as
+    is (its reader refuses it if the report is missing)."""
+    if path.name != evaluate.BATCHES:
+        return [path], []
+    plans, missing = [], []
+    for plan in reference_plans(path):
+        result, failure = plan.parent / "result.json", plan.parent / SUBMISSION_FAILURE
+        status = json.loads(result.read_bytes()) if result.is_file() else {}
+        if "observation_report" in status:
+            plans.append(plan)
+            continue
+        refused = json.loads(failure.read_bytes()) if failure.is_file() else {}
+        missing.append({"batch": plan.parent.name,
+                        "games": json.loads(plan.read_bytes()).get("planned"),
+                        "status": refused.get("stage") or status.get("status", "no_result"),
+                        "reason": refused.get("reason") or status.get(
+                            "observation_report_skipped") or status.get(
+                            "observation_report_error")})
+    return plans, missing
+
+
+def manifest_seeds(plan: Path) -> list[str] | None:
+    """The seeds of a round's frozen manifest (the copy beside its plan, by sha256)."""
+    bound = json.loads(plan.read_bytes())["manifest"]
+    path = plan.parent / Path(bound["path"]).name
+    if not path.is_file() or hashed(path) != bound["sha256"]:
+        return None
+    return json.loads(path.read_bytes()).get("seeds")
+
+
+def seeds_pair(one: list[str] | None, other: list[str] | None) -> bool:
+    """Two seed manifests pair when one's seeds are a prefix of the other's."""
+    if not one or not other:
+        return False
+    short, long = sorted((one, other), key=len)
+    return long[:len(short)] == short
+
+
 def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any],
                     template: Path) -> dict[str, Any]:
     """Which agent adapter and producer each side was frozen with. When the adapter
@@ -250,9 +324,16 @@ def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
     plan = plan.resolve()
     if not plan.is_file() or sha256 is not None and hashed(plan) != sha256:
         raise ValueError("baseline_plan_missing_or_changed")
-    theirs = round_execution(plan)
+    plans = reference_plans(plan)  # a batched reference round: its batches.json
+    absent = reported_plans(plan)[1]
+    if absent:  # a baseline pairs whole, never on part of its games
+        raise ValueError("baseline_round_has_batches_without_a_report: "
+                         + ", ".join(m["batch"] for m in absent))
+    theirs = round_execution(plans[0])
     differing = [key for key in START_PINS if theirs.get(key) != execution.get(key)]
-    if json.loads(plan.read_bytes())["manifest"]["sha256"] != hashed(manifest):
+    ours = json.loads(manifest.read_bytes()).get("seeds")
+    if any(json.loads(p.read_bytes())["manifest"]["sha256"] != hashed(manifest)
+           and not seeds_pair(manifest_seeds(p), ours) for p in plans):
         differing.append("seed_manifest")
     if differing:
         raise ValueError("baseline_round_differs_from_this_watcher: " + ", ".join(differing))
@@ -318,6 +399,8 @@ def prepare_script(settings: dict[str, Any], checkpoint: str, root: Path) -> str
         command += ["--deadline-at", str(settings["deadline_at"])]
     if settings.get("actor_root") is not None:
         command += ["--actor-root", shlex.quote(settings["actor_root"])]
+    if settings.get("batch_seeds") is not None:
+        command += ["--batch-seeds", str(settings["batch_seeds"])]
     return prefix + "exec " + " ".join(command) + "\n"
 
 
@@ -348,6 +431,12 @@ def live_jobs(job_ids: list[str]) -> set[str]:
                             "-o", "%i"])
     live = {line.strip().split("_")[0] for line in out.splitlines() if line.strip()}
     return live & set(job_ids)
+
+
+def jobs_of(item: dict[str, Any]) -> list[str]:
+    """The evaluation job ids of a round: its batches' jobs, or its one job."""
+    jobs = item.get("evaluation_jobs") or {"evaluation": item.get("evaluation_job")}
+    return [str(job) for job in jobs.values() if job]
 
 
 class Loop:
@@ -419,35 +508,47 @@ class Loop:
             self.start()
         self.persist()
 
-    def advance(self) -> bool:
-        """Preparation finished: submit its plan once; a dead job without a plan fails.
+    def directories(self) -> list[str]:
+        """The evaluation directories of each round under `round/` (one, or one per batch)."""
+        return evaluate.batch_directories(self.settings["seeds"],
+                                          self.settings.get("batch_seeds"))
 
-        A finished evaluation job gets its report; one that ended without a result
-        (after the shared-disk grace) is recorded, never resubmitted.
+    def advance(self) -> bool:
+        """Preparation finished: submit its plans once; a dead job without them fails.
+
+        A round whose evaluation jobs have all ended gets its report; one that ended
+        without any result (after the shared-disk grace) is recorded, never resubmitted.
+        A batched round with some results waits the same grace for the rest, then is
+        reported with the missing batches named.
         """
         preparing = [e for e in self.state["evaluations"] if e["stage"] == "preparing"]
         submitted = [e for e in self.state["evaluations"]
-                     if e["stage"] == "submitted" and e.get("evaluation_job")]
+                     if e["stage"] == "submitted" and jobs_of(e)]
         live = self.live([e["prepare_job"] for e in preparing]
-                         + [e["evaluation_job"] for e in submitted])
+                         + [job for e in submitted for job in jobs_of(e)])
         if live is None:
             return False
         for item in submitted:
-            if item["evaluation_job"] in live:
+            if any(job in live for job in jobs_of(item)):
                 continue
-            if not (Path(item["root"]) / "round/evaluation/result.json").is_file():
+            results = [Path(item["root"]) / "round" / d / "result.json"
+                       for d in self.directories() if d not in item.get("batch_failures", {})]
+            if not all(r.is_file() for r in results):
                 ended = item.setdefault("ended_seen_at", self.clock())
-                if self.clock() - ended >= RESULT_GRACE_SECONDS:
+                if self.clock() - ended < RESULT_GRACE_SECONDS:
+                    continue
+                if not any(r.is_file() for r in results):
                     item["stage"] = "evaluation_ended_without_result"
                     self.note("evaluation_ended_without_result", checkpoint=item["checkpoint"],
-                              job=item["evaluation_job"])
-                continue
+                              job=item.get("evaluation_job"), jobs=item.get("evaluation_jobs"))
+                    continue
             self.report(item)
         for item in preparing:
-            plan = Path(item["root"]) / "round/evaluation/plan.json"
+            marker = Path(item["root"]) / "round" / (  # batches.json: written last
+                evaluate.BATCHES if len(self.directories()) > 1 else "evaluation/plan.json")
             if item["prepare_job"] in live:
                 continue
-            if not plan.is_file():
+            if not marker.is_file():
                 ended = item.setdefault("ended_seen_at", self.clock())
                 if self.clock() - ended < PLAN_GRACE_SECONDS:
                     continue
@@ -455,35 +556,67 @@ class Loop:
                 self.note("evaluation_prepare_failed", checkpoint=item["checkpoint"],
                           job=item["prepare_job"])
                 continue
+            self.submit_round(item)
+        return True
+
+    def submit_round(self, item: dict[str, Any]) -> None:
+        """Submits each plan of the round once, in order. A refused pre-submission check
+        stops here and resumes next tick with the plans not yet submitted; a failed or
+        unknown delivery of one batch is recorded (never retried) and the others go on.
+        No job at all: the round's stage is that failure; else it is submitted."""
+        directories = self.directories()
+        batched = len(directories) > 1
+        jobs = item.setdefault("evaluation_jobs", {}) if batched else {}
+        failures = item.setdefault("batch_failures", {}) if batched else {}
+        for directory in directories:
+            if directory in jobs or directory in failures:
+                continue
+            plan = Path(item["root"]) / "round" / directory / "plan.json"
             try:
                 result = self.submit(plan, partition=self.settings["partition"],
                                      exclude_nodes=self.settings.get("exclude_nodes") or None,
                                      dry_run=self.dry_run)
             except ValueError as error:
                 if str(error) in RETRY_BEFORE_SUBMISSION:  # nothing was delivered
-                    self.note("evaluation_submit_deferred", reason=str(error))
-                    continue
-                item.update(stage="submit_failed", reason=str(error))
-                self.note("evaluation_submit_failed", checkpoint=item["checkpoint"],
-                          reason=str(error))
-                continue
+                    self.note("evaluation_submit_deferred", reason=str(error),
+                              batch=directory if batched else None)
+                    return
+                stage, reason = "submit_failed", str(error)
             except (OSError, subprocess.SubprocessError) as error:
                 # Delivery unknown (the owner's intent may exist): recorded, never retried.
-                item.update(stage="submit_unknown", reason=type(error).__name__)
-                self.note("evaluation_submit_unknown", checkpoint=item["checkpoint"],
-                          reason=type(error).__name__)
+                stage, reason = "submit_unknown", type(error).__name__
+            else:
+                jobs[directory] = result.get("job_id")
+                item.setdefault("first_submitted_at", self.clock())
+                if batched:
+                    item.setdefault("batch_submitted_at", {})[directory] = self.clock()
                 continue
-            item.update(stage="submitted", evaluation_job=result.get("job_id"),
-                        submitted_at=self.clock())
-            self.note("evaluation_submitted", checkpoint=item["checkpoint"],
-                      job=result.get("job_id"))
-        return True
+            self.note(f"evaluation_{stage}", checkpoint=item["checkpoint"], reason=reason,
+                      **({"batch": directory} if batched else {}))
+            if not batched:
+                item.update(stage=stage, reason=reason)
+                return
+            failures[directory] = {"stage": stage, "reason": reason}
+            save(plan.parent / SUBMISSION_FAILURE, failures[directory])  # for the report
+        if batched and not jobs:
+            item.update(stage="submit_failed", reason="no_batch_submitted")
+            return
+        if not batched:
+            item["evaluation_job"] = jobs["evaluation"]
+        item.pop("ended_seen_at", None)  # the plan grace's mark; the result grace starts anew
+        item.update(stage="submitted", submitted_at=self.clock())
+        self.note("evaluation_submitted", checkpoint=item["checkpoint"],
+                  job=item.get("evaluation_job"), jobs=item.get("evaluation_jobs"))
 
     def report(self, item: dict[str, Any]) -> None:
         previous = [e for e in self.state["evaluations"]
                     if e["stage"] == "reported" and e["number"] < item["number"]]
-        result = json.loads((Path(item["root"]) / "round/evaluation/result.json").read_bytes())
-        if "observation_report" not in result:  # skipped (end of wall), failed or interrupted
+        results = [json.loads(path.read_bytes()) for path in (
+            Path(item["root"]) / "round" / d / "result.json" for d in self.directories())
+            if path.is_file()]
+        result = results[0] if len(results) == 1 else {
+            "status": sorted({r.get("status") for r in results}, key=str)}
+        if not any("observation_report" in r for r in results):  # skipped, failed, interrupted
             item.update(stage="report_deferred", status=result.get("status"))
             self.loud("evaluation_report_deferred", checkpoint=item["checkpoint"],
                       status=result.get("status"),
@@ -494,8 +627,7 @@ class Loop:
         try:
             summary = write_evaluation_report(
                 Path(item["root"]), self.settings.get("baseline"),
-                str(Path(previous[-1]["root"]) / "round/evaluation/plan.json")
-                if previous else None)
+                str(round_reference(Path(previous[-1]["root"]))) if previous else None)
         except Exception as error:  # noqa: BLE001 -- originals stay; the report is a projection
             item.update(stage="report_failed", reason=f"{type(error).__name__}: {error}")
             self.note("evaluation_report_failed", checkpoint=item["checkpoint"],
@@ -517,6 +649,9 @@ class Loop:
                   reward=current["reward_mean"], conservative=current["conservative"],
                   baseline=summary["baseline"], paired=sorted(summary["paired"]),
                   skipped=summary["skipped_references"])
+        if summary.get("batches_missing"):
+            self.loud("evaluation_batches_missing", checkpoint=item["checkpoint"],
+                      batches=summary["batches_missing"])
         if "baseline" in summary["skipped_references"]:
             self.loud("evaluation_baseline_skipped", checkpoint=item["checkpoint"],
                       **summary["skipped_references"]["baseline"])
@@ -537,10 +672,15 @@ class Loop:
         record["watcher"] = {"checkpoint": item["checkpoint"], "evaluation": item["number"],
                              "checkpoint_record": item.get("record"),
                              "prepare_job": item.get("prepare_job"),
-                             "evaluation_job": item.get("evaluation_job")}
+                             "evaluation_job": item.get("evaluation_job"),
+                             "evaluation_jobs": item.get("evaluation_jobs"),
+                             "batch_failures": item.get("batch_failures")}
+        # the first job's submission: a partly deferred round's last one would understate
+        first = item.get("first_submitted_at", item.get("submitted_at"))
+        record["watcher"]["batch_submitted_at"] = item.get("batch_submitted_at")
         record["stage_seconds"].update(
-            prepare_wall=_span(preparing, item.get("submitted_at")),
-            evaluation_queue=_span(item.get("submitted_at"), record.get("process_started_at")))
+            prepare_wall=_span(preparing, first),
+            evaluation_queue=_span(first, record.get("process_started_at")))
         save(path, record)
 
     def start(self) -> None:
@@ -551,12 +691,13 @@ class Loop:
         evaluations = self.state["evaluations"]
         if any(e["stage"] == "preparing" for e in evaluations):
             return self.note("evaluation_skipped", reason="preparation_still_running")
-        submitted = [e["evaluation_job"] for e in evaluations
-                     if e["stage"] == "submitted" and e.get("evaluation_job")]
-        running = self.live(submitted)
+        submitted = [e for e in evaluations if e["stage"] == "submitted" and jobs_of(e)]
+        running = self.live([job for e in submitted for job in jobs_of(e)])
         if running is None:
             return self.note("evaluation_skipped", reason="scheduler_unreachable")
-        if len(running) >= self.settings["max_live"]:
+        # max_live counts rounds (a batched round's jobs together), not jobs
+        if sum(any(job in running for job in jobs_of(e)) for e in submitted) >= \
+                self.settings["max_live"]:
             return self.note("evaluation_skipped", reason="evaluations_still_running")
         record = self.newest()
         if record is None:
@@ -614,19 +755,28 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     and named (`skipped_references`), never compared. Unknown/failed games stay
     unscored rows (excluded per pair, listed with the floor they reached); the round
     is never voided. Beside it, `<root>/eval-record.json` (`evaluation_record`; the
-    watcher adds its own times).
+    watcher adds its own times). A batched round (#591) is one merged cohort of its
+    batches with an observation report; the others are named in `batches_missing`.
     """
-    from stpd.evaluation.rl_observation import write_report
+    from stpd.evaluation.rl_observation import merge_cohorts, write_report
 
     began = time.time()
-    def cohort(plan: Path, *, pinned: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-        if pinned is not None and hashed(plan) != pinned:
+    def cohort(reference: Path, *, pinned: str | None = None,
+               plans: list[Path] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        if pinned is not None and hashed(reference) != pinned:
             raise ValueError("baseline_plan_changed")
-        frozen, _, files = evaluate.read_observation_report(
-            plan.parent / "result.json", plan, validate_plan=pinned is None)
-        return files["cohort"], frozen
+        read = [evaluate.read_observation_report(plan.parent / "result.json", plan,
+                                                 validate_plan=pinned is None)
+                for plan in (plans or reference_plans(reference))]
+        return merge_cohorts([files["cohort"] for _, _, files in read]), read[0][0]
 
-    current, plan = cohort(root / "round/evaluation/plan.json")
+    round_file = round_reference(root)
+    # never retried: a batch without a report is named and its games are absent
+    plans, missing = reported_plans(round_file)
+    if not plans:
+        raise ValueError("no_batch_has_an_observation_report")
+    current, plan = cohort(round_file, plans=plans)
+    partial: dict[str, Any] = {}  # a previous round compared on its reported batches only
     cohorts: dict[str, dict[str, Any]] = {}
     skipped: dict[str, Any] = {}
     references = (("baseline", baseline["plan"] if baseline else None),
@@ -643,18 +793,46 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     for name, reference in references:
         if reference is None or smoke:
             continue
+        theirs, absent = reported_plans(Path(reference))  # a baseline has none (start check)
+        if not theirs:
+            skipped[name] = {"plan": reference, "differing": ["no_batch_has_a_report"]}
+            continue
+        if absent:
+            partial[name] = {"batches_reported": len(theirs),
+                             "batches": len(theirs) + len(absent),
+                             "games_missing": sum(m["games"] or 0 for m in absent),
+                             "missing": absent}
         group, frozen = cohort(Path(reference), pinned=baseline["sha256"]
-                               if name == "baseline" and baseline else None)
+                               if name == "baseline" and baseline else None, plans=theirs)
         old, new = group["protocol_observed"], current["protocol_observed"]
         keys = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
         keys += [k for k in ("host_kind", "character", "ascension") if group[k] != current[k]]
-        if frozen["manifest"]["sha256"] != plan["manifest"]["sha256"]:
+        if frozen["manifest"]["sha256"] != plan["manifest"]["sha256"] and not seeds_pair(
+                manifest_seeds(reference_plans(Path(reference))[0]), manifest_seeds(plans[0])):
             keys.append("seed_manifest")
         if keys:
             skipped[name] = {"plan": reference, "differing": keys}
             continue
         cohorts[name] = group
     cohorts["current"] = current
+    ours = {row["seed"] for row in current["rows"]}
+    seed_sets = {name: {"common_seeds": len(ours & {r["seed"] for r in group["rows"]}),
+                        "seed_sets_equal": ours == {r["seed"] for r in group["rows"]},
+                        "reference_seeds": len(group["rows"]), "current_seeds": len(ours)}
+                 for name, group in cohorts.items() if name != "current"}
+    for name, sets in seed_sets.items():
+        notes.append(f"{name}: paired on {sets['common_seeds']} common seeds"
+                     + ("." if sets["seed_sets_equal"] else
+                        f" (current {sets['current_seeds']}, {name} {sets['reference_seeds']}"
+                        " seeds: the headline numbers of each cohort cover different seed "
+                        "sets; compare the paired lines)."))
+    for name, part in partial.items():
+        notes.append(f"{name.upper()} IS PARTIAL: {part['batches_reported']} of "
+                     f"{part['batches']} batches, {part['games_missing']} games without a "
+                     "report are not in it.")
+    if missing:
+        notes.append("BATCHES WITHOUT A REPORT (their games are not in this report; never "
+                     "retried): " + json.dumps(missing, sort_keys=True) + ".")
     output = root / "report"
     report = write_report(cohorts, output, scope_note=" ".join([*notes, (
         "Managed fixed pool, argmax; unknown/failed games are excluded per pair and listed, "
@@ -667,6 +845,9 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         "smoke": smoke, "decision": ("smoke, not a decision result" if smoke
                                      else f"decision size (>= {DECISION_GAMES} games)"),
         "references_not_compared": not_compared, "skipped_references": skipped,
+        "batches": ([p.parent.name for p in reference_plans(round_file)]
+                    if round_file.name == evaluate.BATCHES else None),
+        "batches_missing": missing, "references_partial": partial,
         "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
@@ -694,11 +875,12 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
                 "paired_n", "better", "same", "worse", "mean_delta",
                 "bootstrap95_fixed_seed_sensitivity")},
             "conservative_reward_delta": (reward.get("conservative_paired") or {}).get(
-                "mean_delta")}
+                "mean_delta"),
+            **seed_sets[name]}
     save(output / "summary.json", summary)
     try:  # the report above stands even if its record cannot be built
         save(root / "eval-record.json", evaluation_record(
-            root, plan, current, report, summary, time.time() - began))
+            root, plan, current, report, summary, time.time() - began, plans))
     except Exception as error:  # noqa: BLE001 -- noted loudly by the watcher
         summary["evaluation_record_failed"] = f"{type(error).__name__}: {error}"
     return summary
@@ -714,7 +896,7 @@ def _span(start: Any, end: Any) -> float | None:
 
 def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                       report: dict[str, Any], summary: dict[str, Any],
-                      report_seconds: float) -> dict[str, Any]:
+                      report_seconds: float, plans: list[Path] | None = None) -> dict[str, Any]:
     """One round's record: identity, live games, stage seconds, per-seed outcomes, paired.
 
     Stage seconds: the job's own phases from result.json (execution_and_pipeline_save =
@@ -723,13 +905,39 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
     `Loop.add_watcher_facts` adds `prepare_wall` and `evaluation_queue`. Per-step value/HP
     predictions are not in the trajectories: the evaluated package strips the auxiliary
     heads, so `value_predictions` stays unrecorded (the heads remain in round/export).
+    A batched round: `batches` holds each batch's status, games, phases and times; the
+    round's process wall is the longest batch's, it started with the first batch and
+    `ended_to_report` counts from the last batch's end.
     """
-    result_path = root / "round/evaluation/result.json"
-    result = json.loads(result_path.read_bytes()) if result_path.is_file() else {}
-    timing = result.get("timing") or {}
+    paths = [p.parent / "result.json" for p in plans] if plans else [
+        root / "round/evaluation/result.json"]
+    loaded = [json.loads(p.read_bytes()) if p.is_file() else {} for p in paths]
     now = time.time()
+    batches = None
+    if len(loaded) == 1:
+        result = loaded[0]
+        timing = result.get("timing") or {}
+        phases = timing.get("phases") or {}
+    else:
+        batches = [{"batch": path.parent.name, "status": one.get("status"),
+                    "planned": json.loads((path.parent / "plan.json").read_bytes()).get(
+                        "planned"),
+                    "phases": (one.get("timing") or {}).get("phases"),
+                    **{k: (one.get("timing") or {}).get(k) for k in (
+                        "process_wall_seconds", "process_started_at", "process_finished_at")}}
+                   for path, one in zip(paths, loaded, strict=True)]
+        statuses = {b["status"] for b in batches}
+        result = {"status": statuses.pop() if len(statuses) == 1 else "mixed",
+                  "stop_requested": any(one.get("stop_requested") for one in loaded)}
+        def edge(key: str, pick: Callable[..., Any]) -> Any:
+            values = [b[key] for b in batches if isinstance(b[key], (int, float))]
+            return pick(values) if values else None
+        timing = {"process_wall_seconds": edge("process_wall_seconds", max),
+                  "process_started_at": edge("process_started_at", min),
+                  "process_finished_at": edge("process_finished_at", max)}
+        phases = {}
     stages: dict[str, Any] = {
-        **(timing.get("phases") or {}),
+        **phases,
         "evaluation_process_wall": timing.get("process_wall_seconds"),
         "report": report_seconds,
         "ended_to_report": _span(timing.get("process_finished_at"), now)}
@@ -739,7 +947,9 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
     return {
         "schema": RECORD_SCHEMA, "written_at": now,
         "process_started_at": timing.get("process_started_at"),
-        "suite": {"manifest_sha256": plan["manifest"]["sha256"], "planned": plan.get("planned"),
+        "suite": {"manifest_sha256": plan["manifest"]["sha256"],
+                  "planned": (sum(b["planned"] or 0 for b in batches) if batches
+                              else plan.get("planned")),
                   "selections": plan.get("selections"), "character": current["character"],
                   "ascension": current["ascension"], "host_kind": current["host_kind"],
                   "protocol_observed": current["protocol_observed"]},
@@ -755,6 +965,8 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                                if timing.get("process_wall_seconds") and plan.get("wall_seconds")
                                else None),
         "status": result.get("status"), "stop_requested": result.get("stop_requested"),
+        "batches": batches, "batches_missing": summary.get("batches_missing", []),
+        "references_partial": summary.get("references_partial", {}),
         "outcome": summary["cohorts"]["current"],
         "seeds": [{"seed": row["seed"], "status": row["status"], "result": row["result"],
                    "scored": row["scored"], "floor": row["floor"],
@@ -787,7 +999,10 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     # Only when given: the default (the source parent) keeps earlier state.json settings.
     actor = ({"actor_root": str(args.actor_root.resolve())}
              if getattr(args, "actor_root", None) is not None else {})
-    return {**actor, "learner_config": str(args.learner_config.resolve()),
+    batch = getattr(args, "batch_seeds", None)
+    games = min(args.seeds, batch or args.seeds)  # per job: each job's wall is its own
+    return {**actor, **({"batch_seeds": batch} if batch is not None else {}),
+            "learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation, "chain": args.chain,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
@@ -798,12 +1013,12 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
             else MEMORY_GB_PER_LIVE * live,
             "expected_steps": args.expected_steps,
             "wall_seconds": args.wall_seconds if args.wall_seconds is not None
-            else planned_wall_seconds(args.seeds, args.expected_steps, live, args.episode_seconds),
+            else planned_wall_seconds(games, args.expected_steps, live, args.episode_seconds),
             # --deadline-at: the last evaluation starts while the expected wall (games at
             # the mean steps, without the planned 2x) still fits; the job itself stops
             # admitting games in time for its deadline (evaluate.run).
             "deadline_headroom_seconds": planned_wall_seconds(
-                args.seeds, max(1, args.expected_steps // 2), live, args.episode_seconds),
+                games, max(1, args.expected_steps // 2), live, args.episode_seconds),
             "episode_seconds": args.episode_seconds, "interval": args.interval,
             "max_live": args.max_live, "partition": args.partition,
             "prepare_partition": args.prepare_partition,
@@ -826,7 +1041,11 @@ def main() -> None:
                         "(g-fc-CHAIN, g-fc-CHAIN-rN; supervise.py passes it)")
     parser.add_argument("--interval", type=int, default=INTERVAL_SECONDS)
     parser.add_argument("--workers", type=int, default=WORKERS)
-    parser.add_argument("--seeds", type=int, default=SEEDS)
+    parser.add_argument("--seeds", type=int, default=SEEDS,
+                        help="games per round: the first N seeds of the manifest")
+    parser.add_argument("--batch-seeds", type=int,
+                        help="games per job: a round of more --seeds runs as parallel jobs "
+                             "of at most this many (e.g. 300 seeds, 100 per job; #591)")
     parser.add_argument("--pending-limit", type=int, default=PENDING_LIMIT,
                         help="live games per job (playing + saving + waiting for a shard)")
     parser.add_argument("--save-workers", type=int, default=SAVE_WORKERS)
@@ -881,9 +1100,12 @@ def main() -> None:
         parser.error("--baseline-sha256 goes with --baseline-plan")
     if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
         parser.error("--memory-gb and --wall-seconds are positive (omit for the defaults)")
-    if not 1 <= args.seeds <= evaluate.MAX_DISPATCH_SLOTS:
-        parser.error(f"--seeds 1..{evaluate.MAX_DISPATCH_SLOTS}: one evaluation job admits at "
-                     "most that many games; more seeds (e.g. 300) need batches (#591)")
+    one_job = evaluate.MAX_DISPATCH_SLOTS
+    if args.batch_seeds is not None and not 1 <= args.batch_seeds <= one_job:
+        parser.error(f"--batch-seeds 1..{one_job}: one evaluation job admits at most that many")
+    if args.seeds < 1 or args.batch_seeds is None and args.seeds > one_job:
+        parser.error(f"--seeds 1..{one_job} in one job; more seeds (e.g. 300) need "
+                     "--batch-seeds (e.g. 100: three parallel jobs)")
     try:  # supervise runs --check before generation 0: a refusal stops the chain
         check_manifest(args.manifest.resolve(), args.suite, args.seeds)
         settings = settings_from(args)

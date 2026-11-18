@@ -152,10 +152,16 @@ def test_rl3_learning_curve_roundtrip_and_all_seeds_excluded_from_training(tmp_p
     path = tmp_path / "manifest.json"
     path.write_bytes(json_bytes(manifest))
     assert load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())[1] == manifest
+    # The fixed A0 300 (#591) holds these 100 first, so its rounds pair seed by seed.
+    a300 = suites.rl5_a0_curve_300_manifest("v0.111.0")["seeds"]
+    assert a300[:100] == seeds
     for seed in seeds:
-        assert suites.seed_membership(seed) == (suites.RL3_LEARNING_CURVE_SUITE_ID,)
+        assert suites.seed_membership(seed) == (suites.RL3_LEARNING_CURVE_SUITE_ID,
+                                                suites.RL5_A0_CURVE_300_SUITE_ID)
         with pytest.raises(ValueError, match="reserved"):
             suites.require_non_evaluation_seed(seed)
+    for seed in a300[100:]:  # the 200 new seeds: the 300 suite only
+        assert suites.seed_membership(seed) == (suites.RL5_A0_CURVE_300_SUITE_ID,)
     # Exercise the real actor seed-group producer's reserved-seed failure branch.
     derive = suites.derive_game_seed
     monkeypatch.setattr(suites, "derive_game_seed", lambda name, i:

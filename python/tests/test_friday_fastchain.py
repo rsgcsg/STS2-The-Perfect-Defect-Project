@@ -2942,6 +2942,28 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
     assert execution['storage_mode'] == 'shared_local' and execution['peer'] == {
         'kind': 'local', 'directory': chain.site['peer_dir']}
     assert execution['store'] == chain.site['peer_dir'] and execution['models'] == {}
+    for cmd in started:  # #590: the site release dir; one job per round by default
+        assert cmd[cmd.index('--actor-root') + 1] == chain.site['node_release']
+        assert '--batch-seeds' not in cmd
+
+
+def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
+    """#591/#590: eval_seeds 300 with eval_batch_seeds 100 reach fast_eval; A10 stays one
+    job; a site eval_actor_root replaces node_release."""
+    chain, _ = chain_for(tmp_path, [], eval_seeds='300', eval_batch_seeds='100',
+                         eval_a10_enabled='true', eval_a10_suite='a10-50')
+    chain.site = {**chain.site, 'eval_actor_root': '/release/eval'}
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.dir.mkdir(parents=True)
+    watchers = chain.watchers()
+    a0, a10 = (chain.eval_command(name, watchers[name]) for name in ('a0', 'a10'))
+    assert a0[a0.index('--seeds') + 1] == '300' and a0[a0.index('--batch-seeds') + 1] == '100'
+    assert '--batch-seeds' not in a10
+    for cmd in (a0, a10):
+        assert cmd[cmd.index('--actor-root') + 1] == '/release/eval'
 
 
 def eval_chain(tmp_path, baselines='', **changes):
@@ -3689,8 +3711,10 @@ def stopped_chain(tmp_path, gpu_obeys=False):
         (chain.dir / f'eval-{name}').mkdir(exist_ok=True)
         (chain.dir / f'eval-{name}' / 'state.json').write_text(json.dumps(
             {'evaluations': [{'stage': 'preparing', 'prepare_job': job},
-                             {'stage': 'reported', 'evaluation_job': '800'}]}))
-    cluster.alive |= {'901', '902'}
+                             {'stage': 'reported', 'evaluation_job': '800'},
+                             {'stage': 'submitted',  # a batched round (#591)
+                              'evaluation_jobs': {'evaluation-01': f'{job}1'}}]}))
+    cluster.alive |= {'901', '902', '9011', '9021'}
     (tmp_path / 'run-lr1' / 'STOP').unlink()  # the fake wrote its ending at launch
     ended, cancelled = [], []
 
@@ -3716,18 +3740,19 @@ def test_the_stop_command_ends_a_chain_without_a_live_supervise(tmp_path, capsys
     # watchers (by recorded pid) and their live jobs first (800 is gone), then STOP, the
     # stop grace, then the generation's jobs (dependents first, GPU last)
     assert ended == [7, 7]
-    assert cancelled == [['901', '902'], ['101'], ['100']] and cluster.alive == set()
+    assert cancelled == [['901', '9011', '902', '9021'], ['101'], ['100']]
+    assert cluster.alive == set()
     assert cluster.now - start >= stopper.knobs['stop_grace_seconds']
     assert (tmp_path / 'run-lr1' / 'STOP').read_text() == \
         'service stop: operator stop (supervise.py stop)\n'
     assert (stopper.dir / 'STOP-REQUESTED').exists()
     report = json.loads((stopper.dir / 'stop-report.json').read_text())
     assert report['generation'] == 0 and report['generation_stop'].startswith('STOP written')
-    assert "evaluation jobs ['901', '902'] cancelled" in report['watchers']
+    assert "evaluation jobs ['901', '9011', '902', '9021'] cancelled" in report['watchers']
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == report
     # STOP obeyed: nothing of the generation is cancelled
     stopper, cluster, ended, cancelled = stopped_chain(tmp_path / 'obeys', gpu_obeys=True)
-    assert stopper.stop() == 0 and cancelled == [['901', '902']]
+    assert stopper.stop() == 0 and cancelled == [['901', '9011', '902', '9021']]
     assert 'every job ended within 0 s' in json.loads(
         (stopper.dir / 'stop-report.json').read_text())['generation_stop']
 

@@ -325,10 +325,33 @@ def _uncached_membership(seed):
     curve = (rl3["suite_id"],) if canonical in rl3["seeds"] else ()
     a10 = suites.rl5_a10_curve_manifest("v0.111.0")
     curve += (a10["suite_id"],) if canonical in a10["seeds"] else ()
+    a300 = suites.rl5_a0_curve_300_manifest("v0.111.0")
+    curve += (a300["suite_id"],) if canonical in a300["seeds"] else ()
     sealed = tuple(m["suite_id"] for m in (suites.rl5_int_sealed_manifest("v0.111.0", a)
                                            for a in (0, 10)) if canonical in m["seeds"])
     return (legacy + ((suites.FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
             + checkpoint + t2 + curve + sealed)
+
+
+def test_a0_300_extends_the_a0_100_and_is_disjoint_from_the_sealed_set():
+    """#591: the A0 300 is the A0 100 (pairs by seed with every A0 100 round) plus 200 seeds
+    of its own id; no seed of the sealed sets; every seed is barred from training."""
+    from stpd.evaluation import suites
+
+    a100 = suites.rl3_learning_curve_manifest("v0.111.0")
+    a300 = suites.rl5_a0_curve_300_manifest("v0.111.0")
+    assert a300["seeds"][:100] == a100["seeds"] and len(set(a300["seeds"])) == 300
+    assert a300["episode_count"] == 300 and a300["purpose"] == "fixed_evaluation_only"
+    assert a300["ascension"] == 0 and a300["collection_training_RL"] == "forbidden"
+    sealed = {s for a in suites.RL5_INT_SEALED_COUNTS
+              for s in suites.rl5_int_sealed_manifest("v0.111.0", a)["seeds"]}
+    assert not sealed.intersection(a300["seeds"])
+    for seed in a300["seeds"][:100]:
+        assert seed_membership(seed) == (a100["suite_id"], a300["suite_id"])
+    for seed in a300["seeds"][100:]:  # new: in no other reserved set
+        assert seed_membership(seed) == (a300["suite_id"],)
+        with pytest.raises(ValueError, match="reserved"):
+            suites.require_non_evaluation_seed(seed)
 
 
 def test_cached_membership_index_equals_the_uncached_query():

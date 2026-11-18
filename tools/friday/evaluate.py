@@ -58,6 +58,23 @@ ACTOR_LAYOUT = {"env/bin/python": "evaluation Python env", "node22.23.4/bin/node
                 "game": "deployed game (STS2_GAME_DIR)", "dotnet-sdk9.0.117": ".NET SDK"}
 # One evaluation job admits at most this many games (`EvaluationLedger.run_managed`).
 MAX_DISPATCH_SLOTS = 200
+BATCHES = "batches.json"  # a round of several evaluation jobs (#591): written last
+
+
+def batch_ordinals(seeds: int, batch_seeds: int | None) -> list[list[int]] | None:
+    """The manifest ordinals of each job of a round of `seeds` games, `batch_seeds` per
+    job (the last one smaller), or None for one job of the first `seeds` (unchanged)."""
+    if batch_seeds is None or batch_seeds >= seeds:
+        return None
+    return [list(range(first, min(first + batch_seeds, seeds + 1)))
+            for first in range(1, seeds + 1, batch_seeds)]
+
+
+def batch_directories(seeds: int, batch_seeds: int | None) -> list[str]:
+    """The round's evaluation directories: `evaluation`, or `evaluation-01`, ..."""
+    batches = batch_ordinals(seeds, batch_seeds)
+    return (["evaluation"] if batches is None
+            else [f"evaluation-{number:02d}" for number in range(1, len(batches) + 1)])
 
 
 def actor_layout_missing(actor: Path) -> list[str]:
@@ -254,17 +271,20 @@ def prepare_learning_curve_manifest(game_directory: Path, output: Path,
                                     suite: str | None = None) -> dict[str, Any]:
     """Use the exact shipped version, including its v prefix; never guess a version.
 
-    `suite`: the fixed A0 100 (default) or the fixed A10 50, each frozen and reported
-    on its own.
+    `suite`: the fixed A0 100 (default), the fixed A0 300 (the A0 100 plus 200, #591) or
+    the fixed A10 50, each frozen and reported on its own.
     """
     from stpd.evaluation.suites import (
         RL3_LEARNING_CURVE_SUITE_ID,
+        RL5_A0_CURVE_300_SUITE_ID,
         RL5_A10_CURVE_SUITE_ID,
         rl3_learning_curve_manifest,
+        rl5_a0_curve_300_manifest,
         rl5_a10_curve_manifest,
     )
 
     builders = {RL3_LEARNING_CURVE_SUITE_ID: rl3_learning_curve_manifest,
+                RL5_A0_CURVE_300_SUITE_ID: rl5_a0_curve_300_manifest,
                 RL5_A10_CURVE_SUITE_ID: rl5_a10_curve_manifest}
     if (suite or RL3_LEARNING_CURVE_SUITE_ID) not in builders:
         raise ValueError('fixed_learning_curve_suite_required')
@@ -282,20 +302,26 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
                        deadline_at: float | None = None,
                        pending_limit: int | None = None, save_workers: int | None = None,
                        memory_gb: int | None = None,
-                       actor: Path | None = None) -> dict[str, Any]:
+                       actor: Path | None = None,
+                       batch_seeds: int | None = None) -> dict[str, Any]:
     """`pending_limit`/`save_workers` (given together) replace the execution template's
     pipeline; `memory_gb` is the evaluation job's memory request (fast_eval settings);
     `actor`: the evaluation job's actor root (default: the source checkout's parent).
 
     `seeds`: the first N seeds of the frozen manifest, 1..MAX_DISPATCH_SLOTS and at most
     the manifest's length (`prepare`). The old 50..100 floor/ceiling was the RL4.1
-    watcher's setting on the 100-seed A0 suite, not a limit of this code."""
+    watcher's setting on the 100-seed A0 suite, not a limit of this code. With
+    `batch_seeds` (1..MAX_DISPATCH_SLOTS) any `seeds` up to the manifest's length runs
+    as parallel jobs of at most that many games (`prepare_round`, #591)."""
     from spireagent.source import source_identity
     from spireagent.storage.config import open_peer
     from spireagent.workbench.global_evidence_store import publish_detached_p1_model
     from stpd.evaluation.rl_checkpoint import export_checkpoint
 
-    if type(seeds) is not int or not 1 <= seeds <= MAX_DISPATCH_SLOTS:
+    if batch_seeds is not None and (
+            type(batch_seeds) is not int or not 1 <= batch_seeds <= MAX_DISPATCH_SLOTS):
+        raise ValueError('bounded_evaluation_batch_size_required')
+    if type(seeds) is not int or seeds < 1 or batch_seeds is None and seeds > MAX_DISPATCH_SLOTS:
         raise ValueError('bounded_evaluation_seed_count_required')
     if actor is not None and not actor.is_absolute():
         raise ValueError('absolute_evaluation_actor_root_required')
@@ -318,17 +344,43 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
     if pending_limit is not None or save_workers is not None:
         execution['pipeline'] = {'pending_limit': pending_limit, 'save_workers': save_workers}
     save(output / 'input-execution.json', execution)
-    plan = prepare(output / 'input-execution.json', output / 'evaluation',
-        selections={'checkpoint': 'checkpoint'}, workers=workers, wall_seconds=wall_seconds,
-        episode_seconds=episode_seconds, manifest_path=manifest, seed_prefix=seeds,
-        runtime_source=Path(__file__).resolve().parents[2], observation_report=True,
-        unknown_policy='continue_cleaned', deadline_at=deadline_at, memory_gb=memory_gb)
-    plan['checkpoint_binding'] = {'path': str(output / 'checkpoint-binding.json'),
-                                 'sha256': hashed(output / 'checkpoint-binding.json')}
-    if actor is not None:
-        plan['actor_root'] = str(actor)
-    save(output / 'evaluation/plan.json', plan)
-    return plan
+    return prepare_round(output, manifest, seeds=seeds, batch_seeds=batch_seeds, actor=actor,
+                         workers=workers, wall_seconds=wall_seconds,
+                         episode_seconds=episode_seconds, deadline_at=deadline_at,
+                         memory_gb=memory_gb)
+
+
+def prepare_round(output: Path, manifest: Path, *, seeds: int, batch_seeds: int | None,
+                  actor: Path | None, **options: Any) -> dict[str, Any]:
+    """The plans of one CP round from `output/input-execution.json` and
+    `output/checkpoint-binding.json`: one job (`evaluation/`, the first `seeds`) or, with
+    `batch_seeds`, one job per batch of ordinals, then `batches.json` (written last: its
+    presence means every plan exists). Returns the plan, or `{batches: [plans]}`."""
+    binding = {'path': str(output / 'checkpoint-binding.json'),
+               'sha256': hashed(output / 'checkpoint-binding.json')}
+    batches = batch_ordinals(seeds, batch_seeds)
+    directories = batch_directories(seeds, batch_seeds)
+    plans = []
+    for directory, ordinals in zip(directories, batches or [None], strict=True):
+        choice = ({'seed_prefix': seeds} if ordinals is None
+                  else {'seed_ordinals': ordinals})
+        plan = prepare(output / 'input-execution.json', output / directory,
+            selections={'checkpoint': 'checkpoint'}, manifest_path=manifest,
+            runtime_source=Path(__file__).resolve().parents[2], observation_report=True,
+            unknown_policy='continue_cleaned', **choice, **options)
+        plan['checkpoint_binding'] = binding
+        if actor is not None:
+            plan['actor_root'] = str(actor)
+        save(output / directory / 'plan.json', plan)
+        plans.append(plan)
+    if batches is None:
+        return plans[0]
+    save(output / BATCHES, {
+        'schema': SCHEMA + '/batches', 'seeds': seeds, 'batch_seeds': batch_seeds,
+        'batches': [{'directory': directory, 'seed_ordinals': [ordinals[0], ordinals[-1]],
+                     'plan_sha256': hashed(output / directory / 'plan.json')}
+                    for directory, ordinals in zip(directories, batches, strict=True)]})
+    return {'batches': plans}
 
 
 def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.py',
@@ -1156,6 +1208,8 @@ def main():
                            help='job memory request (default 4 GB per worker)')
     cp_parser.add_argument('--actor-root', type=Path,
                            help='evaluation actor root (default: the source parent)')
+    cp_parser.add_argument('--batch-seeds', type=int,
+                           help='games per job: --seeds runs as parallel jobs (#591)')
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--execution', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
@@ -1216,7 +1270,7 @@ def main():
             wall_seconds=args.wall_seconds, episode_seconds=args.episode_seconds,
             construction_package=args.construction_package, deadline_at=args.deadline_at,
             pending_limit=args.pending_limit, save_workers=args.save_workers,
-            memory_gb=args.memory_gb, actor=args.actor_root)
+            memory_gb=args.memory_gb, actor=args.actor_root, batch_seeds=args.batch_seeds)
     elif args.command == 'prepare':
         pairs = [value.split('=', 1) for value in args.selection]
         if any(len(pair) != 2 or not all(pair) for pair in pairs):
