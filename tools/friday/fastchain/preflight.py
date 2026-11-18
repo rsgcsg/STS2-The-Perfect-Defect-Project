@@ -771,14 +771,14 @@ def check_queue(facts: dict[str, Any]) -> Result:
 def check_evaluation_jobs(plan: dict[str, Any]) -> Result:
     """Printed (#612): where the evaluation watchers' jobs run (site eval_partition /
     eval_constraint; absent = today's partition general without a constraint) and the
-    share of unknown + censored + not-started games above which a round is degraded. The
+    share of planned games not finished and scored above which a round is degraded. The
     node class decided usability on hardware: the slow class cut 81 of 300 games."""
     site, k = plan["site"], plan["knobs"]
     partition = site.get("eval_partition") or "general (fast_eval default)"
     constraint = site.get("eval_constraint") or "none"
     return Result("evaluation_jobs", True, f"partition {partition}, node constraint "
-                  f"{constraint}; a round above {k['eval_degraded_share']:.0%} unknown + "
-                  "censored + not started is labelled degraded, never a baseline",
+                  f"{constraint}; a round above {k['eval_degraded_share']:.0%} of planned games "
+                  "not finished and scored is labelled degraded, never a baseline",
                   warn=not site.get("eval_constraint"))
 
 

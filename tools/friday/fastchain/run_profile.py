@@ -478,7 +478,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "eval_batch_seeds": _int(0, 200),
     # after the chain: how long a watcher waits for its final CP to show (0 = until stop)
     "eval_final_grace_seconds": _int(0, 86400),
-    # #612: a round above this share of unknown + censored + not-started games is degraded
+    # #612: a round above this share of planned games not finished and scored is degraded
+    # (fast_eval --degraded-share takes the same [0, 0.99])
     "eval_degraded_share": _num(0, 0.99),
     "disk_sample_seconds": _int(5, 3600),
     "disk_warn_free_pct": _int(1, 99),

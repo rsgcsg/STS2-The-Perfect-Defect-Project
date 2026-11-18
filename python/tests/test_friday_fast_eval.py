@@ -41,8 +41,9 @@ SETTINGS = {'learner_config': '/w/learner.json', 'peer': {'kind': 'local', 'dire
             'interval': 7200, 'max_live': 2, 'partition': 'general',
             'prepare_partition': 'debug', 'exclude_nodes': [], 'deadline_at': None,
             'deadline_headroom_seconds': 7388}
-CLEAN = {'degraded': False, 'share': 0.0, 'threshold': 0.1, 'planned': 100, 'unknown': 0,
-         'censored': 0, 'not_started': 0}  # a report summary's `degraded` (#612)
+CLEAN = {'degraded': False, 'share': 0.0, 'threshold': 0.1, 'planned': 100, 'scored': 100,
+         'unknown': 0, 'censored': 0, 'not_started': 0, 'other': 0, 'finished_unscored': 0,
+         'missing_batch': 0}  # a report summary's `degraded` (#612)
 
 
 class World:
@@ -1403,11 +1404,13 @@ def test_a_round_with_a_missing_batch_never_blocks_the_rounds_after_it(fast_eval
     assert 'PREVIOUS IS PARTIAL: 1 of 2 batches, 2 games' in readme
 
 
-def real_round(fast_eval, root, bindings=('binding',) * 3):
+def real_round(fast_eval, root, bindings=('binding',) * 3, batches=None, missing=0):
     """A batched round of three real-shaped batch ledgers (#612, test_rl_observation's
-    REAL_BATCHES: one batch's formal-audit game cut, unknown/censored/not-started games),
-    each plan naming the round's checkpoint binding as evaluate.prepare_round writes it.
-    Returns the round's plans and a reader standing in for read_observation_report."""
+    REAL_BATCHES unless `batches`: one batch's formal-audit game cut, unknown/censored/
+    not-started games), each plan naming the round's checkpoint binding as
+    evaluate.prepare_round writes it; `missing` > 0 adds a batch of that many games whose
+    job failed (no report). Returns the round's plans and a reader standing in for
+    read_observation_report."""
     from stpd.evaluation.rl_observation import load_cohort
 
     shapes = module_file('rl_observation_shapes',
@@ -1415,8 +1418,8 @@ def real_round(fast_eval, root, bindings=('binding',) * 3):
     seeds = [f'STPD{ordinal:028X}' for ordinal in range(1, 13)]
     round_dir = root / 'round'
     plans, cohorts = [], {}
-    for number, (rows, binding) in enumerate(zip(shapes.REAL_BATCHES, bindings, strict=True),
-                                             start=1):
+    for number, (rows, binding) in enumerate(zip(batches or shapes.REAL_BATCHES, bindings,
+                                                 strict=True), start=1):
         plan = batch_plan(round_dir / f'evaluation-0{number}', seeds, 4)
         plan.write_text(json.dumps({**json.loads(plan.read_text()), 'checkpoint_binding': {
             'path': str(round_dir / 'checkpoint-binding.json'), 'sha256': binding}}))
@@ -1424,8 +1427,13 @@ def real_round(fast_eval, root, bindings=('binding',) * 3):
             {'status': 'completed', 'observation_report': {}}))
         cohorts[str(plan)] = load_cohort(shapes.real_batch_result(plan.parent, number, rows))
         plans.append(plan)
+    every = list(plans)
+    if missing:
+        absent = batch_plan(round_dir / 'evaluation-04', seeds, missing)
+        (absent.parent / 'result.json').write_text(json.dumps({'status': 'failed'}))
+        every.append(absent)
     (round_dir / 'batches.json').write_text(json.dumps({'batches': [
-        {'directory': p.parent.name, 'plan_sha256': fast_eval_hash(p)} for p in plans]}))
+        {'directory': p.parent.name, 'plan_sha256': fast_eval_hash(p)} for p in every]}))
 
     def read(result, plan, validate_plan=True):
         return json.loads(Path(plan).read_text()), {}, {'cohort': cohorts[str(plan)]}
@@ -1434,9 +1442,10 @@ def real_round(fast_eval, root, bindings=('binding',) * 3):
 
 def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, tmp_path):
     """#612: three batches of one model whose ledgers differ in admission (a cut audit
-    game) merge into one report; the batch closed unscored is named; 6 of 12 games
-    unknown/censored/not started is above 10%: DEGRADED in the report's first lines with
-    the counts, next to where the jobs ran; another checkpoint binding is refused."""
+    game) merge into one report; the batch closed unscored is named; 8 of 12 games not
+    finished-and-scored (6 unknown/censored/not started + batch 02's 2 unadmitted finished)
+    is above 10%: DEGRADED in the report's first lines with the buckets, next to where the
+    jobs ran; another checkpoint binding is refused."""
     plans, read = real_round(fast_eval, tmp_path / 'eval')
     where = {'partition': 'general', 'constraint': 'fastclass'}
     with patch.object(fast_eval.evaluate, 'read_observation_report', read):
@@ -1444,9 +1453,10 @@ def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, 
                                                     submission=where)
     assert summary['batches'] == ['evaluation-01', 'evaluation-02', 'evaluation-03']
     assert summary['batches_not_admitted'] == ['evaluation-02']
-    assert summary['degraded'] == {'degraded': True, 'share': 0.5, 'threshold': 0.1,
-                                   'planned': 12, 'unknown': 3, 'censored': 2,
-                                   'not_started': 1}
+    assert summary['degraded'] == {'degraded': True, 'share': 8 / 12, 'threshold': 0.1,
+                                   'planned': 12, 'scored': 4, 'unknown': 3, 'censored': 2,
+                                   'not_started': 1, 'other': 0, 'finished_unscored': 2,
+                                   'missing_batch': 0}
     now = summary['cohorts']['current']
     assert now['planned'] == 12 and now['scored'] == 4 and now['wins'] == 1
     assert len(now['excluded']) == 8  # 6 unresolved + batch 02's 2 unadmitted finished
@@ -1454,8 +1464,9 @@ def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, 
     readme = (tmp_path / 'eval/report/README.md').read_text().splitlines()
     header = ' '.join(readme[:4])
     assert 'Evaluation jobs: partition general, node constraint fastclass.' in header
-    assert ('DEGRADED ROUND: unknown 3, censored 2, not started 1 of 12 planned games '
-            '(50.0%, threshold 10%)') in header
+    assert ('DEGRADED ROUND: 8 of 12 planned games not finished and scored (66.7%, '
+            'threshold 10%): unknown 3, censored 2, not started 1, save_failed/other 0, '
+            'finished but unscored (batch not admitted) 2, missing batch 0') in header
     assert 'BATCHES NOT SCORE-ADMITTED' in header and 'evaluation-02' in header
     record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
     assert record['degraded'] == summary['degraded'] and record['submission'] == where
@@ -1465,7 +1476,7 @@ def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, 
     shutil.rmtree(tmp_path / 'eval/report')
     with patch.object(fast_eval.evaluate, 'read_observation_report', read):
         loose = fast_eval.write_evaluation_report(tmp_path / 'eval', None, None,
-                                                  degraded_share=0.5)
+                                                  degraded_share=0.7)
     assert loose['degraded']['degraded'] is False and loose['submission'] is None
     readme = (tmp_path / 'eval/report/README.md').read_text()
     assert 'DEGRADED' not in readme and 'Evaluation jobs:' not in readme
@@ -1473,6 +1484,33 @@ def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, 
     with (patch.object(fast_eval.evaluate, 'read_observation_report', read),
           pytest.raises(ValueError, match='merged_batches_must_share_one_checkpoint_binding')):
         fast_eval.write_evaluation_report(tmp_path / 'other', None, None)
+
+
+def test_every_planned_game_not_finished_and_scored_counts_toward_degraded(
+        fast_eval, tmp_path):
+    """#612 review (lead rule): degraded share = (planned - finished and scored) / planned.
+    A save_failed game, the unadmitted batch's finished games and a batch with no report
+    (its planned games stay in the denominator) all count, in named buckets that add up."""
+    shapes = module_file('rl_observation_shapes',
+                         Path(__file__).with_name('test_rl_observation.py'))
+    batches = [list(rows) for rows in shapes.REAL_BATCHES]
+    batches[2][3] = (12, 'save_failed', 'trajectory_save_failed', 7, None, False)
+    plans, read = real_round(fast_eval, tmp_path / 'eval', batches=batches, missing=4)
+    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', None, None,
+                                                    degraded_share=0.75)
+    value = summary['degraded']
+    assert summary['batches_missing'][0]['batch'] == 'evaluation-04'
+    assert summary['batches_not_admitted'] == ['evaluation-02']
+    assert {k: value[k] for k in ('planned', 'scored', 'unknown', 'censored', 'not_started',
+                                  'other', 'finished_unscored', 'missing_batch')} == {
+        'planned': 16, 'scored': 3, 'unknown': 3, 'censored': 2, 'not_started': 1,
+        'other': 1, 'finished_unscored': 2, 'missing_batch': 4}
+    assert value['planned'] - value['scored'] == sum(value[k] for k in (
+        'unknown', 'censored', 'not_started', 'other', 'finished_unscored', 'missing_batch'))
+    assert value['share'] == 13 / 16 and value['degraded'] is True  # above 0.75
+    readme = (tmp_path / 'eval/report/README.md').read_text()
+    assert 'save_failed/other 1' in readme and 'missing batch 4' in readme
 
 
 def test_a_degraded_round_is_reported_loudly_and_never_a_baseline(fast_eval, tmp_path, capsys):
@@ -1517,9 +1555,12 @@ def test_a_degraded_round_is_reported_loudly_and_never_a_baseline(fast_eval, tmp
           patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER)):
         problems = fast_eval.start_problems(settings, {'agent_adapter': ADAPTER})
         assert problems[0].startswith(
-            'baseline_round_degraded: unknown 3, censored 2, not started 1 of 12 planned games')
+            f"baseline_round_degraded: {baseline['plan']}: 8 of 12 planned games not "
+            'finished and scored')
         assert 'never a pairing baseline' in problems[0]
-        loose = fast_eval.start_problems({**settings, 'degraded_share': 0.5},
+        assert "eval_baselines.<name>" in problems[0] and '--eval-no-baseline' in problems[0]
+        assert '--no-baseline' in problems[0].split('by hand')[1]
+        loose = fast_eval.start_problems({**settings, 'degraded_share': 0.7},
                                          {'agent_adapter': ADAPTER})
         assert not any('baseline' in p for p in loose)
     unreadable = fast_eval.start_problems({**settings, 'baseline': {
@@ -1568,7 +1609,7 @@ def test_the_node_class_comes_from_flags_or_the_site_and_reaches_every_submissio
     finish_prepare(world, plain.state['evaluations'][0])
     plain.tick()
     assert world.submits[-1][1]['constraint'] is None  # today: no --constraint
-    for bad in (['--degraded-share', '1'], ['--constraint', ' ']):
+    for bad in (['--degraded-share', '0.995'], ['--constraint', ' ']):
         argv = ['fast_eval.py', '--learner-config', 'l', '--execution', 'e', '--manifest',
                 'm', '--output', str(tmp_path), '--dry-run', '--no-baseline', *bad]
         with patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as stopped:

@@ -3012,7 +3012,7 @@ def test_the_evaluation_node_class_and_degraded_threshold_reach_watchers_and_pre
     result = preflight.check_evaluation_jobs(plan)
     assert result.ok and result.warn  # no constraint: printed as a warning, never refused
     assert result.detail.startswith('partition general (fast_eval default), node constraint '
-                                    'none; a round above 10% unknown')
+                                    'none; a round above 10% of planned games not finished')
     placed = preflight.check_evaluation_jobs({**plan, 'site': {
         **plan['site'], 'eval_partition': 'general', 'eval_constraint': 'fastclass'}})
     assert placed.ok and not placed.warn and 'node constraint fastclass' in placed.detail

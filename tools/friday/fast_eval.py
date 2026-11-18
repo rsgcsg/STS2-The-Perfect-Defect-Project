@@ -75,15 +75,16 @@ starts with the A0 100 seeds), and may be named by its `batches.json`.
 Batches of one round each carry their own ledger admission: a batch whose formal-audit
 game did not finish is closed unscored by its ledger (its games stay rows, never scores)
 and is named in `batches_not_admitted`; the batches still merge (#612). Batches with
-another checkpoint binding, model selection, character or ascension are refused.
+another checkpoint binding, model selection, host kind, character or ascension are refused.
 
 Node class (#612): `--partition` / `--constraint` (or a site profile's `eval_partition` /
 `eval_constraint` through `--site`; supervise passes them) place the evaluation jobs;
 none given = today's submission (partition general, no constraint). The report's first
-lines name them. A round whose unknown + censored + not-started games exceed
-`--degraded-share` (default 0.10, the rolling unknown gate) of its planned games is
-reported all the same, labelled DEGRADED with its counts (loud
-`evaluation_round_degraded`), and refused as a baseline at start.
+lines name them. A round whose planned games that are not finished-and-scored exceed
+`--degraded-share` (default 0.10, the rolling unknown gate) of its planned games (a
+batch without a report keeps its games in the planned count) is reported all the same,
+labelled DEGRADED with its counts by bucket (loud `evaluation_round_degraded`), and
+refused as a baseline at start.
 
 A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summary.json,
 eval-record.json and the report say "smoke, not a decision result", and no reference is
@@ -164,10 +165,11 @@ UNKNOWN = ("prepare_submit_unknown", "submit_unknown")  # delivery unknown: neve
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 PARTITIONS = ("smp", "general", "debug")  # evaluate.submit's CPU partitions
 DEFAULT_PARTITION = "general"
-# #612: a round whose unknown + censored + not-started games exceed this share of its
-# planned games is degraded (the project's 10% rolling unknown gate): reported and labelled,
-# never voided, never a pairing baseline. --degraded-share / profile eval_degraded_share.
+# #612: a round whose planned games that are not finished-and-scored exceed this share
+# is degraded (the project's 10% rolling unknown gate): reported and labelled, never voided,
+# never a pairing baseline. --degraded-share / profile eval_degraded_share (both [0, 0.99]).
 DEGRADED_SHARE = 0.10
+MAX_DEGRADED_SHARE = 0.99
 DEGRADED_STATUSES = ("unknown", "censored", "not_started")
 
 
@@ -374,21 +376,34 @@ def pairing_note(pairing: dict[str, Any] | None) -> str:
             f"re-freeze record sha256 {record['sha256']} ({record['reason']}).")
 
 
-def degradation(cohort: dict[str, Any], threshold: float) -> dict[str, Any]:
-    """The round's unknown, censored and not-started counts and their share of its planned
-    games; `degraded` above `threshold` (#612). The games stay in the cohort, excluded and
-    counted as before."""
-    counts = {status: cohort["status_counts"].get(status, 0) for status in DEGRADED_STATUSES}
-    planned = cohort["planned"]
-    share = sum(counts.values()) / planned if planned else 0.0
+def degradation(cohort: dict[str, Any], threshold: float,
+                missing: list[dict[str, Any]] = ()) -> dict[str, Any]:
+    """Share of the round's planned games that are not finished and scored; `degraded`
+    above `threshold` (#612, lead rule). Planned = the reported batches' games plus the
+    games of `missing` batches (no report). The buckets add up to planned - scored:
+    unknown, censored, not_started, other (save_failed or any other unfinished status),
+    finished_unscored (finished, not scored: a batch its ledger did not admit) and
+    missing_batch. The games stay in the cohort, excluded and counted as before."""
+    statuses = cohort["status_counts"]
+    counts = {status: statuses.get(status, 0) for status in DEGRADED_STATUSES}
+    finished = statuses.get("finished", 0)
+    scored = sum(1 for row in cohort["rows"] if row["scored"])
+    missing_games = sum(int(batch["games"]) for batch in missing)
+    planned = cohort["planned"] + missing_games
+    share = (planned - scored) / planned if planned else 0.0
     return {"degraded": share > threshold, "share": share, "threshold": threshold,
-            "planned": planned, **counts}
+            "planned": planned, "scored": scored, **counts,
+            "other": cohort["planned"] - finished - sum(counts.values()),
+            "finished_unscored": finished - scored, "missing_batch": missing_games}
 
 
 def degradation_text(value: dict[str, Any]) -> str:
-    return (f"unknown {value['unknown']}, censored {value['censored']}, not started "
-            f"{value['not_started']} of {value['planned']} planned games "
-            f"({value['share']:.1%}, threshold {value['threshold']:.0%})")
+    return (f"{value['planned'] - value['scored']} of {value['planned']} planned games not "
+            f"finished and scored ({value['share']:.1%}, threshold {value['threshold']:.0%}): "
+            f"unknown {value['unknown']}, censored {value['censored']}, not started "
+            f"{value['not_started']}, save_failed/other {value['other']}, finished but "
+            f"unscored (batch not admitted) {value['finished_unscored']}, missing batch "
+            f"{value['missing_batch']}")
 
 
 def read_round(reference: Path, plans: list[Path] | None = None, *,
@@ -415,8 +430,11 @@ def baseline_problem(baseline: dict[str, Any] | None, threshold: float) -> str |
     group, _ = read_round(Path(baseline["plan"]), validate_plan=False)
     value = degradation(group, threshold)
     if value["degraded"]:
-        return (f"baseline_round_degraded: {degradation_text(value)}; a degraded round is "
-                f"never a pairing baseline: name another round or --no-baseline")
+        return (f"baseline_round_degraded: {baseline['plan']}: {degradation_text(value)}; "
+                "a degraded round is never a pairing baseline: under supervise name another "
+                "round in the site's eval_baselines.<name> (or --eval-baseline-plan) or "
+                "pass --eval-no-baseline; by hand pass another --baseline-plan or "
+                "--no-baseline")
     return None
 
 
@@ -962,8 +980,8 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     watcher adds its own times). A batched round (#591) is one merged cohort of its
     batches with an observation report; the others are named in `batches_missing`, and
     a batch its ledger closed unscored (formal-audit slot not finished) in
-    `batches_not_admitted`. A round above `degraded_share` unknown + censored + not
-    started is labelled degraded (`degraded`, the report's first line); `submission`
+    `batches_not_admitted`. A round above `degraded_share` of planned games (missing
+    batches included) not finished and scored is labelled degraded (`degraded`, the report's first line); `submission`
     (partition, constraint) heads the report.
     """
     from stpd.evaluation.rl_observation import write_report
@@ -989,7 +1007,7 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     smoke = current["planned"] < DECISION_GAMES
     not_compared = [name for name, reference in references if reference] if smoke else []
     pairing = baseline.get("adapter_pairing") if baseline else None
-    degraded = degradation(current, degraded_share)
+    degraded = degradation(current, degraded_share, missing)
     admitted = current.get("score_admitted_batches") or [current["score_admitted"]]
     not_admitted = [p.parent.name for p, ok in zip(plans, admitted, strict=True) if not ok]
     notes = []
@@ -1373,8 +1391,8 @@ def main() -> None:
         parser.error("save-workers 1..4, pending-limit save-workers..16 (pipeline maximums)")
     if bool(args.baseline_plan) == bool(args.no_baseline):
         parser.error("exactly one of --baseline-plan or --no-baseline")
-    if args.degraded_share is not None and not 0 <= args.degraded_share < 1:
-        parser.error("--degraded-share in [0, 1)")
+    if args.degraded_share is not None and not 0 <= args.degraded_share <= MAX_DEGRADED_SHARE:
+        parser.error(f"--degraded-share in [0, {MAX_DEGRADED_SHARE}]")
     if args.constraint is not None and not args.constraint.strip():
         parser.error("--constraint is a node feature expression (omit for none)")
     if args.baseline_sha256 and not args.baseline_plan:

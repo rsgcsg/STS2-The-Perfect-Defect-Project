@@ -225,8 +225,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--site S` 读同一对值，旗标与站点不同则拒绝），preflight 的 `evaluation_jobs` 行和每轮报告
   开头都写明。慢节点类曾把 300 局切掉 81 局。分批轮里各批账本自己决定是否计分：某批的正式审计
   局没跑完，该批整批不计分（局仍在行里），报告点名 `batches_not_admitted`，各批照常合并。
-  一轮的 unknown + censored + 未开始 超过 `eval_degraded_share`（默认 0.10，滚动 unknown 门槛）
-  时报告首行标 DEGRADED 和各计数，看守照常报告并响亮记 `evaluation_round_degraded`（排除并计数，
+  一轮计划局中"没有跑完并计分"的比例超过 `eval_degraded_share`（默认 0.10，滚动 unknown 门槛；
+  unknown、censored、未开始、save_failed 等、不计分批里跑完的局、没交报告的批的局都算，没交报告的
+  批的局留在分母里）时报告首行标 DEGRADED 和各分项计数，看守照常报告并响亮记 `evaluation_round_degraded`（排除并计数，
   不作废、不停链）；这样的轮做基线时起步检查直接拒绝。
 - 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
   删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
