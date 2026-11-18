@@ -39,6 +39,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from learner_config import DECLARABLE  # noqa: E402
 
+# evaluate.CLOSE_RESERVE_SECONDS (a test keeps them equal): wall kept after the last game start
+EVAL_CLOSE_RESERVE_SECONDS = 900
+
 SCHEMA = "spireagent/friday-fastchain-profile-1"
 SITE_SCHEMA = "spireagent/friday-fastchain-site-1"
 FIELDS = ("value", "default", "why", "measured")
@@ -261,10 +264,11 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["checkpoint_keep_newest"] == 1:
         out.append("checkpoint_keep_newest is 0 (keep every CP) or >= 2: the newest is the "
                    "resume CP, the one before covers an evaluation's claim (cp_retention.py)")
-    if values["eval_wall_seconds"] and (
-            values["eval_wall_seconds"] <= values["eval_episode_seconds"] + 180):
+    floor = values["eval_episode_seconds"] + EVAL_CLOSE_RESERVE_SECONDS
+    if values["eval_wall_seconds"] and values["eval_wall_seconds"] <= floor:
         out.append(f"eval_wall_seconds {values['eval_wall_seconds']} is 0 (planned) or above "
-                   f"eval_episode_seconds + 180 ({values['eval_episode_seconds'] + 180})")
+                   f"eval_episode_seconds + {EVAL_CLOSE_RESERVE_SECONDS} ({floor}): no game "
+                   "could start (start window = wall - cap - reserve)")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if (any(w != 1 for w in values["hp_combat_weights"].values())

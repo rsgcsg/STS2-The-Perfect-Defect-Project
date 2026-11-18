@@ -1405,8 +1405,9 @@ def main() -> None:
     if not 10 <= args.episode_seconds <= evaluate.MAX_EPISODE_SECONDS:
         parser.error(f"--episode-seconds 10..{evaluate.MAX_EPISODE_SECONDS}")
     if args.wall_seconds is not None and not (
-            args.episode_seconds + 180 < args.wall_seconds <= MAX_WALL_SECONDS):
-        parser.error(f"--wall-seconds above --episode-seconds + 180, at most {MAX_WALL_SECONDS}")
+            args.episode_seconds + CLOSE_SECONDS < args.wall_seconds <= MAX_WALL_SECONDS):
+        parser.error(f"--wall-seconds above --episode-seconds + {CLOSE_SECONDS} (no game could "
+                     f"start), at most {MAX_WALL_SECONDS}")
     one_job = evaluate.MAX_DISPATCH_SLOTS
     if args.batch_seeds is not None and not 1 <= args.batch_seeds <= one_job:
         parser.error(f"--batch-seeds 1..{one_job}: one evaluation job admits at most that many")

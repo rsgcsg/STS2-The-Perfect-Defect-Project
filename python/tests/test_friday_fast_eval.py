@@ -1611,7 +1611,7 @@ def test_the_node_class_comes_from_flags_or_the_site_and_reaches_every_submissio
     assert world.submits[-1][1]['constraint'] is None  # today: no --constraint
     for bad in (['--degraded-share', '0.995'], ['--constraint', ' '],
                 ['--episode-seconds', '7201'],  # #614: evaluate.MAX_EPISODE_SECONDS
-                ['--episode-seconds', '3600', '--wall-seconds', '3780']):
+                ['--episode-seconds', '3600', '--wall-seconds', '4500']):  # wall <= cap + reserve
         argv = ['fast_eval.py', '--learner-config', 'l', '--execution', 'e', '--manifest',
                 'm', '--output', str(tmp_path), '--dry-run', '--no-baseline', *bad]
         with patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as stopped:

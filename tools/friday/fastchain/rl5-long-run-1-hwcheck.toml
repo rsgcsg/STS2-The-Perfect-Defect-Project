@@ -1,6 +1,6 @@
 # Short hardware check before the first RL5 long run: an overlay on rl5-long-run-1.toml
 # (same recipe, hardware, exploration and model retention); only the window, the
-# evaluation size, the shortest generation and the CP retention differ, so one resume
+# evaluation size and job wall, the shortest generation and the CP retention differ, so one resume
 # (the operator scancels the GPU job once after the 2nd CP) and peer CP deletion both
 # happen inside the check. `default` = the long-run profile's value. The SGD offline dump
 # is not a profile knob: for this check set `sgd_offline_dump_every` in the gate copy's
@@ -16,3 +16,4 @@ checkpoint_keep_newest = { value = 3, default = 24, why = "6 CPs in the check, s
 eval_seeds = { value = 32, default = 100, why = "a smaller A0 round: one 32-seed job on the fast node class shows the evaluation path and its time per game", measured = "V6 smokes used 32" }
 eval_a10_seeds = { value = 16, default = 50, why = "a smaller A10 round, same purpose", measured = "lead 11-18 (smaller evaluation)" }
 eval_interval_seconds = { value = 900, default = 7200, why = "rounds every 15 min of wall: at least one in-chain A0 and A10 round on a CP while training runs (and the final CP after it)", measured = "lead 11-19 (at least one in-chain round)" }
+eval_wall_seconds = { value = 6300, default = 17000, why = "the check's evaluation jobs keep the long run's explicit wall and 3600 s cap (same code path) with a shorter Slurm time: start window 6300 - 3600 - 900 = 1800 s, about 3x what 32 games on 16 slots need on the fast node class (two waves, max game 594 s)", measured = "#614: fast class max game 594 s of 200" }

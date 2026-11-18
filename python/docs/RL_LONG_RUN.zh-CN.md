@@ -223,7 +223,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   评估节点类（#612）：站点 `eval_partition` / `eval_constraint`（不写或空 = 今天的 general、
   无约束）由 supervise 传给两个看守（`--partition` / `--constraint`；手动 `fast_eval.py` 用
   `--site S` 读同一对值，旗标与站点不同则拒绝），preflight 的 `evaluation_jobs` 行和每轮报告
-  开头都写明。慢节点类曾把 300 局切掉 81 局。分批轮里各批账本自己决定是否计分：某批的正式审计
+  开头都写明。慢节点类 300 局里 80 局到 1800 秒时限被切（另 1 局早期 TimeoutExpired、3 局未开始）。分批轮里各批账本自己决定是否计分：某批的正式审计
   局没跑完，该批整批不计分（局仍在行里），报告点名 `batches_not_admitted`，各批照常合并。
   一轮计划局中"没有跑完并计分"的比例超过 `eval_degraded_share`（默认 0.10，滚动 unknown 门槛；
   unknown、censored、未开始、save_failed 等、不计分批里跑完的局、没交报告的批的局都算，没交报告的
@@ -233,7 +233,10 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   含 Host 准备和对局）和作业墙钟 `eval_wall_seconds`（0 = 按局数和快节点步速算）由 supervise 传给
   两个看守（`--episode-seconds` / `--wall-seconds`）。到时限还没结束的局照旧切掉、记
   unknown/censored、不重发。慢节点类每局约慢 5 倍（同种子同决策，墙钟比中位 4.9）：1800 秒切掉的
-  局都还在走（约 0.39 决策/秒）。慢节点类要用 3600 秒时限和 17000 秒作业墙钟，否则最后几局排不进。
+  局都还在走（约 0.39 决策/秒）。慢节点类要用 3600 秒时限和 17000 秒作业墙钟，否则最后几局排不进
+  （排进新局的窗口 = 墙钟 − 时限 − 900）；`rl5-long-run-1` 就用这对值，慢节点类一轮 100 局约 3.5 小时。
+  墙钟必须大于 时限 + 900（profile、fast_eval、evaluate.prepare 三处拒绝）；时限 > 1800 而墙钟为 0 时
+  preflight 的 `evaluation_cap` 行给 WARN。
 - 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
   删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
   sidecar 持有 `R7Selection`（自己的随机 key、`r7_expected_games_per_node_hour` 估计、
@@ -400,8 +403,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 长跑和它之前的短硬件体检都从仓库里的文件起，不再从议题里拼 `--set`：
 - 运行配置 `tools/friday/fastchain/rl5-long-run-1.toml`：叠加在 `rl5-fastchain.toml` 上
   （`base = "rl5-fastchain.toml"`），只列和它不同的旋钮，其余取基础配置。
-- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口、评估大小、
-  `min_generation_seconds`（600）和 `checkpoint_keep_newest`（3），配方和其余值同长跑（见下文“短体检”）。
+- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口、评估大小、评估作业墙钟
+  `eval_wall_seconds`（6300）、`min_generation_seconds`（600）和 `checkpoint_keep_newest`（3），配方和其余值同长跑（见下文“短体检”）。
 - 冻结配方 `python/configs/rl5-long-run-1.json`（旋钮 `frozen_learner_config` 指向它）：
   `rl5.json` + 下表的配方值，预检 A9 逐键核闸门。
 - 叠加规则（`run_profile.py`）：叠加文件每个旋钮仍写满 value/default/why/measured，default 必须
