@@ -159,6 +159,12 @@ def test_job_size_and_wall_are_settings_from_games_and_expected_steps(fast_eval,
                                              pending_limit=8))
     assert given['wall_seconds'] == 7000 and given['memory_gb'] == 90
     assert fast_eval.settings_from(args_for(tmp_path, pending_limit=8))['memory_gb'] == 32
+    assert 'until_file' not in settings  # #598: only when given
+    until = fast_eval.settings_from(args_for(tmp_path, until_file=tmp_path / 'FINAL.json'))
+    assert until['until_file'] == str((tmp_path / 'FINAL.json').resolve())
+    assert 'final_grace_seconds' not in until
+    assert fast_eval.settings_from(args_for(tmp_path, final_grace_seconds=1800))[
+        'final_grace_seconds'] == 1800
 
 
 @pytest.mark.parametrize('option', [['--memory-gb', '0'], ['--wall-seconds', '0'],
@@ -382,7 +388,55 @@ def test_a_baseline_under_another_adapter_pairs_only_through_its_refreeze_record
         'current': {'agent_adapter': 'c' * 64, 'producer': {'source_revision': 'b'}},
         'adapter_differs': True,
         'refreeze_record': {'path': str(record), 'sha256': fast_eval.hashed(record),
-                            'reason': 'PR #592'}}
+                            'template': str(args.execution), 'reason': 'PR #592'}}
+
+
+def test_a_supervise_copy_pairs_through_its_templates_record_and_nothing_looser(
+        fast_eval, tmp_path):
+    """#598: supervise writes the template plus shared-local storage into the chain dir;
+    the copy pairs through the record beside the template it names, only while the copy
+    equals that template outside the storage keys and the template is unchanged."""
+    args = args_for(tmp_path, no_baseline=False)
+    args.manifest.write_text('{"seeds": ["s1"]}')
+    old, new = {**ADAPTER, 'code_sha256': '7' * 64}, ADAPTER
+    args.baseline_plan = round_on(tmp_path, 'base', args.manifest, agent_adapter=old,
+                                  producer={'source_revision': 'a'})
+    frozen = tmp_path / 'frozen'
+    frozen.mkdir()
+    template = frozen / 'template.json'
+    template.write_text(json.dumps({'storage_mode': 'r2', **PINS, 'agent_adapter': new,
+                                    'producer': {'source_revision': 'b'},
+                                    'refrozen_from': {'record': 'template.json.refreeze.json'}}))
+    record = frozen / 'template.json.refreeze.json'
+    record.write_text(json.dumps({'schema': fast_eval.REFREEZE_SCHEMA, 'reason': 'PR #592',
+                                  'agent_adapter': {'old': old, 'new': new},
+                                  'template_out': {'sha256': fast_eval.hashed(template)}}))
+
+    def derive(**changes):
+        value = {**json.loads(template.read_text()), 'storage_mode': 'shared_local',
+                 'store': '/peer', 'peer': {'kind': 'local', 'directory': '/peer'},
+                 'derived_from': {'path': str(template), 'sha256': fast_eval.hashed(template),
+                                  'keys': list(fast_eval.DERIVED_KEYS)}}
+        args.execution.write_text(json.dumps({**value, **changes}))
+
+    derive()
+    pairing = fast_eval.settings_from(args)['baseline']['adapter_pairing']
+    assert pairing['refreeze_record'] == {'path': str(record), 'sha256': fast_eval.hashed(record),
+                                          'template': str(template), 'reason': 'PR #592'}
+    with pytest.raises(ValueError, match='derived_execution_differs_from_its_template: seeds'):
+        derive(seeds=7)  # another key than storage: not the template's copy
+        fast_eval.settings_from(args)
+    with pytest.raises(ValueError, match='derived_execution_keys_changed'):
+        derive(derived_from={'path': str(template), 'sha256': fast_eval.hashed(template),
+                             'keys': [*fast_eval.DERIVED_KEYS, 'seeds']})
+        fast_eval.settings_from(args)
+    derive()
+    template.write_text(template.read_text() + ' ')  # changed after the copy
+    with pytest.raises(ValueError, match='derived_execution_template_missing_or_changed'):
+        fast_eval.settings_from(args)
+    derive()  # a copy of the edited template: the record no longer pins it
+    with pytest.raises(ValueError, match='adapter_differs_without_refreeze_record'):
+        fast_eval.settings_from(args)
 
 
 def test_check_refuses_an_interpreter_that_cannot_import_the_adapter(fast_eval, tmp_path,
@@ -672,6 +726,170 @@ def test_one_given_cp_without_R2_is_prepared_once(fast_eval, tmp_path):
 
 
 BASELINE = {'plan': '/base/plan.json', 'sha256': 'b' * 64, 'source': 'site'}
+
+
+def test_after_the_chain_ends_the_final_cp_is_evaluated_then_the_watcher_is_done(
+        fast_eval, tmp_path):
+    """#598: once the until-file (the chain's FINAL.json) exists there is no schedule; the
+    final CP gets one round at once, live rounds are waited for (never cancelled), and
+    then the watcher is done. Without the file it never is."""
+    world = World()
+    world.record('cp-a', 10)
+    final = tmp_path / 'chain' / 'FINAL.json'
+    runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final))
+
+    def report(root, baseline, previous):
+        (root / 'eval-record.json').write_text(json.dumps({'stage_seconds': {}}))
+        return {'report_directory': str(root / 'report'), 'baseline': None, 'paired': {},
+                'skipped_references': {}, 'cohorts': {'current': {
+                    'scored': 8, 'wins': 0, 'mean_floor': 9.0, 'reward_mean': 0.1,
+                    'conservative': 0.1}}}
+
+    def finish(item):
+        world.live.discard(item['evaluation_job'])
+        (Path(item['root']) / 'round/evaluation/result.json').write_text(
+            '{"observation_report": {}}')
+
+    with patch.object(fast_eval, 'write_evaluation_report', report):
+        runner.tick()
+        first = runner.state['evaluations'][0]
+        finish_prepare(world, first)
+        runner.tick()
+        assert first['stage'] == 'submitted' and runner.done() is None
+        world.record('cp-b', 20)  # the final CP, published before the chain ends
+        final.parent.mkdir()
+        final.write_text('{}')
+        runner.tick()  # not due by the interval: started because the chain ended
+        second = runner.state['evaluations'][1]
+        assert second['checkpoint'] == 'cp-b' and runner.done() is None
+        finish(first)
+        runner.tick()
+        assert first['stage'] == 'reported' and runner.done() is None  # cp-b still live
+        finish_prepare(world, second)
+        runner.tick()
+        world.now += 7200
+        runner.tick()  # no third round, no schedule after the end
+        assert len(runner.state['evaluations']) == 2 and runner.done() is None
+        assert second['stage'] == 'submitted' and second['evaluation_job'] in world.live
+        finish(second)
+        runner.tick()
+        assert second['stage'] == 'reported'
+        assert runner.done() == 'final_checkpoint_evaluated'
+    assert not any('scancel' in str(c) for c in world.commands)
+
+    empty = loop(fast_eval, World(), tmp_path / 'empty', until_file=str(final))
+    empty.tick()
+    assert empty.done() == 'no_checkpoint'
+    late = World()
+    late.record('cp-z', 10)
+    late.now = 1e6
+    blocked = loop(fast_eval, late, tmp_path / 'late', until_file=str(final),
+                   deadline_at=1e6 + 100)
+    blocked.tick()  # inside the deadline headroom: the final CP cannot start, said so
+    assert not blocked.state['evaluations']
+    assert blocked.done() == 'final_checkpoint_not_started_absolute_deadline'
+    forever = loop(fast_eval, World(), tmp_path / 'forever')
+    forever.tick()
+    assert forever.done() is None
+
+
+def test_the_final_cp_named_by_the_chain_is_waited_for_and_an_unknown_round_is_said(
+        fast_eval, tmp_path, capsys):
+    """#601 review: FINAL.json names the chain's final CP; while the peer view still shows
+    only the previous one (which has a round) the watcher waits, loudly, and evaluates
+    the final CP when it appears. A final round whose delivery is unknown is never
+    retried and never called evaluated. The deadline headroom ends a wait that cannot
+    start the final CP, loudly."""
+    world = World()
+    world.record('cp-a', 10)
+    final = tmp_path / 'chain' / 'FINAL.json'
+    runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final))
+    runner.tick()
+    first = runner.state['evaluations'][0]
+    finish_prepare(world, first)
+    runner.tick()
+    final.parent.mkdir()
+    final.write_text('{"final_che')  # mid-write: not yet the end
+    assert runner.done() is None and not runner.ending()
+    final.write_text(json.dumps({'ok': True, 'final_checkpoint': 'cp-b'}))
+    world.live.discard(first['evaluation_job'])
+    first['stage'] = 'reported'  # cp-a done; cp-b not on this peer view yet
+    runner.tick()
+    assert runner.done() is None and len(runner.state['evaluations']) == 1
+    assert '*** fast_eval evaluation_final_checkpoint_not_visible' in capsys.readouterr().err
+    runner.tick()  # said once
+    assert 'not_visible' not in capsys.readouterr().err
+    world.record('cp-b', 20)
+    runner.tick()  # cp-b visible: its one round
+    second = runner.state['evaluations'][1]
+    assert second['checkpoint'] == 'cp-b' and runner.done() is None
+    finish_prepare(world, second)
+
+    def lost(plan, **options):
+        raise subprocess.CalledProcessError(255, ['sbatch'])
+
+    runner.submit = lost
+    runner.tick()
+    assert second['stage'] == 'submit_unknown'
+    assert runner.done() == 'final_checkpoint_round_unknown'
+    runner.tick()
+    assert len(runner.state['evaluations']) == 2  # never retried
+    none = loop(fast_eval, world, tmp_path / 'none', until_file=str(tmp_path / 'n.json'))
+    (tmp_path / 'n.json').write_text('{"final_checkpoint": null}')
+    none.tick()
+    assert none.done() == 'no_checkpoint' and not none.state['evaluations']
+    lag = World()
+    lag.record('cp-a', 10)
+    lag.now = 1e6
+    late = loop(fast_eval, lag, tmp_path / 'late', until_file=str(final),
+                deadline_at=1e6 + 100)
+    late.tick()
+    assert late.done() == 'final_checkpoint_not_started_absolute_deadline'
+
+
+def test_a_final_cp_still_not_visible_after_the_grace_ends_the_watcher_loudly(
+        fast_eval, tmp_path):
+    """#601 lead: the wait for the named final CP is bounded, counted from when the
+    watcher first saw FINAL.json; 0 = wait until stopped. A visible final CP that
+    could not start yet is not this reason."""
+    world = World()
+    world.record('cp-a', 10)
+    final = tmp_path / 'FINAL.json'
+    runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final),
+                  final_grace_seconds=1800)
+    runner.tick()
+    first = runner.state['evaluations'][0]
+    finish_prepare(world, first)
+    runner.tick()
+    world.live.discard(first['evaluation_job'])
+    first['stage'] = 'reported'
+    world.now += 50000  # long after the chain's start: the grace counts from the file
+    final.write_text(json.dumps({'final_checkpoint': 'cp-b'}))
+    runner.tick()
+    assert runner.state['final_seen_at'] == world.now and runner.done() is None
+    world.now += 1799
+    runner.tick()
+    assert runner.done() is None
+    world.now += 1
+    runner.tick()
+    assert runner.done() == 'final_checkpoint_not_visible_after_grace'
+    assert len(runner.state['evaluations']) == 1  # nothing started or retried
+    forever = loop(fast_eval, world, tmp_path / 'forever', until_file=str(final),
+                   final_grace_seconds=0)
+    forever.tick()
+    world.now += 10 ** 6
+    forever.tick()
+    assert forever.done() is None  # 0: until stopped
+    busy = World()
+    busy.record('cp-b', 10)
+    blocked = loop(fast_eval, busy, tmp_path / 'busy', until_file=str(final),
+                   final_grace_seconds=60)
+    blocked.start = lambda: None  # skipped every tick (busy, scheduler down): not lag
+    blocked.tick()
+    busy.now += 120
+    blocked.tick()
+    assert blocked.state['final_seen_at'] == busy.now - 120
+    assert not blocked.state['evaluations'] and blocked.done() is None
 
 
 def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval, tmp_path):
