@@ -8,7 +8,8 @@ Two halves, both decided by the pure functions below:
   declared recipe changes against the CP they name (RL5-METHODS C),
   env package identity and memo, env nodes and shard balance, memory budget, per-batch
   prepared cap, service CPUs, cross-node identity, hot path, secret files, time limits,
-  core cap, the queue (printed only);
+  core cap, the evaluation jobs' node class and degraded threshold and the queue (both
+  printed only);
 - job side (`preflight.py job-gpu | prep-host | env-node`), when a role starts on its
   node: dependencies + python_env_sha256, node-local hot path, prep scratch free space,
   env sha equal to the GPU side's.
@@ -769,6 +770,20 @@ def check_queue(facts: dict[str, Any]) -> Result:
                   warn=not parts or any(p.get("above") != 0 for p in parts.values()))
 
 
+def check_evaluation_jobs(plan: dict[str, Any]) -> Result:
+    """Printed (#612): where the evaluation watchers' jobs run (site eval_partition /
+    eval_constraint; absent = today's partition general without a constraint) and the
+    share of planned games not finished and scored above which a round is degraded. The
+    node class decided usability on hardware: the slow class cut 81 of 300 games."""
+    site, k = plan["site"], plan["knobs"]
+    partition = site.get("eval_partition") or "general (fast_eval default)"
+    constraint = site.get("eval_constraint") or "none"
+    return Result("evaluation_jobs", True, f"partition {partition}, node constraint "
+                  f"{constraint}; a round above {k['eval_degraded_share']:.0%} of planned games "
+                  "not finished and scored is labelled degraded, never a baseline",
+                  warn=not site.get("eval_constraint"))
+
+
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
     return [check_placement(plan), check_gpu_request(plan, facts), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
@@ -781,7 +796,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
             check_seeds(plan, facts), check_cores(plan),
-            check_resume(plan, facts), check_queue(facts)]
+            check_resume(plan, facts), check_evaluation_jobs(plan), check_queue(facts)]
 
 
 def report(results: list[Result]) -> str:

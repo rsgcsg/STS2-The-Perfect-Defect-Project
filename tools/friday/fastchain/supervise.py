@@ -108,7 +108,10 @@ Each watcher's baseline: --eval-baseline-plan (a0), else the site's `eval_baseli
 entry; --eval-no-baseline: none (e.g. the first round on a new Host pin). Every
 watcher's start checks (`fast_eval.py --check`: manifest, baseline pins, settings) run
 before generation 0 (and in --dry-run), and a refusal stops the chain there. A watcher
-that dies later is DEAD in the readout.
+that dies later is DEAD in the readout. The site's `eval_partition` / `eval_constraint`
+(absent = today's submission) place the watchers' evaluation jobs and the profile's
+`eval_degraded_share` labels degraded rounds (fast_eval --partition / --constraint /
+--degraded-share, #612); a degraded baseline round is refused by the start check.
 --eval-execution is a template (models, retention, pipeline): the chain writes its copy
 with `"storage_mode": "shared_local"` on the site's peer (no R2).
 """
@@ -868,6 +871,13 @@ class Chain:
                "--final-grace-seconds", str(self.knobs["eval_final_grace_seconds"])]
         cmd += ["--batch-seeds", str(watcher["batch_seeds"])] if watcher["batch_seeds"] else []
         cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
+        # #612: the evaluation jobs' node class (site; absent = today's submission) and the
+        # degraded-round threshold (profile)
+        cmd += ["--partition", self.site["eval_partition"]] if self.site.get(
+            "eval_partition") else []
+        cmd += ["--constraint", self.site["eval_constraint"]] if self.site.get(
+            "eval_constraint") else []
+        cmd += ["--degraded-share", str(self.knobs["eval_degraded_share"])]
         baseline = watcher["baseline"]
         if baseline is not None:
             cmd += ["--baseline-plan", baseline["plan"], "--baseline-source", baseline["source"]]
