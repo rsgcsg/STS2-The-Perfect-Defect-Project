@@ -942,7 +942,8 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
              if getattr(args, "actor_root", None) is not None else {})
     batch = getattr(args, "batch_seeds", None)
     games = min(args.seeds, batch or args.seeds)  # per job: each job's wall is its own
-    return {**actor, **({"batch_seeds": batch} if batch is not None else {}), "learner_config": str(args.learner_config.resolve()),
+    return {**actor, **({"batch_seeds": batch} if batch is not None else {}),
+            "learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
             "training_generation": args.training_generation, "chain": args.chain,
             "execution": str(args.execution.resolve()), "manifest": str(args.manifest.resolve()),
