@@ -110,13 +110,19 @@ from .learning_diagnostics import (
     advantage_fields,
     entropy_fields,
     exploration_fields,
+    explore_floor_by_arm,
     policy_by_arm,
     row_arms,
     value_target_fields,
 )
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
-from .loss import minibatch_control_rows, prepared_update, warmup_learning_rates
+from .loss import (
+    minibatch_control_rows,
+    minibatch_explore_rows,
+    prepared_update,
+    warmup_learning_rates,
+)
 from .performance import PerformanceConfig
 from .prepared_batch import (
     AuxiliaryInput,
@@ -321,11 +327,16 @@ def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
 
 
 def _with_policy_by_arm(build: Callable[[], dict[str, Any]] | None,
-                        arms: list[str | None], samples: list[dict[str, Any]]
-                        ) -> dict[str, Any]:
-    """`build`'s fields (if any) and this attempt's `policy_by_arm` (learning_diagnostics)."""
-    return {**(build() if build is not None else {}),
-            "policy_by_arm": policy_by_arm(arms, samples)}
+                        arms: list[str | None], samples: list[dict[str, Any]],
+                        explore_ratio_floor: float = 0.0) -> dict[str, Any]:
+    """`build`'s fields (if any) and this attempt's `policy_by_arm` (learning_diagnostics),
+    with `explore_floor_by_arm` when the ratio floor is on."""
+    out = {**(build() if build is not None else {}),
+           "policy_by_arm": policy_by_arm(arms, samples)}
+    floor = explore_floor_by_arm(arms, samples, explore_ratio_floor)
+    if floor is not None:
+        out["explore_floor_by_arm"] = floor
+    return out
 
 
 # R: first-use rows' behaviour-model age, histogram upper edges in seconds (last bin open).
@@ -561,6 +572,9 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         value["segments"].pop("kl_stop_scope", None)
     if value["segments"].get("lr_warmup_steps", 0) == 0:
         value["segments"].pop("lr_warmup_steps", None)
+    # The ratio floor: left out at 0 (off), so older CPs keep their recipe digest.
+    if value["loss"].get("explore_ratio_floor", 0.0) == 0:
+        value["loss"].pop("explore_ratio_floor", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
@@ -3738,6 +3752,9 @@ class SegmentLearner:
             control_rows=(minibatch_control_rows(minibatch, self._dataset_arms(batch),
                                                  self._policy_mask(batch))
                           if self.settings.kl_stop_scope == "control" else None),
+            explore_rows=(minibatch_explore_rows(minibatch, self._dataset_arms(batch),
+                                                 self._policy_mask(batch))
+                          if self.config.loss.explore_ratio_floor else None),
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
@@ -3860,7 +3877,8 @@ class SegmentLearner:
         # Fallible IO follows the complete learning transition; CP never pairs
         # new Adam/theta with old successful-use counters.
         if arms is not None:  # fast chain: PPO clip/KL per exploration arm, telemetry side
-            build = partial(_with_policy_by_arm, build, arms, policy_samples)
+            build = partial(_with_policy_by_arm, build, arms, policy_samples,
+                            self.config.loss.explore_ratio_floor)
         self._event("progress", _build=build, **result, version=self.version)
         if self.metrics is not None and self.updates % self.config.tensorboard_steps == 0:
             self.metrics.scalars(

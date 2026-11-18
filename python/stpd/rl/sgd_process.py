@@ -1477,7 +1477,10 @@ class _SgdWorker:
             result = prepared_update(
                 self.model, self.optimizer, staged, config=self.loss,
                 performance=self.performance, target_kl=-1.0, diagnostics=False,
-                collect_policy_rows=False)
+                collect_policy_rows=False,
+                # compile warm-up never steps (target_kl -1) and dumps carry no arms
+                explore_rows=([False] * len(minibatch.tensors["targets"])
+                              if self.loss.explore_ratio_floor else None))
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         if result["stepped"] or weights_digest(self.model.state_dict()) != before:
@@ -1720,7 +1723,12 @@ class _SgdWorker:
             row_arms,
             value_target_fields,
         )
-        from .loss import minibatch_control_rows, prepared_update, warmup_learning_rates
+        from .loss import (
+            minibatch_control_rows,
+            minibatch_explore_rows,
+            prepared_update,
+            warmup_learning_rates,
+        )
 
         torch = self.torch
         dataset = start["dataset"]
@@ -1731,7 +1739,10 @@ class _SgdWorker:
         epochs, start_updates = plan["epochs"], self.updates
         minibatch = epoch = 0
         arms, policy = None, []
-        if self.kl_stop_scope == "control":  # once per dataset (every rank holds it whole)
+        # once per dataset (every rank holds it whole); the floor's rows as the learner's
+        # `_dataset_arms`: None when no source names an arm
+        floor = self.loss.explore_ratio_floor
+        if self.kl_stop_scope == "control" or floor:
             arms = row_arms(device_batch.metadata,
                             [m.rows for m in device_batch.request.members])
             policy = device_batch.policy_mask.tolist()
@@ -1793,7 +1804,9 @@ class _SgdWorker:
                 gradient_sync=self.sync,
                 shard=(self.rank, self.parallel.world) if self.parallel is not None else None,
                 control_rows=(minibatch_control_rows(batch, arms, policy)
-                              if self.kl_stop_scope == "control" else None))
+                              if self.kl_stop_scope == "control" else None),
+                explore_rows=(minibatch_explore_rows(batch, arms if arms and any(arms)
+                                                     else None, policy) if floor else None))
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
                 result = self.gather_step(result, diagnostics)

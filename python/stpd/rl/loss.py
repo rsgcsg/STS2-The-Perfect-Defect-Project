@@ -66,6 +66,18 @@ def minibatch_control_rows(minibatch: Any, arms: list[str | None] | None,
             and policy_mask[row] for group in minibatch.groups for row in group.rows]
 
 
+def minibatch_explore_rows(minibatch: Any, arms: list[str | None] | None,
+                           policy_mask: list[bool]) -> list[bool] | None:
+    """`loss.explore_ratio_floor`: per row of `minibatch` in tensor order, True for a policy
+    row of an exploration arm (a named arm outside `CONTROL_ARMS`). Control rows and rows
+    of a source without an arm are never floored. None when the dataset names no arm at
+    all (`arms` None): `prepared_update` then refuses a floor > 0."""
+    if arms is None:
+        return None
+    return [row < len(arms) and arms[row] is not None and arms[row] not in CONTROL_ARMS
+            and policy_mask[row] for group in minibatch.groups for row in group.rows]
+
+
 def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],
                           updates: int, steps: int) -> None:
     """`segments.lr_warmup_steps` (RL5-METHODS K): before optimizer step `updates + 1`
@@ -103,6 +115,7 @@ def batched_segment_loss(
     policy_coef: float = 1.0,
     row_diagnostics: list[torch.Tensor] | None = None,
     control_kl: list[torch.Tensor] | None = None,
+    explore_ratio_floor: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
@@ -111,18 +124,29 @@ def batched_segment_loss(
     Only recorded multi-choice PPO rows contribute to policy/KL/entropy.
     `control_kl` (KL stop scope "control"): appends the KL sum weighted by
     `t["control_weight"]` (control-arm policy rows / their minibatch count).
+    `explore_ratio_floor` (`LossConfig.explore_ratio_floor`, 0 = off): see there; it needs
+    `t["explore_mask"]` (bool per row, `minibatch_explore_rows`). The KL, clip fraction and
+    every other total are unchanged by it.
     """
     logp = scores.float().log_softmax(-1)
     probability = logp.exp()
     safe_logp = logp.masked_fill(~t["catalog_valid"], 0)
     action = t["actions"][:, None]
-    log_ratio = logp.gather(1, action)[:, 0] - t["old_probabilities"].gather(1, action)[:, 0].log()
+    chosen = logp.gather(1, action)[:, 0]
+    log_ratio = chosen - t["old_probabilities"].gather(1, action)[:, 0].log()
     ratio = log_ratio.exp()
     advantage = t["advantages"]
     policy_mask = t["policy_mask"] / max(multi, 1)
-    policy = -(
-        torch.minimum(ratio * advantage, ratio.clamp(1 - clip, 1 + clip) * advantage) * policy_mask
-    ).sum()
+    surrogate = torch.minimum(ratio * advantage, ratio.clamp(1 - clip, 1 + clip) * advantage)
+    floored = None
+    if explore_ratio_floor:
+        # `loss.explore_ratio_floor` c: an exploration-arm row (`t["explore_mask"]`) with
+        # r < c keeps its surrogate value but takes the gradient c * A * grad log p(a),
+        # both signs of A (no ratchet upwards). Control rows keep plain clipped PPO.
+        floored = (ratio.detach() < explore_ratio_floor) & t["explore_mask"]
+        surrogate = torch.where(floored, surrogate.detach() + explore_ratio_floor
+                                * advantage * (chosen - chosen.detach()), surrogate)
+    policy = -(surrogate * policy_mask).sum()
     entropy = (-(probability * safe_logp).sum(-1) * policy_mask).sum()
     kl = ((ratio - 1 - log_ratio) * policy_mask).sum()
     if control_kl is not None:
@@ -140,9 +164,12 @@ def batched_segment_loss(
             detached = ratio.detach()
             objective_clipped = (detached * advantage
                 > detached.clamp(1 - clip, 1 + clip) * advantage)
-            row_diagnostics.append(torch.stack((forward, detached,
-                (detached - 1).abs().gt(clip).float(), objective_clipped.float(),
-                detached.gt(1).float(), t["policy_mask"]), dim=1))
+            columns: tuple[torch.Tensor, ...] = (
+                forward, detached, (detached - 1).abs().gt(clip).float(),
+                objective_clipped.float(), detached.gt(1).float(), t["policy_mask"])
+            if floored is not None:  # c > 0 only: the advantage and the floored flag
+                columns += (advantage, floored.float())
+            row_diagnostics.append(torch.stack(columns, dim=1))
     outcome_logp = logits.float().log_softmax(-1).masked_fill(~t["outcome_valid"], 0)
     ce = -(t["targets"] * outcome_logp).sum(-1)
     td = (ce * t["td_mask"]).sum() / max(td_rows, 1)
@@ -189,6 +216,7 @@ def prepared_update(
     gradient_sync: Any = None,
     shard: tuple[int, int] | None = None,
     control_rows: list[bool] | None = None,
+    explore_rows: list[bool] | None = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
 
@@ -197,6 +225,10 @@ def prepared_update(
     policy row. The stop then compares the KL over those rows only with
     `target_kl`; a minibatch without one falls back to the all-rows KL and says so
     (`kl_stop_basis`). None (scope "all", default) is the unchanged rule.
+
+    `explore_rows` (`loss.explore_ratio_floor` > 0, required then): per row in tensor order
+    (`minibatch_explore_rows`), True for an exploration-arm policy row, the only rows the
+    floor may touch. None with a floor > 0 (no arm identity) is refused, never "all rows".
 
     `shard=(rank, world)` (data parallel, same update) runs only this rank's
     groups (`data_parallel.shard_groups`) with the minibatch's global
@@ -236,6 +268,12 @@ def prepared_update(
             control_parts = []
             t = {**t, "control_weight": torch.tensor(
                 control_rows, dtype=torch.float32).div_(max(control_count, 1)).to(device)}
+        if config.explore_ratio_floor:
+            if explore_rows is None:
+                raise ValueError("explore_ratio_floor_needs_row_arms")
+            if len(explore_rows) != len(t["targets"]):
+                raise ValueError("explore_rows_must_cover_the_minibatch")
+            t = {**t, "explore_mask": torch.tensor(explore_rows, dtype=torch.bool).to(device)}
         totals = t["targets"].new_zeros(8)
         # Value/HP head sums (learning_diagnostics); never part of the loss or decision.
         value_sums = t["targets"].new_zeros(learning_diagnostics.SIZE)
@@ -292,7 +330,8 @@ def prepared_update(
                     terminal_coef=config.terminal_coef, hp_coef=config.hp_coef,
                     multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
                     terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows,
-                    row_diagnostics=row_diagnostics, control_kl=control_parts)
+                    row_diagnostics=row_diagnostics, control_kl=control_parts,
+                    explore_ratio_floor=config.explore_ratio_floor)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
                 value_sums = value_sums + learning_diagnostics.value_statistics(
@@ -427,13 +466,18 @@ def prepared_update(
             # Logical row indices pair these transient pre-update observations
             # with generation time/actual mu. The learner persists summaries only.
             logical_rows = [row for group in executed for row in group.rows]
+            # c > 0 (`explore_ratio_floor`): two more columns, the row's advantage and
+            # whether its ratio was below c (learning_diagnostics.explore_floor_by_arm).
+            width = 8 if config.explore_ratio_floor else 6
             result["_policy_rows"] = [
                 {"row": row, "kl_mu_theta": value[0] if math.isfinite(value[0]) else None,
                  "ratio": value[1] if math.isfinite(value[1]) else None,
                  "outside_clip": bool(value[2]), "ppo_objective_clipped": bool(value[3]),
-                 "ratio_above_one": bool(value[4])}
-                for row, value in zip(logical_rows, (row_values[i:i + 6]
-                    for i in range(0, len(row_values), 6)), strict=True) if value[5] > 0
+                 "ratio_above_one": bool(value[4]),
+                 **({"advantage": value[6], "explore_floored": bool(value[7])}
+                    if width == 8 else {})}
+                for row, value in zip(logical_rows, (row_values[i:i + width]
+                    for i in range(0, len(row_values), width)), strict=True) if value[5] > 0
             ]
         if diagnostic_values is not None:
             norms = dict(zip(("policy", "td", "terminal", "hp"), measured[10:14], strict=True))
@@ -545,6 +589,15 @@ class LossConfig:
     # "all_combats" (an experiment arm) = every scored combat row, full games included.
     # Frozen for a run like c_hp.
     hp_advantage_scope: str = "combat_ticket"
+    # c: a policy row of an exploration arm whose ratio r = p_theta(a) / q(a) is below c
+    # takes the gradient c * A * grad log p_theta(a) (both signs of A) instead of the
+    # clipped surrogate's (r * A or 0); rows with r >= c are unchanged, and at r = c the two
+    # agree for an unclipped row. A rarely sampled action (q >> p, r near 0) then still
+    # learns from its advantage. Control-arm rows (and rows without an arm) keep plain
+    # clipped PPO, so stale control rows are never floored; a batch with no arm identity
+    # is refused. prepared_update only (rl_update refuses c > 0). 0 = off (today's loss
+    # exactly); 0 <= c <= 0.5. KL and its stop unchanged.
+    explore_ratio_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
@@ -557,7 +610,9 @@ class LossConfig:
                 or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
                 or type(self.rho_max) not in (int, float)
                 or not math.isfinite(self.rho_max) or self.rho_max <= 0
-                or self.hp_advantage_scope not in HP_ADVANTAGE_SCOPES):
+                or self.hp_advantage_scope not in HP_ADVANTAGE_SCOPES
+                or type(self.explore_ratio_floor) not in (int, float)
+                or not 0 <= self.explore_ratio_floor <= 0.5):
             raise BoundaryError("rl_loss", "invalid_PPO_configuration")
 
 
@@ -628,6 +683,8 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
               frame_cache: dict[object, TensorFrame] | None = None
               ) -> dict[str, Any]:
     """``reference_cache`` keeps each sample's start-model log-probabilities across reuses."""
+    if config.explore_ratio_floor:  # implemented by prepared_update only, never ignored
+        raise BoundaryError("rl_loss", "explore_ratio_floor_needs_prepared_update")
     if config.mode == "ppo":
         if performance is not None:
             from .performance import prepare_models
