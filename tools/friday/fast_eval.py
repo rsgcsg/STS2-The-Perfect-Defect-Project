@@ -568,6 +568,7 @@ class Loop:
             return
         if not batched:
             item["evaluation_job"] = jobs["evaluation"]
+        item.pop("ended_seen_at", None)  # the plan grace's mark; the result grace starts anew
         item.update(stage="submitted", submitted_at=self.clock())
         self.note("evaluation_submitted", checkpoint=item["checkpoint"],
                   job=item.get("evaluation_job"), jobs=item.get("evaluation_jobs"))

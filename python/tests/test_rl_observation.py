@@ -527,3 +527,26 @@ def test_conservative_score_keeps_unknowns_at_their_floor_and_drops_infrastructu
         'wall_limit', 'infrastructure', None]
     paired = compare_rewards({'ascension': 0, 'rows': rows}, {'ascension': 0, 'rows': rows})
     assert paired['conservative_paired']['paired_n'] == 2
+
+
+def test_batches_merge_into_one_cohort_of_disjoint_seeds(tmp_path):
+    """#591: a round run as parallel batches is one cohort; counts are over the union."""
+    from stpd.evaluation.rl_observation import merge_cohorts
+
+    one = load_cohort(saved(tmp_path, seed='a', floor=17))
+    two = load_cohort(saved(tmp_path, seed='b', status='unknown', floor=30, result=None))
+    three = load_cohort(saved(tmp_path, seed='c', floor=48, result='win'))
+    assert merge_cohorts([one]) is one
+    merged = merge_cohorts([one, two, three])
+    assert merged['planned'] == merged['original_planned'] == 3
+    assert merged['status_counts'] == {'finished': 2, 'unknown': 1}
+    assert (merged['wins'], merged['losses'], merged['floor_n']) == (1, 1, 2)
+    assert merged['mean_floor'] == 32.5 and merged['max_floor'] == 48
+    assert merged['source_sha256'] == [c['source_sha256'] for c in (one, two, three)]
+    with pytest.raises(ValueError, match='disjoint_seeds'):
+        merge_cohorts([one, one])
+    with pytest.raises(ValueError, match='share_model'):
+        merge_cohorts([one, {**two, 'ascension': 10}])
+    with pytest.raises(ValueError, match='mixed_protocol'):
+        merge_cohorts([{**one, 'protocol_observed': {'host_pin': 1}},
+                       {**three, 'protocol_observed': {'host_pin': 2}}])
