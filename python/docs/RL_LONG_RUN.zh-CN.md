@@ -91,14 +91,17 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--dependency=after:<每个备料元素>`（备料全部开工后 GPU 才开始排队，GPU 不再白等备料）；
   最后交 env 数组，带 `--dependency=after:<GPU作业>`（GPU 开始前只是 Dependency 排队，不占 CPU
   节点、不扣 fairshare）。`plan.json` 里的命令不含依赖项，作业号见 `jobs.json`。先等全部备料开工，
-  最多 `prep_pending_max_seconds`（7200 s）；再等 gpu.sh 确认开工（写 `gpu-started`），PENDING
-  最多 `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min），
-  且不超过第一台备料开工后 `prep_lead_seconds`（7200 s）。
-  这一项，作业号见 `jobs.json`）。然后等 gpu.sh 确认开工（写 `gpu-started`），PENDING 最多
-  `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min）：到时打印
-  任一上限到时打印 Slurm Reason、优先级和同分区排在前面的排队作业数，取消本 run 全部作业，非零
-  退出，不自动重交，也从不少几台备料就开跑；备料上限到时 GPU 一秒没花。备料元素在 GPU 开工前就结束、
-  或有主机写了 `prep-refused/*`，同样当场全部取消。
+  最多 `prep_pending_max_seconds`（7200 s），再等每台都写出 `prep-ready/ready-*`（服务能答），
+  最多再 `remote_prepare_wait_seconds`；开工时刻取调度器报的开始时间（squeue `%S`，读不到时取最后
+  一次还看到它 PENDING 的时刻，只会更早）。然后等 gpu.sh 确认开工（写 `gpu-started`），PENDING
+  最多 `gpu_pending_max_seconds`（4 h；`--smoke` 用 `smoke_gpu_pending_max_seconds` 15 min），且
+  不超过第一台备料开工后 `prep_lead_seconds`（7200 s）：所以 GPU 排队可用时间 = `prep_lead_seconds`
+  减去从第一台备料开工到全部就绪的时间（主机开工先后之差加启动），有备料时
+  `gpu_pending_max_seconds` 实际被它封顶。任一上限到时打印 Slurm Reason、优先级和同分区排在前面的
+  排队作业数（到时 squeue 读不到就写明"squeue unreadable at the deadline"，不说仍在 PENDING），
+  取消本 run 全部作业，非零退出，不自动重交，也从不少几台备料就开跑；备料上限到时 GPU 一秒没花。
+  从交作业到 gpu.sh 确认开工，launcher 每拍（10 s）都查：有主机写了 `prep-refused/*`，或某个备料元素
+  已结束或不在队列里，就当场取消本 run 全部作业并写明原因（`submit-failed.txt`）。
   GPU 作业没确认就结束（FAILED、TIMEOUT、NODE_FAIL、BOOT_FAIL、OUT_OF_MEMORY、CANCELLED、已清除）
   一样算失败；RUNNING 满 300 s 仍没有 `gpu-started`（gpu.sh 卡在检查之前，或共享盘看不到该
   文件）也算失败；squeue 读不到不算回答，下一拍再读。中途任一提交失败、Ctrl-C、SIGTERM、SIGHUP
@@ -109,7 +112,10 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `launcher-alive`；gpu.sh 开工时它比 `launcher_stale_seconds`（120 s）旧（或不存在），先等 30 s
   打开文件再读一次（NFS 属性缓存可让它看着旧约 60 s，误拒会白等整段排队），仍旧才拒绝（launcher 被
   SIGKILL、崩溃或登录节点没了），写 STOP 并以 3 退出，不会无人看管地跑 20 h。supervise 在自己
-  进程里调 launcher，每一代（含自动续跑）都是同一个检查。
+  进程里调 launcher，每一代（含自动续跑）都是同一个检查。备料主机在 `gpu-started` 出现前用同一规则
+  看 `launcher-alive`（旧于 `launcher_stale_seconds`，30 s 后再读一次仍旧），旧了就停、写
+  `prep-stopped-<组>` 说明原因；这段时间 squeue 读不到时也只看 launcher 心跳（GPU 的 `load.txt`
+  还没有），不会在 launcher 还活着时悄悄退出。主机退出后 launcher 下一拍看到元素结束，全部取消。
 - 启动握手（备料先开始，11-19 起；以前 GPU 先开始、备料后排队，上机总验两次都是 GPU 开工后
   备料排不齐：general 900 s 0/8、debug 300 s 3/8，GPU 时间白等，链停）：GPU 开工时备料主机都已在跑；
   学习者从开始起最多等 `remote_prepare_wait_seconds`（300 s，只剩主机启动和自检，不含排队）等全部
@@ -120,7 +126,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   计 fairshare，最多 `prep_lead_seconds`；排队时的作业不计费。繁忙分区上长跑的起法：备料排队（最多
   2 h，不花 GPU），全部开工后 GPU 排队（最多 2 h，备料空等），GPU 开工后 env 排队、按弹性加入；
   任一上限到时链以 `generation N submit failed (... still PENDING ...)` 停（`FINAL.json`），不续跑、不
-  重交。两段上限都吃链的墙钟（`long_wall_seconds` 比训练目标多出的约 4 h）。续跑的每一代走同一顺序。
+  重交。两段上限都吃链的墙钟（链期限 = 开链 + `long_wall_seconds` + 900 s，比训练目标多出约 4.25 h）。续跑的每一代走同一顺序。
+  要知道的三件事：（1）续跑那一代排队超过上限，链就以 submit failed 终止：本来可续跑的一次死亡
+  （GPU 节点掉了、超时）变成最终停止，要人看过再手动起新链；（2）第 0 代两段排队都排满（2 h +
+  2 h）就用掉长跑约 4.25 h 余量中的 4 h，之后的续跑够不到完整训练目标，链按窗口用完收尾；（3）有备料
+  时 `gpu_pending_max_seconds`（4 h）实际被 `prep_lead_seconds`（2 h）封顶，GPU 最多排 2 h。
   预检 `time_limits` 按站点 `partition_max_minutes` 查三类作业时长：20 h 长跑第 0 代 GPU 1220、备料
   1340、env 1255 分钟，要 24 h 分区（60 分钟的 debug 会被拒）；hwcheck 档案三者都 ≤ 60 分钟（测试钉住）。
 - GPU 作业是否还活着（prep.sh、env.sh 共用 `gpu_job.sh`）：只看 `squeue` 的 stdout（rc 0 时 stderr
@@ -471,11 +481,13 @@ gae_lambda 0.99、dataset_rows 4096 / 4 个小批 / 1 epoch、`lr_warmup_steps` 
   自己评估认领/点过的 CP，没评估过的较旧 CP 可能在新链读到之前被删掉。
 
 短体检（`rl5-long-run-1-hwcheck.toml`）：
-- 规则：每个作业都能进 60 分钟分区（测试钉住）：第 0 代 GPU 45、备料 60（45 + `prep_lead_seconds`
-  900 s）、env 55 分钟（训练目标 1500 s，`env_wait_seconds` 和 `remote_prepare_wait_seconds` 各 300 s）。
+- 规则：每个作业都能进 60 分钟分区（测试钉住，续跑那代只会更短）：第 0 代 GPU 43、备料 60（43 +
+  `prep_lead_seconds` 1020 s）、env 53 分钟（训练目标 1500 s，`env_wait_seconds` 300 s，
+  `remote_prepare_wait_seconds` 只在本档案里是 180 s，长跑仍 300 s）。
   链墙钟上限 7200 s 不是作业时长（有训练目标时每代作业只要剩余训练 + 预留），留给备料排队（≤ 1800 s）、
-  GPU 排队（≤ 900 s）、两次启动和被杀那代丢的尾巴；`min_generation_seconds` 600，续跑后剩余训练
-  ≥ 600 s 时才再起一代。GPU 排队超过 900 s（11-19 第二次是 941 s）会按上限停、不花 GPU。
+  GPU 排队（≤ 1020 s 减去从第一台备料开工到全部就绪的时间）、两次启动和被杀那代丢的尾巴；
+  `min_generation_seconds` 600，续跑后剩余训练 ≥ 600 s 时才再起一代。GPU 排队超过这个可用时间会按
+  上限停、不花 GPU（11-19 第二次 941 s，主机开工先后差在约 80 s 内时排得下）。
 - CP 每 300 s 一个（冻结配方锁定，A9 不许改），1500 s 训练约 5 个 CP，多于留 3 个，保留和删除都会真跑到；
   评估每 900 s 一轮（A0 100 局，是决策轮、按种子和登记基线配对，`DECISION_GAMES` 100；A10 16 局），
   训练期间至少一轮链内评估，评估认领保护也会被跑到。

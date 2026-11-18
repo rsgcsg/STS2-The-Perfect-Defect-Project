@@ -4,9 +4,10 @@
 # and the start-up waits differ, so one resume (the operator scancels the GPU job once after
 # the 2nd CP) and peer CP deletion both happen inside the check. `default` = the long-run
 # profile's value. Every job fits a 60 min partition (a test pins it), for generation 0:
-#   gpu  = (wall 1500 + 240 + remote_prepare_wait 300 + end reserve 600) // 60 + 1 = 45 min
-#   prep = gpu + prep_lead 900 / 60 = 60 min
-#   env  = (env_wait 300 + remote_prepare_wait 300 + 1500 + 600 + 600) // 60 = 55 min
+#   gpu  = (wall 1500 + 240 + remote_prepare_wait 180 + end reserve 600) // 60 + 1 = 43 min
+#   prep = gpu + prep_lead 1020 / 60 = 60 min
+#   env  = (env_wait 300 + remote_prepare_wait 180 + 1500 + 600 + 600) // 60 = 53 min
+# A resumed generation asks less training (min(wall left, training left)), so less time.
 # The SGD offline dump is not a profile knob: for this check set `sgd_offline_dump_every`
 # in the gate copy's dataplane.json (see python/docs/RL_LONG_RUN.zh-CN.md), never for the
 # long run.
@@ -14,12 +15,13 @@ schema = "spireagent/friday-fastchain-profile-1"
 base = "rl5-long-run-1.toml"
 
 [knobs]
-train_target_seconds = { value = 1500, default = 72000, why = "25 min of training: 5 CPs at the recipe's 300 s; the 2nd CP lands at ~600 s, so ~900 s is left after the scancel, above min_generation_seconds 600 (the resume starts); keeps the GPU job at 45 min and the env job at 55 min", measured = "lead 11-19 (hwcheck attempt 2 overlay); V6 smokes: GPU start to training 2-3 min, resume to restore 1.3 min" }
-long_wall_seconds = { value = 7200, default = 86400, why = "the chain's wall limit, not a job's time (with a training target each job asks min(wall left, training left) <= 1500 s + reserves): room for the prep queue (<= 1800 s), the GPU queue (<= 900 s), two start-ups and the killed generation's lost tail, so a slow queue ends the check loudly at its bound instead of eating the resume", measured = "hwcheck 11-19: GPU queue 221 s and 941 s; prep PENDING > 900 s" }
+train_target_seconds = { value = 1500, default = 72000, why = "25 min of training: 5 CPs at the recipe's 300 s; the 2nd CP lands at ~600 s, so ~900 s is left after the scancel, above min_generation_seconds 600 (the resume starts); keeps the GPU job at 43 min and the env job at 53 min", measured = "lead 11-19 (hwcheck attempt 2 overlay); V6 smokes: GPU start to training 2-3 min, resume to restore 1.3 min" }
+long_wall_seconds = { value = 7200, default = 86400, why = "the chain's wall limit, not a job's time (with a training target each job asks min(wall left, training left) <= 1500 s + reserves): room for the prep queue (<= 1800 s), the GPU queue (<= prep_lead 1020 s minus the time from the first prep host's start until every host is ready), two start-ups and the killed generation's lost tail, so a slow queue ends the check loudly at its bound instead of eating the resume", measured = "hwcheck 11-19: GPU queue 221 s and 941 s; prep PENDING > 900 s" }
 min_generation_seconds = { value = 600, default = 1800, why = "lets the resume after the operator's scancel start: with 1800 the chain would end as reached or as out of window instead of resuming", measured = "V6 smokes used 600; review of #616 (S1)" }
 checkpoint_keep_newest = { value = 3, default = 24, why = "5 CPs in the check, so peer CP deletion acts (and evaluation claims and the generation start are seen kept); the long run keeps 24", measured = "lead 11-19; review of #616 (S1)" }
 eval_a10_seeds = { value = 16, default = 50, why = "a smaller A10 round: shows the A10 path and its time per game (the A0 round keeps the long run's 100 seeds, a decision round: fast_eval DECISION_GAMES 100, paired per seed with the registered baseline)", measured = "lead 11-18 (smaller evaluation); fast_eval.py DECISION_GAMES = 100" }
 eval_interval_seconds = { value = 900, default = 7200, why = "rounds every 15 min of wall: at least one in-chain A0 and A10 round on a CP while training runs (and the final CP after it)", measured = "lead 11-19 (at least one in-chain round)" }
 env_wait_seconds = { value = 300, default = 1800, why = "a 60 min env job carries env_wait + remote_prepare_wait + wall + 1200 s; 300 as the price run, whose env nodes joined on debug", measured = "price run 11-18 (env_wait 300, remote_prepare_wait 300 on debug)" }
+remote_prepare_wait_seconds = { value = 180, default = 300, why = "the check's host start-up bound (the launcher's wait for every ready file after all hosts run, and the learner's wait from its start); 120 s off the GPU and env jobs leaves the prep hosts 1020 s to wait for the GPU start inside a 60 min prep job; the long run keeps 300", measured = "hwcheck 11-19: a 3-node prep job came up within 60 s of its start; review of #619 (S4 option A)" }
 prep_pending_max_seconds = { value = 1800, default = 7200, why = "the check's prep queue bound: a 30 min wait with no GPU spent, inside the 7200 s chain window", measured = "hwcheck 11-19 (prep PENDING > 900 s on general)" }
-prep_lead_seconds = { value = 900, default = 7200, why = "a 60 min prep job: 45 min GPU job + 15 min the hosts may wait for the GPU start; a longer GPU queue cancels the run with no GPU spent", measured = "hwcheck 11-19: H100 queue 221 s (attempt 1) and 941 s (attempt 2: would hit this bound)" }
+prep_lead_seconds = { value = 1020, default = 7200, why = "a 60 min prep job: 43 min GPU job + 17 min the hosts may wait for the GPU start (less the time from the first host's start until every host is ready); a longer GPU queue cancels the run with no GPU spent", measured = "hwcheck 11-19: H100 queue 221 s (attempt 1) and 941 s (attempt 2: fits, with ~80 s for the hosts' start spread); review of #619 (S4 option A)" }

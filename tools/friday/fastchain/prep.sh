@@ -42,19 +42,44 @@ echo "prep group $FC_PREP_GROUP host index $((n-1)) start=$(date -Is)"
 # publishes its final CP, reading from these hosts (V6 smoke attempt 2: the hosts stopped
 # on an operator STOP, the learner's shard 2 got EOFError and fenced, no final CP). A STOP
 # before the learner was ready (it never started) also ends the serving.
-# squeue decides while it answers (gpu_job.sh: stdout only, a failure is unknown, never
-# gone). While it cannot (slurmctld outage), the GPU job's own heartbeat decides: gpu.sh
+# Before the GPU job confirmed its start ($RUN/gpu-started) the launcher is the one
+# watching: its heartbeat launcher-alive must stay fresh, by gpu.sh's rule (older than
+# FC_LAUNCHER_STALE_SECONDS, read again after 30 s: stale). A stale one (launcher killed,
+# login node lost) stops the hosts loudly; the queued GPU job then refuses on the same file
+# (review #619 M3). squeue decides while it answers (gpu_job.sh: stdout only, a failure is
+# unknown, never gone). While it cannot (slurmctld outage): before the GPU start the
+# launcher's heartbeat decides (above), after it the GPU job's own heartbeat: gpu.sh
 # rewrites load.txt every 5 s while it lives. The hosts stop only when squeue cannot answer
-# AND that heartbeat is older than 600 s; prep-stopped-<group> then says why (#540 review).
+# AND that heartbeat is older than 600 s. Every stop writes prep-stopped-<group> with the
+# reason (#540 review); the launcher, still waiting, sees the element end and cancels.
 SERVE_START=$(date +%s); RC=0
 learner_done() { [ -e $RUN/learner-report.json ] || { [ -e $RUN/STOP ] && [ ! -e $RUN/learner.ready ]; }; }
+launcher_beat() { local m; m=$(date -r $RUN/launcher-alive +%s 2>/dev/null) && echo "$(( $(date +%s) - m )) s old" || echo missing; }
+launcher_gone() {
+  [ -e $RUN/gpu-started ] && return 1
+  local b; b=$(launcher_beat)
+  [ "$b" = missing ] || [ "${b%% *}" -gt $FC_LAUNCHER_STALE_SECONDS ] || return 1
+  echo "launcher heartbeat $b before the GPU start: read again in 30 s $(date -Is)"
+  sleep 30; cat $RUN/launcher-alive >/dev/null 2>&1
+  [ -e $RUN/gpu-started ] && return 1
+  b=$(launcher_beat)
+  [ "$b" = missing ] || [ "${b%% *}" -gt $FC_LAUNCHER_STALE_SECONDS ]
+}
 while ! learner_done; do
   sleep 15
+  if launcher_gone; then
+    echo "launcher gone before the GPU start (launcher-alive $(launcher_beat)): prep group $FC_PREP_GROUP stopped $(date -Is)" | tee $RUN/prep-stopped-$FC_PREP_GROUP
+    RC=4; break
+  fi
   read -r V D <<< "$(gpu_job_state $GPU)"
   case $V in
     live) ;;
     gone) echo "GPU job $GPU gone: $D $(date -Is)"; break ;;
-    *) AGE=$(( $(date +%s) - $(date -r $RUN/load.txt +%s 2>/dev/null || echo $SERVE_START) ))
+    *) if [ ! -e $RUN/gpu-started ]; then
+         echo "squeue cannot answer ($D); before the GPU start, launcher heartbeat $(launcher_beat) $(date -Is)"
+         continue
+       fi
+       AGE=$(( $(date +%s) - $(date -r $RUN/load.txt +%s 2>/dev/null || echo $SERVE_START) ))
        echo "squeue cannot answer ($D); GPU heartbeat load.txt ${AGE} s old $(date -Is)"
        if [ $AGE -gt 600 ]; then
          echo "squeue cannot answer and the GPU heartbeat is ${AGE} s old: prep group $FC_PREP_GROUP stopped $(date -Is)" | tee $RUN/prep-stopped-$FC_PREP_GROUP

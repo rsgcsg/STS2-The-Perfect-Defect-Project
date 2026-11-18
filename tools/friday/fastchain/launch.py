@@ -657,13 +657,14 @@ def gpu_state(job: str) -> str | None:
 
 
 def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0,
-                   ack_limit: float = GPU_ACK_MAX_SECONDS) -> None:
+                   ack_limit: float = GPU_ACK_MAX_SECONDS, check: Any = None) -> None:
     """Until gpu.sh confirms its start (`gpu-started`, written once its launcher check
     passed). PENDING after `limit` s (CLUSTER-QUEUE-DIAG 11-14), RUNNING for `ack_limit` s
     without that confirmation (gpu.sh hung before its check, or the shared file system
     hides the file), or ended without it (FAILED, TIMEOUT, NODE_FAIL, CANCELLED, purged
     ...): SystemExit with the reason; the caller cancels every job of the run. A failed
-    squeue is read again at the next poll, never taken as an answer; CONFIGURING waits."""
+    squeue is read again at the next poll, never taken as an answer; CONFIGURING waits.
+    `check` (prep hosts: a refusal or an ended element) runs every poll and raises."""
     deadline, shown, started = time.monotonic() + limit, False, run / "gpu-started"
     running_since: float | None = None  # first RUNNING since the last PENDING
     left_pending = False  # CONFIGURING/RUNNING seen: a failed squeue is no longer "PENDING"
@@ -675,6 +676,8 @@ def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0,
     while True:
         if started.exists():
             return
+        if check:
+            check()
         state = gpu_state(job)
         if state not in (None, "PENDING", "CONFIGURING", "RUNNING"):
             if started.exists():  # confirmed between the two reads
@@ -707,46 +710,83 @@ def wait_gpu_start(job: str, limit: float, run: Path, *, poll: float = 10.0,
         time.sleep(poll)
 
 
-def element_states(arrays: list[str]) -> dict[str, str] | None:
-    """`squeue -h -r -j A,B -o %i|%T`: state per array element ("123_4"); elements no longer
-    listed are absent; None if squeue failed."""
-    out = subprocess.run(["squeue", "-h", "-r", "-j", ",".join(arrays), "-o", "%i|%T"],
+PREP_LIVE = ("PENDING", "CONFIGURING", "RUNNING")
+
+
+def parse_start(text: str) -> float | None:
+    """squeue %S ("2026-11-19T10:00:00", local time) as epoch seconds; None for N/A,
+    Unknown or anything else."""
+    try:
+        return time.mktime(time.strptime(text.strip(), "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def element_states(arrays: list[str]) -> dict[str, tuple[str, float | None]] | None:
+    """`squeue -h -r -j A,B -o %i|%T|%S`: (state, scheduler start time as epoch or None) per
+    array element ("123_4"); elements no longer listed are absent; None if squeue failed."""
+    out = subprocess.run(["squeue", "-h", "-r", "-j", ",".join(arrays), "-o", "%i|%T|%S"],
                          capture_output=True, text=True)
     if out.returncode != 0 and "Invalid job id" not in out.stderr:
         return None
-    return dict(line.strip().split("|", 1) for line in out.stdout.splitlines()
-                if "|" in line)
+    rows = (line.strip().split("|") for line in out.stdout.splitlines() if "|" in line)
+    return {r[0]: (r[1], parse_start(r[2]) if len(r) > 2 else None) for r in rows}
 
 
-def wait_prep_start(elements: list[str], limit: float, run: Path, *, poll: float = 10.0,
-                    states: Any = None) -> float:
-    """Until every prep element (one per host, "<array job>_<index>") runs; returns the
-    time.monotonic() of the earliest start seen (one poll earlier: the start may lie between
-    two polls). Still PENDING after `limit` s (prep_pending_max_seconds), an element ended
-    before the GPU job started (it serves until the learner is done), or a host refused
-    (prep-refused/): SystemExit with the reason; the caller cancels every job of the run,
-    so no GPU time is spent. A failed squeue is read again at the next poll."""
+def prep_problem(elements: list[str], run: Path,
+                 now: dict[str, tuple[str, float | None]] | None) -> str | None:
+    """Why the run cannot go on before the GPU job confirmed its start: a host refused
+    (prep-refused/), or an element ended or is no longer listed (prep.sh serves until the
+    learner is done, so before that any end is a failure). None while all is well; a failed
+    squeue (now None) decides nothing."""
+    refused = sorted(f for f in (run / "prep-refused").glob("*") if not f.name.endswith(".tmp"))
+    if refused:
+        return ("prep host refused before the GPU job started: "
+                + "; ".join(f.read_text().strip() for f in refused))
+    for element in elements if now is not None else []:
+        state = now.get(element, (None, None))[0]
+        if state not in PREP_LIVE:
+            return (f"prep element {element} ended before the GPU job started "
+                    f"({state or 'no longer listed'}); see {run}/slurm-prep-*.out")
+    return None
+
+
+def prep_ready(run: Path) -> int:
+    """How many prep hosts wrote prep-ready/ready-<n> (their service answers)."""
+    return len([f for f in (run / "prep-ready").glob("ready-*") if not f.name.endswith(".tmp")])
+
+
+def wait_prep_start(elements: list[str], limit: float, run: Path, *, ready_limit: float,
+                    poll: float = 10.0, states: Any = None) -> float:
+    """Until every prep element (one per host, "<array job>_<index>") runs, at most `limit` s
+    (prep_pending_max_seconds), then until every host wrote prep-ready/ready-<n>, at most
+    `ready_limit` s more (remote_prepare_wait_seconds, the learner's own wait). Returns the
+    earliest start as epoch seconds: the scheduler's start time (squeue %S), or, when it
+    cannot be read, the last read that still showed the element PENDING (earlier, so the GPU
+    bound never runs past the prep jobs' time). Every poll: a host refused, an element ended
+    (prep_problem), a bound passed: SystemExit with the reason; the caller cancels every job
+    of the run. A failed squeue is read again at the next poll."""
     states = states or element_states
     arrays = sorted({element.rsplit("_", 1)[0] for element in elements})
-    deadline, started, shown = time.monotonic() + limit, {}, False
-    while True:
-        refused = sorted(f for f in (run / "prep-refused").glob("*")
-                         if not f.name.endswith(".tmp"))
-        if refused:
-            raise SystemExit("prep host refused before the GPU job started: "
-                             + "; ".join(f.read_text().strip() for f in refused))
+    began = time.time()
+    deadline, started, pending_at, shown = time.monotonic() + limit, {}, {}, False
+    now: dict[str, tuple[str, float | None]] | None = None
+    while len(started) < len(elements):
+        read_at = time.time()
         now = states(arrays)
-        if now is not None:
-            for element in elements:
-                state = now.get(element)
-                if state is None or state not in ("PENDING", "CONFIGURING", "RUNNING"):
-                    raise SystemExit(f"prep element {element} ended before the GPU job "
-                                     f"started ({state or 'no longer listed'}); see "
-                                     f"{run}/slurm-prep-*.out")
-                if state != "PENDING":
-                    started.setdefault(element, time.monotonic() - poll)
-            if len(started) == len(elements):
-                return min(started.values())
+        problem = prep_problem(elements, run, now)
+        if problem:
+            raise SystemExit(problem)
+        for element, (state, start) in (now or {}).items():
+            if element not in elements:
+                continue
+            if state == "PENDING":
+                pending_at[element] = read_at
+            else:
+                started.setdefault(element, start if start is not None
+                                   else pending_at.get(element, began))
+        if len(started) == len(elements):
+            break
         pending = [e for e in elements if e not in started]
         if not shown and now is not None:
             print(f"prep: {len(started)} of {len(elements)} hosts running; "
@@ -754,11 +794,29 @@ def wait_prep_start(elements: list[str], limit: float, run: Path, *, poll: float
                   f"{limit:.0f} s", flush=True)
             shown = True
         if time.monotonic() >= deadline:
-            where = queue_position(pending[0], pending_jobs())
+            if now is None:
+                raise SystemExit(f"prep hosts not seen running after {limit:.0f} s "
+                                 f"(prep_pending_max_seconds): squeue unreadable at the "
+                                 f"deadline (hosts may be starting); {len(started)} of "
+                                 f"{len(elements)} seen running; the GPU job never started; "
+                                 "not resubmitted")
             raise SystemExit(f"prep hosts still PENDING after {limit:.0f} s "
                              f"(prep_pending_max_seconds): {len(started)} of {len(elements)} "
-                             f"running; {where}; the GPU job never started; not resubmitted")
+                             f"running; {queue_position(pending[0], pending_jobs())}; the "
+                             "GPU job never started; not resubmitted")
         time.sleep(poll)
+    ready_deadline = time.monotonic() + ready_limit
+    while prep_ready(run) < len(elements):
+        problem = prep_problem(elements, run, states(arrays))
+        if problem:
+            raise SystemExit(problem)
+        if time.monotonic() >= ready_deadline:
+            raise SystemExit(f"prep hosts not ready {ready_limit:.0f} s after all ran "
+                             f"(remote_prepare_wait_seconds): {prep_ready(run)} of "
+                             f"{len(elements)} wrote prep-ready/ready-*; see "
+                             f"{run}/prep-host-*.log")
+        time.sleep(poll)
+    return min(started.values())
 
 
 def prep_elements(plan: dict[str, Any], jobs: dict[str, Any]) -> list[str]:
@@ -771,18 +829,19 @@ def prep_elements(plan: dict[str, Any], jobs: dict[str, Any]) -> list[str]:
 def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
            *, run_cmd: Any = None, wait: Any = None, wait_prep: Any = None,
            run_scancel: Any = None) -> dict[str, Any]:
-    """Prep jobs first, the GPU job with --dependency=after:<every prep element> (it queues
-    only once every prep host runs, so no GPU time waits for prep hosts), env jobs with
-    --dependency=after:<GPU job> (no env node is held or charged while the GPU job pends).
-    Then wait until every prep host runs, at most plan["prep_pending_max_seconds"], and
-    until gpu.sh confirms its start, at most plan["gpu_pending_max_seconds"] in PENDING and
-    never past prep_lead_seconds after the first prep host's start (a later start would
-    outlive the prep jobs' time). Without prep hosts the GPU job goes first. Any failure on
-    the way (a later sbatch failing, a bound, Ctrl-C, SIGTERM, SIGHUP) cancels every job
-    already submitted, then re-raises. Nothing is retried or resubmitted. For what no
-    handler sees (SIGKILL, a crash, a lost login node) a thread touches launcher-alive every
-    HEARTBEAT_SECONDS from before the first submit until gpu.sh confirmed: gpu.sh refuses to
-    run on a stale one."""
+    """Prep jobs first, the GPU job with --dependency=after:<every prep element> (it queues only
+    once every prep host runs, so no GPU time waits for prep hosts), env jobs with
+    --dependency=after:<GPU job> (no env node is held or charged while the GPU job pends). Then
+    wait until every prep host runs, at most plan["prep_pending_max_seconds"], and is ready
+    (prep-ready/ready-*), at most plan["prep_wait_seconds"] more, and until gpu.sh confirms its
+    start (every poll: a prep host refusing or ending cancels the run), at most
+    plan["gpu_pending_max_seconds"] in PENDING and never past prep_lead_seconds after the first
+    prep host's start (a later start would outlive the prep jobs' time). Without prep hosts the
+    GPU job goes first. Any failure on the way (a later sbatch failing, a bound, Ctrl-C,
+    SIGTERM, SIGHUP) cancels every job already submitted, then re-raises. Nothing is retried or
+    resubmitted. For what no handler sees (SIGKILL, a crash, a lost login node) a thread touches
+    launcher-alive every HEARTBEAT_SECONDS from before the first submit until gpu.sh confirmed:
+    gpu.sh refuses to run on a stale one."""
     run_cmd = run_cmd or (lambda cmd: sh(*cmd))
     wait = wait or wait_gpu_start
     wait_prep = wait_prep or wait_prep_start
@@ -819,16 +878,24 @@ def submit(run: Path, plan: dict[str, Any], cmds: dict[str, list[str]],
         for name, cmd in cmds.items():
             if name != "gpu" and not name.startswith("prep-"):
                 go(name, [*cmd[:-1], f"--dependency=after:{gpu}", cmd[-1]])
-        limit = float(plan["gpu_pending_max_seconds"])
+        limit, check = float(plan["gpu_pending_max_seconds"]), None
         if elements:
-            first = wait_prep(elements, plan["prep_pending_max_seconds"], run)
-            lead_left = plan["prep_lead_seconds"] - (time.monotonic() - first)
+            first = wait_prep(elements, plan["prep_pending_max_seconds"], run,
+                              ready_limit=plan["prep_wait_seconds"])
+            lead_left = plan["prep_lead_seconds"] - (time.time() - first)
             if lead_left < limit:
                 print(f"GPU queue bound {max(lead_left, 0):.0f} s: the first prep host "
-                      f"may wait prep_lead_seconds {plan['prep_lead_seconds']} s for the "
-                      "GPU start", flush=True)
+                      f"started {time.time() - first:.0f} s ago and its job lasts "
+                      f"prep_lead_seconds {plan['prep_lead_seconds']} s past the GPU job's "
+                      "time", flush=True)
                 limit = max(lead_left, 0.0)
-        wait(gpu, limit, run)
+            arrays = sorted({element.rsplit("_", 1)[0] for element in elements})
+
+            def check() -> None:
+                problem = prep_problem(elements, run, element_states(arrays))
+                if problem:
+                    raise SystemExit(problem)
+        wait(gpu, limit, run, check=check)
     except BaseException as error:
         result = cancel_all(jobs, run_scancel=run_scancel)
         (run / "submit-failed.txt").write_text(f"{error!r}\n{result}\n")
