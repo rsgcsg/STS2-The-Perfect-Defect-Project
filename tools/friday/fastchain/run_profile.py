@@ -425,6 +425,11 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "remote_prepare_client_processes": _int(0, 64),
     "remote_prepare_timeout_seconds": _num(1),
     "remote_prepare_wait_seconds": _num(1),
+    # the launcher cancels the run when a prep host is still PENDING after this long ...
+    "prep_pending_max_seconds": _int(60),
+    # ... and when the GPU job has not started this long after the first prep host did
+    # (added to the prep job time: a host must outlive the GPU job it waited for)
+    "prep_lead_seconds": _int(60),
     "prep_groups": _prep_groups,
     "prep_host_inflight_gb": _num(0),
     "prep_scratch_min_free": _bool,

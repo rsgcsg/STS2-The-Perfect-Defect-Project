@@ -267,9 +267,9 @@ def learner() -> None:
         dataplane["sgd_data_parallel"] = {"world": ranks, "backend": "nccl",
                                           "timeout_seconds": K["data_parallel_timeout_seconds"]}
         dataplane["sgd_cpus"] = sorted(os.sched_getaffinity(0))[:K["sgd_cpus"]]
-    # Remote preparation hosts (PR #491/#496): the prep jobs start only after this GPU job
-    # started (--dependency=after), so wait here for every host's RUN/prep-ready/ready-<n>
-    # (their queue time + start), all of them, never fewer; a refusing host ends the wait.
+    # Remote preparation hosts (PR #491/#496): every prep host runs before this GPU job
+    # starts (its --dependency=after), so wait here for every host's RUN/prep-ready/ready-<n>
+    # (host start only), all of them, never fewer; a refusing host ends the wait.
     if K["remote_prepare"]:
         from stpd.p1.inference_service import python_env_sha256
 

@@ -772,8 +772,8 @@ def check_queue(facts: dict[str, Any]) -> Result:
     """Printed, never enforced (CLUSTER-QUEUE-DIAG 11-14): this user's fair-share factor and,
     in the GPU partition and the prep partition, how many pending jobs rank above a job
     submitted now. Backfill looks at only the first bf_max_job_test of them per cycle (500
-    there), so a long list means a long wait. The prep jobs queue only once the GPU job
-    started and must be up within remote_prepare_wait_seconds, or the learner gives up."""
+    there), so a long list means a long wait. The prep jobs queue first, at most
+    prep_pending_max_seconds; the GPU job queues once every prep host runs."""
     q = facts.get("queue") or {}
 
     def shown(value: Any) -> str:
