@@ -259,6 +259,68 @@ def test_checkpoint_seed_count_is_bounded_by_one_job_not_fifty_to_one_hundred(
     assert not (tmp_path / 'out').exists()
 
 
+@pytest.mark.parametrize('batch_seeds', [0, 201, 50.0])
+def test_checkpoint_batch_size_is_bounded_by_one_job(evaluate, tmp_path, batch_seeds):
+    """#591: more than 200 seeds need batches of 1..200; 300 with batches passes the check."""
+    with pytest.raises(ValueError, match='bounded_evaluation_batch_size_required'):
+        evaluate.prepare_checkpoint(tmp_path / 'learner.json', 'cp', tmp_path / 'e.json',
+                                    tmp_path / 'm.json', tmp_path / 'out', seeds=300,
+                                    batch_seeds=batch_seeds)
+    with pytest.raises(FileNotFoundError):  # past the checks: the learner config is next
+        evaluate.prepare_checkpoint(tmp_path / 'learner.json', 'cp', tmp_path / 'e.json',
+                                    tmp_path / 'm.json', tmp_path / 'out', seeds=300,
+                                    batch_seeds=100)
+    assert not (tmp_path / 'out').exists()
+
+
+def test_batch_ordinals_split_a_round_into_jobs_of_at_most_the_batch_size(evaluate):
+    assert evaluate.batch_ordinals(100, None) is None and evaluate.batch_ordinals(100, 100) is None
+    assert evaluate.batch_directories(100, 200) == ['evaluation']
+    batches = evaluate.batch_ordinals(250, 100)
+    assert [(b[0], b[-1], len(b)) for b in batches] == [(1, 100, 100), (101, 200, 100),
+                                                        (201, 250, 50)]
+    assert evaluate.batch_directories(250, 100) == [
+        'evaluation-01', 'evaluation-02', 'evaluation-03']
+
+
+def test_a_300_seed_round_prepares_three_plans_then_its_batches_file(
+        evaluate, execution, tmp_path):
+    """#591: one export, one plan per batch on the same frozen A0 300 manifest and
+    checkpoint binding, then batches.json (written last) naming each plan by sha256."""
+    from stpd.evaluation.suites import rl5_a0_curve_300_manifest
+
+    output = (tmp_path / 'round').resolve()
+    output.mkdir()
+    value = json.loads(execution.read_text())
+    value['models'] = {'checkpoint': {'artifact_id': '1' * 64}}
+    (output / 'input-execution.json').write_text(json.dumps(value))
+    (output / 'checkpoint-binding.json').write_text('{"run": "r"}')
+    manifest = tmp_path / 'a300.json'
+    manifest.write_text(json.dumps(rl5_a0_curve_300_manifest('v0.111.0')))
+    actor = make_actor(tmp_path / 'actor')
+    result = evaluate.prepare_round(output, manifest, seeds=300, batch_seeds=100, actor=actor,
+                                    workers=16, wall_seconds=21600, episode_seconds=900)
+    plans = result['batches']
+    assert [p['seed_ordinals'][0] for p in plans] == [1, 101, 201]
+    assert all(p['planned'] == 100 and p['actor_root'] == str(actor) for p in plans)
+    assert len({p['manifest']['sha256'] for p in plans}) == 1
+    assert len({p['checkpoint_binding']['sha256'] for p in plans}) == 1
+    batches = json.loads((output / 'batches.json').read_text())
+    assert batches['seeds'] == 300 and batches['batch_seeds'] == 100
+    for entry, number in zip(batches['batches'], (1, 2, 3), strict=True):
+        assert entry['directory'] == f'evaluation-0{number}'
+        assert entry['plan_sha256'] == evaluate.hashed(output / entry['directory'] / 'plan.json')
+    assert batches['batches'][2]['seed_ordinals'] == [201, 300]
+    one = (tmp_path / 'one').resolve()  # without batches: today's single job
+    one.mkdir()
+    for name in ('input-execution.json', 'checkpoint-binding.json'):
+        (one / name).write_bytes((output / name).read_bytes())
+    single = evaluate.prepare_round(one, manifest, seeds=100, batch_seeds=None, actor=None,
+                                    workers=16, wall_seconds=21600, episode_seconds=900)
+    assert single['seed_prefix'] == 100 and not (tmp_path / 'one' / 'batches.json').exists()
+    assert (tmp_path / 'one' / 'evaluation' / 'plan.json').is_file()
+
+
 def test_fixed20_seed_tampering_stays_rejected_by_original_reader(evaluate, execution, tmp_path):
     from spireagent.json_boundary import BoundaryError
     from stpd.evaluation.suites import load_suite
