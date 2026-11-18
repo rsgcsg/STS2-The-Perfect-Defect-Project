@@ -215,7 +215,7 @@ SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
 # RL5-METHODS A2: the format-4 HP-change weight per combat type (fast_assembly.hp_weights).
 HP_COMBAT_TYPES = ("normal", "elite", "boss")
 # Ticket H: how the per-combat HP score treats potions (fast_assembly.HP_POTION_MODES).
-HP_POTION_MODES = ("points", "value_head")
+HP_POTION_MODES = ("points", "value_head", "value_head_neutral")  # neutral: #608
 # Ticket K: which policy rows the learner's KL stop measures (stpd.rl.loss.KL_STOP_SCOPES).
 KL_STOP_SCOPES = ("all", "control")
 

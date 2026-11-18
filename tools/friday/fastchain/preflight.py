@@ -265,6 +265,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["hp_combat_weights"] = "HP-change weight per combat type (RL5-METHODS A2)"
     if k["hp_potion_mode"] != "points":
         need["hp_potion_mode"] = "potions judged by the value head in the HP score (ticket H)"
+    if k["hp_potion_mode"] == "value_head_neutral":
+        need["hp_potion_neutral"] = "potion rows take their combat's mean HP-change part (#608)"
     if k["kl_stop_scope"] != "all":
         need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
     if k["lr_warmup_steps"]:
