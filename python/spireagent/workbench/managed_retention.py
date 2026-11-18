@@ -84,7 +84,7 @@ def pipeline_configuration(configuration: dict[str, Any]) -> dict[str, int]:
     value = configuration.get("pipeline", {"save_workers": 2, "pending_limit": 8})
     if (not isinstance(value, dict) or set(value) != {"save_workers", "pending_limit"}
             or any(type(v) is not int for v in value.values())
-            or not 1 <= value["save_workers"] <= 4
-            or not value["save_workers"] <= value["pending_limit"] <= 16):
+            or not 1 <= value["save_workers"] <= 16
+            or not value["save_workers"] <= value["pending_limit"] <= 48):
         raise BoundaryError("managed_retention", "invalid_pipeline")
     return dict(value)

@@ -1217,8 +1217,8 @@ def main() -> None:
         parser.error("register a GAME-SLOT line first (working rule 5), then --slot-registered")
     if not 600 <= args.interval <= 86400 or not 1 <= args.max_live <= 4:
         parser.error("interval 600..86400 s, max-live 1..4")
-    if not 1 <= args.save_workers <= 4 or not args.save_workers <= args.pending_limit <= 16:
-        parser.error("save-workers 1..4, pending-limit save-workers..16 (pipeline maximums)")
+    if not 1 <= args.save_workers <= 16 or not args.save_workers <= args.pending_limit <= 48:
+        parser.error("save-workers 1..16, pending-limit save-workers..48 (pipeline maximums)")
     if bool(args.baseline_plan) == bool(args.no_baseline):
         parser.error("exactly one of --baseline-plan or --no-baseline")
     if args.baseline_sha256 and not args.baseline_plan:

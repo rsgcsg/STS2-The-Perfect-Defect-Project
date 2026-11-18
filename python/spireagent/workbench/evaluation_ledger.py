@@ -382,7 +382,7 @@ class EvaluationLedger:
         if (
             self.plan.get("host_kind") != "managed"
             or type(workers) is not int
-            or not 1 <= workers <= 16
+            or not 1 <= workers <= 20
             or type(max_episodes) is not int
             or not 1 <= max_episodes <= 200
         ):

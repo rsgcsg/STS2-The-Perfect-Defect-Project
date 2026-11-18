@@ -152,7 +152,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
     from spireagent.workbench.reference_suite import load_manifest
     from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, load_suite
 
-    if (type(workers) is not int or not 1 <= workers <= 16
+    if (type(workers) is not int or not 1 <= workers <= 20
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
             or wall_seconds <= episode_seconds + 180

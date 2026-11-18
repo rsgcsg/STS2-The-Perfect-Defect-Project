@@ -43,10 +43,17 @@ def test_invalid_intent_rejected(value):
 
 
 @pytest.mark.parametrize("value", [None, {}, {"save_workers": 2, "pending_limit": 1},
-    {"save_workers": True, "pending_limit": 4}, {"save_workers": 5, "pending_limit": 8}])
+    {"save_workers": True, "pending_limit": 4}, {"save_workers": 17, "pending_limit": 32},
+    {"save_workers": 12, "pending_limit": 49}])
 def test_invalid_pipeline_rejected(value):
     with pytest.raises(BoundaryError, match="invalid_pipeline"):
         pipeline_configuration({"pipeline": value})
+
+
+def test_wide_evaluation_pipeline_accepted():
+    # #545: 20 live games need about 10 save threads on top of the playing slots.
+    value = {"save_workers": 12, "pending_limit": 36}
+    assert pipeline_configuration({"pipeline": value}) == value
 
 
 @pytest.mark.parametrize("count, expected", [(1, 1), (8, 1), (50, 1), (51, 2), (1000, 20)])

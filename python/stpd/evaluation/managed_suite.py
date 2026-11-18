@@ -44,7 +44,7 @@ class SuiteLimits:
             type(self.max_steps) is not int
             or self.max_steps < 1
             or type(self.workers) is not int
-            or not 1 <= self.workers <= 16
+            or not 1 <= self.workers <= 20
             or any(
                 not math.isfinite(v) or v <= 0
                 for v in (self.max_episode_seconds, self.max_suite_seconds)
