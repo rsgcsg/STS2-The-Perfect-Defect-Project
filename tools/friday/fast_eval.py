@@ -77,9 +77,12 @@ eval-record.json and the report say "smoke, not a decision result", and no refer
 paired (no paired-delta line).
 
 `--until-file F` (supervise: the chain's FINAL.json, #598): once F exists the schedule
-stops; the newest CP gets one round if none has it (the final CP), every started round is
-waited for until it leaves the waiting stages (reported, deferred, failed: never retried),
-then the loop exits with a loud `evaluation_watcher_done` and its reason. Nothing is
+stops; the final CP (F's `final_checkpoint`, else the newest) gets one round if none has
+it, waited for while not yet visible on the peer (loud once; until --deadline-at's
+headroom, if given), every started round is waited for until it leaves the waiting
+stages (reported, deferred, failed, unknown: never retried), then the loop exits with a
+loud `evaluation_watcher_done` and its reason (`final_checkpoint_round_unknown` when the
+final round's delivery is unknown). Nothing is
 cancelled; a live job keeps it waiting. Without it the loop runs until stopped.
 
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
@@ -143,6 +146,7 @@ PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
 LIVE_STATES = "PD,R,CG,CF,S,RQ,RS"  # queued or running; a purged id is simply absent
 SPLIT = 'exec "$actor_root/env/bin/python"'
 WAITING = ("preparing", "submitted")
+UNKNOWN = ("prepare_submit_unknown", "submit_unknown")  # delivery unknown: never retried
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 
 
@@ -541,18 +545,47 @@ class Loop:
 
     def ending(self) -> bool:
         """The chain has ended (`until_file`, supervise: the chain's FINAL.json exists)."""
+        return self.final() is not False
+
+    def final(self) -> Any:
+        """False before the chain ends (or while its file is not yet readable JSON); else
+        the final CP id the file names (`final_checkpoint`, supervise #598: None = the
+        chain produced none), or True when the file names none (then: the newest CP)."""
         until = self.settings.get("until_file")
-        return until is not None and Path(until).is_file()
+        if until is None or not Path(until).is_file():
+            return False
+        try:
+            value = json.loads(Path(until).read_bytes())
+        except (OSError, ValueError):  # mid-write: read again next tick
+            return False
+        if isinstance(value, dict) and "final_checkpoint" in value:
+            return value["final_checkpoint"]
+        return True
+
+    def final_target(self) -> tuple[bool, str | None]:
+        """(named, id): the CP the last round must be for, and whether the file named it."""
+        final = self.final()
+        if final is True:
+            record = self.newest()
+            return False, record["checkpoint_artifact_id"] if record is not None else None
+        return True, final
 
     def tick(self) -> None:
         if self.advance() is False:  # liveness unknown: nothing decided this tick
             self.persist()
             return
         if self.ending():  # no schedule now: the final CP once, if no round has it yet
+            _, target = self.final_target()
             record = self.newest()
-            if record is not None and not any(e["checkpoint"] == record["checkpoint_artifact_id"]
-                                              for e in self.state["evaluations"]):
+            visible = record is not None and record["checkpoint_artifact_id"] == target
+            if visible and not any(e["checkpoint"] == target
+                                   for e in self.state["evaluations"]):
                 self.start()
+            elif target is not None and not visible and not self.state.get("final_waiting"):
+                # shared-disk lag: the chain's final CP is not on this peer view yet
+                self.state["final_waiting"] = target
+                self.loud("evaluation_final_checkpoint_not_visible", checkpoint=target,
+                          newest=record["checkpoint_artifact_id"] if record else None)
         elif self.clock() >= self.state["next_due"]:
             self.state["next_due"] = self.clock() + self.settings["interval"]
             self.start()
@@ -567,12 +600,13 @@ class Loop:
             return None
         if any(e["stage"] in WAITING for e in self.state["evaluations"]):
             return None
-        record = self.newest()
-        if record is None:
+        _, target = self.final_target()
+        if target is None:
             return "no_checkpoint"
-        if any(e["checkpoint"] == record["checkpoint_artifact_id"]
-               for e in self.state["evaluations"]):
-            return "final_checkpoint_evaluated"
+        rounds = [e for e in self.state["evaluations"] if e["checkpoint"] == target]
+        if rounds:  # never retried: an unknown submission is said, not called evaluated
+            return ("final_checkpoint_round_unknown" if rounds[-1]["stage"] in UNKNOWN
+                    else "final_checkpoint_evaluated")
         deadline = self.settings.get("deadline_at")
         if deadline is not None and self.clock() >= deadline - self.settings[
                 "deadline_headroom_seconds"]:

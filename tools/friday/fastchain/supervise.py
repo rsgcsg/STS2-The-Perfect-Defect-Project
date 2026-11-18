@@ -99,7 +99,8 @@ and with --eval-*: one standing tools/friday/fast_eval.py watcher per suite (#52
 run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
 A10 suite when `eval_a10_enabled`. The watchers outlive supervise: once FINAL.json exists
-(`--until-file`, #598) each starts one round for the final CP if none has it, waits for
+(`--until-file`, #598) each starts one round for the final CP it names
+(`final_checkpoint`, waited for if the watcher's peer view lags) if none has it, waits for
 every round it started, then exits on its own (nothing cancelled); FINAL.json names their
 pids, and `stop` still ends them early.
 Each watcher's baseline: --eval-baseline-plan (a0), else the site's `eval_baselines`
@@ -259,6 +260,17 @@ class Chain:
         tmp.write_text(json.dumps(self.state, indent=1, default=str))
         os.replace(tmp, self.state_path)
 
+    def final_checkpoint(self) -> dict[str, Any]:
+        """FINAL.json's `final_checkpoint`: the chain's own newest CP (None: it produced
+        none). Peer unreadable: the key is left out, said (watchers take their newest)."""
+        if not self.state.get("generations"):
+            return {"final_checkpoint": None}
+        try:
+            return {"final_checkpoint": self.newest_checkpoint(produced_only=True)}
+        except Exception as error:  # noqa: BLE001 -- the chain end is still written
+            self.note("final_checkpoint_unknown", reason=f"{type(error).__name__}: {error}")
+            return {}
+
     def final(self, ok: bool, cause: str) -> int:
         resumable = [g["outcome"] for g in self.state["generations"]
                      if (g.get("outcome") or {}).get("kind") not in (None, "normal")]
@@ -268,8 +280,10 @@ class Chain:
                   # GPU queue time is not given back to the window (see the docstring)
                   "queue_seconds_total": round(sum(g.get("queue_seconds") or 0
                                                    for g in self.state["generations"]), 1),
-                  # standing watchers see this file (--until-file), evaluate the final
-                  # CP, wait for their rounds and exit on their own (#598).
+                  # standing watchers see this file (--until-file), evaluate exactly
+                  # this final CP (null: the chain produced none), wait for their rounds
+                  # and exit on their own (#598; their peer view may lag this one).
+                  **self.final_checkpoint(),
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
                                           for name, loop in self.eval_loops.items()}}
         if self.state["generations"] and self.record(
@@ -356,15 +370,15 @@ class Chain:
                   file=sys.stderr, flush=True)
         return generation
 
-    def newest_checkpoint(self) -> str | None:
+    def newest_checkpoint(self, produced_only: bool = False) -> str | None:
         """Newest CP (published_at) of any generation of this chain; else the chain's
-        own starting CP (None = the start package)."""
+        own starting CP (None = the start package; `produced_only`: None)."""
         generations = {f"g-fc-{g['runtag']}" for g in self.state["generations"]}
         records = [r for r in self.checkpoints(generations)
                    if r.get("training_generation") in generations]
         if records:
             return max(records, key=lambda r: r["published_at"])["checkpoint_artifact_id"]
-        return self.state["start_checkpoint"]
+        return None if produced_only else self.state["start_checkpoint"]
 
     def peer_checkpoints(self, generations: set[str]) -> list[dict[str, Any]]:
         from spireagent.rl_exchange import Exchange

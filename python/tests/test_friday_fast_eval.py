@@ -790,6 +790,60 @@ def test_after_the_chain_ends_the_final_cp_is_evaluated_then_the_watcher_is_done
     assert forever.done() is None
 
 
+def test_the_final_cp_named_by_the_chain_is_waited_for_and_an_unknown_round_is_said(
+        fast_eval, tmp_path, capsys):
+    """#601 review: FINAL.json names the chain's final CP; while the peer view still shows
+    only the previous one (which has a round) the watcher waits, loudly, and evaluates
+    the final CP when it appears. A final round whose delivery is unknown is never
+    retried and never called evaluated. The deadline headroom ends a wait that cannot
+    start the final CP, loudly."""
+    world = World()
+    world.record('cp-a', 10)
+    final = tmp_path / 'chain' / 'FINAL.json'
+    runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final))
+    runner.tick()
+    first = runner.state['evaluations'][0]
+    finish_prepare(world, first)
+    runner.tick()
+    final.parent.mkdir()
+    final.write_text('{"final_che')  # mid-write: not yet the end
+    assert runner.done() is None and not runner.ending()
+    final.write_text(json.dumps({'ok': True, 'final_checkpoint': 'cp-b'}))
+    world.live.discard(first['evaluation_job'])
+    first['stage'] = 'reported'  # cp-a done; cp-b not on this peer view yet
+    runner.tick()
+    assert runner.done() is None and len(runner.state['evaluations']) == 1
+    assert '*** fast_eval evaluation_final_checkpoint_not_visible' in capsys.readouterr().err
+    runner.tick()  # said once
+    assert 'not_visible' not in capsys.readouterr().err
+    world.record('cp-b', 20)
+    runner.tick()  # cp-b visible: its one round
+    second = runner.state['evaluations'][1]
+    assert second['checkpoint'] == 'cp-b' and runner.done() is None
+    finish_prepare(world, second)
+
+    def lost(plan, **options):
+        raise subprocess.CalledProcessError(255, ['sbatch'])
+
+    runner.submit = lost
+    runner.tick()
+    assert second['stage'] == 'submit_unknown'
+    assert runner.done() == 'final_checkpoint_round_unknown'
+    runner.tick()
+    assert len(runner.state['evaluations']) == 2  # never retried
+    none = loop(fast_eval, world, tmp_path / 'none', until_file=str(tmp_path / 'n.json'))
+    (tmp_path / 'n.json').write_text('{"final_checkpoint": null}')
+    none.tick()
+    assert none.done() == 'no_checkpoint' and not none.state['evaluations']
+    lag = World()
+    lag.record('cp-a', 10)
+    lag.now = 1e6
+    late = loop(fast_eval, lag, tmp_path / 'late', until_file=str(final),
+                deadline_at=1e6 + 100)
+    late.tick()
+    assert late.done() == 'final_checkpoint_not_started_absolute_deadline'
+
+
 def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval, tmp_path):
     world = World()
     world.record('cp-a', 10)

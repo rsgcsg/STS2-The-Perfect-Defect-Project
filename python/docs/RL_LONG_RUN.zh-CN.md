@@ -206,9 +206,12 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   （站点 peer，不走 R2），并记 `derived_from`（模板路径、sha256、改了哪几个存储键）：模板旁的
   重冻记录钉的是模板本身，看守先核这份拷贝除存储键外与模板逐键相同、模板未改，再按模板核记录，
   所以换过 adapter 的基线也能配对（#598；记录仍必须是这份模板的记录）。看守带
-  `--until-file <链目录>/FINAL.json`：链结束后不再按间隔开新轮，最后的 CP 还没评就立刻开一轮，
-  等已开的每一轮离开准备/在跑（报告、推迟、失败都算，不重试），然后响亮记
-  `evaluation_watcher_done` 和原因、自己退出；不取消任何作业。`FINAL.json` 记它们的 pid，
+  `--until-file <链目录>/FINAL.json`：链结束后不再按间隔开新轮。`FINAL.json` 的
+  `final_checkpoint` 是 supervise 看到的本链最后一个 CP（本链没出 CP 时为 null）；看守只认这个
+  CP，共享盘还没显示它时响亮记一次 `evaluation_final_checkpoint_not_visible` 并继续等（给了
+  `--deadline-at` 时等到其余量用尽），出现后立刻评一轮；等已开的每一轮离开准备/在跑（报告、
+  推迟、失败、投递未知都算，不重试），然后响亮记 `evaluation_watcher_done` 和原因（最后一轮
+  投递未知时是 `final_checkpoint_round_unknown`）、自己退出；不取消任何作业。`FINAL.json` 记它们的 pid，
   `supervise.py stop` 仍可提前结束。
   重冻模板（`tools/friday/eval_template.py refreeze --previous-revision REV`）要求 REV 的文件
   算出旧模板钉的 adapter；旧模板自己的 `producer.source_revision` 不一定算得出（A40：f9fa3367
