@@ -33,6 +33,8 @@ DECLARABLE: dict[str, str] = {
     "loss.hp_advantage_coef": "c_hp, applied when fresh segments are read; the old "
                               "generation's rows are discarded",
     "loss.hp_advantage_scope": "which rows get c_hp, applied like c_hp",
+    "loss.explore_ratio_floor": "policy-gradient weight floor of low-ratio rows; loss "
+                                "only, no state",
     "segments.target_kl": "per-dataset KL stop threshold; no state",
     "segments.kl_stop_scope": "which rows the KL stop measures; no state",
     "segments.value_target": "value/advantage targets of fresh segments; the old "
@@ -46,6 +48,7 @@ DECLARABLE: dict[str, str] = {
 RECIPE_DEFAULTS: dict[str, Any] = {
     "segments.value_target": "segment",
     "segments.kl_stop_scope": "all",
+    "loss.explore_ratio_floor": 0.0,
 }
 _MISSING = object()
 

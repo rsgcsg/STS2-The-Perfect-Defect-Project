@@ -66,6 +66,9 @@ EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
 UNATTRIBUTED = "unattributed"  # learning_diagnostics: rows of a source without a table
 POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
+# stpd.rl.learning_diagnostics.EXPLORE_FLOOR_FIELDS (loss.explore_ratio_floor > 0 only)
+EXPLORE_FLOOR_FIELDS = ("rows", "floored", "floored_positive", "floored_abs_advantage_sum",
+                        "floor_weight_sum", "ratio_weight_sum")
 # RL5-METHODS R, learning settings (stpd.rl.learning_diagnostics / segment_learner):
 ENTROPY_FIELDS = ("rows", "entropy_sum", "normalized_entropy_sum")  # per "arm|actN|decision"
 CALIBRATION_FIELDS = ("rows", "predicted_sum", "realised_sum")  # per bin of predicted value
@@ -480,6 +483,7 @@ def identity_edge(run: Path, plan: dict[str, Any], plan_path: Path) -> dict[str,
                    "hp_coef": loss.get("hp_coef"),
                    "c_hp": loss.get("hp_advantage_coef"),
                    "c_hp_scope": loss.get("hp_advantage_scope"),
+                   "explore_ratio_floor": loss.get("explore_ratio_floor", 0.0),
                    "hp_combat_weights": knobs.get("hp_combat_weights"),
                    "hp_potion_mode": knobs.get("hp_potion_mode"),
                    # ticket K (#577): as the learner read them, else the profile knob
@@ -522,7 +526,7 @@ def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
 
 
 LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advantage_raw",
-                 "exploration", "policy_by_arm", "gradient_clipped", "value_target",
+                 "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped", "value_target",
                  "value_calibration", "policy_entropy", "first_use_mu_age_seconds")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
@@ -638,6 +642,7 @@ class _Learning:
         self.hp = [0.0, 0.0, 0]  # A2, c_hp > 0: sum of hp_share, of hp_std, datasets
         self.exploration: dict[str, list[int]] = {}
         self.policy_arms: dict[str, list[float]] = {}
+        self.floor_arms: dict[str, list[float]] = {}  # loss.explore_ratio_floor > 0
         self.raw_variance = [0.0, 0]  # sum, datasets that report it (#564)
         # R: optimizer steps with a finite norm, of them clip-bound, norm sum; norm bins
         self.clip = [0, 0, 0.0]
@@ -687,6 +692,13 @@ class _Learning:
                 raise ValueError(f"policy_by_arm {arm}: {len(values)} fields, expected "
                                  f"{len(POLICY_ARM_FIELDS)}")
             row = self.policy_arms.setdefault(arm, [0] * len(POLICY_ARM_FIELDS))
+            for i, value in enumerate(values):
+                row[i] += value
+        for arm, values in (e.get("explore_floor_by_arm") or {}).items():
+            if len(values) != len(EXPLORE_FLOOR_FIELDS):
+                raise ValueError(f"explore_floor_by_arm {arm}: {len(values)} fields, "
+                                 f"expected {len(EXPLORE_FLOOR_FIELDS)}")
+            row = self.floor_arms.setdefault(arm, [0] * len(EXPLORE_FLOOR_FIELDS))
             for i, value in enumerate(values):
                 row[i] += value
         self._settings(e)
@@ -804,6 +816,15 @@ class _Learning:
                   "approx_kl": kl / (rows - bad) if rows > bad else None,
                   "ratio_nonfinite": round(bad)}
             for arm, (rows, kl, clipped, bad) in sorted(self.policy_arms.items())} or None
+        # loss.explore_ratio_floor c > 0: per arm, pooled like policy_by_arm, the rows whose
+        # ratio was below c and the gradient weight c |A| they got vs the r |A| replaced.
+        out["explore_floor_by_arm"] = {
+            arm: {"rows": round(rows), "floored_per_1000": 1000 * floored / rows if rows else None,
+                  "floored_positive_share": positive / floored if floored else None,
+                  "floored_mean_abs_advantage": magnitude / floored if floored else None,
+                  "floor_weight_sum": given, "ratio_weight_sum": replaced}
+            for arm, (rows, floored, positive, magnitude, given, replaced)
+            in sorted(self.floor_arms.items())} or None
         out.update(self.settings_result())
         return out
 
@@ -1645,6 +1666,11 @@ def render_record(r: dict[str, Any]) -> list[str]:
             out.append("  PPO update per arm (rows, clip, approx KL): " + ", ".join(
                 f"{arm} {a['rows']:,} / {fmt(a['clip_fraction'], 3)} / "
                 f"{fmt(a['approx_kl'], 4)}" for arm, a in arms.items()))
+        for arm, f in (x.get("explore_floor_by_arm") or {}).items() if key == "latest" else ():
+            out.append(f"  ratio floor arm {arm}: {fmt(f['floored_per_1000'], 1)} floored per "
+                       f"1,000 rows, A>0 {fmt(f['floored_positive_share'], 2)}, mean |A| "
+                       f"{fmt(f['floored_mean_abs_advantage'], 3)}, weight c|A| "
+                       f"{fmt(f['floor_weight_sum'], 2)} vs r|A| {fmt(f['ratio_weight_sum'], 2)}")
         if lost:
             out.append(f"  WARNING ({key}): {lost['rows']:,} PPO rows unattributed (a source "
                        "without an exploration table), left out of the per-arm line")

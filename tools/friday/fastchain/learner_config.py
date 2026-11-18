@@ -42,12 +42,14 @@ ALLOWED_DRIFT = {
 # = stpd.rl.recipe_changes.DECLARABLE (pinned by a test): the only recipe keys a
 # continuation may change; the learner owns the rule and the reason per key.
 DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
-              "loss.hp_advantage_coef", "loss.hp_advantage_scope", "segments.target_kl",
+              "loss.hp_advantage_coef", "loss.hp_advantage_scope", "loss.explore_ratio_floor",
+              "segments.target_kl",
               "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda")
 # A key missing from a learner config (a CP's or this run's) means this value: the learner's
 # own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
 CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
-                   "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket"}
+                   "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket",
+                   "loss.explore_ratio_floor": 0.0}
 MISSING = "<missing>"
 
 

@@ -1126,7 +1126,7 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
         '0': 0.5, '10': 0.5}, 'replay_k': 4, 'save_starts': None,
         'segment_format': 'stpd/rl-fast-segment-4',
-        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
+        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket', 'explore_ratio_floor': 0.0,
         'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3},
         'hp_potion_mode': None,  # a plan without the knob (ticket H)
         'kl_stop_scope': None, 'lr_warmup_steps': None}  # nor the ticket K knobs
@@ -1447,6 +1447,9 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
         if event.get('kind') == 'progress':  # 4 rows of control (1 clipped), 2 of hot
             event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1],
                                       'unattributed': [3, 0.0, 0, 0]}
+            # loss.explore_ratio_floor c = .3: 1 of hot's 2 rows floored (A = +.8, r = .05)
+            event['explore_floor_by_arm'] = {'control': [4, 0, 0, 0.0, 0.0, 0.0],
+                                             'hot': [2, 1, 1, 0.8, 0.24, 0.04]}
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     r = readout.build(run, 1200)
     arms = r['hp_score_arms']
@@ -1466,7 +1469,18 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
     assert ppo['hot'] == {'rows': 2 * attempts, 'clip_fraction': 1.0,
                           'approx_kl': pytest.approx(0.01), 'ratio_nonfinite': attempts}
     assert r['learning']['latest']['policy_by_arm']['hot']['clip_fraction'] == 1.0
+    floor = r['learning']['run_mean']['explore_floor_by_arm']
+    assert floor['control'] == {'rows': 4 * attempts, 'floored_per_1000': 0.0,
+                                'floored_positive_share': None,
+                                'floored_mean_abs_advantage': None,
+                                'floor_weight_sum': 0.0, 'ratio_weight_sum': 0.0}
+    assert floor['hot']['floored_per_1000'] == 500.0
+    assert floor['hot']['floored_positive_share'] == 1.0
+    assert floor['hot']['floored_mean_abs_advantage'] == pytest.approx(0.8)
+    assert floor['hot']['floor_weight_sum'] == pytest.approx(0.24 * attempts)
     text = readout.render(r)
+    assert ('  ratio floor arm hot: 500.0 floored per 1,000 rows, A>0 1.00, mean |A| '
+            '0.800, weight c|A| ') in text
     assert 'PPO update per arm (rows, clip, approx KL): control ' in text
     assert '/ 0.250 / 0.0010, hot ' in text
     assert 'unattributed' not in text.split('PPO update per arm')[1].splitlines()[0]
