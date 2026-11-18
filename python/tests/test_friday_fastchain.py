@@ -3740,7 +3740,8 @@ def test_the_stop_command_ends_a_chain_without_a_live_supervise(tmp_path, capsys
     # watchers (by recorded pid) and their live jobs first (800 is gone), then STOP, the
     # stop grace, then the generation's jobs (dependents first, GPU last)
     assert ended == [7, 7]
-    assert cancelled == [['901', '9011', '902', '9021'], ['101'], ['100']] and cluster.alive == set()
+    assert cancelled == [['901', '9011', '902', '9021'], ['101'], ['100']]
+    assert cluster.alive == set()
     assert cluster.now - start >= stopper.knobs['stop_grace_seconds']
     assert (tmp_path / 'run-lr1' / 'STOP').read_text() == \
         'service stop: operator stop (supervise.py stop)\n'
