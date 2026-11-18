@@ -254,17 +254,20 @@ def prepare_learning_curve_manifest(game_directory: Path, output: Path,
                                     suite: str | None = None) -> dict[str, Any]:
     """Use the exact shipped version, including its v prefix; never guess a version.
 
-    `suite`: the fixed A0 100 (default) or the fixed A10 50, each frozen and reported
-    on its own.
+    `suite`: the fixed A0 100 (default), the fixed A0 300 (the A0 100 plus 200, #591) or
+    the fixed A10 50, each frozen and reported on its own.
     """
     from stpd.evaluation.suites import (
         RL3_LEARNING_CURVE_SUITE_ID,
+        RL5_A0_CURVE_300_SUITE_ID,
         RL5_A10_CURVE_SUITE_ID,
         rl3_learning_curve_manifest,
+        rl5_a0_curve_300_manifest,
         rl5_a10_curve_manifest,
     )
 
     builders = {RL3_LEARNING_CURVE_SUITE_ID: rl3_learning_curve_manifest,
+                RL5_A0_CURVE_300_SUITE_ID: rl5_a0_curve_300_manifest,
                 RL5_A10_CURVE_SUITE_ID: rl5_a10_curve_manifest}
     if (suite or RL3_LEARNING_CURVE_SUITE_ID) not in builders:
         raise ValueError('fixed_learning_curve_suite_required')

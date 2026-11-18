@@ -642,3 +642,21 @@ def test_space_is_rechecked_before_the_second_game(tmp_path, monkeypatch):
     assert report["episodes"][0]["status"] == "finished"
     assert report["summary"]["not_started"] == 19
     assert report["summary"]["cleanup_unknown"] == 0
+
+
+def test_the_fixed_a0_300_manifest_loads_and_a_changed_copy_is_refused(tmp_path):
+    """#591: a frozen A0 300 manifest is checked against its builder like the A0 100."""
+    from spireagent.json_boundary import json_bytes
+    from spireagent.workbench.reference_suite import load_manifest
+    from stpd.evaluation.suites import rl5_a0_curve_300_manifest
+
+    manifest = rl5_a0_curve_300_manifest("v0.111.0")
+    for value, ok in ((manifest, True), ({**manifest, "seeds": manifest["seeds"][:299]}, False)):
+        path = tmp_path / f"m-{ok}.json"
+        path.write_bytes(json_bytes(value))
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        if ok:
+            assert load_manifest(path, sha)[1]["episode_count"] == 300
+        else:
+            with pytest.raises(ValueError, match="manifest_configuration_changed"):
+                load_manifest(path, sha)

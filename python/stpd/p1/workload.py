@@ -153,6 +153,7 @@ def prepare_p1_run(
     # Known fixed evaluation seeds are forbidden even through the direct Run API.
     from stpd.evaluation.suites import (
         rl3_learning_curve_manifest,
+        rl5_a0_curve_300_manifest,
         rl5_a10_curve_manifest,
         t2_managed_manifest,
     )
@@ -161,6 +162,7 @@ def prepare_p1_run(
                 for seed in t2_managed_manifest("v0.111.0", level)["seeds"]}
     reserved.update(rl3_learning_curve_manifest("v0.111.0")["seeds"])
     reserved.update(rl5_a10_curve_manifest("v0.111.0")["seeds"])
+    reserved.update(rl5_a0_curve_300_manifest("v0.111.0")["seeds"])
     if any(source["lineage"].get("seed") in reserved for source in reader.selection["sources"]):
         raise BoundaryError("p1_workload", "evaluation_seed_reserved")
     if snapshot.parameters.value().get("purpose") != "engineering":

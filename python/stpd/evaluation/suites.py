@@ -16,6 +16,9 @@ CHECKPOINT_SUITE_ID = "ref-checkpoints-20261024"
 RL3_LEARNING_CURVE_SUITE_ID = "managed-rl3-learning-curve-100-20261030-Defect-a0"
 # The fixed A10 learning-curve suite (owner D3, 2026-11-14): reported apart from the A0 100.
 RL5_A10_CURVE_SUITE_ID = "managed-rl5-learning-curve-50-20261114-Defect-a10"
+# The fixed A0 300 (#591): the A0 100 (ordinals 1..100, so results pair by seed with every
+# A0 100 round) plus 200 new seeds of its own id. Never the sealed set (RL5_INT_SEALED_*).
+RL5_A0_CURVE_300_SUITE_ID = "managed-rl5-learning-curve-300-20261117-Defect-a0"
 RL5_INT_SEALED_PREFIX = "managed-rl5-int-sealed-20261112-Defect"
 RL5_INT_SEALED_COUNTS = {0: 300, 10: 100}
 
@@ -72,6 +75,16 @@ def rl5_a10_curve_manifest(game_version: str) -> dict[str, Any]:
             "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
             "seeds": [derive_game_seed(RL5_A10_CURVE_SUITE_ID, i) for i in range(1, 51)],
             "collection_training_RL": "forbidden"}
+
+
+def rl5_a0_curve_300_manifest(game_version: str) -> dict[str, Any]:
+    """The A0 100 seeds then 200 derived from this suite id; never collect or train on these."""
+    first = rl3_learning_curve_manifest(game_version)
+    return {**first, "suite_id": RL5_A0_CURVE_300_SUITE_ID, "episode_count": 300,
+            "seed_derivation": ("ordinals 1..100: the A0 100 (RL3 suite); 101..300: "
+                                "derive_game_seed(suite_id, ordinal_1_based)"),
+            "seeds": first["seeds"] + [derive_game_seed(RL5_A0_CURVE_300_SUITE_ID, i)
+                                       for i in range(101, 301)]}
 
 
 def rl5_int_sealed_manifest(game_version: str, ascension: int = 0) -> dict[str, Any]:
@@ -196,6 +209,7 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
     # RL5 INT sealed.
     rl3 = rl3_learning_curve_manifest("v0.111.0")
     a10 = rl5_a10_curve_manifest("v0.111.0")
+    a300 = rl5_a0_curve_300_manifest("v0.111.0")
     sets: list[tuple[str, list[str]]] = [
         *((name, load_suite(name)["seeds"]) for name in suite_names()),
         (FOUR_AGENT_SUITE_ID, [derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11)]),
@@ -207,6 +221,7 @@ def _membership_index() -> dict[str, tuple[str, ...]]:
                                                 for a in (0, 10))),
         (rl3["suite_id"], rl3["seeds"]),
         (a10["suite_id"], a10["seeds"]),
+        (a300["suite_id"], a300["seeds"]),
         *((m["suite_id"], m["seeds"]) for m in (rl5_int_sealed_manifest("v0.111.0", a)
                                                 for a in RL5_INT_SEALED_COUNTS)),
     ]
