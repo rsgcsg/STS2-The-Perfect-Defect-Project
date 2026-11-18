@@ -169,6 +169,10 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         if smoke:
             raise SystemExit("--smoke is never a chain generation")
         wall = max(0, min(wall, int(chain["deadline_at"] - time.time())))
+    wall_left = wall  # the chain's wall left (with a target, the wall limit only)
+    targeted = chain is not None and bool(chain.get("train_target_seconds"))
+    if targeted:  # #604 M1: the job asks for the training left, not the whole wall left
+        wall = min(wall, chain["train_left_seconds"])
     limit = mem * preflight.GIB
     target = layouts.target(count, knobs["targets_rows_h"], knobs["ready_rows_h"])
     cap_rows = knobs["card_capacity_rows_h"].get(card_type)
@@ -184,8 +188,7 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
     # env nodes wait for the learner: that wait is added to the GPU job's time and to the
     # env wait. A prep job never runs before the GPU job, so it needs no longer than it.
     prep_wait = int(math.ceil(knobs["remote_prepare_wait_seconds"])) if prep_hosts else 0
-    end_reserve = (knobs["train_target_end_reserve_seconds"]
-                   if chain is not None and chain.get("train_target_seconds") else 0)
+    end_reserve = knobs["train_target_end_reserve_seconds"] if targeted else 0
     gpu_minutes = (wall + 240 + prep_wait + end_reserve) // 60 + 1
     return {
         "schema": "spireagent/friday-fastchain-plan-1", "runtag": runtag, "t": time.time(),
@@ -193,6 +196,11 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "requested": {"cards": cards, "card_type": card_type, "layout": layout_spec,
                       "env_cores": env_cores, "fallback": fallback},
         "why": tried, "smoke": smoke, "long_run": long_run, "wall_seconds": wall,
+        "chain_wall_left_seconds": wall_left if chain is not None else None,
+        # #604 S1: with a target the drivers live at least the generation's wall (DRAIN
+        # still ends them); otherwise the knob, and preflight refuses one shorter than it
+        "driver_steady_seconds": (max(knobs["driver_steady_seconds"], wall) if targeted
+                                  else knobs["driver_steady_seconds"]),
         "producer_identity": knobs["producer_identity"], "probe_only": probe_only,
         "resume_checkpoint": resume_checkpoint, "chain": chain,
         "checkpoints_void": knobs["producer_identity"] == "placeholder",
@@ -308,6 +316,7 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
         "FC_SEED_START": plan["seed_start"],
+        "FC_DRIVER_STEADY_SECONDS": plan["driver_steady_seconds"],
         **({"FC_CHAIN_ID": plan["chain"]["id"],
             # empty with a training target: the learner gets no absolute deadline (#603)
             "FC_CHAIN_DEADLINE": ("" if plan["chain"].get("train_target_seconds")

@@ -120,6 +120,22 @@ def clock(owner: Any, started: float) -> dict[str, Any]:
                                               if budget is not None else None)}
 
 
+LEARNER_DRAIN_RESERVE_SECONDS = 600  # SegmentLearner stops training deadline_at - 600
+
+
+def service_drain_at(ready: dict[str, Any], drain_seconds: float) -> float:
+    """When the services drain: `drain_seconds` before the learner's own window end, read
+    from learner.ready (#604 M1). The learner wrote its effective window there after its
+    restore: `wall_seconds` already min(FC_WALL, budget left), so a training-time target
+    that ends hours before the job's wall drains the services with it; `deadline_at` (None
+    with a target) ends training 600 s before it. The learner's window starts after
+    learner.ready, so this is never after its end."""
+    end = ready["at"] + ready["wall_seconds"]
+    if ready["deadline_at"] is not None:
+        end = min(end, ready["deadline_at"] - LEARNER_DRAIN_RESERVE_SECONDS)
+    return end - drain_seconds
+
+
 def learner() -> None:
     import multiprocessing.connection as mpc
 
@@ -430,7 +446,12 @@ def learner() -> None:
                 counts.clear()
 
     threading.Thread(target=profile, daemon=True, name="rl-profile").start()
-    (RUN / "learner.ready").write_text(json.dumps({"generation": owner.generation}))
+    # #604 M1: the window after the restore, which the services drain by
+    ready = RUN / ".learner.ready.tmp"
+    ready.write_text(json.dumps({"generation": owner.generation, "at": time.time(),
+                                 "wall_seconds": owner.config.wall_seconds,
+                                 "deadline_at": owner.deadline_at}))
+    ready.replace(RUN / "learner.ready")
     failure = summary = trace = None
     try:
         summary = owner.run()
@@ -585,10 +606,10 @@ def service() -> None:
     log = RUN / f"service-status{tag}.jsonl"
     error = None
     # Orderly end: the services drain (finish(), end message, follower stopped) before the
-    # learner's wall closes the mu source; otherwise the follower sees the source gone and
-    # the service fails loud (smoke2). Deadline = learner ready + WALL - DRAIN_S.
-    drain_at = ((RUN / "learner.ready").stat().st_mtime + float(os.environ["FC_WALL"])
-                - float(K["drain_seconds"]))
+    # learner's window closes the mu source; otherwise the follower sees the source gone
+    # and the service fails loud (smoke2). The window is the learner's own (#604 M1).
+    drain_at = service_drain_at(json.loads((RUN / "learner.ready").read_text()),
+                                float(K["drain_seconds"]))
     # s1f: env nodes join and leave on their own; DRAIN tells them to stop their drivers
     # cleanly ENV_DRAIN_S before the services drain, so a late node ends with the GPU.
     env_drain_at = drain_at - float(K["env_drain_seconds"])

@@ -648,7 +648,7 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
         problems.append("env job shorter than the GPU wall plus the env wait")
     # A driver stops on its own warm + steady after its fast env is ready (env_driver.mjs);
     # the GPU side expects it until DRAIN, so it must outlive the wall (#586 review M2).
-    life = k["driver_warm_seconds"] + k["driver_steady_seconds"]
+    life = k["driver_warm_seconds"] + plan["driver_steady_seconds"]
     if life < plan["wall_seconds"]:
         problems.append(f"env drivers end by design after driver_warm_seconds + "
                         f"driver_steady_seconds = {life} s, before the GPU wall "
@@ -678,17 +678,19 @@ def check_training_clock(plan: dict[str, Any]) -> Result:
     if chain is None:
         return Result("training_clock", False, "train_target_seconds needs a supervise.py "
                       "chain (a plain run has no operating budget to count it)")
-    shown = (f"target {target} s learner training (counted across resumes), chain wall "
-             f"limit long_wall_seconds {k['long_wall_seconds']} s, this job: wall "
-             f"{plan['wall_seconds']} s + end reserve {plan['end_reserve_seconds']} s; "
-             "no absolute deadline in the learner or its CPs")
-    if chain["generation"] == 0 and plan["wall_seconds"] < target:
-        return Result("training_clock", False, f"the chain's wall limit "
-                      f"{plan['wall_seconds']} s cannot hold the training target {target} s: "
-                      "raise long_wall_seconds (the partition limit is checked by "
-                      "time_limits) or lower the target")
+    left, wall_left = chain["train_left_seconds"], plan["chain_wall_left_seconds"]
+    shown = (f"target {target} s learner training (counted across resumes), {left} s left; "
+             f"chain wall limit long_wall_seconds {k['long_wall_seconds']} s, "
+             f"{wall_left} s left; this job: wall {plan['wall_seconds']} s (the training "
+             f"left) + end reserve {plan['end_reserve_seconds']} s; no absolute deadline "
+             "in the learner or its CPs")
+    if chain["generation"] == 0 and wall_left < target:
+        return Result("training_clock", False, f"the chain's wall limit {wall_left} s "
+                      f"cannot hold the training target {target} s: raise "
+                      "long_wall_seconds (the partition limit is checked by time_limits) "
+                      "or lower the target")
     return Result("training_clock", True, shown,
-                  warn=chain["generation"] > 0 and plan["wall_seconds"] < target)
+                  warn=chain["generation"] > 0 and wall_left < left)
 
 
 def check_seeds(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
