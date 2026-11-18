@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import json
 import math
@@ -2945,6 +2946,13 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
     for cmd in started:  # #590: the site release dir; one job per round by default
         assert cmd[cmd.index('--actor-root') + 1] == chain.site['node_release']
         assert '--batch-seeds' not in cmd
+    # #598: the copy names its template (the re-freeze record pins that file) and the
+    # watchers exit on their own once this chain's FINAL.json exists
+    assert execution['derived_from'] == {
+        'path': str(template.resolve()), 'keys': ['storage_mode', 'store', 'peer'],
+        'sha256': hashlib.sha256(template.read_bytes()).hexdigest()}
+    for cmd in started:
+        assert cmd[cmd.index('--until-file') + 1] == str(chain.dir / 'FINAL.json')
 
 
 def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
