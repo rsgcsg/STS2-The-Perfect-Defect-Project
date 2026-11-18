@@ -126,3 +126,65 @@ def test_previous_revision_names_the_pinned_commit_and_changed_closure_files(too
     assert head['closure_files_changed_since'] == [] and len(head['code_sha256']) == 64
     assert head['code_sha256'] == tool.closure_code_sha256(
         lambda path: (ROOT / path).read_bytes())  # a clean checkout: HEAD is what is imported
+
+
+def test_find_revision_names_the_newest_first_parent_commit_reproducing_the_pin(
+        tool, tmp_path):
+    """#598: a template's producer revision need not reproduce its pin; find-revision walks
+    the first-parent ancestors, newest first, and names the newest commit that does. A
+    side-branch commit with the pin is not a first-parent ancestor; a state missing a
+    closure file never matches; an unknown pin is refused."""
+    import subprocess
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t',
+                               '-c', 'user.email=t@t', *args],
+                              check=True, capture_output=True).stdout
+
+    def write(state, other=None, drop=None):
+        for path in tool.ADAPTER_CLOSURE.values():
+            file = repo / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(f'{state}:{path}')
+        if drop:
+            (repo / drop).unlink()
+        if other is not None:
+            (repo / 'README').write_text(other)
+
+    def commit(message):
+        git('add', '-A')
+        git('commit', '-q', '-m', message)
+        return git('rev-parse', 'HEAD').decode().strip()
+
+    def code(state):
+        return tool.closure_code_sha256(lambda path: f'{state}:{path}'.encode())
+
+    git('init', '-q', '-b', 'main')
+    write('A', 'x')
+    first = commit('A')
+    write('A', 'y')
+    newest_a = commit('docs only')  # same closure: the newest commit with pin A
+    write('B')
+    commit('B')
+    git('checkout', '-q', '-b', 'side', 'HEAD~1')
+    write('C', 'side')
+    side = commit('side C')
+    git('checkout', '-q', 'main')
+    write('B', 'z')
+    commit('docs on main')
+    git('merge', '-q', '--no-ff', '-s', 'ours', side, '-m', 'merge side (main keeps B)')
+    write('D', drop=next(iter(tool.ADAPTER_CLOSURE.values())))
+    commit('D missing a file')
+
+    found = tool.find_revision(code('A'), run=git)
+    assert found['revision'] == newest_a and found['code_sha256'] == code('A')
+    assert found['commits_checked'] == 5 and found['closure_states_hashed'] == 3
+    assert tool.find_revision(code('A'), first, run=git)['revision'] == first
+    assert tool.find_revision(code('B'), run=git)['commits_checked'] == 2
+    for missing in (code('C'), code('D')):  # side branch only; incomplete closure
+        with pytest.raises(ValueError, match='no_first_parent_ancestor_reproduces_the_pin'):
+            tool.find_revision(missing, run=git)
+    assert side

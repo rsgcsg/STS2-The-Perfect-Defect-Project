@@ -210,6 +210,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   等已开的每一轮离开准备/在跑（报告、推迟、失败都算，不重试），然后响亮记
   `evaluation_watcher_done` 和原因、自己退出；不取消任何作业。`FINAL.json` 记它们的 pid，
   `supervise.py stop` 仍可提前结束。
+  重冻模板（`tools/friday/eval_template.py refreeze --previous-revision REV`）要求 REV 的文件
+  算出旧模板钉的 adapter；旧模板自己的 `producer.source_revision` 不一定算得出（A40：f9fa3367
+  不行，411106ad 行）。先跑 `eval_template.py find-revision --template OLD.json`
+  （`--search-from` 默认 HEAD），它沿第一父提交往回找、给出最新一个算得出旧钉值的提交，再把它
+  当 REV；找不到退出 2。核对本身不放宽。
 - 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
   删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
   sidecar 持有 `R7Selection`（自己的随机 key、`r7_expected_games_per_node_hour` 估计、
