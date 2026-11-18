@@ -985,6 +985,49 @@ def test_value_head_mode_drops_potion_points_and_the_potion_rows_hp_term():
         0.5 * (-70) - 30 - 5 - 0.5 * (62.5 - 70), 0.5 * (-60) - 30 - 5 - 0.5 * (25 - 60)]
 
 
+# -- #608: hp_potion_mode "value_head_neutral" ---------------------------------------
+def test_neutral_mode_gives_a_potion_row_its_combats_mean_hp_change_part():
+    # middle (w 0.5, death): value_head non-potion rows -40 and -33.5, i.e. HP-change
+    # parts -10 and -3.5; the potion row gets their mean and the same -30 death.
+    middle = [(outcome(30, 82), 20.0, False), (outcome(10, 82), 15.0, True),
+              (outcome(0, 82, terminal="defeat"), 5.0, False)]
+    head = hp_advantages(facts(40), middle, 0.5, "value_head")
+    neutral = hp_advantages(facts(40), middle, 0.5, "value_head_neutral")
+    assert neutral[0] == head[0] and neutral[2] == head[2]
+    assert neutral[1] == pytest.approx((-10.0 + -3.5) / 2 - 30)
+    # boss weight 0.3, no death: 70 -> 60 -> 50 (drinks) -> 40
+    boss = [(outcome(60), 60.0, False), (outcome(50), 50.0, True), (outcome(40), 45.0, False)]
+    head = hp_advantages(facts(70), boss, 0.3, "value_head")
+    neutral = hp_advantages(facts(70), boss, 0.3, "value_head_neutral")
+    assert [neutral[0], neutral[2]] == [head[0], head[2]]
+    assert neutral[1] == (head[0] + head[2]) / 2
+    assert neutral[1] == pytest.approx((0.3 * (-30 + 10) + 0.3 * (-10 + 5)) / 2)
+    # only potion rows: no HP-change part, death points kept
+    only = [(outcome(50), 40.0, True), (outcome(0, terminal="defeat"), 30.0, True)]
+    assert hp_advantages(facts(70), only, 0.3, "value_head_neutral") == [-30.0, -30.0]
+    assert hp_advantages(facts(70), only[:1], 1.0, "value_head_neutral") == [0.0]
+
+
+def test_neutral_mode_through_the_assembler():
+    g = HpGame(potion_mode="value_head_neutral")
+    play_two_combats(g)
+    # as value_head ([None, -2.5, 0.0, 3.75, None, -55.0]) but the potion row takes
+    # the mean of rows 1 and 3: (-2.5 + 3.75) / 2
+    assert g.sealed[0].header["hp_adv"] == [None, -2.5, 0.625, 3.75, None, -55.0]
+    boss = HpGame(potion_mode="value_head_neutral", hp_weights={
+        "normal": 1.0, "elite": 1.0, "boss": 0.3})
+    boss.open("g")
+    boss.step("g", combat=False, hp=70)
+    boss.step("g", combat=True, encounter="boss", hp=60, predicted=0.6)
+    boss.step("g", combat=True, encounter="boss", hp=50, predicted=0.5, potion=True)
+    boss.step("g", combat=True, encounter="boss", hp=40, predicted=0.45)
+    boss.step("g", combat=False, hp=40)
+    boss.close("g", "terminal")
+    hp_adv = boss.sealed[0].header["hp_adv"]
+    assert hp_adv[2] == pytest.approx((hp_adv[1] + hp_adv[3]) / 2)
+    assert hp_adv[1:4] == pytest.approx([-6.0, -3.75, -1.5])
+
+
 def test_hp_potion_mode_is_checked_and_needs_format_4():
     def assembler(segment_format: str, mode: Any) -> FastSegmentAssembler:
         return FastSegmentAssembler(assembler_id="node-a", emit=lambda _segment: None,
@@ -992,9 +1035,12 @@ def test_hp_potion_mode_is_checked_and_needs_format_4():
                                     segment_format=segment_format, hp_potion_mode=mode)
 
     assert assembler(FORMAT_4, "value_head").hp_potion_mode == "value_head"
+    assert assembler(FORMAT_4, "value_head_neutral").hp_potion_mode == "value_head_neutral"
     assert assembler(FORMAT_3, "points").hp_potion_mode == "points"
-    for bad in ("Value_head", None, 0):
+    for bad in ("Value_head", "neutral", "value_head_mean", None, 0):
         with pytest.raises(AssemblyError, match="invalid_hp_potion_mode"):
             assembler(FORMAT_4, bad)
     with pytest.raises(AssemblyError, match="hp_potion_mode_needs_segment_format_4"):
         assembler(FORMAT_3, "value_head")
+    with pytest.raises(AssemblyError, match="hp_potion_mode_needs_segment_format_4"):
+        assembler(FORMAT_3, "value_head_neutral")

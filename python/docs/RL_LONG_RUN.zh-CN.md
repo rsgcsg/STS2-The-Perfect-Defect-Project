@@ -290,6 +290,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
     战斗类型权重和 HP 头基线都不变。要求格式 4（载入配置时核对）且 c_hp > 0（预检 `hp_score`），
     预检要求源码特性 `hp_potion_mode`。这种模式下免血量变化的药水行数
     就是 `hp_score.potions`；血量项占优势方差的份额照旧看 `advantage_raw.hp_share`。
+    `"value_head_neutral"`（#608）同 `"value_head"`，只是药水行的血量变化部分取本场非药水行
+    血量变化部分（已乘战斗类型权重）的平均值，本场没有非药水行时为 0；死亡 −30 不变。按场中性
+    （不是按数据集），血量分不偏向也不排斥药水。预检另要求源码特性 `hp_potion_neutral`。
   - KL 刹车范围和学习率预热（票 K）：旋钮 `kl_stop_scope`，默认 `"all"`（现行为：小批里所有
     多选行的 KL 和 `target_kl` 比）；`"control"` 只算名为 `control` 的臂的行，含它的存档开局
     `control+save`（存档只改起点、不改采样；探索臂故意偏离，不该触发刹车），这个小批没有对照行时退回全部行，并在该次记 `kl_stop_basis:

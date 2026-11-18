@@ -57,6 +57,9 @@ The fast-chain knob `hp_potion_mode` (default `"points"`: -5 per potion used fro
 row on) set to `"value_head"` (format 4, c_hp > 0) drops the potion points and gives a
 row whose own choice is `potion.use` only the death points (no HP-change part), so using
 a potion is judged by the outcome advantage, not by the HP it saves; death points, combat weights and the HP-head baseline are unchanged.
+`"value_head_neutral"` (#608) is the same except that a potion row's HP-change part is the
+mean HP-change part (combat weight included) of the non-potion rows of its own combat, 0
+when the combat has none; the HP score is then neutral on potions per combat, not per dataset.
 Ticket K adds two `segments` keys, both absent here (= default), resume-locked and left
 out of the recipe at their default; the fast chain sets them from the profile knobs of
 the same name (`learner_config.build`). `kl_stop_scope`: `"all"` (default, the stop

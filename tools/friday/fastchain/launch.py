@@ -485,6 +485,8 @@ FEATURES = {
                           "hp_weights_need_segment_format_4"),
     "hp_potion_mode": ("python/stpd/rl/fast_assembly.py",  # ticket H
                        "hp_potion_mode_needs_segment_format_4"),
+    "hp_potion_neutral": ("python/stpd/rl/fast_assembly.py",  # #608
+                          '"value_head_neutral"'),
     "declared_changes": ("python/stpd/rl/segment_learner.py",  # RL5-METHODS C
                          "resume_recipe_changes"),
     "kl_stop_scope": ("python/stpd/rl/segments.py", "kl_stop_scope"),  # ticket K
