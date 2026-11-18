@@ -858,19 +858,22 @@ def test_a_shard_offer_claims_only_its_own_instance_without_walking_the_open_one
 
 class _CancellingPreparer:
     """The shard's preparer at its close: the shutdown barrier fences the pinned
-    preparation, so a read-ahead dataset still in flight raises (#597)."""
+    preparation, so each read-ahead dataset still in flight raises (#597), in
+    selection order."""
 
-    def __init__(self, future: Any, error: BaseException) -> None:
-        self.future, self.error = future, error
+    def __init__(self, futures: list[Any], errors: tuple[BaseException, ...]) -> None:
+        self.futures, self.errors = futures, errors
 
     def shutdown(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
-        if not self.future.done():
-            self.future.set_exception(self.error)
+        for future, error in zip(self.futures, self.errors, strict=True):
+            if not future.done():
+                future.set_exception(error)
 
 
-def _shard_with_read_ahead(error: BaseException) -> tuple[Any, Any, list[dict[str, Any]]]:
-    """A shard's own state with one read-ahead dataset in flight, wired as `_on_ahead`
-    does (its completion announces). Only what `_announce` and `_on_close` use."""
+def _shard_with_read_ahead(*errors: BaseException) -> tuple[Any, Any, list[dict[str, Any]]]:
+    """A shard's own state with read-ahead datasets 1.. in flight (one per error),
+    wired as `_on_ahead` does (each completion announces). Only what `_announce`
+    and `_on_close` use. Returns the first dataset's future."""
     import threading
     from collections import deque
     from concurrent.futures import Future, ThreadPoolExecutor
@@ -879,7 +882,7 @@ def _shard_with_read_ahead(error: BaseException) -> tuple[Any, Any, list[dict[st
     shard = dataplane_shards._ShardLearner.__new__(dataplane_shards._ShardLearner)
     sent: list[dict[str, Any]] = []
     shard.send, shard.shards = sent.append, None
-    shard.applying_flags, shard.closing = False, False
+    shard.applying_flags, shard.closing, shard.cancelled_at_close = False, False, set()
     shard.fence_report = threading.Event()
     shard.control_lock = threading.RLock()
     shard.condition = threading.Condition(shard.control_lock)
@@ -887,23 +890,25 @@ def _shard_with_read_ahead(error: BaseException) -> tuple[Any, Any, list[dict[st
     shard.input_failure = None
     shard.announce_lock, shard.announced, shard.handoff = threading.Lock(), 0, False
     shard.announced_batches, shard.unreleased = {}, {}
-    future: Future[Any] = Future()
-    request = SimpleNamespace(identity=SimpleNamespace(sequence=1))
-    shard.pending_batch, shard.ahead_batches = ({"request": request}, future), deque()
-    future.add_done_callback(lambda _future: shard._announce())
+    futures: list[Future[Any]] = [Future() for _ in errors]
+    pending = [({"request": SimpleNamespace(identity=SimpleNamespace(sequence=index))}, future)
+               for index, future in enumerate(futures, 1)]
+    shard.pending_batch, shard.ahead_batches = pending[0], deque(pending[1:])
+    for future in futures:
+        future.add_done_callback(lambda _future: shard._announce())
     shard.source_prefetch_stopping = threading.Event()
     shard.source_prefetch_changed = threading.Event()
     shard.shard_prefetch = threading.Thread(target=lambda: None)
     shard.shard_prefetch.start()
     shard.preparation_dispatch = ThreadPoolExecutor(1)
     shard.handoff_releaser = ThreadPoolExecutor(1)
-    shard.input_preparer = _CancellingPreparer(future, error)
+    shard.input_preparer = _CancellingPreparer(futures, errors)
     shard.pending_labels, shard.hot_references, shard.segment_release = deque(), {}, None
     shard.shard_intake = SimpleNamespace(value_target="segment")
     shard._check_releases = lambda wait=False: None
     shard._on_status = lambda message: {"input_fenced": shard.input_fenced,
                                         "input_failure": shard.input_failure}
-    return shard, future, sent
+    return shard, futures[0], sent
 
 
 def test_read_ahead_cancelled_by_the_close_after_an_operator_stop_is_not_a_fence():
@@ -942,3 +947,18 @@ def test_a_preparation_cancelled_before_the_close_or_failing_at_it_still_fences(
     status = shard._on_close({})
     assert status["input_fenced"] and shard.fence_report.is_set()
     assert status["input_failure"]["producer_error_type"] == "ValueError"
+
+
+def test_a_real_failure_after_a_dataset_cancelled_by_the_close_still_fences():
+    """#600 review: at the close dataset 1 is cancelled (exempt) and dataset 2 fails
+    with a real error: the exemption moves past 1, examines 2 and fences."""
+    from concurrent.futures import CancelledError
+
+    shard, _future, sent = _shard_with_read_ahead(
+        CancelledError("binary_pinned_preparation_fenced"), ValueError("broken packet"))
+    shard._on_flags({"stopped": True, "fenced": False})
+    status = shard._on_close({})
+    assert status["input_fenced"] and shard.fence_report.is_set()
+    assert status["input_failure"]["producer_error_type"] == "ValueError"
+    assert shard.cancelled_at_close == {1}
+    assert [m for m in sent if m["kind"] == "ready"] == []

@@ -881,6 +881,7 @@ class _ShardLearner(SegmentLearner):
         self.send = send
         self.applying_flags = False
         self.closing = False  # set by `_on_close` before its preparer shutdown
+        self.cancelled_at_close: set[int] = set()  # read-ahead sequences (logged once)
         self.fence_report = threading.Event()
         self.shard_index, self.shard_count = init["index"], init["count"]
         config = init["config"]
@@ -1143,10 +1144,13 @@ class _ShardLearner(SegmentLearner):
                         # its barrier cancels the read-ahead still in flight
                         # (`binary_pinned_preparation_fenced`). Those datasets can
                         # never be taken: an end, not a failed input. A cancellation
-                        # before the close, or any other error, still fences.
-                        _log(f"read-ahead dataset {sequence} cancelled by the close: "
-                             f"{error}")
-                        return
+                        # before the close, or any other error, still fences: the
+                        # later datasets are still examined (#600 review).
+                        if sequence not in self.cancelled_at_close:
+                            self.cancelled_at_close.add(sequence)
+                            _log(f"read-ahead dataset {sequence} cancelled by the close: "
+                                 f"{error}")
+                        continue
                     self.announced_batches[sequence] = batch
                     if self.handoff:
                         self.unreleased[sequence] = batch
