@@ -174,7 +174,11 @@ def load_cohort(path: Path, selection: str | None = None, *,
         'score_admitted': ledger.get('score_admitted') is True, **_aggregate(rows)}
 
 
-MERGE_SAME = ('selection', 'host_kind', 'character', 'ascension', 'score_admitted')
+# score_admitted is NOT here: each batch's ledger owns its own admission (a batch whose
+# formal-audit slot did not finish is closed unscored, its rows `scored` False), so batches
+# of one model differ in it on hardware (#612). Merged, the cohort is admitted only when
+# every batch was, and `score_admitted_batches` keeps each batch's own value.
+MERGE_SAME = ('selection', 'host_kind', 'character', 'ascension')
 
 
 def merge_cohorts(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -191,9 +195,11 @@ def merge_cohorts(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
             if protocols.setdefault(key, value) != value:
                 raise ValueError('mixed_protocol_details')
     rows = [row for cohort in cohorts for row in cohort['rows']]
-    if len({row['seed'] for row in rows}) != len(rows):
+    if len(rows) != len({row['seed'] for row in rows}):
         raise ValueError('merged_cohorts_must_have_disjoint_seeds')
+    admitted = [c['score_admitted'] for c in cohorts]
     return {**{key: first[key] for key in MERGE_SAME},
+            'score_admitted': all(admitted), 'score_admitted_batches': admitted,
             'source_sha256': [c['source_sha256'] for c in cohorts],
             'details_sha256': [c['details_sha256'] for c in cohorts],
             'protocol_observed': protocols,

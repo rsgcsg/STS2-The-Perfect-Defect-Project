@@ -2983,6 +2983,46 @@ def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
         assert cmd[cmd.index('--actor-root') + 1] == '/release/eval'
 
 
+def test_the_evaluation_node_class_and_degraded_threshold_reach_watchers_and_preflight(
+        tmp_path):
+    """#612: the site's eval_partition / eval_constraint (absent = today's submission) and
+    the profile's eval_degraded_share reach both watchers' fast_eval commands and are
+    printed by preflight; a partition fast_eval cannot submit to is refused in the site."""
+    chain, _ = chain_for(tmp_path, [], eval_a10_enabled='true', eval_a10_suite='a10-50')
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.dir.mkdir(parents=True)
+    watchers = chain.watchers()
+    for name in ('a0', 'a10'):  # today: no partition or constraint flag
+        cmd = chain.eval_command(name, watchers[name])
+        assert '--partition' not in cmd and '--constraint' not in cmd
+        assert cmd[cmd.index('--degraded-share') + 1] == '0.1'
+    text = chain.args.site.read_text().replace(
+        '\n[site.gpu_types', '\neval_partition = "general"\neval_constraint = "fastclass"\n'
+        '[site.gpu_types', 1)
+    chain.args.site.write_text(text)
+    chain.site = supervise.run_profile.load_site(chain.args.site)
+    for name in ('a0', 'a10'):
+        cmd = chain.eval_command(name, watchers[name])
+        assert cmd[cmd.index('--partition') + 1] == 'general'
+        assert cmd[cmd.index('--constraint') + 1] == 'fastclass'
+    plan = plan_for(cards=3)
+    result = preflight.check_evaluation_jobs(plan)
+    assert result.ok and result.warn  # no constraint: printed as a warning, never refused
+    assert result.detail.startswith('partition general (fast_eval default), node constraint '
+                                    'none; a round above 10% unknown')
+    placed = preflight.check_evaluation_jobs({**plan, 'site': {
+        **plan['site'], 'eval_partition': 'general', 'eval_constraint': 'fastclass'}})
+    assert placed.ok and not placed.warn and 'node constraint fastclass' in placed.detail
+    assert 'evaluation_jobs' in preflight.report(preflight.checks(plan, good_facts(plan)))
+    chain.args.site.write_text(text.replace('eval_partition = "general"',
+                                            'eval_partition = "gpu"'))
+    with pytest.raises(supervise.run_profile.ProfileError, match='eval_partition'):
+        supervise.run_profile.load_site(chain.args.site)
+
+
 def eval_chain(tmp_path, baselines='', **changes):
     """A chain with both standing watchers; `baselines` is appended to the site's [site]."""
     chain, cluster = chain_for(tmp_path, [{}], eval_a10_enabled='true', eval_a10_suite='a10-50',

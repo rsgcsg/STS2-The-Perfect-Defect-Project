@@ -41,6 +41,8 @@ SETTINGS = {'learner_config': '/w/learner.json', 'peer': {'kind': 'local', 'dire
             'interval': 7200, 'max_live': 2, 'partition': 'general',
             'prepare_partition': 'debug', 'exclude_nodes': [], 'deadline_at': None,
             'deadline_headroom_seconds': 7388}
+CLEAN = {'degraded': False, 'share': 0.0, 'threshold': 0.1, 'planned': 100, 'unknown': 0,
+         'censored': 0, 'not_started': 0}  # a report summary's `degraded` (#612)
 
 
 class World:
@@ -738,10 +740,10 @@ def test_after_the_chain_ends_the_final_cp_is_evaluated_then_the_watcher_is_done
     final = tmp_path / 'chain' / 'FINAL.json'
     runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final))
 
-    def report(root, baseline, previous):
+    def report(root, baseline, previous, **_):
         (root / 'eval-record.json').write_text(json.dumps({'stage_seconds': {}}))
         return {'report_directory': str(root / 'report'), 'baseline': None, 'paired': {},
-                'skipped_references': {}, 'cohorts': {'current': {
+                'skipped_references': {}, 'degraded': CLEAN, 'cohorts': {'current': {
                     'scored': 8, 'wins': 0, 'mean_floor': 9.0, 'reward_mean': 0.1,
                     'conservative': 0.1}}}
 
@@ -898,12 +900,12 @@ def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval,
     runner = loop(fast_eval, world, tmp_path, baseline=BASELINE)
     calls = []
 
-    def report(root, baseline, previous):
+    def report(root, baseline, previous, **_):
         calls.append((root, baseline, previous))
         (root / 'eval-record.json').write_text(json.dumps(
             {'process_started_at': world.now + 5, 'stage_seconds': {'report': 1.0}}))
         return {'report_directory': str(root / 'report'), 'baseline': baseline,
-                'paired': {'baseline': {}}, 'skipped_references': {},
+                'paired': {'baseline': {}}, 'skipped_references': {}, 'degraded': CLEAN,
                 'cohorts': {'current': {'scored': 99, 'wins': 1, 'mean_floor': 37.5,
                                         'reward_mean': 0.48, 'conservative': 0.48}}}
 
@@ -961,9 +963,10 @@ def test_skipped_baseline_and_deferred_report_are_loud(fast_eval, tmp_path, caps
     assert 'evaluation_report_deferred' in capsys.readouterr().err
     skipped = {'plan': '/base/plan.json', 'differing': ['input_spec']}
     result.write_text('{"observation_report": {}}')
-    with patch.object(fast_eval, 'write_evaluation_report', lambda *_: {
+    with patch.object(fast_eval, 'write_evaluation_report', lambda *_, **__: {
             'report_directory': 'r', 'baseline': BASELINE, 'paired': {},
-            'skipped_references': {'baseline': skipped}, 'cohorts': {'current': {
+            'skipped_references': {'baseline': skipped}, 'degraded': CLEAN,
+            'cohorts': {'current': {
                 'scored': 50, 'wins': 0, 'mean_floor': 20.0, 'reward_mean': 0.1,
                 'conservative': 0.1}}}):
         runner.report(item)
@@ -1150,11 +1153,11 @@ def test_a_batched_round_submits_each_job_once_and_reports_when_all_ended(fast_e
 
     runner.submit = flaky
 
-    def report(root, baseline, previous):
+    def report(root, baseline, previous, **_):
         calls.append((root, previous))
         (root / 'eval-record.json').write_text(json.dumps({'stage_seconds': {}}))
         return {'report_directory': 'r', 'baseline': baseline, 'paired': {},
-                'skipped_references': {}, 'batches_missing': [
+                'skipped_references': {}, 'degraded': CLEAN, 'batches_missing': [
                     {'batch': 'evaluation-03', 'games': 100, 'status': 'no_result'}],
                 'cohorts': {'current': {'scored': 190, 'wins': 3, 'mean_floor': 30.0,
                                         'reward_mean': 0.4, 'conservative': 0.4}}}
@@ -1398,3 +1401,176 @@ def test_a_round_with_a_missing_batch_never_blocks_the_rounds_after_it(fast_eval
     assert third['references_partial'] == {} and third['paired']['previous']['seed_sets_equal']
     readme = (Path(runner.state['evaluations'][1]['root']) / 'report/README.md').read_text()
     assert 'PREVIOUS IS PARTIAL: 1 of 2 batches, 2 games' in readme
+
+
+def real_round(fast_eval, root, bindings=('binding',) * 3):
+    """A batched round of three real-shaped batch ledgers (#612, test_rl_observation's
+    REAL_BATCHES: one batch's formal-audit game cut, unknown/censored/not-started games),
+    each plan naming the round's checkpoint binding as evaluate.prepare_round writes it.
+    Returns the round's plans and a reader standing in for read_observation_report."""
+    from stpd.evaluation.rl_observation import load_cohort
+
+    shapes = module_file('rl_observation_shapes',
+                         Path(__file__).with_name('test_rl_observation.py'))
+    seeds = [f'STPD{ordinal:028X}' for ordinal in range(1, 13)]
+    round_dir = root / 'round'
+    plans, cohorts = [], {}
+    for number, (rows, binding) in enumerate(zip(shapes.REAL_BATCHES, bindings, strict=True),
+                                             start=1):
+        plan = batch_plan(round_dir / f'evaluation-0{number}', seeds, 4)
+        plan.write_text(json.dumps({**json.loads(plan.read_text()), 'checkpoint_binding': {
+            'path': str(round_dir / 'checkpoint-binding.json'), 'sha256': binding}}))
+        (plan.parent / 'result.json').write_text(json.dumps(
+            {'status': 'completed', 'observation_report': {}}))
+        cohorts[str(plan)] = load_cohort(shapes.real_batch_result(plan.parent, number, rows))
+        plans.append(plan)
+    (round_dir / 'batches.json').write_text(json.dumps({'batches': [
+        {'directory': p.parent.name, 'plan_sha256': fast_eval_hash(p)} for p in plans]}))
+
+    def read(result, plan, validate_plan=True):
+        return json.loads(Path(plan).read_text()), {}, {'cohort': cohorts[str(plan)]}
+    return plans, read
+
+
+def test_a_real_shaped_batched_round_merges_and_is_labelled_degraded(fast_eval, tmp_path):
+    """#612: three batches of one model whose ledgers differ in admission (a cut audit
+    game) merge into one report; the batch closed unscored is named; 6 of 12 games
+    unknown/censored/not started is above 10%: DEGRADED in the report's first lines with
+    the counts, next to where the jobs ran; another checkpoint binding is refused."""
+    plans, read = real_round(fast_eval, tmp_path / 'eval')
+    where = {'partition': 'general', 'constraint': 'fastclass'}
+    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+        summary = fast_eval.write_evaluation_report(tmp_path / 'eval', None, None,
+                                                    submission=where)
+    assert summary['batches'] == ['evaluation-01', 'evaluation-02', 'evaluation-03']
+    assert summary['batches_not_admitted'] == ['evaluation-02']
+    assert summary['degraded'] == {'degraded': True, 'share': 0.5, 'threshold': 0.1,
+                                   'planned': 12, 'unknown': 3, 'censored': 2,
+                                   'not_started': 1}
+    now = summary['cohorts']['current']
+    assert now['planned'] == 12 and now['scored'] == 4 and now['wins'] == 1
+    assert len(now['excluded']) == 8  # 6 unresolved + batch 02's 2 unadmitted finished
+    assert summary['submission'] == where
+    readme = (tmp_path / 'eval/report/README.md').read_text().splitlines()
+    header = ' '.join(readme[:4])
+    assert 'Evaluation jobs: partition general, node constraint fastclass.' in header
+    assert ('DEGRADED ROUND: unknown 3, censored 2, not started 1 of 12 planned games '
+            '(50.0%, threshold 10%)') in header
+    assert 'BATCHES NOT SCORE-ADMITTED' in header and 'evaluation-02' in header
+    record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
+    assert record['degraded'] == summary['degraded'] and record['submission'] == where
+    assert record['batches_not_admitted'] == ['evaluation-02']
+    # Under a looser threshold the same round is not degraded; no submission: no line.
+    import shutil
+    shutil.rmtree(tmp_path / 'eval/report')
+    with patch.object(fast_eval.evaluate, 'read_observation_report', read):
+        loose = fast_eval.write_evaluation_report(tmp_path / 'eval', None, None,
+                                                  degraded_share=0.5)
+    assert loose['degraded']['degraded'] is False and loose['submission'] is None
+    readme = (tmp_path / 'eval/report/README.md').read_text()
+    assert 'DEGRADED' not in readme and 'Evaluation jobs:' not in readme
+    plans, read = real_round(fast_eval, tmp_path / 'other', ('binding', 'other', 'binding'))
+    with (patch.object(fast_eval.evaluate, 'read_observation_report', read),
+          pytest.raises(ValueError, match='merged_batches_must_share_one_checkpoint_binding')):
+        fast_eval.write_evaluation_report(tmp_path / 'other', None, None)
+
+
+def test_a_degraded_round_is_reported_loudly_and_never_a_baseline(fast_eval, tmp_path, capsys):
+    """#612: the watcher reports a degraded round (excluded and counted, never voided, the
+    loop goes on) with a loud note; at start a degraded baseline round is refused."""
+    world = World()
+    runner = loop(fast_eval, world, tmp_path, baseline=BASELINE)
+    root = tmp_path / 'evaluation-0001'
+    (root / 'round/evaluation').mkdir(parents=True)
+    (root / 'round/evaluation/result.json').write_text('{"observation_report": {}}')
+    item = {'number': 1, 'checkpoint': 'cp-a', 'root': str(root), 'stage': 'submitted'}
+    runner.state['evaluations'].append(item)
+    degraded = {**CLEAN, 'degraded': True, 'share': 0.28, 'unknown': 38, 'censored': 43,
+                'not_started': 3, 'planned': 300}
+    seen = {}
+
+    def report(root, baseline, previous, **options):
+        seen.update(options)
+        return {'report_directory': 'r', 'baseline': baseline, 'paired': {},
+                'skipped_references': {}, 'degraded': degraded,
+                'batches_not_admitted': ['evaluation-02'],
+                'cohorts': {'current': {'scored': 200, 'wins': 1, 'mean_floor': 30.0,
+                                        'reward_mean': 0.3, 'conservative': 0.3}}}
+
+    with patch.object(fast_eval, 'write_evaluation_report', report):
+        runner.report(item)
+    assert item['stage'] == 'reported'
+    assert seen == {'degraded_share': 0.1, 'submission': {'partition': 'general',
+                                                          'constraint': None}}
+    kinds = [entry['kind'] for entry in runner.state['log']]
+    assert kinds[-3:] == ['evaluation_reported', 'evaluation_round_degraded',
+                          'evaluation_batches_not_score_admitted']
+    assert runner.state['log'][-3]['degraded'] is True
+    assert runner.state['log'][-2]['censored'] == 43
+    err = capsys.readouterr().err
+    assert 'evaluation_round_degraded' in err and 'evaluation_batches_not_score_admitted' in err
+    # At start: the baseline round is read and refused when degraded, with its counts.
+    plans, read = real_round(fast_eval, tmp_path / 'base')
+    baseline = {'plan': str(tmp_path / 'base/round/batches.json')}
+    settings = {**SETTINGS, 'runtime_source': str(tmp_path / 'src'), 'baseline': baseline}
+    with (patch.object(fast_eval.evaluate, 'read_observation_report', read),
+          patch.object(fast_eval, 'code_adapter_identity', lambda: ADAPTER)):
+        problems = fast_eval.start_problems(settings, {'agent_adapter': ADAPTER})
+        assert problems[0].startswith(
+            'baseline_round_degraded: unknown 3, censored 2, not started 1 of 12 planned games')
+        assert 'never a pairing baseline' in problems[0]
+        loose = fast_eval.start_problems({**settings, 'degraded_share': 0.5},
+                                         {'agent_adapter': ADAPTER})
+        assert not any('baseline' in p for p in loose)
+    unreadable = fast_eval.start_problems({**settings, 'baseline': {
+        'plan': str(tmp_path / 'missing/plan.json')}}, {'agent_adapter': ADAPTER})
+    assert unreadable[0].startswith('baseline_round_unreadable')
+
+
+def test_the_node_class_comes_from_flags_or_the_site_and_reaches_every_submission(
+        fast_eval, tmp_path, capsys):
+    """#612: partition and node constraint are settings (flags or the site profile's
+    eval_partition / eval_constraint); none given = today's submission; a flag that differs
+    from the site is refused; every batch job is submitted with them."""
+    today = fast_eval.settings_from(args_for(tmp_path, partition=None))
+    assert today['partition'] == 'general' and 'constraint' not in today
+    assert 'degraded_share' not in today  # today's state.json settings unchanged
+    site = tmp_path / 'site.toml'
+    site.write_text('schema = "x"\n[site]\neval_partition = "smp"\neval_constraint = "fast"\n'
+                    '[site.gpu_types.A]\npartition = "gpu"\n')
+    placed = fast_eval.settings_from(args_for(tmp_path, partition=None, site=site,
+                                              degraded_share=0.2))
+    assert (placed['partition'], placed['constraint'], placed['degraded_share']) == (
+        'smp', 'fast', 0.2)
+    assert fast_eval.settings_from(args_for(tmp_path, partition='smp', constraint='fast',
+                                            site=site))['constraint'] == 'fast'
+    for flag in ({'partition': 'general'}, {'constraint': 'slow'}):
+        with pytest.raises(ValueError, match='given_twice'):
+            fast_eval.settings_from(args_for(tmp_path, **{'partition': None, **flag},
+                                             site=site))
+    site.write_text('[site]\neval_partition = ""\neval_constraint = ""\n')
+    assert fast_eval.settings_from(args_for(tmp_path, partition=None, site=site)) == today
+    site.write_text('[site]\neval_partition = "gpu"\n')
+    with pytest.raises(ValueError, match='site_eval_partition_or_constraint_invalid'):
+        fast_eval.settings_from(args_for(tmp_path, partition=None, site=site))
+    world = World()
+    world.record('cp-a', 10)
+    runner = loop(fast_eval, world, tmp_path / 'run', seeds=300, batch_seeds=100,
+                  partition='smp', constraint='fast')
+    runner.tick()
+    finish_batches(world, runner.state['evaluations'][0])
+    runner.tick()
+    assert [(options['partition'], options['constraint']) for _, options in world.submits] == [
+        ('smp', 'fast')] * 3
+    plain = loop(fast_eval, world, tmp_path / 'plain')
+    world.record('cp-b', 20)
+    plain.tick()
+    finish_prepare(world, plain.state['evaluations'][0])
+    plain.tick()
+    assert world.submits[-1][1]['constraint'] is None  # today: no --constraint
+    for bad in (['--degraded-share', '1'], ['--constraint', ' ']):
+        argv = ['fast_eval.py', '--learner-config', 'l', '--execution', 'e', '--manifest',
+                'm', '--output', str(tmp_path), '--dry-run', '--no-baseline', *bad]
+        with patch.object(sys, 'argv', argv), pytest.raises(SystemExit) as stopped:
+            fast_eval.main()
+        assert stopped.value.code == 2

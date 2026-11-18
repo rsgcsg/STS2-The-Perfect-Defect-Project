@@ -72,6 +72,19 @@ Unknown games stay excluded and counted as in one job. A reference (baseline or 
 round) pairs by seed when one round's seed manifest is a prefix of the other's (the A0 300
 starts with the A0 100 seeds), and may be named by its `batches.json`.
 
+Batches of one round each carry their own ledger admission: a batch whose formal-audit
+game did not finish is closed unscored by its ledger (its games stay rows, never scores)
+and is named in `batches_not_admitted`; the batches still merge (#612). Batches with
+another checkpoint binding, model selection, character or ascension are refused.
+
+Node class (#612): `--partition` / `--constraint` (or a site profile's `eval_partition` /
+`eval_constraint` through `--site`; supervise passes them) place the evaluation jobs;
+none given = today's submission (partition general, no constraint). The report's first
+lines name them. A round whose unknown + censored + not-started games exceed
+`--degraded-share` (default 0.10, the rolling unknown gate) of its planned games is
+reported all the same, labelled DEGRADED with its counts (loud
+`evaluation_round_degraded`), and refused as a baseline at start.
+
 A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summary.json,
 eval-record.json and the report say "smoke, not a decision result", and no reference is
 paired (no paired-delta line).
@@ -149,6 +162,13 @@ SPLIT = 'exec "$actor_root/env/bin/python"'
 WAITING = ("preparing", "submitted")
 UNKNOWN = ("prepare_submit_unknown", "submit_unknown")  # delivery unknown: never retried
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
+PARTITIONS = ("smp", "general", "debug")  # evaluate.submit's CPU partitions
+DEFAULT_PARTITION = "general"
+# #612: a round whose unknown + censored + not-started games exceed this share of its
+# planned games is degraded (the project's 10% rolling unknown gate): reported and labelled,
+# never voided, never a pairing baseline. --degraded-share / profile eval_degraded_share.
+DEGRADED_SHARE = 0.10
+DEGRADED_STATUSES = ("unknown", "censored", "not_started")
 
 
 def chain_generation(chain: str) -> re.Pattern[str]:
@@ -354,6 +374,52 @@ def pairing_note(pairing: dict[str, Any] | None) -> str:
             f"re-freeze record sha256 {record['sha256']} ({record['reason']}).")
 
 
+def degradation(cohort: dict[str, Any], threshold: float) -> dict[str, Any]:
+    """The round's unknown, censored and not-started counts and their share of its planned
+    games; `degraded` above `threshold` (#612). The games stay in the cohort, excluded and
+    counted as before."""
+    counts = {status: cohort["status_counts"].get(status, 0) for status in DEGRADED_STATUSES}
+    planned = cohort["planned"]
+    share = sum(counts.values()) / planned if planned else 0.0
+    return {"degraded": share > threshold, "share": share, "threshold": threshold,
+            "planned": planned, **counts}
+
+
+def degradation_text(value: dict[str, Any]) -> str:
+    return (f"unknown {value['unknown']}, censored {value['censored']}, not started "
+            f"{value['not_started']} of {value['planned']} planned games "
+            f"({value['share']:.1%}, threshold {value['threshold']:.0%})")
+
+
+def read_round(reference: Path, plans: list[Path] | None = None, *,
+               validate_plan: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One round's cohort (its batches merged) and its first plan, from the saved,
+    hash-bound observation files. Batches of one round share one checkpoint binding (one
+    preparation, one export): another binding is another model and is refused."""
+    from stpd.evaluation.rl_observation import merge_cohorts
+
+    read = [evaluate.read_observation_report(plan.parent / "result.json", plan,
+                                             validate_plan=validate_plan)
+            for plan in (plans or reference_plans(reference))]
+    if len({json.dumps(frozen.get("checkpoint_binding"), sort_keys=True)
+            for frozen, _, _ in read}) > 1:
+        raise ValueError("merged_batches_must_share_one_checkpoint_binding")
+    return merge_cohorts([files["cohort"] for _, _, files in read]), read[0][0]
+
+
+def baseline_problem(baseline: dict[str, Any] | None, threshold: float) -> str | None:
+    """Why the baseline round cannot be a pairing baseline: degraded (#612). Checked at
+    start (`start_problems`), so the watcher never starts on it; None = usable."""
+    if baseline is None:
+        return None
+    group, _ = read_round(Path(baseline["plan"]), validate_plan=False)
+    value = degradation(group, threshold)
+    if value["degraded"]:
+        return (f"baseline_round_degraded: {degradation_text(value)}; a degraded round is "
+                f"never a pairing baseline: name another round or --no-baseline")
+    return None
+
+
 def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
                      execution: dict[str, Any], manifest: Path,
                      template: Path) -> dict[str, Any] | None:
@@ -396,9 +462,17 @@ def code_adapter_identity() -> dict[str, str]:
 
 def start_problems(settings: dict[str, Any], execution: dict[str, Any]) -> list[str]:
     """Why an evaluation of these settings cannot run, found before any job is submitted:
-    the actor layout and the frozen adapter identity (the seed count and manifest are
-    checked by `main` and `check_manifest`). Empty = it can start."""
+    a degraded baseline round (#612), the actor layout and the frozen adapter identity (the
+    seed count and manifest are checked by `main` and `check_manifest`). Empty = it can
+    start."""
     problems = []
+    try:
+        degraded = baseline_problem(settings.get("baseline"),
+                                    settings.get("degraded_share", DEGRADED_SHARE))
+    except (ValueError, OSError, KeyError) as error:
+        degraded = f"baseline_round_unreadable: {type(error).__name__}: {error}"
+    if degraded is not None:
+        problems.append(degraded)
     actor = evaluate.actor_root({"source_root": settings["runtime_source"],
                                  "actor_root": settings.get("actor_root")})
     try:
@@ -687,6 +761,7 @@ class Loop:
             plan = Path(item["root"]) / "round" / directory / "plan.json"
             try:
                 result = self.submit(plan, partition=self.settings["partition"],
+                                     constraint=self.settings.get("constraint"),
                                      exclude_nodes=self.settings.get("exclude_nodes") or None,
                                      dry_run=self.dry_run)
             except ValueError as error:
@@ -740,7 +815,9 @@ class Loop:
         try:
             summary = write_evaluation_report(
                 Path(item["root"]), self.settings.get("baseline"),
-                str(round_reference(Path(previous[-1]["root"]))) if previous else None)
+                str(round_reference(Path(previous[-1]["root"]))) if previous else None,
+                degraded_share=self.settings.get("degraded_share", DEGRADED_SHARE),
+                submission=submission(self.settings))
         except Exception as error:  # noqa: BLE001 -- originals stay; the report is a projection
             item.update(stage="report_failed", reason=f"{type(error).__name__}: {error}")
             self.note("evaluation_report_failed", checkpoint=item["checkpoint"],
@@ -761,7 +838,14 @@ class Loop:
                   wins=current["wins"], mean_floor=current["mean_floor"],
                   reward=current["reward_mean"], conservative=current["conservative"],
                   baseline=summary["baseline"], paired=sorted(summary["paired"]),
-                  skipped=summary["skipped_references"])
+                  skipped=summary["skipped_references"],
+                  degraded=summary["degraded"]["degraded"])
+        if summary["degraded"]["degraded"]:  # reported all the same: excluded and counted
+            self.loud("evaluation_round_degraded", checkpoint=item["checkpoint"],
+                      **summary["degraded"])
+        if summary.get("batches_not_admitted"):
+            self.loud("evaluation_batches_not_score_admitted", checkpoint=item["checkpoint"],
+                      batches=summary["batches_not_admitted"])
         if summary.get("batches_missing"):
             self.loud("evaluation_batches_missing", checkpoint=item["checkpoint"],
                       batches=summary["batches_missing"])
@@ -857,8 +941,15 @@ class Loop:
         return None
 
 
+def submission(settings: dict[str, Any]) -> dict[str, Any]:
+    """Where the evaluation jobs were submitted: partition and node constraint (#612)."""
+    return {"partition": settings["partition"], "constraint": settings.get("constraint")}
+
+
 def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
-                            previous_plan: str | None) -> dict[str, Any]:
+                            previous_plan: str | None, *,
+                            degraded_share: float = DEGRADED_SHARE,
+                            submission: dict[str, Any] | None = None) -> dict[str, Any]:
     """The owner's report for one finished evaluation round (`<root>/report`).
 
     Reads only the saved, hash-bound observation files of each round
@@ -869,19 +960,20 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     unscored rows (excluded per pair, listed with the floor they reached); the round
     is never voided. Beside it, `<root>/eval-record.json` (`evaluation_record`; the
     watcher adds its own times). A batched round (#591) is one merged cohort of its
-    batches with an observation report; the others are named in `batches_missing`.
+    batches with an observation report; the others are named in `batches_missing`, and
+    a batch its ledger closed unscored (formal-audit slot not finished) in
+    `batches_not_admitted`. A round above `degraded_share` unknown + censored + not
+    started is labelled degraded (`degraded`, the report's first line); `submission`
+    (partition, constraint) heads the report.
     """
-    from stpd.evaluation.rl_observation import merge_cohorts, write_report
+    from stpd.evaluation.rl_observation import write_report
 
     began = time.time()
     def cohort(reference: Path, *, pinned: str | None = None,
                plans: list[Path] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         if pinned is not None and hashed(reference) != pinned:
             raise ValueError("baseline_plan_changed")
-        read = [evaluate.read_observation_report(plan.parent / "result.json", plan,
-                                                 validate_plan=pinned is None)
-                for plan in (plans or reference_plans(reference))]
-        return merge_cohorts([files["cohort"] for _, _, files in read]), read[0][0]
+        return read_round(reference, plans, validate_plan=pinned is None)
 
     round_file = round_reference(root)
     # never retried: a batch without a report is named and its games are absent
@@ -897,7 +989,20 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     smoke = current["planned"] < DECISION_GAMES
     not_compared = [name for name, reference in references if reference] if smoke else []
     pairing = baseline.get("adapter_pairing") if baseline else None
+    degraded = degradation(current, degraded_share)
+    admitted = current.get("score_admitted_batches") or [current["score_admitted"]]
+    not_admitted = [p.parent.name for p, ok in zip(plans, admitted, strict=True) if not ok]
     notes = []
+    if submission is not None:
+        notes.append(f"Evaluation jobs: partition {submission['partition']}, node constraint "
+                     f"{submission.get('constraint') or 'none'}.")
+    if degraded["degraded"]:
+        notes.append(f"DEGRADED ROUND: {degradation_text(degraded)}; reported, never used "
+                     "as a pairing baseline.")
+    if not_admitted:
+        notes.append("BATCHES NOT SCORE-ADMITTED (their ledger closed them unscored: a "
+                     "formal-audit game did not finish; their games are rows, not scores): "
+                     + ", ".join(not_admitted) + ".")
     if smoke:
         notes.append(f"SMOKE: {current['planned']} games < {DECISION_GAMES}: smoke, not a "
                      "decision result; no reference is paired.")
@@ -961,7 +1066,8 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         "batches": ([p.parent.name for p in reference_plans(round_file)]
                     if round_file.name == evaluate.BATCHES else None),
         "batches_missing": missing, "references_partial": partial,
-        "cohorts": {}, "paired": {}}
+        "batches_not_admitted": not_admitted, "degraded": degraded,
+        "submission": submission, "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
         reward = report["rewards"][name]
@@ -1089,6 +1195,8 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                    "conservative_reward": conservative.get(row["seed"])}
                   for row in current["rows"]],
         "smoke": summary["smoke"], "decision": summary["decision"],
+        "degraded": summary["degraded"], "submission": summary["submission"],
+        "batches_not_admitted": summary["batches_not_admitted"],
         "adapter_pairing": summary["adapter_pairing"],
         "paired": summary["paired"], "skipped_references": summary["skipped_references"],
         "value_predictions": {"recorded": False,
@@ -1101,6 +1209,29 @@ def check_storage(execution: dict[str, Any], peer: dict[str, Any]) -> bool:
             set(peer) != {"kind", "directory"} or peer.get("kind") != "local"):
         raise ValueError("shared_local_evaluation_requires_a_local_peer_without_archive")
     return evaluate.needs_r2(execution)
+
+
+def site_submission(path: Path | None) -> dict[str, str]:
+    """The evaluation jobs' node class from a site profile (#612): `eval_partition` and
+    `eval_constraint` of its [site] table; absent or "" = today's submission."""
+    if path is None:
+        return {}
+    import tomllib
+
+    site = tomllib.loads(path.read_text()).get("site") or {}
+    out = {key: site.get(f"eval_{key}") or "" for key in ("partition", "constraint")}
+    if out["partition"] and out["partition"] not in PARTITIONS or not all(
+            isinstance(value, str) for value in out.values()):
+        raise ValueError(f"site_eval_partition_or_constraint_invalid: {out}")
+    return {key: value for key, value in out.items() if value}
+
+
+def one_value(name: str, given: str | None, site: str | None) -> str | None:
+    """A flag or the site's value; both given and different is refused (no precedence)."""
+    if given and site and given != site:
+        raise ValueError(f"evaluation_{name}_given_twice: --{name} {given}, site "
+                         f"eval_{name} {site}")
+    return given or site
 
 
 def settings_from(args: argparse.Namespace) -> dict[str, Any]:
@@ -1118,6 +1249,13 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     grace = getattr(args, "final_grace_seconds", None)
     actor.update({"final_grace_seconds": grace} if grace is not None else {})
     games = min(args.seeds, batch or args.seeds)  # per job: each job's wall is its own
+    site = site_submission(getattr(args, "site", None))
+    # Only when given: today's states (no constraint, default threshold) are unchanged.
+    constraint = one_value("constraint", getattr(args, "constraint", None),
+                           site.get("constraint"))
+    actor.update({"constraint": constraint} if constraint else {})
+    share = getattr(args, "degraded_share", None)
+    actor.update({"degraded_share": share} if share is not None else {})
     return {**actor, **({"batch_seeds": batch} if batch is not None else {}),
             "learner_config": str(args.learner_config.resolve()),
             "peer": config["peer"], "run": config["run"],
@@ -1137,7 +1275,9 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
             "deadline_headroom_seconds": planned_wall_seconds(
                 games, max(1, args.expected_steps // 2), live, args.episode_seconds),
             "episode_seconds": args.episode_seconds, "interval": args.interval,
-            "max_live": args.max_live, "partition": args.partition,
+            "max_live": args.max_live,
+            "partition": one_value("partition", args.partition,
+                                   site.get("partition")) or DEFAULT_PARTITION,
             "prepare_partition": args.prepare_partition,
             "exclude_nodes": args.exclude_node or [], "deadline_at": args.deadline_at,
             "checkpoint": args.checkpoint, "r2": check_storage(execution, config["peer"]),
@@ -1174,7 +1314,19 @@ def main() -> None:
                         help="job wall (default: planned_wall_seconds of games and steps)")
     parser.add_argument("--episode-seconds", type=int, default=EPISODE_SECONDS)
     parser.add_argument("--max-live", type=int, default=MAX_LIVE)
-    parser.add_argument("--partition", choices=("smp", "general", "debug"), default="general")
+    parser.add_argument("--partition", choices=PARTITIONS,
+                        help=f"evaluation jobs' partition (default: --site eval_partition, "
+                             f"else {DEFAULT_PARTITION})")
+    parser.add_argument("--constraint",
+                        help="evaluation jobs' Slurm node constraint (a node feature, e.g. the "
+                             "fast node class; default: --site eval_constraint, else none)")
+    parser.add_argument("--site", type=Path,
+                        help="site profile whose eval_partition / eval_constraint place the "
+                             "evaluation jobs (#612); a flag that differs from it is refused")
+    parser.add_argument("--degraded-share", type=float,
+                        help=f"a round above this share of unknown + censored + not-started "
+                             f"games is labelled degraded and never a baseline "
+                             f"(default {DEGRADED_SHARE})")
     parser.add_argument("--prepare-partition", choices=("smp", "general", "debug"),
                         default="debug")
     parser.add_argument("--exclude-node", action="append")
@@ -1221,6 +1373,10 @@ def main() -> None:
         parser.error("save-workers 1..4, pending-limit save-workers..16 (pipeline maximums)")
     if bool(args.baseline_plan) == bool(args.no_baseline):
         parser.error("exactly one of --baseline-plan or --no-baseline")
+    if args.degraded_share is not None and not 0 <= args.degraded_share < 1:
+        parser.error("--degraded-share in [0, 1)")
+    if args.constraint is not None and not args.constraint.strip():
+        parser.error("--constraint is a node feature expression (omit for none)")
     if args.baseline_sha256 and not args.baseline_plan:
         parser.error("--baseline-sha256 goes with --baseline-plan")
     if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
