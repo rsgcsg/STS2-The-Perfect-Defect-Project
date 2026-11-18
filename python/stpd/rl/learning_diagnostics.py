@@ -369,7 +369,8 @@ def policy_by_arm(arms: list[str | None],
 # `loss.explore_ratio_floor` c > 0: per arm, over one attempt's policy rows, the rows whose
 # ratio was below c (their gradient weight c instead of r), those with A > 0, and over
 # the floored rows the sums of |A|, c |A| (the weight given) and r |A| (the unclipped
-# surrogate's weight they replace; a clipped A < 0 row had 0). Diagnostics only, like policy_by_arm.
+# surrogate's weight they replace; a clipped A < 0 row had 0). Diagnostics only, like
+# policy_by_arm.
 EXPLORE_FLOOR_FIELDS = ("rows", "floored", "floored_positive", "floored_abs_advantage_sum",
                         "floor_weight_sum", "ratio_weight_sum")
 

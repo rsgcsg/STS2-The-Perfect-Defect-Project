@@ -150,8 +150,9 @@ def batched_segment_loss(
             detached = ratio.detach()
             objective_clipped = (detached * advantage
                 > detached.clamp(1 - clip, 1 + clip) * advantage)
-            columns = (forward, detached, (detached - 1).abs().gt(clip).float(),
-                       objective_clipped.float(), detached.gt(1).float(), t["policy_mask"])
+            columns: tuple[torch.Tensor, ...] = (
+                forward, detached, (detached - 1).abs().gt(clip).float(),
+                objective_clipped.float(), detached.gt(1).float(), t["policy_mask"])
             if floored is not None:  # c > 0 only: the advantage and the floored flag
                 columns += (advantage, floored.float())
             row_diagnostics.append(torch.stack(columns, dim=1))

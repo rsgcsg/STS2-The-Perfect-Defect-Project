@@ -526,7 +526,8 @@ def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
 
 
 LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advantage_raw",
-                 "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped", "value_target",
+                 "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped",
+                 "value_target",
                  "value_calibration", "policy_entropy", "first_use_mu_age_seconds")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
