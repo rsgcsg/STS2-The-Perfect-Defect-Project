@@ -43,7 +43,7 @@ RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned
 # sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
-SEED_STRIDE_PROCS = 32  # env.sh seed offset = (node * 32 + p) * 600
+BUDGET_CAP_SECONDS = 72000  # the product operating-budget cap (SegmentLearner)
 PREPARED_BATCH_HEADROOM = 1.15  # per-batch cap >= 1.15 x the largest measured batch
 
 
@@ -594,8 +594,6 @@ def check_identity(plan: dict[str, Any]) -> Result:
             problems.append(f"env node indices of {name} overlap another array")
         seen |= block
     procs = max(1, int(k["env_node_cores"] * k["env_procs_fraction"]))
-    if procs > SEED_STRIDE_PROCS:
-        problems.append(f"{procs} drivers per node > seed stride {SEED_STRIDE_PROCS}")
     return Result("cross_node_identity", not problems, "; ".join(problems) or
                   f"node indices {ranges}; ids = job id + node index + driver; "
                   f"{procs} drivers per node")
@@ -650,7 +648,7 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
         problems.append("env job shorter than the GPU wall plus the env wait")
     # A driver stops on its own warm + steady after its fast env is ready (env_driver.mjs);
     # the GPU side expects it until DRAIN, so it must outlive the wall (#586 review M2).
-    life = k["driver_warm_seconds"] + k["driver_steady_seconds"]
+    life = k["driver_warm_seconds"] + plan["driver_steady_seconds"]
     if life < plan["wall_seconds"]:
         problems.append(f"env drivers end by design after driver_warm_seconds + "
                         f"driver_steady_seconds = {life} s, before the GPU wall "
@@ -659,6 +657,63 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
     if problems:
         problems.append("shorten wall_seconds (--set) or use a partition without that limit")
     return Result("time_limits", not problems, "; ".join(problems or shown))
+
+
+def check_training_clock(plan: dict[str, Any]) -> Result:
+    """#603. Without a target a chain's training window is its wall window, which is
+    also the product operating budget (<= 72000 s). With `train_target_seconds` the budget
+    is the target (learner training seconds, carried in the CPs across resumes) and
+    `long_wall_seconds` only the chain's wall limit: generation 0 must be able to train
+    the whole target in it; a later generation with less wall left than training left is
+    a warning (the chain then ends at its wall limit, said in its final cause)."""
+    k, chain = plan["knobs"], plan.get("chain")
+    target = k["train_target_seconds"]
+    if not target:
+        if chain is not None and k["long_wall_seconds"] > BUDGET_CAP_SECONDS:
+            return Result("training_clock", False, f"long_wall_seconds "
+                          f"{k['long_wall_seconds']} s is the chain's operating budget "
+                          f"without train_target_seconds: at most {BUDGET_CAP_SECONDS} s")
+        return Result("training_clock", True, "off: the chain window is long_wall_seconds "
+                      "(wall time, fixed at chain start, queue time included)")
+    if chain is None:
+        return Result("training_clock", False, "train_target_seconds needs a supervise.py "
+                      "chain (a plain run has no operating budget to count it)")
+    left, wall_left = chain["train_left_seconds"], plan["chain_wall_left_seconds"]
+    shown = (f"target {target} s learner training (counted across resumes), {left} s left; "
+             f"chain wall limit long_wall_seconds {k['long_wall_seconds']} s, "
+             f"{wall_left} s left; this job: wall {plan['wall_seconds']} s (the training "
+             f"left) + end reserve {plan['end_reserve_seconds']} s; no absolute deadline "
+             "in the learner or its CPs")
+    if chain["generation"] == 0 and wall_left < target:
+        return Result("training_clock", False, f"the chain's wall limit {wall_left} s "
+                      f"cannot hold the training target {target} s: raise "
+                      "long_wall_seconds (the partition limit is checked by time_limits) "
+                      "or lower the target")
+    return Result("training_clock", True, shown,
+                  warn=chain["generation"] > 0 and wall_left < left)
+
+
+def check_seeds(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """#603: seeds-file length against the lines the run's driver streams can reach
+    (seed_games_per_driver_hour is an upper bound, so this over-estimates). A wrap is
+    allowed (each driver counts it in summary.json) but warned loudly. For a chain the
+    reach is up to the chain's wall limit, else to this run's wall."""
+    k, chain, count = plan["knobs"], plan.get("chain"), facts.get("seeds_file_count")
+    if not count:
+        return Result("seeds", False, f"no seeds in site seeds_file {plan['site']['seeds_file']}")
+    rate, stride, start = k["seed_games_per_driver_hour"], plan["seed_stride"], plan["seed_start"]
+    seconds = k["long_wall_seconds"] if chain is not None else plan["wall_seconds"]
+    if chain is not None and chain["generation"] > 0:
+        seconds = plan["wall_seconds"]  # the rest of the chain from here
+    games = math.ceil(seconds / 3600 * rate)
+    reach = start + games * stride
+    shown = (f"{count} lines; {stride} driver streams (stride) from line {start}, up to "
+             f"{games} games each in {seconds} s at <= {rate:g}/driver hour: reach line "
+             f"{reach}")
+    if reach > count:
+        return Result("seeds", True, f"WILL WRAP: {shown} > {count} (about "
+                      f"{reach / count:.1f} passes; seeds repeat, counted per driver)", warn=True)
+    return Result("seeds", True, shown)
 
 
 def check_cores(plan: dict[str, Any]) -> Result:
@@ -722,7 +777,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
-            check_secrets(facts), check_time_limits(plan), check_cores(plan),
+            check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
+            check_seeds(plan, facts), check_cores(plan),
             check_resume(plan, facts), check_queue(facts)]
 
 

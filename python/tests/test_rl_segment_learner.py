@@ -749,6 +749,54 @@ def test_operating_budget_restores_consumed_time_from_CP_without_reset(tmp_path,
         )
 
 
+
+def test_a_training_time_budget_without_a_deadline_continues_and_opens_windows(
+        tmp_path, monkeypatch):
+    """#603: a chain counted in training time gives the learner a budget and no absolute
+    deadline. No deadline enters the CP; a resume of the same budget continues its
+    consumed seconds; a CP of that window opens a new window (its parent recorded)
+    still without a deadline, and an unrecorded parent is refused as before."""
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(
+        config, wall_seconds=600, deadline_at=None,
+        operating_budget={"id": "c-target", "total_seconds": 500, "consumed_seconds": 0})
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    assert owner.deadline_at is None and owner.config.wall_seconds == 500
+    owner.active_training_seconds = 200
+    owner.checkpoint(final=True)
+    record, cp = read_cp(owner)
+    assert cp.config["deadline_at"] is None
+    assert cp.config["operating_budget"] == {"id": "c-target", "total_seconds": 500,
+                                             "consumed_seconds": 200}
+    owner.close()
+    cp_id = record["checkpoint_artifact_id"]
+    resumed = dataclasses.replace(
+        config, start_package=None, resume_checkpoint=cp_id, operating_budget=None,
+        segments=dataclasses.replace(config.segments, training_generation="g-target-r1"))
+    same = SegmentLearner(resumed, tmp_path / "same", io)
+    try:
+        assert same.deadline_at is None and same.config.wall_seconds == 300
+        assert same.config.operating_budget["consumed_seconds"] == 200
+    finally:
+        same.close()
+    window = {"operating_budget": {"id": "c-next", "total_seconds": 900,
+                                   "consumed_seconds": 0},
+              "operating_budget_parent": {"checkpoint_artifact_id": cp_id,
+                                          "operating_budget": cp.config["operating_budget"],
+                                          "deadline_at": None}}
+    opened = SegmentLearner(dataclasses.replace(
+        resumed, **window, segments=dataclasses.replace(
+            config.segments, training_generation="g-next")), tmp_path / "next", io)
+    try:
+        assert opened.deadline_at is None and opened.config.wall_seconds == 600
+        assert opened.config.operating_budget["consumed_seconds"] == 0
+    finally:
+        opened.close()
+    with pytest.raises(ValueError, match="checkpoint_operating_budget_cannot_be_reset"):
+        SegmentLearner(dataclasses.replace(
+            resumed, operating_budget=window["operating_budget"], segments=dataclasses.replace(
+                config.segments, training_generation="g-refused")), tmp_path / "refused", io)
+
 def test_terminal_actor_releases_capacity_but_preserves_original_ACKs_and_no_labels(
     tmp_path, monkeypatch
 ):

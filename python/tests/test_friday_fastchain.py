@@ -103,7 +103,7 @@ def good_facts(plan):
             'warmup_artifact': {'id': 'f' * 64, 'present': True, 'package_sha256': 'e' * 64},
             'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
-            'gpu_test_start_seconds': 0.0,
+            'gpu_test_start_seconds': 0.0, 'seeds_file_count': 10_000_000,
             'queue': {'fairshare': 0.5, 'priority_estimate': 15000, 'partitions': {
                 'gpu': {'name': 'GPU-PARTITION', 'pending': 3, 'above': 0},
                 'prep': {'name': 'CPU-PARTITION', 'pending': 2, 'above': 0}}},
@@ -2109,6 +2109,9 @@ class FakeCluster:
         number = len(self.argvs)
         jobs = {'gpu': f'{number}00', 'env': f'{number}01'}
         (run / 'jobs.json').write_text(json.dumps(jobs))
+        chain = json.loads(Path(argv[argv.index('--chain-json') + 1]).read_text())
+        (run / 'plan.json').write_text(json.dumps({'seed_start': chain['seed_start'],
+                                                   'seed_stride': 180}))
         self.alive = set(jobs.values())
         ending = self.endings.pop(0)
         write_outcome(run, **ending)
@@ -2613,13 +2616,13 @@ def fake_driver_world(root):
     return root
 
 
-def run_driver(world, out, admit, *flags, steady=1):
+def run_driver(world, out, admit, *flags, steady=1, seed_offset=0):
     import subprocess
     node = __import__('shutil').which('node')
     assert node, 'development Node is required for the env driver regression'
     argv = [node, str(FASTCHAIN / 'env_driver.mjs'), '--pkg', str(world / 'pkg'),
             '--out', str(out), '--tag', 'n0-p1', '--slots', '4', '--ascension', '0',
-            '--seeds', str(world / 'seeds.txt'), '--seed-offset', '0',
+            '--seeds', str(world / 'seeds.txt'), '--seed-offset', str(seed_offset),
             '--initial-progress', str(world / 'progress.json'),
             '--input-spec', str(world / 'spec.json'), '--link', '/nonexistent.sock',
             '--admit', str(admit), '--candidate', str(world), '--single-choice', 'omit',
@@ -3865,3 +3868,260 @@ def test_an_ignored_sigterm_stays_ignored(tmp_path):
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
     finally:
         signal.signal(signal.SIGTERM, before)
+
+
+# ---------------- #603: training clock and seed streams ----------------
+
+def chain_plan(generation=0, wall_left=None, train_left=None, **changes):
+    k = knobs(**changes)
+    left = wall_left if wall_left is not None else k['long_wall_seconds'] + 900
+    target = k['train_target_seconds']
+    chain = {'id': 'c-x', 'deadline_at': time.time() + left, 'generation': generation,
+             'total_seconds': target or k['long_wall_seconds'], 'train_target_seconds': target,
+             'train_left_seconds': (train_left if train_left is not None else target) or None,
+             'seed_start': 0}
+    return launch.build_plan('t1', k, run_profile.load_site(SITE), cards=3,
+                             card_type='A100-40', layout_spec=None, env_cores=None, smoke=False,
+                             probe_rows=[probe_row()], probe_only=True, long_run=True,
+                             chain=chain)
+
+
+def test_training_target_is_a_budget_without_a_deadline_and_preflight_checks_the_wall():
+    # Default (no target): the deadline reaches the learner, no end reserve, <= 72000 s.
+    plan = chain_plan()
+    env = launch.job_env(plan).splitlines()
+    assert plan['end_reserve_seconds'] == 0 and plan['wall_seconds'] == 72000
+    assert f"export FC_CHAIN_DEADLINE={plan['chain']['deadline_at']}" in env
+    assert plan['driver_steady_seconds'] == plan['knobs']['driver_steady_seconds']
+    assert by_name([preflight.check_training_clock(plan)])['training_clock'].ok
+    over = chain_plan(long_wall_seconds=80000)
+    assert not preflight.check_training_clock(over).ok  # no target: the budget cap holds
+    # A 20 h target in a 23 h chain wall: no deadline; the job asks for the training left
+    # (#604 M1) plus the end reserve, not the whole wall left.
+    target = chain_plan(long_wall_seconds=82800, train_target_seconds=72000)
+    assert target['end_reserve_seconds'] == 600 and target['wall_seconds'] == 72000
+    assert target['chain_wall_left_seconds'] == 82800
+    assert target['gpu_minutes'] == chain_plan()['gpu_minutes'] + 10
+    assert "export FC_CHAIN_DEADLINE=''" in launch.job_env(target).splitlines()
+    result = preflight.check_training_clock(target)
+    assert result.ok and not result.warn and 'no absolute deadline' in result.detail
+    assert by_name([preflight.check_time_limits(target)])['time_limits'].ok
+    # A resume with 5000 s of training left asks for 5000 s; drivers live that long.
+    resumed = chain_plan(generation=1, wall_left=40000, train_left=5000,
+                         long_wall_seconds=82800, train_target_seconds=72000)
+    assert resumed['wall_seconds'] == 5000
+    # Generation 0 whose wall cannot hold the target: refused; a later one with less wall
+    # left than training left: a warning.
+    short = chain_plan(long_wall_seconds=60000, train_target_seconds=72000)
+    assert not preflight.check_training_clock(short).ok
+    later = chain_plan(generation=1, wall_left=30000, train_left=40000,
+                       long_wall_seconds=82800, train_target_seconds=72000)
+    result = preflight.check_training_clock(later)
+    assert result.ok and result.warn and later['wall_seconds'] in (29999, 30000)
+    # A target needs a chain.
+    plain = plan_for(long_run=True, train_target_seconds=3600)
+    assert not preflight.check_training_clock(plain).ok
+
+
+def test_driver_steady_time_follows_a_targeted_generation_wall():
+    """#604 S1: drivers outlive a targeted generation's wall without editing the knob;
+    without a target a too-short knob is still refused loudly."""
+    plan = chain_plan(long_wall_seconds=82800, train_target_seconds=72000,
+                      driver_steady_seconds=600)
+    assert plan['driver_steady_seconds'] == 72000
+    assert 'export FC_DRIVER_STEADY_SECONDS=72000' in launch.job_env(plan).splitlines()[-40:]
+    assert 'env drivers end' not in preflight.check_time_limits(plan).detail
+    plain = chain_plan(driver_steady_seconds=600)
+    result = preflight.check_time_limits(plain)
+    assert not result.ok and 'env drivers end by design' in result.detail
+
+
+def roles_function(name):
+    import ast
+    tree = ast.parse((FASTCHAIN / 'roles.py').read_text())
+    nodes = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == name)
+             or (isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                 and n.targets[0].id == 'LEARNER_DRAIN_RESERVE_SECONDS')]
+    space = {'Any': object}
+    exec(compile(ast.Module(nodes, []), 'roles.py', 'exec'), space)
+    return space[name]
+
+
+@pytest.mark.parametrize('wall,deadline_at', [(3600, None), (72000, None), (3000, 1000 + 2000)])
+def test_services_drain_at_or_before_the_learner_window_end(wall, deadline_at):
+    """#604 M1: the services drain from the learner's own window (learner.ready), not the
+    job's FC_WALL: a target that ends hours before the wall drains them with it."""
+    drain_at = roles_function('service_drain_at')
+    k = knobs()
+    ready = {'generation': 'g', 'at': 1000.0, 'wall_seconds': wall, 'deadline_at': deadline_at}
+    # the learner's window starts at or after learner.ready
+    learner_end = ready['at'] + wall
+    if deadline_at is not None:
+        learner_end = min(learner_end, deadline_at - 600)
+    at = drain_at(ready, k['drain_seconds'])
+    assert at == learner_end - k['drain_seconds'] and at <= learner_end
+    roles = (FASTCHAIN / 'roles.py').read_text()
+    assert '"wall_seconds": owner.config.wall_seconds' in roles
+    assert 'FC_WALL"]) - float(K["drain_seconds"])' not in roles
+
+
+def test_learner_window_with_a_target_carries_no_deadline():
+    fresh = learner_config.window('c-x', 72000, None, None, None)
+    assert fresh['deadline_at'] is None and fresh['operating_budget']['total_seconds'] == 72000
+    other = learner_config.window('c-x', 72000, None, 'cp1',
+                                  {'operating_budget': {'id': 'c-old'}, 'deadline_at': None})
+    assert other['deadline_at'] is None
+    assert other['operating_budget_parent']['checkpoint_artifact_id'] == 'cp1'
+
+
+def report_with_clock(chain_training, budget):
+    def write(run):
+        report = json.loads((run / 'learner-report.json').read_text())
+        report['clock'] = {'training_seconds': 100.0, 'wall_seconds': 130.0,
+                           'chain_training_seconds': chain_training,
+                           'chain_training_budget_seconds': budget}
+        (run / 'learner-report.json').write_text(json.dumps(report))
+    return write
+
+
+@pytest.mark.parametrize('trained,reached', [(3590.0, True), (3000.0, False)])
+def test_chain_final_record_states_training_and_wall_seconds(tmp_path, trained, reached):
+    chain, cluster = chain_for(tmp_path, [{}], train_target_seconds='3600',
+                               long_wall_seconds='7200')
+    launch_main = cluster.launch_main
+
+    def launch_with_clock(argv):
+        code = launch_main(argv)
+        report_with_clock(trained, 3600)(tmp_path / f'run-{argv[1]}')
+        return code
+    chain.launch_main = launch_with_clock
+    assert chain.run() == 0
+    facts = json.loads((tmp_path / 'chain-lr1' / 'chain-0.json').read_text())
+    assert facts['total_seconds'] == 3600 and facts['train_target_seconds'] == 3600
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    clock = final['clock']
+    assert clock['training_seconds'] == trained and clock['train_target_seconds'] == 3600
+    assert clock['train_target_reached'] is reached and clock['wall_limit_seconds'] == 7200
+    assert clock['wall_seconds'] >= 0
+    assert ('target reached' if reached else 'TARGET NOT REACHED') in final['cause']
+
+
+def test_readout_states_the_generation_and_chain_clock(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    (run / 'learner-report.json').write_text(json.dumps({'failure': None, 'summary': None}))
+    report_with_clock(3590.0, 3600)(run)
+    text = readout.render(readout.build(run, 1200))
+    assert 'clock: training 100 s, wall 130 s this generation; chain training 3590 of ' \
+        '3600 s budget' in text
+
+
+def test_seed_streams_are_disjoint_per_driver_and_preflight_warns_on_a_wrap():
+    plan = chain_plan()
+    drivers = launch.drivers_per_node(plan['knobs'])
+    assert plan['seed_stride'] == plan['env_nodes_max'] * drivers and plan['seed_start'] == 0
+    assert 'FC_SEED_START=0' in launch.job_env(plan)
+    env_sh = (FASTCHAIN / 'env.sh').read_text()
+    assert '--seed-offset $(( FC_SEED_START + NODEIDX * P + p - 1 )) --seed-stride ' \
+        '$SEED_STRIDE' in env_sh and 'SEED_STRIDE=$(( FC_ENV_NODES * P ))' in env_sh
+    facts = good_facts(plan)
+    result = preflight.check_seeds(plan, facts)
+    assert result.ok and not result.warn
+    games = math.ceil(plan['knobs']['long_wall_seconds'] / 3600 * 300)
+    assert f'reach line {games * plan["seed_stride"]}' in result.detail
+    small = preflight.check_seeds(plan, {**facts, 'seeds_file_count': 1000})
+    assert small.ok and small.warn and 'WILL WRAP' in small.detail
+    assert not preflight.check_seeds(plan, {**facts, 'seeds_file_count': None}).ok
+
+
+def test_a_resumed_generation_starts_its_seed_streams_past_the_earlier_ones(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, FENCE, {}])
+    assert chain.run() == 0
+    starts = [json.loads((tmp_path / 'chain-lr1' / f'chain-{n}.json').read_text())['seed_start']
+              for n in range(3)]
+    subs = [g['submitted_at'] for g in chain.state['generations']]
+    rate = chain.knobs['seed_games_per_driver_hour']
+    assert starts[0] == 0
+    for n in (1, 2):
+        rounds = math.ceil((subs[n] - subs[n - 1]) / 3600 * rate)
+        assert rounds > 0 and starts[n] == starts[n - 1] + rounds * 180
+    # A previous generation without its plan.json: refused, never a guessed start.
+    (tmp_path / 'run-lr1-r2' / 'plan.json').unlink()
+    assert 'seed stream is unknown' in chain.submit(3, None)
+
+
+def test_env_driver_takes_its_strided_stream_and_counts_a_wrap(tmp_path):
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    out = tmp_path / 'out'
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON, '--arm',
+                          'hot', '--replay-k', '1', '--seed-stride', '7', seed_offset=1990)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert len(opens) > 3
+    assert [o['seed'] for o in opens] == [f'S{(1990 + 7 * i) % 2000}' for i in range(len(opens))]
+    stream = json.loads((out / 'summary.json').read_text())['seed_stream']
+    assert stream['offset'] == 1990 and stream['stride'] == 7 and stream['file_seeds'] == 2000
+    assert stream['taken'] >= len(opens) and stream['wrapped'] == stream['taken'] - 2
+    wraps = [r for r in readout.jsonl(out / 'driver.jsonl') if r['event'] == 'seed_stream_wrapped']
+    assert wraps == [{**wraps[0], 'index': 2004, 'file_seeds': 2000}]
+
+
+def test_a_resumed_target_generation_gets_the_target_budget_and_the_training_left(
+        tmp_path, monkeypatch):
+    """#604 S3: generation r1 of a target chain gets the target as its budget, no deadline,
+    and a job sized to target - consumed of the CP it restores."""
+    chain, cluster = chain_for(tmp_path, [FENCE, {}], train_target_seconds='3600',
+                               long_wall_seconds='7200')
+    configs = {'cp-lr1': {'operating_budget': {'id': 'c-lr1', 'total_seconds': 3600,
+                                               'consumed_seconds': 1000.0},
+                          'deadline_at': None}}
+    monkeypatch.setattr(launch, 'checkpoint_config', lambda peer, cp: configs[cp])
+    assert chain.run() == 0
+    first, second = (json.loads((tmp_path / 'chain-lr1' / f'chain-{n}.json').read_text())
+                     for n in (0, 1))
+    assert first['train_left_seconds'] == 3600 and first['total_seconds'] == 3600
+    assert second['train_left_seconds'] == 2600 and second['total_seconds'] == 3600
+    second['deadline_at'] = time.time() + 6000  # the wall left at submission
+    plan = launch.build_plan('t1', knobs(train_target_seconds=3600, long_wall_seconds=7200),
+                             run_profile.load_site(SITE), cards=3, card_type='A100-40',
+                             layout_spec=None, env_cores=None, smoke=False,
+                             probe_rows=[probe_row()], probe_only=True, long_run=True,
+                             chain=second)
+    env = launch.job_env(plan).splitlines()
+    assert plan['wall_seconds'] == 2600 and 'export FC_WALL=2600' in env
+    assert "export FC_CHAIN_DEADLINE=''" in env and 'export FC_CHAIN_TOTAL_SECONDS=3600' in env
+    # the learner inherits the CP's budget (consumed 1000) and no deadline
+    window = learner_config.window('c-lr1', 3600, None, 'cp-lr1', configs['cp-lr1'])
+    assert window == {'operating_budget': None, 'operating_budget_parent': None,
+                      'deadline_at': None}
+    # a CP of another window counts from 0 (it opens a new one)
+    configs['cp-old'] = {'operating_budget': {'id': 'c-old', 'consumed_seconds': 500.0}}
+    assert chain.checkpoint_consumed('cp-old') == 0 and chain.checkpoint_consumed(None) == 0
+
+
+def test_seed_streams_overlap_is_said_and_counted_never_a_stop(tmp_path, capsys):
+    """#604 S2: a previous driver that took more seeds than the rounds the next start
+    skips is reported loudly and counted; the chain goes on."""
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    launch_main = cluster.launch_main
+
+    def launch_with_drivers(argv):
+        code = launch_main(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        for p, taken in (('p1', 10_000_000), ('p2', 1)):
+            out = run / 'env-n0-77' / p
+            out.mkdir(parents=True)
+            (out / 'summary.json').write_text(json.dumps({'seed_stream': {'taken': taken}}))
+        return code
+    chain.launch_main = launch_with_drivers
+    assert chain.run() == 0
+    notes = [e for e in chain.state['log'] if e['kind'] == 'seed_streams_overlap']
+    assert len(notes) == 1 and notes[0]['drivers_over'] == 1 and notes[0]['drivers_read'] == 2
+    assert notes[0]['max_taken'] == 10_000_000
+    assert 'SEED STREAMS OVERLAP' in capsys.readouterr().err
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['ok'] and final['seed_overlaps'] == 1

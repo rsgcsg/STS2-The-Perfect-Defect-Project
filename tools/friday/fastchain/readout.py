@@ -1491,6 +1491,8 @@ class Readout:
                 "env": env_edge(self.run, span), "compile": self.compile.result(),
                 "disk": disk_edge(self.run), "recipe": self.recipe(),
                 "save_starts": self.save_starts(),
+                # #603: training and wall seconds from the learner report (None while it runs)
+                "clock": (_json(self.run / "learner-report.json") or {}).get("clock"),
                 "verdict": verdict(train.get("rows_h"), target),
                 "loss_table": loss_table(plan, train),
                 "identity": identity_edge(self.run, plan, self.plan_path),
@@ -1744,6 +1746,14 @@ def render_record(r: dict[str, Any]) -> list[str]:
     cps = r.get("checkpoints") or []
     if cps:
         out.append(f"checkpoints: {len(cps)}, last {cps[-1]['checkpoint_artifact_id']}")
+    clock = r.get("clock")
+    if clock:
+        chain = clock.get("chain_training_seconds")
+        out.append(f"clock: training {clock['training_seconds']:.0f} s, wall "
+                   f"{clock['wall_seconds']:.0f} s this generation"
+                   + (f"; chain training {chain:.0f} of "
+                      f"{clock['chain_training_budget_seconds']} s budget"
+                      if chain is not None else ""))
     return out
 
 
