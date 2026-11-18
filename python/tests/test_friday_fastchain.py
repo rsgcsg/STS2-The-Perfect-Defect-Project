@@ -4394,8 +4394,14 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
     assert {n for n in base if base[n] != long[n]} == listed
     assert {n for n in long if long[n] != check[n]} == {
         'train_target_seconds', 'long_wall_seconds', 'eval_seeds', 'eval_a10_seeds',
-        'eval_interval_seconds'}
-    assert check['train_target_seconds'] <= 3600 and check['long_wall_seconds'] <= 3600
+        'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest'}
+    # GPU test jobs <= 1 h; one resume can start; >= 4 CPs at 300 s so keep-newest 3
+    # deletes one; at least one evaluation round while training runs
+    assert check['train_target_seconds'] <= 1800 and check['long_wall_seconds'] <= 3600
+    assert check['min_generation_seconds'] < check['train_target_seconds']
+    assert check['train_target_seconds'] // LONG_FROZEN['segments']['checkpoint_seconds'] \
+        > check['checkpoint_keep_newest'] >= 2 and check['checkpoint_seconds'] == 0
+    assert check['eval_interval_seconds'] < check['train_target_seconds']
     # the frozen recipe differs from rl5.json only in the decided keys (and the four
     # LossConfig defaults the V5-era gate carries)
     # every rl5.json key is there, three of them changed
@@ -4431,7 +4437,12 @@ def test_profile_overlay_rules(tmp_path):
     write('base.toml', 'replay_k = { value = 1, default = 1, why = "w", measured = "m" }\n')
     with pytest.raises(run_profile.ProfileError, match='repeats its base value for replay_k'):
         run_profile.load_profile(overlay)
-    write('base.toml', 'replay_k = { value = 2 }\n')
+    # default must be the base's value (review of #616, M1)
+    write('base.toml', 'replay_k = { value = 2, default = 7, why = "w", measured = "m" }\n')
+    with pytest.raises(run_profile.ProfileError,
+                       match='overlay default is not its base value for replay_k'):
+        run_profile.load_profile(overlay)
+    write('base.toml', 'replay_k = { value = 2, default = 1 }\n')
     with pytest.raises(run_profile.ProfileError, match='replay_k: needs exactly'):
         run_profile.load_profile(overlay)
     write('base.toml', 'no_such = { value = 2, default = 1, why = "w", measured = "m" }\n')
@@ -4439,4 +4450,12 @@ def test_profile_overlay_rules(tmp_path):
         run_profile.load_profile(overlay)
     write('o.toml', '')
     with pytest.raises(run_profile.ProfileError, match='cycle'):
+        run_profile.load_profile(overlay)
+    # a missing or unparsable base is one line, not a traceback (review of #616, S4)
+    write('gone.toml', '')
+    with pytest.raises(run_profile.ProfileError, match='profile gone.toml not readable'):
+        run_profile.load_profile(overlay)
+    (tmp_path / 'bad.toml').write_text('schema = \n')
+    write('bad.toml', '')
+    with pytest.raises(run_profile.ProfileError, match='profile bad.toml is not valid TOML'):
         run_profile.load_profile(overlay)

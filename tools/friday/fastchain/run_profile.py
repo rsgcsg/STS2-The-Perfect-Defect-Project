@@ -609,12 +609,23 @@ def _parse_value(text: str) -> Any:
         return text  # a bare word is a string
 
 
+def _read_profile(path: Path) -> dict[str, Any]:
+    """One profile file as TOML; a missing or unparsable one is a one-line ProfileError."""
+    try:
+        return tomllib.loads(Path(path).read_text())
+    except OSError as error:
+        raise ProfileError(f"profile {Path(path).name} not readable: "
+                           f"{error.strerror or error}") from None
+    except tomllib.TOMLDecodeError as error:
+        raise ProfileError(f"profile {Path(path).name} is not valid TOML: {error}") from None
+
+
 def profile_files(path: Path) -> list[Path]:
     """The profile and the base files it builds on, the profile first (`base = "file"`,
     relative to the profile's own directory)."""
     files = [Path(path)]
     while True:
-        data = tomllib.loads(files[-1].read_text())
+        data = _read_profile(files[-1])
         if data.get("schema") != SCHEMA:
             raise ProfileError(f"profile schema must be {SCHEMA} ({files[-1].name})")
         if "base" not in data:
@@ -638,11 +649,12 @@ def profile_digest(path: Path) -> str:
 
 def _raw_knobs(path: Path) -> dict[str, Any]:
     """The [knobs] table of a profile with its base files applied under it. An overlay
-    names only the knobs it changes, each with all four fields; one that repeats its
-    base's value is refused, so an overlay is exactly its list of differences."""
+    names only the knobs it changes, each with all four fields and `default` = the base's
+    value; one that repeats its base's value, or whose default is not the base's value, is
+    refused, so an overlay is exactly its list of differences."""
     merged: dict[str, Any] = {}
     for file in reversed(profile_files(path)):
-        knobs = tomllib.loads(file.read_text()).get("knobs")
+        knobs = _read_profile(file).get("knobs")
         if not isinstance(knobs, dict):
             raise ProfileError(f"profile needs a [knobs] table ({file.name})")
         if merged:  # an overlay
@@ -653,6 +665,14 @@ def _raw_knobs(path: Path) -> dict[str, Any]:
             if same:
                 raise ProfileError(f"{file.name}: overlay repeats its base value for "
                                    f"{', '.join(same)} (leave them out)")
+            stale = sorted(name for name, knob in knobs.items() if name in merged
+                           and isinstance(knob, dict) and isinstance(merged[name], dict)
+                           and (knob.get("default") != merged[name].get("value")
+                                or type(knob.get("default"))
+                                is not type(merged[name].get("value"))))
+            if stale:
+                raise ProfileError(f"{file.name}: overlay default is not its base value for "
+                                   f"{', '.join(stale)} (default = the base file's value)")
         merged.update(knobs)
     return merged
 

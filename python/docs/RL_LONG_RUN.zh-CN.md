@@ -395,11 +395,13 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 长跑和它之前的短硬件体检都从仓库里的文件起，不再从议题里拼 `--set`：
 - 运行配置 `tools/friday/fastchain/rl5-long-run-1.toml`：叠加在 `rl5-fastchain.toml` 上
   （`base = "rl5-fastchain.toml"`），只列和它不同的旋钮，其余取基础配置。
-- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口和评估大小。
+- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口、评估大小、
+  `min_generation_seconds`（600）和 `checkpoint_keep_newest`（3），配方和其余值同长跑（见下文“短体检”）。
 - 冻结配方 `python/configs/rl5-long-run-1.json`（旋钮 `frozen_learner_config` 指向它）：
   `rl5.json` + 下表的配方值，预检 A9 逐键核闸门。
-- 叠加规则（`run_profile.py`）：叠加文件每个旋钮仍写满 value/default/why/measured（default =
-  基础文件的值），和基础值相同的旋钮拒绝（叠加文件就是差异清单）；`base` 成环拒绝。supervise
+- 叠加规则（`run_profile.py`）：叠加文件每个旋钮仍写满 value/default/why/measured，default 必须
+  等于基础文件的值（不等即拒绝），和基础值相同的旋钮拒绝（叠加文件就是差异清单）；`base` 成环拒绝；
+  基础文件缺失或不是合法 TOML 时一行原因拒绝。supervise
   的“配置没变”身份对整条链（叠加文件 + 各层基础文件）取摘要，改了基础文件也不会被当成同一配置续跑。
 
 和 `rl5-fastchain.toml` 不同的值（每项一行原因）：
@@ -443,6 +445,20 @@ gae_lambda 0.99、dataset_rows 4096 / 4 个小批 / 1 epoch、`lr_warmup_steps` 
 - 合计：peer 约 7.3 GB、GPU 节点约 5.8 GB（全留时约 460 GB、920 GB）。不在这里的：WAL（≤ 20 GiB 上限）、
   训完即释放的段和 value-target 暂存、R7 mu 存档（`mu_archive_gb` 60 GB 上限，分给各服务）、评估导出。
   每版字节是推出值，短体检读两个文件系统的剩余空间斜率核对。
+- 中途换链（声明改动或新链接旧链）只从评估过的 CP 起；否则先停掉旧链再起新链——旧链的保留只护
+  自己评估认领/点过的 CP，没评估过的较旧 CP 可能在新链读到之前被删掉。
+
+短体检（`rl5-long-run-1-hwcheck.toml`）：
+- 规则：GPU 测试作业每个 ≤ 1 小时。训练目标 1800 s、链墙钟 3600 s，GPU 作业连预热和一次续跑都在
+  1 小时内；`min_generation_seconds` 600，续跑后剩余训练 ≥ 600 s 时才再起一代。
+- CP 每 300 s 一个（冻结配方锁定，A9 不许改），1800 s 训练约 6 个 CP，多于留 3 个，保留和删除都会真跑到；
+  评估每 900 s 一轮（A0 32 局 + A10 16 局），训练期间至少一轮链内评估，评估认领保护也会被跑到。
+- 操作步骤：第 2 个 CP 落盘后，`scancel` GPU 作业一次（不是 `supervise.py stop`），看三件事：
+  链自动续跑且从最新 CP 接上；peer 上超出最新 3 个的旧 CP 被删；评估认领过的 CP 没被删。
+- 预计时间（两个数分开）：GPU 时间约 40–50 分钟（30 分钟训练 + 预热 + 一次续跑），链墙钟上限 60 分钟；
+  总墙钟（排队 + 备料 + 链 + 收尾那轮评估，32 局一轮约 27 分钟，推出）约 75–90 分钟，**超过 1 小时**。
+- 要读的：两个文件系统剩余空间斜率（核对上面每版字节推出值）、续跑耗时、评估作业时长、新配方键
+  （`explore_ratio_floor` 0.3、三个 `segments` 键）第一次上硬件是否正常。
 
 站点侧（不进仓库）：
 - 起点：`start_package` = a46afd12 的包、`warmup_file` = 3cf87760（同 V6 冒烟），是从包新起一条链，

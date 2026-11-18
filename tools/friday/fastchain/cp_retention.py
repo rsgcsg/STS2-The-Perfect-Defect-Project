@@ -24,7 +24,8 @@ package manifest) and one behaviour-heads artifact (parent: that model) per mu v
 into its node-local Store; the archive copies both and the `models/NNNNNN.json` record to
 the peer. On the peer nothing reads an old one on the live path: the learner serves mu to
 inference from its local Store (the peer is only a read fallback for a missing local
-chunk, and the local Store is never trimmed), a resume republishes from the CP's own
+chunk; with `learner_local_keep_models` > 0 the local Store is trimmed too, but never of
+a version get_mu may still serve or the newest local CP's, #558), a resume republishes from the CP's own
 theta, an evaluation exports the CP into its own detached model, and R7 audit games keep
 their mu in the mu archive. Kept: the newest `keep_newest`, and the version each retained
 CP names (its `version` is the mu version published at that CP). The model and its heads
