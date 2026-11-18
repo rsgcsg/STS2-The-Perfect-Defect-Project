@@ -1,0 +1,34 @@
+# First RL5 long run (lead 11-18): an overlay on rl5-fastchain.toml. Only the knobs that
+# differ from it are listed; every other knob is the base profile's. `value` = this run,
+# `default` = the base profile's value. Learner recipe keys that are not run-profile knobs
+# (lr, head_lr, clip, target_kl, gae_lambda, c_hp and its scope, explore_ratio_floor,
+# value_target, capacity_victim, batch geometry) are in the frozen recipe
+# python/configs/rl5-long-run-1.json, which preflight A9 compares with the gate.
+# Start (site, not here): start_package = the a46afd12 package, warmup_file = 3cf87760
+# (as the V6 smokes); a fresh chain from that package, not --resume-checkpoint.
+# The short hardware check before it: rl5-long-run-1-hwcheck.toml (an overlay on this file).
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-fastchain.toml"
+
+[knobs]
+# --- learner recipe ---
+frozen_learner_config = { value = "python/configs/rl5-long-run-1.json", default = "python/configs/rl5.json", why = "the long run's frozen recipe: rl5.json + c_hp 0.003 all_combats, explore_ratio_floor 0.3, value_target game, capacity_victim hash, kl_stop_scope control (and the four LossConfig-default loss keys the V5-era gate carries)", measured = "lead 11-18. V6 smokes ran rl5.json + c_hp 0.003 all_combats + the four default loss keys only; explore_ratio_floor 0.3 and the three segments keys are new here and first meet hardware in the short check (rl5-long-run-1-hwcheck.toml)" }
+segment_format = { value = "stpd/rl-fast-segment-4", default = "stpd/rl-fast-segment-3", why = "c_hp 0.003 > 0 needs the per-combat HP score column (preflight hp_score)", measured = "V6 smokes 11-16/17 (format 4 ran)" }
+hp_combat_weights = { value = { normal = 1.0, elite = 1.0, boss = 0.3 }, default = { normal = 1.0, elite = 1.0, boss = 1.0 }, why = "boss HP change weighted 0.3: a boss fight's HP loss matters less than surviving it (plan v3 §3.2 start value)", measured = "not measured (owner draft; V6 ran 1 / 1 / 1)" }
+hp_potion_mode = { value = "value_head_neutral", default = "points", why = "potion use judged by the outcome advantage, and the HP score neutral on potions per combat (#608)", measured = "lead 11-18; unit tests only" }
+kl_stop_scope = { value = "control", default = "all", why = "exploration arms deviate from theta on purpose; the KL stop measures the control arm's rows only (owner 11-16)", measured = "V6 smokes ran control scope; control KL itself not yet read over hours" }
+# --- exploration (env-side recipe) ---
+exploration_ladder = { value = { control = { share = 0.5, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }, nc15 = { share = 0.17, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.5, uniform_mix = 0.0 } }, nc2 = { share = 0.17, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 2.0, uniform_mix = 0.0 } }, c12 = { share = 0.16, combat = { temperature = 1.2, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } } }, default = { control = { share = 1.0, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } } }, why = "half the drivers unaltered (the KL-stop basis and the rolling curve), the rest explore non-combat at T 1.5 / 2 and combat at T 1.2; uniform mix 0 everywhere (owner 11-16 A26)", measured = "V6 smokes 11-16/17 (same ladder)" }
+# --- hardware: 2 cards 1i+1t, GPU job 16 + 16 cores (base), 8 prep hosts (base) ---
+env_core_budget = { value = { "1" = 215, "2" = 256, "3" = 304 }, default = { "1" = 215, "2" = 290, "3" = 304 }, why = "2 cards: 256 env cores = 16 nodes of 16, written out (the base 290 is cut to 300 - 32 = 268 and then to an even node count, 256, by the plan)", measured = "lead 11-18; core cap 300" }
+# --- clock ---
+train_target_seconds = { value = 72000, default = 0, why = "20 h of learner training, counted across resumes in the CP's operating budget; the chain ends normal when it is reached (#603)", measured = "user 11-18" }
+long_wall_seconds = { value = 86400, default = 72000, why = "the chain's wall limit with a training target: generation 0 is refused when the wall left cannot hold the 72000 s target, and the wall left is already below 72000 a moment after the chain starts; 86400 leaves about 4 h for start-ups, resumes and queue (#603 knob note)", measured = "not measured (derived from the target)" }
+# --- evaluation and readout ---
+eval_batch_seeds = { value = 100, default = 0, why = "evaluation jobs of 100 seeds: the 100-seed A0 round stays one job, and an endpoint round of 300 (--set eval_seeds=300 with the A0 300 manifest) runs as three parallel jobs without another change", measured = "lead 11-18; RL5-eval-baselines (A0 100 games 5,133 s on 16 cores)" }
+readout_rolling_games = { value = [100, 1000], default = [100], why = "the 1000-game window carries the stall rule and the A0 30% rolling win rate; 100 stays the headline (#556)", measured = "lead 11-18" }
+# --- retention (finite; arithmetic in python/docs/RL_LONG_RUN.zh-CN.md) ---
+checkpoint_keep_newest = { value = 24, default = 0, why = "keep the newest 24 CPs (2 h at one per 300 s) plus every CP an evaluation claimed or pointed at, generation starts (cp_retention.py keeps those whatever N is); 20 h at 84.9 MB per CP is 20.4 GB kept whole, this about 4 GB", measured = "V5 smoke: 84.9 MB per CP; CP every 300 s" }
+model_keep_newest = { value = 256, default = 0, why = "peer copies of mu publications: newest 256 plus the version of every kept CP; no live path reads an old one on the peer (inference serves from the learner-local store), 256 is about 2x the p95 inference lag of 131 versions", measured = "lag mean 68 / p95 131 versions (price run); ~2,100 publications per hour (V6 smoke: mu 276 at 7.8 min, inferred)" }
+learner_local_keep_models = { value = 256, default = 0, why = "GPU-node copies of mu publications: newest 256 plus every snapshot get_mu may still serve and the newest local CP's version (local_retention.py protects those whatever K is); 256 is about 2x the p95 lag of 131 versions", measured = "~45 GB/h kept whole on the GPU node (#558, inferred); lag mean 68 / p95 131" }
+learner_local_keep_checkpoints = { value = 4, default = 0, why = "GPU-node copies of CPs: newest 4 (resume reads the peer); an older one goes once the archive receipt shows the peer has it", measured = "V5 smoke: 84.9 MB per CP" }

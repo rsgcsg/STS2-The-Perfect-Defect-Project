@@ -1,0 +1,18 @@
+# Short hardware check before the first RL5 long run: an overlay on rl5-long-run-1.toml
+# (same recipe, hardware, exploration and model retention); only the window, the
+# evaluation size, the shortest generation and the CP retention differ, so one resume
+# (the operator scancels the GPU job once after the 2nd CP) and peer CP deletion both
+# happen inside the check. `default` = the long-run profile's value. The SGD offline dump
+# is not a profile knob: for this check set `sgd_offline_dump_every` in the gate copy's
+# dataplane.json (see python/docs/RL_LONG_RUN.zh-CN.md), never for the long run.
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-long-run-1.toml"
+
+[knobs]
+train_target_seconds = { value = 1800, default = 72000, why = "30 min of training: 6 CPs at the recipe's 300 s, thousands of publications (local and peer model retention act), and room in the 1 h wall for two start-ups (generation 0 and one resume) and the lost tail of the killed generation", measured = "lead 11-19 (GPU test jobs <= 1 h each); V6 smokes: GPU start to training 2-3 min, resume to restore 1.3 min" }
+long_wall_seconds = { value = 3600, default = 86400, why = "the check's wall limit (GPU test jobs <= 1 h): generation 0 plus one resume; a later generation's job asks min(wall left, training left)", measured = "lead 11-19" }
+min_generation_seconds = { value = 600, default = 1800, why = "lets the resume after the operator's scancel start: with 1800 the chain would end as reached or as out of window instead of resuming", measured = "V6 smokes used 600; review of #616 (S1)" }
+checkpoint_keep_newest = { value = 3, default = 24, why = "6 CPs in the check, so peer CP deletion acts (and evaluation claims and the generation start are seen kept); the long run keeps 24", measured = "lead 11-19; review of #616 (S1)" }
+eval_seeds = { value = 32, default = 100, why = "a smaller A0 round: one 32-seed job on the fast node class shows the evaluation path and its time per game", measured = "V6 smokes used 32" }
+eval_a10_seeds = { value = 16, default = 50, why = "a smaller A10 round, same purpose", measured = "lead 11-18 (smaller evaluation)" }
+eval_interval_seconds = { value = 900, default = 7200, why = "rounds every 15 min of wall: at least one in-chain A0 and A10 round on a CP while training runs (and the final CP after it)", measured = "lead 11-19 (at least one in-chain round)" }

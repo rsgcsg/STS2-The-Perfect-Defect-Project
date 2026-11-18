@@ -173,7 +173,8 @@ def identity(profile: Path, site: Path, overrides: list[str],
     return {"harness": {name: digest(HERE / name)
                         for name in (*launch.HARNESS, "launch.py", "supervise.py",
                                      "cp_retention.py")},
-            "profile": digest(profile), "site": digest(site), "overrides": list(overrides),
+            "profile": run_profile.profile_digest(profile), "site": digest(site),
+            "overrides": list(overrides),
             "source": src}
 
 

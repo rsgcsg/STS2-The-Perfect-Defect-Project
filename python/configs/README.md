@@ -33,6 +33,11 @@ long-run starting point: the RL4.2/S3 method values plus the measured training l
 `recompile_limit` 16 and a 300 s stall floor unless the dataplane sets them. The run
 still supplies its paths, the inductor `cache_dir` (keep it across jobs) and up to 8
 warm-up dumps chosen with `python -m stpd.rl.offline_step warmup-cover`.
+`rl5-long-run-1.json` is the frozen recipe of the first RL5 long run (fast-chain profile
+`tools/friday/fastchain/rl5-long-run-1.toml`): `rl5.json` with c_hp 0.003 / `all_combats`,
+`explore_ratio_floor` 0.3, `value_target` `"game"`, `capacity_victim` `"hash"`,
+`kl_stop_scope` `"control"`, and the four LossConfig-default loss keys a V5-era gate carries.
+The values and their reasons are listed in `python/docs/RL_LONG_RUN.zh-CN.md`.
 `loss.hp_advantage_coef` (c_hp, default 0 = off) weights the per-combat HP score
 (segment format 4): A = A_outcome + c_hp * A_hp before the one normalisation. A_hp is
 in HP points (tens), A_outcome in 0..1 reward units, so c_hp is expected around
