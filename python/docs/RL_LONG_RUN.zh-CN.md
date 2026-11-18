@@ -203,8 +203,23 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   逐种子结果、配对比较；写不出时响亮记 `evaluation_record_failed`，报告照常计入配对）；
   `eval_a10_enabled`（默认关，#530 S-2 后开）再起一个
   A10 50 局看守。`--eval-execution` 是模板，链写一份 `storage_mode = "shared_local"`
-  （站点 peer，不走 R2）。看守在链结束后继续，下一拍评到最后的 CP；`FINAL.json` 记它们的
-  pid，看到那份报告后再停。
+  （站点 peer，不走 R2），并记 `derived_from`（模板路径、sha256、改了哪几个存储键）：模板旁的
+  重冻记录钉的是模板本身，看守先核这份拷贝除存储键外与模板逐键相同、模板未改，再按模板核记录，
+  所以换过 adapter 的基线也能配对（#598；记录仍必须是这份模板的记录）。看守带
+  `--until-file <链目录>/FINAL.json`：链结束后不再按间隔开新轮。`FINAL.json` 的
+  `final_checkpoint` 是 supervise 看到的本链最后一个 CP（本链没出 CP 时为 null）；看守只认这个
+  CP，共享盘还没显示它时响亮记一次 `evaluation_final_checkpoint_not_visible` 并继续等（给了
+  `--deadline-at` 时等到其余量用尽；`eval_final_grace_seconds`（默认 1800，0 = 等到 stop）
+  从首次看到 `FINAL.json` 起算，到时仍不可见就响亮退出，原因
+  `final_checkpoint_not_visible_after_grace`），出现后立刻评一轮；等已开的每一轮离开准备/在跑（报告、
+  推迟、失败、投递未知都算，不重试），然后响亮记 `evaluation_watcher_done` 和原因（最后一轮
+  投递未知时是 `final_checkpoint_round_unknown`）、自己退出；不取消任何作业。`FINAL.json` 记它们的 pid，
+  `supervise.py stop` 仍可提前结束。
+  重冻模板（`tools/friday/eval_template.py refreeze --previous-revision REV`）要求 REV 的文件
+  算出旧模板钉的 adapter；旧模板自己的 `producer.source_revision` 不一定算得出（A40：f9fa3367
+  不行，411106ad 行）。先跑 `eval_template.py find-revision --template OLD.json`
+  （`--search-from` 默认 HEAD），它沿第一父提交往回找、给出最新一个算得出旧钉值的提交，再把它
+  当 REV；找不到退出 2。核对本身不放宽。
 - 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
   删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
   sidecar 持有 `R7Selection`（自己的随机 key、`r7_expected_games_per_node_hour` 估计、

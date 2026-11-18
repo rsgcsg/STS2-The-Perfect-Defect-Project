@@ -467,6 +467,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "eval_seeds": _int(1, 300),
     # ... in parallel jobs of this many (0 = one job; one job admits <= 200)
     "eval_batch_seeds": _int(0, 200),
+    # after the chain: how long a watcher waits for its final CP to show (0 = until stop)
+    "eval_final_grace_seconds": _int(0, 86400),
     "disk_sample_seconds": _int(5, 3600),
     "disk_warn_free_pct": _int(1, 99),
     "disk_stop_free_pct": _int(1, 99),

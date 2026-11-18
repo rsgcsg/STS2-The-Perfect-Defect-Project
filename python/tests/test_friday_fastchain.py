@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import json
 import math
@@ -2147,6 +2148,8 @@ def test_chain_resumes_a_fence_from_the_newest_cp_in_a_new_run_and_generation(tm
     assert facts['id'] == 'c-lr1' and facts['generation'] == 1
     final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
     assert final['ok'] and final['resumes'] == 1
+    # #598 review: the chain's own final CP, for the watchers whose peer view may lag
+    assert final['final_checkpoint'] == chain.newest_checkpoint(produced_only=True) is not None
     assert 'restore_last_checkpoint' in final['first_cause']['failure']
 
 
@@ -2948,6 +2951,14 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
     for cmd in started:  # #590: the site release dir; one job per round by default
         assert cmd[cmd.index('--actor-root') + 1] == chain.site['node_release']
         assert '--batch-seeds' not in cmd
+    # #598: the copy names its template (the re-freeze record pins that file) and the
+    # watchers exit on their own once this chain's FINAL.json exists
+    assert execution['derived_from'] == {
+        'path': str(template.resolve()), 'keys': ['storage_mode', 'store', 'peer'],
+        'sha256': hashlib.sha256(template.read_bytes()).hexdigest()}
+    for cmd in started:
+        assert cmd[cmd.index('--until-file') + 1] == str(chain.dir / 'FINAL.json')
+        assert cmd[cmd.index('--final-grace-seconds') + 1] == '1800'
 
 
 def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
@@ -3008,6 +3019,7 @@ def test_watcher_start_checks_run_before_generation_zero_and_stop_the_chain(tmp_
     assert cluster.argvs == []  # no generation was submitted
     final = json.loads((chain.dir / 'FINAL.json').read_text())
     assert 'watcher a10 refused at start' in final['cause'] and 'manifest' in final['cause']
+    assert final['final_checkpoint'] is None  # the chain produced none
     a0, a10 = checked
     assert all(cmd[-1] == '--check' for cmd in checked)
     assert a0[a0.index('--baseline-plan') + 1] == '/b/a0/plan.json'

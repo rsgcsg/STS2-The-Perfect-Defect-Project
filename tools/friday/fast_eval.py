@@ -76,6 +76,16 @@ A round of fewer than DECISION_GAMES (100, lead decision) games is a smoke: summ
 eval-record.json and the report say "smoke, not a decision result", and no reference is
 paired (no paired-delta line).
 
+`--until-file F` (supervise: the chain's FINAL.json, #598): once F exists the schedule
+stops; the final CP (F's `final_checkpoint`, else the newest) gets one round if none has
+it, waited for while not yet visible on the peer (loud once; until --deadline-at's
+headroom, if given, or --final-grace-seconds after F was first seen:
+`final_checkpoint_not_visible_after_grace`), every started round is waited for until it leaves the waiting
+stages (reported, deferred, failed, unknown: never retried), then the loop exits with a
+loud `evaluation_watcher_done` and its reason (`final_checkpoint_round_unknown` when the
+final round's delivery is unknown). Nothing is
+cancelled; a live job keeps it waiting. Without it the loop runs until stopped.
+
 `--checkpoint ID` evaluates exactly that CP once (also the baseline: the same command
 on the baseline CP gives the comparable reference); `--once` then waits for its report.
 
@@ -137,6 +147,7 @@ PREPARE = {"cpus": 1, "minutes": 20, "memory_gb": 6}
 LIVE_STATES = "PD,R,CG,CF,S,RQ,RS"  # queued or running; a purged id is simply absent
 SPLIT = 'exec "$actor_root/env/bin/python"'
 WAITING = ("preparing", "submitted")
+UNKNOWN = ("prepare_submit_unknown", "submit_unknown")  # delivery unknown: never retried
 RETRY_BEFORE_SUBMISSION = ("requested_evaluation_workers_exceed_current_fair_share",)
 
 
@@ -261,12 +272,44 @@ def seeds_pair(one: list[str] | None, other: list[str] | None) -> bool:
     return long[:len(short)] == short
 
 
+DERIVED_KEYS = ("storage_mode", "store", "peer")  # supervise's storage overrides
+
+
+def derived_template(execution: dict[str, Any], template: Path) -> Path:
+    """The template this execution file was written from, proven by content (#598).
+
+    supervise writes the evaluation execution into the chain directory: the template
+    with only the storage keys (DERIVED_KEYS) replaced and `derived_from` {path, sha256,
+    keys} added. The template's re-freeze record pins the template, not that copy, so
+    pairing goes through the template once (a) the file at `path` still has `sha256` and
+    (b) the copy equals it in every other key. Anything else is refused. A file without
+    `derived_from` is its own template (unchanged)."""
+    derived = execution.get("derived_from")
+    if derived is None:
+        return template
+    if not isinstance(derived, dict) or tuple(derived.get("keys") or ()) != DERIVED_KEYS:
+        raise ValueError("derived_execution_keys_changed")
+    original = Path(str(derived.get("path")))
+    if not original.is_file() or hashed(original) != derived.get("sha256"):
+        raise ValueError(f"derived_execution_template_missing_or_changed: {original}")
+    source = json.loads(original.read_bytes())
+    if "derived_from" in source:
+        raise ValueError("derived_execution_template_is_itself_derived")
+    ignored = {*DERIVED_KEYS, "derived_from"}
+    differing = sorted(k for k in source.keys() | execution.keys()
+                       if k not in ignored and source.get(k) != execution.get(k))
+    if differing:
+        raise ValueError("derived_execution_differs_from_its_template: " + ", ".join(differing))
+    return original
+
+
 def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any],
                     template: Path) -> dict[str, Any]:
     """Which agent adapter and producer each side was frozen with. When the adapter
     differs, the re-freeze record named by the template's `refrozen_from` (beside it)
     must link exactly the baseline's adapter to this one and be the record of this
-    template; otherwise the pairing is refused."""
+    template; otherwise the pairing is refused. A supervise-written execution is checked
+    against the template it names (`derived_template`), whose record it is."""
     def side(value: dict[str, Any]) -> dict[str, Any]:
         return {"agent_adapter": (value.get("agent_adapter") or {}).get("code_sha256"),
                 "producer": value.get("producer")}
@@ -278,6 +321,7 @@ def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any
         "refreeze_record": None}
     if not pairing["adapter_differs"]:
         return pairing
+    template = derived_template(execution, template)
     named = (execution.get("refrozen_from") or {}).get("record")
     path = template.parent / Path(named).name if isinstance(named, str) else None
     record = json.loads(path.read_bytes()) if path is not None and path.is_file() else {}
@@ -293,6 +337,7 @@ def adapter_pairing(baseline_execution: dict[str, Any], execution: dict[str, Any
             "template links exactly these two")
     assert path is not None
     pairing["refreeze_record"] = {"path": str(path), "sha256": hashed(path),
+                                  "template": str(template),
                                   "reason": record.get("reason")}
     return pairing
 
@@ -499,14 +544,82 @@ class Loop:
         self.state["log"].append(entry)
         print(json.dumps(entry, sort_keys=True), flush=True)
 
+    def ending(self) -> bool:
+        """The chain has ended (`until_file`, supervise: the chain's FINAL.json exists)."""
+        return self.final() is not False
+
+    def final(self) -> Any:
+        """False before the chain ends (or while its file is not yet readable JSON); else
+        the final CP id the file names (`final_checkpoint`, supervise #598: None = the
+        chain produced none), or True when the file names none (then: the newest CP)."""
+        until = self.settings.get("until_file")
+        if until is None or not Path(until).is_file():
+            return False
+        try:
+            value = json.loads(Path(until).read_bytes())
+        except (OSError, ValueError):  # mid-write: read again next tick
+            return False
+        if isinstance(value, dict) and "final_checkpoint" in value:
+            return value["final_checkpoint"]
+        return True
+
+    def final_target(self) -> tuple[bool, str | None]:
+        """(named, id): the CP the last round must be for, and whether the file named it."""
+        final = self.final()
+        if final is True:
+            record = self.newest()
+            return False, record["checkpoint_artifact_id"] if record is not None else None
+        return True, final
+
     def tick(self) -> None:
         if self.advance() is False:  # liveness unknown: nothing decided this tick
             self.persist()
             return
-        if self.clock() >= self.state["next_due"]:
+        if self.ending():  # no schedule now: the final CP once, if no round has it yet
+            self.state.setdefault("final_seen_at", self.clock())  # the grace counts from here
+            _, target = self.final_target()
+            record = self.newest()
+            visible = record is not None and record["checkpoint_artifact_id"] == target
+            if visible and not any(e["checkpoint"] == target
+                                   for e in self.state["evaluations"]):
+                self.start()
+            elif target is not None and not visible and not self.state.get("final_waiting"):
+                # shared-disk lag: the chain's final CP is not on this peer view yet
+                self.state["final_waiting"] = target
+                self.loud("evaluation_final_checkpoint_not_visible", checkpoint=target,
+                          newest=record["checkpoint_artifact_id"] if record else None)
+        elif self.clock() >= self.state["next_due"]:
             self.state["next_due"] = self.clock() + self.settings["interval"]
             self.start()
         self.persist()
+
+    def done(self) -> str | None:
+        """Why the watcher may exit after its chain ended, or None: every round it started
+        has left the waiting stages and the newest CP has a round (any stage: never
+        retried), or the absolute deadline leaves no room to start it. Nothing is
+        cancelled: a live job keeps the watcher waiting."""
+        if not self.ending():
+            return None
+        if any(e["stage"] in WAITING for e in self.state["evaluations"]):
+            return None
+        _, target = self.final_target()
+        if target is None:
+            return "no_checkpoint"
+        rounds = [e for e in self.state["evaluations"] if e["checkpoint"] == target]
+        if rounds:  # never retried: an unknown submission is said, not called evaluated
+            return ("final_checkpoint_round_unknown" if rounds[-1]["stage"] in UNKNOWN
+                    else "final_checkpoint_evaluated")
+        deadline = self.settings.get("deadline_at")
+        if deadline is not None and self.clock() >= deadline - self.settings[
+                "deadline_headroom_seconds"]:
+            return "final_checkpoint_not_started_absolute_deadline"
+        grace = self.settings.get("final_grace_seconds") or 0  # 0 / absent: wait until stop
+        seen = self.state.get("final_seen_at")
+        record = self.newest()
+        if (grace and seen is not None and self.clock() >= seen + grace
+                and (record is None or record["checkpoint_artifact_id"] != target)):
+            return "final_checkpoint_not_visible_after_grace"
+        return None
 
     def directories(self) -> list[str]:
         """The evaluation directories of each round under `round/` (one, or one per batch)."""
@@ -1000,6 +1113,10 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     actor = ({"actor_root": str(args.actor_root.resolve())}
              if getattr(args, "actor_root", None) is not None else {})
     batch = getattr(args, "batch_seeds", None)
+    until = getattr(args, "until_file", None)  # only when given: older states unchanged
+    actor.update({"until_file": str(until.resolve())} if until is not None else {})
+    grace = getattr(args, "final_grace_seconds", None)
+    actor.update({"final_grace_seconds": grace} if grace is not None else {})
     games = min(args.seeds, batch or args.seeds)  # per job: each job's wall is its own
     return {**actor, **({"batch_seeds": batch} if batch is not None else {}),
             "learner_config": str(args.learner_config.resolve()),
@@ -1083,6 +1200,14 @@ def main() -> None:
     parser.add_argument("--once", action="store_true",
                         help="one evaluation, then exit once its report is written "
                              "(or it ended without one)")
+    parser.add_argument("--until-file", type=Path,
+                        help="once this file exists (supervise: the chain's FINAL.json), "
+                             "evaluate the final CP if no round has it, wait for every "
+                             "started round to finish, then exit (#598); nothing is cancelled")
+    parser.add_argument("--final-grace-seconds", type=int,
+                        help="with --until-file: exit loudly if the final CP it names is "
+                             "still not visible this long after the file was first seen; "
+                             "0 or absent = wait until stopped")
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--slot-registered", action="store_true",
@@ -1135,6 +1260,12 @@ def main() -> None:
             loop.tick()
             stages = [e["stage"] for e in loop.state["evaluations"]]
             if args.dry_run or args.once and stages and stages[-1] not in WAITING:
+                break
+            reason = loop.done()
+            if reason is not None:
+                loop.loud("evaluation_watcher_done", reason=reason,
+                          stages={s: stages.count(s) for s in sorted(set(stages))})
+                loop.persist()
                 break
             time.sleep(args.poll_seconds)
     print(json.dumps({"evaluations": loop.state["evaluations"]}, sort_keys=True), flush=True)
