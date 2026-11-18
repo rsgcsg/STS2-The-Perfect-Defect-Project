@@ -12,6 +12,10 @@ Profile file (TOML):
     source_gb = { value = 36, default = 10, why = "...", measured = "c3c31, c2d-c3s2" }
 
 Every knob in `KNOBS` must be present, typed and documented; unknown knobs are refused.
+An overlay profile adds `base = "other.toml"` (relative to its own directory) and lists
+only the knobs it changes, each with all four fields; the base supplies the rest.
+`rl5-long-run-1.toml` builds on `rl5-fastchain.toml` this way, its short hardware check
+on it, so the three cannot drift apart.
 A site profile (cluster paths, partitions, node names) is a separate file whose real
 values stay out of the public repository (`site.example.toml` documents the keys).
 
@@ -21,6 +25,7 @@ values stay out of the public repository (`site.example.toml` documents the keys
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -604,14 +609,57 @@ def _parse_value(text: str) -> Any:
         return text  # a bare word is a string
 
 
+def profile_files(path: Path) -> list[Path]:
+    """The profile and the base files it builds on, the profile first (`base = "file"`,
+    relative to the profile's own directory)."""
+    files = [Path(path)]
+    while True:
+        data = tomllib.loads(files[-1].read_text())
+        if data.get("schema") != SCHEMA:
+            raise ProfileError(f"profile schema must be {SCHEMA} ({files[-1].name})")
+        if "base" not in data:
+            return files
+        if not isinstance(data["base"], str) or not data["base"]:
+            raise ProfileError(f"{files[-1].name}: base must be a profile file name")
+        base = (files[-1].parent / data["base"]).resolve()
+        if base in [f.resolve() for f in files]:
+            raise ProfileError(f"{files[-1].name}: base {data['base']} makes a cycle")
+        files.append(base)
+
+
+def profile_digest(path: Path) -> str:
+    """sha256 of the profile file; with base files, of every file of the chain in order
+    (a single-file profile keeps the plain file digest)."""
+    digests = [hashlib.sha256(f.read_bytes()).hexdigest() for f in profile_files(path)]
+    if len(digests) == 1:
+        return digests[0]
+    return hashlib.sha256(" ".join(digests).encode()).hexdigest()
+
+
+def _raw_knobs(path: Path) -> dict[str, Any]:
+    """The [knobs] table of a profile with its base files applied under it. An overlay
+    names only the knobs it changes, each with all four fields; one that repeats its
+    base's value is refused, so an overlay is exactly its list of differences."""
+    merged: dict[str, Any] = {}
+    for file in reversed(profile_files(path)):
+        knobs = tomllib.loads(file.read_text()).get("knobs")
+        if not isinstance(knobs, dict):
+            raise ProfileError(f"profile needs a [knobs] table ({file.name})")
+        if merged:  # an overlay
+            same = sorted(name for name, knob in knobs.items() if name in merged
+                          and isinstance(knob, dict) and isinstance(merged[name], dict)
+                          and knob.get("value") == merged[name].get("value")
+                          and type(knob.get("value")) is type(merged[name].get("value")))
+            if same:
+                raise ProfileError(f"{file.name}: overlay repeats its base value for "
+                                   f"{', '.join(same)} (leave them out)")
+        merged.update(knobs)
+    return merged
+
+
 def load_profile(path: Path, overrides: list[str] | None = None) -> dict[str, Any]:
     """Validated profile: {name: {value, default, why, measured[, overridden_from]}}."""
-    data = tomllib.loads(Path(path).read_text())
-    if data.get("schema") != SCHEMA:
-        raise ProfileError(f"profile schema must be {SCHEMA}")
-    knobs = data.get("knobs")
-    if not isinstance(knobs, dict):
-        raise ProfileError("profile needs a [knobs] table")
+    knobs = _raw_knobs(Path(path))
     problems = []
     for name in sorted(set(knobs) - set(KNOBS)):
         problems.append(f"{name}: unknown knob")

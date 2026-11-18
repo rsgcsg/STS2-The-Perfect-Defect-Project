@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -4295,3 +4296,147 @@ def test_an_unreadable_driver_summary_never_stops_the_seed_overlap_check(tmp_pat
     assert [e['drivers_unreadable'] for e in chain.state['log']
             if e['kind'] == 'seed_streams_unread'] == [1]
     assert 'the skipped drivers are not checked' in capsys.readouterr().err
+
+
+# ---------------- first RL5 long run: profile overlays and frozen recipe ----------------
+
+LONG_RUN = FASTCHAIN / 'rl5-long-run-1.toml'
+HW_CHECK = FASTCHAIN / 'rl5-long-run-1-hwcheck.toml'
+LONG_FROZEN = json.loads(
+    (Path(__file__).resolve().parents[1] / 'configs/rl5-long-run-1.json').read_text())
+
+
+def long_run_site(tmp_path, node_cores=32):
+    """The example site with GPU nodes of `node_cores` cores and an evaluation node class."""
+    text = SITE.read_text().replace('node_cores = 64', f'node_cores = {node_cores}')
+    text = text.replace('\n[site]\n', '\n[site]\neval_constraint = "FAST-NODE-FEATURE"\n', 1)
+    path = tmp_path / 'site.toml'
+    path.write_text(text)
+    return run_profile.load_site(path)
+
+
+def long_run_gate():
+    """A gate learner-base.json as the V6 smokes had it: the V5 gate (levers off, the four
+    LossConfig-default loss keys, no explore_ratio_floor) with c_hp 0.003 / all_combats and
+    segments.value_target game / capacity_victim hash; kl_stop_scope comes from the knob."""
+    base = copy.deepcopy(LONG_FROZEN)
+    for key in ('prepared_compile', 'prepared_kernels', 'prepared_bucket_rows'):
+        base['performance'].pop(key)
+    base.update({'max_versions': 100000, 'peer': {'kind': 'archive'}})
+    base['segments']['warmup_artifact_id'] = 'f' * 64
+    del base['segments']['kl_stop_scope']
+    del base['loss']['explore_ratio_floor']  # filled from the frozen recipe
+    return base
+
+
+def long_run_plan(profile, site, generation=0):
+    k = run_profile.values(run_profile.load_profile(profile))
+    chain = {'id': 'c-lr', 'deadline_at': time.time() + k['long_wall_seconds'],
+             'generation': generation, 'total_seconds': k['train_target_seconds'],
+             'train_target_seconds': k['train_target_seconds'],
+             'train_left_seconds': k['train_target_seconds'], 'seed_start': 0}
+    return launch.build_plan('lr', k, site, cards=2, card_type='A100-40', layout_spec=None,
+                             env_cores=None, smoke=False, probe_rows=[probe_row()],
+                             long_run=True, chain=chain)
+
+
+@pytest.mark.parametrize('profile', [LONG_RUN, HW_CHECK])
+def test_long_run_profiles_pass_validation_and_preflight_on_a_32_core_gpu_node(
+        tmp_path, profile):
+    site = long_run_site(tmp_path)
+    plan = long_run_plan(profile, site)
+    k = plan['knobs']
+    assert plan['knobs']['frozen_learner_config'] == 'python/configs/rl5-long-run-1.json'
+    assert plan['name'].startswith('2卡') and plan['placement']['gpu_cores'] == 32
+    assert plan['env_cores_max'] == 256 and plan['prep_hosts'] == 8
+    facts = {**good_facts(plan), 'frozen_recipe': LONG_FROZEN,
+             'gate_learner_base': long_run_gate()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert 'loss.explore_ratio_floor' in results['frozen_recipe'].detail  # filled, not gated
+    assert results['hp_score'].detail.startswith('c_hp 0.003, scope all_combats')
+    assert not results['evaluation_jobs'].warn
+    # the learner config this run writes carries the decided recipe
+    learner, _ = learner_config.learner_base(long_run_gate(), LONG_FROZEN, k, {
+        'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+        'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
+        'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': None})
+    loss, segments = learner['loss'], learner['segments']
+    assert (learner['lr'], segments['head_lr'], loss['entropy_coef'], loss['clip']) == \
+        (0.000113, 0.0001, 0.01, 0.2)
+    assert (segments['target_kl'], segments['kl_stop_scope'], segments['gae_lambda']) == \
+        (0.03, 'control', 0.99)
+    assert (segments['value_target'], segments['capacity_victim']) == ('game', 'hash')
+    assert (segments['dataset_rows'], segments['minibatches'], segments['epochs']) == \
+        (4096, 4, 1)
+    assert 'lr_warmup_steps' not in segments
+    assert (loss['hp_advantage_coef'], loss['hp_advantage_scope'],
+            loss['explore_ratio_floor']) == (0.003, 'all_combats', 0.3)
+    shares = {arm: spec['share'] for arm, spec in k['exploration_ladder'].items()}
+    assert shares == {'control': 0.5, 'nc15': 0.17, 'nc2': 0.17, 'c12': 0.16}
+    assert k['ascension_mix'] == {'0': 1.0} and k['replay_k'] == 1
+    assert k['save_starts']['share'] == 0
+    assert k['hp_combat_weights'] == {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}
+    assert k['hp_potion_mode'] == 'value_head_neutral'
+    assert all(k[name] > 0 for name in ('checkpoint_keep_newest', 'model_keep_newest',
+                                        'learner_local_keep_models',
+                                        'learner_local_keep_checkpoints'))
+    # one GPU node of fewer cores refuses the same plan
+    small = long_run_plan(profile, long_run_site(tmp_path, node_cores=24))
+    assert not preflight.check_gpu_node_cores(small).ok
+
+
+def test_long_run_overlays_differ_only_in_their_listed_knobs():
+    base = run_profile.values(run_profile.load_profile(PROFILE))
+    long = run_profile.values(run_profile.load_profile(LONG_RUN))
+    check = run_profile.values(run_profile.load_profile(HW_CHECK))
+    listed = set(tomllib.loads(LONG_RUN.read_text())['knobs'])
+    assert {n for n in base if base[n] != long[n]} == listed
+    assert {n for n in long if long[n] != check[n]} == {
+        'train_target_seconds', 'long_wall_seconds', 'eval_seeds', 'eval_a10_seeds',
+        'eval_interval_seconds'}
+    assert check['train_target_seconds'] <= 3600 and check['long_wall_seconds'] <= 3600
+    # the frozen recipe differs from rl5.json only in the decided keys (and the four
+    # LossConfig defaults the V5-era gate carries)
+    # every rl5.json key is there, three of them changed
+    assert [line.split(':')[0] for line in learner_config.recipe_drift(LONG_FROZEN, FROZEN)] \
+        == ['loss.hp_advantage_coef', 'loss.hp_advantage_scope', 'loss.explore_ratio_floor']
+    assert sorted(learner_config.recipe_drift(FROZEN, LONG_FROZEN)) == sorted([
+        "loss.hp_advantage_coef: frozen 0.003, effective 0.0",
+        "loss.hp_advantage_scope: frozen 'all_combats', effective 'combat_ticket'",
+        "loss.explore_ratio_floor: frozen 0.3, effective 0.0",
+        "loss.kl_coef: frozen 0.02, effective '<missing>'",
+        "loss.anchor_coef: frozen 0.5, effective '<missing>'",
+        "loss.rho_max: frozen 1.0, effective '<missing>'",
+        "loss.gradient_diagnostics: frozen False, effective '<missing>'",
+        "segments.value_target: frozen 'game', effective '<missing>'",
+        "segments.capacity_victim: frozen 'hash', effective '<missing>'",
+        "segments.kl_stop_scope: frozen 'control', effective '<missing>'"])
+
+
+def test_profile_overlay_rules(tmp_path):
+    (tmp_path / 'base.toml').write_text(PROFILE.read_text())
+    overlay = tmp_path / 'o.toml'
+
+    def write(base, knobs):
+        overlay.write_text(f'schema = "{run_profile.SCHEMA}"\nbase = "{base}"\n[knobs]\n{knobs}')
+
+    write('base.toml', 'replay_k = { value = 2, default = 1, why = "w", measured = "m" }\n')
+    assert run_profile.values(run_profile.load_profile(overlay))['replay_k'] == 2
+    assert run_profile.profile_files(overlay) == [overlay, (tmp_path / 'base.toml').resolve()]
+    digest = run_profile.profile_digest(overlay)
+    (tmp_path / 'base.toml').write_text(PROFILE.read_text() + '\n')
+    assert run_profile.profile_digest(overlay) != digest  # a base change is a profile change
+    assert run_profile.profile_digest(PROFILE) == hashlib.sha256(PROFILE.read_bytes()).hexdigest()
+    write('base.toml', 'replay_k = { value = 1, default = 1, why = "w", measured = "m" }\n')
+    with pytest.raises(run_profile.ProfileError, match='repeats its base value for replay_k'):
+        run_profile.load_profile(overlay)
+    write('base.toml', 'replay_k = { value = 2 }\n')
+    with pytest.raises(run_profile.ProfileError, match='replay_k: needs exactly'):
+        run_profile.load_profile(overlay)
+    write('base.toml', 'no_such = { value = 2, default = 1, why = "w", measured = "m" }\n')
+    with pytest.raises(run_profile.ProfileError, match='no_such: unknown knob'):
+        run_profile.load_profile(overlay)
+    write('o.toml', '')
+    with pytest.raises(run_profile.ProfileError, match='cycle'):
+        run_profile.load_profile(overlay)

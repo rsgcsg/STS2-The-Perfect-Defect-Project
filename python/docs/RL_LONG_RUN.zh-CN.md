@@ -390,6 +390,77 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
       CP，按原来的精确核对来，所以锁在新配方上。不写声明时行为和以前完全一样：配方不同就
       拒绝（`self_contained_resume_source_config_or_generation_changed`）。
 
+### 第一次 RL5 长跑的配置（`rl5-long-run-1`，主管 11-18 定值）
+
+长跑和它之前的短硬件体检都从仓库里的文件起，不再从议题里拼 `--set`：
+- 运行配置 `tools/friday/fastchain/rl5-long-run-1.toml`：叠加在 `rl5-fastchain.toml` 上
+  （`base = "rl5-fastchain.toml"`），只列和它不同的旋钮，其余取基础配置。
+- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口和评估大小。
+- 冻结配方 `python/configs/rl5-long-run-1.json`（旋钮 `frozen_learner_config` 指向它）：
+  `rl5.json` + 下表的配方值，预检 A9 逐键核闸门。
+- 叠加规则（`run_profile.py`）：叠加文件每个旋钮仍写满 value/default/why/measured（default =
+  基础文件的值），和基础值相同的旋钮拒绝（叠加文件就是差异清单）；`base` 成环拒绝。supervise
+  的“配置没变”身份对整条链（叠加文件 + 各层基础文件）取摘要，改了基础文件也不会被当成同一配置续跑。
+
+和 `rl5-fastchain.toml` 不同的值（每项一行原因）：
+
+| 旋钮 / 配方键 | 默认 | 长跑 | 原因 |
+|---|---|---|---|
+| `frozen_learner_config` | `rl5.json` | `rl5-long-run-1.json` | 长跑配方单独冻结，`rl5.json` 不动 |
+| `loss.hp_advantage_coef` / `hp_advantage_scope`（配方） | 0 / combat_ticket | 0.003 / all_combats | 血量分开（A26 份额算账），env 不发单战斗票，只能 all_combats |
+| `loss.explore_ratio_floor`（配方） | 0 | 0.3 | 离线在价格跑数据上选（RL5-A48）：0.3 基本只托底两条非战斗臂的少见非战斗选择，几乎不碰战斗臂；下一档 0.5（代码上限）中途用声明改动 |
+| `segments.value_target` / `capacity_victim`（配方） | segment / oldest | game / hash | 整局真结局传到每行；game 下用 hash 驱逐，不偏删长局后段 |
+| `segments.kl_stop_scope`（配方，旋钮 `kl_stop_scope`） | all | control | 探索臂故意偏离，KL 刹车只看对照臂 |
+| `loss.kl_coef` / `anchor_coef` / `rho_max` / `gradient_diagnostics`（配方） | 不写 | 0.02 / 0.5 / 1.0 / false | 都等于 LossConfig 默认，行为不变；V5 时代的闸门带这 4 个键，冻结里没有时 A9 拒绝（V6 冒烟踩过） |
+| `segment_format` | fast-segment-3 | fast-segment-4 | c_hp > 0 需要逐战斗血量分列 |
+| `hp_combat_weights` | 1 / 1 / 1 | 1 / 1 / 0.3 | 首领战掉血权重 0.3（计划 v3 §3.2 起点值，未量） |
+| `hp_potion_mode` | points | value_head_neutral | 喝药由价值头判断，血量分按场对药水中性（#608） |
+| `exploration_ladder` | control 1.0 | control 0.5 / nc15 0.17 / nc2 0.17 / c12 0.16，mix 全 0 | 一半驱动不变（刹车和滚动曲线的基准），其余非战斗 T1.5、T2，战斗 T1.2 |
+| `env_core_budget["2"]` | 290 | 256 | 2 卡 = 16 台 × 16 核；写明（原 290 本来也会被核上限和偶数台裁到 256） |
+| `train_target_seconds` | 0 | 72000 | 20 小时学习者训练时间，跨续跑累计，到了正常结束 |
+| `long_wall_seconds` | 72000 | 86400 | 有目标时它只是链的墙钟上限；第 0 代剩余墙钟须 ≥ 目标，72000 起链一刻就不够，留约 4 小时给启动、续跑和排队 |
+| `eval_batch_seeds` | 0 | 100 | 100 局一轮仍是一个作业；终点要 300 局时只 `--set eval_seeds=300` 换 A0 300 清单即成三个并行作业 |
+| `readout_rolling_games` | [100] | [100, 1000] | 1000 局窗口给停滞判断和 A0 30% 滚动胜率 |
+| `checkpoint_keep_newest` | 0（全留） | 24 | 最新 24 个（2 小时）+ 评估认领/点过的、各代起点（cp_retention 自动留） |
+| `model_keep_newest` | 0 | 256 | peer 上没有活路径读旧版本；约 2 × 推理滞后 p95（131 版） |
+| `learner_local_keep_models` | 0 | 256 | GPU 节点本地；get_mu 还能服务的和最新本地 CP 的版本另外自动留；约 2 × p95 |
+| `learner_local_keep_checkpoints` | 0 | 4 | GPU 节点本地 CP 副本，续跑读 peer |
+
+和默认相同、按定值确认过的：lr 1.13e-4、head_lr 1e-4、entropy 0.01、clip 0.2、target_kl 0.03、
+gae_lambda 0.99、dataset_rows 4096 / 4 个小批 / 1 epoch、`lr_warmup_steps` 0、A0（`ascension_mix`
+`{0 = 1}`）、`save_starts.share` 0、`replay_k` 1、`service_cores` 16 + `rank_cores` 16（32 核 GPU
+节点）、8 台备料主机、`resume_max_total` 3、A0 100 局每 7200 s + A10 50 局看守、`eval_degraded_share`
+0.1、`checkpoint_milestone_hours` 0。
+
+保留算账（20 小时；CP 每 300 s 一个、每个 84.9 MB，实测 V5；发布率约 2,100 版/小时，由 V6 冒烟
+7.8 分钟到 mu 276 推出；GPU 节点全留约 45 GB/h，推出）：
+- CP（peer）：全留 240 个 × 84.9 MB = 20.4 GB。现在最多 24 最新 + 评估点过的 ≤ 20（A0、A10 各每
+  2 小时一轮，各 10 轮）+ 各代起点 ≤ 4 = 48 个 ≈ 4.1 GB。
+- 模型发布（peer）：每版约 10.7 MB（V5 冒烟 peer 38.5 分钟约 14 GB 模型发布 ≈ 22 GB/h ÷ 2,100，推出），
+  全留约 440 GB；现在 256 × 10.7 MB ≈ 2.7 GB + 被留 CP 的版本 ≤ 48 × 10.7 MB ≈ 0.5 GB。
+- GPU 节点本地：每版约 21 MB（Store 块 + mu-network 整拷贝，45 GB/h ÷ 2,100，推出），全留约 900 GB；
+  现在 256 × 21 MB ≈ 5.4 GB + 本地 CP 4 × 84.9 MB ≈ 0.34 GB。
+- 合计：peer 约 7.3 GB、GPU 节点约 5.8 GB（全留时约 460 GB、920 GB）。不在这里的：WAL（≤ 20 GiB 上限）、
+  训完即释放的段和 value-target 暂存、R7 mu 存档（`mu_archive_gb` 60 GB 上限，分给各服务）、评估导出。
+  每版字节是推出值，短体检读两个文件系统的剩余空间斜率核对。
+
+站点侧（不进仓库）：
+- 起点：`start_package` = a46afd12 的包、`warmup_file` = 3cf87760（同 V6 冒烟），是从包新起一条链，
+  不是 `--resume-checkpoint`。
+- 闸门 `learner-base.json` 必须带 `segments.value_target = "game"` 和 `segments.capacity_victim =
+  "hash"`：闸门缺的键只补 `loss` 块（`gate_recipe`），`segments` 不补，所以用一份私有闸门副本（V6
+  冒烟同样做法），否则 A9 拒绝（`effective '<missing>'`）。闸门里没有的 loss 键（如
+  `explore_ratio_floor`）从冻结配方补；闸门里有的必须等于冻结值。
+- 评估节点类：站点 `eval_constraint` 填快节点类的 feature（预检 `evaluation_jobs` 不填只警告）。
+- GPU 卡型的 `node_cores` 照实填（32 核节点放得下 16 + 16）。
+- 短体检要 SGD 离线 dump 时：`sgd_offline_dump_every` 不是运行配置旋钮，由闸门 `dataplane.json`
+  原样带进学习者；体检用的闸门副本加这一键（可选 `sgd_offline_dump_limit`，默认 20 个文件），长跑的
+  闸门副本不带。
+
+命令（链名自定；其余参数同上文 supervise 一节）：
+`supervise.py start CHAIN --profile tools/friday/fastchain/rl5-long-run-1.toml --site S --cards 2
+--card-type T --layout 1i+1t --eval-...`；体检把 `--profile` 换成 `rl5-long-run-1-hwcheck.toml`。
+
 ## 以下为旧部署操作史
 
 一页说清 RL 正式长跑在哪个节点跑什么、怎么起、怎么停、怎么续、出错看哪里。细节不在这里重写，只链接原手册：

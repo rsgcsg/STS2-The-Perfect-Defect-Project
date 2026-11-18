@@ -1,0 +1,14 @@
+# Short hardware check before the first RL5 long run: an overlay on rl5-long-run-1.toml
+# (same recipe, hardware, exploration and retention); only the window and the evaluation
+# size differ. `default` = the long-run profile's value. The SGD offline dump is not a
+# profile knob: for this check set `sgd_offline_dump_every` in the gate copy's
+# dataplane.json (see python/docs/RL_LONG_RUN.zh-CN.md), never for the long run.
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-long-run-1.toml"
+
+[knobs]
+train_target_seconds = { value = 2700, default = 72000, why = "45 min of training: past warm-up, several CPs and thousands of publications (local and peer model retention act), within 1 h", measured = "lead 11-18 (window <= 1 h)" }
+long_wall_seconds = { value = 3600, default = 86400, why = "the check's wall limit: the 2700 s target plus room for start-up", measured = "lead 11-18 (window <= 1 h)" }
+eval_seeds = { value = 32, default = 100, why = "a smaller A0 round: one 32-seed job on the fast node class shows the evaluation path and its time per game", measured = "V6 smokes used 32" }
+eval_a10_seeds = { value = 16, default = 50, why = "a smaller A10 round, same purpose", measured = "lead 11-18 (smaller evaluation)" }
+eval_interval_seconds = { value = 1200, default = 7200, why = "at least one A0 and one A10 round inside the 45 min window (and the final CP after it)", measured = "lead 11-18 (smaller evaluation)" }
