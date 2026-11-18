@@ -44,7 +44,6 @@ RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
 BUDGET_CAP_SECONDS = 72000  # the product operating-budget cap (SegmentLearner)
-SEED_STRIDE_PROCS = 32  # env.sh seed offset = (node * 32 + p) * 600
 PREPARED_BATCH_HEADROOM = 1.15  # per-batch cap >= 1.15 x the largest measured batch
 
 
@@ -595,8 +594,6 @@ def check_identity(plan: dict[str, Any]) -> Result:
             problems.append(f"env node indices of {name} overlap another array")
         seen |= block
     procs = max(1, int(k["env_node_cores"] * k["env_procs_fraction"]))
-    if procs > SEED_STRIDE_PROCS:
-        problems.append(f"{procs} drivers per node > seed stride {SEED_STRIDE_PROCS}")
     return Result("cross_node_identity", not problems, "; ".join(problems) or
                   f"node indices {ranges}; ids = job id + node index + driver; "
                   f"{procs} drivers per node")
@@ -694,6 +691,29 @@ def check_training_clock(plan: dict[str, Any]) -> Result:
                   warn=chain["generation"] > 0 and plan["wall_seconds"] < target)
 
 
+def check_seeds(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """#603: seeds-file length against the lines the run's driver streams can reach
+    (seed_games_per_driver_hour is an upper bound, so this over-estimates). A wrap is
+    allowed (each driver counts it in summary.json) but warned loudly. For a chain the
+    reach is up to the chain's wall limit, else to this run's wall."""
+    k, chain, count = plan["knobs"], plan.get("chain"), facts.get("seeds_file_count")
+    if not count:
+        return Result("seeds", False, f"no seeds in site seeds_file {plan['site']['seeds_file']}")
+    rate, stride, start = k["seed_games_per_driver_hour"], plan["seed_stride"], plan["seed_start"]
+    seconds = k["long_wall_seconds"] if chain is not None else plan["wall_seconds"]
+    if chain is not None and chain["generation"] > 0:
+        seconds = plan["wall_seconds"]  # the rest of the chain from here
+    games = math.ceil(seconds / 3600 * rate)
+    reach = start + games * stride
+    shown = (f"{count} lines; {stride} driver streams (stride) from line {start}, up to "
+             f"{games} games each in {seconds} s at <= {rate:g}/driver hour: reach line "
+             f"{reach}")
+    if reach > count:
+        return Result("seeds", True, f"WILL WRAP: {shown} > {count} (about "
+                      f"{reach / count:.1f} passes; seeds repeat, counted per driver)", warn=True)
+    return Result("seeds", True, shown)
+
+
 def check_cores(plan: dict[str, Any]) -> Result:
     total = plan["placement"]["gpu_cores"] + plan["env_cores_max"]
     cap = plan["core_cap"]
@@ -756,7 +776,7 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
-            check_cores(plan),
+            check_seeds(plan, facts), check_cores(plan),
             check_resume(plan, facts), check_queue(facts)]
 
 

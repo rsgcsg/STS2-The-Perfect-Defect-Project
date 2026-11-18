@@ -102,7 +102,7 @@ def good_facts(plan):
             'warmup_artifact': {'id': 'f' * 64, 'present': True, 'package_sha256': 'e' * 64},
             'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
             'env_pkg_rev': k['env_pkg_build'] + 'cdbd192d (int tip)',
-            'gpu_test_start_seconds': 0.0,
+            'gpu_test_start_seconds': 0.0, 'seeds_file_count': 10_000_000,
             'queue': {'fairshare': 0.5, 'priority_estimate': 15000, 'partitions': {
                 'gpu': {'name': 'GPU-PARTITION', 'pending': 3, 'above': 0},
                 'prep': {'name': 'CPU-PARTITION', 'pending': 2, 'above': 0}}},
@@ -2094,6 +2094,9 @@ class FakeCluster:
         number = len(self.argvs)
         jobs = {'gpu': f'{number}00', 'env': f'{number}01'}
         (run / 'jobs.json').write_text(json.dumps(jobs))
+        chain = json.loads(Path(argv[argv.index('--chain-json') + 1]).read_text())
+        (run / 'plan.json').write_text(json.dumps({'seed_start': chain['seed_start'],
+                                                   'seed_stride': 180}))
         self.alive = set(jobs.values())
         ending = self.endings.pop(0)
         write_outcome(run, **ending)
@@ -2596,13 +2599,13 @@ def fake_driver_world(root):
     return root
 
 
-def run_driver(world, out, admit, *flags, steady=1):
+def run_driver(world, out, admit, *flags, steady=1, seed_offset=0):
     import subprocess
     node = __import__('shutil').which('node')
     assert node, 'development Node is required for the env driver regression'
     argv = [node, str(FASTCHAIN / 'env_driver.mjs'), '--pkg', str(world / 'pkg'),
             '--out', str(out), '--tag', 'n0-p1', '--slots', '4', '--ascension', '0',
-            '--seeds', str(world / 'seeds.txt'), '--seed-offset', '0',
+            '--seeds', str(world / 'seeds.txt'), '--seed-offset', str(seed_offset),
             '--initial-progress', str(world / 'progress.json'),
             '--input-spec', str(world / 'spec.json'), '--link', '/nonexistent.sock',
             '--admit', str(admit), '--candidate', str(world), '--single-choice', 'omit',
@@ -3839,3 +3842,150 @@ def test_an_ignored_sigterm_stays_ignored(tmp_path):
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
     finally:
         signal.signal(signal.SIGTERM, before)
+
+
+# ---------------- #603: training clock and seed streams ----------------
+
+def chain_plan(generation=0, wall_left=None, **changes):
+    k = knobs(**changes)
+    left = wall_left if wall_left is not None else k['long_wall_seconds'] + 900
+    chain = {'id': 'c-x', 'deadline_at': time.time() + left, 'generation': generation,
+             'total_seconds': k['train_target_seconds'] or k['long_wall_seconds'],
+             'train_target_seconds': k['train_target_seconds'], 'seed_start': 0}
+    return launch.build_plan('t1', k, run_profile.load_site(SITE), cards=3,
+                             card_type='A100-40', layout_spec=None, env_cores=None, smoke=False,
+                             probe_rows=[probe_row()], probe_only=True, long_run=True,
+                             chain=chain)
+
+
+def test_training_target_is_a_budget_without_a_deadline_and_preflight_checks_the_wall():
+    # Default (no target): the deadline reaches the learner, no end reserve, <= 72000 s.
+    plan = chain_plan()
+    env = launch.job_env(plan)
+    assert plan['end_reserve_seconds'] == 0
+    assert f"export FC_CHAIN_DEADLINE={plan['chain']['deadline_at']}" in env.splitlines()
+    assert by_name([preflight.check_training_clock(plan)])['training_clock'].ok
+    over = chain_plan(long_wall_seconds=80000)
+    assert not preflight.check_training_clock(over).ok  # no target: the budget cap holds
+    # A 20 h target in a 23 h chain wall: no deadline, the end reserve is added to the jobs.
+    target = chain_plan(long_wall_seconds=82800, train_target_seconds=72000)
+    assert target['end_reserve_seconds'] == 600 and target['wall_seconds'] == 82800
+    assert target['gpu_minutes'] == chain_plan(long_wall_seconds=82800)['gpu_minutes'] + 10
+    assert "export FC_CHAIN_DEADLINE=''" in launch.job_env(target).splitlines()
+    result = preflight.check_training_clock(target)
+    assert result.ok and not result.warn and 'no absolute deadline' in result.detail
+    # Generation 0 whose wall cannot hold the target: refused; a later one: a warning.
+    short = chain_plan(long_wall_seconds=60000, train_target_seconds=72000)
+    assert not preflight.check_training_clock(short).ok
+    later = chain_plan(generation=1, wall_left=30000, long_wall_seconds=82800,
+                       train_target_seconds=72000)
+    result = preflight.check_training_clock(later)
+    assert result.ok and result.warn
+    # A target needs a chain.
+    plain = plan_for(long_run=True, train_target_seconds=3600)
+    assert not preflight.check_training_clock(plain).ok
+
+
+def test_learner_window_with_a_target_carries_no_deadline():
+    fresh = learner_config.window('c-x', 72000, None, None, None)
+    assert fresh['deadline_at'] is None and fresh['operating_budget']['total_seconds'] == 72000
+    other = learner_config.window('c-x', 72000, None, 'cp1',
+                                  {'operating_budget': {'id': 'c-old'}, 'deadline_at': None})
+    assert other['deadline_at'] is None
+    assert other['operating_budget_parent']['checkpoint_artifact_id'] == 'cp1'
+
+
+def report_with_clock(chain_training, budget):
+    def write(run):
+        report = json.loads((run / 'learner-report.json').read_text())
+        report['clock'] = {'training_seconds': 100.0, 'wall_seconds': 130.0,
+                           'chain_training_seconds': chain_training,
+                           'chain_training_budget_seconds': budget}
+        (run / 'learner-report.json').write_text(json.dumps(report))
+    return write
+
+
+@pytest.mark.parametrize('trained,reached', [(3590.0, True), (3000.0, False)])
+def test_chain_final_record_states_training_and_wall_seconds(tmp_path, trained, reached):
+    chain, cluster = chain_for(tmp_path, [{}], train_target_seconds='3600',
+                               long_wall_seconds='7200')
+    launch_main = cluster.launch_main
+
+    def launch_with_clock(argv):
+        code = launch_main(argv)
+        report_with_clock(trained, 3600)(tmp_path / f'run-{argv[1]}')
+        return code
+    chain.launch_main = launch_with_clock
+    assert chain.run() == 0
+    facts = json.loads((tmp_path / 'chain-lr1' / 'chain-0.json').read_text())
+    assert facts['total_seconds'] == 3600 and facts['train_target_seconds'] == 3600
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    clock = final['clock']
+    assert clock['training_seconds'] == trained and clock['train_target_seconds'] == 3600
+    assert clock['train_target_reached'] is reached and clock['wall_limit_seconds'] == 7200
+    assert clock['wall_seconds'] >= 0
+    assert ('target reached' if reached else 'TARGET NOT REACHED') in final['cause']
+
+
+def test_readout_states_the_generation_and_chain_clock(tmp_path):
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    write_record_inputs(run)
+    (run / 'learner-report.json').write_text(json.dumps({'failure': None, 'summary': None}))
+    report_with_clock(3590.0, 3600)(run)
+    text = readout.render(readout.build(run, 1200))
+    assert 'clock: training 100 s, wall 130 s this generation; chain training 3590 of ' \
+        '3600 s budget' in text
+
+
+def test_seed_streams_are_disjoint_per_driver_and_preflight_warns_on_a_wrap():
+    plan = chain_plan()
+    drivers = launch.drivers_per_node(plan['knobs'])
+    assert plan['seed_stride'] == plan['env_nodes_max'] * drivers and plan['seed_start'] == 0
+    assert 'FC_SEED_START=0' in launch.job_env(plan)
+    env_sh = (FASTCHAIN / 'env.sh').read_text()
+    assert '--seed-offset $(( FC_SEED_START + NODEIDX * P + p - 1 )) --seed-stride ' \
+        '$SEED_STRIDE' in env_sh and 'SEED_STRIDE=$(( FC_ENV_NODES * P ))' in env_sh
+    facts = good_facts(plan)
+    result = preflight.check_seeds(plan, facts)
+    assert result.ok and not result.warn
+    games = math.ceil(plan['knobs']['long_wall_seconds'] / 3600 * 300)
+    assert f'reach line {games * plan["seed_stride"]}' in result.detail
+    small = preflight.check_seeds(plan, {**facts, 'seeds_file_count': 1000})
+    assert small.ok and small.warn and 'WILL WRAP' in small.detail
+    assert not preflight.check_seeds(plan, {**facts, 'seeds_file_count': None}).ok
+
+
+def test_a_resumed_generation_starts_its_seed_streams_past_the_earlier_ones(tmp_path):
+    chain, cluster = chain_for(tmp_path, [FENCE, FENCE, {}])
+    assert chain.run() == 0
+    starts = [json.loads((tmp_path / 'chain-lr1' / f'chain-{n}.json').read_text())['seed_start']
+              for n in range(3)]
+    subs = [g['submitted_at'] for g in chain.state['generations']]
+    rate = chain.knobs['seed_games_per_driver_hour']
+    assert starts[0] == 0
+    for n in (1, 2):
+        rounds = math.ceil((subs[n] - subs[n - 1]) / 3600 * rate)
+        assert rounds > 0 and starts[n] == starts[n - 1] + rounds * 180
+    # A previous generation without its plan.json: refused, never a guessed start.
+    (tmp_path / 'run-lr1-r2' / 'plan.json').unlink()
+    assert 'seed stream is unknown' in chain.submit(3, None)
+
+
+def test_env_driver_takes_its_strided_stream_and_counts_a_wrap(tmp_path):
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    out = tmp_path / 'out'
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', LADDER_JSON, '--arm',
+                          'hot', '--replay-k', '1', '--seed-stride', '7', seed_offset=1990)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert len(opens) > 3
+    assert [o['seed'] for o in opens] == [f'S{(1990 + 7 * i) % 2000}' for i in range(len(opens))]
+    stream = json.loads((out / 'summary.json').read_text())['seed_stream']
+    assert stream['offset'] == 1990 and stream['stride'] == 7 and stream['file_seeds'] == 2000
+    assert stream['taken'] >= len(opens) and stream['wrapped'] == stream['taken'] - 2
+    wraps = [r for r in readout.jsonl(out / 'driver.jsonl') if r['event'] == 'seed_stream_wrapped']
+    assert wraps == [{**wraps[0], 'index': 2004, 'file_seeds': 2000}]

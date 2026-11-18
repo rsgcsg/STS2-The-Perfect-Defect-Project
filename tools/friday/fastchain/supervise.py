@@ -113,6 +113,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -310,7 +311,26 @@ class Chain:
         target = self.state.get("train_target_seconds") or 0
         return {"id": f"c-{self.args.chain}", "deadline_at": self.state["deadline_at"],
                 "total_seconds": target or self.knobs["long_wall_seconds"],
-                "train_target_seconds": target, "generation": number}
+                "train_target_seconds": target, "generation": number,
+                "seed_start": self.seed_start()}
+
+    def seed_start(self) -> int:
+        """#603: the seeds-file line where this generation's streams begin: 0 for the
+        first; else the previous generation's start + its stride x the most games one of
+        its drivers can have started since its submission (seed_games_per_driver_hour, an
+        upper bound), so streams never revisit a line an earlier generation reached until
+        the file wraps. Nothing is read back from env nodes. A previous generation without
+        its plan.json raises: the start would be a guess."""
+        if not self.state["generations"]:
+            return 0
+        prev = self.state["generations"][-1]
+        plan_path = Path(prev["run"]) / "plan.json"
+        if not plan_path.exists():
+            raise ValueError(f"no {plan_path}: the previous generation's seed stream is unknown")
+        plan = json.loads(plan_path.read_text())
+        hours = max(0.0, self.clock() - prev["submitted_at"]) / 3600
+        rounds = math.ceil(hours * self.knobs["seed_games_per_driver_hour"])
+        return plan["seed_start"] + rounds * plan["seed_stride"]
 
     def env_recipe(self) -> list[str]:
         """The `env-recipe.txt` lines for the next generation ([] without the file)."""
@@ -336,7 +356,11 @@ class Chain:
         except (ValueError, run_profile.ProfileError) as error:
             return f"generation {number} not submitted: {error}"
         chain_json = self.dir / f"chain-{number}.json"
-        chain_json.write_text(json.dumps(self.chain_facts(number)))
+        try:
+            facts = self.chain_facts(number)
+        except ValueError as error:
+            return f"generation {number} not submitted: {error}"
+        chain_json.write_text(json.dumps(facts))
         argv = ["preflight" if self.args.dry_run else "submit", tag,
                 "--profile", str(self.args.profile), "--site", str(self.args.site),
                 "--cards", str(self.args.cards), "--card-type", self.args.card_type,

@@ -106,6 +106,11 @@ def split_slow(env_nodes: int, slow_opt_in: int) -> tuple[int, int]:
     return max(0, env_nodes - (slow + 1) // 2), slow
 
 
+def drivers_per_node(knobs: dict[str, Any]) -> int:
+    """Env drivers per node, as env.sh computes P from the node's requested cores."""
+    return max(1, int(knobs["env_node_cores"] * knobs["env_procs_fraction"]))
+
+
 def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, cards: int,
                card_type: str, layout_spec: str | None, env_cores: int | None, smoke: bool,
                probe_rows: list[dict[str, Any]], fallback: bool = False,
@@ -205,6 +210,11 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "env_cores_max": fast * knobs["env_node_cores"]
         + (slow + 1) // 2 * knobs["env_node_cores"],
         "env_node_index_ranges": {"fast": [0, fast], "c8220": [fast, slow]},
+        # #603 seed streams: driver d = node index x drivers per node + p - 1 takes seed
+        # lines seed_start + d, + stride, + 2 x stride, ... (supervise sets seed_start for a
+        # resumed generation past every line an earlier one could have reached)
+        "seed_stride": (fast + slow) * drivers_per_node(knobs),
+        "seed_start": (chain or {}).get("seed_start", 0),
         "prep_hosts": prep_hosts, "prep_wait_seconds": prep_wait,
         "env_wait_seconds": knobs["env_wait_seconds"] + prep_wait,
         "gpu_minutes": gpu_minutes,
@@ -297,6 +307,7 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_GENERATION": f"g-fc-{plan['runtag']}", "FC_NAME": plan["name"],
         "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
+        "FC_SEED_START": plan["seed_start"],
         **({"FC_CHAIN_ID": plan["chain"]["id"],
             # empty with a training target: the learner gets no absolute deadline (#603)
             "FC_CHAIN_DEADLINE": ("" if plan["chain"].get("train_target_seconds")
@@ -392,6 +403,10 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
     facts["src_features"] = source_features(src)
     frozen = src / plan["knobs"]["frozen_learner_config"]
     facts["frozen_recipe"] = json.loads(frozen.read_text()) if frozen.exists() else None
+    seeds = Path(site["seeds_file"])
+    # the driver's split: env_driver.mjs reads the file as trim().split("\n")
+    facts["seeds_file_count"] = (len(seeds.read_text().strip().split("\n")) if seeds.is_file()
+                                 else None)
     gate = Path(site["gate_dir"]) / "learner-base.json"
     facts["gate_learner_base"] = json.loads(gate.read_text()) if gate.exists() else None
     # A dump is a directory; sgd_process warm() loads offline_step.TREE inside it.

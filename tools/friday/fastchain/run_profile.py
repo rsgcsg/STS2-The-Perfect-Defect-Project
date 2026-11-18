@@ -454,6 +454,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # as before); at most the product operating-budget cap
     "train_target_seconds": _int(0, 72000),
     "train_target_end_reserve_seconds": _int(0, 7200),
+    # #603: games one env driver starts per hour, at most (seed stream offsets, preflight)
+    "seed_games_per_driver_hour": _num(1, 100000),
     # the launcher cancels the run when the GPU job is still PENDING after this long
     "gpu_pending_max_seconds": _int(60),
     "smoke_gpu_pending_max_seconds": _int(60),
