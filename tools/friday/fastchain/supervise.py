@@ -100,7 +100,8 @@ run's peer: the newest CP every `eval_interval_seconds`, `eval_seeds` games of
 `eval_suite` (empty = the fixed A0 100), never stopping training; a second watcher on the
 A10 suite when `eval_a10_enabled`. The watchers outlive supervise: once FINAL.json exists
 (`--until-file`, #598) each starts one round for the final CP it names
-(`final_checkpoint`, waited for if the watcher's peer view lags) if none has it, waits for
+(`final_checkpoint`, waited for up to `eval_final_grace_seconds` if the watcher's peer
+view lags) if none has it, waits for
 every round it started, then exits on its own (nothing cancelled); FINAL.json names their
 pids, and `stop` still ends them early.
 Each watcher's baseline: --eval-baseline-plan (a0), else the site's `eval_baselines`
@@ -783,7 +784,8 @@ class Chain:
                "--seeds", str(watcher["seeds"]), "--chain", self.args.chain,
                # the site release dir with env/, node, game/, dotnet (#590)
                "--actor-root", self.site.get("eval_actor_root") or self.site["node_release"],
-               "--until-file", str(self.dir / "FINAL.json")]
+               "--until-file", str(self.dir / "FINAL.json"),
+               "--final-grace-seconds", str(self.knobs["eval_final_grace_seconds"])]
         cmd += ["--batch-seeds", str(watcher["batch_seeds"])] if watcher["batch_seeds"] else []
         cmd += ["--suite", watcher["suite"]] if watcher["suite"] else []
         baseline = watcher["baseline"]

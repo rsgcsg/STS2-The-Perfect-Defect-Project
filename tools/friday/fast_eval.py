@@ -79,7 +79,8 @@ paired (no paired-delta line).
 `--until-file F` (supervise: the chain's FINAL.json, #598): once F exists the schedule
 stops; the final CP (F's `final_checkpoint`, else the newest) gets one round if none has
 it, waited for while not yet visible on the peer (loud once; until --deadline-at's
-headroom, if given), every started round is waited for until it leaves the waiting
+headroom, if given, or --final-grace-seconds after F was first seen:
+`final_checkpoint_not_visible_after_grace`), every started round is waited for until it leaves the waiting
 stages (reported, deferred, failed, unknown: never retried), then the loop exits with a
 loud `evaluation_watcher_done` and its reason (`final_checkpoint_round_unknown` when the
 final round's delivery is unknown). Nothing is
@@ -575,6 +576,7 @@ class Loop:
             self.persist()
             return
         if self.ending():  # no schedule now: the final CP once, if no round has it yet
+            self.state.setdefault("final_seen_at", self.clock())  # the grace counts from here
             _, target = self.final_target()
             record = self.newest()
             visible = record is not None and record["checkpoint_artifact_id"] == target
@@ -611,6 +613,12 @@ class Loop:
         if deadline is not None and self.clock() >= deadline - self.settings[
                 "deadline_headroom_seconds"]:
             return "final_checkpoint_not_started_absolute_deadline"
+        grace = self.settings.get("final_grace_seconds") or 0  # 0 / absent: wait until stop
+        seen = self.state.get("final_seen_at")
+        record = self.newest()
+        if (grace and seen is not None and self.clock() >= seen + grace
+                and (record is None or record["checkpoint_artifact_id"] != target)):
+            return "final_checkpoint_not_visible_after_grace"
         return None
 
     def directories(self) -> list[str]:
@@ -1107,6 +1115,8 @@ def settings_from(args: argparse.Namespace) -> dict[str, Any]:
     batch = getattr(args, "batch_seeds", None)
     until = getattr(args, "until_file", None)  # only when given: older states unchanged
     actor.update({"until_file": str(until.resolve())} if until is not None else {})
+    grace = getattr(args, "final_grace_seconds", None)
+    actor.update({"final_grace_seconds": grace} if grace is not None else {})
     games = min(args.seeds, batch or args.seeds)  # per job: each job's wall is its own
     return {**actor, **({"batch_seeds": batch} if batch is not None else {}),
             "learner_config": str(args.learner_config.resolve()),
@@ -1194,6 +1204,10 @@ def main() -> None:
                         help="once this file exists (supervise: the chain's FINAL.json), "
                              "evaluate the final CP if no round has it, wait for every "
                              "started round to finish, then exit (#598); nothing is cancelled")
+    parser.add_argument("--final-grace-seconds", type=int,
+                        help="with --until-file: exit loudly if the final CP it names is "
+                             "still not visible this long after the file was first seen; "
+                             "0 or absent = wait until stopped")
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--slot-registered", action="store_true",

@@ -209,7 +209,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   `--until-file <链目录>/FINAL.json`：链结束后不再按间隔开新轮。`FINAL.json` 的
   `final_checkpoint` 是 supervise 看到的本链最后一个 CP（本链没出 CP 时为 null）；看守只认这个
   CP，共享盘还没显示它时响亮记一次 `evaluation_final_checkpoint_not_visible` 并继续等（给了
-  `--deadline-at` 时等到其余量用尽），出现后立刻评一轮；等已开的每一轮离开准备/在跑（报告、
+  `--deadline-at` 时等到其余量用尽；`eval_final_grace_seconds`（默认 1800，0 = 等到 stop）
+  从首次看到 `FINAL.json` 起算，到时仍不可见就响亮退出，原因
+  `final_checkpoint_not_visible_after_grace`），出现后立刻评一轮；等已开的每一轮离开准备/在跑（报告、
   推迟、失败、投递未知都算，不重试），然后响亮记 `evaluation_watcher_done` 和原因（最后一轮
   投递未知时是 `final_checkpoint_round_unknown`）、自己退出；不取消任何作业。`FINAL.json` 记它们的 pid，
   `supervise.py stop` 仍可提前结束。

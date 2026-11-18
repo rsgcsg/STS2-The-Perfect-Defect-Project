@@ -162,6 +162,9 @@ def test_job_size_and_wall_are_settings_from_games_and_expected_steps(fast_eval,
     assert 'until_file' not in settings  # #598: only when given
     until = fast_eval.settings_from(args_for(tmp_path, until_file=tmp_path / 'FINAL.json'))
     assert until['until_file'] == str((tmp_path / 'FINAL.json').resolve())
+    assert 'final_grace_seconds' not in until
+    assert fast_eval.settings_from(args_for(tmp_path, final_grace_seconds=1800))[
+        'final_grace_seconds'] == 1800
 
 
 @pytest.mark.parametrize('option', [['--memory-gb', '0'], ['--wall-seconds', '0'],
@@ -842,6 +845,51 @@ def test_the_final_cp_named_by_the_chain_is_waited_for_and_an_unknown_round_is_s
                 deadline_at=1e6 + 100)
     late.tick()
     assert late.done() == 'final_checkpoint_not_started_absolute_deadline'
+
+
+def test_a_final_cp_still_not_visible_after_the_grace_ends_the_watcher_loudly(
+        fast_eval, tmp_path):
+    """#601 lead: the wait for the named final CP is bounded, counted from when the
+    watcher first saw FINAL.json; 0 = wait until stopped. A visible final CP that
+    could not start yet is not this reason."""
+    world = World()
+    world.record('cp-a', 10)
+    final = tmp_path / 'FINAL.json'
+    runner = loop(fast_eval, world, tmp_path / 'out', until_file=str(final),
+                  final_grace_seconds=1800)
+    runner.tick()
+    first = runner.state['evaluations'][0]
+    finish_prepare(world, first)
+    runner.tick()
+    world.live.discard(first['evaluation_job'])
+    first['stage'] = 'reported'
+    world.now += 50000  # long after the chain's start: the grace counts from the file
+    final.write_text(json.dumps({'final_checkpoint': 'cp-b'}))
+    runner.tick()
+    assert runner.state['final_seen_at'] == world.now and runner.done() is None
+    world.now += 1799
+    runner.tick()
+    assert runner.done() is None
+    world.now += 1
+    runner.tick()
+    assert runner.done() == 'final_checkpoint_not_visible_after_grace'
+    assert len(runner.state['evaluations']) == 1  # nothing started or retried
+    forever = loop(fast_eval, world, tmp_path / 'forever', until_file=str(final),
+                   final_grace_seconds=0)
+    forever.tick()
+    world.now += 10 ** 6
+    forever.tick()
+    assert forever.done() is None  # 0: until stopped
+    busy = World()
+    busy.record('cp-b', 10)
+    blocked = loop(fast_eval, busy, tmp_path / 'busy', until_file=str(final),
+                   final_grace_seconds=60)
+    blocked.start = lambda: None  # skipped every tick (busy, scheduler down): not lag
+    blocked.tick()
+    busy.now += 120
+    blocked.tick()
+    assert blocked.state['final_seen_at'] == busy.now - 120
+    assert not blocked.state['evaluations'] and blocked.done() is None
 
 
 def test_finished_evaluation_is_reported_once_and_a_lost_one_recorded(fast_eval, tmp_path):

@@ -2955,6 +2955,7 @@ def test_standing_eval_watchers_use_shared_local_storage(tmp_path):
         'sha256': hashlib.sha256(template.read_bytes()).hexdigest()}
     for cmd in started:
         assert cmd[cmd.index('--until-file') + 1] == str(chain.dir / 'FINAL.json')
+        assert cmd[cmd.index('--final-grace-seconds') + 1] == '1800'
 
 
 def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
