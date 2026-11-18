@@ -166,14 +166,45 @@ def load_cohort(path: Path, selection: str | None = None, *,
             'last_combat_enemies': context.get('enemies'),
             'last_combat_context': context or None,
             'details_present': bool(r)})
-    scored_floors = [r['floor'] for r in rows if r['scored'] and r['floor'] is not None]
-    losses = Counter(r['death_floor'] for r in rows if r['death_floor'] is not None)
     return {'source_sha256': hashlib.sha256(raw).hexdigest(), 'details_sha256': detail_sha,
         'selection': slots[0]['step'], 'protocol_observed': protocols,
         'host_kind': ledger.get('host_kind'),
         'character': slots[0]['character'], 'ascension': slots[0]['ascension'],
-        'planned': len(rows), 'original_planned': ledger['planned'],
-        'score_admitted': ledger.get('score_admitted') is True,
+        'original_planned': ledger['planned'],
+        'score_admitted': ledger.get('score_admitted') is True, **_aggregate(rows)}
+
+
+MERGE_SAME = ('selection', 'host_kind', 'character', 'ascension', 'score_admitted')
+
+
+def merge_cohorts(cohorts: list[dict[str, Any]]) -> dict[str, Any]:
+    """One cohort of several disjoint-seed cohorts of one model and suite (a round run
+    as parallel batches, #591): every count is recomputed over the union of rows."""
+    if len(cohorts) == 1:
+        return cohorts[0]
+    first = cohorts[0]
+    if any(c[key] != first[key] for c in cohorts for key in MERGE_SAME):
+        raise ValueError('merged_cohorts_must_share_model_character_ascension')
+    protocols: dict[str, Any] = {}
+    for cohort in cohorts:
+        for key, value in cohort['protocol_observed'].items():
+            if protocols.setdefault(key, value) != value:
+                raise ValueError('mixed_protocol_details')
+    rows = [row for cohort in cohorts for row in cohort['rows']]
+    if len({row['seed'] for row in rows}) != len(rows):
+        raise ValueError('merged_cohorts_must_have_disjoint_seeds')
+    return {**{key: first[key] for key in MERGE_SAME},
+            'source_sha256': [c['source_sha256'] for c in cohorts],
+            'details_sha256': [c['details_sha256'] for c in cohorts],
+            'protocol_observed': protocols,
+            'original_planned': sum(c['original_planned'] for c in cohorts),
+            **_aggregate(rows)}
+
+
+def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    scored_floors = [r['floor'] for r in rows if r['scored'] and r['floor'] is not None]
+    losses = Counter(r['death_floor'] for r in rows if r['death_floor'] is not None)
+    return {'planned': len(rows),
         'status_counts': dict(Counter(r['status'] for r in rows)),
         'wins': sum(r['scored'] and r['result'] == 'win' for r in rows),
         'losses': sum(r['scored'] and r['result'] == 'loss' for r in rows),

@@ -422,7 +422,7 @@ def test_seed_count_is_a_setting_from_a_smoke_count_up_to_one_jobs_200(
     if code == 0:
         assert json.loads(out)['settings']['seeds'] == seeds
     else:
-        assert '--seeds 1..200' in err and 'batches' in err
+        assert '--seeds 1..200' in err and '--batch-seeds' in err
     assert fast_eval.evaluate.MAX_DISPATCH_SLOTS == 200
 
 
