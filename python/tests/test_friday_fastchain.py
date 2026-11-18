@@ -1999,6 +1999,9 @@ def test_outcome_resumes_only_the_learner_fence_and_dead_jobs(tmp_path):
              ({'rc': 0, 'window_end': None, 'stop': 'service stop: operator stop'}, 'stopped'),
              ({'rc': 143, 'window_end': None, 'stop': 'service stop: operator stop'}, 'stopped'),
              ({'failure': 'BoundaryError: x', 'stop': 'service stop: operator stop'}, 'failure'),
+             # a real input fence before the final CP stays loud: rc 6, the learner's own
+             # resume signal (the chain still refuses it after an operator stop, #597)
+             ({'failure': fence, 'rc': 6, 'stop': 'service stop: operator stop'}, 'resumable'),
              # nor a STOP that says why (it would repeat)
              ({'report': False, 'rc': 3, 'stop': 'launcher gone before GPU start'}, 'failure'),
              ({'report': False, 'rc': 143, 'stop': 'learner failure x'}, 'failure')]

@@ -44,7 +44,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from multiprocessing.reduction import ForkingPickler
@@ -880,6 +880,7 @@ class _ShardLearner(SegmentLearner):
         self.shards = None
         self.send = send
         self.applying_flags = False
+        self.closing = False  # set by `_on_close` before its preparer shutdown
         self.fence_report = threading.Event()
         self.shard_index, self.shard_count = init["index"], init["count"]
         config = init["config"]
@@ -1132,7 +1133,20 @@ class _ShardLearner(SegmentLearner):
                         continue
                     if not future.done():
                         return
-                    batch = future.result()  # a failed preparation raises: fence below
+                    try:
+                        batch = future.result()  # a failed preparation raises: fence below
+                    except CancelledError as error:
+                        if not self.closing:
+                            raise
+                        # Our own close (after the stop, and after the learner's
+                        # final CP when there is one) shuts the preparer down, and
+                        # its barrier cancels the read-ahead still in flight
+                        # (`binary_pinned_preparation_fenced`). Those datasets can
+                        # never be taken: an end, not a failed input. A cancellation
+                        # before the close, or any other error, still fences.
+                        _log(f"read-ahead dataset {sequence} cancelled by the close: "
+                             f"{error}")
+                        return
                     self.announced_batches[sequence] = batch
                     if self.handoff:
                         self.unreleased[sequence] = batch
@@ -1271,6 +1285,8 @@ class _ShardLearner(SegmentLearner):
 
     def _on_close(self, message: dict[str, Any]) -> dict[str, Any]:
         self._on_flags({"stopped": True, "fenced": False})
+        with self.condition:
+            self.closing = True  # read-ahead cancelled from here on is not a fence
         self.source_prefetch_stopping.set()
         self.source_prefetch_changed.set()
         self.shard_prefetch.join()
