@@ -208,6 +208,7 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "target": target, "gpu_nodes_free_now": free_now,
         "gpu_partition": gpu["partition"], "gpu_gres": gpu["gres"],
         "gpu_constraint": gpu["constraint"], "gpu_nodelist": gpu.get("nodelist"),
+        "gpu_node_cores": gpu.get("node_cores"),  # #607: preflight gpu_node_cores
         "gpu_pending_max_seconds": knobs["smoke_gpu_pending_max_seconds"] if smoke
         else knobs["gpu_pending_max_seconds"],
         "job_mem_g": mem, "core_cap": cap,

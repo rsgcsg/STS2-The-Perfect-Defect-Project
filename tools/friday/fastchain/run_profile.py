@@ -565,7 +565,7 @@ SITE_KEYS: dict[str, Callable[[Any], str | None]] = {
 # explicit --nodelist pin exists only when the site sets `nodelist` (CLUSTER-QUEUE-DIAG
 # 11-14: a pin taken from a snapshot was wrong).
 GPU_TYPE_KEYS = {"gres": str, "partition": str, "nodes": list, "constraint": str}
-GPU_TYPE_OPTIONAL = {"nodelist": str}
+GPU_TYPE_OPTIONAL = {"nodelist": str, "node_cores": int}
 
 
 def _baseline(value: Any) -> str | None:
