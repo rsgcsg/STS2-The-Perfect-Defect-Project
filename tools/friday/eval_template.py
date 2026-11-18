@@ -206,9 +206,9 @@ def main() -> None:
     sys.path.insert(0, str(FRIDAY))
     if args.command == "find-revision":
         try:
-            pinned = (json.loads(args.template.read_bytes()).get("agent_adapter")
-                      or {}).get("code_sha256")
-            if not isinstance(pinned, str):
+            pinned = str((json.loads(args.template.read_bytes()).get("agent_adapter")
+                          or {}).get("code_sha256") or "")
+            if len(pinned) != 64:
                 raise ValueError("template_has_no_agent_adapter_code_sha256")
             found = find_revision(pinned, args.search_from)
         except (ValueError, OSError, subprocess.CalledProcessError) as error:
