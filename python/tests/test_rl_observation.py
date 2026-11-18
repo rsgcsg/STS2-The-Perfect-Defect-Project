@@ -550,3 +550,92 @@ def test_batches_merge_into_one_cohort_of_disjoint_seeds(tmp_path):
     with pytest.raises(ValueError, match='mixed_protocol'):
         merge_cohorts([{**one, 'protocol_observed': {'host_pin': 1}},
                        {**three, 'protocol_observed': {'host_pin': 2}}])
+
+
+# The ledger_report of one batch of a round, shaped as evaluation_ledger.report() writes
+# it into result.json on hardware (#612: a46afd12, A0, 3 x 100): per-slot formal-audit
+# selection, ledger status and execution status/reason, the public floor of an unfinished
+# game, and the batch's own score_admitted (False when a formal-audit game did not finish).
+REAL_BATCHES = (
+    [(1, 'unknown', 'episode_wall_limit_reached', 42, None, False),
+     (2, 'unknown', 'TimeoutExpired', None, None, False),
+     (3, 'finished', 'natural_terminal', 37, 'loss', True),
+     (4, 'censored', 'runtime_censored', 38, None, False)],
+    [(5, 'finished', 'natural_terminal', 48, 'loss', False),
+     (6, 'censored', 'runtime_censored', 40, None, True),  # the audit game was cut
+     (7, 'finished', 'natural_terminal', 17, 'loss', False),
+     (8, 'unknown', 'episode_wall_limit_reached', 44, None, False)],
+    [(9, 'finished', 'natural_terminal', 49, 'win', True),
+     (10, 'not_started', None, None, None, False),
+     (11, 'finished', 'natural_terminal', 33, 'loss', False),
+     (12, 'finished', 'natural_terminal', 7, 'loss', False)])
+
+
+def real_batch_result(tmp_path, number, rows, *, step='checkpoint', ascension=0):
+    slots = []
+    for ordinal, status, reason, floor, result, audit in rows:
+        slot = {'slot_id': f'{number}-{ordinal:064d}'[-64:], 'character': 'Defect',
+                'ascension': ascension, 'seed': f'STPD{ordinal:028X}', 'seed_ordinal': ordinal,
+                'step': step, 'selection_id': 'checkpoint', 'host_kind': 'managed',
+                'retention': {'tier': 'trajectory', 'purpose': 'evaluation',
+                              'audit_every': 50},
+                'formal_audit_selected': audit, 'status': status,
+                'execution_status': status if status != 'not_started' else None,
+                'reason': reason, 'run_id': f'run-{number}-{ordinal}',
+                'elapsed_seconds': 1700.0 if status != 'not_started' else None,
+                'natural_result': result, 'world_mutation_offered': status != 'not_started'}
+        if status == 'finished':
+            slot['max_observed_floor'] = floor
+        elif floor is not None:
+            slot['public_max_observed_floor'] = floor
+        slots.append(slot)
+    audit = [s for s in slots if s['formal_audit_selected']]
+    qualified = [s['slot_id'] for s in audit if s['status'] == 'finished']
+    ledger = {'schema': 'spireagent/evaluation-ledger-v1', 'host_kind': 'managed',
+              'pooling': 'separate_host_conditions', 'planned': len(slots),
+              'censored': sum(s['status'] == 'censored' for s in slots),
+              'unknown': sum(s['status'] == 'unknown' for s in slots),
+              'not_started': sum(s['status'] == 'not_started' for s in slots),
+              'retention': slots[0]['retention'],
+              'score_admitted': len(qualified) == len(audit),
+              'formal_audit': {'planned': len(audit), 'qualified': len(qualified),
+                               'qualified_slot_ids': qualified,
+                               'satisfied': len(qualified) == len(audit)},
+              'slots': slots}
+    path = tmp_path / f'evaluation-0{number}-report-source.json'
+    path.write_text(json.dumps({'plan_sha256': f'{number}' * 64, 'ledger_report': ledger}))
+    return path
+
+
+def test_real_shaped_batches_of_one_model_merge_with_their_own_admissions(tmp_path):
+    """#612: on hardware one batch's formal-audit game was cut, so its ledger closed it
+    unscored (score_admitted False) while the other two were admitted; the merge refused
+    the round as 'another model'. Same model/character/ascension now merges; each batch
+    keeps its own admission and its rows their own `scored`."""
+    from stpd.evaluation.rl_observation import merge_cohorts
+
+    batches = [load_cohort(real_batch_result(tmp_path, n, rows))
+               for n, rows in enumerate(REAL_BATCHES, start=1)]
+    assert [b['score_admitted'] for b in batches] == [True, False, True]
+    merged = merge_cohorts(batches)
+    assert merged['score_admitted'] is False
+    assert merged['score_admitted_batches'] == [True, False, True]
+    assert merged['planned'] == merged['original_planned'] == 12
+    assert merged['status_counts'] == {'finished': 6, 'unknown': 3, 'censored': 2,
+                                       'not_started': 1}
+    # batch 2's finished games stay rows, never scores (their ledger did not admit them)
+    assert [r['seed'] for r in merged['rows'] if r['scored']] == [
+        f'STPD{n:028X}' for n in (3, 9, 11, 12)]
+    assert (merged['wins'], merged['losses'], merged['floor_n']) == (1, 3, 4)
+    unknown = next(r for r in merged['rows'] if r['seed'] == f'STPD{1:028X}')
+    assert unknown['floor'] is None and unknown['observed_floor_lower_bound'] == 42
+    # A genuinely different model selection, character or ascension is still refused.
+    (tmp_path / 'step').mkdir()
+    (tmp_path / 'a10').mkdir()
+    other_step = load_cohort(real_batch_result(tmp_path / 'step', 3, REAL_BATCHES[2], step='v2'))
+    other_a10 = load_cohort(real_batch_result(tmp_path / 'a10', 3, REAL_BATCHES[2],
+                                              ascension=10))
+    for other in (other_step, other_a10, {**batches[2], 'character': 'Ironclad'},
+                  {**batches[2], 'host_kind': 'reference'}):
+        with pytest.raises(ValueError, match='merged_cohorts_must_share_model_character'):
+            merge_cohorts([batches[0], batches[1], other])

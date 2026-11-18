@@ -1126,7 +1126,7 @@ def test_readout_run_record_carries_identity_learning_games_and_incidents(tmp_pa
     assert i['recipe'] == {'exploration_ladder': [0.0, 0.1], 'ascension_mix': {
         '0': 0.5, '10': 0.5}, 'replay_k': 4, 'save_starts': None,
         'segment_format': 'stpd/rl-fast-segment-4',
-        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket',
+        'hp_coef': 0.1, 'c_hp': 0.005, 'c_hp_scope': 'combat_ticket', 'explore_ratio_floor': 0.0,
         'hp_combat_weights': {'normal': 1.0, 'elite': 1.0, 'boss': 0.3},
         'hp_potion_mode': None,  # a plan without the knob (ticket H)
         'kl_stop_scope': None, 'lr_warmup_steps': None}  # nor the ticket K knobs
@@ -1447,6 +1447,9 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
         if event.get('kind') == 'progress':  # 4 rows of control (1 clipped), 2 of hot
             event['policy_by_arm'] = {'control': [4, 0.004, 1, 0], 'hot': [2, 0.01, 2, 1],
                                       'unattributed': [3, 0.0, 0, 0]}
+            # loss.explore_ratio_floor c = .3: 1 of hot's 2 rows floored (A = +.8, r = .05)
+            event['explore_floor_by_arm'] = {'control': [4, 0, 0, 0.0, 0.0, 0.0],
+                                             'hot': [2, 1, 1, 0.8, 0.24, 0.04]}
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     r = readout.build(run, 1200)
     arms = r['hp_score_arms']
@@ -1466,7 +1469,18 @@ def test_readout_reports_hp_score_and_ppo_update_per_arm(tmp_path):
     assert ppo['hot'] == {'rows': 2 * attempts, 'clip_fraction': 1.0,
                           'approx_kl': pytest.approx(0.01), 'ratio_nonfinite': attempts}
     assert r['learning']['latest']['policy_by_arm']['hot']['clip_fraction'] == 1.0
+    floor = r['learning']['run_mean']['explore_floor_by_arm']
+    assert floor['control'] == {'rows': 4 * attempts, 'floored_per_1000': 0.0,
+                                'floored_positive_share': None,
+                                'floored_mean_abs_advantage': None,
+                                'floor_weight_sum': 0.0, 'ratio_weight_sum': 0.0}
+    assert floor['hot']['floored_per_1000'] == 500.0
+    assert floor['hot']['floored_positive_share'] == 1.0
+    assert floor['hot']['floored_mean_abs_advantage'] == pytest.approx(0.8)
+    assert floor['hot']['floor_weight_sum'] == pytest.approx(0.24 * attempts)
     text = readout.render(r)
+    assert ('  ratio floor arm hot: 500.0 floored per 1,000 rows, A>0 1.00, mean |A| '
+            '0.800, weight c|A| ') in text
     assert 'PPO update per arm (rows, clip, approx KL): control ' in text
     assert '/ 0.250 / 0.0010, hot ' in text
     assert 'unattributed' not in text.split('PPO update per arm')[1].splitlines()[0]
@@ -2981,6 +2995,46 @@ def test_a_300_seed_a0_watcher_runs_batches_on_the_named_actor_root(tmp_path):
     assert '--batch-seeds' not in a10
     for cmd in (a0, a10):
         assert cmd[cmd.index('--actor-root') + 1] == '/release/eval'
+
+
+def test_the_evaluation_node_class_and_degraded_threshold_reach_watchers_and_preflight(
+        tmp_path):
+    """#612: the site's eval_partition / eval_constraint (absent = today's submission) and
+    the profile's eval_degraded_share reach both watchers' fast_eval commands and are
+    printed by preflight; a partition fast_eval cannot submit to is refused in the site."""
+    chain, _ = chain_for(tmp_path, [], eval_a10_enabled='true', eval_a10_suite='a10-50')
+    template = tmp_path / 'execution.json'
+    template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+    chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+    chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+    chain.dir.mkdir(parents=True)
+    watchers = chain.watchers()
+    for name in ('a0', 'a10'):  # today: no partition or constraint flag
+        cmd = chain.eval_command(name, watchers[name])
+        assert '--partition' not in cmd and '--constraint' not in cmd
+        assert cmd[cmd.index('--degraded-share') + 1] == '0.1'
+    text = chain.args.site.read_text().replace(
+        '\n[site.gpu_types', '\neval_partition = "general"\neval_constraint = "fastclass"\n'
+        '[site.gpu_types', 1)
+    chain.args.site.write_text(text)
+    chain.site = supervise.run_profile.load_site(chain.args.site)
+    for name in ('a0', 'a10'):
+        cmd = chain.eval_command(name, watchers[name])
+        assert cmd[cmd.index('--partition') + 1] == 'general'
+        assert cmd[cmd.index('--constraint') + 1] == 'fastclass'
+    plan = plan_for(cards=3)
+    result = preflight.check_evaluation_jobs(plan)
+    assert result.ok and result.warn  # no constraint: printed as a warning, never refused
+    assert result.detail.startswith('partition general (fast_eval default), node constraint '
+                                    'none; a round above 10% of planned games not finished')
+    placed = preflight.check_evaluation_jobs({**plan, 'site': {
+        **plan['site'], 'eval_partition': 'general', 'eval_constraint': 'fastclass'}})
+    assert placed.ok and not placed.warn and 'node constraint fastclass' in placed.detail
+    assert 'evaluation_jobs' in preflight.report(preflight.checks(plan, good_facts(plan)))
+    chain.args.site.write_text(text.replace('eval_partition = "general"',
+                                            'eval_partition = "gpu"'))
+    with pytest.raises(supervise.run_profile.ProfileError, match='eval_partition'):
+        supervise.run_profile.load_site(chain.args.site)
 
 
 def eval_chain(tmp_path, baselines='', **changes):

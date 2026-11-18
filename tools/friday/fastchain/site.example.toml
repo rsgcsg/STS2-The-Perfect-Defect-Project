@@ -60,6 +60,10 @@ compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
 # The evaluation jobs' actor root (env/, node, game/, dotnet) is node_release; a site
 # whose evaluation release lives elsewhere names it (fast_eval --actor-root, #590):
 # eval_actor_root = "/scratch/USER/releases/EVAL-RELEASE"
+# The evaluation jobs' node class (#612; absent or "" = partition general, no constraint):
+# a node feature (sbatch --constraint) of the fast class keeps rounds off the slow one.
+# eval_partition = "general"
+# eval_constraint = "FAST-NODE-FEATURE"
 
 # A card type = partition + gres + constraint, never a node pinned from an sinfo snapshot.
 # constraint: a node feature (sinfo -o "%N %f") that only nodes with this card have, as
