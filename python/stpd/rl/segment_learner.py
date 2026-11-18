@@ -117,7 +117,12 @@ from .learning_diagnostics import (
 )
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
-from .loss import minibatch_control_rows, prepared_update, warmup_learning_rates
+from .loss import (
+    minibatch_control_rows,
+    minibatch_explore_rows,
+    prepared_update,
+    warmup_learning_rates,
+)
 from .performance import PerformanceConfig
 from .prepared_batch import (
     AuxiliaryInput,
@@ -3747,6 +3752,9 @@ class SegmentLearner:
             control_rows=(minibatch_control_rows(minibatch, self._dataset_arms(batch),
                                                  self._policy_mask(batch))
                           if self.settings.kl_stop_scope == "control" else None),
+            explore_rows=(minibatch_explore_rows(minibatch, self._dataset_arms(batch),
+                                                 self._policy_mask(batch))
+                          if self.config.loss.explore_ratio_floor else None),
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)

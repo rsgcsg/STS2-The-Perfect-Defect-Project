@@ -366,11 +366,11 @@ def policy_by_arm(arms: list[str | None],
     return out
 
 
-# `loss.explore_ratio_floor` c > 0: per arm, over one attempt's policy rows, the rows whose
-# ratio was below c (their gradient weight c instead of r), those with A > 0, and over
-# the floored rows the sums of |A|, c |A| (the weight given) and r |A| (the unclipped
-# surrogate's weight they replace; a clipped A < 0 row had 0). Diagnostics only, like
-# policy_by_arm.
+# `loss.explore_ratio_floor` c > 0: per arm, over one attempt's policy rows, the rows the
+# floor took (exploration arms only, ratio below c), those with A > 0, and over the
+# floored rows the sums of |A|, c |A| (the weight given) and the weight the clipped
+# surrogate would have given: r |A|, or 0 for a row whose objective the clip bound (A < 0
+# below 1 - clip). Diagnostics only, like policy_by_arm.
 EXPLORE_FLOOR_FIELDS = ("rows", "floored", "floored_positive", "floored_abs_advantage_sum",
                         "floor_weight_sum", "ratio_weight_sum")
 
@@ -390,5 +390,6 @@ def explore_floor_by_arm(arms: list[str | None], samples: list[dict[str, Any]],
             total[2] += sample["advantage"] > 0
             total[3] += magnitude
             total[4] += floor * magnitude
-            total[5] += (sample["ratio"] or 0.0) * magnitude
+            if not sample["ppo_objective_clipped"]:
+                total[5] += (sample["ratio"] or 0.0) * magnitude
     return out

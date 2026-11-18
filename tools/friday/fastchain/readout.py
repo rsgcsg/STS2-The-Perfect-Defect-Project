@@ -817,8 +817,9 @@ class _Learning:
                   "approx_kl": kl / (rows - bad) if rows > bad else None,
                   "ratio_nonfinite": round(bad)}
             for arm, (rows, kl, clipped, bad) in sorted(self.policy_arms.items())} or None
-        # loss.explore_ratio_floor c > 0: per arm, pooled like policy_by_arm, the rows whose
-        # ratio was below c and the gradient weight c |A| they got vs the r |A| replaced.
+        # loss.explore_ratio_floor c > 0: per arm, pooled like policy_by_arm, the rows the
+        # floor took and the gradient weight c |A| they got vs what the clipped surrogate
+        # gave (r |A|, 0 for clip-bound A < 0 rows).
         out["explore_floor_by_arm"] = {
             arm: {"rows": round(rows), "floored_per_1000": 1000 * floored / rows if rows else None,
                   "floored_positive_share": positive / floored if floored else None,
@@ -1673,7 +1674,8 @@ def render_record(r: dict[str, Any]) -> list[str]:
             out.append(f"  ratio floor arm {arm}: {fmt(f['floored_per_1000'], 1)} floored per "
                        f"1,000 rows, A>0 {fmt(f['floored_positive_share'], 2)}, mean |A| "
                        f"{fmt(f['floored_mean_abs_advantage'], 3)}, weight c|A| "
-                       f"{fmt(f['floor_weight_sum'], 2)} vs r|A| {fmt(f['ratio_weight_sum'], 2)}")
+                       f"{fmt(f['floor_weight_sum'], 2)} vs clipped surrogate "
+                       f"{fmt(f['ratio_weight_sum'], 2)}")
         if lost:
             out.append(f"  WARNING ({key}): {lost['rows']:,} PPO rows unattributed (a source "
                        "without an exploration table), left out of the per-arm line")

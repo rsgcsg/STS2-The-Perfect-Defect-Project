@@ -42,10 +42,13 @@ No source sends single-combat tickets yet (the fast env's `episode_open` names n
 the fast-chain preflight refuses c_hp > 0 with `"combat_ticket"` (#568).
 Both are frozen for a run. A fast-chain gate `learner-base.json` that has them must match;
 a gate made before them takes them from here (`learner_config.gate_recipe`).
-`loss.explore_ratio_floor` c (default 0 = off, 0..0.5): a policy row whose ratio
-r = p_theta(a)/q(a) is below c takes the gradient c * A * grad log p_theta(a), both signs
-of A, instead of the clipped surrogate's, so a rarely sampled action still learns from
-its advantage; rows with r >= c and the KL stop are unchanged. Declarable at a
+`loss.explore_ratio_floor` c (default 0 = off, 0..0.5): a policy row of an exploration
+arm whose ratio r = p_theta(a)/q(a) is below c takes the gradient c * A * grad log
+p_theta(a), both signs of A, instead of the clipped surrogate's, so a rarely sampled
+action still learns from its advantage; rows with r >= c and the KL stop are unchanged.
+Control-arm rows (and rows of a source without an arm) keep plain clipped PPO; a dataset
+with no arm identity is refused (`explore_ratio_floor_needs_row_arms`), and the old
+`rl_update` path refuses c > 0. Declarable at a
 continuation (`recipe_changes.DECLARABLE`); at 0 it is left out of the recipe digest.
 With c > 0 the progress events carry `explore_floor_by_arm` and the readout shows it.
 `segments.value_target` (fast chain only) is `"segment"` (default: each 64-row segment
