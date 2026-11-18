@@ -112,8 +112,11 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
                probe_only: bool = False, long_run: bool = False,
                resume_checkpoint: str | None = None,
                chain: dict[str, Any] | None = None) -> dict[str, Any]:
-    """`chain` (supervise.py): {"id", "deadline_at", "total_seconds", "generation"}; the
-    wall is then what is left of the chain's window."""
+    """`chain` (supervise.py): {"id", "deadline_at", "total_seconds", "generation"[,
+    "train_target_seconds"]}; the wall is then what is left of the chain's window (its
+    wall limit). With a training target (#603) the learner gets no absolute deadline, so
+    the GPU and env job times add `train_target_end_reserve_seconds` for its drain and
+    final CP (the deadline's 600 s reserve did that inside the window)."""
     if card_type not in site["gpu_types"]:
         raise SystemExit(f"card type {card_type} not in the site profile")
     gpu = site["gpu_types"][card_type]
@@ -176,7 +179,9 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
     # env nodes wait for the learner: that wait is added to the GPU job's time and to the
     # env wait. A prep job never runs before the GPU job, so it needs no longer than it.
     prep_wait = int(math.ceil(knobs["remote_prepare_wait_seconds"])) if prep_hosts else 0
-    gpu_minutes = (wall + 240 + prep_wait) // 60 + 1
+    end_reserve = (knobs["train_target_end_reserve_seconds"]
+                   if chain is not None and chain.get("train_target_seconds") else 0)
+    gpu_minutes = (wall + 240 + prep_wait + end_reserve) // 60 + 1
     return {
         "schema": "spireagent/friday-fastchain-plan-1", "runtag": runtag, "t": time.time(),
         "run": str(Path(site["work_root"]) / f"run-{runtag}"),
@@ -203,7 +208,8 @@ def build_plan(runtag: str, knobs: dict[str, Any], site: dict[str, Any], *, card
         "prep_hosts": prep_hosts, "prep_wait_seconds": prep_wait,
         "env_wait_seconds": knobs["env_wait_seconds"] + prep_wait,
         "gpu_minutes": gpu_minutes,
-        "env_minutes": (knobs["env_wait_seconds"] + prep_wait + wall + 600) // 60,
+        "env_minutes": (knobs["env_wait_seconds"] + prep_wait + wall + 600 + end_reserve)
+        // 60, "end_reserve_seconds": end_reserve,
         "prep_minutes": gpu_minutes,
         "partition_max_minutes": {
             role: site["partition_max_minutes"].get(part) for role, part in (
@@ -292,7 +298,9 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
         **({"FC_CHAIN_ID": plan["chain"]["id"],
-            "FC_CHAIN_DEADLINE": repr(float(plan["chain"]["deadline_at"])),
+            # empty with a training target: the learner gets no absolute deadline (#603)
+            "FC_CHAIN_DEADLINE": ("" if plan["chain"].get("train_target_seconds")
+                                  else repr(float(plan["chain"]["deadline_at"]))),
             "FC_CHAIN_TOTAL_SECONDS": plan["chain"]["total_seconds"]}
            if plan.get("chain") else {}),
         # remote_prepare --scratch-min-free-bytes (#523 a437612d) = the in-flight budget.

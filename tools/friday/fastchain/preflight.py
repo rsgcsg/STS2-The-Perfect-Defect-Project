@@ -43,6 +43,7 @@ RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned
 # sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
 CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
+BUDGET_CAP_SECONDS = 72000  # the product operating-budget cap (SegmentLearner)
 SEED_STRIDE_PROCS = 32  # env.sh seed offset = (node * 32 + p) * 600
 PREPARED_BATCH_HEADROOM = 1.15  # per-batch cap >= 1.15 x the largest measured batch
 
@@ -661,6 +662,38 @@ def check_time_limits(plan: dict[str, Any]) -> Result:
     return Result("time_limits", not problems, "; ".join(problems or shown))
 
 
+def check_training_clock(plan: dict[str, Any]) -> Result:
+    """#603. Without a target a chain's training window is its wall window, which is
+    also the product operating budget (<= 72000 s). With `train_target_seconds` the budget
+    is the target (learner training seconds, carried in the CPs across resumes) and
+    `long_wall_seconds` only the chain's wall limit: generation 0 must be able to train
+    the whole target in it; a later generation with less wall left than training left is
+    a warning (the chain then ends at its wall limit, said in its final cause)."""
+    k, chain = plan["knobs"], plan.get("chain")
+    target = k["train_target_seconds"]
+    if not target:
+        if chain is not None and k["long_wall_seconds"] > BUDGET_CAP_SECONDS:
+            return Result("training_clock", False, f"long_wall_seconds "
+                          f"{k['long_wall_seconds']} s is the chain's operating budget "
+                          f"without train_target_seconds: at most {BUDGET_CAP_SECONDS} s")
+        return Result("training_clock", True, "off: the chain window is long_wall_seconds "
+                      "(wall time, fixed at chain start, queue time included)")
+    if chain is None:
+        return Result("training_clock", False, "train_target_seconds needs a supervise.py "
+                      "chain (a plain run has no operating budget to count it)")
+    shown = (f"target {target} s learner training (counted across resumes), chain wall "
+             f"limit long_wall_seconds {k['long_wall_seconds']} s, this job: wall "
+             f"{plan['wall_seconds']} s + end reserve {plan['end_reserve_seconds']} s; "
+             "no absolute deadline in the learner or its CPs")
+    if chain["generation"] == 0 and plan["wall_seconds"] < target:
+        return Result("training_clock", False, f"the chain's wall limit "
+                      f"{plan['wall_seconds']} s cannot hold the training target {target} s: "
+                      "raise long_wall_seconds (the partition limit is checked by "
+                      "time_limits) or lower the target")
+    return Result("training_clock", True, shown,
+                  warn=chain["generation"] > 0 and plan["wall_seconds"] < target)
+
+
 def check_cores(plan: dict[str, Any]) -> Result:
     total = plan["placement"]["gpu_cores"] + plan["env_cores_max"]
     cap = plan["core_cap"]
@@ -722,7 +755,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_env_package(plan, facts), check_shards(plan, facts),
             check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
-            check_secrets(facts), check_time_limits(plan), check_cores(plan),
+            check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
+            check_cores(plan),
             check_resume(plan, facts), check_queue(facts)]
 
 

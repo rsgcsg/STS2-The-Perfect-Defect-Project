@@ -446,7 +446,14 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "core_cap": _per_cards(_int(1)),
     "wall_seconds": _int(60),
     "smoke_wall_seconds": _int(60),
-    "long_wall_seconds": _int(60, 72000),
+    # 86400 (#603): a 20 h training target (train_target_seconds) plus about 4 h for
+    # start-ups, resumes and queue. Without a target the product budget cap (72000) holds
+    # (preflight training_clock); the site's partition limit is checked by time_limits.
+    "long_wall_seconds": _int(60, 86400),
+    # #603: learner training seconds per chain (0 = off: the window is long_wall_seconds,
+    # as before); at most the product operating-budget cap
+    "train_target_seconds": _int(0, 72000),
+    "train_target_end_reserve_seconds": _int(0, 7200),
     # the launcher cancels the run when the GPU job is still PENDING after this long
     "gpu_pending_max_seconds": _int(60),
     "smoke_gpu_pending_max_seconds": _int(60),

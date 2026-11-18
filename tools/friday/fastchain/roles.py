@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import layout  # noqa: E402
@@ -104,6 +105,21 @@ def jline(path: Path, record: dict) -> None:
         handle.write(json.dumps(record, default=str) + "\n")
 
 
+def clock(owner: Any, started: float) -> dict[str, Any]:
+    """Training and wall seconds of this generation, and the chain's training total from
+    the operating budget the learner restored (consumed at start + this generation's
+    training window; #603). The CPs carry the same count: a resume continues it."""
+    budget = getattr(owner.config, "operating_budget", None)
+    began = owner.active_training_began  # set while the training window runs
+    active = (time.monotonic() - began if began is not None
+              else float(owner.active_training_seconds))
+    return {"training_seconds": active, "wall_seconds": time.time() - started,
+            "chain_training_seconds": (budget["consumed_seconds"] + active
+                                       if budget is not None else None),
+            "chain_training_budget_seconds": (budget["total_seconds"]
+                                              if budget is not None else None)}
+
+
 def learner() -> None:
     import multiprocessing.connection as mpc
 
@@ -113,6 +129,7 @@ def learner() -> None:
     from stpd.rl.learner import LearnerConfig
     from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
 
+    started = time.time()  # the generation's learner wall clock (report "clock")
     check_learner_cards()
     # A git-archive source has no checkout: "placeholder" = a scratch producer identity
     # (CPs of these runs are void, probe only; preflight allows it only for --smoke or
@@ -144,7 +161,8 @@ def learner() -> None:
                      {k: restored_config.get(k) for k in ("deadline_at", "operating_budget")})
         window = learner_config.window(
             os.environ["FC_CHAIN_ID"], int(os.environ["FC_CHAIN_TOTAL_SECONDS"]),
-            float(os.environ["FC_CHAIN_DEADLINE"]), resume, cp_config)
+            float(os.environ["FC_CHAIN_DEADLINE"]) if os.environ["FC_CHAIN_DEADLINE"] else None,
+            resume, cp_config)
         jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_window",
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
@@ -426,7 +444,8 @@ def learner() -> None:
                   "input_failure": owner.input_failure,
                   "failure_trace": trace if failure else None,
                   "version": owner.version, "updates": owner.updates,
-                  "fast": owner.fast_status(), "attached": len(attached)}
+                  "fast": owner.fast_status(), "attached": len(attached),
+                  "clock": clock(owner, started)}
         try:
             owner.close()
         except BaseException as error:  # noqa: BLE001

@@ -78,7 +78,7 @@ def apply_declared(config: dict[str, Any], declared: dict[str, Any]) -> dict[str
     return config
 
 
-def window(chain_id: str, total_seconds: int, chain_deadline: float,
+def window(chain_id: str, total_seconds: int, chain_deadline: float | None,
            checkpoint_id: str | None, checkpoint: dict[str, Any] | None) -> dict[str, Any]:
     """The learner's operating window for one generation of a resume chain.
 
@@ -89,7 +89,10 @@ def window(chain_id: str, total_seconds: int, chain_deadline: float,
     - a fresh start, or a CP without budget and deadline: open the chain's window;
     - a CP of another window: open the chain's window with that CP as the parent;
     - a CP with a deadline but no budget cannot open a new window: refused.
-    `checkpoint` = the CP's `config` facts (`deadline_at`, `operating_budget`)."""
+    `checkpoint` = the CP's `config` facts (`deadline_at`, `operating_budget`).
+    `chain_deadline` None (a training-time target, #603): the window is the budget alone,
+    no absolute deadline enters the learner or its CPs (RL4.2: a deadline in the CP capped
+    the run at 17.7 h)."""
     budget = {"id": chain_id, "total_seconds": total_seconds, "consumed_seconds": 0}
     if not 0 < total_seconds <= 72000:
         raise ValueError(f"chain window {total_seconds} s outside 1..72000")
