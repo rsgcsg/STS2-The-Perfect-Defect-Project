@@ -217,6 +217,33 @@ def reference_plans(path: Path) -> list[Path]:
     return plans
 
 
+SUBMISSION_FAILURE = "submission-failure.json"  # beside a batch plan never delivered
+
+
+def reported_plans(path: Path) -> tuple[list[Path], list[dict[str, Any]]]:
+    """The plans of a reference that have an observation report, and the batches that
+    have none: `{batch, games, status, reason}` (a refused or unknown submission: its
+    stage and reason; else the job's status, or `no_result`). A single plan is taken as
+    is (its reader refuses it if the report is missing)."""
+    if path.name != evaluate.BATCHES:
+        return [path], []
+    plans, missing = [], []
+    for plan in reference_plans(path):
+        result, failure = plan.parent / "result.json", plan.parent / SUBMISSION_FAILURE
+        status = json.loads(result.read_bytes()) if result.is_file() else {}
+        if "observation_report" in status:
+            plans.append(plan)
+            continue
+        refused = json.loads(failure.read_bytes()) if failure.is_file() else {}
+        missing.append({"batch": plan.parent.name,
+                        "games": json.loads(plan.read_bytes()).get("planned"),
+                        "status": refused.get("stage") or status.get("status", "no_result"),
+                        "reason": refused.get("reason") or status.get(
+                            "observation_report_skipped") or status.get(
+                            "observation_report_error")})
+    return plans, missing
+
+
 def manifest_seeds(plan: Path) -> list[str] | None:
     """The seeds of a round's frozen manifest (the copy beside its plan, by sha256)."""
     bound = json.loads(plan.read_bytes())["manifest"]
@@ -298,6 +325,10 @@ def resolve_baseline(plan: Path | None, sha256: str | None, source: str,
     if not plan.is_file() or sha256 is not None and hashed(plan) != sha256:
         raise ValueError("baseline_plan_missing_or_changed")
     plans = reference_plans(plan)  # a batched reference round: its batches.json
+    absent = reported_plans(plan)[1]
+    if absent:  # a baseline pairs whole, never on part of its games
+        raise ValueError("baseline_round_has_batches_without_a_report: "
+                         + ", ".join(m["batch"] for m in absent))
     theirs = round_execution(plans[0])
     differing = [key for key in START_PINS if theirs.get(key) != execution.get(key)]
     ours = json.loads(manifest.read_bytes()).get("seeds")
@@ -556,6 +587,9 @@ class Loop:
                 stage, reason = "submit_unknown", type(error).__name__
             else:
                 jobs[directory] = result.get("job_id")
+                item.setdefault("first_submitted_at", self.clock())
+                if batched:
+                    item.setdefault("batch_submitted_at", {})[directory] = self.clock()
                 continue
             self.note(f"evaluation_{stage}", checkpoint=item["checkpoint"], reason=reason,
                       **({"batch": directory} if batched else {}))
@@ -563,6 +597,7 @@ class Loop:
                 item.update(stage=stage, reason=reason)
                 return
             failures[directory] = {"stage": stage, "reason": reason}
+            save(plan.parent / SUBMISSION_FAILURE, failures[directory])  # for the report
         if batched and not jobs:
             item.update(stage="submit_failed", reason="no_batch_submitted")
             return
@@ -640,9 +675,12 @@ class Loop:
                              "evaluation_job": item.get("evaluation_job"),
                              "evaluation_jobs": item.get("evaluation_jobs"),
                              "batch_failures": item.get("batch_failures")}
+        # the first job's submission: a partly deferred round's last one would understate
+        first = item.get("first_submitted_at", item.get("submitted_at"))
+        record["watcher"]["batch_submitted_at"] = item.get("batch_submitted_at")
         record["stage_seconds"].update(
-            prepare_wall=_span(preparing, item.get("submitted_at")),
-            evaluation_queue=_span(item.get("submitted_at"), record.get("process_started_at")))
+            prepare_wall=_span(preparing, first),
+            evaluation_queue=_span(first, record.get("process_started_at")))
         save(path, record)
 
     def start(self) -> None:
@@ -733,18 +771,12 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         return merge_cohorts([files["cohort"] for _, _, files in read]), read[0][0]
 
     round_file = round_reference(root)
-    plans, missing = ([], []) if round_file.name == evaluate.BATCHES else ([round_file], [])
-    for path in reference_plans(round_file) if not plans else []:
-        result = path.parent / "result.json"
-        status = json.loads(result.read_bytes()) if result.is_file() else {}
-        if "observation_report" in status:
-            plans.append(path)
-        else:  # never retried: its games are named here and absent from the cohort
-            missing.append({"batch": path.parent.name, "status": status.get("status", "no_result"),
-                            "games": json.loads(path.read_bytes()).get("planned")})
+    # never retried: a batch without a report is named and its games are absent
+    plans, missing = reported_plans(round_file)
     if not plans:
         raise ValueError("no_batch_has_an_observation_report")
     current, plan = cohort(round_file, plans=plans)
+    partial: dict[str, Any] = {}  # a previous round compared on its reported batches only
     cohorts: dict[str, dict[str, Any]] = {}
     skipped: dict[str, Any] = {}
     references = (("baseline", baseline["plan"] if baseline else None),
@@ -761,8 +793,17 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     for name, reference in references:
         if reference is None or smoke:
             continue
+        theirs, absent = reported_plans(Path(reference))  # a baseline has none (start check)
+        if not theirs:
+            skipped[name] = {"plan": reference, "differing": ["no_batch_has_a_report"]}
+            continue
+        if absent:
+            partial[name] = {"batches_reported": len(theirs),
+                             "batches": len(theirs) + len(absent),
+                             "games_missing": sum(m["games"] or 0 for m in absent),
+                             "missing": absent}
         group, frozen = cohort(Path(reference), pinned=baseline["sha256"]
-                               if name == "baseline" and baseline else None)
+                               if name == "baseline" and baseline else None, plans=theirs)
         old, new = group["protocol_observed"], current["protocol_observed"]
         keys = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
         keys += [k for k in ("host_kind", "character", "ascension") if group[k] != current[k]]
@@ -774,6 +815,21 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
             continue
         cohorts[name] = group
     cohorts["current"] = current
+    ours = {row["seed"] for row in current["rows"]}
+    seed_sets = {name: {"common_seeds": len(ours & {r["seed"] for r in group["rows"]}),
+                        "seed_sets_equal": ours == {r["seed"] for r in group["rows"]},
+                        "reference_seeds": len(group["rows"]), "current_seeds": len(ours)}
+                 for name, group in cohorts.items() if name != "current"}
+    for name, sets in seed_sets.items():
+        notes.append(f"{name}: paired on {sets['common_seeds']} common seeds"
+                     + ("." if sets["seed_sets_equal"] else
+                        f" (current {sets['current_seeds']}, {name} {sets['reference_seeds']}"
+                        " seeds: the headline numbers of each cohort cover different seed "
+                        "sets; compare the paired lines)."))
+    for name, part in partial.items():
+        notes.append(f"{name.upper()} IS PARTIAL: {part['batches_reported']} of "
+                     f"{part['batches']} batches, {part['games_missing']} games without a "
+                     "report are not in it.")
     if missing:
         notes.append("BATCHES WITHOUT A REPORT (their games are not in this report; never "
                      "retried): " + json.dumps(missing, sort_keys=True) + ".")
@@ -791,7 +847,8 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         "references_not_compared": not_compared, "skipped_references": skipped,
         "batches": ([p.parent.name for p in reference_plans(round_file)]
                     if round_file.name == evaluate.BATCHES else None),
-        "batches_missing": missing, "cohorts": {}, "paired": {}}
+        "batches_missing": missing, "references_partial": partial,
+        "cohorts": {}, "paired": {}}
     for name, group in cohorts.items():
         bosses = {b["act"]: b for b in report["progress"][name]["bosses"]}
         reward = report["rewards"][name]
@@ -818,7 +875,8 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
                 "paired_n", "better", "same", "worse", "mean_delta",
                 "bootstrap95_fixed_seed_sensitivity")},
             "conservative_reward_delta": (reward.get("conservative_paired") or {}).get(
-                "mean_delta")}
+                "mean_delta"),
+            **seed_sets[name]}
     save(output / "summary.json", summary)
     try:  # the report above stands even if its record cannot be built
         save(root / "eval-record.json", evaluation_record(
@@ -908,6 +966,7 @@ def evaluation_record(root: Path, plan: dict[str, Any], current: dict[str, Any],
                                else None),
         "status": result.get("status"), "stop_requested": result.get("stop_requested"),
         "batches": batches, "batches_missing": summary.get("batches_missing", []),
+        "references_partial": summary.get("references_partial", {}),
         "outcome": summary["cohorts"]["current"],
         "seeds": [{"seed": row["seed"], "status": row["status"], "result": row["result"],
                    "scored": row["scored"], "floor": row["floor"],

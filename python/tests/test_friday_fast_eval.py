@@ -911,7 +911,10 @@ def finish_batches(world, item, count=3):
     for number in range(1, count + 1):
         (round_dir / f'evaluation-0{number}').mkdir(parents=True)
         (round_dir / f'evaluation-0{number}/plan.json').write_text('{}')
-    (round_dir / 'batches.json').write_text('{}')
+    (round_dir / 'batches.json').write_text(json.dumps({'batches': [
+        {'directory': f'evaluation-0{number}',
+         'plan_sha256': fast_eval_hash(round_dir / f'evaluation-0{number}/plan.json')}
+        for number in range(1, count + 1)]}))
 
 
 def test_a_batched_round_submits_each_job_once_and_reports_when_all_ended(fast_eval, tmp_path):
@@ -952,6 +955,8 @@ def test_a_batched_round_submits_each_job_once_and_reports_when_all_ended(fast_e
         runner.tick()  # batch 01 in; 02 refused before delivery: resumes next tick
         assert item['stage'] == 'preparing' and item['evaluation_jobs'] == {
             'evaluation-01': '901'}
+        first = world.now
+        world.now += 60
         runner.tick()
         assert item['stage'] == 'submitted' and item['evaluation_jobs'] == {
             'evaluation-01': '901', 'evaluation-02': '902', 'evaluation-03': '903'}
@@ -976,6 +981,12 @@ def test_a_batched_round_submits_each_job_once_and_reports_when_all_ended(fast_e
     assert any(e['kind'] == 'evaluation_batches_missing' for e in runner.state['log'])
     record = json.loads((Path(item['root']) / 'eval-record.json').read_text())
     assert record['watcher']['evaluation_jobs'] == item['evaluation_jobs']
+    # times from the first job's submission, not the last (a partly deferred round)
+    assert item['first_submitted_at'] == first < item['submitted_at']
+    assert record['watcher']['batch_submitted_at'] == {
+        'evaluation-01': first, 'evaluation-02': first + 60, 'evaluation-03': first + 60}
+    preparing = next(e['at'] for e in runner.state['log'] if e['kind'] == 'evaluation_preparing')
+    assert record['stage_seconds']['prepare_wall'] == first - preparing
 
 
 def test_a_failed_batch_submission_is_recorded_and_the_others_still_run(fast_eval, tmp_path):
@@ -1000,6 +1011,10 @@ def test_a_failed_batch_submission_is_recorded_and_the_others_still_run(fast_eva
     assert item['batch_failures'] == {'evaluation-02': {'stage': 'submit_unknown',
                                                        'reason': 'OSError'}}
     assert len(world.submits) == 2
+    plans, missing = fast_eval.reported_plans(Path(item['root']) / 'round/batches.json')
+    assert {m['batch']: (m['status'], m['reason']) for m in missing} == {
+        'evaluation-01': ('no_result', None), 'evaluation-02': ('submit_unknown', 'OSError'),
+        'evaluation-03': ('no_result', None)} and plans == []  # before any job ended
     for job, number in (('901', 1), ('902', 3)):
         world.live.discard(job)
         (Path(item['root']) / f'round/evaluation-0{number}/result.json').write_text(
@@ -1064,15 +1079,18 @@ def test_a_batched_round_is_one_merged_report_paired_with_a_100_seed_baseline(
                                                     str(other_plan))
     assert summary['batches'] == ['evaluation-01', 'evaluation-02', 'evaluation-03']
     assert summary['batches_missing'] == [
-        {'batch': 'evaluation-03', 'games': 4, 'status': 'failed'}]
+        {'batch': 'evaluation-03', 'games': 4, 'status': 'failed', 'reason': None}]
     now = summary['cohorts']['current']
     assert now['planned'] == 3 and now['scored'] == 2 and now['wins'] == 1
     assert [row['seed'] for row in now['excluded']] == ['s3']  # unknown: excluded, counted
     assert summary['paired']['baseline']['floor_pairs'] == 2
+    assert summary['paired']['baseline']['common_seeds'] == 2
+    assert summary['paired']['baseline']['seed_sets_equal'] is False  # 3 seeds against 2
     assert summary['skipped_references'] == {
         'previous': {'plan': str(other_plan), 'differing': ['seed_manifest']}}
     readme = (tmp_path / 'eval/report/README.md').read_text()
     assert 'BATCHES WITHOUT A REPORT' in readme and 'evaluation-03' in readme
+    assert 'baseline: paired on 2 common seeds (current 3, baseline 2 seeds' in readme
     record = json.loads((tmp_path / 'eval/eval-record.json').read_text())
     assert [b['batch'] for b in record['batches']] == ['evaluation-01', 'evaluation-02']
     assert record['suite']['planned'] == 8 and record['status'] == 'completed'
@@ -1103,8 +1121,62 @@ def test_a_batched_or_prefix_seed_baseline_passes_the_start_check(fast_eval, tmp
     batches.write_text(json.dumps({'batches': [
         {'directory': '.', 'plan_sha256': fast_eval_hash(plan)}]}))
     args.baseline_plan = batches
+    with pytest.raises(ValueError, match='baseline_round_has_batches_without_a_report'):
+        fast_eval.settings_from(args)  # a batch without a report: refused at start
+    (plan.parent / 'result.json').write_text('{"observation_report": {}}')
     assert fast_eval.settings_from(args)['baseline']['plan'] == str(batches.resolve())
     copy.write_text(json.dumps({'seeds': ['x1']}))
     args.baseline_plan = plan  # the copy no longer matches its sha256: no pairing
     with pytest.raises(ValueError, match='seed_manifest'):
         fast_eval.settings_from(args)
+
+
+def test_a_round_with_a_missing_batch_never_blocks_the_rounds_after_it(fast_eval, tmp_path):
+    """Review of #595: a reported round with a batch missing is the next round's partial
+    previous reference (its reported batches only, said so); two more rounds report."""
+    world = World()
+    runner = loop(fast_eval, world, tmp_path, seeds=4, batch_seeds=2)
+    cohorts = {}
+
+    def read(result, plan, validate_plan=True):  # refuses a missing report, as the owner
+        if 'observation_report' not in json.loads(Path(result).read_text()):
+            raise ValueError('observation_report_missing')
+        manifest = json.loads(Path(plan).read_text())['manifest']
+        return {'manifest': manifest}, {}, {'cohort': cohorts[str(plan)]}
+
+    summaries = []
+    for number, cp in enumerate(('cp-a', 'cp-b', 'cp-c'), start=1):
+        world.record(cp, number)
+        world.now += 7200
+        runner.tick()
+        item = runner.state['evaluations'][-1]
+        world.live.discard(item['prepare_job'])
+        round_dir = Path(item['root']) / 'round'
+        plans = [batch_plan(round_dir / f'evaluation-0{n}', ['s1', 's2', 's3', 's4'], 2)
+                 for n in (1, 2)]
+        (round_dir / 'batches.json').write_text(json.dumps({'batches': [
+            {'directory': p.parent.name, 'plan_sha256': fast_eval_hash(p)} for p in plans]}))
+        for plan, seeds in zip(plans, (('s1', 's2'), ('s3', 's4')), strict=True):
+            cohorts[str(plan)] = cohort(tmp_path, f'{cp}-{plan.parent.name}', [
+                (seed, 'finished', 10 * number, 'loss') for seed in seeds])
+        runner.tick()
+        assert item['stage'] == 'submitted'
+        for job in item['evaluation_jobs'].values():
+            world.live.discard(job)
+        for n, plan in enumerate(plans, start=1):  # the first round's batch 02 fails
+            body = ({'status': 'failed'} if (number, n) == (1, 2)
+                    else {'status': 'completed', 'observation_report': {}})
+            (plan.parent / 'result.json').write_text(json.dumps(body))
+        with (patch.object(fast_eval.evaluate, 'read_observation_report', read),
+              patch.object(fast_eval, 'DECISION_GAMES', 1)):
+            runner.tick()
+        assert item['stage'] == 'reported', item.get('reason')
+        summaries.append(item['summary'])
+    first, second, third = summaries
+    assert first['batches_missing'][0]['batch'] == 'evaluation-02'
+    assert second['references_partial']['previous']['batches_reported'] == 1
+    assert second['references_partial']['previous']['games_missing'] == 2
+    assert second['paired']['previous']['common_seeds'] == 2
+    assert third['references_partial'] == {} and third['paired']['previous']['seed_sets_equal']
+    readme = (Path(runner.state['evaluations'][1]['root']) / 'report/README.md').read_text()
+    assert 'PREVIOUS IS PARTIAL: 1 of 2 batches, 2 games' in readme
