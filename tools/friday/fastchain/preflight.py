@@ -111,7 +111,8 @@ def check_gpu_node_cores(plan: dict[str, Any]) -> Result:
            f"rank_cores {k['rank_cores']} x {p['ranks']} ranks)")
     if cores is None:
         return Result("gpu_node_cores", False, f"{ask}; site gpu_types.{p['card_type']} has "
-                      "no node_cores (the cores of one node of this type): cannot check it fits")
+                      "no node_cores, so the request cannot be checked: add `node_cores = N` (the "
+                      f"cores of one node of this type) to [site.gpu_types.\"{p['card_type']}\"]")
     if p["gpu_cores"] > cores:
         return Result("gpu_node_cores", False, f"{ask} > {cores} cores of one "
                       f"{p['card_type']} node: the job can never start (lower service_cores "

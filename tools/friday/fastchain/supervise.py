@@ -295,7 +295,8 @@ class Chain:
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
                                           for name, loop in self.eval_loops.items()},
                   "clock": self.clock_facts(),
-                  "seed_overlaps": self.state.get("seed_overlaps", 0)}
+                  "seed_overlaps": self.state.get("seed_overlaps", 0),
+                  "seed_summaries_unreadable": self.state.get("seed_summaries_unreadable", 0)}
         if self.state["generations"] and self.record(
                 Path(self.state["generations"][-1]["run"]), "final"):
             record["run_record"] = str(self.dir / "run-record.json")
@@ -320,9 +321,15 @@ class Chain:
             if path.exists():
                 training = ((json.loads(path.read_text()).get("clock") or {})
                             .get("chain_training_seconds"))
+        reached = (None if target is None or training is None
+                   else training >= target - TARGET_TOLERANCE_SECONDS)
+        end = self.state.get("target_end")
+        if end:  # #610: the chain ended on its newest CP's count (target_done)
+            training, reached = end["training_seconds"], end["reached"]
         return {"training_seconds": training, "train_target_seconds": target,
-                "train_target_reached": (None if target is None or training is None
-                                         else training >= target - TARGET_TOLERANCE_SECONDS),
+                "train_target_reached": reached,
+                **({"train_left_seconds": end["train_left_seconds"],
+                    "counted_from_checkpoint": end["checkpoint"]} if end else {}),
                 "wall_seconds": round(self.clock() - self.state["started_at"], 1),
                 "wall_limit_seconds": self.knobs["long_wall_seconds"]}
 
@@ -366,6 +373,8 @@ class Chain:
             else:
                 unreadable += 1
         over = [t for t in taken if t > rounds]
+        self.state["seed_summaries_unreadable"] = (
+            self.state.get("seed_summaries_unreadable", 0) + unreadable)
         read = f"{len(taken)} drivers read" + (
             f", {unreadable} summary.json unreadable (skipped)" if unreadable else "")
         if over:
@@ -988,7 +997,7 @@ class Chain:
                 why = self.refuse_resume()
                 done = self.target_done()
                 if done:  # #610: no generation is left to run, whatever else refuses
-                    return self.final(True, done)
+                    return self.final(True, done + (f"; also: {why}" if why else ""))
                 if why:
                     return self.final(False, why)
                 self.record(Path(generation["run"]), "generation_end")
@@ -1010,8 +1019,10 @@ class Chain:
 
     def target_done(self) -> str | None:
         """#610: with a training target, a generation that died after its last CP may leave
-        less training than min_generation_seconds; the chain then ends ok with the target
-        wording instead of submitting a generation preflight would refuse. An unreadable CP
+        less training than min_generation_seconds; the chain then ends ok instead of
+        submitting a generation preflight would refuse: "target reached" only within
+        TARGET_TOLERANCE_SECONDS, else "target end" with the seconds left. The CP's count
+        goes to state["target_end"], which FINAL's clock then reports. An unreadable CP
         config returns None: the next submit then fails on it loudly."""
         target = self.state.get("train_target_seconds") or 0
         if not target:
@@ -1024,9 +1035,13 @@ class Chain:
         left = max(0, math.ceil(target - consumed))
         if left >= self.knobs["min_generation_seconds"]:
             return None
-        return (f"training target reached at CP {checkpoint}: {consumed:.0f} of {target} s "
-                f"trained, {left} s left < min_generation_seconds "
-                f"{self.knobs['min_generation_seconds']} s; no generation submitted")
+        reached = left <= TARGET_TOLERANCE_SECONDS
+        self.state["target_end"] = {"checkpoint": checkpoint, "training_seconds": consumed,
+                                    "train_left_seconds": left, "reached": reached}
+        return (f"training target {'reached' if reached else 'end'} at CP {checkpoint}: "
+                f"{consumed:.0f} of {target} s trained, {left} s left < "
+                f"min_generation_seconds {self.knobs['min_generation_seconds']} s; no "
+                "generation submitted")
 
     def normal_cause(self, result: dict[str, Any]) -> str:
         return f"window complete ({result['window_end']})" + self.target_words()
