@@ -58,6 +58,11 @@ ACTOR_LAYOUT = {"env/bin/python": "evaluation Python env", "node22.23.4/bin/node
                 "game": "deployed game (STS2_GAME_DIR)", "dotnet-sdk9.0.117": ".NET SDK"}
 # One evaluation job admits at most this many games (`EvaluationLedger.run_managed`).
 MAX_DISPATCH_SLOTS = 200
+# Per-game wall cap bound (`episode_seconds`, Host preparation + play). On the slow node class
+# 1800 s cut 80 of 300 healthy games still moving (about 0.39 decisions/s; plus 1 early
+# TimeoutExpired and 3 not started, #614). A longer cap is a plan value; a game cut there stays
+# unknown/censored and is never retried.
+MAX_EPISODE_SECONDS = 7200
 BATCHES = "batches.json"  # a round of several evaluation jobs (#591): written last
 
 
@@ -154,8 +159,10 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
 
     if (type(workers) is not int or not 1 <= workers <= 16
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
-            or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
-            or wall_seconds <= episode_seconds + 180
+            or type(episode_seconds) is not int
+            or not 10 <= episode_seconds <= MAX_EPISODE_SECONDS
+            # one capped game must still start: the start window is wall - cap - reserve
+            or wall_seconds <= episode_seconds + CLOSE_RESERVE_SECONDS
             or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)
             or memory_gb is not None and (type(memory_gb) is not int
                                           or not 1 <= memory_gb <= 512)):

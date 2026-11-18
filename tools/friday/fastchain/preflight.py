@@ -793,14 +793,32 @@ def check_evaluation_jobs(plan: dict[str, Any]) -> Result:
     """Printed (#612): where the evaluation watchers' jobs run (site eval_partition /
     eval_constraint; absent = today's partition general without a constraint) and the
     share of planned games not finished and scored above which a round is degraded. The
-    node class decided usability on hardware: the slow class cut 81 of 300 games."""
+    node class decided usability on hardware: of 300 games the slow class cut 80 at the
+    1800 s cap (plus 1 early TimeoutExpired and 3 not started, #614)."""
     site, k = plan["site"], plan["knobs"]
     partition = site.get("eval_partition") or "general (fast_eval default)"
     constraint = site.get("eval_constraint") or "none"
     return Result("evaluation_jobs", True, f"partition {partition}, node constraint "
                   f"{constraint}; a round above {k['eval_degraded_share']:.0%} of planned games "
-                  "not finished and scored is labelled degraded, never a baseline",
+                  "not finished and scored is labelled degraded, never a baseline; per-game "
+                  f"cap {k['eval_episode_seconds']} s, job wall "
+                  f"{k['eval_wall_seconds'] or 'planned from the games'}",
                   warn=not site.get("eval_constraint"))
+
+
+def check_evaluation_cap(plan: dict[str, Any]) -> Result:
+    """#614: a per-game cap above 1800 s with the planned job wall (eval_wall_seconds 0)
+    keeps the fast-node start window (planned play), so on the slow node class the last
+    games of a round may not start. Printed as a warning, never refused."""
+    k = plan["knobs"]
+    cap, wall = k["eval_episode_seconds"], k["eval_wall_seconds"]
+    if cap > 1800 and not wall:
+        return Result("evaluation_cap", True, f"eval_episode_seconds {cap} with "
+                      "eval_wall_seconds 0: the planned job wall keeps the fast-node start "
+                      "window, so slow-node rounds may leave games not started; set "
+                      "eval_wall_seconds too (e.g. 17000 with 3600)", warn=True)
+    return Result("evaluation_cap", True, f"per-game cap {cap} s, job wall "
+                  f"{wall or 'planned from the games'}")
 
 
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
@@ -816,7 +834,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
             check_seeds(plan, facts), check_cores(plan),
-            check_resume(plan, facts), check_evaluation_jobs(plan), check_queue(facts)]
+            check_resume(plan, facts), check_evaluation_jobs(plan), check_evaluation_cap(plan),
+            check_queue(facts)]
 
 
 def report(results: list[Result]) -> str:

@@ -21,6 +21,9 @@ from typing import Any, cast
 import evaluate
 from batch import hashed, private_root, read_pinned, save
 
+# A batch needs a start window: evaluate.prepare wants wall > cap (900 s) + close reserve.
+MIN_BATCH_WALL = 900 + evaluate.CLOSE_RESERVE_SECONDS
+
 SCHEMA = 'spireagent/friday-natural-quick-1'
 PROTOCOL_KEYS = {'host_pin', 'runtime_pin', 'input_spec', 'initial_progress_sha256',
                  'behavior_policy'}
@@ -247,7 +250,7 @@ def run(path: Path) -> dict[str, Any]:
                 break
         cursor = 1
         while reason is None and len(set(current_good) & set(baseline_good)) < 20:
-            if (root / 'STOP').exists() or deadline - time.time() <= 1080:
+            if (root / 'STOP').exists() or deadline - time.time() <= MIN_BATCH_WALL:
                 reason = 'round_stop_or_wall_limit'
                 break
             unavailable = attempted_baseline - set(baseline_good)
@@ -262,7 +265,7 @@ def run(path: Path) -> dict[str, Any]:
                      and seeds[n - 1] not in baseline_good])
                 if not selected:
                     continue
-                if (root / 'STOP').exists() or deadline - time.time() <= 1080:
+                if (root / 'STOP').exists() or deadline - time.time() <= MIN_BATCH_WALL:
                     reason = 'round_stop_or_wall_limit'
                     break
                 batch_root = root / 'batches' / f'{len(batches):03d}-{role}'

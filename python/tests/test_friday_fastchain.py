@@ -3038,6 +3038,48 @@ def test_the_evaluation_node_class_and_degraded_threshold_reach_watchers_and_pre
         supervise.run_profile.load_site(chain.args.site)
 
 
+def test_the_evaluation_game_cap_and_job_wall_reach_watchers(tmp_path):
+    """#614: eval_episode_seconds (default 1800 = fast_eval's own default) and
+    eval_wall_seconds (0 = planned, no flag) reach both watchers' fast_eval commands; a job
+    wall that cannot hold one capped game is refused in the profile."""
+    for sets, cap, wall in (({}, '1800', None),
+                            ({'eval_episode_seconds': 3600, 'eval_wall_seconds': 17000},
+                             '3600', '17000')):
+        chain, _ = chain_for(tmp_path / cap, [], eval_a10_enabled='true',
+                             eval_a10_suite='a10-50', **sets)
+        template = tmp_path / 'execution.json'
+        template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+        chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+        chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+        chain.dir.mkdir(parents=True)
+        watchers = chain.watchers()
+        for name in ('a0', 'a10'):
+            cmd = chain.eval_command(name, watchers[name])
+            assert cmd[cmd.index('--episode-seconds') + 1] == cap
+            assert (cmd[cmd.index('--wall-seconds') + 1] if '--wall-seconds' in cmd
+                    else None) == wall
+    plan = plan_for(cards=3)
+    assert 'per-game cap 1800 s, job wall planned from the games' in (
+        preflight.check_evaluation_jobs(plan).detail)
+    assert not preflight.check_evaluation_cap(plan).warn
+    # a longer cap with the planned wall keeps the fast-node start window: a warning only
+    loud = preflight.check_evaluation_cap({**plan, 'knobs': {
+        **plan['knobs'], 'eval_episode_seconds': 3600, 'eval_wall_seconds': 0}})
+    assert loud.ok and loud.warn and 'set eval_wall_seconds too' in loud.detail
+    assert 'WARN evaluation_cap' in preflight.report(preflight.checks(
+        {**plan, 'knobs': {**plan['knobs'], 'eval_episode_seconds': 3600}},
+        good_facts(plan)))
+    # the start window is wall - cap - close reserve: a wall with none is refused
+    evaluate_text = (FASTCHAIN.parent / 'evaluate.py').read_text()
+    assert f'\nCLOSE_RESERVE_SECONDS = {run_profile.EVAL_CLOSE_RESERVE_SECONDS}\n' \
+        in evaluate_text
+    with pytest.raises(supervise.run_profile.ProfileError, match='no game could start'):
+        supervise.run_profile.load_profile(
+            PROFILE, ['eval_episode_seconds=3600', 'eval_wall_seconds=4500'])
+    supervise.run_profile.load_profile(
+        PROFILE, ['eval_episode_seconds=3600', 'eval_wall_seconds=4501'])
+
+
 def eval_chain(tmp_path, baselines='', **changes):
     """A chain with both standing watchers; `baselines` is appended to the site's [site]."""
     chain, cluster = chain_for(tmp_path, [{}], eval_a10_enabled='true', eval_a10_suite='a10-50',
@@ -4394,7 +4436,14 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
     assert {n for n in base if base[n] != long[n]} == listed
     assert {n for n in long if long[n] != check[n]} == {
         'train_target_seconds', 'long_wall_seconds', 'eval_seeds', 'eval_a10_seeds',
-        'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest'}
+        'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest',
+        'eval_wall_seconds'}
+    # #614: the check keeps the long run's cap and an explicit wall (same evaluation path);
+    # the start window (wall - cap - close reserve) still holds the check's 32-game round
+    assert check['eval_episode_seconds'] == long['eval_episode_seconds'] == 3600
+    assert long['eval_wall_seconds'] == 17000
+    assert check['eval_wall_seconds'] - check['eval_episode_seconds'] \
+        - run_profile.EVAL_CLOSE_RESERVE_SECONDS >= 1800
     # GPU test jobs <= 1 h; one resume can start; >= 4 CPs at 300 s so keep-newest 3
     # deletes one; at least one evaluation round while training runs
     assert check['train_target_seconds'] <= 1800 and check['long_wall_seconds'] <= 3600

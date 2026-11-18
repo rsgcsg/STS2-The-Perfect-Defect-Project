@@ -672,6 +672,20 @@ def test_job_memory_is_a_plan_setting_with_the_old_default(evaluate, execution, 
         prepared(evaluate, execution, tmp_path / 'bad', memory_gb=0)
 
 
+def test_episode_cap_is_a_plan_value_up_to_its_bound(evaluate, execution, tmp_path):
+    """#614: the per-game cap may exceed 1800 s (slow node class), up to
+    MAX_EPISODE_SECONDS, and the job wall must leave a start window (wall - cap - reserve)."""
+    plan, _ = prepared(evaluate, execution, tmp_path / 'long', wall_seconds=17000,
+                       episode_seconds=3600)
+    assert plan['episode_seconds'] == 3600
+    for name, keywords in (('over', {'episode_seconds': evaluate.MAX_EPISODE_SECONDS + 1,
+                                     'wall_seconds': 21600}),
+                           ('tight', {'episode_seconds': 3600,  # no game could start
+                                      'wall_seconds': 3600 + evaluate.CLOSE_RESERVE_SECONDS})):
+        with pytest.raises(ValueError, match='bounded_allocation'):
+            prepared(evaluate, execution, tmp_path / name, **keywords)
+
+
 def write_attempt(evaluate, scratch, number, *, finished=True):
     """One attempt original as the pipeline leaves it (receipts in the ledger's shape)."""
     attempt = scratch / 'ledger/attempts' / f'{number:06d}'
