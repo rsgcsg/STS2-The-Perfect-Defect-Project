@@ -70,15 +70,20 @@ compile_warmup_dumps = ["/PATH/TO/dumps/u000003074-d0000773-m2-e0"]
 # sbatch --constraint takes it ("a&b" = both); "" = partition and gres already decide the
 # type. nodes: sinfo is read on these for the printed snapshot (and --fallback) only.
 # nodelist (optional): an explicit --nodelist pin; leave it out unless the site needs one.
+# node_cores: the cores of one node of this type (sinfo -o "%N %c"); preflight refuses a
+# GPU job whose service_cores + rank_cores x ranks exceeds it (#607). A type without it is
+# refused at preflight (the request cannot be checked).
 [site.gpu_types."A100-40"]
 gres = "a100"
 partition = "GPU-PARTITION"
 constraint = "A100-40-NODE-FEATURE"
 nodes = ["GPU-NODE-1"]
+node_cores = 64
 
 [site.gpu_types."A100-80"]
 gres = "a100"
 partition = "GPU-PARTITION"
 constraint = "A100-80-NODE-FEATURE"
 nodes = ["GPU-NODE-2"]
+node_cores = 64
 # nodelist = "GPU-NODE-2"

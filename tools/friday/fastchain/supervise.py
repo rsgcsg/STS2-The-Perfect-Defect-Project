@@ -295,7 +295,8 @@ class Chain:
                   "evaluation_watchers": {name: getattr(loop, "pid", None)
                                           for name, loop in self.eval_loops.items()},
                   "clock": self.clock_facts(),
-                  "seed_overlaps": self.state.get("seed_overlaps", 0)}
+                  "seed_overlaps": self.state.get("seed_overlaps", 0),
+                  "seed_summaries_unreadable": self.state.get("seed_summaries_unreadable", 0)}
         if self.state["generations"] and self.record(
                 Path(self.state["generations"][-1]["run"]), "final"):
             record["run_record"] = str(self.dir / "run-record.json")
@@ -320,9 +321,15 @@ class Chain:
             if path.exists():
                 training = ((json.loads(path.read_text()).get("clock") or {})
                             .get("chain_training_seconds"))
+        reached = (None if target is None or training is None
+                   else training >= target - TARGET_TOLERANCE_SECONDS)
+        end = self.state.get("target_end")
+        if end:  # #610: the chain ended on its newest CP's count (target_done)
+            training, reached = end["training_seconds"], end["reached"]
         return {"training_seconds": training, "train_target_seconds": target,
-                "train_target_reached": (None if target is None or training is None
-                                         else training >= target - TARGET_TOLERANCE_SECONDS),
+                "train_target_reached": reached,
+                **({"train_left_seconds": end["train_left_seconds"],
+                    "counted_from_checkpoint": end["checkpoint"]} if end else {}),
                 "wall_seconds": round(self.clock() - self.state["started_at"], 1),
                 "wall_limit_seconds": self.knobs["long_wall_seconds"]}
 
@@ -353,19 +360,38 @@ class Chain:
     def seed_overlap(self, run: Path, rounds: int) -> None:
         """#604 S2: a driver of the previous generation that took more seeds than the
         rounds the next start skips (real rate above seed_games_per_driver_hour) means the
-        next streams revisit some of its lines. Said loudly and counted; never a stop."""
-        taken = [json.loads(path.read_text()).get("seed_stream", {}).get("taken", 0)
-                 for path in sorted(run.glob("env-*/p*/summary.json"))]
+        next streams revisit some of its lines. Said loudly and counted; never a stop: an
+        unreadable or half-written summary.json is skipped and counted (#610)."""
+        taken, unreadable = [], 0
+        for path in sorted(run.glob("env-*/p*/summary.json")):
+            try:
+                value = json.loads(path.read_text()).get("seed_stream", {}).get("taken", 0)
+            except (OSError, ValueError, AttributeError):
+                value = None
+            if isinstance(value, int) and not isinstance(value, bool):
+                taken.append(value)
+            else:
+                unreadable += 1
         over = [t for t in taken if t > rounds]
+        self.state["seed_summaries_unreadable"] = (
+            self.state.get("seed_summaries_unreadable", 0) + unreadable)
+        read = f"{len(taken)} drivers read" + (
+            f", {unreadable} summary.json unreadable (skipped)" if unreadable else "")
         if over:
             self.state["seed_overlaps"] = self.state.get("seed_overlaps", 0) + 1
             self.note("seed_streams_overlap", run=str(run), rounds_skipped=rounds,
-                      drivers_over=len(over), drivers_read=len(taken), max_taken=max(over),
+                      drivers_over=len(over), drivers_read=len(taken),
+                      drivers_unreadable=unreadable, max_taken=max(over),
                       rate_bound=self.knobs["seed_games_per_driver_hour"])
-            print(f"*** SEED STREAMS OVERLAP: {len(over)} of {len(taken)} drivers of {run.name} "
-                  f"took up to {max(over)} seeds > {rounds} rounds skipped; the next "
-                  "generation revisits some of their lines (raise "
-                  "seed_games_per_driver_hour)", file=sys.stderr, flush=True)
+            print(f"*** SEED STREAMS OVERLAP: {len(over)} of {read} of {run.name} took up "
+                  f"to {max(over)} seeds > {rounds} rounds skipped; the next generation "
+                  "revisits some of their lines (raise seed_games_per_driver_hour)",
+                  file=sys.stderr, flush=True)
+        elif unreadable:
+            self.note("seed_streams_unread", run=str(run), drivers_read=len(taken),
+                      drivers_unreadable=unreadable)
+            print(f"*** SEED STREAMS: overlap check of {run.name} on {read}; the skipped "
+                  "drivers are not checked", file=sys.stderr, flush=True)
 
     def seed_start(self) -> int:
         """#603: the seeds-file line where this generation's streams begin: 0 for the
@@ -969,6 +995,9 @@ class Chain:
                     return self.final(False, f"generation {number} ended {result['kind']}: "
                                       f"{result.get('failure') or result.get('stop')}")
                 why = self.refuse_resume()
+                done = self.target_done()
+                if done:  # #610: no generation is left to run, whatever else refuses
+                    return self.final(True, done + (f"; also: {why}" if why else ""))
                 if why:
                     return self.final(False, why)
                 self.record(Path(generation["run"]), "generation_end")
@@ -987,6 +1016,32 @@ class Chain:
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
             self.persist()
+
+    def target_done(self) -> str | None:
+        """#610: with a training target, a generation that died after its last CP may leave
+        less training than min_generation_seconds; the chain then ends ok instead of
+        submitting a generation preflight would refuse: "target reached" only within
+        TARGET_TOLERANCE_SECONDS, else "target end" with the seconds left. The CP's count
+        goes to state["target_end"], which FINAL's clock then reports. An unreadable CP
+        config returns None: the next submit then fails on it loudly."""
+        target = self.state.get("train_target_seconds") or 0
+        if not target:
+            return None
+        try:
+            checkpoint = self.newest_checkpoint()
+            consumed = self.checkpoint_consumed(checkpoint)
+        except (OSError, ValueError, KeyError):
+            return None
+        left = max(0, math.ceil(target - consumed))
+        if left >= self.knobs["min_generation_seconds"]:
+            return None
+        reached = left <= TARGET_TOLERANCE_SECONDS
+        self.state["target_end"] = {"checkpoint": checkpoint, "training_seconds": consumed,
+                                    "train_left_seconds": left, "reached": reached}
+        return (f"training target {'reached' if reached else 'end'} at CP {checkpoint}: "
+                f"{consumed:.0f} of {target} s trained, {left} s left < "
+                f"min_generation_seconds {self.knobs['min_generation_seconds']} s; no "
+                "generation submitted")
 
     def normal_cause(self, result: dict[str, Any]) -> str:
         return f"window complete ({result['window_end']})" + self.target_words()

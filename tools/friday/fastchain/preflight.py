@@ -101,6 +101,25 @@ def check_gpu_request(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         f"pending bound {plan['gpu_pending_max_seconds']} s"]), warn=not free)
 
 
+def check_gpu_node_cores(plan: dict[str, Any]) -> Result:
+    """#607: the GPU job's core request (service_cores + rank_cores x ranks) must fit one
+    node of the card type (site gpu_types.<type>.node_cores). Slurm would leave a larger
+    request pending for ever; a type without node_cores cannot be checked and is refused."""
+    p, cores = plan["placement"], plan.get("gpu_node_cores")
+    k = plan["knobs"]
+    ask = (f"GPU job asks {p['gpu_cores']} cores (service_cores {k['service_cores']} + "
+           f"rank_cores {k['rank_cores']} x {p['ranks']} ranks)")
+    if cores is None:
+        return Result("gpu_node_cores", False, f"{ask}; site gpu_types.{p['card_type']} has "
+                      "no node_cores, so the request cannot be checked: add `node_cores = N` (the "
+                      f"cores of one node of this type) to [site.gpu_types.\"{p['card_type']}\"]")
+    if p["gpu_cores"] > cores:
+        return Result("gpu_node_cores", False, f"{ask} > {cores} cores of one "
+                      f"{p['card_type']} node: the job can never start (lower service_cores "
+                      "or rank_cores)")
+    return Result("gpu_node_cores", True, f"{ask} <= {cores} cores of one {p['card_type']} node")
+
+
 def check_machine_types(plan: dict[str, Any]) -> Result:
     k = plan["knobs"]
     slow = set(k["env_slow_types"])
@@ -785,7 +804,8 @@ def check_evaluation_jobs(plan: dict[str, Any]) -> Result:
 
 
 def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
-    return [check_placement(plan), check_gpu_request(plan, facts), check_machine_types(plan),
+    return [check_placement(plan), check_gpu_request(plan, facts),
+            check_gpu_node_cores(plan), check_machine_types(plan),
             check_prep_scratch(plan), check_prep_schedulable(plan, facts),
             check_switches(plan), check_features(plan, facts), check_producer(plan, facts),
             check_frozen_recipe(plan, facts), check_declared_changes(plan, facts),

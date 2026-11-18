@@ -4178,3 +4178,120 @@ def test_seed_streams_overlap_is_said_and_counted_never_a_stop(tmp_path, capsys)
     assert 'SEED STREAMS OVERLAP' in capsys.readouterr().err
     final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
     assert final['ok'] and final['seed_overlaps'] == 1
+
+
+def test_preflight_refuses_a_gpu_core_request_larger_than_one_node(tmp_path):
+    """#607: service_cores + rank_cores x ranks against the site's node_cores."""
+    two = plan_for(cards=2)
+    assert two['placement']['gpu_cores'] == 32  # profile default 16 + 16
+    assert two['env_cores_max'] == 256 and preflight.check_cores(two).ok
+    small = {**two, 'gpu_node_cores': 32}
+    assert preflight.check_gpu_node_cores(small).ok
+    old = plan_for(cards=2, service_cores=30)
+    result = preflight.check_gpu_node_cores({**old, 'gpu_node_cores': 32})
+    assert not result.ok and '46 cores' in result.detail and '32 cores' in result.detail
+    assert not by_name(preflight.checks({**old, 'gpu_node_cores': 32},
+                                        good_facts(old)))['gpu_node_cores'].ok
+    three = plan_for(cards=3)
+    assert three['gpu_node_cores'] == 64 and preflight.check_gpu_node_cores(three).ok
+    assert not preflight.check_gpu_node_cores({**three, 'gpu_node_cores': 32}).ok
+    # a card type without node_cores cannot be checked: refused, never passed
+    site = tmp_path / 'site.toml'
+    site.write_text(SITE.read_text().replace('node_cores = 64\n', '', 1))
+    plain = launch.build_plan('t1', knobs(), run_profile.load_site(site), cards=2,
+                              card_type='A100-40', layout_spec=None, env_cores=None,
+                              smoke=False, probe_rows=[probe_row()], probe_only=True)
+    missing = preflight.check_gpu_node_cores(plain)
+    assert not missing.ok and 'no node_cores' in missing.detail
+    assert 'add `node_cores = N`' in missing.detail and 'site.gpu_types."A100-40"' in missing.detail
+    site.write_text(SITE.read_text().replace('node_cores = 64', 'node_cores = "64"', 1))
+    with pytest.raises(run_profile.ProfileError, match='node_cores: expected int'):
+        run_profile.load_site(site)
+
+
+KILLED = {'report': False, 'rc': 143, 'stop': 'gpu job end'}  # signal exit, no report
+
+
+@pytest.mark.parametrize('ending', [FENCE, KILLED], ids=['fence', 'killed_no_report'])
+def test_a_target_chain_whose_generation_died_after_the_last_cp_ends_target_reached(
+        tmp_path, monkeypatch, ending):
+    """#610: the training left after the last CP is below min_generation_seconds: the
+    chain ends ok and submits nothing more; "reached" only within the tolerance, and
+    FINAL's clock carries the CP's count, agreeing with the cause."""
+    chain, cluster = chain_for(tmp_path, [ending, {}], train_target_seconds='3600',
+                               long_wall_seconds='7200')
+    consumed = {'value': 3570.0}
+    monkeypatch.setattr(launch, 'checkpoint_config', lambda peer, cp: {
+        'operating_budget': {'id': 'c-lr1', 'consumed_seconds': consumed['value']}})
+    assert chain.run() == 0
+    assert len(cluster.argvs) == 1
+    assert chain.state['generations'][0]['outcome']['kind'] == 'resumable'
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['ok'] and final['cause'].startswith('training target reached at CP cp-lr1')
+    assert '3570 of 3600 s trained, 30 s left < min_generation_seconds 1800' in final['cause']
+    assert 'also:' not in final['cause']
+    assert final['clock']['training_seconds'] == 3570.0
+    assert final['clock']['train_target_reached'] is True
+    assert final['clock']['train_left_seconds'] == 30
+    # short of the target by more than the tolerance: an honest "target end", reached False
+    consumed['value'] = 3000.0
+    chain, cluster = chain_for(tmp_path / 'short', [ending, {}],
+                               train_target_seconds='3600', long_wall_seconds='7200')
+    assert chain.run() == 0 and len(cluster.argvs) == 1
+    final = json.loads((tmp_path / 'short' / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['ok'] and final['cause'].startswith('training target end at CP cp-lr1: '
+                                                     '3000 of 3600 s trained, 600 s left')
+    assert final['clock']['train_target_reached'] is False
+    assert final['clock']['train_left_seconds'] == 600
+    # another refusal also applies: kept in the cause
+    chain, cluster = chain_for(tmp_path / 'stop', [ending, {}],
+                               train_target_seconds='3600', long_wall_seconds='7200')
+    refuse = chain.refuse_resume
+    chain.refuse_resume = lambda: refuse() or 'operator stop requested (test)'
+    assert chain.run() == 0 and len(cluster.argvs) == 1
+    assert chain.state['final']['cause'].endswith('; also: operator stop requested (test)')
+    # more training left than a generation's minimum: resumed as before
+    consumed['value'] = 1000.0
+    chain, cluster = chain_for(tmp_path / 'b', [ending, {}], train_target_seconds='3600',
+                               long_wall_seconds='7200')
+    assert chain.run() == 0 and len(cluster.argvs) == 2
+
+
+def test_an_unreadable_driver_summary_never_stops_the_seed_overlap_check(tmp_path, capsys):
+    """#610: a half-written summary.json is skipped and counted; the chain goes on."""
+    chain, cluster = chain_for(tmp_path, [FENCE, {}])
+    launch_main = cluster.launch_main
+
+    def launch_with_drivers(argv):
+        code = launch_main(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        for p, text in (('p1', json.dumps({'seed_stream': {'taken': 10_000_000}})),
+                        ('p2', '{"seed_stream": {"tak'), ('p3', '[]')):
+            out = run / 'env-n0-77' / p
+            out.mkdir(parents=True)
+            (out / 'summary.json').write_text(text)
+        return code
+    chain.launch_main = launch_with_drivers
+    assert chain.run() == 0 and len(cluster.argvs) == 2
+    notes = [e for e in chain.state['log'] if e['kind'] == 'seed_streams_overlap']
+    assert len(notes) == 1 and notes[0]['drivers_read'] == 1
+    assert notes[0]['drivers_unreadable'] == 2
+    err = capsys.readouterr().err
+    assert '1 of 1 drivers read, 2 summary.json unreadable (skipped)' in err
+    final = json.loads((tmp_path / 'chain-lr1' / 'FINAL.json').read_text())
+    assert final['seed_overlaps'] == 1 and final['seed_summaries_unreadable'] == 2
+    # no overlap but unreadable files: said, still never a stop
+    chain, cluster = chain_for(tmp_path / 'b', [FENCE, {}])
+    launch_main_b = cluster.launch_main
+
+    def launch_broken(argv):
+        code = launch_main_b(argv)
+        out = tmp_path / 'b' / f'run-{argv[1]}' / 'env-n0-77' / 'p1'
+        out.mkdir(parents=True)
+        (out / 'summary.json').write_text('{')
+        return code
+    chain.launch_main = launch_broken
+    assert chain.run() == 0
+    assert [e['drivers_unreadable'] for e in chain.state['log']
+            if e['kind'] == 'seed_streams_unread'] == [1]
+    assert 'the skipped drivers are not checked' in capsys.readouterr().err
