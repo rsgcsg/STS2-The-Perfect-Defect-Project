@@ -111,7 +111,9 @@ before generation 0 (and in --dry-run), and a refusal stops the chain there. A w
 that dies later is DEAD in the readout. The site's `eval_partition` / `eval_constraint`
 (absent = today's submission) place the watchers' evaluation jobs and the profile's
 `eval_degraded_share` labels degraded rounds (fast_eval --partition / --constraint /
---degraded-share, #612); a degraded baseline round is refused by the start check.
+--degraded-share, #612); a degraded baseline round is refused by the start check. The
+profile's `eval_episode_seconds` (per-game cap) and `eval_wall_seconds` (job wall, 0 = planned
+from the games) are fast_eval --episode-seconds / --wall-seconds (#614).
 --eval-execution is a template (models, retention, pipeline): the chain writes its copy
 with `"storage_mode": "shared_local"` on the site's peer (no R2).
 """
@@ -905,6 +907,10 @@ class Chain:
         cmd += ["--constraint", self.site["eval_constraint"]] if self.site.get(
             "eval_constraint") else []
         cmd += ["--degraded-share", str(self.knobs["eval_degraded_share"])]
+        # #614: per-game cap and job wall (slow node class: games run ~5x longer)
+        cmd += ["--episode-seconds", str(self.knobs["eval_episode_seconds"])]
+        cmd += ["--wall-seconds", str(self.knobs["eval_wall_seconds"])] if self.knobs[
+            "eval_wall_seconds"] else []
         baseline = watcher["baseline"]
         if baseline is not None:
             cmd += ["--baseline-plan", baseline["plan"], "--baseline-source", baseline["source"]]

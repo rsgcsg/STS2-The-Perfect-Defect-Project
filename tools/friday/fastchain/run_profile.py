@@ -261,6 +261,10 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["checkpoint_keep_newest"] == 1:
         out.append("checkpoint_keep_newest is 0 (keep every CP) or >= 2: the newest is the "
                    "resume CP, the one before covers an evaluation's claim (cp_retention.py)")
+    if values["eval_wall_seconds"] and (
+            values["eval_wall_seconds"] <= values["eval_episode_seconds"] + 180):
+        out.append(f"eval_wall_seconds {values['eval_wall_seconds']} is 0 (planned) or above "
+                   f"eval_episode_seconds + 180 ({values['eval_episode_seconds'] + 180})")
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if (any(w != 1 for w in values["hp_combat_weights"].values())
@@ -486,6 +490,10 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # #612: a round above this share of planned games not finished and scored is degraded
     # (fast_eval --degraded-share takes the same [0, 0.99])
     "eval_degraded_share": _num(0, 0.99),
+    # #614: per-game wall cap (fast_eval --episode-seconds; evaluate.MAX_EPISODE_SECONDS) and
+    # the evaluation job wall (fast_eval --wall-seconds; 0 = planned from games and steps)
+    "eval_episode_seconds": _int(10, 7200),
+    "eval_wall_seconds": _int(0, 21600),
     "disk_sample_seconds": _int(5, 3600),
     "disk_warn_free_pct": _int(1, 99),
     "disk_stop_free_pct": _int(1, 99),

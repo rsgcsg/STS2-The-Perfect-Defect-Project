@@ -799,7 +799,9 @@ def check_evaluation_jobs(plan: dict[str, Any]) -> Result:
     constraint = site.get("eval_constraint") or "none"
     return Result("evaluation_jobs", True, f"partition {partition}, node constraint "
                   f"{constraint}; a round above {k['eval_degraded_share']:.0%} of planned games "
-                  "not finished and scored is labelled degraded, never a baseline",
+                  "not finished and scored is labelled degraded, never a baseline; per-game "
+                  f"cap {k['eval_episode_seconds']} s, job wall "
+                  f"{k['eval_wall_seconds'] or 'planned from the games'}",
                   warn=not site.get("eval_constraint"))
 
 

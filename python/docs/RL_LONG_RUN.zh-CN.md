@@ -229,6 +229,11 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   unknown、censored、未开始、save_failed 等、不计分批里跑完的局、没交报告的批的局都算，没交报告的
   批的局留在分母里）时报告首行标 DEGRADED 和各分项计数，看守照常报告并响亮记 `evaluation_round_degraded`（排除并计数，
   不作废、不停链）；这样的轮做基线时起步检查直接拒绝。
+  评估每局时限（#614）：`eval_episode_seconds`（默认 1800，最多 7200 = `evaluate.MAX_EPISODE_SECONDS`，
+  含 Host 准备和对局）和作业墙钟 `eval_wall_seconds`（0 = 按局数和快节点步速算）由 supervise 传给
+  两个看守（`--episode-seconds` / `--wall-seconds`）。到时限还没结束的局照旧切掉、记
+  unknown/censored、不重发。慢节点类每局约慢 5 倍（同种子同决策，墙钟比中位 4.9）：1800 秒切掉的
+  局都还在走（约 0.39 决策/秒）。慢节点类要用 3600 秒时限和 17000 秒作业墙钟，否则最后几局排不进。
 - 保留与 R7 审计局（#529）：`release_trained_segments = true`（学习者数据面：持久 CP 覆盖后
   删已训练原件）。`r7_games_per_hour`（10，0 = 关）按 env 节点均分，每节点的 admission
   sidecar 持有 `R7Selection`（自己的随机 key、`r7_expected_games_per_node_hour` 估计、

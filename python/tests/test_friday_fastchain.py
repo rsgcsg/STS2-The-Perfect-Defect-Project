@@ -3038,6 +3038,34 @@ def test_the_evaluation_node_class_and_degraded_threshold_reach_watchers_and_pre
         supervise.run_profile.load_site(chain.args.site)
 
 
+def test_the_evaluation_game_cap_and_job_wall_reach_watchers(tmp_path):
+    """#614: eval_episode_seconds (default 1800 = fast_eval's own default) and
+    eval_wall_seconds (0 = planned, no flag) reach both watchers' fast_eval commands; a job
+    wall that cannot hold one capped game is refused in the profile."""
+    for sets, cap, wall in (({}, '1800', None),
+                            ({'eval_episode_seconds': 3600, 'eval_wall_seconds': 17000},
+                             '3600', '17000')):
+        chain, _ = chain_for(tmp_path / cap, [], eval_a10_enabled='true',
+                             eval_a10_suite='a10-50', **sets)
+        template = tmp_path / 'execution.json'
+        template.write_text(json.dumps({'schema': 'x', 'models': {}}))
+        chain.args.eval_execution, chain.args.eval_manifest = template, tmp_path / 'm.json'
+        chain.args.eval_a10_manifest = tmp_path / 'm10.json'
+        chain.dir.mkdir(parents=True)
+        watchers = chain.watchers()
+        for name in ('a0', 'a10'):
+            cmd = chain.eval_command(name, watchers[name])
+            assert cmd[cmd.index('--episode-seconds') + 1] == cap
+            assert (cmd[cmd.index('--wall-seconds') + 1] if '--wall-seconds' in cmd
+                    else None) == wall
+    plan = plan_for(cards=3)
+    assert 'per-game cap 1800 s, job wall planned from the games' in (
+        preflight.check_evaluation_jobs(plan).detail)
+    with pytest.raises(supervise.run_profile.ProfileError, match='eval_wall_seconds'):
+        supervise.run_profile.load_profile(
+            PROFILE, ['eval_episode_seconds=3600', 'eval_wall_seconds=3780'])
+
+
 def eval_chain(tmp_path, baselines='', **changes):
     """A chain with both standing watchers; `baselines` is appended to the site's [site]."""
     chain, cluster = chain_for(tmp_path, [{}], eval_a10_enabled='true', eval_a10_suite='a10-50',

@@ -20,8 +20,9 @@ Rules (RL4.1 long-run lessons, lead 11-12):
 - a refused pre-submission check (fair share) is tried again next tick; a failure
   after a submission intent is written is never retried (unknown delivery);
 - RL3 registered 100-seed suite (the RL4.2 final-evaluation seeds, PLAN v11), argmax,
-  1800 s per game, unknowns continue cleaned and are excluded per pair, never voiding
-  the round;
+  1800 s per game by default (`--episode-seconds`, profile eval_episode_seconds, at most
+  evaluate.MAX_EPISODE_SECONDS; a game cut there is unknown/censored, never retried),
+  unknowns continue cleaned and are excluded per pair, never voiding the round;
 - job size (EVAL-SPEED-CHECK 11-14, lead decision a/e): 16 workers, 16 live games
   (`--pending-limit`: playing + saving + waiting for a shard) and 4 save threads, the
   code maximums; memory 4 GB per live game; job wall from the number of games and
@@ -1330,7 +1331,9 @@ def main() -> None:
                         help="expected mean steps per game; sets the job wall")
     parser.add_argument("--wall-seconds", type=int,
                         help="job wall (default: planned_wall_seconds of games and steps)")
-    parser.add_argument("--episode-seconds", type=int, default=EPISODE_SECONDS)
+    parser.add_argument("--episode-seconds", type=int, default=EPISODE_SECONDS,
+                        help="per-game wall cap (Host preparation + play; a game cut there "
+                             "is unknown/censored, never retried; #614)")
     parser.add_argument("--max-live", type=int, default=MAX_LIVE)
     parser.add_argument("--partition", choices=PARTITIONS,
                         help=f"evaluation jobs' partition (default: --site eval_partition, "
@@ -1399,6 +1402,11 @@ def main() -> None:
         parser.error("--baseline-sha256 goes with --baseline-plan")
     if any(value is not None and value <= 0 for value in (args.memory_gb, args.wall_seconds)):
         parser.error("--memory-gb and --wall-seconds are positive (omit for the defaults)")
+    if not 10 <= args.episode_seconds <= evaluate.MAX_EPISODE_SECONDS:
+        parser.error(f"--episode-seconds 10..{evaluate.MAX_EPISODE_SECONDS}")
+    if args.wall_seconds is not None and not (
+            args.episode_seconds + 180 < args.wall_seconds <= MAX_WALL_SECONDS):
+        parser.error(f"--wall-seconds above --episode-seconds + 180, at most {MAX_WALL_SECONDS}")
     one_job = evaluate.MAX_DISPATCH_SLOTS
     if args.batch_seeds is not None and not 1 <= args.batch_seeds <= one_job:
         parser.error(f"--batch-seeds 1..{one_job}: one evaluation job admits at most that many")
