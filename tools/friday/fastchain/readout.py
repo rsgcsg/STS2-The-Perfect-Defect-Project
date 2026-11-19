@@ -649,8 +649,12 @@ class _Learning:
         self.policy_arms: dict[str, list[float]] = {}
         self.floor_arms: dict[str, list[float]] = {}  # loss.explore_ratio_floor > 0
         self.cells: dict[str, dict[str, Any]] = {}  # value_by_cell, pooled sums
-        # value_cross_cell: queried configs (latest), rows per own cell, sums per pair
-        self.cross: dict[str, Any] = {"configs": {}, "rows": {}, "sums": {}}
+        # value_cross_cell: queried configs (latest), rows per own cell; per (own, queried)
+        # pair the sum and its rows (a dataset queries only the cells it has); per queried
+        # cell sum/rows of V(cell) - V(control) and per own cell of V(control) - V(own),
+        # each over the events that queried both
+        self.cross: dict[str, Any] = {"configs": {}, "rows": {}, "sums": {}, "pair_rows": {},
+                                      "vs_control": {}, "control_own": {}}
         self.raw_variance = [0.0, 0]  # sum, datasets that report it (#564)
         # R: optimizer steps with a finite norm, of them clip-bound, norm sum; norm bins
         self.clip = [0, 0, 0.0]
@@ -725,14 +729,32 @@ class _Learning:
                 for i, value in enumerate(values):
                     pooled["calibration"][b][i] += value
         cross = e.get("value_cross_cell")
-        if cross:
-            self.cross["configs"].update(cross["configs"])
-            for own, n in cross["rows"].items():
-                self.cross["rows"][own] = self.cross["rows"].get(own, 0) + n
-            for own, queried in cross["expected_reward_sum"].items():
-                sums = self.cross["sums"].setdefault(own, {})
+        if not cross:
+            return
+        pooled = self.cross
+        pooled["configs"].update(cross["configs"])
+        control = next((name for name, config in cross["configs"].items() if not any(config)),
+                       None)
+
+        def add(table: dict[str, list[float]], key: str, value: float, n: int) -> None:
+            total = table.setdefault(key, [0.0, 0])
+            total[0] += value
+            total[1] += n
+
+        for own, queried in cross["expected_reward_sum"].items():
+            n = cross["rows"][own]
+            pooled["rows"][own] = pooled["rows"].get(own, 0) + n
+            sums = pooled["sums"].setdefault(own, {})
+            pair = pooled["pair_rows"].setdefault(own, {})
+            for query, value in queried.items():
+                sums[query] = sums.get(query, 0.0) + value
+                pair[query] = pair.get(query, 0) + n
+            if control in queried:
                 for query, value in queried.items():
-                    sums[query] = sums.get(query, 0.0) + value
+                    if query != control:
+                        add(pooled["vs_control"], query, value - queried[control], n)
+                if own in queried and own != control:
+                    add(pooled["control_own"], own, queried[control] - queried[own], n)
 
     def cells_result(self) -> dict[str, Any]:
         """Per cell: the outcome head vs lambda-return ("td") and vs the realised outcome
@@ -747,27 +769,27 @@ class _Learning:
                        for b, (rows, predicted, realised) in enumerate(p["calibration"])
                        if rows]}
             for cell, p in sorted(self.cells.items())} or None}
-        rows, sums, configs = self.cross["rows"], self.cross["sums"], self.cross["configs"]
-        if not rows:
+        cross = self.cross
+        if not cross["rows"]:
             out["value_cross_cell"] = None
             return out
-        means = {own: {query: value / rows[own] for query, value in queried.items()}
-                 for own, queried in sorted(sums.items())}
-        # heat = sum of the four config inputs (ln T and mix / 0.1, combat and noncombat)
-        heat = sorted(configs, key=lambda name: (sum(configs[name]), name))
-        cold, hot = heat[0], heat[-1]
-        control = next((name for name in heat if not any(configs[name])), None)
-        total = sum(rows.values())
+        configs = cross["configs"]
         out["value_cross_cell"] = {
-            "rows": dict(sorted(rows.items())), "mean_expected_reward": means,
-            "coldest": cold, "hottest": hot, "control": control,
-            # mean over rows of V(row, coldest) - V(row, hottest): per own cell and all rows
-            "cold_minus_hot": {**{own: m[cold] - m[hot] for own, m in means.items()},
-                               "all": sum(sums[own][cold] - sums[own][hot]
-                                          for own in sums) / total},
-            # mean over a cell's rows of V(row, control) - V(row, own cell)
-            "control_minus_own": {own: m[control] - m[own] for own, m in means.items()
-                                  if own in m and own != control} if control else None}
+            "rows": dict(sorted(cross["rows"].items())),
+            # mean over the rows that queried that cell (pair rows, not own-cell rows)
+            "mean_expected_reward": {
+                own: {query: value / cross["pair_rows"][own][query]
+                      for query, value in sorted(queried.items())}
+                for own, queried in sorted(cross["sums"].items())},
+            "control": next((name for name in sorted(configs) if not any(configs[name])),
+                            None),
+            # per queried cell: mean over all rows of V(row, cell) - V(row, control)
+            "cell_minus_control": {
+                query: {"config": configs[query], "gap": total / n, "rows": n}
+                for query, (total, n) in sorted(cross["vs_control"].items()) if n} or None,
+            # per own cell: mean over its rows of V(row, control) - V(row, own cell)
+            "control_minus_own": {own: total / n for own, (total, n)
+                                  in sorted(cross["control_own"].items()) if n} or None}
         return out
 
     def _settings(self, e: dict[str, Any]) -> None:
@@ -1635,7 +1657,8 @@ def _settings_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
 
 def _cell_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
     """Value heads per exploration cell: per cell rows, predicted -> realised (difference),
-    EV (latest window); the cross-cell table (latest); the two gaps (both windows)."""
+    EV (latest window); the cross-cell table (latest); cell - control and control - own
+    (both windows)."""
     out = []
 
     def head(name: str, h: dict[str, Any], digits: int = 3) -> str:
@@ -1653,18 +1676,20 @@ def _cell_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
     if not cross:
         return out
     if key == "latest":
-        queried = list(next(iter(cross["mean_expected_reward"].values())))
+        queried = sorted({q for m in cross["mean_expected_reward"].values() for q in m})
         out.append(f"  V at queried cell ({label}; rows by own cell, columns "
                    f"{' / '.join(queried)}): " + "; ".join(
             f"{own} ({cross['rows'][own]:,}) " + " / ".join(fmt(m.get(q), 3) for q in queried)
             for own, m in cross["mean_expected_reward"].items()))
-    gap = cross["cold_minus_hot"]
-    own = cross["control_minus_own"]
-    out.append(f"  V gap {label}: coldest {cross['coldest']} - hottest {cross['hottest']} "
-               f"all {gap['all']:+.4f} (" + ", ".join(
-                   f"{cell} {value:+.4f}" for cell, value in gap.items() if cell != "all")
-               + ")" + ("; control - own: " + ", ".join(
-                   f"{cell} {value:+.4f}" for cell, value in own.items()) if own else ""))
+    gaps, own = cross["cell_minus_control"], cross["control_minus_own"]
+    if gaps or own:
+        out.append(f"  V gap {label}: " + "; ".join(part for part in (
+            ("cell - control, all rows: " + ", ".join(
+                f"{cell} [{' '.join(f'{v:.2f}' for v in g['config'])}] {g['gap']:+.4f}"
+                for cell, g in gaps.items())) if gaps else "",
+            ("control - own: " + ", ".join(
+                f"{cell} {value:+.4f}" for cell, value in own.items())) if own else "")
+            if part))
     return out
 
 

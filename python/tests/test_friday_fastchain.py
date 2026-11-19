@@ -1885,21 +1885,56 @@ def test_readout_value_heads_per_cell_and_cross_cell_gaps(tmp_path):
                                        'mean_predicted': pytest.approx(0.95),
                                        'mean_realised': 1.0}]
     cross = x['value_cross_cell']
-    assert (cross['coldest'], cross['hottest'], cross['control']) == ('control', 'hot',
-                                                                      'control')
+    assert cross['control'] == 'control'
     assert cross['mean_expected_reward']['control'] == {'control': pytest.approx(0.4),
                                                         'hot': pytest.approx(0.3)}
-    assert cross['cold_minus_hot'] == {'control': pytest.approx(0.1),
-                                       'hot': pytest.approx(0.2),
-                                       'all': pytest.approx(0.4 / 3)}
+    hot = cross['cell_minus_control']['hot']
+    assert hot['config'] == [0.9, 1.0, 1.1, 1.0] and hot['gap'] == pytest.approx(-0.4 / 3)
     assert cross['control_minus_own'] == {'hot': pytest.approx(0.2)}
     text = readout.render(r)
     assert re.search(r'  value cell control: vs lambda-return [\d,]+ rows 0\.350 -> 0\.300 '
                      r'\(\+0\.050\) EV 1\.000; vs outcome -; HP -', text)
     assert ('  V at queried cell (latest; rows by own cell, columns control / hot): '
             'control (') in text
-    assert '  V gap run mean: coldest control - hottest hot all +0.1333 (control +0.1000, ' \
-        'hot +0.2000); control - own: hot +0.2000' in text
+    assert ('  V gap run mean: cell - control, all rows: hot [0.90 1.00 1.10 1.00] -0.1333; '
+            'control - own: hot +0.2000') in text
+
+
+def test_readout_cross_cell_means_are_per_pair_when_a_cell_is_rare(tmp_path):
+    """A dataset queries only the cells it has: a cell present in some datasets only is
+    averaged over the rows that queried it, and the gaps over the events with both cells
+    (true V 0.5 everywhere: every mean 0.5, every gap 0, no crash)."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    progress = [e for e in events if e.get('kind') == 'progress' and e.get('stepped')]
+    zero, hot, rare = [0.0] * 4, [0.5, 0.0, 0.5, 0.0], [1.0, 1.0, 1.0, 1.0]
+    progress[0]['value_cross_cell'] = {
+        'configs': {'control': zero, 'hot': hot}, 'rows': {'control': 2, 'hot': 2},
+        'expected_reward_sum': {'control': {'control': 1.0, 'hot': 1.0},
+                                'hot': {'control': 1.0, 'hot': 1.0}}}
+    progress[1]['value_cross_cell'] = {
+        'configs': {'control': zero, 'hot': hot, 'rare': rare},
+        'rows': {'control': 2, 'hot': 2, 'rare': 2},
+        'expected_reward_sum': {own: {'control': 1.0, 'hot': 1.0, 'rare': 1.0}
+                                for own in ('control', 'hot', 'rare')}}
+    progress[2]['value_cross_cell'] = {  # an own cell without the control cell queried
+        'configs': {'hot': hot, 'rare': rare}, 'rows': {'rare': 2},
+        'expected_reward_sum': {'rare': {'hot': 1.0, 'rare': 1.0}}}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    r = readout.build(run, 1e9)
+    for window in ('latest', 'run_mean'):
+        cross = r['learning'][window]['value_cross_cell']
+        for own, means in cross['mean_expected_reward'].items():
+            assert means == {q: pytest.approx(0.5) for q in means}, own
+        assert set(cross['mean_expected_reward']['control']) == {'control', 'hot', 'rare'}
+        assert {c: g['gap'] for c, g in cross['cell_minus_control'].items()} == {
+            'hot': pytest.approx(0), 'rare': pytest.approx(0)}
+        assert cross['cell_minus_control']['rare']['rows'] == 6
+        assert cross['control_minus_own'] == {'hot': pytest.approx(0),
+                                              'rare': pytest.approx(0)}
+    assert 'columns control / hot / rare' in readout.render(r)
 
 
 def test_readout_refuses_to_guess_missing_aux(tmp_path):

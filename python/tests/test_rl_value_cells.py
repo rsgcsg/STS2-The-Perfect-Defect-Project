@@ -1,7 +1,8 @@
 """Value heads per exploration cell (diagnostics only, owner 2026-11-19).
 
-`value_by_cell` splits the live value statistics by the row's cell and sums exactly to
-the unsplit ones; `value_cross_cell` (value-config heads, diagnostics steps) evaluates
+`value_by_cell` (diagnostics steps) splits the live value statistics by the row's cell,
+summing exactly to the unsplit ones of that step; `value_cross_cell` (value-config heads,
+diagnostics steps too) evaluates
 the outcome head at every cell's config on the same rows and equals a direct forward at
 that config; with the input off it is absent; data-parallel ranks add up to one rank.
 """
@@ -139,7 +140,8 @@ def test_cells_sum_to_the_unsplit_statistics_and_cross_equals_a_direct_forward(m
             != pytest.approx(cross["expected_reward_sum"]["hot"]["control"], abs=1e-6))
 
 
-def test_off_steps_and_knob_off_emit_no_cross_query_and_a_still_works(model):
+def test_knob_off_emits_no_cross_query_and_off_steps_emit_neither(model):
+    """Both readouts come on diagnostics steps only; heads without the input give A only."""
     minibatch = prepared(model, "rows-v2").minibatches[0]
     cells = cells_for(minibatch, configs=False)  # heads without the input
     for diagnostics in (False, True):
@@ -149,15 +151,16 @@ def test_off_steps_and_knob_off_emit_no_cross_query_and_a_still_works(model):
                                  performance=PerformanceConfig(prepared_forward="rows-v2"),
                                  target_kl=1e9, diagnostics=diagnostics, value_cells=cells)
         assert "value_cross_cell" not in result
-        assert sum(result["value_by_cell"][c]["td"][0] for c in cells.names) == (
-            result["value_statistics"]["all"]["td"][0])
-    # value-config heads, a step that is not a diagnostics step: A only
+        assert ("value_by_cell" in result) is diagnostics
+    assert sum(result["value_by_cell"][c]["td"][0] for c in cells.names) == (
+        result["value_statistics"]["all"]["td"][0])
+    # value-config heads, a step that is not a diagnostics step: neither
     new = heads_model(model)
     cells = cells_for(minibatch, configs=True)
     result = prepared_update(new, torch.optim.AdamW(new.parameters()), staged(minibatch, cells),
                              config=CONFIG, performance=PerformanceConfig(
                                  prepared_forward="rows-v2"), target_kl=1e9, value_cells=cells)
-    assert "value_by_cell" in result and "value_cross_cell" not in result
+    assert "value_by_cell" not in result and "value_cross_cell" not in result
     plain = prepared_update(copy.deepcopy(model), torch.optim.AdamW(model.parameters()),
                             minibatch, config=CONFIG, target_kl=1e9,
                             performance=PerformanceConfig(prepared_forward="rows-v2"))

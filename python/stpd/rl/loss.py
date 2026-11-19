@@ -301,7 +301,7 @@ def prepared_update(
     """One optimizer minibatch, with physical groups as a memory parameter.
 
     `value_cells` (diagnostics only, `learning_diagnostics.row_cells` of the dataset):
-    adds `value_by_cell` every step and, with value-config heads on `diagnostics` steps,
+    on `diagnostics` steps adds `value_by_cell` and, with value-config heads,
     `value_cross_cell` (the outcome head at every cell's config on the same rows, from
     the first-layer activations of this forward: no extra trunk pass).
 
@@ -367,12 +367,13 @@ def prepared_update(
         totals = t["targets"].new_zeros(8)
         # Value/HP head sums (learning_diagnostics); never part of the loss or decision.
         value_sums = t["targets"].new_zeros(learning_diagnostics.SIZE)
-        # Per cell (`value_cells`): the same sums split by cell, then (diagnostics steps,
-        # value-config heads) the cross-cell query; they ride in value_sums' all-reduce.
+        # Per cell (`value_cells`, diagnostics steps): the same sums split by cell, then
+        # (value-config heads) the cross-cell query; they ride in value_sums' all-reduce.
+        if not diagnostics:
+            value_cells = None
         cell_count = len(value_cells.names) if value_cells is not None else 0
         queries = (torch.tensor(value_cells.configs, dtype=torch.float32, device=device)
-                   if diagnostics and value_cells is not None
-                   and value_cells.configs is not None else None)
+                   if value_cells is not None and value_cells.configs is not None else None)
         cell_sums = t["targets"].new_zeros(cell_count * learning_diagnostics.CELL_SIZE)
         cross_sums = t["targets"].new_zeros(
             cell_count * (1 + len(queries)) if queries is not None else 0)

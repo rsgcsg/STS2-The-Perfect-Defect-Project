@@ -411,9 +411,10 @@ def explore_floor_by_arm(arms: list[str | None], samples: list[dict[str, Any]],
 # config). Diagnostics only, from tensors the loss already holds plus, for the cross query,
 # a few head-MLP passes on the detached first-layer activations (no trunk pass).
 #
-# `value_by_cell`: per cell the "all"-bucket head sums of `value_statistics` (td, terminal,
-# hp: FIELDS each) and its calibration tail, from the same per-row terms, so the cells sum
-# exactly to the unsplit statistics. Auxiliary (terminal/HP) rows carry no arm; with
+# `value_by_cell` (diagnostics steps): per cell the "all"-bucket head sums of
+# `value_statistics` (td, terminal, hp: FIELDS each) and its calibration tail, from the
+# same per-row terms, so the cells sum exactly to that step's unsplit statistics.
+# Auxiliary (terminal/HP) rows carry no arm; with
 # `segments.value_config_input` they take the cell whose PPO rows in the same dataset
 # have their recorded config (unique match only), otherwise UNATTRIBUTED.
 #
