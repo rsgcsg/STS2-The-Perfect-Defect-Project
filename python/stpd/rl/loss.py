@@ -78,6 +78,15 @@ def minibatch_explore_rows(minibatch: Any, arms: list[str | None] | None,
             and policy_mask[row] for group in minibatch.groups for row in group.rows]
 
 
+def with_value_config(minibatch: Any, configs: list[tuple[float, ...]], device: Any) -> Any:
+    """`segments.value_config_input`: `minibatch` with tensor "value_config" ([rows, 4], its
+    tensor order) from the dataset's `heads.row_value_configs`. Added before the step (and
+    an offline dump), so every rank, group slice and replay reads the same rows' configs."""
+    value = torch.tensor([configs[row] for group in minibatch.groups for row in group.rows],
+                         dtype=torch.float32).to(device)
+    return replace(minibatch, tensors={**minibatch.tensors, "value_config": value})
+
+
 def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],
                           updates: int, steps: int) -> None:
     """`segments.lr_warmup_steps` (RL5-METHODS K): before optimizer step `updates + 1`
@@ -311,10 +320,15 @@ def prepared_update(
                                         "prepared_layout_does_not_match_selected_forward")
                 executed.append(group)
                 phase = time.perf_counter()
+                # `segments.value_config_input`: the heads read the rows' sampling config
+                # (`with_value_config`); heads without the input never see it.
+                value_input = ({"value_config": t["value_config"][offset:offset + len(group.rows)]}
+                               if "value_config" in t else {})
                 scores, logits, hp = (
                     model.forward_prepared_rl4(group, compile_rows=compile_rows,
-                                               kernels=performance.prepared_kernels)
-                    if rows_forward else model.forward_prepared_rl4(group))
+                                               kernels=performance.prepared_kernels,
+                                               **value_input)
+                    if rows_forward else model.forward_prepared_rl4(group, **value_input))
                 scores = F.pad(scores, (0, t["old_probabilities"].shape[1] - scores.shape[1]),
                                value=-torch.inf if group.policy else 0)
                 phases["forward"] += time.perf_counter() - phase

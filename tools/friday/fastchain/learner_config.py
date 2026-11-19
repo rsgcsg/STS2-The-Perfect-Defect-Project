@@ -44,12 +44,13 @@ ALLOWED_DRIFT = {
 DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
               "loss.hp_advantage_coef", "loss.hp_advantage_scope", "loss.explore_ratio_floor",
               "segments.target_kl",
-              "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda")
+              "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda",
+              "segments.value_config_input")
 # A key missing from a learner config (a CP's or this run's) means this value: the learner's
 # own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
 CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
                    "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket",
-                   "loss.explore_ratio_floor": 0.0}
+                   "loss.explore_ratio_floor": 0.0, "segments.value_config_input": False}
 MISSING = "<missing>"
 
 
@@ -205,6 +206,9 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         config["segments"]["kl_stop_scope"] = knobs["kl_stop_scope"]
     if knobs.get("lr_warmup_steps", 0):
         config["segments"]["lr_warmup_steps"] = knobs["lr_warmup_steps"]
+    # The value-config input (owner 11-19): the same rule (off = key left out).
+    if knobs.get("value_config_input", False):
+        config["segments"]["value_config_input"] = True
     if run.get("window"):
         config.update(run["window"])
     # RL5-METHODS C: written only when declared (an older learner refuses the key).

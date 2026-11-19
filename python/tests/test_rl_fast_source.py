@@ -32,7 +32,12 @@ from stpd.rl.fast_source import (
     fast_envelope,
     read_handoff,
 )
-from stpd.rl.heads import OUTCOME_CLASSES, categorical_lambda_targets, class_reward_values
+from stpd.rl.heads import (
+    OUTCOME_CLASSES,
+    categorical_lambda_targets,
+    class_reward_values,
+    value_config_vector,
+)
 from stpd.rl.prepared_batch import BatchMember, PrepareRequest
 
 SAMPLING = {"mode": "temperature_uniform", "seed": "draw-seed", "arm_id": "control",
@@ -70,8 +75,10 @@ class Game:
     def __init__(self, generation: str = "gen-1", terminal_class: int = 3,
                  compiler: FrameCompiler = COMPILER, assembler_id: str = "node-a",
                  handoff: MuHandoff | None = None, segment_format: str = FORMAT,
-                 instance_id: str | None = None) -> None:
+                 instance_id: str | None = None,
+                 sampling: dict[str, Any] = SAMPLING) -> None:
         self.sealed: list[Any] = []
+        self.sampling = sampling
         self.row = encode_row(compiler.compile(public_state()))
         self.width = len(compiler.compile(public_state()).choices)
         self.assembler = FastSegmentAssembler(
@@ -90,7 +97,7 @@ class Game:
         self.assembler.open_episode({
             "schema": "stpd/rl-inference-4", "kind": "episode_open",
             "ascension": 0, "request_id": 1,
-            "game_instance_id": game, "actor_id": "actor-1", "sampling": SAMPLING,
+            "game_instance_id": game, "actor_id": "actor-1", "sampling": self.sampling,
             "single_choice": "score", "start": {"kind": "new_run"}})
         self.steps[game] = 0
 
@@ -107,6 +114,7 @@ class Game:
                "floor": 1, "payload": {"offset": 0, "length": len(raw),
                                        "row_sha256": hashlib.sha256(raw).hexdigest()}}
         plan = self.assembler.begin_row(row, raw)
+        decision = "combat" if in_combat else "noncombat"
         q = [0.0] * n
         q[0], q[-1] = 0.25, 0.75
         if n == 1:
@@ -116,9 +124,9 @@ class Game:
                   "mu_snapshot_sha256": plan.mu.snapshot_sha256, "segment_id": plan.segment_id,
                   "row_in_segment": plan.row_in_segment, "selected_index": n - 1,
                   "behavior_q": q, "selected_q": q[-1],
-                  "applied": {"arm_id": "control",
-                              "decision_class": "combat" if in_combat else "noncombat",
-                              "temperature": 1.0, "uniform_mix": 0.0}}
+                  "applied": {"arm_id": self.sampling["arm_id"],
+                              "decision_class": decision,
+                              **self.sampling["classes"][decision]}}
         shift = 0.01 * (step % 7)
         self.assembler.finish_row(plan, scored, values(1, shift),
                                   values(1, 0.2) if plan.tail is not None else None)
@@ -198,6 +206,27 @@ def test_fast_segment_becomes_the_same_prepared_source_targets_as_the_old_formul
         assert source.labels["terminal"] == seal["terminal"]
         assert header["witness"]["identity"]["seed"] == envelope_for(segment)["seed"]
         bp.validate_training_source(header["witness"], frozenset())
+
+
+def test_each_source_records_its_games_sampling_config_for_the_value_heads():
+    """(c) `metadata[0]["value_config"]` is the game's own sampling; control is zeros."""
+    high = {**SAMPLING, "arm_id": "high",
+            "classes": {"combat": {"temperature": 1.4, "uniform_mix": 0.005},
+                        "noncombat": {"temperature": 2.5, "uniform_mix": 0.01}}}
+    for sampling in (SAMPLING, high):
+        g = Game(sampling=sampling)
+        g.open("g1")
+        for step in range(64 + 1):
+            g.step("g1", in_combat=step % 2 == 0)
+        [segment] = g.sealed
+        source, _ = decode_fast_packet(segment.data, envelope=envelope_for(segment),
+                                       compiler=COMPILER)
+        assert segment.header["sampling"] == sampling
+        assert source.metadata[0]["value_config"] == list(
+            value_config_vector(sampling["classes"]))
+        assert all("value_config" not in meta for meta in source.metadata[1:])
+    assert source.metadata[0]["value_config"] != [0.0] * 4
+    assert value_config_vector(SAMPLING["classes"]) == (0.0,) * 4
 
 
 def test_columnar_segments_become_the_same_prepared_sources():

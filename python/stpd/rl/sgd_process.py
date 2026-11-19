@@ -1295,10 +1295,13 @@ class _SgdWorker:
         self.device = _device(parallel.device if parallel is not None else init["device"])
         values = read_tree(init["state"], INIT_SCHEMA)
         spec = init["model"]
+        from .heads import VALUE_CONFIG_HEAD
+
         with torch.random.fork_rng(devices=[]):
             model = MStd(spec["vocabulary"], MStdExecution(**spec["execution"]),
                          model_size=spec["model_size"])
-            model.enable_rl4_heads(0)
+            model.enable_rl4_heads(0, value_config=VALUE_CONFIG_HEAD in spec["architecture"].get(
+                "auxiliary_heads", ()))
         if model.architecture != spec["architecture"]:
             raise _ChildViolation("sgd_model_construction_changed")
         model.load_state_dict(values["weights"], strict=True)
@@ -1455,7 +1458,8 @@ class _SgdWorker:
         same, and the torch/CUDA RNG states are restored around it.
         """
         from . import batch_preparation as bp
-        from .loss import prepared_update
+        from .heads import CONTROL_VALUE_CONFIG
+        from .loss import prepared_update, with_value_config
         from .offline_step import load
 
         torch = self.torch
@@ -1470,8 +1474,13 @@ class _SgdWorker:
                     group, bucket_rows=self.performance.prepared_bucket_rows))
                 for group in minibatch.groups))
         before = weights_digest(self.model.state_dict())
-        staged = bp.stage_batch(minibatch, self.device)[0] if self.device.type == "cuda" else (
-            minibatch)
+        staged: Any = bp.stage_batch(minibatch, self.device)[0] if (
+            self.device.type == "cuda") else minibatch
+        if self.model.rl4_heads.has_value_config and "value_config" not in staged.tensors:
+            # never steps: the control config gives the live step's shapes
+            staged = with_value_config(staged, [CONTROL_VALUE_CONFIG] * (1 + max(
+                (row for group in staged.groups for row in group.rows), default=0)),
+                self.device)
         devices = [self.device] if self.device.type == "cuda" else []
         with torch.random.fork_rng(devices=devices):
             result = prepared_update(
@@ -1716,6 +1725,7 @@ class _SgdWorker:
             self.send("staged", dataset=dataset, **fields)
 
     def run_dataset(self, start: dict[str, Any], next_message: Any) -> None:
+        from .heads import row_value_configs
         from .learning_diagnostics import (
             advantage_fields,
             entropy_fields,
@@ -1728,6 +1738,7 @@ class _SgdWorker:
             minibatch_explore_rows,
             prepared_update,
             warmup_learning_rates,
+            with_value_config,
         )
 
         torch = self.torch
@@ -1746,6 +1757,10 @@ class _SgdWorker:
             arms = row_arms(device_batch.metadata,
                             [m.rows for m in device_batch.request.members])
             policy = device_batch.policy_mask.tolist()
+        # segments.value_config_input: each row's sampling config (control without one)
+        configs = (row_value_configs(device_batch.metadata,
+                                     [m.rows for m in device_batch.request.members])
+                   if self.model.rl4_heads.has_value_config else None)
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
         boundary: float | None = None
@@ -1779,6 +1794,8 @@ class _SgdWorker:
                 terminal_rows, hp_rows = batch.epoch_auxiliary_counts[epoch]
                 batch = replace(batch, terminal_rows=terminal_rows, hp_rows=hp_rows,
                                 tensors={**batch.tensors, **batch.epoch_auxiliary[epoch]})
+            if configs is not None:  # before the dump, so an offline replay reads them too
+                batch = with_value_config(batch, configs, self.device)
             diagnostics = self.updates % self.diagnostics_every == 0
             dumped = None
             if (self.next_dump is not None and self.updates >= self.next_dump

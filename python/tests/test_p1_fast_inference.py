@@ -1480,3 +1480,49 @@ def test_levered_service_scores_each_published_mu_with_its_own_weights(vocabular
     assert any(not torch.allclose(torch.tensor(got["first"][3 + i]["behavior_q"]),
                                   torch.tensor(got["second"][30 + i]["behavior_q"]), atol=1e-3)
                for i in range(4))
+
+
+def test_value_heads_read_each_games_own_sampling_config(vocabulary, model):
+    """`segments.value_config_input` (c): the service gives each row its game's arm config,
+    so the values the assembler records equal RowsScorer with that config."""
+    from stpd.rl.heads import VALUE_CONFIG_KEYS, value_config_vector
+
+    configured = copy.deepcopy(model)
+    configured.enable_value_config()
+    generator = torch.Generator().manual_seed(5)
+    with torch.no_grad():
+        for module in (configured.rl4_heads.outcome, configured.rl4_heads.hp):
+            weight = module.mlp[-1].weight
+            weight.copy_(torch.randn(weight.shape, generator=generator) * 0.05)
+        for key in VALUE_CONFIG_KEYS:
+            weight = configured.rl4_heads.get_parameter(key)
+            weight.copy_(torch.randn(weight.shape, generator=generator))
+    configured.requires_grad_(False)
+    high = {**SAMPLING, "arm_id": "high",
+            "classes": {"combat": {"temperature": 1.4, "uniform_mix": 0.005},
+                        "noncombat": {"temperature": 2.5, "uniform_mix": 0.01}}}
+    encoder = RowsEncoder(vocabulary)
+    observation = _observations(1)[0]
+    encoded = encoder.encode(json.dumps(observation).encode())
+    assembler = FakeAssembler()
+    service = _service(vocabulary, configured, assembler)
+    clients = {"g1": _open_client(service, encoder, "g1"),
+               "g2": _open_client(service, encoder, "g2", high)}
+    try:
+        for request_id, game in ((3, "g1"), (4, "g2")):
+            assert _score(clients[game], encoded, request_id, game)["status"] == "scored"
+    finally:
+        for client in clients.values():
+            client.close()
+        service.close()
+    frame = FrameCompiler(vocabulary).compile(observation)
+    expected = RowsScorer(configured, bf16=False).score(
+        [frame, frame], [2, 2], [value_config_vector(SAMPLING["classes"]),
+                                 value_config_vector(high["classes"])])
+    values = {body[0]: body[2] for kind, body in assembler.calls if kind == "finish"}
+    hp = {request: value for request, value, _ in assembler.hp}
+    for index, request in enumerate((3, 4)):
+        assert values[request] == pytest.approx(expected[index].outcome_probabilities,
+                                                abs=1e-5)
+        assert hp[request] == pytest.approx(expected[index].hp, abs=1e-5)
+    assert abs(hp[3] - hp[4]) > 1e-4  # the arm config moved the value of the same state

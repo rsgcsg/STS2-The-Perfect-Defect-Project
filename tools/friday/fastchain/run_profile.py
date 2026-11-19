@@ -296,6 +296,12 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if scope and scope["new"] != values["kl_stop_scope"]:
         out.append(f"declared_changes segments.kl_stop_scope new {scope['new']!r} needs the "
                    f"kl_stop_scope knob at the same value (have {values['kl_stop_scope']!r})")
+    value_config = (values["declared_changes"].get("changes") or {}).get(
+        "segments.value_config_input")
+    if value_config and value_config["new"] != values["value_config_input"]:
+        out.append("declared_changes segments.value_config_input new "
+                   f"{value_config['new']!r} needs the value_config_input knob at the same "
+                   f"value (have {values['value_config_input']!r})")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
         for name in ("combat", "noncombat"):
@@ -443,6 +449,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # RL5-METHODS K: the learner's segments.kl_stop_scope / lr_warmup_steps (learner_config)
     "kl_stop_scope": _choice(*KL_STOP_SCOPES),
     "lr_warmup_steps": _int(0, 1_000_000),
+    # the learner's segments.value_config_input (owner 11-19; learner_config)
+    "value_config_input": _bool,
     # RL5-METHODS C: declared recipe changes at a continuation from a CP (learner_config)
     "declared_changes": _declared_changes,
     "service_window_ms": _num(0),

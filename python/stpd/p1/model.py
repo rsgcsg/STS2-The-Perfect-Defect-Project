@@ -427,8 +427,12 @@ class MStd(nn.Module):
                       ) -> list[Tensor]:
         return self._forward_batch(frames, check_finite=check_finite)[0]
 
-    def enable_rl4_heads(self, seed: int, frequencies: Sequence[float] | None = None) -> None:
-        """New-run independent outcome/HP heads; preserve action weights and RNG."""
+    def enable_rl4_heads(self, seed: int, frequencies: Sequence[float] | None = None, *,
+                         value_config: bool = False) -> None:
+        """New-run independent outcome/HP heads; preserve action weights and RNG.
+
+        `value_config` (`segments.value_config_input`) adds the heads' zero-initialised
+        sampling-config input; it draws no RNG, so the heads are otherwise identical."""
         from stpd.rl.heads import Rl4Heads
 
         if self.value_heads or hasattr(self, "rl4_heads"):
@@ -438,9 +442,25 @@ class MStd(nn.Module):
             devices=[self.ids.weight.get_device()] if device.type == "cuda" else []
         ):
             torch.manual_seed(seed)
-            self.rl4_heads = Rl4Heads(frequencies).to(device)
+            self.rl4_heads = Rl4Heads(frequencies, value_config=value_config).to(device)
         self.architecture = {**self.architecture,
             "auxiliary_heads": ["rl4-outcome-attention-51", "rl4-hp-attention-1"]}
+        if value_config:
+            self._mark_value_config()
+
+    def _mark_value_config(self) -> None:
+        from stpd.rl.heads import VALUE_CONFIG_HEAD
+
+        self.architecture = {**self.architecture, "auxiliary_heads": [
+            *self.architecture["auxiliary_heads"], VALUE_CONFIG_HEAD]}
+
+    def enable_value_config(self) -> None:
+        """Add the zero value-config input to existing RL4 heads (an older CP continued
+        with `segments.value_config_input`): every head output is unchanged."""
+        if not hasattr(self, "rl4_heads"):
+            raise ValueError("rl4_heads_not_enabled")
+        self.rl4_heads.add_value_config()
+        self._mark_value_config()
 
     def forward_rl4(self, frames: Sequence[ModelFrame], floors: Sequence[int] | Tensor,
                     *, policy: bool = True, check_finite: bool = True
@@ -464,7 +484,8 @@ class MStd(nn.Module):
         return scores, logits, hp
 
     def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False,
-                             kernels: str = "") -> tuple[Tensor, Tensor, Tensor]:
+                             kernels: str = "", value_config: Tensor | None = None
+                             ) -> tuple[Tensor, Tensor, Tensor]:
         """RL4.1 tensor region: metadata is complete before the GPU sees it.
 
         Text is encoded from current theta on every update, with gradients through
@@ -472,11 +493,14 @@ class MStd(nn.Module):
         Static indexing/floor checks belong to the CPU preparation boundary;
         dynamic finite/gradient/KL checks are combined once by the step owner.
         A group carrying an S3 rows-v2 layout runs the padding-free forward.
+        `value_config` ([rows, 4], `stpd.rl.heads.value_config_vector`): required exactly
+        when the heads have the value-config input.
         """
         if getattr(group, "layout", None) is not None:
             from .rows_forward import forward_rows
 
-            return forward_rows(self, group, compile=compile_rows, kernels=kernels)
+            return forward_rows(self, group, compile=compile_rows, kernels=kernels,
+                                value_config=value_config)
         if compile_rows or kernels:
             raise ValueError("compiled_rows_forward_requires_row_layout")
         device = self.ids.weight.device
@@ -493,9 +517,13 @@ class MStd(nn.Module):
         mask = t["scene_mask"]
         scene = self.scene(packed, src_key_padding_mask=mask)
         current = (scene * (~mask).unsqueeze(-1)).sum(1) / t["scene_lengths"]
-        logits = self.rl4_heads.outcome(scene, mask, current).float()
+        from stpd.rl.heads import module_readout
+
+        shifts = self.rl4_heads.config_shifts(value_config, scene.shape[0])
+        logits = module_readout(self.rl4_heads.outcome, scene, mask, current,
+                                 shifts[0]).float()
         logits = logits.masked_fill(~t["outcome_valid"], -torch.inf)
-        hp = self.rl4_heads.hp(scene, mask, current)[:, 0].float()
+        hp = module_readout(self.rl4_heads.hp, scene, mask, current, shifts[1])[:, 0].float()
         if not group.policy:
             return (logits.new_empty((len(group.rows), 0)),
                     logits[:len(group.rows)], hp[:len(group.rows)])

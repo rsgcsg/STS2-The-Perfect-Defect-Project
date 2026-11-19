@@ -555,14 +555,16 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
             return
         if not message:
             return
-        # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None)]
+        # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None,
+        #         value config of the row's game sampling)]
         job_id, part, parts, mu, rows, span, *stamp = pickle.loads(message)
         if stamp:  # trace (default off): [dispatched, received here]
             stamp = [stamp[0], time.monotonic()]
         frames, floors, kept, failed, audit = [], [], [], {}, []
+        configs: list[tuple[float, ...]] = []  # per kept row, the heads' value-config input
         potions: dict[int, list[int]] = {}  # row index -> its `potion.use` choice positions
-        tails: dict[str, list[tuple[int, Any, int]]] = {}
-        for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
+        tails: dict[str, list[tuple[int, Any, int, tuple[float, ...]]]] = {}
+        for index, (raw, audit_sha, catalog_len, floor, tail, config) in enumerate(rows):
             frame, code, detail = _audited_decode(raw, audit_sha, compiler)
             if code == "audit_mismatch":
                 audit.append((index, detail))
@@ -575,20 +577,21 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                 continue
             frames.append(frame)
             floors.append(floor)
+            configs.append(config)
             kept.append(index)
             positions = [position for position, action
                          in enumerate(frame.tensors["actions"].tolist()) if action == potion_use]
             if positions:
                 potions[index] = positions
             if tail is not None:
-                tails.setdefault(tail[0], []).append((index, frame, tail[1]))
+                tails.setdefault(tail[0], []).append((index, frame, tail[1], config))
         group: Any = None
         overflow = None
         try:
             group = prepare(frames, floors) if frames else None
         except ValueError:
             failed.update(dict.fromkeys(kept, "ROW_DECODE_FAILED"))
-            kept, tails = [], {}
+            kept, tails, configs = [], {}, []
         if group is not None and arena is not None:
             from stpd.rl.batch_preparation import write_forward_inputs
             start, end, slot_start, slot_end = span
@@ -603,22 +606,24 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                 overflow = {"need": forward_arena_bytes(group), "have": end - start,
                             "rows": len(kept)}
                 failed.update(dict.fromkeys(kept, "SERVICE_STOPPING"))
-                kept, tails, group = [], {}, None
+                kept, tails, group, configs = [], {}, None, []
             else:
                 group = _ArenaPart(dataclasses.replace(written, start=written.start + start,
                                                        end=written.end + start), len(kept),
                                    (slot_start, slot_end))
         tail_parts = []
         for tail_mu, members in tails.items():
-            indices = [index for index, _, _ in members]
+            indices = [index for index, _, _, _ in members]
+            tail_configs = [config for _, _, _, config in members]
             try:
-                tail_group = prepare([frame for _, frame, _ in members],
-                                     [floor for _, _, floor in members])
+                tail_group = prepare([frame for _, frame, _, _ in members],
+                                     [floor for _, _, floor, _ in members])
             except ValueError:
-                tail_parts.append((tail_mu, indices, None))
+                tail_parts.append((tail_mu, indices, None, tail_configs))
                 continue
-            tail_parts.append((tail_mu, indices, tail_group))
+            tail_parts.append((tail_mu, indices, tail_group, tail_configs))
         prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
+                    "configs": configs,
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts,
                     "overflow": overflow, "potions": potions}
@@ -651,13 +656,17 @@ def _join_parts(groups: list[Any]) -> tuple[Any, list[int]]:
     return concatenate_groups(groups, rows=tuple(range(sum(counts)))), counts
 
 
-def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
+def _forward_parts(scorer: Any, groups: list[Any], configs: list[tuple[float, ...]] | None = None
+                   ) -> list[tuple[torch.Tensor, ...]]:
     """Score one job's prepared sub-groups with one mu in one forward."""
-    return _score_joined(scorer, *_join_parts(groups))
+    return _score_joined(scorer, *_join_parts(groups), configs)
 
 
-def _score_joined(scorer: Any, joined: Any, counts: list[int]) -> list[tuple[torch.Tensor, ...]]:
-    tensors = scorer.forward_tensors(joined)
+def _score_joined(scorer: Any, joined: Any, counts: list[int],
+                  configs: list[tuple[float, ...]] | None = None
+                  ) -> list[tuple[torch.Tensor, ...]]:
+    """`configs`: the joined rows' value configs in row order (heads that read them)."""
+    tensors = scorer.forward_tensors(joined, configs)
     out, start = [], 0
     for count in counts:
         out.append(tuple(value[start:start + count] for value in tensors))
@@ -920,7 +929,10 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         error = ("MU_NOT_RESIDENT", "")
     elif live:
         try:
-            for part, tensors in zip(live, _score_joined(scorer, *joined), strict=True):
+            configs = [config for part in live for config in part["configs"]]
+            data, counts = joined
+            for part, tensors in zip(live, _score_joined(scorer, data, counts, configs),
+                                     strict=True):
                 outputs[part["part"]] = tensors
         except Exception as failure:
             fatal = f"forward {type(failure).__name__}: {str(failure)[:200]}"
@@ -928,7 +940,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
     for part in parts:
         tails: list[tuple[Any, Any]] = []
         part_tails.append(tails)
-        for tail_mu, indices, group in part["tails"]:
+        for tail_mu, indices, group, tail_configs in part["tails"]:
             tail_scorer = scorers.get(tail_mu)
             if group is None:
                 tails.append((indices, "ROW_DECODE_FAILED"))
@@ -936,7 +948,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
                 tails.append((indices, "MU_NOT_RESIDENT"))
             else:
                 try:
-                    tails.append((indices, tail_scorer.forward_tensors(group)))
+                    tails.append((indices, tail_scorer.forward_tensors(group, tail_configs)))
                 except Exception as failure:
                     fatal = fatal or f"tail {type(failure).__name__}: {str(failure)[:200]}"
                     tails.append((indices, "SERVICE_STOPPING"))
@@ -1597,6 +1609,8 @@ class FastInferenceService:
         self.stats["parts"] += len(chunks)
         self.stats["job_rows_max"] = max(self.stats["job_rows_max"], len(rows))
         mu = rows[0].plan.mu.snapshot_sha256
+        from stpd.rl.heads import value_config_vector
+
         for part, (chunk, worker) in enumerate(zip(chunks, workers, strict=True)):
             payload = []
             for item in chunk:
@@ -1606,7 +1620,9 @@ class FastInferenceService:
                 payload.append((item.raw,
                                 item.row["payload"]["row_sha256"] if item.audit else None,
                                 item.row["catalog_len"], item.row["floor"],
-                                (tail.mu, tail.floor) if needs_tail else None))
+                                (tail.mu, tail.floor) if needs_tail else None,
+                                # the heads' value-config input: this game's own sampling
+                                value_config_vector(item.sampling["classes"])))
             span = (base + part * share, base + (part + 1) * share, base,
                     base + self.slot_bytes)
             message: tuple[Any, ...] = (job_id, part, len(chunks), mu, payload, span)

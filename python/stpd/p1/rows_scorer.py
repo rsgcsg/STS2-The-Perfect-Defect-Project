@@ -70,23 +70,40 @@ class RowsScorer:
         self.bf16 = bf16 and self.device.type == "cuda"
         self.compile = compile
         self.kernels = kernels
+        # `segments.value_config_input`: this mu's heads read each row's sampling config.
+        self.reads_value_config = bool(model.rl4_heads.has_value_config)
 
-    def forward_device(self, group: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def value_config(self, configs: Sequence[Sequence[float]] | None) -> torch.Tensor | None:
+        """The rows' value configs (`heads.value_config_vector`, group row order) as this
+        mu's heads take them: a [rows, 4] tensor when they read it, else None."""
+        if not self.reads_value_config:
+            return None
+        if configs is None:
+            raise ValueError("value_config_required")
+        return torch.tensor([list(row) for row in configs], dtype=torch.float32)
+
+    def forward_device(self, group: Any, value_config: torch.Tensor | None = None
+                       ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """The model call alone (caller holds inference mode and autocast): device
         (scores, outcome logits, hp)."""
         if self.kernels:
             return cast(tuple[torch.Tensor, torch.Tensor, torch.Tensor],
                         self.model.forward_prepared_rl4(group, compile_rows=self.compile,
-                                                        kernels=self.kernels))
+                                                        kernels=self.kernels,
+                                                        value_config=value_config))
         return cast(tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-                    self.model.forward_prepared_rl4(group, compile_rows=self.compile))
+                    self.model.forward_prepared_rl4(group, compile_rows=self.compile,
+                                                    value_config=value_config))
 
-    def forward_tensors(self, group: Any) -> tuple[torch.Tensor, ...]:
-        """Device forward only: CPU float (scores, outcome probabilities, logits, hp)."""
+    def forward_tensors(self, group: Any, configs: Sequence[Sequence[float]] | None = None
+                        ) -> tuple[torch.Tensor, ...]:
+        """Device forward only: CPU float (scores, outcome probabilities, logits, hp).
+        `configs`: each row's value config, read only by heads with that input."""
         autocast = (torch.autocast("cuda", dtype=torch.bfloat16) if self.bf16
                     else nullcontext())
+        value_config = self.value_config(configs)
         with torch.inference_mode(), autocast:
-            scores, logits, hp = self.forward_device(group)
+            scores, logits, hp = self.forward_device(group, value_config)
             probabilities = logits.float().softmax(-1)
         return (scores.float().cpu(), probabilities.cpu(), logits.float().cpu(),
                 hp.float().cpu())
@@ -122,13 +139,15 @@ class RowsScorer:
                                  hp_list[row]))
         return out
 
-    def forward(self, group: Any, catalog_lengths: Sequence[int]) -> list[RowScores | None]:
+    def forward(self, group: Any, catalog_lengths: Sequence[int],
+                configs: Sequence[Sequence[float]] | None = None) -> list[RowScores | None]:
         """Scores per row; None for a row whose outputs are not finite."""
-        return self.rows(self.forward_tensors(group), catalog_lengths)
+        return self.rows(self.forward_tensors(group, configs), catalog_lengths)
 
-    def score(self, frames: Sequence[TensorFrame], floors: Sequence[int]
-              ) -> list[RowScores | None]:
-        return self.forward(prepare(frames, floors), [len(f.choices) for f in frames])
+    def score(self, frames: Sequence[TensorFrame], floors: Sequence[int],
+              configs: Sequence[Sequence[float]] | None = None) -> list[RowScores | None]:
+        return self.forward(prepare(frames, floors), [len(f.choices) for f in frames],
+                            configs)
 
 
 def compare_action_forward(model: Any, frames: Sequence[TensorFrame], floors: Sequence[int],

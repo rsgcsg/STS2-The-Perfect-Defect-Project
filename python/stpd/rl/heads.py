@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 import torch
 from torch import Tensor, nn
@@ -36,6 +36,59 @@ SUPPORTED_ASCENSIONS = tuple(range(11))
 _BOSS_FLOORS = (17, 33, 48)
 
 
+# Value-config input (`segments.value_config_input`, owner 2026-11-19): the outcome and
+# HP heads also read the sampling configuration ("exploration arm") the game was played
+# with, so V(s) is the value of one play style instead of a mixture of arms. Four numbers
+# per row: (ln T, mix / 0.1) of the combat class, then of the noncombat class. Control
+# (T 1, mix 0) is all zeros. ln T spans [ln 0.25, ln 3] and mix / 0.1 spans [0, 1] (the
+# rl-inference-4 envelope), so both inputs are order one. The policy logits never read it.
+VALUE_CONFIG_SIZE = 4
+VALUE_CONFIG_HEAD = "rl4-value-config-4"  # architecture["auxiliary_heads"] entry
+# Rl4Heads state keys: one ParameterDict registered after `hp`, so last in parameter order.
+VALUE_CONFIG_KEYS = ("value_config.outcome", "value_config.hp")
+CONTROL_VALUE_CONFIG = (0.0, 0.0, 0.0, 0.0)
+_MIX_SCALE = 0.1  # the rl-inference-4 uniform_mix ceiling
+
+
+def value_config_vector(classes: dict[str, Any]) -> tuple[float, float, float, float]:
+    """The value-config input of one rl-inference-4 `sampling.classes`."""
+    out: list[float] = []
+    for name in ("combat", "noncombat"):
+        policy = classes[name]
+        temperature, mix = policy["temperature"], policy["uniform_mix"]
+        if (type(temperature) not in (int, float) or not 0 < temperature <= 3
+                or type(mix) not in (int, float) or not 0 <= mix <= 0.1):
+            raise ValueError("invalid_value_config_sampling")
+        out += [math.log(temperature), mix / _MIX_SCALE]
+    return out[0], out[1], out[2], out[3]
+
+
+def row_value_configs(metadata: Any, sources: Any) -> list[tuple[float, ...]]:
+    """Per dataset row, its source's value config (`metadata["value_config"]` on the
+    source's first row, written by fast_source); control for a source without one (old
+    data, non-fast sources). `sources` as for `learning_diagnostics.row_arms`."""
+    out: list[tuple[float, ...]] = []
+    for rows in sources:
+        value = metadata[len(out)].get("value_config") if rows else None
+        if value is not None and (len(value) != VALUE_CONFIG_SIZE
+                                  or not all(math.isfinite(v) for v in value)):
+            raise ValueError("invalid_row_value_config")
+        out.extend([tuple(value) if value is not None else CONTROL_VALUE_CONFIG] * rows)
+    if len(out) != len(metadata):
+        raise ValueError(f"row_value_configs: sources cover {len(out)} rows, metadata has "
+                         f"{len(metadata)}")
+    return out
+
+
+def mlp_readout(mlp: nn.Sequential, features: Tensor, shift: Tensor | None) -> Tensor:
+    """`AttentionValueResidual.mlp(features)`, with `shift` (the value-config term) added
+    to the first layer's pre-activation. None is the original call, unchanged."""
+    if shift is None:
+        return cast(Tensor, mlp(features))
+    hidden = mlp[0](features)
+    return cast(Tensor, mlp[1:](hidden + shift.to(hidden.dtype)))
+
+
 def finish_floor(ascension: int) -> int:
     """Reward v2.1 finish floor of a supported ascension; ValueError otherwise."""
     if type(ascension) is not int or ascension not in SUPPORTED_ASCENSIONS:
@@ -44,7 +97,8 @@ def finish_floor(ascension: int) -> int:
 
 
 class Rl4Heads(nn.Module):
-    def __init__(self, frequencies: Sequence[float] | None = None) -> None:
+    def __init__(self, frequencies: Sequence[float] | None = None, *,
+                 value_config: bool = False) -> None:
         super().__init__()
         counts = torch.ones(OUTCOME_CLASSES) if frequencies is None else torch.tensor(
             list(frequencies), dtype=torch.float32)
@@ -59,14 +113,75 @@ class Rl4Heads(nn.Module):
         with torch.no_grad():
             final.bias.copy_((counts + 1e-3).log())
         self.hp = AttentionValueResidual()
+        if value_config:
+            self.add_value_config()
+
+    @property
+    def has_value_config(self) -> bool:
+        return hasattr(self, "value_config")
+
+    def add_value_config(self) -> None:
+        """Zero value-config weights (no RNG drawn): every output stays as it was until
+        they are trained. Registered after `hp`, so they come last in parameter order
+        (a CP upgraded at a continuation and a fresh run share one optimizer order)."""
+        if self.has_value_config:
+            raise ValueError("value_config_already_enabled")
+        first = cast(nn.Linear, self.outcome.mlp[0])
+        weight, width = first.weight, first.out_features
+        self.value_config = nn.ParameterDict()
+        for name in ("outcome", "hp"):  # item by item: a dict argument would be sorted
+            self.value_config[name] = nn.Parameter(torch.zeros(
+                (width, VALUE_CONFIG_SIZE), dtype=weight.dtype, device=weight.device))
+
+    def config_shifts(self, config: Tensor | None, rows: int
+                      ) -> tuple[Tensor | None, Tensor | None]:
+        """(outcome, HP) first-layer terms of a [rows, 4] value config; (None, None) for
+        heads without the input. Heads with it need the rows' config (no silent control)."""
+        if not self.has_value_config:
+            if config is not None:
+                raise ValueError("value_config_given_to_heads_without_it")
+            return None, None
+        if config is None:
+            raise ValueError("value_config_required")
+        if config.shape != (rows, VALUE_CONFIG_SIZE):
+            raise ValueError("value_config_batch_mismatch")
+        weights = [cast(Tensor, self.value_config[name]) for name in ("outcome", "hp")]
+        values = config.to(device=weights[0].device, dtype=weights[0].dtype)
+        return (torch.nn.functional.linear(values, weights[0]),
+                torch.nn.functional.linear(values, weights[1]))
 
     def forward(self, scene: Tensor, mask: Tensor, mean: Tensor,
-                floors: Sequence[int] | Tensor) -> tuple[Tensor, Tensor]:
-        logits = self.outcome(scene, mask, mean).float()
+                floors: Sequence[int] | Tensor, config: Tensor | None = None
+                ) -> tuple[Tensor, Tensor]:
+        if self.has_value_config and config is None:
+            # The frame API (evaluation, actor-local and target tools): no arm = control.
+            config = mean.new_zeros((scene.shape[0], VALUE_CONFIG_SIZE))
+        shifts = self.config_shifts(config, scene.shape[0])
+        logits = module_readout(self.outcome, scene, mask, mean, shifts[0]).float()
         valid = outcome_mask(floors, device=logits.device)
         if logits.shape != valid.shape:
             raise ValueError("outcome_floor_batch_mismatch")
-        return logits.masked_fill(~valid, -torch.inf), self.hp(scene, mask, mean)[:, 0].float()
+        hp = module_readout(self.hp, scene, mask, mean, shifts[1])
+        return logits.masked_fill(~valid, -torch.inf), hp[:, 0].float()
+
+
+def module_readout(module: AttentionValueResidual, scene: Tensor, mask: Tensor, mean: Tensor,
+                    shift: Tensor | None) -> Tensor:
+    """`AttentionValueResidual.forward` with the value-config term (None: the module)."""
+    if shift is None:
+        return cast(Tensor, module(scene, mask, mean))
+    pooled, _ = module.attention(module.query.expand(scene.shape[0], -1, -1),
+                                 scene, scene, key_padding_mask=mask, need_weights=False)
+    return mlp_readout(module.mlp, torch.cat((pooled[:, 0], mean), dim=1), shift)
+
+
+def load_heads_state(heads: Rl4Heads, state: dict[str, Tensor]) -> None:
+    """Strict load; heads with the value-config input also take a state without it (an
+    older head snapshot) with zero config weights. Anything else differing fails."""
+    if heads.has_value_config and not any(key in state for key in VALUE_CONFIG_KEYS):
+        state = {**state, **{key: torch.zeros_like(heads.state_dict()[key])
+                             for key in VALUE_CONFIG_KEYS}}
+    heads.load_state_dict(state, strict=True)
 
 
 def outcome_mask(floors: Sequence[int] | Tensor, *, device: torch.device | None = None) -> Tensor:
