@@ -7,7 +7,8 @@
 // nothing; never in git):
 //   saves/        the Host writes each save here (open.save_points.directory)
 //   ledger.jsonl  append-only, shared by every driver of the node: save / claim / open / close / pause / evict
-//   claims/       one file per consumed ticket, created exclusively: a ticket is consumed once, node-wide
+//   claims/       one file per consumed ticket, created exclusively: a ticket is consumed once, node-wide; a
+//                 driver deletes a save only after taking its remaining tickets the same way (#retire)
 // A ticket is one use of one save (`<save sha256>.u<n>`, n < uses_per_save). A refused load (`reset_failed`)
 // or an unknown close seals that attempt, is counted, and pauses the save's family (the source game) for every
 // driver; nothing is retried or reissued under a new id. A source game's saves enter the pool only after it
@@ -331,14 +332,36 @@ export class SaveTickets {
 
   /** Deletes saves no use is left of, then the oldest past the size cap; never one with an open claim. */
   #trim() {
+    this.refresh();
     for (const entry of [...this.saves.values()]) {
       const used = entry.used >= this.config.uses_per_save || this.paused.has(entry.family);
-      if (entry.open > 0 || (!used && this.bytes <= this.config.pool_bytes)) continue;
+      if (entry.open > 0 || (!used && this.bytes <= this.config.pool_bytes) || !this.#retire(entry)) continue;
       const record = { kind: "evict", id: entry.id, why: used ? "used" : "pool_full" };
       this.#append(record); this.#apply(record);
       this.#count(this.counts.evicted, record.why);
       unlinkQuiet(entry.path);
     }
+  }
+
+  /**
+   * Takes every use of `entry` this driver has not seen claimed, with the claim's own exclusive file create,
+   * so a delete and a claim never both win: another driver's claim whose ledger line is not in this view yet
+   * (its file exists) keeps the save, and the claim files taken here are given back. False = keep it.
+   */
+  #retire(entry) {
+    const taken = [];
+    for (let use = 0; use < this.config.uses_per_save; use += 1) {
+      const ticket = `${entry.id}.u${use}`;
+      if (this.used.has(ticket)) continue;
+      const path = join(this.claimDir, ticket);
+      try { closeSync(openSync(path, "wx", 0o600)); taken.push(path); }
+      catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        for (const own of taken) unlinkQuiet(own);
+        return false;
+      }
+    }
+    return true;
   }
 
   #pause(family, ticket, why) {

@@ -438,8 +438,10 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 长跑和它之前的短硬件体检都从仓库里的文件起，不再从议题里拼 `--set`：
 - 运行配置 `tools/friday/fastchain/rl5-long-run-1.toml`：叠加在 `rl5-fastchain.toml` 上
   （`base = "rl5-fastchain.toml"`），只列和它不同的旋钮，其余取基础配置。
-- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口、评估大小、评估作业墙钟
-  `eval_wall_seconds`（6300）、`min_generation_seconds`（600）和 `checkpoint_keep_newest`（3），配方和其余值同长跑（见下文“短体检”）。
+- 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口（训练目标 1500 s、链墙钟 7200 s）、
+  A10 评估局数（16）、评估间隔（900 s）、`min_generation_seconds`（600）、`checkpoint_keep_newest`（3）
+  和启动等待（`env_wait_seconds`、`remote_prepare_wait_seconds`、`prep_pending_max_seconds`、
+  `prep_lead_seconds`）；评估作业墙钟 `eval_wall_seconds` 不改，沿用长跑的 17000 s。配方和其余值同长跑（见下文“短体检”）。
 - 冻结配方 `python/configs/rl5-long-run-1.json`（旋钮 `frozen_learner_config` 指向它）：
   `rl5.json` + 下表的配方值，预检 A9 逐键核闸门。
 - 叠加规则（`run_profile.py`）：叠加文件每个旋钮仍写满 value/default/why/measured，default 必须

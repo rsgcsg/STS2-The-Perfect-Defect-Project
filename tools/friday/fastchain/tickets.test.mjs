@@ -228,3 +228,34 @@ test("the pool is capped by size (oldest without an open claim deleted) and used
   tickets.refresh();
   assert.equal(tickets.counters().pool_bytes, 4e5);
 });
+
+test("a driver with a stale view never deletes a save another driver has just claimed", () => {
+  const dir = pool();
+  const a = make(dir, { share: 1, uses_per_save: 2 }), b = make(dir, { share: 1, uses_per_save: 2 }, { id: "drv-b" });
+  const [s1] = pooled(a, "s1", [{ dir, family: "fam-1" }]);
+  a.random = () => 0; b.random = () => 0;
+  open(a, "ta"); // a claims s1.u0; a's view is now read
+  b.candidate = a.candidate;
+  const tb = open(b, "tb"); // b claims s1.u1 after a's last read
+  assert.equal(tb.plan.tickets[0].ticket, `${s1.sha256}.u1`);
+  // a retires s1 on what it knows locally (an unknown close pauses the family) while b's cold read runs.
+  a.onEvent(closed("ta", "unknown"));
+  assert.ok(existsSync(s1.path), "s1 deleted under b's open claim");
+  b.onEvent(closed("tb", "terminal"));
+  assert.ok(!existsSync(s1.path)); // b's close sees the pause and no open claim: s1 goes, once
+  assert.deepEqual(ledger(dir).filter(line => line.kind === "evict").map(line => [line.id, line.why, line.driver]), [[s1.sha256, "used", "drv-b"]]);
+});
+
+test("a claim whose ledger line is not written yet still keeps its save; trim gives back the claim files it took", () => {
+  const dir = pool();
+  const a = make(dir, { share: 1, uses_per_save: 3 });
+  const [s1] = pooled(a, "s1", [{ dir, family: "fam-1" }]);
+  a.random = () => 0;
+  open(a, "ta"); // s1.u0
+  // Another driver has created s1.u2's claim file (the exclusive create) and not yet appended its claim line.
+  writeFileSync(join(dir, "claims", `${s1.sha256}.u2`), "{}\n", { flag: "wx" });
+  a.onEvent(closed("ta", "unknown"));
+  assert.ok(existsSync(s1.path), "s1 deleted under a claim file");
+  assert.deepEqual(readdirSync(join(dir, "claims")).sort(), [`${s1.sha256}.u0`, `${s1.sha256}.u2`]); // u1 given back
+  assert.equal(ledger(dir).filter(line => line.kind === "evict").length, 0);
+});
