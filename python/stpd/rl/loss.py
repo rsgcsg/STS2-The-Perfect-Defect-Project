@@ -80,7 +80,7 @@ def minibatch_explore_rows(minibatch: Any, arms: list[str | None] | None,
 
 def with_value_config(minibatch: Any, configs: list[tuple[float, ...]], device: Any) -> Any:
     """`segments.value_config_input`: `minibatch` with tensor "value_config" ([rows, 4], its
-    tensor order) from the dataset's `heads.row_value_configs`. Added before the step (and
+    tensor order) from the dataset's `heads.batch_value_configs`. Added before the step (and
     an offline dump), so every rank, group slice and replay reads the same rows' configs."""
     value = torch.tensor([configs[row] for group in minibatch.groups for row in group.rows],
                          dtype=torch.float32).to(device)

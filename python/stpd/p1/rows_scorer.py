@@ -75,11 +75,10 @@ class RowsScorer:
 
     def value_config(self, configs: Sequence[Sequence[float]] | None) -> torch.Tensor | None:
         """The rows' value configs (`heads.value_config_vector`, group row order) as this
-        mu's heads take them: a [rows, 4] tensor when they read it, else None."""
-        if not self.reads_value_config:
+        mu's heads take them: a [rows, 4] tensor when they read it, else None (heads with
+        the input then refuse the forward: `Rl4Heads.config_shifts`)."""
+        if not self.reads_value_config or configs is None:
             return None
-        if configs is None:
-            raise ValueError("value_config_required")
         return torch.tensor([list(row) for row in configs], dtype=torch.float32)
 
     def forward_device(self, group: Any, value_config: torch.Tensor | None = None

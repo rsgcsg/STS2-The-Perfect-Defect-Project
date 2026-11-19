@@ -105,7 +105,13 @@ from .fast_source import (
     read_handoff,
 )
 from .fast_verify import FastVerifyClosed, FastVerifyPool
-from .heads import HEAD_PREFIX, VALUE_CONFIG_KEYS, load_heads_state, row_value_configs
+from .heads import (
+    HEAD_PREFIX,
+    VALUE_CONFIG_KEYS,
+    batch_value_configs,
+    load_heads_state,
+    value_config_vector,
+)
 from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import (
     advantage_fields,
@@ -2723,12 +2729,16 @@ class SegmentLearner:
 
     def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
                         ) -> list[tuple[str, str, list[dict[str, Any]]]]:
-        """Verified fast labels -> the old pools' rows; each holds its original segment."""
+        """Verified fast labels -> the old pools' rows; each holds its original segment
+        (and, with `segments.value_config_input`, the sampling config of its game)."""
         result = []
         for kind, identity, rows in groups:
             values = []
             for row in rows:
                 segment, envelope = row["segment"], row["envelope"]
+                config = ({"value_config": value_config_vector(
+                    segment.header["sampling"]["classes"])}
+                    if self.settings.value_config_input else {})
                 ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
                                 f"{segment.segment_id}", envelope["packet_sha256"],
                                 envelope["packet_size"])
@@ -2744,7 +2754,7 @@ class SegmentLearner:
                 values.append({"key": source["key"], "source": source, "member": member,
                                "outcome" if kind == "terminal" else "hp": row["label"],
                                "prepared_input": AuxiliaryInput(source, member, segment.data,
-                                                                envelope)})
+                                                                envelope), **config})
             result.append((kind, identity, values))
         return result
 
@@ -3428,6 +3438,7 @@ class SegmentLearner:
                             float(row["outcome" if kind == "terminal" else "hp"]),
                             row["uses"],
                             self.terminal.max_uses if kind == "terminal" else self.hp.max_uses,
+                            row.get("value_config"),  # value_config_input only
                         )
                     )
                     owners.append(i % self.settings.minibatches)
@@ -3764,8 +3775,8 @@ class SegmentLearner:
         warmup_learning_rates(self.optimizer, (self.config.lr, self.settings.head_lr),
                               self.updates, self.settings.lr_warmup_steps)
         if self.model.rl4_heads.has_value_config:  # segments.value_config_input
-            minibatch = with_value_config(minibatch, row_value_configs(
-                batch.metadata, [m.rows for m in batch.request.members]), self.device)
+            minibatch = with_value_config(
+                minibatch, batch_value_configs(batch.metadata, batch.request), self.device)
         result = prepared_update(
             self.model,
             self.optimizer,

@@ -22,6 +22,7 @@ from typing import Any, cast
 import torch
 from torch import Tensor, nn
 
+from stpd.p1.sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
 from stpd.p1.value_head import AttentionValueResidual
 
 # Golden Compass has a witnessed alternate Act-2 map: natural death on floor35
@@ -40,14 +41,15 @@ _BOSS_FLOORS = (17, 33, 48)
 # HP heads also read the sampling configuration ("exploration arm") the game was played
 # with, so V(s) is the value of one play style instead of a mixture of arms. Four numbers
 # per row: (ln T, mix / 0.1) of the combat class, then of the noncombat class. Control
-# (T 1, mix 0) is all zeros. ln T spans [ln 0.25, ln 3] and mix / 0.1 spans [0, 1] (the
-# rl-inference-4 envelope), so both inputs are order one. The policy logits never read it.
+# (T 1, mix 0) is all zeros. Within the rl-inference-4 arm envelope (`stpd.p1.sampling`)
+# ln T spans [ln 0.25, ln 3] ~ [-1.39, 1.10] ([0, 1.10] at the default temperature
+# minimum 1) and mix / 0.1 spans [0, 1], so both inputs are order one. The policy logits
+# never read it.
 VALUE_CONFIG_SIZE = 4
 VALUE_CONFIG_HEAD = "rl4-value-config-4"  # architecture["auxiliary_heads"] entry
 # Rl4Heads state keys: one ParameterDict registered after `hp`, so last in parameter order.
 VALUE_CONFIG_KEYS = ("value_config.outcome", "value_config.hp")
-CONTROL_VALUE_CONFIG = (0.0, 0.0, 0.0, 0.0)
-_MIX_SCALE = 0.1  # the rl-inference-4 uniform_mix ceiling
+CONTROL_VALUE_CONFIG = (0.0,) * VALUE_CONFIG_SIZE
 
 
 def value_config_vector(classes: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -56,27 +58,41 @@ def value_config_vector(classes: dict[str, Any]) -> tuple[float, float, float, f
     for name in ("combat", "noncombat"):
         policy = classes[name]
         temperature, mix = policy["temperature"], policy["uniform_mix"]
-        if (type(temperature) not in (int, float) or not 0 < temperature <= 3
-                or type(mix) not in (int, float) or not 0 <= mix <= 0.1):
+        if (type(temperature) not in (int, float)
+                or not ARM_TEMPERATURE_FLOOR <= temperature <= ARM_TEMPERATURE_MAX
+                or type(mix) not in (int, float) or not 0 <= mix <= ARM_UNIFORM_MIX_MAX):
             raise ValueError("invalid_value_config_sampling")
-        out += [math.log(temperature), mix / _MIX_SCALE]
+        out += [math.log(temperature), mix / ARM_UNIFORM_MIX_MAX]
     return out[0], out[1], out[2], out[3]
 
 
+def _checked_config(value: Any) -> tuple[float, ...]:
+    if (value is None or len(value) != VALUE_CONFIG_SIZE
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in value)):
+        raise ValueError("value_config_missing_or_invalid")
+    return tuple(float(v) for v in value)
+
+
 def row_value_configs(metadata: Any, sources: Any) -> list[tuple[float, ...]]:
-    """Per dataset row, its source's value config (`metadata["value_config"]` on the
-    source's first row, written by fast_source); control for a source without one (old
-    data, non-fast sources). `sources` as for `learning_diagnostics.row_arms`."""
+    """Per PPO dataset row, its source's value config (`metadata["value_config"]` on the
+    source's first row, written by fast_source). A source without one fails (heads with
+    the input never guess an arm). `sources` as for `learning_diagnostics.row_arms`."""
     out: list[tuple[float, ...]] = []
     for rows in sources:
-        value = metadata[len(out)].get("value_config") if rows else None
-        if value is not None and (len(value) != VALUE_CONFIG_SIZE
-                                  or not all(math.isfinite(v) for v in value)):
-            raise ValueError("invalid_row_value_config")
-        out.extend([tuple(value) if value is not None else CONTROL_VALUE_CONFIG] * rows)
+        if rows:
+            out.extend([_checked_config(metadata[len(out)].get("value_config"))] * rows)
     if len(out) != len(metadata):
         raise ValueError(f"row_value_configs: sources cover {len(out)} rows, metadata has "
                          f"{len(metadata)}")
+    return out
+
+
+def batch_value_configs(metadata: Any, request: Any) -> list[tuple[float, ...]]:
+    """Every row of a prepared dataset in its row order: the PPO rows (`row_value_configs`)
+    then the auxiliary terminal/HP rows `n + local`, each with the config the learner
+    recorded from its own segment (`AuxiliarySelection.value_config`)."""
+    out = row_value_configs(metadata, [member.rows for member in request.members])
+    out.extend(_checked_config(selection.value_config) for selection in request.auxiliary)
     return out
 
 
@@ -126,12 +142,12 @@ class Rl4Heads(nn.Module):
         (a CP upgraded at a continuation and a fresh run share one optimizer order)."""
         if self.has_value_config:
             raise ValueError("value_config_already_enabled")
-        first = cast(nn.Linear, self.outcome.mlp[0])
-        weight, width = first.weight, first.out_features
         self.value_config = nn.ParameterDict()
-        for name in ("outcome", "hp"):  # item by item: a dict argument would be sorted
+        for name, head in (("outcome", self.outcome), ("hp", self.hp)):  # item by item:
+            first = cast(nn.Linear, head.mlp[0])                         # a dict sorts
             self.value_config[name] = nn.Parameter(torch.zeros(
-                (width, VALUE_CONFIG_SIZE), dtype=weight.dtype, device=weight.device))
+                (first.out_features, VALUE_CONFIG_SIZE), dtype=first.weight.dtype,
+                device=first.weight.device))
 
     def config_shifts(self, config: Tensor | None, rows: int
                       ) -> tuple[Tensor | None, Tensor | None]:
@@ -153,9 +169,6 @@ class Rl4Heads(nn.Module):
     def forward(self, scene: Tensor, mask: Tensor, mean: Tensor,
                 floors: Sequence[int] | Tensor, config: Tensor | None = None
                 ) -> tuple[Tensor, Tensor]:
-        if self.has_value_config and config is None:
-            # The frame API (evaluation, actor-local and target tools): no arm = control.
-            config = mean.new_zeros((scene.shape[0], VALUE_CONFIG_SIZE))
         shifts = self.config_shifts(config, scene.shape[0])
         logits = module_readout(self.outcome, scene, mask, mean, shifts[0]).float()
         valid = outcome_mask(floors, device=logits.device)

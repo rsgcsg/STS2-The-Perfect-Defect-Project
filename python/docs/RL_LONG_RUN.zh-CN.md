@@ -401,7 +401,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
        可以改，写在 `python/stpd/rl/recipe_changes.py`。改 `segments.kl_stop_scope` 时，旋钮
        `kl_stop_scope` 也要设成同一个新值。`segments.value_config_input`（价值头读本局采样配置）
        只许从关到开（false -> true），旋钮 `value_config_input` 设 true；接上的 CP 的两个价值头
-       加上全零的新权重，输出和原来完全一样，优化器给新权重从零起状态。模型结构、奖励表、片段格式、批几何和
+       加上全零的新权重，输出和原来完全一样，优化器给新权重从零起状态。每行（含辅助的结局/血量行）用它自己那局的采样配置；没有记录配置的行直接报错，不当对照臂（所以只用于快链）。模型结构、奖励表、片段格式、批几何和
        `lr_warmup_steps` 都不许改。
     3. 起新链：`supervise.py start NEWCHAIN ... --resume-checkpoint CP --set 'declared_changes=...'`。
        预检（`declared_changes` 项）会从站点 peer 读 CP 的配置头（不用 torch），列出每个

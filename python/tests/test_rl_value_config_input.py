@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import dataclasses as dc
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,7 @@ from stpd.rl.heads import (  # noqa: E402
     CONTROL_VALUE_CONFIG,
     VALUE_CONFIG_HEAD,
     VALUE_CONFIG_KEYS,
+    batch_value_configs,
     load_heads_state,
     row_value_configs,
     value_config_vector,
@@ -128,6 +130,20 @@ def test_frame_api_reads_control_and_padded_path_agrees(model):
         torch.testing.assert_close(left[finite], right[finite], rtol=0, atol=1e-6)
     with pytest.raises(ValueError, match="value_config_required"):
         new.forward_prepared_rl4(group)
+    # The frame API (`Rl4Heads.forward`, `forward_rl4`) never guesses an arm either.
+    width = old.rl4_heads.outcome.query.shape[-1]
+    generator = torch.Generator().manual_seed(2)
+    scene = torch.randn((3, 5, width), generator=generator)
+    mask = torch.zeros((3, 5), dtype=torch.bool)
+    mean = torch.randn((3, width), generator=generator)
+    with torch.no_grad():
+        with pytest.raises(ValueError, match="value_config_required"):
+            new.rl4_heads(scene, mask, mean, [3, 3, 3])
+        for left, right in zip(old.rl4_heads(scene, mask, mean, [3, 3, 3]),
+                               new.rl4_heads(scene, mask, mean, [3, 3, 3],
+                                             torch.zeros((3, 4))), strict=True):
+            finite = left.isfinite()
+            torch.testing.assert_close(left[finite], right[finite], rtol=0, atol=1e-6)
 
 
 def test_a_trained_input_changes_only_rows_with_a_non_control_config(model):
@@ -161,8 +177,8 @@ def test_a_trained_input_changes_only_rows_with_a_non_control_config(model):
 def test_training_step_reads_the_rows_configs_and_learns_the_input(model):
     """The learner path: `with_value_config` per row, the config weights get gradient."""
     new = trained(model)
+    batch = prepared(new, "rows-v2")  # the actor side scored it before the input existed
     new.enable_value_config()
-    batch = prepared(new, "rows-v2")
     minibatch = batch.minibatches[0]
     rows = 1 + max(row for group in minibatch.groups for row in group.rows)
     configs = [value_config_vector(HIGH)] * rows
@@ -183,14 +199,26 @@ def test_training_step_reads_the_rows_configs_and_learns_the_input(model):
     assert bool(hp.ne(0).any()) == (float(result["hp_loss"]) > 0)
 
 
-def test_row_configs_come_from_each_sources_first_row_control_without_one():
-    """(c) Dataset rows take their source's recorded config; old sources are control."""
+def test_row_configs_come_from_each_sources_first_row_and_never_default():
+    """(c) Dataset rows take their source's recorded config; a source without one fails
+    (no silent control), and so does an auxiliary row without one."""
     high = list(value_config_vector(HIGH))
-    metadata = [{"value_config": high}, {}, {}, {}, {"value_config": [0.0] * 4}]
+    metadata = [{"value_config": high}, {}, {"value_config": [0.0] * 4}, {},
+                {"value_config": [0.0] * 4}]
     assert row_value_configs(metadata, [2, 2, 1]) == [tuple(high)] * 2 + [
         CONTROL_VALUE_CONFIG] * 2 + [CONTROL_VALUE_CONFIG]
     with pytest.raises(ValueError, match="sources cover"):
         row_value_configs(metadata, [2, 2])
+    with pytest.raises(ValueError, match="value_config_missing"):
+        row_value_configs([{"value_config": high}, {}, {}], [1, 2])
+    members = [SimpleNamespace(rows=2), SimpleNamespace(rows=2), SimpleNamespace(rows=1)]
+    aux = [SimpleNamespace(value_config=(0.0,) * 4), SimpleNamespace(value_config=tuple(high))]
+    request = SimpleNamespace(members=members, auxiliary=aux)
+    assert batch_value_configs(metadata, request) == row_value_configs(
+        metadata, [2, 2, 1]) + [CONTROL_VALUE_CONFIG, tuple(high)]
+    with pytest.raises(ValueError, match="value_config_missing"):
+        batch_value_configs(metadata, SimpleNamespace(
+            members=members, auxiliary=[SimpleNamespace(value_config=None)]))
 
 
 def test_rows_scorer_ignores_configs_for_heads_without_the_input(model):

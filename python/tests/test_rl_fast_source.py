@@ -580,10 +580,12 @@ def test_published_mu_ledger_is_typed_and_per_generation():
 # ---------------------------------------------------------- instance labels (gap a)
 def combat_game(game: str = "g1", generation: str = "gen-1",
                 handoff: MuHandoff | None = None, compiler: FrameCompiler = COMPILER,
-                assembler_id: str = "node-a") -> list[SealedSegment]:
+                assembler_id: str = "node-a",
+                sampling: dict[str, Any] = SAMPLING) -> list[SealedSegment]:
     """70 rows: combat 0-9 (post hp 40), map 10-19, combat 20-29 (post hp 30), then
     noncombat to a natural terminal; two segments (bootstrap + terminal)."""
-    g = Game(generation, compiler=compiler, assembler_id=assembler_id, handoff=handoff)
+    g = Game(generation, compiler=compiler, assembler_id=assembler_id, handoff=handoff,
+             sampling=sampling)
     g.open(game)
     for step in range(70):
         combat = step < 10 or 20 <= step < 30

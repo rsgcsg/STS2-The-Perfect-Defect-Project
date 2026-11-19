@@ -463,9 +463,11 @@ class MStd(nn.Module):
         self._mark_value_config()
 
     def forward_rl4(self, frames: Sequence[ModelFrame], floors: Sequence[int] | Tensor,
-                    *, policy: bool = True, check_finite: bool = True
+                    *, policy: bool = True, check_finite: bool = True,
+                    value_config: Tensor | None = None
                     ) -> tuple[list[Tensor], Tensor, Tensor]:
-        """One scene encoding; auxiliary gradients enter the shared public trunk."""
+        """One scene encoding; auxiliary gradients enter the shared public trunk.
+        `value_config` ([frames, 4]): required exactly when the heads have the input."""
         if not hasattr(self, "rl4_heads"):
             raise ValueError("rl4_heads_not_enabled")
         if not frames:
@@ -477,7 +479,7 @@ class MStd(nn.Module):
         captured: list[Tensor] = []
         scores, current = self._forward_batch(frames, values_only=not policy,
             check_finite=check_finite, capture_scene=captured)
-        logits, hp = self.rl4_heads(captured[0], captured[1], current, floors)
+        logits, hp = self.rl4_heads(captured[0], captured[1], current, floors, value_config)
         if check_finite and (not bool(torch.isfinite(hp).all())
                 or bool(torch.isnan(logits).any()) or bool(torch.isposinf(logits).any())):
             raise ValueError("non_finite_rl4_head_outputs")

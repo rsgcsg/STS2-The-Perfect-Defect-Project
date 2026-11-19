@@ -442,9 +442,6 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     the value-config input (`Rl4Heads.config_shifts`)."""
     if model.training:
         raise ValueError("rows_forward_requires_eval_mode")
-    if (value_config is None) == model.rl4_heads.has_value_config:
-        raise ValueError("value_config_required" if value_config is None
-                         else "value_config_given_to_heads_without_it")
     from .rows_kernels import parse_kernels
 
     levers = parse_kernels(kernels)
@@ -469,7 +466,9 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
     rows = len(group.rows)
     config = None
     if value_config is not None:
-        if value_config.shape != (rows, 4):
+        from stpd.rl.heads import VALUE_CONFIG_SIZE
+
+        if value_config.shape != (rows, VALUE_CONFIG_SIZE):
             raise ValueError("value_config_batch_mismatch")
         config = move(value_config.float())
     if packed is None:

@@ -1725,7 +1725,7 @@ class _SgdWorker:
             self.send("staged", dataset=dataset, **fields)
 
     def run_dataset(self, start: dict[str, Any], next_message: Any) -> None:
-        from .heads import row_value_configs
+        from .heads import batch_value_configs
         from .learning_diagnostics import (
             advantage_fields,
             entropy_fields,
@@ -1757,9 +1757,8 @@ class _SgdWorker:
             arms = row_arms(device_batch.metadata,
                             [m.rows for m in device_batch.request.members])
             policy = device_batch.policy_mask.tolist()
-        # segments.value_config_input: each row's sampling config (control without one)
-        configs = (row_value_configs(device_batch.metadata,
-                                     [m.rows for m in device_batch.request.members])
+        # segments.value_config_input: each row's (PPO and auxiliary) sampling config
+        configs = (batch_value_configs(device_batch.metadata, device_batch.request)
                    if self.model.rl4_heads.has_value_config else None)
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
