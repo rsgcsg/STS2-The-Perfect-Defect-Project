@@ -72,6 +72,9 @@ EXPLORE_FLOOR_FIELDS = ("rows", "floored", "floored_positive", "floored_abs_adva
 # RL5-METHODS R, learning settings (stpd.rl.learning_diagnostics / segment_learner):
 ENTROPY_FIELDS = ("rows", "entropy_sum", "normalized_entropy_sum")  # per "arm|actN|decision"
 CALIBRATION_FIELDS = ("rows", "predicted_sum", "realised_sum")  # per bin of predicted value
+# learning_diagnostics value heads per exploration cell: per cell these heads' VALUE_FIELDS
+# and the calibration bins (`value_by_cell`), and the cross-cell query (`value_cross_cell`)
+CELL_HEADS = ("td", "terminal", "hp")
 MU_AGE_EDGES = (5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 450, 600, 900, 1200,
                 1800, 3600)  # segment_learner.MU_AGE_EDGES: bin upper edges, seconds
 NORM_BINS_PER_OCTAVE = 8  # pre-clip gradient norm histogram: 2^(1/8) wide bins (9%)
@@ -528,7 +531,8 @@ def value_summary(sums: list[float], scale: float = 1.0) -> dict[str, Any]:
 LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advantage_raw",
                  "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped",
                  "value_target",
-                 "value_calibration", "policy_entropy", "first_use_mu_age_seconds")
+                 "value_calibration", "policy_entropy", "first_use_mu_age_seconds",
+                 "value_by_cell", "value_cross_cell")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
 
@@ -644,6 +648,9 @@ class _Learning:
         self.exploration: dict[str, list[int]] = {}
         self.policy_arms: dict[str, list[float]] = {}
         self.floor_arms: dict[str, list[float]] = {}  # loss.explore_ratio_floor > 0
+        self.cells: dict[str, dict[str, Any]] = {}  # value_by_cell, pooled sums
+        # value_cross_cell: queried configs (latest), rows per own cell, sums per pair
+        self.cross: dict[str, Any] = {"configs": {}, "rows": {}, "sums": {}}
         self.raw_variance = [0.0, 0]  # sum, datasets that report it (#564)
         # R: optimizer steps with a finite norm, of them clip-bound, norm sum; norm bins
         self.clip = [0, 0, 0.0]
@@ -695,6 +702,7 @@ class _Learning:
             row = self.policy_arms.setdefault(arm, [0] * len(POLICY_ARM_FIELDS))
             for i, value in enumerate(values):
                 row[i] += value
+        self._cells(e)
         for arm, values in (e.get("explore_floor_by_arm") or {}).items():
             if len(values) != len(EXPLORE_FLOOR_FIELDS):
                 raise ValueError(f"explore_floor_by_arm {arm}: {len(values)} fields, "
@@ -703,6 +711,64 @@ class _Learning:
             for i, value in enumerate(values):
                 row[i] += value
         self._settings(e)
+
+    def _cells(self, e: dict[str, Any]) -> None:
+        """Value heads per exploration cell: pool the sums (all fields add)."""
+        for cell, heads in (e.get("value_by_cell") or {}).items():
+            pooled = self.cells.setdefault(cell, {
+                **{head: [0.0] * len(VALUE_FIELDS) for head in CELL_HEADS},
+                "calibration": [[0.0] * len(CALIBRATION_FIELDS) for _ in heads["calibration"]]})
+            for head in CELL_HEADS:
+                for i, value in enumerate(heads[head]):
+                    pooled[head][i] += value
+            for b, values in enumerate(heads["calibration"]):
+                for i, value in enumerate(values):
+                    pooled["calibration"][b][i] += value
+        cross = e.get("value_cross_cell")
+        if cross:
+            self.cross["configs"].update(cross["configs"])
+            for own, n in cross["rows"].items():
+                self.cross["rows"][own] = self.cross["rows"].get(own, 0) + n
+            for own, queried in cross["expected_reward_sum"].items():
+                sums = self.cross["sums"].setdefault(own, {})
+                for query, value in queried.items():
+                    sums[query] = sums.get(query, 0.0) + value
+
+    def cells_result(self) -> dict[str, Any]:
+        """Per cell: the outcome head vs lambda-return ("td") and vs the realised outcome
+        ("terminal"), the HP head, calibration bins; the cross-cell table and its gaps."""
+        out: dict[str, Any] = {"value_by_cell": {
+            cell: {**{head: value_summary(p[head], 100.0 if head == "hp" else 1.0)
+                      for head in CELL_HEADS},
+                   "calibration": [
+                       {"bin": [b / len(p["calibration"]), (b + 1) / len(p["calibration"])],
+                        "rows": round(rows), "mean_predicted": predicted / rows,
+                        "mean_realised": realised / rows}
+                       for b, (rows, predicted, realised) in enumerate(p["calibration"])
+                       if rows]}
+            for cell, p in sorted(self.cells.items())} or None}
+        rows, sums, configs = self.cross["rows"], self.cross["sums"], self.cross["configs"]
+        if not rows:
+            out["value_cross_cell"] = None
+            return out
+        means = {own: {query: value / rows[own] for query, value in queried.items()}
+                 for own, queried in sorted(sums.items())}
+        # heat = sum of the four config inputs (ln T and mix / 0.1, combat and noncombat)
+        heat = sorted(configs, key=lambda name: (sum(configs[name]), name))
+        cold, hot = heat[0], heat[-1]
+        control = next((name for name in heat if not any(configs[name])), None)
+        total = sum(rows.values())
+        out["value_cross_cell"] = {
+            "rows": dict(sorted(rows.items())), "mean_expected_reward": means,
+            "coldest": cold, "hottest": hot, "control": control,
+            # mean over rows of V(row, coldest) - V(row, hottest): per own cell and all rows
+            "cold_minus_hot": {**{own: m[cold] - m[hot] for own, m in means.items()},
+                               "all": sum(sums[own][cold] - sums[own][hot]
+                                          for own in sums) / total},
+            # mean over a cell's rows of V(row, control) - V(row, own cell)
+            "control_minus_own": {own: m[control] - m[own] for own, m in means.items()
+                                  if own in m and own != control} if control else None}
+        return out
 
     def _settings(self, e: dict[str, Any]) -> None:
         """RL5-METHODS R: the folds that judge the learning settings."""
@@ -828,6 +894,7 @@ class _Learning:
             for arm, (rows, floored, positive, magnitude, given, replaced)
             in sorted(self.floor_arms.items())} or None
         out.update(self.settings_result())
+        out.update(self.cells_result())
         return out
 
 
@@ -1566,6 +1633,41 @@ def _settings_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
     return out
 
 
+def _cell_lines(label: str, key: str, x: dict[str, Any]) -> list[str]:
+    """Value heads per exploration cell: per cell rows, predicted -> realised (difference),
+    EV (latest window); the cross-cell table (latest); the two gaps (both windows)."""
+    out = []
+
+    def head(name: str, h: dict[str, Any], digits: int = 3) -> str:
+        if not h["rows"]:
+            return f"{name} -"
+        return (f"{name} {h['rows']:,} rows {fmt(h['mean_prediction'], digits)} -> "
+                f"{fmt(h['mean_target'], digits)} ({h['bias_prediction_minus_target']:+.{digits}f})"
+                f" EV {fmt(h['explained_variance'], 3)}")
+
+    for cell, c in (x.get("value_by_cell") or {}).items() if key == "latest" else ():
+        out.append(f"  value cell {cell}: " + "; ".join((
+            head("vs lambda-return", c["td"]), head("vs outcome", c["terminal"]),
+            head("HP", c["hp"], 1))))
+    cross = x.get("value_cross_cell")
+    if not cross:
+        return out
+    if key == "latest":
+        queried = list(next(iter(cross["mean_expected_reward"].values())))
+        out.append(f"  V at queried cell ({label}; rows by own cell, columns "
+                   f"{' / '.join(queried)}): " + "; ".join(
+            f"{own} ({cross['rows'][own]:,}) " + " / ".join(fmt(m.get(q), 3) for q in queried)
+            for own, m in cross["mean_expected_reward"].items()))
+    gap = cross["cold_minus_hot"]
+    own = cross["control_minus_own"]
+    out.append(f"  V gap {label}: coldest {cross['coldest']} - hottest {cross['hottest']} "
+               f"all {gap['all']:+.4f} (" + ", ".join(
+                   f"{cell} {value:+.4f}" for cell, value in gap.items() if cell != "all")
+               + ")" + ("; control - own: " + ", ".join(
+                   f"{cell} {value:+.4f}" for cell, value in own.items()) if own else ""))
+    return out
+
+
 def render_record(r: dict[str, Any]) -> list[str]:
     """The run-record sections as table lines (the JSON carries the same numbers)."""
     out: list[str] = []
@@ -1679,6 +1781,7 @@ def render_record(r: dict[str, Any]) -> list[str]:
         if lost:
             out.append(f"  WARNING ({key}): {lost['rows']:,} PPO rows unattributed (a source "
                        "without an exploration table), left out of the per-arm line")
+        out += _cell_lines(label, key, x)
     game_targets = r.get("value_target_intake") or {}
     if game_targets:
         intake = game_targets["intake"]

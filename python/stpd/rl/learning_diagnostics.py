@@ -33,6 +33,7 @@ settings; it is empty when no terminal pool runs (terminal_coef 0).
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -64,6 +65,44 @@ def row_floors(outcome_valid: Tensor) -> Tensor:
     return 49 - outcome_valid[:, :49].sum(-1)
 
 
+def _row_terms(logits: Tensor, hp: Tensor, t: dict[str, Tensor]
+               ) -> tuple[Tensor, Tensor, Tensor]:
+    """Per row: bucket membership [rows, BUCKETS], head columns [rows, HEADS x FIELDS] and
+    calibration terms [rows, CALIBRATION_SIZE] (bin-major), whose row sums are the sums
+    of `value_statistics`. Caller holds no_grad."""
+    import torch
+
+    valid = t["outcome_valid"]
+    values = _values(logits.device)
+    floor = row_floors(valid)
+    buckets = torch.stack((torch.ones_like(floor, dtype=torch.bool), floor <= 17,
+                           (floor > 17) & (floor <= 33), floor > 33,
+                           (floor == 17) | (floor == 33) | (floor >= 48)), dim=1).float()
+    probability = logits.float().masked_fill(~valid, -torch.inf).softmax(-1)
+    value = (probability * values).sum(-1)
+    target = (t["targets"].float() * values).sum(-1)
+    columns = []
+    for mask, predicted, truth in ((t["td_mask"], value, target),
+                                   (t["terminal_mask"], value, target),
+                                   (t["hp_mask"], hp.float(), t["hp_targets"].float())):
+        mask = mask.float()
+        # Masked rows (other kinds) may hold any finite number: zero them first.
+        truth = torch.where(mask > 0, truth, torch.zeros_like(truth))
+        error = torch.where(mask > 0, predicted - truth, torch.zeros_like(truth))
+        columns += [mask, truth, truth * truth, error, error * error, error.abs()]
+    terminal = t["terminal_mask"] > 0
+    # NaN goes to bin 0 on every platform (the step then fails as non-finite).
+    bins = (value.nan_to_num(0.0).clamp(0, 1) * CALIBRATION_BINS).floor().clamp(
+        max=CALIBRATION_BINS - 1).long()
+    member = torch.nn.functional.one_hot(bins, CALIBRATION_BINS).float()
+    member = torch.where(terminal[:, None], member, torch.zeros_like(member))
+    predicted = torch.where(terminal, value, torch.zeros_like(value))
+    realised = torch.where(terminal, target, torch.zeros_like(target))
+    calibration = torch.stack((member, member * predicted[:, None],
+                               member * realised[:, None]), dim=2).flatten(1)
+    return buckets, torch.stack(columns, dim=1), calibration
+
+
 def value_statistics(logits: Tensor, hp: Tensor, t: dict[str, Tensor]) -> Tensor:
     """[SIZE] float32 sums of one group, laid out bucket-major, then head, then field.
 
@@ -73,37 +112,9 @@ def value_statistics(logits: Tensor, hp: Tensor, t: dict[str, Tensor]) -> Tensor
     import torch
 
     with torch.no_grad():
-        valid = t["outcome_valid"]
-        values = _values(logits.device)
-        floor = row_floors(valid)
-        buckets = torch.stack((torch.ones_like(floor, dtype=torch.bool), floor <= 17,
-                               (floor > 17) & (floor <= 33), floor > 33,
-                               (floor == 17) | (floor == 33) | (floor >= 48)), dim=1).float()
-        probability = logits.float().masked_fill(~valid, -torch.inf).softmax(-1)
-        value = (probability * values).sum(-1)
-        target = (t["targets"].float() * values).sum(-1)
-        columns = []
-        for mask, predicted, truth in ((t["td_mask"], value, target),
-                                       (t["terminal_mask"], value, target),
-                                       (t["hp_mask"], hp.float(), t["hp_targets"].float())):
-            mask = mask.float()
-            # Masked rows (other kinds) may hold any finite number: zero them first.
-            truth = torch.where(mask > 0, truth, torch.zeros_like(truth))
-            error = torch.where(mask > 0, predicted - truth, torch.zeros_like(truth))
-            columns += [mask, truth, truth * truth, error, error * error, error.abs()]
-        features = torch.stack(columns, dim=1)
+        buckets, features, calibration = _row_terms(logits, hp, t)
         sums = (buckets[:, :, None] * features[:, None, :]).sum(0).flatten()
-        terminal = t["terminal_mask"] > 0
-        # NaN goes to bin 0 on every platform (the step then fails as non-finite).
-        bins = (value.nan_to_num(0.0).clamp(0, 1) * CALIBRATION_BINS).floor().clamp(
-            max=CALIBRATION_BINS - 1).long()
-        member = torch.nn.functional.one_hot(bins, CALIBRATION_BINS).float()
-        member = torch.where(terminal[:, None], member, torch.zeros_like(member))
-        predicted = torch.where(terminal, value, torch.zeros_like(value))
-        realised = torch.where(terminal, target, torch.zeros_like(target))
-        calibration = torch.stack((member.sum(0), (member * predicted[:, None]).sum(0),
-                                   (member * realised[:, None]).sum(0)), dim=1).flatten()
-        return torch.cat((sums, calibration))
+        return torch.cat((sums, calibration.sum(0)))
 
 
 def statistics_fields(values: list[float]) -> dict[str, dict[str, list[float]]]:
@@ -393,3 +404,122 @@ def explore_floor_by_arm(arms: list[str | None], samples: list[dict[str, Any]],
             if not sample["ppo_objective_clipped"]:
                 total[5] += (sample["ratio"] or 0.0) * magnitude
     return out
+
+
+# Value heads per exploration cell (owner 2026-11-19). A cell is a sampling config: the
+# row's arm without the "+save" suffix (a save start changes the starting state, not the
+# config). Diagnostics only, from tensors the loss already holds plus, for the cross query,
+# a few head-MLP passes on the detached first-layer activations (no trunk pass).
+#
+# `value_by_cell`: per cell the "all"-bucket head sums of `value_statistics` (td, terminal,
+# hp: FIELDS each) and its calibration tail, from the same per-row terms, so the cells sum
+# exactly to the unsplit statistics. Auxiliary (terminal/HP) rows carry no arm; with
+# `segments.value_config_input` they take the cell whose PPO rows in the same dataset
+# have their recorded config (unique match only), otherwise UNATTRIBUTED.
+#
+# `value_cross_cell` (value_config_input only, diagnostics steps): the outcome head's
+# expected reward of every row at every cell's config: per (row's own cell, queried
+# cell) the sum, plus the row count per own cell.
+CELL_SIZE = len(HEADS) * len(FIELDS) + CALIBRATION_SIZE
+
+
+@dataclass(frozen=True)
+class ValueCells:
+    """One dataset's cells: `names` (sorted, UNATTRIBUTED last if any row lacks one),
+    `rows` = each dataset row's cell index (PPO rows, then auxiliary rows `n + local`),
+    `configs` = each named cell's value config in `names` order (None: knob off)."""
+    names: tuple[str, ...]
+    rows: tuple[int, ...]
+    configs: tuple[tuple[float, ...], ...] | None
+
+
+def row_cells(metadata: Any, request: Any,
+              configs: list[tuple[float, ...]] | None) -> ValueCells | None:
+    """`ValueCells` of a prepared dataset; None when no source names an arm. `configs` =
+    `heads.batch_value_configs` of the dataset (value_config_input), else None."""
+    arms = row_arms(metadata, [member.rows for member in request.members])
+    if not any(arms):
+        return None
+    names: list[str | None] = [arm.split("+", 1)[0] if arm else None for arm in arms]
+    cell_config: dict[str, tuple[float, ...]] = {}
+    if configs is not None:
+        owners: dict[tuple[float, ...], set[str]] = {}
+        for name, config in zip(names, configs, strict=False):
+            if name is not None:
+                cell_config.setdefault(name, config)
+                owners.setdefault(config, set()).add(name)
+        unique = {config: next(iter(cells)) for config, cells in owners.items()
+                  if len(cells) == 1}
+        names += [unique.get(config) for config in configs[len(metadata):]]
+    else:
+        names += [None] * len(request.auxiliary)
+    cells = sorted({name for name in names if name is not None})
+    if None in names:
+        cells.append(UNATTRIBUTED)
+    index = {cell: i for i, cell in enumerate(cells)}
+    return ValueCells(tuple(cells), tuple(index[name or UNATTRIBUTED] for name in names),
+                      tuple(cell_config[cell] for cell in cells if cell != UNATTRIBUTED)
+                      if configs is not None else None)
+
+
+def value_statistics_by_cell(logits: Tensor, hp: Tensor, t: dict[str, Tensor],
+                             cells: Tensor, count: int) -> Tensor:
+    """[count x CELL_SIZE] sums of one group: per cell (`cells` = row's cell index) the
+    "all" head columns of `value_statistics`, then its calibration terms."""
+    import torch
+
+    with torch.no_grad():
+        _, features, calibration = _row_terms(logits, hp, t)
+        member = torch.nn.functional.one_hot(cells, count).float()
+        terms = torch.cat((features, calibration), dim=1)
+        return (member[:, :, None] * terms[:, None, :]).sum(0).flatten()
+
+
+def cross_cell_sums(heads: Any, hidden: Tensor, valid: Tensor, cells: Tensor,
+                    configs: Tensor, count: int) -> Tensor:
+    """[count x (1 + queries)]: per own cell its rows, then the sum of the outcome head's
+    expected reward at each queried config. `hidden` = the outcome MLP's first-layer
+    output without the config term (`heads.mlp_readout`), group row order; `configs` =
+    [queries, 4]. Same arithmetic as the live head: mlp[1:](hidden + shift)."""
+    import torch
+
+    with torch.no_grad():
+        shifts = heads.config_shifts(configs, configs.shape[0])[0]
+        out = heads.outcome.mlp[1:](hidden[:, None, :] + shifts[None].to(hidden.dtype))
+        logits = out.float().masked_fill(~valid[:, None, :], -torch.inf)
+        value = (logits.softmax(-1) * _values(hidden.device)).sum(-1)  # [rows, queries]
+        member = torch.nn.functional.one_hot(cells, count).float()
+        sums = (member[:, :, None] * value[:, None, :]).sum(0)
+        return torch.cat((member.sum(0)[:, None], sums), dim=1).flatten()
+
+
+def cell_fields(values: list[float], names: tuple[str, ...]) -> dict[str, Any]:
+    """Event form of `value_statistics_by_cell` sums: {cell: {head: [FIELDS...],
+    "calibration": [[CALIBRATION_FIELDS...] per bin]}}, 8 significant digits."""
+    if len(values) != len(names) * CELL_SIZE:
+        raise ValueError("value_by_cell_size_mismatch")
+    width, out = len(FIELDS), {}
+    for c, name in enumerate(names):
+        part = [float(f"{v:.8g}") for v in values[c * CELL_SIZE:(c + 1) * CELL_SIZE]]
+        tail = part[len(HEADS) * width:]
+        out[name] = {**{head: part[h * width:(h + 1) * width] for h, head in enumerate(HEADS)},
+                     "calibration": [tail[b * 3:(b + 1) * 3] for b in range(CALIBRATION_BINS)]}
+    return out
+
+
+def cross_cell_fields(values: list[float], cells: ValueCells) -> dict[str, Any]:
+    """Event form of `cross_cell_sums`: the queried configs, rows per own cell and the
+    expected-reward sums per (own cell, queried cell)."""
+    assert cells.configs is not None
+    queried = [name for name in cells.names if name != UNATTRIBUTED]
+    width = 1 + len(queried)
+    if len(values) != len(cells.names) * width:
+        raise ValueError("value_cross_cell_size_mismatch")
+    rows = {own: round(values[c * width]) for c, own in enumerate(cells.names)}
+    return {"configs": {name: list(config) for name, config
+                        in zip(queried, cells.configs, strict=True)},
+            "rows": {own: n for own, n in rows.items() if n},
+            "expected_reward_sum": {
+                own: {query: float(f"{values[c * width + 1 + q]:.8g}")
+                      for q, query in enumerate(queried)}
+                for c, own in enumerate(cells.names) if rows[own]}}

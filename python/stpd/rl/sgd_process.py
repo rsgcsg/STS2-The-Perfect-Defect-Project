@@ -1736,6 +1736,7 @@ class _SgdWorker:
             entropy_fields,
             exploration_fields,
             row_arms,
+            row_cells,
             value_target_fields,
         )
         from .loss import (
@@ -1770,6 +1771,8 @@ class _SgdWorker:
         # loss.arm_policy_update "own": each row's cell (T, m); a row without one fails here
         cells = (batch_arm_sampling(device_batch.metadata, device_batch.request)
                  if self.loss.arm_policy_update == "own" else None)
+        # value heads per exploration cell (diagnostics only): None without arms
+        value_cells = row_cells(device_batch.metadata, device_batch.request, configs)
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
         boundary: float | None = None
@@ -1834,7 +1837,8 @@ class _SgdWorker:
                 control_rows=(minibatch_control_rows(batch, arms, policy)
                               if self.kl_stop_scope == "control" else None),
                 explore_rows=(minibatch_explore_rows(batch, arms if arms and any(arms)
-                                                     else None, policy) if floor else None))
+                                                     else None, policy) if floor else None),
+                value_cells=value_cells)
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
                 result = self.gather_step(result, diagnostics)

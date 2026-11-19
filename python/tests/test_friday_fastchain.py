@@ -7,6 +7,7 @@ import importlib
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -1845,6 +1846,60 @@ def test_readout_reports_the_learning_settings_diagnostics(tmp_path):
     (run / 'learner-events.jsonl').write_text(jsonl_text(events))
     with pytest.raises(ValueError, match='value_calibration bin 0: 2 fields, expected 3'):
         readout.build(run, 1200)
+
+
+def test_readout_value_heads_per_cell_and_cross_cell_gaps(tmp_path):
+    """Value heads per exploration cell: pooled per cell (rows, predicted -> realised,
+    EV), the cross-cell table and its two gaps; nothing printed without the fields."""
+    run = tmp_path / 'run-t1'
+    write_run(run)
+    assert 'value cell' not in readout.render(readout.build(run, 1200))
+    events = [json.loads(line) for line in
+              (run / 'learner-events.jsonl').read_text().splitlines()]
+    progress = [e for e in events if e.get('kind') == 'progress' and e.get('stepped')]
+    empty = [0.0] * 6
+    bins = [[0, 0.0, 0.0]] * 9 + [[1, 0.95, 1.0]]
+    for n, event in enumerate(progress):
+        # td: 2 rows, targets 0.2 and 0.4, predictions 0.25 and 0.45 (error +0.05 each)
+        event['value_by_cell'] = {
+            'control': {'td': [2, 0.6, 0.2, 0.1, 0.005, 0.1], 'terminal': empty,
+                        'hp': empty, 'calibration': bins},
+            'hot': {'td': [1, 0.3, 0.09, -0.1, 0.01, 0.1], 'terminal': empty, 'hp': empty,
+                    'calibration': [[0, 0.0, 0.0]] * 10}}
+        if n % 2 == 0:  # diagnostics steps only
+            event['value_cross_cell'] = {
+                'configs': {'control': [0.0] * 4, 'hot': [0.9, 1.0, 1.1, 1.0]},
+                'rows': {'control': 2, 'hot': 1},
+                'expected_reward_sum': {'control': {'control': 0.8, 'hot': 0.6},
+                                        'hot': {'control': 0.5, 'hot': 0.3}}}
+    (run / 'learner-events.jsonl').write_text(jsonl_text(events))
+    r = readout.build(run, 1200)
+    x = r['learning']['run_mean']
+    control = x['value_by_cell']['control']
+    assert control['td']['rows'] == 2 * len(progress)
+    assert control['td']['mean_prediction'] == pytest.approx(0.35)
+    assert control['td']['mean_target'] == pytest.approx(0.3)
+    assert control['td']['explained_variance'] == pytest.approx(1.0)
+    assert control['terminal']['rows'] == 0
+    assert control['calibration'] == [{'bin': [0.9, 1.0], 'rows': len(progress),
+                                       'mean_predicted': pytest.approx(0.95),
+                                       'mean_realised': 1.0}]
+    cross = x['value_cross_cell']
+    assert (cross['coldest'], cross['hottest'], cross['control']) == ('control', 'hot',
+                                                                      'control')
+    assert cross['mean_expected_reward']['control'] == {'control': pytest.approx(0.4),
+                                                        'hot': pytest.approx(0.3)}
+    assert cross['cold_minus_hot'] == {'control': pytest.approx(0.1),
+                                       'hot': pytest.approx(0.2),
+                                       'all': pytest.approx(0.4 / 3)}
+    assert cross['control_minus_own'] == {'hot': pytest.approx(0.2)}
+    text = readout.render(r)
+    assert re.search(r'  value cell control: vs lambda-return [\d,]+ rows 0\.350 -> 0\.300 '
+                     r'\(\+0\.050\) EV 1\.000; vs outcome -; HP -', text)
+    assert ('  V at queried cell (latest; rows by own cell, columns control / hot): '
+            'control (') in text
+    assert '  V gap run mean: coldest control - hottest hot all +0.1333 (control +0.1000, ' \
+        'hot +0.2000); control - own: hot +0.2000' in text
 
 
 def test_readout_refuses_to_guess_missing_aux(tmp_path):
