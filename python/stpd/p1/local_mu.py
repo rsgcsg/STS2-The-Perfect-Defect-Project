@@ -62,8 +62,12 @@ def load_behavior_mu(identity: dict[str, Any], *, node_cache: NodeMuCache | None
     if digest(raw) != identity["heads_sha256"]:
         raise ValueError("behavior_heads_checksum_changed")
     state = decode_checkpoint(raw)
+    from stpd.rl.heads import VALUE_CONFIG_KEYS
+
     with torch.random.fork_rng(devices=[]):
-        model.enable_rl4_heads(0)
+        # The head snapshot itself says whether it reads the value-config input
+        # (`segments.value_config_input`); the strict load checks the whole key set.
+        model.enable_rl4_heads(0, value_config=VALUE_CONFIG_KEYS[0] in state["heads"])
     model.rl4_heads.load_state_dict(state["heads"], strict=True)
     numerical = {key: identity[key] for key in (
         "precision", "tf32", "projection", "execution", "adapter", "deduplicate_text")}

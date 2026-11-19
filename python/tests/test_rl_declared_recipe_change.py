@@ -275,3 +275,63 @@ def test_during_an_unfinished_warm_up_the_record_shows_the_real_next_step_lr(
         assert [g["lr"] for g in owner.optimizer.param_groups] == pytest.approx(lr["applied"])
     finally:
         owner.close()
+
+
+def test_value_config_input_off_to_on_upgrades_the_cp_and_a_second_resume_keeps_it(
+        tmp_path, monkeypatch):
+    """`segments.value_config_input` declared off -> on: the restored model gets the zero
+    config weights (same outputs), the old Adam state and EMA stay, the new weights join
+    the head group last; the next automatic resume restores them under the new recipe."""
+    import torch
+
+    from stpd.rl.heads import HEAD_PREFIX, VALUE_CONFIG_HEAD, VALUE_CONFIG_KEYS
+
+    config, io, cp_id, cp = trained_cp(tmp_path, monkeypatch)
+    added = [HEAD_PREFIX + key for key in VALUE_CONFIG_KEYS]
+    declared = declaration(cp_id, segments__value_config_input=(False, True))
+    new = continuation(config, cp_id, declared=declared, **{
+        "segments.value_config_input": True})
+    owner = SegmentLearner(new, tmp_path / "next", io)
+    try:
+        weights = owner.model.state_dict()
+        assert owner.model.architecture["auxiliary_heads"][-1] == VALUE_CONFIG_HEAD
+        assert_tree({k: v for k, v in weights.items() if k not in added}, cp.weights)
+        assert all(not bool(weights[name].any()) for name in added)
+        assert_tree({k: v for k, v in owner.ema.items() if k not in added}, cp.ema)
+        assert all(not bool(owner.ema[name].any()) for name in added)
+        names = owner._optimizer_names()
+        assert names[1][-2:] == tuple(added) and added[0] not in names[0]
+        state = owner.optimizer.state_dict()
+        assert_tree(state["state"], cp.optimizer["state"])  # old moments; new: none yet
+        assert owner.updates == 1
+        assert owner.restored_checkpoint["recipe_changes"] == {
+            "segments.value_config_input": {"old": False, "new": True}}
+        owner.checkpoint(final=True)
+        record, second = read_cp(owner)
+        assert second.config["segments"]["value_config_input"] is True
+        assert second.optimizer_parameter_names == names
+        assert all(name in second.weights and name in second.ema for name in added)
+    finally:
+        owner.close()
+    again = continuation(new, record["checkpoint_artifact_id"], generation="g-new-r2",
+                         declared=declared)
+    third = SegmentLearner(again, tmp_path / "third", io)
+    try:
+        assert third.recipe_changes is None and third.updates == 1
+        assert third.model.rl4_heads.has_value_config
+        assert third._optimizer_names() == names
+        assert_tree(third.model.state_dict(), second.weights)
+        assert len(third.optimizer.param_groups[1]["params"]) == len(names[1])
+        assert all(torch.equal(third.ema[name], second.ema[name]) for name in added)
+    finally:
+        third.close()
+    # Back to off is refused, declared or not.
+    with pytest.raises(ValueError):
+        SegmentLearner(continuation(config, record["checkpoint_artifact_id"],
+                                    generation="g-new-r3"), tmp_path / "back", io)
+    back = declaration(record["checkpoint_artifact_id"],
+                       segments__value_config_input=(True, False))
+    with pytest.raises(ValueError, match="only_off_to_on"):
+        SegmentLearner(continuation(config, record["checkpoint_artifact_id"],
+                                    generation="g-new-r4", declared=back),
+                       tmp_path / "back2", io)

@@ -284,7 +284,11 @@ def construct_model(construction: ModelConstruction) -> Any:
         MStdExecution(**construction.numerical["execution"]),
         model_size=construction.numerical["model_size"],
     )
-    model.enable_rl4_heads(0)
+    from .heads import VALUE_CONFIG_HEAD
+
+    # The architecture names the heads' value-config input (`segments.value_config_input`).
+    model.enable_rl4_heads(0, value_config=VALUE_CONFIG_HEAD in construction.architecture.get(
+        "auxiliary_heads", ()))
     if (
         model.architecture != construction.architecture
         or input_spec(model.vocabulary, runtime_projection(model.vocabulary))

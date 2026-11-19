@@ -42,6 +42,9 @@ DECLARABLE: dict[str, str] = {
                              "intake starts empty (and clears its spill directory)",
     "segments.gae_lambda": "advantage targets of fresh segments (learner and remote "
                            "prepare read it from this run's config); no stored rows",
+    "segments.value_config_input": "off -> on only: the CP's value heads get the zero "
+                                   "sampling-config input (outputs unchanged), its new "
+                                   "weights start with fresh Adam state; on -> off refused",
 }
 # Recipe keys `_resume_config` leaves out at their default (so older CPs keep their
 # digest): a missing key means this value.
@@ -49,6 +52,7 @@ RECIPE_DEFAULTS: dict[str, Any] = {
     "segments.value_target": "segment",
     "segments.kl_stop_scope": "all",
     "loss.explore_ratio_floor": 0.0,
+    "segments.value_config_input": False,
 }
 _MISSING = object()
 
@@ -128,6 +132,9 @@ def check(declaration: Any, old: dict[str, Any], new: dict[str, Any]) -> dict[st
         if _same(have_old, have_new):
             raise ValueError(f"declared_recipe_change_not_different: {key} is "
                              f"{have_old!r} in both")
+        if key == "segments.value_config_input" and have_new is not True:
+            # Turning it off would drop trained value-head weights: never declarable.
+            raise ValueError("declared_recipe_change_value_config_input_only_off_to_on")
     rest_old, rest_new = copy.deepcopy(old), copy.deepcopy(new)
     for key in changes:
         _drop(rest_old, key)

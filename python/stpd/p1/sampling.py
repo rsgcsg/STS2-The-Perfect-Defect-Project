@@ -14,6 +14,14 @@ from typing import Any
 
 MODE = "temperature_uniform"
 TEMPERATURE_RANGE = (1.0, 1.3)
+# rl-inference-4 exploration-arm envelope (`inference_service.check_sampling`; the value
+# heads' config input `stpd.rl.heads.value_config_vector` scales by the same bounds).
+# At T >= 0.25 a probability p > 0 keeps q > 0 for logit gaps up to ~180 nats, beyond
+# what the float32 policy distinguishes from 0; a lower T would round reachable actions
+# to 0. A run configures its own minimum in [ARM_TEMPERATURE_FLOOR, 1].
+ARM_TEMPERATURE_FLOOR = 0.25
+ARM_TEMPERATURE_MAX = 3.0
+ARM_UNIFORM_MIX_MAX = 0.1
 
 
 def validate_policy(policy: Any) -> dict[str, Any]:

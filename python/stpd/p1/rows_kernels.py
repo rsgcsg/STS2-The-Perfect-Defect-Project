@@ -126,13 +126,17 @@ def _head_queries(modules: tuple[Any, ...]) -> Tensor:
     return torch.cat(queries)  # [modules * heads, embed]
 
 
-def _head_outputs(modules: tuple[Any, ...], pooled: Tensor, current: Tensor) -> list[Tensor]:
+def _head_outputs(modules: tuple[Any, ...], pooled: Tensor, current: Tensor,
+                  shifts: tuple[Tensor | None, ...] | None = None) -> list[Tensor]:
+    from stpd.rl.heads import mlp_readout
+
     outputs, start = [], 0
-    for module in modules:
+    for index, module in enumerate(modules):
         heads = module.attention.num_heads
         read = _values(module.attention, pooled[:, start:start + heads])
         start += heads
-        outputs.append(cast(Tensor, module.mlp(torch.cat((read, current), dim=1))))
+        outputs.append(mlp_readout(module.mlp, torch.cat((read, current), dim=1),
+                                   None if shifts is None else shifts[index]))
     return outputs
 
 
@@ -146,13 +150,14 @@ def _cross_queries(module: torch.nn.MultiheadAttention, action: Tensor) -> Tenso
 # Masked bucket (CPU / FP32 reference path).
 
 def folded_heads(modules: tuple[Any, ...], padded: Tensor, keep: Tensor,
-                 current: Tensor) -> list[Tensor]:
+                 current: Tensor, shifts: tuple[Tensor | None, ...] | None = None
+                 ) -> list[Tensor]:
     """`AttentionValueResidual` readouts of every module on a padded bucket."""
     folded = _head_queries(modules).to(padded.dtype)
     scores = torch.matmul(padded, folded.t()).float()  # [rows, longest, modules * heads]
     weights = scores.masked_fill(~keep[:, :, None], -torch.inf).softmax(1)
     pooled = torch.matmul(weights.transpose(1, 2).to(padded.dtype), padded)
-    return _head_outputs(modules, pooled, current)
+    return _head_outputs(modules, pooled, current, shifts)
 
 
 def padded_cross(module: torch.nn.MultiheadAttention, action: Tensor, padded: Tensor,
@@ -194,12 +199,13 @@ def _attend_tokens(folded: Tensor, encoded: Tensor, offsets: Tensor, longest: in
 
 
 def packed_heads(modules: tuple[Any, ...], encoded: Tensor, offsets: Tensor, longest: int,
-                 current: Tensor) -> list[Tensor]:
+                 current: Tensor, shifts: tuple[Tensor | None, ...] | None = None
+                 ) -> list[Tensor]:
     """`AttentionValueResidual` readouts of every module on packed real tokens."""
     rows = current.shape[0]
     folded = _head_queries(modules)
     pooled = _attend_tokens(folded.unsqueeze(0).expand(rows, -1, -1), encoded, offsets, longest)
-    return _head_outputs(modules, pooled, current)
+    return _head_outputs(modules, pooled, current, shifts)
 
 
 def packed_cross(module: torch.nn.MultiheadAttention, action: Tensor, encoded: Tensor,

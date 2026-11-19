@@ -38,9 +38,11 @@ from typing import Any, NamedTuple, Protocol, cast
 import torch
 
 from spireagent.json_boundary import BoundaryError
+from stpd.rl.heads import value_config_vector
 
 from .data import digest, json_bytes
 from .local_inference import CentralInferencePool, tcp_nodelay
+from .sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
 from .text_cache import TextVectorCache
 
 ROLE = "inference_service"
@@ -425,10 +427,8 @@ def _audited_decode(raw: bytes, audit_sha: str | None, compiler: Any
 
 
 _SAMPLING_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-# The lowest temperature a run may configure (rl-inference-4 envelope). At T >= 0.25
-# a probability p > 0 keeps q > 0 for logit gaps up to ~180 nats, beyond what the
-# float32 policy distinguishes from 0; a lower T would round reachable actions to 0.
-TEMPERATURE_FLOOR = 0.25
+# The lowest temperature a run may configure (rl-inference-4 envelope; why: sampling.py).
+TEMPERATURE_FLOOR = ARM_TEMPERATURE_FLOOR
 
 
 def check_sampling(sampling: Any, temperature_min: float = 1.0) -> str | None:
@@ -457,9 +457,10 @@ def check_sampling(sampling: Any, temperature_min: float = 1.0) -> str | None:
         if not isinstance(policy, dict) or set(policy) != {"temperature", "uniform_mix"}:
             return "sampling_class_keys"
         temperature, mix = policy["temperature"], policy["uniform_mix"]
-        if type(temperature) not in (int, float) or not temperature_min <= temperature <= 3.0:
+        if (type(temperature) not in (int, float)
+                or not temperature_min <= temperature <= ARM_TEMPERATURE_MAX):
             return "sampling_temperature"
-        if type(mix) not in (int, float) or not 0.0 <= mix <= 0.1:
+        if type(mix) not in (int, float) or not 0.0 <= mix <= ARM_UNIFORM_MIX_MAX:
             return "sampling_uniform_mix"
     return None
 
@@ -555,14 +556,16 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
             return
         if not message:
             return
-        # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None)]
+        # rows: [(raw, audit_sha256 | None, catalog_len, floor, (tail_mu, tail_floor) | None,
+        #         value config of the row's game sampling)]
         job_id, part, parts, mu, rows, span, *stamp = pickle.loads(message)
         if stamp:  # trace (default off): [dispatched, received here]
             stamp = [stamp[0], time.monotonic()]
         frames, floors, kept, failed, audit = [], [], [], {}, []
+        configs: list[tuple[float, ...]] = []  # per kept row, the heads' value-config input
         potions: dict[int, list[int]] = {}  # row index -> its `potion.use` choice positions
-        tails: dict[str, list[tuple[int, Any, int]]] = {}
-        for index, (raw, audit_sha, catalog_len, floor, tail) in enumerate(rows):
+        tails: dict[str, list[tuple[int, Any, int, tuple[float, ...]]]] = {}
+        for index, (raw, audit_sha, catalog_len, floor, tail, config) in enumerate(rows):
             frame, code, detail = _audited_decode(raw, audit_sha, compiler)
             if code == "audit_mismatch":
                 audit.append((index, detail))
@@ -575,20 +578,21 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                 continue
             frames.append(frame)
             floors.append(floor)
+            configs.append(config)
             kept.append(index)
             positions = [position for position, action
                          in enumerate(frame.tensors["actions"].tolist()) if action == potion_use]
             if positions:
                 potions[index] = positions
             if tail is not None:
-                tails.setdefault(tail[0], []).append((index, frame, tail[1]))
+                tails.setdefault(tail[0], []).append((index, frame, tail[1], config))
         group: Any = None
         overflow = None
         try:
             group = prepare(frames, floors) if frames else None
         except ValueError:
             failed.update(dict.fromkeys(kept, "ROW_DECODE_FAILED"))
-            kept, tails = [], {}
+            kept, tails, configs = [], {}, []
         if group is not None and arena is not None:
             from stpd.rl.batch_preparation import write_forward_inputs
             start, end, slot_start, slot_end = span
@@ -603,22 +607,24 @@ def _prepare_worker(jobs: Connection, outputs: list[Connection], vocabulary: dic
                 overflow = {"need": forward_arena_bytes(group), "have": end - start,
                             "rows": len(kept)}
                 failed.update(dict.fromkeys(kept, "SERVICE_STOPPING"))
-                kept, tails, group = [], {}, None
+                kept, tails, group, configs = [], {}, None, []
             else:
                 group = _ArenaPart(dataclasses.replace(written, start=written.start + start,
                                                        end=written.end + start), len(kept),
                                    (slot_start, slot_end))
         tail_parts = []
         for tail_mu, members in tails.items():
-            indices = [index for index, _, _ in members]
+            indices = [index for index, _, _, _ in members]
+            tail_configs = [config for _, _, _, config in members]
             try:
-                tail_group = prepare([frame for _, frame, _ in members],
-                                     [floor for _, _, floor in members])
+                tail_group = prepare([frame for _, frame, _, _ in members],
+                                     [floor for _, _, floor, _ in members])
             except ValueError:
-                tail_parts.append((tail_mu, indices, None))
+                tail_parts.append((tail_mu, indices, None, tail_configs))
                 continue
-            tail_parts.append((tail_mu, indices, tail_group))
+            tail_parts.append((tail_mu, indices, tail_group, tail_configs))
         prepared = {"job": job_id, "part": part, "parts": parts, "mu": mu, "group": group,
+                    "configs": configs,
                     "kept": kept, "lengths": [len(frame.choices) for frame in frames],
                     "failed": failed, "audit": audit, "tails": tail_parts,
                     "overflow": overflow, "potions": potions}
@@ -651,13 +657,17 @@ def _join_parts(groups: list[Any]) -> tuple[Any, list[int]]:
     return concatenate_groups(groups, rows=tuple(range(sum(counts)))), counts
 
 
-def _forward_parts(scorer: Any, groups: list[Any]) -> list[tuple[torch.Tensor, ...]]:
+def _forward_parts(scorer: Any, groups: list[Any], configs: list[tuple[float, ...]] | None = None
+                   ) -> list[tuple[torch.Tensor, ...]]:
     """Score one job's prepared sub-groups with one mu in one forward."""
-    return _score_joined(scorer, *_join_parts(groups))
+    return _score_joined(scorer, *_join_parts(groups), configs)
 
 
-def _score_joined(scorer: Any, joined: Any, counts: list[int]) -> list[tuple[torch.Tensor, ...]]:
-    tensors = scorer.forward_tensors(joined)
+def _score_joined(scorer: Any, joined: Any, counts: list[int],
+                  configs: list[tuple[float, ...]] | None = None
+                  ) -> list[tuple[torch.Tensor, ...]]:
+    """`configs`: the joined rows' value configs in row order (heads that read them)."""
+    tensors = scorer.forward_tensors(joined, configs)
     out, start = [], 0
     for count in counts:
         out.append(tuple(value[start:start + count] for value in tensors))
@@ -920,7 +930,10 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
         error = ("MU_NOT_RESIDENT", "")
     elif live:
         try:
-            for part, tensors in zip(live, _score_joined(scorer, *joined), strict=True):
+            configs = [config for part in live for config in part["configs"]]
+            data, counts = joined
+            for part, tensors in zip(live, _score_joined(scorer, data, counts, configs),
+                                     strict=True):
                 outputs[part["part"]] = tensors
         except Exception as failure:
             fatal = f"forward {type(failure).__name__}: {str(failure)[:200]}"
@@ -928,7 +941,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
     for part in parts:
         tails: list[tuple[Any, Any]] = []
         part_tails.append(tails)
-        for tail_mu, indices, group in part["tails"]:
+        for tail_mu, indices, group, tail_configs in part["tails"]:
             tail_scorer = scorers.get(tail_mu)
             if group is None:
                 tails.append((indices, "ROW_DECODE_FAILED"))
@@ -936,7 +949,7 @@ def _device_job(scorers: dict[str, Any], parts: list[dict[str, Any]],
                 tails.append((indices, "MU_NOT_RESIDENT"))
             else:
                 try:
-                    tails.append((indices, tail_scorer.forward_tensors(group)))
+                    tails.append((indices, tail_scorer.forward_tensors(group, tail_configs)))
                 except Exception as failure:
                     fatal = fatal or f"tail {type(failure).__name__}: {str(failure)[:200]}"
                     tails.append((indices, "SERVICE_STOPPING"))
@@ -994,6 +1007,7 @@ class _V3Row:
     raw: bytes
     sampling: dict[str, Any]
     plan: Any = None
+    value_config: tuple[float, ...] | None = None  # this game's, from episode_open
     audit: bool = False
     trace: list[float] | None = None  # trace=True only: [received, queued, part stamps...]
 
@@ -1158,6 +1172,9 @@ class FastInferenceService:
         self.audit_failed = threading.Event()
         self.stop_reason: str | None = None  # why the service stopped serving
         self.sampling: dict[str, dict[str, Any]] = {}
+        # The value heads' config input of each open game (`heads.value_config_vector`),
+        # computed once at episode_open; read only by a mu whose heads have the input.
+        self.value_configs: dict[str, tuple[float, ...]] = {}
         self.queue: queue.Queue[_V3Row | None] = queue.Queue()
         self.stopping = threading.Event()
         self.stats: dict[str, Any] = {"rows": 0, "batches": 0, "jobs": 0, "refused": {},
@@ -1430,9 +1447,12 @@ class FastInferenceService:
                         continue
                     self.assembler.open_episode(envelope)
                     self.sampling[envelope["game_instance_id"]] = envelope["sampling"]
+                    self.value_configs[envelope["game_instance_id"]] = value_config_vector(
+                        envelope["sampling"]["classes"])
                 elif kind == "episode_close":
                     self.assembler.close_episode(envelope)
                     self.sampling.pop(str(envelope.get("game_instance_id")), None)
+                    self.value_configs.pop(str(envelope.get("game_instance_id")), None)
                 else:
                     raise BoundaryError("rl_inference_3", "unexpected_message")
         except EOFError:
@@ -1484,9 +1504,11 @@ class FastInferenceService:
             if (type(offset) is not int or type(length) is not int or offset < 0
                     or length < 1 or offset + length > len(binary)):
                 raise BoundaryError("rl_inference_3", "row_payload_range")
-            sampling = self.sampling.get(str(row.get("game_instance_id")))
+            game = str(row.get("game_instance_id"))
+            sampling = self.sampling.get(game)
             item = _V3Row(link, packet, index, row, bytes(binary[offset:offset + length]),
-                          sampling or {}, audit=self._audited(row))
+                          sampling or {}, audit=self._audited(row),
+                          value_config=self.value_configs.get(game))
             if type(row.get("catalog_len")) is not int or not 1 <= row["catalog_len"] <= 4096:
                 self._refuse(item, "IDENTITY_MISMATCH", abort=False)
                 continue
@@ -1606,7 +1628,8 @@ class FastInferenceService:
                 payload.append((item.raw,
                                 item.row["payload"]["row_sha256"] if item.audit else None,
                                 item.row["catalog_len"], item.row["floor"],
-                                (tail.mu, tail.floor) if needs_tail else None))
+                                (tail.mu, tail.floor) if needs_tail else None,
+                                item.value_config))  # this game's, from episode_open
             span = (base + part * share, base + (part + 1) * share, base,
                     base + self.slot_bytes)
             message: tuple[Any, ...] = (job_id, part, len(chunks), mu, payload, span)

@@ -58,6 +58,11 @@ class SegmentConfig:
     # Linear lr warm-up over this many optimizer steps, both groups (lr and head_lr)
     # in proportion; 0 = none (the behaviour before K).
     lr_warmup_steps: int = 0
+    # Value-config input (owner 2026-11-19): the outcome and HP heads also read the row's
+    # sampling config (`heads.value_config_vector`; control = zeros), zero-initialised so
+    # an older model's outputs are unchanged. False = the heads before it. Resume-locked;
+    # a continuation may declare off -> on (the CP's heads get the zero input), never back.
+    value_config_input: bool = False
     ema_decay: float = 0.999
     head_lr: float = 1e-4
     checkpoint_seconds: float = 900
@@ -97,6 +102,7 @@ class SegmentConfig:
                 or self.capacity_victim not in ("oldest", "hash")
                 or self.kl_stop_scope not in ("all", "control")
                 or type(self.lr_warmup_steps) is not int or self.lr_warmup_steps < 0
+                or type(self.value_config_input) is not bool
                 or any(type(v) not in (int, float) or not math.isfinite(v)
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,

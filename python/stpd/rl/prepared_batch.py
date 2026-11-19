@@ -35,6 +35,9 @@ class AuxiliarySelection:
     label: float
     uses_before: int
     use_limit: int  # configured total successful uses; admission does not charge a use
+    # `segments.value_config_input` only: the sampling config of the row's own game
+    # (`heads.value_config_vector`), recorded with the label; None with the knob off.
+    value_config: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)

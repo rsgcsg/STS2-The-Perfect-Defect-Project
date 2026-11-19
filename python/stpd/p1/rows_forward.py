@@ -213,19 +213,25 @@ def compile_counters() -> dict[str, int]:
             "dynamo_unique_graphs": int(counters["stats"]["unique_graphs"])}
 
 
-def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
-    """AttentionValueResidual.forward with batch-first attention."""
+def head(module: Any, scene: Tensor, mask: Tensor, mean: Tensor,
+         shift: Tensor | None = None) -> Tensor:
+    """AttentionValueResidual.forward with batch-first attention (`shift`: the
+    value-config term, `stpd.rl.heads.mlp_readout`)."""
+    from stpd.rl.heads import mlp_readout
+
     pooled = attention(module.attention, module.query.expand(scene.shape[0], -1, -1), scene, mask)
-    return cast(Tensor, module.mlp(torch.cat((pooled[:, 0], mean), dim=1)))
+    return mlp_readout(module.mlp, torch.cat((pooled[:, 0], mean), dim=1), shift)
 
 
 def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, offsets: Tensor,
                rows: int, width: int, longest: int, outcome_valid: Tensor,
                action_types: Tensor | None, catalog_mask: Tensor | None,
-               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...], *,
+               roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+               value_config: Tensor | None = None, *,
                kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """Scene encoder + heads + action readout for one length bucket of rows
-    (masked: padded bucket and key mask; CPU/FP32 and the reference)."""
+    (masked: padded bucket and key mask; CPU/FP32 and the reference).
+    `value_config`: the bucket rows' [rows, 4] value-config input (heads with it only)."""
     embed = tokens.shape[1]
     stream = residual_stream(kernels, tokens)
     if stream is not None:
@@ -238,15 +244,16 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
         scene = scene.float()  # heads, roles and the mean read the FP32 encoding as before
     current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths[:, None].float()
     padded = scene.to(_kernel_dtype(scene)) if kernels else scene
+    shifts = model.rl4_heads.config_shifts(value_config, rows)
     if "heads" in kernels:
         from .rows_kernels import folded_heads
 
         outcome, value = folded_heads((model.rl4_heads.outcome, model.rl4_heads.hp), padded,
-                                      ~mask, current)
+                                      ~mask, current, shifts)
         logits, hp = outcome.float(), value[:, 0].float()
     else:
-        logits = head(model.rl4_heads.outcome, scene, mask, current).float()
-        hp = head(model.rl4_heads.hp, scene, mask, current)[:, 0].float()
+        logits = head(model.rl4_heads.outcome, scene, mask, current, shifts[0]).float()
+        hp = head(model.rl4_heads.hp, scene, mask, current, shifts[1])[:, 0].float()
     logits = logits.masked_fill(~outcome_valid, -torch.inf)
     if action_types is None or catalog_mask is None:
         return None, logits, hp
@@ -275,7 +282,8 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
                       offsets: Tensor, rows: int, width: int, longest: int,
                       outcome_valid: Tensor, action_types: Tensor | None,
                       catalog_mask: Tensor | None,
-                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...], *,
+                      roles: tuple[tuple[Tensor, Tensor, Tensor, Tensor], ...],
+                      value_config: Tensor | None = None, *,
                       kernels: tuple[str, ...] = ()) -> tuple[Tensor | None, Tensor, Tensor]:
     """`rows_block` on packed real scene tokens only (CUDA BF16 flash varlen).
 
@@ -292,20 +300,24 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     current = current / lengths[:, None].to(current.dtype)
     one = torch.arange(rows + 1, device=tokens.device, dtype=torch.int32)
 
-    def pooled(module: Any) -> Tensor:
+    shifts = model.rl4_heads.config_shifts(value_config, rows)
+
+    def pooled(module: Any, shift: Tensor | None) -> Tensor:
+        from stpd.rl.heads import mlp_readout
+
         query = module.query.reshape(1, -1).expand(rows, -1)
         value = packed_attention(module.attention, query, encoded, one, offsets, 1, longest)
-        return cast(Tensor, module.mlp(torch.cat((value, current), dim=1)))
+        return mlp_readout(module.mlp, torch.cat((value, current), dim=1), shift)
 
     if "heads" in kernels:
         from .rows_kernels import packed_heads
 
         outcome, value = packed_heads((model.rl4_heads.outcome, model.rl4_heads.hp), encoded,
-                                      offsets, longest, current)
+                                      offsets, longest, current, shifts)
         logits, hp = outcome.float(), value[:, 0].float()
     else:
-        logits = pooled(model.rl4_heads.outcome).float()
-        hp = pooled(model.rl4_heads.hp)[:, 0].float()
+        logits = pooled(model.rl4_heads.outcome, shifts[0]).float()
+        hp = pooled(model.rl4_heads.hp, shifts[1])[:, 0].float()
     logits = logits.masked_fill(~outcome_valid, -torch.inf)
     if action_types is None or catalog_mask is None:
         return None, logits, hp
@@ -351,8 +363,8 @@ def _block(packed: bool, kernels: tuple[str, ...], policy: bool = True) -> Any:
     if not kernels:
         return function
 
-    # `kernels` is keyword-only in both blocks: the 12 positional block arguments
-    # can never fill it.
+    # `kernels` is keyword-only in both blocks: the 12 positional block arguments (13
+    # with the value-config input) can never fill it.
     def block(*args: Any) -> Any:
         return function(*args, kernels=kernels)
 
@@ -421,10 +433,13 @@ def _compiled_block(model: Any, packed: bool, kernels: tuple[str, ...] = (),
 
 
 def forward_rows(model: Any, group: Any, *, compile: bool = False,
-                 packed: bool | None = None, kernels: str = "") -> tuple[Tensor, Tensor, Tensor]:
+                 packed: bool | None = None, kernels: str = "",
+                 value_config: Tensor | None = None) -> tuple[Tensor, Tensor, Tensor]:
     """`packed` defaults to the device: CUDA sm80+ under BF16/FP16 autocast.
     Tests may force it on CPU (reference attention, one sequence at a time).
-    `kernels` selects V3 T6 levers (`rows_kernels.LEVERS`); '' is the original block."""
+    `kernels` selects V3 T6 levers (`rows_kernels.LEVERS`); '' is the original block.
+    `value_config` ([rows, 4] in group row order): required exactly when the heads have
+    the value-config input (`Rl4Heads.config_shifts`)."""
     if model.training:
         raise ValueError("rows_forward_requires_eval_mode")
     from .rows_kernels import parse_kernels
@@ -449,6 +464,13 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
 
     t = {key: move(value) for key, value in group.tensors.items()}
     rows = len(group.rows)
+    config = None
+    if value_config is not None:
+        from stpd.rl.heads import VALUE_CONFIG_SIZE
+
+        if value_config.shape != (rows, VALUE_CONFIG_SIZE):
+            raise ValueError("value_config_batch_mismatch")
+        config = move(value_config.float())
     if packed is None:
         packed = varlen_supported(device)
     if packed and layout.text_buckets and layout.text_tokens is not None:
@@ -530,7 +552,7 @@ def forward_rows(model: Any, group: Any, *, compile: bool = False,
             longest, t["outcome_valid"].index_select(0, member),
             t["action_types"].index_select(0, member) if group.policy else None,
             t["catalog_mask"].index_select(0, member) if group.policy else None,
-            bucket[3])
+            bucket[3], *(() if config is None else (config.index_select(0, member),)))
         logits.append(logit)
         hp.append(value)
         if score is not None:

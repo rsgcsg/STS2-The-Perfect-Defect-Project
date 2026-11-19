@@ -25,6 +25,7 @@ from stpd.rl.segment_learner import SegmentLearner
 def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
                  aux_labels: list[str] | None = None,
                  dataplane_extra: dict[str, Any] | None = None,
+                 segments: dict[str, Any] | None = None,
                  **loss: float) -> SegmentLearner:
     from stpd.p1.local_inference import AUTH_ENV
 
@@ -34,7 +35,8 @@ def fast_learner(tmp_path, monkeypatch, *, fast: Any = True,
         config = dataclasses.replace(config, loss=dataclasses.replace(config.loss, **loss))
     monkeypatch.setenv(AUTH_ENV, "ab" * 32)
     config = dataclasses.replace(config, segments=dataclasses.replace(
-        config.segments, steps=64, dataset_rows=64, episode_rows=128, capacity_rows=128))
+        config.segments, steps=64, dataset_rows=64, episode_rows=128, capacity_rows=128,
+        **(segments or {})))
     dataplane = {"lanes": 1, "root": str(tmp_path / "live"), "source_slots": 8,
                  "prepare_slots": 2, "source_bytes": 16 * 1024**2,
                  "preparation_workers": 1, "assembly_workers": 1}
@@ -908,3 +910,73 @@ def test_referenced_only_prefetch_never_copies_a_capacity_victim(tmp_path, monke
 def test_prefetch_referenced_only_must_be_a_bool(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="prefetch_referenced_only_must_be_explicit"):
         _ref_learner(tmp_path, monkeypatch, "yes")
+
+
+def test_value_config_reaches_ppo_and_aux_rows_of_two_arms_through_the_sgd_child(
+        tmp_path, monkeypatch):
+    """`segments.value_config_input` (review B1): the auxiliary terminal/HP rows of a
+    dataset (rows n + local) carry the config of their own game, recorded at label
+    admission; the SGD child steps on PPO rows of one arm and aux rows of two."""
+    from test_rl_fast_source import SAMPLING, combat_game
+    from test_rl_pipeline_checkpoint import SGD_PROCESS
+
+    from stpd.rl.heads import (
+        VALUE_CONFIG_KEYS,
+        batch_value_configs,
+        row_value_configs,
+        value_config_vector,
+    )
+
+    high = {**SAMPLING, "arm_id": "high",
+            "classes": {"combat": {"temperature": 1.4, "uniform_mix": 0.005},
+                        "noncombat": {"temperature": 2.5, "uniform_mix": 0.01}}}
+    owner = fast_learner(tmp_path, monkeypatch, aux_labels=["terminal", "hp"],
+                         dataplane_extra={**SGD_PROCESS, "sgd_prestart": False},
+                         segments={"value_config_input": True, "target_kl": 0.99})
+    try:
+        assert owner.sgd is not None  # theta lives in the SGD child
+        compiler = FrameCompiler(owner.input_preparer.vocabulary)
+        for index, (name, sampling) in enumerate((("g1", SAMPLING), ("g2", high)), 1):
+            sealed = combat_game(name, owner.generation, handoff=learner_mu(owner),
+                                 compiler=compiler, assembler_id="node-" + name,
+                                 sampling=sampling)
+            admission(owner, name, index)
+            ours, theirs = multiprocessing.Pipe()
+            process = multiprocessing.Process(target=_sender,
+                                              args=(theirs, sealed, closed_for(sealed), True))
+            process.start()
+            theirs.close()
+            reader = owner.attach_fast_handoff(ours)
+            process.join(30)
+            assert process.exitcode == 0
+            reader.join(30)
+            assert not reader.is_alive() and not owner.input_fenced
+        control, explore = value_config_vector(SAMPLING["classes"]), value_config_vector(
+            high["classes"])
+        pooled = {row["key"].split(":")[0]: tuple(row["value_config"])
+                  for pool in (owner.terminal, owner.hp)
+                  for rows in pool.groups.values() for row in rows}
+        assert pooled == {"g1": control, "g2": explore}
+        assert owner._prepare()
+        batch = owner.active_batch
+        assert batch is not None and owner.active is not None
+        request = batch.request
+        assert {selection.value_config for selection in request.auxiliary} == {
+            control, explore}
+        configs = batch_value_configs(batch.metadata, request)
+        ppo = row_value_configs(batch.metadata, [m.rows for m in request.members])
+        assert configs[:len(ppo)] == ppo == [control] * len(ppo)  # g1's bootstrap segment
+        assert configs[len(ppo):] == [s.value_config for s in request.auxiliary]
+        results = []
+        while owner.active is not None:
+            results.append(owner._step())
+        owner._collect_publication(wait=True)
+        assert any(result["stepped"] for result in results)
+        owner.checkpoint(final=True)
+        from test_rl_segment_learner import read_cp
+
+        _, state = read_cp(owner)
+        assert all(bool(state.weights[f"rl4_heads.{key}"].ne(0).any())
+                   for key in VALUE_CONFIG_KEYS)
+    finally:
+        owner.close()

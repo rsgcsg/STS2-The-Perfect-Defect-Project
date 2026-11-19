@@ -105,6 +105,13 @@ from .fast_source import (
     read_handoff,
 )
 from .fast_verify import FastVerifyClosed, FastVerifyPool
+from .heads import (
+    HEAD_PREFIX,
+    VALUE_CONFIG_KEYS,
+    batch_value_configs,
+    load_heads_state,
+    value_config_vector,
+)
 from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import (
     advantage_fields,
@@ -122,6 +129,7 @@ from .loss import (
     minibatch_explore_rows,
     prepared_update,
     warmup_learning_rates,
+    with_value_config,
 )
 from .performance import PerformanceConfig
 from .prepared_batch import (
@@ -572,6 +580,9 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         value["segments"].pop("kl_stop_scope", None)
     if value["segments"].get("lr_warmup_steps", 0) == 0:
         value["segments"].pop("lr_warmup_steps", None)
+    # The value-config input: the same (off = the heads before it).
+    if value["segments"].get("value_config_input", False) is False:
+        value["segments"].pop("value_config_input", None)
     # The ratio floor: left out at 0 (off), so older CPs keep their recipe digest.
     if value["loss"].get("explore_ratio_floor", 0.0) == 0:
         value["loss"].pop("explore_ratio_floor", None)
@@ -982,6 +993,15 @@ class SegmentLearner:
             self.model.load_state_dict(restored.weights, strict=True)
         else:
             self.model = self._start_model()
+        # `segments.value_config_input`: a CP without it is upgraded only by a declared
+        # off -> on change (the recipe check above refused anything else); a CP with it
+        # never runs without it.
+        added_value_config: list[str] = []
+        if settings.value_config_input != self.model.rl4_heads.has_value_config:
+            if not settings.value_config_input or restored is None:
+                raise ValueError("value_config_input_differs_from_restored_heads")
+            self.model.enable_value_config()
+            added_value_config = [HEAD_PREFIX + key for key in VALUE_CONFIG_KEYS]
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
         self.model.to(self.device).eval().requires_grad_(True)
@@ -999,7 +1019,9 @@ class SegmentLearner:
                     ],
                     "lr": config.lr,
                 },
-                {"params": list(self.model.rl4_heads.parameters()), "lr": settings.head_lr},
+                {"params": [p for name, p in self.model.named_parameters()
+                            if name.startswith("rl4_heads.") and name not in added_value_config],
+                 "lr": settings.head_lr},
             ],
             weight_decay=config.weight_decay,
         )
@@ -1008,6 +1030,12 @@ class SegmentLearner:
             if self._optimizer_names() != restored.optimizer_parameter_names:
                 raise ValueError("checkpoint_optimizer_parameter_order_changed")
             self.optimizer.load_state_dict(restored.optimizer)
+            if added_value_config:
+                # Last in the head group, as a fresh run with the input orders them; Adam
+                # state starts when they first step. EMA starts at their zero value.
+                parameters = dict(self.model.named_parameters())
+                self.optimizer.param_groups[1]["params"].extend(
+                    parameters[name] for name in added_value_config)
             # load_state_dict restores each group's lr from the CP. A declared change sets
             # the configured rates (the Adam moments and step counts stay the CP's); the
             # lr warm-up, if any, still counts the restored update count.
@@ -1017,6 +1045,8 @@ class SegmentLearner:
                                        (config.lr, settings.head_lr), strict=True):
                     group["lr"] = rate
             self.ema = {name: value.to(self.device) for name, value in restored.ema.items()}
+            for name in added_value_config:
+                self.ema[name] = self.model.state_dict()[name].detach().clone()
             counters = restored.counters
             for name, value in (
                 ("updates", counters.updates),
@@ -1919,7 +1949,7 @@ class SegmentLearner:
             package / "model.tensor-tree",
             self.config.start_model_sha256 or descriptor["package_sha256"],
         )
-        model.enable_rl4_heads(0)
+        model.enable_rl4_heads(0, value_config=self.settings.value_config_input)
         # A pre-existing fitted head snapshot is an explicit initial state, not
         # a warmup phase. RL4.1 never trains/opens a separate warmup path.
         if self.settings.warmup_artifact_id:
@@ -1929,7 +1959,7 @@ class SegmentLearner:
                 raise ValueError("explicit_fitted_RL4_heads_required")
             if fitted["model_package_sha256"] != descriptor["package_sha256"]:
                 raise ValueError("fitted_heads_start_policy_changed_use_explicit_CP_conversion")
-            model.rl4_heads.load_state_dict(fitted["heads"], strict=True)
+            load_heads_state(model.rl4_heads, fitted["heads"])
         return model
 
     def _optimizer_names(self) -> tuple[tuple[str, ...], ...]:
@@ -2699,12 +2729,16 @@ class SegmentLearner:
 
     def _fast_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]
                         ) -> list[tuple[str, str, list[dict[str, Any]]]]:
-        """Verified fast labels -> the old pools' rows; each holds its original segment."""
+        """Verified fast labels -> the old pools' rows; each holds its original segment
+        (and, with `segments.value_config_input`, the sampling config of its game)."""
         result = []
         for kind, identity, rows in groups:
             values = []
             for row in rows:
                 segment, envelope = row["segment"], row["envelope"]
+                config = ({"value_config": value_config_vector(
+                    segment.header["sampling"]["classes"])}
+                    if self.settings.value_config_input else {})
                 ref = BinaryRef(FAST_FORMAT, f"{self.config.run}/{self.generation}/fast/"
                                 f"{segment.segment_id}", envelope["packet_sha256"],
                                 envelope["packet_size"])
@@ -2720,7 +2754,7 @@ class SegmentLearner:
                 values.append({"key": source["key"], "source": source, "member": member,
                                "outcome" if kind == "terminal" else "hp": row["label"],
                                "prepared_input": AuxiliaryInput(source, member, segment.data,
-                                                                envelope)})
+                                                                envelope), **config})
             result.append((kind, identity, values))
         return result
 
@@ -3404,6 +3438,7 @@ class SegmentLearner:
                             float(row["outcome" if kind == "terminal" else "hp"]),
                             row["uses"],
                             self.terminal.max_uses if kind == "terminal" else self.hp.max_uses,
+                            row.get("value_config"),  # value_config_input only
                         )
                     )
                     owners.append(i % self.settings.minibatches)
@@ -3739,6 +3774,9 @@ class SegmentLearner:
                                 tensors={**minibatch.tensors, **minibatch.epoch_auxiliary[epoch]})
         warmup_learning_rates(self.optimizer, (self.config.lr, self.settings.head_lr),
                               self.updates, self.settings.lr_warmup_steps)
+        if self.model.rl4_heads.has_value_config:  # segments.value_config_input
+            minibatch = with_value_config(
+                minibatch, batch_value_configs(batch.metadata, batch.request), self.device)
         result = prepared_update(
             self.model,
             self.optimizer,

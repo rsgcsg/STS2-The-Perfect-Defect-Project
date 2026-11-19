@@ -119,7 +119,7 @@ from .fast_handoff import (
 )
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, sha256
-from .heads import OUTCOME_CLASSES, categorical_lambda_targets
+from .heads import OUTCOME_CLASSES, categorical_lambda_targets, value_config_vector
 from .learning_diagnostics import add_entropy, add_exploration, exploration_row, row_entropy
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
@@ -336,6 +336,9 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     # R: entropy of the categorical value targets, per source [rows, sum in nats].
     metadata[0]["target_entropy"] = [len(rows), float(
         -(targets * targets.clamp_min(1e-30).log()).sum())]
+    # The value heads' sampling-config input (`segments.value_config_input`): the game's own
+    # sampling, the one every row's `applied` was checked against (save starts included).
+    metadata[0]["value_config"] = list(value_config_vector(header["sampling"]["classes"]))
     if decisions is not None:
         arm, signs = header["sampling"]["arm_id"], (advantages > 0).tolist()
         if header["start"]["kind"] == "from_save":
