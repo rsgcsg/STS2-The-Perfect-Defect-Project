@@ -258,4 +258,5 @@ test("a claim whose ledger line is not written yet still keeps its save; trim gi
   assert.ok(existsSync(s1.path), "s1 deleted under a claim file");
   assert.deepEqual(readdirSync(join(dir, "claims")).sort(), [`${s1.sha256}.u0`, `${s1.sha256}.u2`]); // u1 given back
   assert.equal(ledger(dir).filter(line => line.kind === "evict").length, 0);
+  assert.equal(a.counters().evictions_kept, 1);
 });

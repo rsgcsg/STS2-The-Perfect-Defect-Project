@@ -113,10 +113,12 @@ export class SaveTickets {
     this.candidate = null;
     /** Floors this driver's closed games played, per act (the training-data proxy of #pickAct). */
     this.covered = [0, 0, 0];
+    /** claim_conflicts also counts tickets of a save another driver already retired (#retire's claim files);
+     * evictions_kept counts trims that kept a save because another driver's claim file was there. */
     this.counts = { save_points_games: 0, saves_reported: 0, saves_pooled: 0, saves_dropped: {}, saves_duplicate: 0,
       tickets_claimed: 0, claim_conflicts: 0, from_save_opened: 0, load_failed: 0, open_refused_other: 0,
       ticket_closes: {}, families_paused: 0, new_run_without_ticket: {}, died_later_draws: 0, ledger_bad_lines: 0,
-      evicted: {} };
+      evicted: {}, evictions_kept: 0 };
   }
 
   #append(record) {
@@ -358,6 +360,7 @@ export class SaveTickets {
       catch (error) {
         if (error?.code !== "EEXIST") throw error;
         for (const own of taken) unlinkQuiet(own);
+        this.counts.evictions_kept += 1;
         return false;
       }
     }
