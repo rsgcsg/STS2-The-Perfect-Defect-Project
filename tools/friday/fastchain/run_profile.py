@@ -226,6 +226,8 @@ HP_COMBAT_TYPES = ("normal", "elite", "boss")
 HP_POTION_MODES = ("points", "value_head", "value_head_neutral")  # neutral: #608
 # Ticket K: which policy rows the learner's KL stop measures (stpd.rl.loss.KL_STOP_SCOPES).
 KL_STOP_SCOPES = ("all", "control")
+# Owner 11-19: which policy a row updates (stpd.rl.loss.ARM_POLICY_UPDATES).
+ARM_POLICY_UPDATES = ("normal", "own")
 
 
 def _hp_combat_weights(value: Any) -> str | None:
@@ -302,6 +304,11 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
         out.append("declared_changes segments.value_config_input new "
                    f"{value_config['new']!r} needs the value_config_input knob at the same "
                    f"value (have {values['value_config_input']!r})")
+    policy = (values["declared_changes"].get("changes") or {}).get("loss.arm_policy_update")
+    if policy and policy["new"] != values["arm_policy_update"]:
+        out.append("declared_changes loss.arm_policy_update new "
+                   f"{policy['new']!r} needs the arm_policy_update knob at the same "
+                   f"value (have {values['arm_policy_update']!r})")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
         for name in ("combat", "noncombat"):
@@ -451,6 +458,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "lr_warmup_steps": _int(0, 1_000_000),
     # the learner's segments.value_config_input (owner 11-19; learner_config)
     "value_config_input": _bool,
+    # the learner's loss.arm_policy_update (owner 11-19; learner_config)
+    "arm_policy_update": _choice(*ARM_POLICY_UPDATES),
     # RL5-METHODS C: declared recipe changes at a continuation from a CP (learner_config)
     "declared_changes": _declared_changes,
     "service_window_ms": _num(0),

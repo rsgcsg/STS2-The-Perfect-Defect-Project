@@ -6,7 +6,8 @@ operational values. `recipe_drift(effective, frozen)` compares it with the froze
 long-run parameters (python/configs/rl5.json): every frozen key must be equal, except
 the ones in `ALLOWED_DRIFT`, each with the reason the launcher sets it on purpose.
 Recipe keys (the whole `loss` block, c_hp and its scope included) pass through unchanged
-from the gate and have no default here. `gate_recipe(base, frozen)` first adds the `loss`
+from the gate and have no default here; the one exception is the `arm_policy_update` knob,
+which writes `loss.arm_policy_update` off its default. `gate_recipe(base, frozen)` first adds the `loss`
 keys a gate made before them lacks (c_hp and its scope, #538), from the frozen config of
 the run's own source; a key the gate has stays the gate's and A9 still compares it. Every
 other missing key shows as `<missing>` drift. `learner_base(gate, frozen, knobs, run)` is the
@@ -45,12 +46,13 @@ DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
               "loss.hp_advantage_coef", "loss.hp_advantage_scope", "loss.explore_ratio_floor",
               "segments.target_kl",
               "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda",
-              "segments.value_config_input")
+              "segments.value_config_input", "loss.arm_policy_update")
 # A key missing from a learner config (a CP's or this run's) means this value: the learner's
 # own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
 CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
                    "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket",
-                   "loss.explore_ratio_floor": 0.0, "segments.value_config_input": False}
+                   "loss.explore_ratio_floor": 0.0, "segments.value_config_input": False,
+                   "loss.arm_policy_update": "normal"}
 MISSING = "<missing>"
 
 
@@ -209,10 +211,20 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     # The value-config input (owner 11-19): the same rule (off = key left out).
     if knobs.get("value_config_input", False):
         config["segments"]["value_config_input"] = True
+    # The arm policy update (owner 11-19): the same rule (normal = key left out).
+    if knobs.get("arm_policy_update", "normal") != "normal":
+        config["loss"]["arm_policy_update"] = knobs["arm_policy_update"]
     if run.get("window"):
         config.update(run["window"])
     # RL5-METHODS C: written only when declared (an older learner refuses the key).
-    return apply_declared(config, knobs.get("declared_changes") or {})
+    config = apply_declared(config, knobs.get("declared_changes") or {})
+    # "own" and the gate's (or a declared) explore_ratio_floor > 0 are alternatives; the
+    # learner refuses both too (LossConfig), this says so before anything starts.
+    if (config["loss"].get("arm_policy_update", "normal") == "own"
+            and config["loss"].get("explore_ratio_floor", 0.0)):
+        raise ValueError("loss.arm_policy_update own refuses loss.explore_ratio_floor > 0 "
+                         "(the two are alternatives): set the floor to 0")
+    return config
 
 
 def input_cause(failure: Any) -> str | None:

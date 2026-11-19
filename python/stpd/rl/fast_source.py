@@ -275,6 +275,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     actions: list[int] = []
     old: list[tuple[float, ...]] = []
     metadata: list[dict[str, Any]] = []
+    classes = header["sampling"]["classes"]
     for index, (meta, row) in enumerate(zip(header["rows"], rows, strict=True)):
         frame = decode_row(row, validator=compiler,
                            expected_sha256=meta["payload"]["row_sha256"])
@@ -289,9 +290,13 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         # finite, sums to 1, selected > 0), in the row's own catalog order.
         actions.append(meta["selected_index"])
         old.append(tuple(float(q) for q in meta["behavior_q"]))
+        # The row's cell (`loss.arm_policy_update` "own"): (T, m) of the game's sampling class
+        # the service sampled this row with (the one its `applied` was checked against).
+        cell = classes["combat" if meta["in_combat"] else "noncombat"]
         metadata.append({"generated_at": None, "generated_timestamp": None,
                          "floor": meta["floor"], "mu_version": header["mu"]["version"],
-                         "mu_updates": header["mu"]["updates"]})
+                         "mu_updates": header["mu"]["updates"],
+                         "arm_sampling": [cell["temperature"], cell["uniform_mix"]]})
     decoded = time.perf_counter()
     probabilities = torch.tensor([meta["outcome_probabilities"] for meta in header["rows"]],
                                  dtype=torch.float32)
