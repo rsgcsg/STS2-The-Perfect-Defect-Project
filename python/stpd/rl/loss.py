@@ -23,6 +23,7 @@ from stpd.p1.model import MStd
 if TYPE_CHECKING:
     from stpd.p1.tensor_input import ModelFrame, TensorFrame
 
+    from .learning_diagnostics import ValueCells
     from .performance import PerformanceConfig
 
 
@@ -295,8 +296,14 @@ def prepared_update(
     shard: tuple[int, int] | None = None,
     control_rows: list[bool] | None = None,
     explore_rows: list[bool] | None = None,
+    value_cells: ValueCells | None = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
+
+    `value_cells` (diagnostics only, `learning_diagnostics.row_cells` of the dataset):
+    on `diagnostics` steps adds `value_by_cell` and, with value-config heads,
+    `value_cross_cell` (the outcome head at every cell's config on the same rows, from
+    the first-layer activations of this forward: no extra trunk pass).
 
     `control_rows` (KL stop scope "control", RL5-METHODS K): per row of this
     minibatch in tensor order (`minibatch_control_rows`), True for a control-arm
@@ -336,6 +343,7 @@ def prepared_update(
     diagnostic = _PreparedGradientDiagnostics(model) if diagnostics else None
     row_diagnostics: list[torch.Tensor] | None = [] if collect_policy_rows else None
     row_values: list[float] = []
+    hook = None  # the cross-cell query's capture (value_cells, diagnostics steps)
     try:
         t = minibatch.tensors
         # `loss.arm_policy_update`: "own" needs every row's cell (`with_arm_sampling`); a
@@ -359,6 +367,27 @@ def prepared_update(
         totals = t["targets"].new_zeros(8)
         # Value/HP head sums (learning_diagnostics); never part of the loss or decision.
         value_sums = t["targets"].new_zeros(learning_diagnostics.SIZE)
+        # Per cell (`value_cells`, diagnostics steps): the same sums split by cell, then
+        # (value-config heads) the cross-cell query; they ride in value_sums' all-reduce.
+        if not diagnostics:
+            value_cells = None
+        cell_count = len(value_cells.names) if value_cells is not None else 0
+        queries = (torch.tensor(value_cells.configs, dtype=torch.float32, device=device)
+                   if value_cells is not None and value_cells.configs is not None else None)
+        cell_sums = t["targets"].new_zeros(cell_count * learning_diagnostics.CELL_SIZE)
+        cross_sums = t["targets"].new_zeros(
+            cell_count * (1 + len(queries)) if queries is not None else 0)
+        captured: list[torch.Tensor] | None = None
+        if value_cells is not None:
+            t = {**t, "value_cell": torch.tensor(
+                [value_cells.rows[row] for group in minibatch.groups for row in group.rows],
+                dtype=torch.long).to(device)}
+        if queries is not None:
+            # Diagnostics steps run eager (no compiled block): the hook sees every bucket's
+            # outcome first-layer output (before the config term), in bucket order.
+            captured = store = []
+            hook = model.rl4_heads.outcome.mlp[0].register_forward_hook(
+                lambda module, inputs, output: store.append(output.detach()))
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
         offset = 0
         rows_forward = performance.prepared_forward == "rows-v2"
@@ -423,6 +452,18 @@ def prepared_update(
                 dynamic_valid = dynamic_valid & valid
                 value_sums = value_sums + learning_diagnostics.value_statistics(
                     logits.detach(), hp.detach(), group_tensors)
+                if value_cells is not None:
+                    cell_sums = cell_sums + learning_diagnostics.value_statistics_by_cell(
+                        logits.detach(), hp.detach(), group_tensors,
+                        group_tensors["value_cell"], cell_count)
+                if captured is not None and queries is not None:
+                    hidden = torch.cat(captured)
+                    captured.clear()
+                    if rows_forward:  # buckets back to group row order, as forward_rows
+                        hidden = hidden.index_select(0, group.layout.scene_inverse.to(device))
+                    cross_sums = cross_sums + learning_diagnostics.cross_cell_sums(
+                        model.rl4_heads, hidden[:rows], group_tensors["outcome_valid"],
+                        group_tensors["value_cell"], queries, cell_count)
                 phases["loss"] += time.perf_counter() - phase
                 if diagnostic is not None:
                     phase = time.perf_counter()
@@ -447,12 +488,16 @@ def prepared_update(
                 # one minibatch; after this all ranks share the mean gradient and
                 # totals, so clip, KL stop and Adam make one identical decision.
                 # The value sums ride in the same all-reduce as the totals.
+                cells = torch.cat((cell_sums, cross_sums))
                 joined, dynamic_valid = gradient_sync(
-                    model, torch.cat((totals, value_sums) if scope is None
-                                     else (totals, value_sums, scope)), dynamic_valid)
+                    model, torch.cat((totals, value_sums, cells) if scope is None
+                                     else (totals, value_sums, cells, scope)), dynamic_valid)
                 totals, value_sums = joined[:8], joined[8:8 + learning_diagnostics.SIZE]
+                end = 8 + learning_diagnostics.SIZE + cells.numel()
+                cell_sums = joined[8 + learning_diagnostics.SIZE:end - cross_sums.numel()]
+                cross_sums = joined[end - cross_sums.numel():end]
                 if scope is not None:
-                    scope = joined[8 + learning_diagnostics.SIZE:]
+                    scope = joined[end:]
                 phases["gradient_sync"] = time.perf_counter() - phase
                 phase = time.perf_counter()
             diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
@@ -463,7 +508,9 @@ def prepared_update(
                                   valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
-            decision = torch.cat((decision, value_sums.detach().float()))
+            cell_size = cell_sums.numel() + cross_sums.numel()
+            decision = torch.cat((decision, cell_sums.detach().float(),
+                                  cross_sums.detach().float(), value_sums.detach().float()))
             if scope is not None:
                 decision = torch.cat((decision, scope.detach().float()))  # last fixed part
             decision_size = decision.numel()
@@ -528,6 +575,14 @@ def prepared_update(
             },
         }
         result.update(learning_diagnostics.headline(result["value_statistics"]))
+        if value_cells is not None:
+            start = values_end - learning_diagnostics.SIZE - cell_size
+            split = start + cell_count * learning_diagnostics.CELL_SIZE
+            result["value_by_cell"] = learning_diagnostics.cell_fields(
+                measured[start:split], value_cells.names)
+            if queries is not None:
+                result["value_cross_cell"] = learning_diagnostics.cross_cell_fields(
+                    measured[split:start + cell_size], value_cells)
         if basis is not None:
             result.update(kl_stop_basis=basis, kl_control_rows=control_count,
                           approx_kl_control=measured[decision_size - 1]
@@ -583,6 +638,8 @@ def prepared_update(
             }
         return result
     finally:
+        if hook is not None:
+            hook.remove()
         model.train(original_mode)
 
 

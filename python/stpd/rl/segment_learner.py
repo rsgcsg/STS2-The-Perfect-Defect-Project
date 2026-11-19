@@ -114,12 +114,14 @@ from .heads import (
 )
 from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import (
+    ValueCells,
     advantage_fields,
     entropy_fields,
     exploration_fields,
     explore_floor_by_arm,
     policy_by_arm,
     row_arms,
+    row_cells,
     value_target_fields,
 )
 from .local_retention import LocalRetention
@@ -673,6 +675,7 @@ class SegmentLearner:
     memory_sample: tuple[float, dict[str, Any]] | None
     policy_mask_cache: tuple[Any, list[bool]] | None  # (batch, mask list): per dataset
     row_arm_cache: tuple[Any, list[str | None] | None] | None  # (batch, arms): per dataset
+    row_cell_cache: tuple[Any, ValueCells | None] | None  # (batch, cells): per dataset
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
@@ -3779,9 +3782,10 @@ class SegmentLearner:
                                 tensors={**minibatch.tensors, **minibatch.epoch_auxiliary[epoch]})
         warmup_learning_rates(self.optimizer, (self.config.lr, self.settings.head_lr),
                               self.updates, self.settings.lr_warmup_steps)
-        if self.model.rl4_heads.has_value_config:  # segments.value_config_input
-            minibatch = with_value_config(
-                minibatch, batch_value_configs(batch.metadata, batch.request), self.device)
+        configs = (batch_value_configs(batch.metadata, batch.request)
+                   if self.model.rl4_heads.has_value_config else None)
+        if configs is not None:  # segments.value_config_input
+            minibatch = with_value_config(minibatch, configs, self.device)
         if self.config.loss.arm_policy_update == "own":  # each row updates its own cell
             minibatch = with_arm_sampling(
                 minibatch, batch_arm_sampling(batch.metadata, batch.request), self.device)
@@ -3801,6 +3805,7 @@ class SegmentLearner:
             explore_rows=(minibatch_explore_rows(minibatch, self._dataset_arms(batch),
                                                  self._policy_mask(batch))
                           if self.config.loss.explore_ratio_floor else None),
+            value_cells=self._dataset_cells(batch, configs),
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
@@ -3915,7 +3920,7 @@ class SegmentLearner:
             self.active = self.active_batch = None
             self.device_batch = None
             self.policy_mask_cache = None  # never retain a finished batch
-            self.row_arm_cache = None
+            self.row_arm_cache = self.row_cell_cache = None
             self._promote()  # before forgetting: its sources stay retained
             self._forget_unreferenced()
             if self.updates > active["start_updates"]:
@@ -3965,6 +3970,13 @@ class SegmentLearner:
             derived = row_arms(batch.metadata, [m.rows for m in batch.request.members])
             self.row_arm_cache = batch, (derived if any(derived) else None)
         return self.row_arm_cache[1]
+
+    def _dataset_cells(self, batch: Any, configs: list[tuple[float, ...]] | None
+                       ) -> ValueCells | None:
+        """`row_cells` of `batch` (value heads per exploration cell), once per dataset."""
+        if self.row_cell_cache is None or self.row_cell_cache[0] is not batch:
+            self.row_cell_cache = batch, row_cells(batch.metadata, batch.request, configs)
+        return self.row_cell_cache[1]
 
     def _charge_auxiliary(self, active: dict[str, Any], request: PrepareRequest,
                           index: int) -> None:
@@ -4061,7 +4073,7 @@ class SegmentLearner:
     def _init_progress_telemetry(self) -> None:
         self.memory_sample = None
         self.policy_mask_cache = None
-        self.row_arm_cache = None
+        self.row_arm_cache = self.row_cell_cache = None
 
     def _memory(self) -> dict[str, Any]:
         """Peak memory, sampled at most every MEMORY_SAMPLE_SECONDS (peaks only grow)."""
