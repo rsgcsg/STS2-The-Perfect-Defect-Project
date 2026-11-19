@@ -115,6 +115,10 @@ def batch_arm_sampling(metadata: Any, request: Any) -> list[tuple[float, float]]
     the segment header's sampling class of the row), then `NORMAL_SAMPLING` for the
     auxiliary rows `n + local` (policy weight 0). A PPO row without one fails: "own" never
     falls back to the T = 1 policy."""
+    if len(metadata) != sum(member.rows for member in request.members):
+        raise ValueError(f"batch_arm_sampling: members cover "
+                         f"{sum(member.rows for member in request.members)} rows, metadata "
+                         f"has {len(metadata)}")
     out = [_checked_sampling(row.get("arm_sampling")) for row in metadata]
     out.extend([NORMAL_SAMPLING] * len(request.auxiliary))
     return out

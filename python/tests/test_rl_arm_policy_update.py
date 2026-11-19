@@ -137,6 +137,22 @@ def test_pure_temperature_gradient_is_the_one_over_T_logit_gradient():
     assert not torch.allclose(torch.autograd.grad(normal, scores)[0][0], want, atol=1e-3)
 
 
+def test_mixed_cell_gradient_is_the_closed_form():
+    """m > 0: d log pi_cell(a) / d logits = (1 - m) / T * ts_a (onehot(a) - ts) / pc_a, with
+    ts = softmax(logits / T) and pc the cell probability."""
+    temperature, mix, action = 0.5, 0.1, 2
+    scores, valid = _rows([7], seed=5)
+    scores.requires_grad_(True)
+    cell = arm_log_probabilities(scores, torch.tensor([[temperature, mix]]), valid)
+    gradient = torch.autograd.grad(cell[0, action], scores)[0][0]
+    ts = (scores.detach()[0] / temperature).softmax(-1)
+    pc = cell.detach()[0].exp()
+    onehot = F.one_hot(torch.tensor(action), 7).float()
+    want = (1 - mix) / temperature * ts[action] * (onehot - ts) / pc[action]
+    assert torch.allclose(gradient, want, atol=1e-6)
+    assert not torch.allclose(gradient, (onehot - ts) / temperature, atol=1e-3)
+
+
 def _before_knob(scores, t, clip, multi, entropy_coef):
     """The policy part and policy totals as written before the knob (reference copy)."""
     logp = scores.float().log_softmax(-1)
@@ -234,10 +250,15 @@ def test_fast_chain_builds_the_knob_and_refuses_it_with_a_floor():
 
 
 def test_rows_without_a_sampling_config_are_refused_never_control():
-    members = SimpleNamespace(auxiliary=[object(), object()])
+    members = SimpleNamespace(members=[SimpleNamespace(rows=2)],
+                              auxiliary=[object(), object()])
     metadata = [{"arm_sampling": [2.5, 0.01]}, {"arm_sampling": [1, 0]}]
     assert batch_arm_sampling(metadata, members) == [(2.5, 0.01), (1.0, 0.0),
                                                      NORMAL_SAMPLING, NORMAL_SAMPLING]
+    # members and metadata must cover the same PPO rows: aux (1, 0) never shifts onto them
+    for rows in ([SimpleNamespace(rows=3)], [SimpleNamespace(rows=1)]):
+        with pytest.raises(ValueError, match="members cover"):
+            batch_arm_sampling(metadata, SimpleNamespace(members=rows, auxiliary=[]))
     for bad in ({}, {"arm_sampling": None}, {"arm_sampling": [0.1, 0.0]},
                 {"arm_sampling": [1.0, 0.5]}, {"arm_sampling": [1.0]}):
         with pytest.raises(ValueError, match="arm_sampling_missing_or_invalid"):
