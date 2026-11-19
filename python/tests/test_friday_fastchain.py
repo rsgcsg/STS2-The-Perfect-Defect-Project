@@ -95,12 +95,17 @@ def gate_without_hp(*keys, config=None):
     return base
 
 
+# The RL5 model's state_dict bytes (hwcheck 11-19 budget: 16 x model = 0.32 GiB).
+MODEL_BYTES = 21_474_836
+
+
 def good_facts(plan):
     k = plan['knobs']
     return {'src_rev': f'{k["env_pkg_build"]}{"0" * 32}',
             'src_features': {name: True for name in launch.FEATURES},
             'src_checkout': {'git': True, 'head': 'c' * 40, 'dirty': False},
             'frozen_recipe': FROZEN, 'gate_learner_base': gate_base(),
+            'gate_dataplane': {}, 'model_bytes': MODEL_BYTES,
             'compile_warmup_dumps': {p: True for p in plan['site']['compile_warmup_dumps']},
             'warmup_artifact': {'id': 'f' * 64, 'present': True, 'package_sha256': 'e' * 64},
             'start_model': {'package_sha256': 'e' * 64, 'training_identity': None},
@@ -270,11 +275,13 @@ def test_build_plan_derives_memory_guard_from_job_limit_and_falls_back():
         assert plan['mem_hard_bytes'] == int(0.95 * limit)
         assert plan['mem_guard_bytes'] < plan['mem_hard_bytes'] < limit
         # Non-reclaimable bound (learner budget) leaves >= 20% of the job below the guard.
-        assert preflight.memory_estimate(plan)['counted'] <= 0.8 * plan['mem_guard_bytes']
+        assert preflight.memory_estimate(plan, {}, MODEL_BYTES)['counted'] \
+            <= 0.8 * plan['mem_guard_bytes']
     two = plan_for(cards=2)
     smaller = plan_for(cards=2, job_mem_g={'1': 160, '2': 100, '3': 240})
     assert smaller['mem_guard_bytes'] == int(0.85 * 100 * preflight.GIB)
-    assert not preflight.check_memory(plan_for(cards=2, mem_guard_fraction=0.96)).ok
+    high = plan_for(cards=2, mem_guard_fraction=0.96)
+    assert not preflight.check_memory(high, good_facts(high)).ok
     assert two['placement']['learner_device'] == 'cuda'
     assert (two['env_nodes_max'] * two['knobs']['env_aggregators']) % two['knobs']['services'] == 0
     none = plan_for(cards=3, probe=[probe_row(free=1)])
@@ -378,7 +385,7 @@ def test_preflight_refuses_bad_site_and_plan_edits():
     assert not preflight.check_identity(overlap).ok
     guard = copy.deepcopy(plan)
     guard['mem_guard_bytes'] = guard['job_mem_g'] * preflight.GIB + 1
-    assert not preflight.check_memory(guard).ok
+    assert not preflight.check_memory(guard, good_facts(guard)).ok
     cores = copy.deepcopy(plan)
     cores['env_cores_max'] = cores['core_cap']
     assert not preflight.check_cores(cores).ok
@@ -1236,14 +1243,196 @@ def test_time_limits_refuse_drivers_that_end_by_design_before_the_gpu_wall():
     assert preflight.check_time_limits(plan_for(cards=2, driver_steady_seconds=4800)).ok  # 3000 s
 
 
-def test_memory_budget_does_not_count_idle_local_pools():
+def test_memory_budget_with_shards_counts_remote_clients_not_local_pools():
     remote = plan_for(cards=3)
     local = plan_for(cards=3, remote_prepare=False, preparation_workers=24,
                      assembly_workers=24)
-    est_remote, est_local = preflight.memory_estimate(remote), preflight.memory_estimate(local)
-    assert est_remote['workers'] == 4 * remote['knobs']['shards']
+    est_remote = preflight.memory_estimate(remote, {}, MODEL_BYTES)
+    est_local = preflight.memory_estimate(local, {}, MODEL_BYTES)
     assert est_local['workers'] > est_remote['workers']
-    assert preflight.check_memory(remote).ok
+    assert preflight.check_memory(remote, good_facts(remote)).ok
+
+
+
+HWCHECK = FASTCHAIN / 'rl5-long-run-1-hwcheck.toml'
+
+
+def hwcheck_plan(cards=2, job_mem=200, **changes):
+    values = run_profile.values(run_profile.load_profile(HWCHECK))
+    values.update(changes)
+    values['job_mem_g'] = {**values['job_mem_g'], str(cards): job_mem}
+    return launch.build_plan('t1', values, run_profile.load_site(SITE), cards=cards,
+                             card_type='A100-80', layout_spec=None, env_cores=None,
+                             smoke=False, probe_rows=[probe_row(gpus=cards, free=cards)],
+                             probe_only=True, long_run=True)
+
+
+def learner_budget(plan, gate_dataplane, model_bytes, monkeypatch):
+    """The learner's own budget for this plan: the dataplane roles.py writes and the
+    inputs SegmentLearner._start_sgd_process computes, through the learner's functions."""
+    from dataclasses import dataclass
+
+    from stpd.rl import sgd_process
+    from stpd.rl.dataplane_shards import shard_budget
+    from stpd.rl.segment_learner import binary_preparer_arguments
+
+    @dataclass(frozen=True)
+    class Settings:  # the SegmentConfig fields these functions read
+        prepared_bytes: int
+        preparation_workers: int = 1
+        preparation_threads: int = 1
+        capacity_rows: int = 1000
+        capacity_limit_rows: int | None = None
+        terminal_games: int = 8
+        hp_battles: int = 8
+
+    k, p = plan['knobs'], plan['placement']
+    settings = Settings(int(k['prepared_gib'] * 1024**3))
+    source = k['source_gb'] * 1024**3
+    dataplane = {**gate_dataplane, 'sgd_process': True, 'source_bytes': source,
+                 'prepare_source_bytes': source, 'preparation_workers': k['preparation_workers'],
+                 'assembly_workers': k['assembly_workers'],
+                 'wal_max_bytes': k['wal_max_gib'] * 1024**3}
+    if k['shards']:
+        dataplane['shards'] = k['shards']
+    if k['remote_prepare']:
+        dataplane['remote_prepare'] = (
+            {'client_processes': k['remote_prepare_client_processes']}
+            if k['remote_prepare_client_processes'] else {})
+    if p['ranks'] > 1:
+        dataplane['sgd_data_parallel'] = {'world': p['ranks'], 'backend': 'nccl'}
+    dataplane.setdefault('memory_limit_bytes', plan['job_mem_g'] * 1024**3)
+    batches = k['prepared_batches']
+    if k['shards']:
+        own = binary_preparer_arguments(
+            {**dataplane, 'persistent_pools': False, 'remote_prepare': None,
+             'preparation_workers': 1, 'assembly_workers': 1, 'label_workers': 1},
+            settings, batches)
+        prepare_source, prepared, shard_workers = shard_budget(dataplane, settings, batches,
+                                                               k['shards'])
+    else:
+        own = binary_preparer_arguments(dataplane, settings, batches)
+        prepare_source, prepared, shard_workers = own['max_source_bytes'], \
+            settings.prepared_bytes, 0
+    tmpfs = plan['site']['gpu_local_tmp'].startswith('/dev/shm')
+    monkeypatch.setattr(sgd_process, '_filesystem', lambda _path: 'tmpfs' if tmpfs else 'xfs')
+    budget = sgd_process.memory_budget(
+        options=sgd_process.sgd_options(dataplane), device=p['learner_device'],
+        model_bytes=model_bytes, source_bytes=source, prepare_source_bytes=prepare_source,
+        prepared_bytes=prepared, pinned_bytes=settings.prepared_bytes,
+        wal_bytes=dataplane['wal_max_bytes'],
+        workers=own['workers'] + own['assembly_workers'] + own['label_workers'] + 4
+        + shard_workers, paths={'sources': Path('s'), 'arenas': Path('a'), 'wal': Path('w')})
+    return budget
+
+
+DUMP = {'sgd_offline_dump_every': 50}
+
+
+@pytest.mark.parametrize('plan_args,gate', [
+    ({}, DUMP),  # the hwcheck: 3 shards, remote prepare, SGD offline dump on
+    ({}, {}),
+    ({'shards': 0}, {}),  # unsharded: the local pools count, remote prepare or not
+    ({'shards': 0, 'remote_prepare': False}, DUMP),
+    ({'shards': 2, 'remote_prepare': False}, {'label_workers': 3}),
+    ({'shards': 1}, {'memory_budget': {'worker_process': 2 * 1024**3},
+                     'memory_headroom_fraction': 0.1}),
+    ({'cards': 3}, DUMP),  # two data-parallel ranks
+    ({'tmpfs': True}, {}),
+])
+def test_preflight_memory_is_the_learners_own_budget(plan_args, gate, monkeypatch):
+    """hwcheck 11-19: the learner refused at 87.13 GiB what preflight passed at 78 GiB
+    (no offline-dump term, its own worker/controller formula). Same items, same bytes."""
+    pytest.importorskip('torch')
+    args = dict(plan_args)
+    cards, tmpfs = args.pop('cards', 2), args.pop('tmpfs', False)
+    plan = hwcheck_plan(cards=cards, **args)
+    if tmpfs:
+        plan['site']['gpu_local_tmp'] = '/dev/shm/fc'
+    learner = learner_budget(plan, gate, MODEL_BYTES, monkeypatch)
+    est = preflight.memory_estimate(plan, gate, MODEL_BYTES)
+    assert {row['item']: row['bytes'] for row in learner['items'] if row['counted']} \
+        == est['items']
+    assert (learner['counted_bytes'], learner['usable_bytes'], learner['limit_bytes']) \
+        == (est['counted'], est['usable'], est['limit'])
+
+
+def test_preflight_refuses_a_job_the_learner_refuses_with_the_numbers():
+    """The hwcheck's 87.13 GiB with the dump on: refused at a 100 GiB job (usable 80);
+    the same job passes without the dump (67.77 GiB)."""
+    plan = hwcheck_plan(job_mem=100)
+    on = preflight.check_memory(plan, {**good_facts(plan), 'gate_dataplane': DUMP})
+    assert not on.ok
+    assert 'learner budget 87.1' in on.detail and '> usable 80.00 GiB' in on.detail
+    assert 'offline_dump 19.36' in on.detail and 'sgd_process_memory_budget_exceeded' \
+        in on.detail
+    off = preflight.check_memory(plan, good_facts(plan))
+    assert off.ok and 'learner budget 67.7' in off.detail and 'offline_dump' not in off.detail
+    missing = preflight.check_memory(plan, {**good_facts(plan), 'gate_dataplane': None})
+    assert not missing.ok and 'no gate dataplane.json' in missing.detail
+    unknown = preflight.check_memory(plan, {**good_facts(plan), 'model_bytes': None})
+    assert unknown.ok and unknown.warn and 'model bytes unknown' in unknown.detail
+
+
+def test_preflight_refuses_unix_socket_paths_over_the_af_unix_limit():
+    """hwcheck 11-19: the learner died binding <work_root>/run-<tag>/handoff.sock at 111
+    bytes (`OSError: AF_UNIX path too long`); the limit is 107 (sun_path 108 with NUL)."""
+    plan = plan_for(cards=2)
+    ok = preflight.check_unix_sockets(plan)
+    assert ok.ok and 'handoff' in ok.detail
+    long = copy.deepcopy(plan)
+    long['run'] = '/' + 'w' * (111 - len('/handoff.sock') - 1)
+    assert len(preflight.unix_socket_paths(long)['handoff']) == 111
+    result = by_name(preflight.checks(long, good_facts(long)))['unix_sockets']
+    assert not result.ok and 'handoff socket' in result.detail and '111 bytes' in result.detail
+    assert 'limit 107 bytes' in result.detail
+    env = copy.deepcopy(plan)
+    env['site']['env_tmp_root'] = '/' + 'e' * 90
+    result = preflight.check_unix_sockets(env)
+    assert not result.ok and 'aggregator socket' in result.detail
+    assert 'admission socket' in result.detail and 'handoff' not in result.detail
+    # Exactly at the limit binds: a real bind on this OS for a path within both limits.
+    import socket
+    import tempfile
+    with tempfile.TemporaryDirectory(dir='/tmp') as root:
+        path = os.path.join(root, 'h.sock')
+        assert len(path) <= preflight.UNIX_PATH_MAX
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(path)
+        server.close()
+
+
+def test_learner_setup_failure_ends_the_process_with_threads_left_running(tmp_path):
+    """hwcheck 11-19: the learner failed in setup after SegmentLearner was built (its
+    threads and child processes never closed); the process did not exit, so gpu.sh's
+    `wait` and the job held the cards until a scancel. It now ends with rc 6, report and
+    STOP written."""
+    run = tmp_path / 'run'
+    run.mkdir()
+    (run / 'effective-profile.json').write_text(json.dumps({'knobs': {}}))
+    script = tmp_path / 'drive.py'
+    script.write_text(f"""
+import ast, sys, threading
+sys.argv = ['roles.py', 'learner', {str(run)!r}]
+source = open({str(FASTCHAIN / 'roles.py')!r}).read()
+tree = ast.parse(source)
+main = [n for n in tree.body if isinstance(n, ast.If)]
+body = [n for n in tree.body if not isinstance(n, ast.If)]
+space = {{'__name__': 'roles', '__file__': {str(FASTCHAIN / 'roles.py')!r}}}
+exec(compile(ast.Module(body, []), 'roles.py', 'exec'), space)
+def learner():  # a built learner whose worker thread never ends, then a failing bind
+    threading.Thread(target=threading.Event().wait, name='left-running').start()
+    raise OSError('AF_UNIX path too long')
+space['learner'] = learner
+space['__name__'] = '__main__'
+exec(compile(ast.Module(main, []), 'roles.py', 'exec'), space)
+""")
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                          timeout=30)
+    assert done.returncode == 6, done.stderr
+    report = json.loads((run / 'learner-report.json').read_text())
+    assert report['setup_failure'] and 'AF_UNIX path too long' in report['failure']
+    assert (run / 'STOP').read_text().startswith('learner failure setup OSError')
 
 
 # ---------------- preflight (job side) ----------------

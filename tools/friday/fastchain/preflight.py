@@ -6,7 +6,8 @@ Two halves, both decided by the pure functions below:
   the GPU request (sinfo snapshot and --test-only printed only), machine types, prep
   scratch, prep jobs, speed switches, source features the knobs need, producer identity,
   declared recipe changes against the CP they name (RL5-METHODS C),
-  env package identity and memo, env nodes and shard balance, memory budget, per-batch
+  env package identity and memo, env nodes and shard balance, memory budget (the
+  learner's own), AF_UNIX socket path lengths, per-batch
   prepared cap, service CPUs, cross-node identity, hot path, secret files, time limits,
   core cap, the evaluation jobs' node class and degraded threshold and the queue (both
   printed only);
@@ -41,9 +42,15 @@ GIB = 1024**3
 LOCAL_FS = ("tmpfs", "xfs", "ext2/ext3", "ext4", "btrfs", "overlayfs", "overlay", "zfs")
 HEX12 = re.compile(r"^[0-9a-f]{12,64}$")
 RANDOM_START = "stpd/rl-random-start-1"  # = stpd.rl.random_start.SCHEMA (pinned by a test)
-# sgd_process.DECLARED_BYTES (the learner's own memory budget bases).
-CONTROLLER_BASE, WORKER, PUBLISHER, SGD_BASE = 6 * GIB, 1.5 * GIB, 1 * GIB, 2.5 * GIB
+# = sgd_process.DECLARED_BYTES, the learner's own memory budget bases (pinned by a test;
+# the gate's dataplane.json `memory_budget` overrides them as in the learner).
+DECLARED_BYTES = {"controller_base": 6 * GIB, "worker_process": 3 * GIB // 2,
+                  "publisher_process": 1 * GIB, "sgd_base_cuda": 5 * GIB // 2,
+                  "sgd_base_cpu": 2 * GIB}
 HEADROOM = 0.20  # sgd_process memory_headroom_fraction default
+# Linux sockaddr_un.sun_path is 108 bytes including the trailing NUL.
+UNIX_PATH_MAX = 107
+SLURM_JOB_ID_WIDTH = 10  # widest Slurm job id (32 bit): the env side's sockets carry one
 BUDGET_CAP_SECONDS = 72000  # the product operating-budget cap (SegmentLearner)
 PREPARED_BATCH_HEADROOM = 1.15  # per-batch cap >= 1.15 x the largest measured batch
 
@@ -569,44 +576,109 @@ def check_service_cpus(plan: dict[str, Any]) -> Result:
     return Result("service_cpus", True, f"{head}, distinct CPUs")
 
 
-def memory_estimate(plan: dict[str, Any]) -> dict[str, Any]:
-    """Resident memory of the GPU job's learner side, counting only what runs.
+def memory_estimate(plan: dict[str, Any], gate_dataplane: dict[str, Any],
+                    model_bytes: int) -> dict[str, Any]:
+    """The learner's own SGD memory budget, item for item: sgd_process.memory_budget with
+    the inputs SegmentLearner._start_sgd_process gives it for the dataplane roles.py
+    writes (the gate's dataplane.json + the profile). A test pins it equal to the
+    learner's computation, so a job the learner would refuse
+    (`sgd_process_memory_budget_exceeded`) is refused here before anything is queued.
 
-    Under remote prepare the local preparation/assembly pools do no work, so they are
-    not counted (c3s1 was refused by a budget that counted 73 idle workers = 110 GB).
-    Bases are sgd_process.DECLARED_BYTES; file-backed bounds count only on tmpfs.
+    As in the learner: unsharded, the local pools count even under remote prepare; with
+    shards, one idle 1+1+1 preparer plus each shard process and its remote clients (or
+    local pools). The SGD offline dump counts when the gate's dataplane.json turns it on.
+    File-backed bounds count only on tmpfs.
     """
     k, p = plan["knobs"], plan["placement"]
-    copies = max(1, k["shards"])
-    local = 0 if k["remote_prepare"] else copies * (
-        k["preparation_workers"] + k["assembly_workers"] + 1)
-    workers = local + 4 * copies
-    prepared = k["prepared_gib"] * GIB
-    items = {"controller": CONTROLLER_BASE * copies, "workers": workers * WORKER,
-             "publisher": PUBLISHER, "sgd": SGD_BASE, "pinned": prepared,
-             "followers": (p["ranks"] - 1) * (SGD_BASE + prepared)}
+    declared = {**DECLARED_BYTES, **gate_dataplane.get("memory_budget", {})}
+    count, batches = k["shards"], k["prepared_batches"]
+    label = gate_dataplane.get("label_workers", 1)
+    total = int(k["prepared_gib"] * GIB)  # settings.prepared_bytes (learner_config)
+    source = k["source_gb"] * GIB  # source_bytes = prepare_source_bytes (roles.py)
+    if count:  # dataplane_shards.shard_budget over shard_dataplane / shard_settings
+        def share(value: int) -> int:
+            return -(-value // count) if count > 1 and value > 0 else value
+        clients = k["remote_prepare_client_processes"]
+        pools = ((share(clients) if clients else 0) if k["remote_prepare"] else
+                 share(k["preparation_workers"]) + share(k["assembly_workers"]) + share(label))
+        workers = 3 + 4 + count * (1 + pools)
+        prepare_source = count * (source // count if count > 1 else source)
+        prepared = count * (total if count == 1 else
+                            total // (batches + 1) * (max(1, batches // count) + 1))
+    else:
+        workers = k["preparation_workers"] + k["assembly_workers"] + label + 4
+        prepare_source, prepared = source, total
+    cuda = p["learner_device"].startswith("cuda")
+    base = declared["sgd_base_cuda" if cuda else "sgd_base_cpu"]
+    items = {"controller_base": declared["controller_base"],
+             "checkpoint_assembly": 8 * model_bytes,
+             "worker_processes": workers * declared["worker_process"],
+             "publisher_process": declared["publisher_process"] + 3 * model_bytes,
+             "sgd_base": base, "pinned_slots" if cuda else "owned_batches": total,
+             "state_capture": 8 * model_bytes}
+    if p["ranks"] > 1:
+        items["data_parallel_ranks"] = (p["ranks"] - 1) * (base + total)
+    if gate_dataplane.get("sgd_offline_dump_every") is not None:
+        items["offline_dump"] = 8 * model_bytes + prepared // 2
     if plan["site"]["gpu_local_tmp"].startswith("/dev/shm"):
-        items["file_backed_on_tmpfs"] = (k["source_gb"] * GIB * 2 + prepared
-                                         + k["wal_max_gib"] * GIB)
-    limit = plan["job_mem_g"] * GIB
+        items.update({"source_spool": source, "prepare_arenas": prepare_source,
+                      "prepared_outputs": prepared, "wal": k["wal_max_gib"] * GIB})
+    limit = gate_dataplane.get("memory_limit_bytes") or plan["job_mem_g"] * GIB
+    headroom = gate_dataplane.get("memory_headroom_fraction", HEADROOM)
     return {"items": items, "workers": workers, "counted": sum(items.values()),
-            "limit": limit, "usable": limit * (1 - HEADROOM)}
+            "limit": limit, "usable": int(limit * (1 - headroom))}
 
 
-def check_memory(plan: dict[str, Any]) -> Result:
-    est = memory_estimate(plan)
+def check_memory(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    dataplane, model = facts.get("gate_dataplane"), facts.get("model_bytes")
+    if dataplane is None:
+        return Result("memory", False, "no gate dataplane.json: the learner's memory budget "
+                      "(SGD offline dump, memory_budget overrides) cannot be computed")
+    est = memory_estimate(plan, dataplane, model or 0)
+    shown = ", ".join(f"{name} {size / GIB:.2f}" for name, size in est["items"].items())
+    unknown = ("; model bytes unknown (no start package model.tensor-tree): 16-19x model "
+               "bytes not counted") if model is None else ""
     problems = []
     if est["counted"] > est["usable"]:
-        problems.append(f"learner side {est['counted'] / GIB:.0f} GiB > usable "
-                        f"{est['usable'] / GIB:.0f} GiB of the job")
+        problems.append(f"learner budget {est['counted'] / GIB:.2f} GiB > usable "
+                        f"{est['usable'] / GIB:.2f} GiB = (1 - headroom) x "
+                        f"{est['limit'] / GIB:.0f} GiB (the learner refuses: "
+                        f"sgd_process_memory_budget_exceeded) [GiB: {shown}]")
     guard = plan["mem_guard_bytes"]
-    if not guard < plan["mem_hard_bytes"] <= est["limit"]:
+    if not guard < plan["mem_hard_bytes"] <= plan["job_mem_g"] * GIB:
         problems.append("memory guard must be < hard stop <= job memory")
-    return Result("memory", not problems, "; ".join(problems) or
-                  f"learner side {est['counted'] / GIB:.0f} of {est['usable'] / GIB:.0f} GiB "
-                  f"usable ({est['workers']} running workers; idle local pools not counted); "
-                  f"guard {guard / 1e9:.0f} GB, hard {plan['mem_hard_bytes'] / 1e9:.0f} GB, "
-                  f"job {est['limit'] / 1e9:.0f} GB")
+    if problems:
+        return Result("memory", False, "; ".join(problems) + unknown)
+    return Result("memory", True, f"learner budget {est['counted'] / GIB:.2f} of "
+                  f"{est['usable'] / GIB:.2f} GiB usable [GiB: {shown}] ({est['workers']} "
+                  f"worker processes); guard {guard / 1e9:.0f} GB, hard "
+                  f"{plan['mem_hard_bytes'] / 1e9:.0f} GB, job "
+                  f"{plan['job_mem_g'] * GIB / 1e9:.0f} GB" + unknown, warn=bool(unknown))
+
+
+def unix_socket_paths(plan: dict[str, Any]) -> dict[str, str]:
+    """AF_UNIX paths the roles bind, built from site settings: roles.py's hand-off
+    listener (learner) and env.sh's admission and aggregator sockets (env_tmp_root/<job
+    id>/, the job id at its widest)."""
+    env_tmp = os.path.join(plan["site"]["env_tmp_root"], "9" * SLURM_JOB_ID_WIDTH)
+    last = plan["knobs"]["env_aggregators"] - 1
+    return {"handoff": os.path.join(plan["run"], "handoff.sock"),
+            "admission": os.path.join(env_tmp, "admit.sock"),
+            "aggregator": os.path.join(env_tmp, f"agg-{last}.sock")}
+
+
+def check_unix_sockets(plan: dict[str, Any]) -> Result:
+    """A longer path kills its role at bind: `OSError: AF_UNIX path too long` (hwcheck
+    11-19: the learner's handoff.sock at 111 bytes)."""
+    sizes = {name: (path, len(path.encode())) for name, path in unix_socket_paths(plan).items()}
+    long = [f"{name} socket {path} is {size} bytes" for name, (path, size) in sizes.items()
+            if size > UNIX_PATH_MAX]
+    if long:
+        return Result("unix_sockets", False, "; ".join(long) + f" > the AF_UNIX limit "
+                      f"{UNIX_PATH_MAX} bytes: shorten work_root / env_tmp_root or the run tag")
+    return Result("unix_sockets", True, ", ".join(f"{name} {size}" for name, (_, size)
+                                                  in sizes.items())
+                  + f" bytes <= {UNIX_PATH_MAX}")
 
 
 def check_identity(plan: dict[str, Any]) -> Result:
@@ -834,7 +906,8 @@ def checks(plan: dict[str, Any], facts: dict[str, Any]) -> list[Result]:
             check_hp_score(plan, facts),
             check_compile_warmup(plan, facts), check_warmup_artifact(plan, facts),
             check_env_package(plan, facts), check_shards(plan, facts),
-            check_memory(plan), check_prepared_batch_cap(plan), check_service_cpus(plan),
+            check_memory(plan, facts), check_unix_sockets(plan),
+            check_prepared_batch_cap(plan), check_service_cpus(plan),
             check_identity(plan), check_hot_path(plan),
             check_secrets(facts), check_time_limits(plan), check_training_clock(plan),
             check_seeds(plan, facts), check_cores(plan),

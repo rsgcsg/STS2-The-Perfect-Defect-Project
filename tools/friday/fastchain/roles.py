@@ -666,6 +666,13 @@ if __name__ == "__main__":
                     "failure_trace": traceback.format_exc()}, default=str, indent=1))
             stop_once(f"learner failure {failed}")
             traceback.print_exc()
+            # A failure after SegmentLearner was built (hwcheck 11-19: the hand-off socket
+            # bind) leaves its threads and child processes unclosed; a normal interpreter
+            # exit waits on them and the GPU job held its cards until a scancel. Report and
+            # STOP are written: end now, the job's end reaps the rest.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(6)
         if failed is not None:
             sys.exit(6)
     else:

@@ -430,6 +430,12 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
                                  else None)
     gate = Path(site["gate_dir"]) / "learner-base.json"
     facts["gate_learner_base"] = json.loads(gate.read_text()) if gate.exists() else None
+    # The learner's dataplane base (SGD offline dump, memory_budget overrides) and the
+    # start model's weights file (model bytes): preflight check_memory = its own budget.
+    plane = Path(site["gate_dir"]) / "dataplane.json"
+    facts["gate_dataplane"] = json.loads(plane.read_text()) if plane.exists() else None
+    weights = Path(site["start_package"]) / "model.tensor-tree"
+    facts["model_bytes"] = weights.stat().st_size if weights.is_file() else None
     # A dump is a directory; sgd_process warm() loads offline_step.TREE inside it.
     facts["compile_warmup_dumps"] = {
         path: os.path.isfile(os.path.join(path, "offline-step.tensor-tree"))
