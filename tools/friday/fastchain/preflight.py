@@ -587,7 +587,11 @@ def memory_estimate(plan: dict[str, Any], gate_dataplane: dict[str, Any],
     As in the learner: unsharded, the local pools count even under remote prepare; with
     shards, one idle 1+1+1 preparer plus each shard process and its remote clients (or
     local pools). The SGD offline dump counts when the gate's dataplane.json turns it on.
-    File-backed bounds count only on tmpfs.
+    Exception (as on the base): file-backed bounds (source spool, prepare arenas,
+    prepared outputs, WAL) are counted here only when gpu_local_tmp starts with
+    /dev/shm; the learner counts them on any memory filesystem (MEMORY_FILESYSTEMS:
+    tmpfs, ramfs, devtmpfs, unknown), so a memory-backed gpu_local_tmp outside /dev/shm
+    is undercounted here.
     """
     k, p = plan["knobs"], plan["placement"]
     declared = {**DECLARED_BYTES, **gate_dataplane.get("memory_budget", {})}
@@ -630,6 +634,7 @@ def memory_estimate(plan: dict[str, Any], gate_dataplane: dict[str, Any],
 
 
 def check_memory(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
+    """The learner's own budget (memory_estimate), with its file-backed exception."""
     dataplane, model = facts.get("gate_dataplane"), facts.get("model_bytes")
     if dataplane is None:
         return Result("memory", False, "no gate dataplane.json: the learner's memory budget "

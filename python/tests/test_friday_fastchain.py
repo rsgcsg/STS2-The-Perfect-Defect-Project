@@ -1342,7 +1342,9 @@ DUMP = {'sgd_offline_dump_every': 50}
 ])
 def test_preflight_memory_is_the_learners_own_budget(plan_args, gate, monkeypatch):
     """hwcheck 11-19: the learner refused at 87.13 GiB what preflight passed at 78 GiB
-    (no offline-dump term, its own worker/controller formula). Same items, same bytes."""
+    (no offline-dump term, its own worker/controller formula). Same items, same bytes.
+    `learner_budget` copies by hand the input composition of `_start_sgd_process` and the
+    dataplane keys roles.py writes: drift in those two places is not covered here."""
     pytest.importorskip('torch')
     args = dict(plan_args)
     cards, tmpfs = args.pop('cards', 2), args.pop('tmpfs', False)
