@@ -293,6 +293,8 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
         need["lr_warmup_steps"] = "lr warm-up (ticket K)"
     if k["value_config_input"]:
         need["value_config_input"] = "value heads read the sampling config (owner 11-19)"
+    if k["arm_policy_update"] != "normal":
+        need["arm_policy_update"] = "each arm's rows update its own cell policy (owner 11-19)"
     if k.get("declared_changes"):
         need["declared_changes"] = "declared recipe changes at a continuation (RL5-METHODS C)"
     if any(int(level) > 0 and w > 0 for level, w in k["ascension_mix"].items()):

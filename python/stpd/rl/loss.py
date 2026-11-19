@@ -87,6 +87,65 @@ def with_value_config(minibatch: Any, configs: list[tuple[float, ...]], device: 
     return replace(minibatch, tensors={**minibatch.tensors, "value_config": value})
 
 
+# Arm policy update (`loss.arm_policy_update`, owner 2026-11-19). "normal": every PPO row
+# updates the T = 1 policy, ratio pi(a) / mu(a) (the rule before it). "own": every row
+# updates its own cell's policy, the one its game sampled from: for the row's decision
+# class (T, m), pi_cell = (1 - m) softmax(logits / T) + m / |catalog| over the row's catalog
+# (`stpd.p1.sampling.distribution`, the collection-side formula), so ratio = pi_cell(a) /
+# mu(a) is 1 at unchanged weights for every arm. Clip, surrogate and the KL estimator are
+# the same rule for all rows; the entropy bonus stays on the T = 1 policy.
+ARM_POLICY_UPDATES = ("normal", "own")
+NORMAL_SAMPLING = (1.0, 0.0)  # (T, m) of the T = 1 policy: auxiliary rows (no policy loss)
+
+
+def _checked_sampling(value: Any) -> tuple[float, float]:
+    from stpd.p1.sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
+
+    if (value is None or len(value) != 2
+            or type(value[0]) not in (int, float) or type(value[1]) not in (int, float)
+            or not ARM_TEMPERATURE_FLOOR <= value[0] <= ARM_TEMPERATURE_MAX
+            or not 0 <= value[1] <= ARM_UNIFORM_MIX_MAX):
+        raise ValueError("arm_sampling_missing_or_invalid")
+    return float(value[0]), float(value[1])
+
+
+def batch_arm_sampling(metadata: Any, request: Any) -> list[tuple[float, float]]:
+    """`loss.arm_policy_update` "own": every row of a prepared dataset in its row order, its
+    (T, m): the PPO rows' from their metadata (`arm_sampling`, written by fast_source from
+    the segment header's sampling class of the row), then `NORMAL_SAMPLING` for the
+    auxiliary rows `n + local` (policy weight 0). A PPO row without one fails: "own" never
+    falls back to the T = 1 policy."""
+    if len(metadata) != sum(member.rows for member in request.members):
+        raise ValueError(f"batch_arm_sampling: members cover "
+                         f"{sum(member.rows for member in request.members)} rows, metadata "
+                         f"has {len(metadata)}")
+    out = [_checked_sampling(row.get("arm_sampling")) for row in metadata]
+    out.extend([NORMAL_SAMPLING] * len(request.auxiliary))
+    return out
+
+
+def with_arm_sampling(minibatch: Any, sampling: list[tuple[float, float]], device: Any) -> Any:
+    """`loss.arm_policy_update` "own": `minibatch` with tensor "arm_sampling" ([rows, 2]:
+    T, m in its tensor order) from `batch_arm_sampling`. Added before the step (and an
+    offline dump), so every rank, group slice and replay reads the same rows' cells."""
+    value = torch.tensor([sampling[row] for group in minibatch.groups for row in group.rows],
+                         dtype=torch.float32).to(device)
+    return replace(minibatch, tensors={**minibatch.tensors, "arm_sampling": value})
+
+
+def arm_log_probabilities(scores: torch.Tensor, sampling: torch.Tensor,
+                          valid: torch.Tensor) -> torch.Tensor:
+    """log pi_cell per catalog entry ([rows, width]); -inf outside the catalog. `sampling`
+    [rows, 2] = (T, m). T = 1, m = 0 gives log_softmax(scores) on the catalog."""
+    temperature, mix = sampling[:, :1], sampling[:, 1:]
+    tempered = (scores.float().masked_fill(~valid, -torch.inf) / temperature).log_softmax(-1)
+    # Outside the catalog: 0 before the mix (no -inf - -inf in value or gradient), -inf after.
+    count = valid.sum(-1, keepdim=True).clamp_min(1)
+    mixed = torch.logaddexp(tempered.masked_fill(~valid, 0) + torch.log1p(-mix),
+                            (mix / count).log())
+    return mixed.masked_fill(~valid, -torch.inf)
+
+
 def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],
                           updates: int, steps: int) -> None:
     """`segments.lr_warmup_steps` (RL5-METHODS K): before optimizer step `updates + 1`
@@ -136,12 +195,21 @@ def batched_segment_loss(
     `explore_ratio_floor` (`LossConfig.explore_ratio_floor`, 0 = off): see there; it needs
     `t["explore_mask"]` (bool per row, `minibatch_explore_rows`). The KL, clip fraction and
     every other total are unchanged by it.
+    `t["arm_sampling"]` (`loss.arm_policy_update` "own", `with_arm_sampling`): ratio, clip,
+    KL and the KL diagnostics use each row's cell policy (`arm_log_probabilities`); the
+    entropy stays the T = 1 policy's. Absent: the T = 1 policy for all of them.
     """
     logp = scores.float().log_softmax(-1)
     probability = logp.exp()
     safe_logp = logp.masked_fill(~t["catalog_valid"], 0)
+    if "arm_sampling" in t:
+        cell_logp = arm_log_probabilities(scores, t["arm_sampling"], t["catalog_valid"])
+        cell_probability = cell_logp.exp()
+        safe_cell = cell_logp.masked_fill(~t["catalog_valid"], 0)
+    else:
+        cell_logp, cell_probability, safe_cell = logp, probability, safe_logp
     action = t["actions"][:, None]
-    chosen = logp.gather(1, action)[:, 0]
+    chosen = cell_logp.gather(1, action)[:, 0]
     log_ratio = chosen - t["old_probabilities"].gather(1, action)[:, 0].log()
     ratio = log_ratio.exp()
     advantage = t["advantages"]
@@ -163,13 +231,14 @@ def batched_segment_loss(
                            * t["control_weight"]).sum())
     clipped = (((ratio.detach() - 1).abs() > clip).float() * policy_mask).sum()
     reverse = (
-        (probability * safe_logp - torch.special.xlogy(probability, t["old_probabilities"])).sum(-1)
+        (cell_probability * safe_cell
+         - torch.special.xlogy(cell_probability, t["old_probabilities"])).sum(-1)
         * policy_mask
     ).sum()
     if row_diagnostics is not None:
         with torch.no_grad():
             old = t["old_probabilities"]
-            forward = (torch.special.xlogy(old, old) - old * safe_logp.detach()).sum(-1)
+            forward = (torch.special.xlogy(old, old) - old * safe_cell.detach()).sum(-1)
             detached = ratio.detach()
             objective_clipped = (detached * advantage
                 > detached.clamp(1 - clip, 1 + clip) * advantage)
@@ -269,6 +338,10 @@ def prepared_update(
     row_values: list[float] = []
     try:
         t = minibatch.tensors
+        # `loss.arm_policy_update`: "own" needs every row's cell (`with_arm_sampling`); a
+        # minibatch carrying cells under "normal" would silently change the rule. Both fail.
+        if (config.arm_policy_update == "own") != ("arm_sampling" in t):
+            raise ValueError("arm_sampling_must_match_arm_policy_update")
         control_count = sum(control_rows) if control_rows is not None else 0
         control_parts: list[torch.Tensor] | None = None
         if control_rows is not None:
@@ -612,8 +685,17 @@ class LossConfig:
     # is refused. prepared_update only (rl_update refuses c > 0). 0 = off (today's loss
     # exactly); 0 <= c <= 0.5. KL and its stop unchanged.
     explore_ratio_floor: float = 0.0
+    # Which policy a row updates (`ARM_POLICY_UPDATES`, owner 2026-11-19; see there):
+    # "normal" = the T = 1 policy for every row (today's loss exactly); "own" = each row its
+    # own cell's policy. "own" and explore_ratio_floor > 0 are alternatives (refused).
+    # prepared_update only; resume-locked like every loss key.
+    arm_policy_update: str = "normal"
 
     def __post_init__(self) -> None:
+        if self.arm_policy_update not in ARM_POLICY_UPDATES:
+            raise BoundaryError("rl_loss", "invalid_PPO_configuration")
+        if self.arm_policy_update == "own" and self.explore_ratio_floor:
+            raise BoundaryError("rl_loss", "arm_policy_update_own_refuses_explore_ratio_floor")
         if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef, self.policy_coef,
@@ -699,6 +781,8 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
     """``reference_cache`` keeps each sample's start-model log-probabilities across reuses."""
     if config.explore_ratio_floor:  # implemented by prepared_update only, never ignored
         raise BoundaryError("rl_loss", "explore_ratio_floor_needs_prepared_update")
+    if config.arm_policy_update != "normal":  # the same: prepared_update only
+        raise BoundaryError("rl_loss", "arm_policy_update_needs_prepared_update")
     if config.mode == "ppo":
         if performance is not None:
             from .performance import prepare_models

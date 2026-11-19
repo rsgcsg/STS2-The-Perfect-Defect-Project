@@ -1459,7 +1459,7 @@ class _SgdWorker:
         """
         from . import batch_preparation as bp
         from .heads import CONTROL_VALUE_CONFIG
-        from .loss import prepared_update, with_value_config
+        from .loss import NORMAL_SAMPLING, prepared_update, with_arm_sampling, with_value_config
         from .offline_step import load
 
         torch = self.torch
@@ -1479,6 +1479,11 @@ class _SgdWorker:
         if self.model.rl4_heads.has_value_config and "value_config" not in staged.tensors:
             # never steps: the control config gives the live step's shapes
             staged = with_value_config(staged, [CONTROL_VALUE_CONFIG] * (1 + max(
+                (row for group in staged.groups for row in group.rows), default=0)),
+                self.device)
+        if self.loss.arm_policy_update == "own" and "arm_sampling" not in staged.tensors:
+            # never steps either: the T = 1 cell gives the live step's shapes
+            staged = with_arm_sampling(staged, [NORMAL_SAMPLING] * (1 + max(
                 (row for group in staged.groups for row in group.rows), default=0)),
                 self.device)
         devices = [self.device] if self.device.type == "cuda" else []
@@ -1734,10 +1739,12 @@ class _SgdWorker:
             value_target_fields,
         )
         from .loss import (
+            batch_arm_sampling,
             minibatch_control_rows,
             minibatch_explore_rows,
             prepared_update,
             warmup_learning_rates,
+            with_arm_sampling,
             with_value_config,
         )
 
@@ -1760,6 +1767,9 @@ class _SgdWorker:
         # segments.value_config_input: each row's (PPO and auxiliary) sampling config
         configs = (batch_value_configs(device_batch.metadata, device_batch.request)
                    if self.model.rl4_heads.has_value_config else None)
+        # loss.arm_policy_update "own": each row's cell (T, m); a row without one fails here
+        cells = (batch_arm_sampling(device_batch.metadata, device_batch.request)
+                 if self.loss.arm_policy_update == "own" else None)
         self.mark("idle")
         waited = time.perf_counter() - self.idle_since
         boundary: float | None = None
@@ -1795,6 +1805,8 @@ class _SgdWorker:
                                 tensors={**batch.tensors, **batch.epoch_auxiliary[epoch]})
             if configs is not None:  # before the dump, so an offline replay reads them too
                 batch = with_value_config(batch, configs, self.device)
+            if cells is not None:  # the same: the dump and its replay carry the cells
+                batch = with_arm_sampling(batch, cells, self.device)
             diagnostics = self.updates % self.diagnostics_every == 0
             dumped = None
             if (self.next_dump is not None and self.updates >= self.next_dump

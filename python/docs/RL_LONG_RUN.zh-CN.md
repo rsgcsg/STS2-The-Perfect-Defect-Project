@@ -397,15 +397,15 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
        只许 `lr`、`segments.head_lr`、`loss.entropy_coef`、`loss.hp_coef`、
        `loss.hp_advantage_coef`（c_hp，血量优势系数；不是 HP 头损失权重 `loss.hp_coef`）、`loss.hp_advantage_scope`、`segments.target_kl`、
        `segments.kl_stop_scope`、`segments.value_target`、`segments.gae_lambda`、
-       `loss.explore_ratio_floor`、`segments.value_config_input`；每个键为什么
+       `loss.explore_ratio_floor`、`segments.value_config_input`、`loss.arm_policy_update`；每个键为什么
        可以改，写在 `python/stpd/rl/recipe_changes.py`。改 `segments.kl_stop_scope` 时，旋钮
        `kl_stop_scope` 也要设成同一个新值。`segments.value_config_input`（价值头读本局采样配置）
        只许从关到开（false -> true），旋钮 `value_config_input` 设 true；接上的 CP 的两个价值头
-       加上全零的新权重，输出和原来完全一样，优化器给新权重从零起状态。每行（含辅助的结局/血量行）用它自己那局的采样配置；没有记录配置的行直接报错，不当对照臂（所以只用于快链）。模型结构、奖励表、片段格式、批几何和
+       加上全零的新权重，输出和原来完全一样，优化器给新权重从零起状态。每行（含辅助的结局/血量行）用它自己那局的采样配置；没有记录配置的行直接报错，不当对照臂（所以只用于快链）。`loss.arm_policy_update`（owner 11-19）：`normal`（默认，今天的规则）= 每行都更新 T=1 的正常策略；`own` = 每行更新它自己那格（cell）的策略 pi_cell = (1-m)·softmax(logits/T) + m/候选数，(T, m) 取本局采样配置里该行决策类的值，和推理服务采样的公式一致，所以权重没变时每格的 ratio 都是 1；裁剪、目标和 KL 估计对所有行同一条规则（KL 停止用 `kl_stop_scope` all 才有意义），熵奖励仍算在正常策略上。`own` 和 `loss.explore_ratio_floor` > 0 二选一，同时设直接拒绝；旋钮 `arm_policy_update` 设成同一个新值；没有记录采样配置的行直接报错。模型结构、奖励表、片段格式、批几何和
        `lr_warmup_steps` 都不许改。
     3. 起新链：`supervise.py start NEWCHAIN ... --resume-checkpoint CP --set 'declared_changes=...'`。
        预检（`declared_changes` 项）会从站点 peer 读 CP 的配置头（不用 torch），列出每个
-       `键 旧 -> 新`。预检只比许可单里的 11 个键；别的配方键不同，要等学习者启动时才拒绝，
+       `键 旧 -> 新`。预检只比许可单里的 12 个键；别的配方键不同，要等学习者启动时才拒绝，
        那时 GPU 作业已经开始（#582）。以下情况在提交前拒绝：许可单里漏声明的改动、`old` 和 CP 不符、`new` 和本次
        配方不符、新旧相同、不在许可单里的键、没给 `--resume-checkpoint`、声明的 CP 和本次起点
        不是同一个。学习者启动时会用同样的规则再核一遍完整配方，错误码以 `declared_recipe_`

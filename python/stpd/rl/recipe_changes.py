@@ -45,6 +45,8 @@ DECLARABLE: dict[str, str] = {
     "segments.value_config_input": "off -> on only: the CP's value heads get the zero "
                                    "sampling-config input (outputs unchanged), its new "
                                    "weights start with fresh Adam state; on -> off refused",
+    "loss.arm_policy_update": "which policy a row's PPO ratio, clip and KL use (T = 1 or "
+                              "its own cell's); loss only, no state",
 }
 # Recipe keys `_resume_config` leaves out at their default (so older CPs keep their
 # digest): a missing key means this value.
@@ -53,6 +55,7 @@ RECIPE_DEFAULTS: dict[str, Any] = {
     "segments.kl_stop_scope": "all",
     "loss.explore_ratio_floor": 0.0,
     "segments.value_config_input": False,
+    "loss.arm_policy_update": "normal",
 }
 _MISSING = object()
 

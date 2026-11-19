@@ -125,10 +125,12 @@ from .learning_diagnostics import (
 from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
 from .loss import (
+    batch_arm_sampling,
     minibatch_control_rows,
     minibatch_explore_rows,
     prepared_update,
     warmup_learning_rates,
+    with_arm_sampling,
     with_value_config,
 )
 from .performance import PerformanceConfig
@@ -586,6 +588,9 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     # The ratio floor: left out at 0 (off), so older CPs keep their recipe digest.
     if value["loss"].get("explore_ratio_floor", 0.0) == 0:
         value["loss"].pop("explore_ratio_floor", None)
+    # The arm policy update: left out at "normal" (the rule before it), the same reason.
+    if value["loss"].get("arm_policy_update", "normal") == "normal":
+        value["loss"].pop("arm_policy_update", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
@@ -3777,6 +3782,9 @@ class SegmentLearner:
         if self.model.rl4_heads.has_value_config:  # segments.value_config_input
             minibatch = with_value_config(
                 minibatch, batch_value_configs(batch.metadata, batch.request), self.device)
+        if self.config.loss.arm_policy_update == "own":  # each row updates its own cell
+            minibatch = with_arm_sampling(
+                minibatch, batch_arm_sampling(batch.metadata, batch.request), self.device)
         result = prepared_update(
             self.model,
             self.optimizer,
