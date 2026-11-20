@@ -4974,6 +4974,12 @@ def test_long_run_profiles_pass_validation_and_preflight_on_a_32_core_gpu_node(
     assert k['save_starts']['share'] == 0.5
     assert k['eval_seeds'] == (100 if profile == HW_CHECK else 300)
     assert k['eval_batch_seeds'] == 100
+    # review of #630: fast_eval.check_manifest needs the manifest's suite_id = --suite
+    # (empty = the A0 100 id), which the watcher passes only when eval_suite is set
+    from stpd.evaluation import suites
+    assert k['eval_suite'] == ('' if profile == HW_CHECK else suites.RL5_A0_CURVE_300_SUITE_ID)
+    # the diagnostics cadence the 11-20 comparison ran on hardware (not the base's 512)
+    assert k['diagnostics_every'] == 128 and learner['segments']['diagnostics_every'] == 128
     assert k['hp_combat_weights'] == {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}
     assert k['hp_potion_mode'] == 'value_head_neutral'
     assert all(k[name] > 0 for name in ('checkpoint_keep_newest', 'model_keep_newest',
@@ -4994,6 +5000,15 @@ def test_long_run_profiles_pass_validation_and_preflight_on_a_32_core_gpu_node(
                                                    'gate_learner_base': old})
     assert not refused.ok
     assert 'loss.explore_ratio_floor = 0.3' in refused.detail
+    # another refusal of the same build (a declared floor > 0 with own, gate at 0) is
+    # reported as it is, without the gate-floor note
+    declared = copy.deepcopy(plan)
+    declared['knobs']['declared_changes'] = {'checkpoint': 'c' * 64, 'changes': {
+        'loss.explore_ratio_floor': {'old': 0.0, 'new': 0.3}}}
+    other = preflight.check_frozen_recipe(declared, {'frozen_recipe': LONG_FROZEN,
+                                                     'gate_learner_base': zero})
+    assert not other.ok and 'own refuses' in other.detail
+    assert 'gate learner-base.json' not in other.detail
 
 
 def test_long_run_overlays_differ_only_in_their_listed_knobs():
@@ -5006,7 +5021,7 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
         'train_target_seconds', 'long_wall_seconds', 'eval_a10_seeds',
         'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest',
         'env_wait_seconds', 'prep_pending_max_seconds', 'prep_lead_seconds',
-        'remote_prepare_wait_seconds', 'eval_seeds'}
+        'remote_prepare_wait_seconds', 'eval_seeds', 'eval_suite'}
     # #614: the check keeps the long run's cap and explicit wall (same evaluation path) and
     # its 100-seed A0 round: a decision round, paired per seed (fast_eval DECISION_GAMES)
     assert check['eval_episode_seconds'] == long['eval_episode_seconds'] == 3600

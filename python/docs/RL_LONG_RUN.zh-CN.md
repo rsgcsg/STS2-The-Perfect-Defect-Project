@@ -440,7 +440,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 - 运行配置 `tools/friday/fastchain/rl5-long-run-1.toml`：叠加在 `rl5-fastchain.toml` 上
   （`base = "rl5-fastchain.toml"`），只列和它不同的旋钮，其余取基础配置。
 - 短硬件体检 `rl5-long-run-1-hwcheck.toml`：叠加在长跑配置上，只改窗口（训练目标 1500 s、链墙钟 7200 s）、
-  A0 评估局数（100，单个作业）、A10 评估局数（16）、评估间隔（900 s）、`min_generation_seconds`（600）、`checkpoint_keep_newest`（3）
+  A0 评估套件和局数（`eval_suite` ""、100，单个作业，配 A0 100 清单）、A10 评估局数（16）、评估间隔（900 s）、`min_generation_seconds`（600）、`checkpoint_keep_newest`（3）
   和启动等待（`env_wait_seconds`、`remote_prepare_wait_seconds`、`prep_pending_max_seconds`、
   `prep_lead_seconds`）；评估作业墙钟 `eval_wall_seconds` 不改，沿用长跑的 17000 s。配方和其余值同长跑（见下文“短体检”）。
 - 冻结配方 `python/configs/rl5-long-run-1.json`（旋钮 `frozen_learner_config` 指向它）：
@@ -461,7 +461,7 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 | `segments.value_config_input`（配方，旋钮 `value_config_input`） | false | true | 统一做法：价值头读本局采样配置（#621） |
 | `segments.value_target` / `capacity_victim`（配方） | segment / oldest | game / hash | 整局真结局传到每行；game 下用 hash 驱逐，不偏删长局后段 |
 | `segments.kl_stop_scope`（配方，旋钮 `kl_stop_scope`） | all | control | 探索臂故意偏离，KL 刹车只看对照臂 |
-| `loss.kl_coef` / `anchor_coef` / `rho_max` / `gradient_diagnostics`（配方） | 不写 | 0.02 / 0.5 / 1.0 / false | 都等于 LossConfig 默认，行为不变；V5 时代的闸门带这 4 个键，冻结里没有时 A9 拒绝（V6 冒烟踩过），所以删不掉。前三个快链不生效：片段学习者（`prepared_update` / `batched_segment_loss`）不读，只有旧 `rl_update` 路径读 |
+| `loss.kl_coef` / `anchor_coef` / `rho_max` / `gradient_diagnostics`（配方） | 不写 | 0.02 / 0.5 / 1.0 / false | 都等于 LossConfig 默认，行为不变；V5 时代的闸门带这 4 个键，冻结里没有时 A9 拒绝（V6 冒烟踩过）；为和现有闸门副本逐键一致先保留（闸门副本和冻结配方一起删也行），值等于默认、不影响行为。前三个快链不生效：片段学习者（`prepared_update` / `batched_segment_loss`）不读，只有旧 `rl_update` 路径读 |
 | 闸门 `max_staleness` / `max_reuse` / `max_episode_age_seconds`（闸门顶层键，不在仓库文件里） | — | — | 快链不生效：只有旧 `learner.py` 的缓冲区读，片段学习者不读；在闸门里，仓库无处可删 |
 | `segment_format` | fast-segment-3 | fast-segment-4 | c_hp > 0 需要逐战斗血量分列 |
 | `hp_combat_weights` | 1 / 1 / 1 | 1 / 1 / 0.3 | 首领战掉血权重 0.3（负责人 #616 定、用户 2026-11-20 确认；效果未量） |
@@ -473,7 +473,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
 | `env_core_budget["2"]` | 290 | 256 | 2 卡 = 16 台 × 16 核；写明（原 290 本来也会被核上限和偶数台裁到 256） |
 | `train_target_seconds` | 0 | 72000 | 20 小时学习者训练时间，跨续跑累计，到了正常结束 |
 | `long_wall_seconds` | 72000 | 86400 | 有目标时它只是链的墙钟上限；第 0 代剩余墙钟须 ≥ 目标，72000 起链一刻就不够，留约 4 小时给启动、续跑和排队 |
-| `eval_seeds` | 100 | 300 | 每轮 A0 都是固定 300 局（起链时 `--eval-manifest` 给 A0 300 清单），按种子和起点配对；短体检仍 100 |
+| `eval_suite` / `eval_seeds` | "" / 100 | `managed-rl5-learning-curve-300-20261117-Defect-a0` / 300 | 每轮 A0 都是固定 300 局：起链时 `--eval-manifest` 给 A0 300 清单；套件 id 必须写，看守只在非空时传 `--suite`，fast_eval 要求清单的 suite_id 等于它（空 = A0 100 的 id）。前 100 个种子就是 A0 100，按种子配对。短体检写回 "" / 100，配 A0 100 清单 |
+| `diagnostics_every` | 512 | 128 | 和 11-20 短对比上过硬件的形态一致（512 时第 7 次 2000 次更新只有 3 个诊断步）；改 512 提速要单独量过再定 |
 | `eval_batch_seeds` | 0 | 100 | 300 局一轮分成三个 100 局的并行作业 |
 | `readout_rolling_games` | [100] | [100, 1000] | 1000 局窗口给停滞判断和 A0 30% 滚动胜率 |
 | `checkpoint_keep_newest` | 0（全留） | 24 | 最新 24 个（2 小时）+ 评估认领/点过的、各代起点（cp_retention 自动留） |

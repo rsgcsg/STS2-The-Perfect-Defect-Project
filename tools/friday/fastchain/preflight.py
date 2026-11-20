@@ -366,9 +366,13 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
             "rendezvous_path": "-", "ranks": plan["placement"]["ranks"],
             "resume_checkpoint": None})
     except ValueError as error:  # e.g. own with the gate's explore_ratio_floor 0.3 kept
-        return Result("frozen_recipe", False, f"{error} (the gate's loss keys win over the "
-                      "frozen config's: gate learner-base.json loss.explore_ratio_floor = "
-                      f"{(base.get('loss') or {}).get('explore_ratio_floor', '<absent>')!r})")
+        floor = (base.get("loss") or {}).get("explore_ratio_floor")
+        gate_floor = (plan["knobs"].get("arm_policy_update") == "own" and bool(floor)
+                      and "loss.explore_ratio_floor" not in (
+                          (plan["knobs"].get("declared_changes") or {}).get("changes") or {}))
+        return Result("frozen_recipe", False, str(error) + (
+            " (the gate's loss keys win over the frozen config's: gate learner-base.json "
+            f"loss.explore_ratio_floor = {floor!r})" if gate_floor else ""))
     declared = frozenset((plan["knobs"].get("declared_changes") or {}).get("changes") or {})
     drift = learner_config.recipe_drift(effective, frozen, declared=declared)
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "

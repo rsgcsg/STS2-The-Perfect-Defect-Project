@@ -38,8 +38,9 @@ warm-up dumps chosen with `python -m stpd.rl.offline_step warmup-cover`.
 `value_target` `"game"`, `capacity_victim` `"hash"`, `kl_stop_scope` `"control"`, the
 unified recipe (`explore_ratio_floor` 0, `arm_policy_update` `"own"`, `value_config_input`
 true), and the four LossConfig-default loss keys a V5-era gate carries (`kl_coef`,
-`anchor_coef`, `rho_max` are not read by the fast chain's segment learner; A9 needs them
-while the gate has them).
+`anchor_coef`, `rho_max` are not read by the fast chain's segment learner; kept so the
+frozen JSON matches the existing gate copies key by key, at their defaults, no behaviour
+change).
 The values and their reasons are listed in `python/docs/RL_LONG_RUN.zh-CN.md`.
 `loss.hp_advantage_coef` (c_hp, default 0 = off) weights the per-combat HP score
 (segment format 4): A = A_outcome + c_hp * A_hp before the one normalisation. A_hp is
