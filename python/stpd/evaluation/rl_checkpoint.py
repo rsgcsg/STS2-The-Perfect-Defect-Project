@@ -125,7 +125,7 @@ def _same_layout(reference: dict[str, Any], other: dict[str, Any], refusal: str)
 
 
 def derive_checkpoint(store: Any, artifact_ids: list[str], method: str, *,
-                      derived_by: dict[str, Any] | None = None) -> dict[str, Any]:
+                      derived_by: dict[str, Any]) -> dict[str, Any]:
     """Publish a new checkpoint whose weights are a source CP's EMA or a mean of CPs.
 
     `ema`: one source; weights = its stored weight EMA (refused when absent or not
@@ -134,14 +134,20 @@ def derive_checkpoint(store: Any, artifact_ids: list[str], method: str, *,
     (integer buffers must agree). Everything else is the newest source's state.
     The result is its own artifact: the sources are its parents and the manifest's
     `weights_derivation` names the method and each source, so `export_checkpoint`
-    binds it as `weights: <method>`, never as a source's raw theta. It is not a
-    training CP: no Exchange record is written, so watchers and resumes never see it.
+    binds it as `weights: <method>`, never as a source's raw theta. Its run, sequence,
+    updates and version are the newest source's: tell them apart by artifact id or
+    `weights`. The manifest producer stays the training code's; `derived_by` (required)
+    is the exporting code's source identity. It is not a training CP: no Exchange
+    record is written (watchers never pick it), and a resume refuses it because a
+    restorable CP has no parents (`SegmentLearner._read_checkpoint`).
     """
     from spireagent.artifact_contracts import Manifest, Parent
     from spireagent.json_boundary import FrozenObject
 
     if method not in DERIVATION_METHODS:
         raise ValueError("unknown_weights_derivation_method")
+    if not isinstance(derived_by, dict) or not derived_by:
+        raise ValueError("derivation_source_identity_required")
     if len(set(artifact_ids)) != len(artifact_ids):
         raise ValueError("duplicate_derivation_source")
     if method == "ema" and len(artifact_ids) != 1:
@@ -187,8 +193,7 @@ def derive_checkpoint(store: Any, artifact_ids: list[str], method: str, *,
                 weights[name] = reference
             else:
                 raise ValueError("mean_of_last_n_integer_weights_differ")
-    if derived_by is not None:
-        derivation["derived_by"] = derived_by
+    derivation["derived_by"] = derived_by
     derived = dataclasses.replace(
         base, weights=weights,
         construction=dataclasses.replace(base.construction, text_digest=text_digest(weights)))

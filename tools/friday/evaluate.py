@@ -1302,6 +1302,8 @@ def main():
         from spireagent.source import source_identity
         from spireagent.storage.config import open_peer
         from stpd.evaluation.rl_checkpoint import derive_checkpoint
+        if args.checkpoint and args.training_generation:
+            parser.error('--training-generation applies only to --last')
         config = json.loads(args.learner_config.read_bytes())
         sources = args.checkpoint or last_checkpoints(config['peer'], config['run'], args.last,
                                                       args.training_generation)
