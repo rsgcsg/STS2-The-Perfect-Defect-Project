@@ -4902,13 +4902,16 @@ def long_run_site(tmp_path, node_cores=32):
 def long_run_gate():
     """A gate learner-base.json as the V6 smokes had it: the V5 gate (levers off, the four
     LossConfig-default loss keys, no explore_ratio_floor) with c_hp 0.003 / all_combats and
-    segments.value_target game / capacity_victim hash; kl_stop_scope comes from the knob."""
+    segments.value_target game / capacity_victim hash; kl_stop_scope, value_config_input and
+    arm_policy_update come from their knobs."""
     base = copy.deepcopy(LONG_FROZEN)
     for key in ('prepared_compile', 'prepared_kernels', 'prepared_bucket_rows'):
         base['performance'].pop(key)
     base.update({'max_versions': 100000, 'peer': {'kind': 'archive'}})
     base['segments']['warmup_artifact_id'] = 'f' * 64
     del base['segments']['kl_stop_scope']
+    del base['segments']['value_config_input']
+    del base['loss']['arm_policy_update']
     del base['loss']['explore_ratio_floor']  # filled from the frozen recipe
     return base
 
@@ -4956,11 +4959,21 @@ def test_long_run_profiles_pass_validation_and_preflight_on_a_32_core_gpu_node(
         (4096, 4, 1)
     assert 'lr_warmup_steps' not in segments
     assert (loss['hp_advantage_coef'], loss['hp_advantage_scope'],
-            loss['explore_ratio_floor']) == (0.003, 'all_combats', 0.3)
-    shares = {arm: spec['share'] for arm, spec in k['exploration_ladder'].items()}
-    assert shares == {'control': 0.5, 'nc15': 0.17, 'nc2': 0.17, 'c12': 0.16}
+            loss['explore_ratio_floor']) == (0.003, 'all_combats', 0.0)
+    # the unified recipe (11-20 comparison group A)
+    assert (loss['arm_policy_update'], segments['value_config_input']) == ('own', True)
+    ladder = {arm: (spec['share'], spec['combat']['temperature'],
+                    spec['noncombat']['temperature'], spec['combat']['uniform_mix'],
+                    spec['noncombat']['uniform_mix'])
+              for arm, spec in k['exploration_ladder'].items()}
+    assert ladder == {'control': (0.40, 1.0, 1.0, 0.0, 0.0), 'cold': (0.10, 0.5, 0.5, 0.0, 0.0),
+                      'cool': (0.10, 0.7, 0.7, 0.0, 0.0), 'nc16': (0.15, 1.0, 1.6, 0.0, 0.0),
+                      'nc25': (0.15, 1.0, 2.5, 0.0, 0.0), 'both13': (0.10, 1.3, 1.3, 0.0, 0.0)}
+    assert k['sampling_temperature_min'] == 0.5 and k['resume_max_total'] == 6
     assert k['ascension_mix'] == {'0': 1.0} and k['replay_k'] == 1
-    assert k['save_starts']['share'] == 0
+    assert k['save_starts']['share'] == 0.5
+    assert k['eval_seeds'] == (100 if profile == HW_CHECK else 300)
+    assert k['eval_batch_seeds'] == 100
     assert k['hp_combat_weights'] == {'normal': 1.0, 'elite': 1.0, 'boss': 0.3}
     assert k['hp_potion_mode'] == 'value_head_neutral'
     assert all(k[name] > 0 for name in ('checkpoint_keep_newest', 'model_keep_newest',
@@ -4969,6 +4982,18 @@ def test_long_run_profiles_pass_validation_and_preflight_on_a_32_core_gpu_node(
     # one GPU node of fewer cores refuses the same plan
     small = long_run_plan(profile, long_run_site(tmp_path, node_cores=24))
     assert not preflight.check_gpu_node_cores(small).ok
+    # the gate keeps a loss key it has: a gate copy at floor 0 passes, one carrying the old
+    # 0.3 is refused by A9 (with own: one line, not a traceback), never run at 0.3
+    zero = long_run_gate()
+    zero['loss']['explore_ratio_floor'] = 0.0
+    assert preflight.check_frozen_recipe(plan, {'frozen_recipe': LONG_FROZEN,
+                                                'gate_learner_base': zero}).ok
+    old = long_run_gate()
+    old['loss']['explore_ratio_floor'] = 0.3
+    refused = preflight.check_frozen_recipe(plan, {'frozen_recipe': LONG_FROZEN,
+                                                   'gate_learner_base': old})
+    assert not refused.ok
+    assert 'loss.explore_ratio_floor = 0.3' in refused.detail
 
 
 def test_long_run_overlays_differ_only_in_their_listed_knobs():
@@ -4981,7 +5006,7 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
         'train_target_seconds', 'long_wall_seconds', 'eval_a10_seeds',
         'eval_interval_seconds', 'min_generation_seconds', 'checkpoint_keep_newest',
         'env_wait_seconds', 'prep_pending_max_seconds', 'prep_lead_seconds',
-        'remote_prepare_wait_seconds'}
+        'remote_prepare_wait_seconds', 'eval_seeds'}
     # #614: the check keeps the long run's cap and explicit wall (same evaluation path) and
     # its 100-seed A0 round: a decision round, paired per seed (fast_eval DECISION_GAMES)
     assert check['eval_episode_seconds'] == long['eval_episode_seconds'] == 3600
@@ -4996,20 +5021,21 @@ def test_long_run_overlays_differ_only_in_their_listed_knobs():
     assert check['eval_interval_seconds'] < check['train_target_seconds']
     # the frozen recipe differs from rl5.json only in the decided keys (and the four
     # LossConfig defaults the V5-era gate carries)
-    # every rl5.json key is there, three of them changed
+    # every rl5.json key is there, two of them changed (the floor is 0 in both)
     assert [line.split(':')[0] for line in learner_config.recipe_drift(LONG_FROZEN, FROZEN)] \
-        == ['loss.hp_advantage_coef', 'loss.hp_advantage_scope', 'loss.explore_ratio_floor']
+        == ['loss.hp_advantage_coef', 'loss.hp_advantage_scope']
     assert sorted(learner_config.recipe_drift(FROZEN, LONG_FROZEN)) == sorted([
         "loss.hp_advantage_coef: frozen 0.003, effective 0.0",
         "loss.hp_advantage_scope: frozen 'all_combats', effective 'combat_ticket'",
-        "loss.explore_ratio_floor: frozen 0.3, effective 0.0",
+        "loss.arm_policy_update: frozen 'own', effective '<missing>'",
         "loss.kl_coef: frozen 0.02, effective '<missing>'",
         "loss.anchor_coef: frozen 0.5, effective '<missing>'",
         "loss.rho_max: frozen 1.0, effective '<missing>'",
         "loss.gradient_diagnostics: frozen False, effective '<missing>'",
         "segments.value_target: frozen 'game', effective '<missing>'",
         "segments.capacity_victim: frozen 'hash', effective '<missing>'",
-        "segments.kl_stop_scope: frozen 'control', effective '<missing>'"])
+        "segments.kl_stop_scope: frozen 'control', effective '<missing>'",
+        "segments.value_config_input: frozen True, effective '<missing>'"])
 
 
 def test_hwcheck_jobs_fit_a_60_minute_partition_and_the_long_run_a_24_hour_one(tmp_path):

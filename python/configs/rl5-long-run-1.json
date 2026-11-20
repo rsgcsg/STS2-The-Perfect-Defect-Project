@@ -17,7 +17,8 @@
     "hp_coef": 0.1,
     "hp_advantage_coef": 0.003,
     "hp_advantage_scope": "all_combats",
-    "explore_ratio_floor": 0.3,
+    "explore_ratio_floor": 0.0,
+    "arm_policy_update": "own",
     "kl_coef": 0.02,
     "anchor_coef": 0.5,
     "rho_max": 1.0,
@@ -51,7 +52,8 @@
     "gae_lambda": 0.99,
     "value_target": "game",
     "capacity_victim": "hash",
-    "kl_stop_scope": "control"
+    "kl_stop_scope": "control",
+    "value_config_input": true
   },
   "performance": {
     "microbatch_size": 1280,
