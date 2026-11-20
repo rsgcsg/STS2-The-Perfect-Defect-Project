@@ -841,6 +841,15 @@ actor进程只写durable pending intent（`put_if_absent`，不加锁），不�
 
 `evaluate.py export-checkpoint --learner-config ... --checkpoint ... --output ...` 直接导出raw θ；
 CP16另给原构造包。prepare-checkpoint绑定CP→动作包→原evaluate/ledger，0学习/0私有开局。
+
+`evaluate.py derive-checkpoint --learner-config ... --method ema --checkpoint <CP>`把该CP存着的
+权重EMA导出成一个新CP（自己的artifact id；父级=来源CP；清单`weights_derivation`记方式、来源
+id/payload sha和导出代码身份；无EMA或EMA不全即报错）；`--method mean_of_last_n --last N
+[--training-generation G]`（或重复`--checkpoint`，旧到新）导出最后N个CP普通权重的逐参数均值。
+新CP不写交换记录（watcher不会选它），有父级所以续跑拒收；照常交给`prepare-checkpoint
+--checkpoint <新id>`评估，绑定里`weights`为`ema`/`mean_of_last_n`。它的run/sequence/updates
+和来源相同，报告和配对按CP id或`weights`区分。解读：EMA从学习端启动时的权重累积、无偏差校正，
+起点权重残留约0.999^更新数（1000次约37%，3000次约5%），看早期CP的EMA要对照来源`updates`。
 正常评估保全部完整原件，也保原P1轨迹供Boss/协议报告；unknown只保原件、不评分。
 submit支持general/debug及排除G1节点，仍用原容量门、E2和分区时限。
 

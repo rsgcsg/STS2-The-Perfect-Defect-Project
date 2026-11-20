@@ -357,6 +357,23 @@ def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Pat
                          memory_gb=memory_gb)
 
 
+def last_checkpoints(peer: dict[str, Any], run: str, count: int,
+                     generation: str | None = None) -> list[str]:
+    """The newest `count` CP ids of the run (peer and archive records), oldest first."""
+    from spireagent.rl_exchange import Exchange
+
+    records = Exchange(peer, run).checkpoint_records()
+    if peer.get('archive') is not None:
+        records += Exchange(peer['archive'], run).checkpoint_records()
+    if generation is not None:
+        records = [r for r in records if r.get('training_generation') == generation]
+    unique = {r['checkpoint_artifact_id']: r for r in records}.values()
+    ordered = sorted(unique, key=lambda r: (r.get('checkpoint_sequence', 0), r['published_at']))
+    if type(count) is not int or not 2 <= count <= len(ordered):
+        raise ValueError('last_checkpoint_count_must_be_2_to_available')
+    return [r['checkpoint_artifact_id'] for r in ordered[-count:]]
+
+
 def prepare_round(output: Path, manifest: Path, *, seeds: int, batch_seeds: int | None,
                   actor: Path | None, **options: Any) -> dict[str, Any]:
     """The plans of one CP round from `output/input-execution.json` and
@@ -1209,6 +1226,16 @@ def main():
     check_parser.add_argument('--learner-config', type=Path, required=True)
     check_parser.add_argument('--checkpoint', required=True)
     check_parser.add_argument('--training-generation')
+    derive_parser = commands.add_parser(
+        'derive-checkpoint', help="publish a new CP whose weights are a CP's EMA or a mean of CPs")
+    derive_parser.add_argument('--learner-config', type=Path, required=True)
+    derive_parser.add_argument('--method', choices=('ema', 'mean_of_last_n'), required=True)
+    derive_sources = derive_parser.add_mutually_exclusive_group(required=True)
+    derive_sources.add_argument('--checkpoint', action='append',
+                                help='source CP id (ema: one; mean_of_last_n: oldest first)')
+    derive_sources.add_argument('--last', type=int,
+                                help='mean_of_last_n: the newest N CP records of the run')
+    derive_parser.add_argument('--training-generation', help='with --last: only this generation')
     cp_parser = commands.add_parser('prepare-checkpoint')
     cp_parser.add_argument('--learner-config', type=Path, required=True)
     cp_parser.add_argument('--checkpoint', required=True)
@@ -1271,6 +1298,17 @@ def main():
         config = json.loads(args.learner_config.read_bytes())
         result = inspect_checkpoint(open_peer(config['peer']), args.checkpoint,
                                     run=config['run'], generation=args.training_generation)
+    elif args.command == 'derive-checkpoint':
+        from spireagent.source import source_identity
+        from spireagent.storage.config import open_peer
+        from stpd.evaluation.rl_checkpoint import derive_checkpoint
+        if args.checkpoint and args.training_generation:
+            parser.error('--training-generation applies only to --last')
+        config = json.loads(args.learner_config.read_bytes())
+        sources = args.checkpoint or last_checkpoints(config['peer'], config['run'], args.last,
+                                                      args.training_generation)
+        result = derive_checkpoint(open_peer(config['peer']), sources, args.method,
+            derived_by=source_identity(Path(__file__).resolve().parents[2] / 'python').to_dict())
     elif args.command == 'export-checkpoint':
         from spireagent.source import source_identity
         from spireagent.storage.config import open_peer
