@@ -358,12 +358,21 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         return Result("frozen_recipe", False, "gate learner-base.json has loss keys the "
                       f"frozen config lacks: {', '.join(unknown)} (misspelt? a source older "
                       "than the gate needs its own gate)")
-    effective, filled = learner_config.learner_base(base, frozen, plan["knobs"], {
-        "run_name": "preflight", "peer_dir": "-", "start_package": "-",
-        "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
-        "generation": "-", "warmup_artifact_id": base["segments"].get("warmup_artifact_id"),
-        "rendezvous_path": "-", "ranks": plan["placement"]["ranks"],
-        "resume_checkpoint": None})
+    try:
+        effective, filled = learner_config.learner_base(base, frozen, plan["knobs"], {
+            "run_name": "preflight", "peer_dir": "-", "start_package": "-",
+            "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
+            "generation": "-", "warmup_artifact_id": base["segments"].get("warmup_artifact_id"),
+            "rendezvous_path": "-", "ranks": plan["placement"]["ranks"],
+            "resume_checkpoint": None})
+    except ValueError as error:  # e.g. own with the gate's explore_ratio_floor 0.3 kept
+        floor = (base.get("loss") or {}).get("explore_ratio_floor")
+        gate_floor = (plan["knobs"].get("arm_policy_update") == "own" and bool(floor)
+                      and "loss.explore_ratio_floor" not in (
+                          (plan["knobs"].get("declared_changes") or {}).get("changes") or {}))
+        return Result("frozen_recipe", False, str(error) + (
+            " (the gate's loss keys win over the frozen config's: gate learner-base.json "
+            f"loss.explore_ratio_floor = {floor!r})" if gate_floor else ""))
     declared = frozenset((plan["knobs"].get("declared_changes") or {}).get("changes") or {})
     drift = learner_config.recipe_drift(effective, frozen, declared=declared)
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
