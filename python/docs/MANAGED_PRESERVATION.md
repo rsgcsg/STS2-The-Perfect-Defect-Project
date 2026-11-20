@@ -30,8 +30,8 @@
 `managed-retention-v2`：以完整冻结配置和槽身份哈希排序，预选
 `max(1, ceil(N/50))` 个完整审计槽，优先调度，plan 保存 salt、全分母和选中身份。
 未完成及未知不改选、不重投；异常额外保存不抵审计配额。完整审计未取得自然终局和
-完整 typed peer 读回时，报告 `formal_audit.satisfied=false`、`score_admitted=false`，
-保留所有分母。普通评估局须先通过原 typed 校验，再经轨迹分片完整读回及内容身份核验。
+完整 typed peer 读回时，报告如实写 `formal_audit.satisfied=false`；该审计局和其他
+未完成局一样排除并计数，不让整批不计分（`score_admitted` 只由保存档决定），保留所有分母。普通评估局须先通过原 typed 校验，再经轨迹分片完整读回及内容身份核验。
 训练可声明 `purpose=training`。旧配置、旧 plan 和旧轨迹维持原用途；旧 modulo 审计规则
 只供旧账本及非评估用途读取，不改写历史。
 原完整证据不减字段，不放宽 producer、整包、父对象或 payload 哈希检查。
@@ -54,13 +54,19 @@ typed 失败完整保留失败原件，记录 unknown；只恢复保存，不重
 队列满而执行工人空闲时，先封存已有的不足八局分片以释放保存额度，不等待无关慢局；
 分片在读回完成前仍按成员数占额度，不能提前超发。
 空间为每个未完原件保守计原 2 GiB 峰值，并留原容量余量/本轮停止线；达到队列或空间上限
-就停新准入、排空已开局。关闭未确认停新准入。已关闭的局保存失败记 `save_failed`，
+就停新准入、排空已开局。可能已启动 Host 而关闭未确认才停新准入；没开局（执行器前已停，或
+节点占位检查超时，无 Host、无世界）记 `not_started`、关闭视为已确认，继续发后面的局。
+执行器试过的这类局（账本行带 `executor_attempted`）在 watch/quick 里和 unknown 一样算排除
+并计数的一局；执行器前就被 STOP 或整轮中止拦下的局没有这个标记，仍算这一轮没打完。节点持续
+过载时每局最多等满占位检查上限（默认 60 s）才记 `not_started`，不停、不重试，整轮可能因
+未打完比例超线被标 DEGRADED。
+每局子进程上限取冻结执行配置：节点占位检查 `resource_slot_check_seconds`、公开环境协商
+`environment_negotiation_seconds`，默认都是 60 s（桌面注册仍 12 s）；超时在该局报告写
+`timeout_failure`（程序/脚本名与实际上限秒数，不含路径和参数）。已关闭的局保存失败记 `save_failed`，
 该局排除、继续发后面的局；批末（无局执行、无分片等待）对每个这样的局经原
 `preserve_report` 只重试一次保存（同样的 plan/save-job/封印/包身份核对），从不重新执行该局。
 成功则正常计分并恢复配对；仍失败保持 `save_failed`、原件全留，结果事件带
-`resume_save_retry`，调用返回 `save_failed_after_retry`，按排除一对报告（RL5 卡 §3E）。
-例外：若失败的是正式审计槽，账本 `score_admitted` 为 False，整批按不计分关闭（与审计槽
-unknown 同样从严），告警为 `evaluation_audit_save_failed_cohort_not_scored`，不是排除一对。
+`resume_save_retry`，调用返回 `save_failed_after_retry`，按排除一对报告（RL5 卡 §3E），正式审计槽也一样（其审计收据记 `satisfied=false`）。
 本规则只覆盖 `preserve_report` 的保存失败；轨迹分片上传失败（`trajectory_shard_save_failed`）
 仍照旧停新准入，成员保持 `trajectory_pending`，靠下次显式恢复。
 整批墙钟包含冷准备、所有失败/unknown 和最后封片/读回尾巴。

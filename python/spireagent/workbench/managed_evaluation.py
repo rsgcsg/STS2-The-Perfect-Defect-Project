@@ -94,6 +94,13 @@ def _phase(row: dict[str, Any], name: str, *, detail: bool = False) -> Iterator[
         phases[name] = phases.get(name, 0.0) + time.monotonic() - began
 
 
+def _timeout_failure(error: subprocess.TimeoutExpired) -> dict[str, Any]:
+    """Which child timed out and its applied cap; program/script names only."""
+    argv = error.cmd.split() if isinstance(error.cmd, str) else [str(p) for p in error.cmd]
+    names = [os.path.basename(part) for part in argv[:2] if not part.startswith("-")]
+    return {"command": " ".join(names), "timeout_seconds": error.timeout}
+
+
 def _finish_runtime(process: subprocess.Popen | _EmbeddedRuntime, stdout: Path, row: dict[str, Any],
                     artifacts: Any, deadline: float, cleanup_seconds: float, *,
                     on_started: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
@@ -320,6 +327,10 @@ class ManagedEpisodeExecutor:
 
     # Replaced in __init__ by the decoded frozen ``episode_starts``; never mutated.
     episode_starts: Mapping[str, EpisodeStart] = MappingProxyType({})
+    # Per-episode child-process caps (seconds), replaced in __init__ from the frozen
+    # execution. Sixteen workers cold-starting at once can exceed desktop-era caps.
+    resource_slot_check_seconds: float = 60.0
+    environment_negotiation_seconds: float = 60.0
 
     def __init__(
         self, configuration: dict[str, Any], *, episode_seconds: float, cleanup_seconds: float
@@ -350,6 +361,11 @@ class ManagedEpisodeExecutor:
         self.measure_host_performance = configuration.get("measure_host_performance", False)
         if type(self.measure_host_performance) is not bool:
             reject("invalid_host_performance_setting")
+        for key in ("resource_slot_check_seconds", "environment_negotiation_seconds"):
+            seconds = configuration.get(key, getattr(self, key))
+            if type(seconds) not in {int, float} or not 1 <= seconds <= 600:
+                reject("invalid_" + key)
+            setattr(self, key, seconds)
         self.max_auto_submissions = configuration.get("max_auto_submissions", 10000)
         if (type(self.max_auto_submissions) is not int
                 or not 1 <= self.max_auto_submissions <= 10000):
@@ -567,7 +583,18 @@ class ManagedEpisodeExecutor:
     ) -> None:
         from spireagent.resource_slot import require_managed_slot
 
-        require_managed_slot()
+        admission_started = time.monotonic()
+        try:
+            # Node admission only: no Host process and no world yet, so a slow check
+            # is this one slot not started (excluded and counted), never an unknown.
+            require_managed_slot(self.resource_slot_check_seconds)
+        except subprocess.TimeoutExpired as error:
+            row.update(host_kind="managed", status="not_started",
+                       reason="resource_slot_check_timeout", cleanup_accepted=True,
+                       timeout_failure=_timeout_failure(error),
+                       elapsed_seconds=time.monotonic() - admission_started)
+            checkpoint()
+            return
         if manifest["host"] != "Managed":
             reject("unsupported_scenario")
         if any(key not in os.environ for key in self.adapter_environment_keys):
@@ -711,6 +738,7 @@ class ManagedEpisodeExecutor:
                     export.adapter_identity(),
                     row["intent_id"],
                     started + self.episode_seconds,
+                    maximum_seconds=self.environment_negotiation_seconds,
                 )
                 registration = private / "registration"
                 sampling = behavior_policy(model, row)
@@ -831,6 +859,8 @@ class ManagedEpisodeExecutor:
                 reason=(error.code if isinstance(error, BoundaryError)
                         else type(error).__name__),
             )
+            if isinstance(error, subprocess.TimeoutExpired):
+                row["timeout_failure"] = _timeout_failure(error)
         finally:
             close_started = time.monotonic()
             close = None

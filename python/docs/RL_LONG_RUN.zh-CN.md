@@ -255,8 +255,9 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
   评估节点类（#612）：站点 `eval_partition` / `eval_constraint`（不写或空 = 今天的 general、
   无约束）由 supervise 传给两个看守（`--partition` / `--constraint`；手动 `fast_eval.py` 用
   `--site S` 读同一对值，旗标与站点不同则拒绝），preflight 的 `evaluation_jobs` 行和每轮报告
-  开头都写明。慢节点类 300 局里 80 局到 1800 秒时限被切（另 1 局早期 TimeoutExpired、3 局未开始）。分批轮里各批账本自己决定是否计分：某批的正式审计
-  局没跑完，该批整批不计分（局仍在行里），报告点名 `batches_not_admitted`，各批照常合并。
+  开头都写明。慢节点类 300 局里 80 局到 1800 秒时限被切（另 1 局早期 TimeoutExpired、3 局未开始）。分批轮里各批账本自己决定是否计分：只有保存档不计分
+  的批整批不计分（局仍在行里），报告点名 `batches_not_admitted`，各批照常合并；正式审计局没跑完
+  只排除并计数这一局，审计收据如实记 `satisfied=false`，其余局照常计分。
   一轮计划局中"没有跑完并计分"的比例超过 `eval_degraded_share`（默认 0.10，滚动 unknown 门槛；
   unknown、censored、未开始、save_failed 等、不计分批里跑完的局、没交报告的批的局都算，没交报告的
   批的局留在分母里）时报告首行标 DEGRADED 和各分项计数，看守照常报告并响亮记 `evaluation_round_degraded`（排除并计数，
@@ -865,7 +866,7 @@ prepare曾因允许的节点全被自己的actor占满等了52和57 min。prepar
 （`evaluation_job_queued_over_limit_no_fallback`），不换到别的节点。兼容修复登记在`tools/friday/compatible-fixes.json`（host_pin X→Y + 固定种子
 证明sha256）：只差已登记host_pin的两批照常比较并记`compatible_fixes`注记，未登记的差异照旧跳过。已登记：Host rc.63→rc.64（U4-1固定种子复跑，原卡住局前536步相同后自然获胜），所以窗口1（rc.63）与窗口2（rc.64）的评估从下一个release起可以带注记比较。每局墙钟上限900→1800 s不进观测协议，不需要登记。一局保存失败只排除该局，
 批末重试一次保存，仍失败按排除一对报告并告警，不停评估、不停训（RL5 卡 §3E）；正式审计槽
-的保存仍失败则整批不计分（`evaluation_audit_save_failed_cohort_not_scored`）。只覆盖
+也一样，只是其审计收据记 `satisfied=false`。只覆盖
 `preserve_report` 失败，轨迹分片上传失败照旧停批。待重试的保存继续占用pending额度与磁盘余量，
 新局不会挤占它唯一一次重试所需的空间。
 

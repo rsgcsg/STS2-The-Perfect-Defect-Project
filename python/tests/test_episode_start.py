@@ -272,7 +272,7 @@ def _executor(tmp_path, monkeypatch, *, starts, identity, load=None, reply=None)
         raise _Stop("test", "stopped_after_identity_gate")
 
     monkeypatch.setattr(backend, "runtime_arguments", stop_here)
-    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot", lambda: None)
+    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot", lambda _seconds: None)
     stored = {}
     artifacts = SimpleNamespace(root=tmp_path,
                                 put=lambda name, value: stored.setdefault(name, value) and name)

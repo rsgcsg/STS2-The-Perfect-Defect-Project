@@ -175,8 +175,8 @@ def load_cohort(path: Path, selection: str | None = None, *,
 
 
 # score_admitted is NOT here: each batch's ledger owns its own admission (a batch whose
-# formal-audit slot did not finish is closed unscored, its rows `scored` False), so batches
-# of one model differ in it on hardware (#612). Merged, the cohort is admitted only when
+# retention tier is not score-eligible is closed unscored, its rows `scored` False), so
+# batches of one model can differ in it (#612). Merged, the cohort is admitted only when
 # every batch was, and `score_admitted_batches` keeps each batch's own value.
 MERGE_SAME = ('selection', 'host_kind', 'character', 'ascension')
 
