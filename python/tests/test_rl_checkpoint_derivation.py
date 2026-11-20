@@ -19,7 +19,6 @@ from stpd.evaluation.rl_checkpoint import derive_checkpoint, export_checkpoint
 from stpd.rl.checkpoint_state import SCHEMA, decode_state, encode_state, text_digest
 from stpd.rl.segment_learner import SegmentLearner
 
-
 DERIVED_BY = {"repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
               "source_revision": "f" * 40, "lock_sha256": "e" * 64}
 
@@ -147,9 +146,10 @@ def friday_evaluate():
         spec.loader.exec_module(module)
         return module
 
-    with patch.dict(sys.modules, {"batch": load("derive_batch", "batch.py")}):
-        with patch.dict(sys.modules, {"submit": load("derive_submit", "submit.py")}):
-            return load("derive_evaluate", "evaluate.py")
+    # Entered left to right: submit.py loads while batch is in sys.modules.
+    with (patch.dict(sys.modules, {"batch": load("derive_batch", "batch.py")}),
+          patch.dict(sys.modules, {"submit": load("derive_submit", "submit.py")})):
+        return load("derive_evaluate", "evaluate.py")
 
 
 def test_last_selects_the_newest_records_of_one_generation_oldest_first(source):
