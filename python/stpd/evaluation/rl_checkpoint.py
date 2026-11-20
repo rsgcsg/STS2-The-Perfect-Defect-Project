@@ -1,12 +1,22 @@
 """Export an immutable RL checkpoint for the ordinary Managed evaluation owner."""
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from stpd.p1.export import adapter_identity, export_model, load_model
-from stpd.rl.checkpoint_state import READABLE_SCHEMAS, construct_model, decode_state
+from stpd.rl.checkpoint_state import (
+    READABLE_SCHEMAS,
+    SCHEMA,
+    construct_model,
+    decode_state,
+    encode_state,
+    text_digest,
+)
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 
@@ -73,15 +83,130 @@ def export_checkpoint(store: Any, artifact_id: str, output: Path, *,
     output.mkdir(parents=True, exist_ok=False)
     checkpoint = output / "raw-theta.tensor-tree"
     checkpoint.write_bytes(encode_checkpoint({"weights": model.state_dict()}))
+    # A derived CP (`derive_checkpoint`) names its weights and sources; others are raw theta.
+    derivation = manifest.parameters.value().get("weights_derivation")
     binding = {"checkpoint_artifact_id": artifact_id,
                "checkpoint_payload_sha256": payload.sha256,
                "checkpoint_producer": manifest.producer.to_dict(),
-               **identity, "weights": "raw", "behavior_policy": {"mode": "argmax"}}
+               **identity, "weights": derivation["method"] if derivation else "raw",
+               **({"weights_derivation": derivation} if derivation else {}),
+               "behavior_policy": {"mode": "argmax"}}
     descriptor = export_model(model, checkpoint, output / "package", binding)
     binding.update(model_sha256=descriptor["package_sha256"],
                    input_spec=descriptor["input_spec"], package_directory=str(output / "package"))
     (output / "checkpoint-binding.json").write_text(json.dumps(binding, indent=2) + "\n")
     return binding
+
+
+DERIVATION_METHODS = ("ema", "mean_of_last_n")
+
+
+def _source_checkpoint(store: Any, artifact_id: str) -> tuple[Any, Any, Any]:
+    manifest = store.get_manifest(artifact_id)
+    if manifest.kind != "checkpoint":
+        raise ValueError("evaluation_checkpoint_required")
+    parameters = manifest.parameters.value()
+    if parameters.get("schema") not in READABLE_SCHEMAS:
+        raise ValueError("self_contained_checkpoint_required_for_derivation")
+    if parameters.get("weights_derivation") is not None:
+        raise ValueError("derived_checkpoint_is_not_a_training_source")
+    payload = manifest.payload("checkpoint")
+    cp = decode_state(store.bytes(payload, maximum=payload.size),
+                      expected_schema=parameters["schema"])
+    require_source_producer(manifest.producer.to_dict(), cp.producer)
+    return manifest, payload, cp
+
+
+def _same_layout(reference: dict[str, Any], other: dict[str, Any], refusal: str) -> None:
+    if reference.keys() != other.keys() or any(
+            reference[k].shape != other[k].shape or reference[k].dtype != other[k].dtype
+            for k in reference):
+        raise ValueError(refusal)
+
+
+def derive_checkpoint(store: Any, artifact_ids: list[str], method: str, *,
+                      derived_by: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Publish a new checkpoint whose weights are a source CP's EMA or a mean of CPs.
+
+    `ema`: one source; weights = its stored weight EMA (refused when absent or not
+    covering every weight). `mean_of_last_n`: at least two CPs of one run and one
+    construction, oldest first by updates; weights = the per-parameter mean
+    (integer buffers must agree). Everything else is the newest source's state.
+    The result is its own artifact: the sources are its parents and the manifest's
+    `weights_derivation` names the method and each source, so `export_checkpoint`
+    binds it as `weights: <method>`, never as a source's raw theta. It is not a
+    training CP: no Exchange record is written, so watchers and resumes never see it.
+    """
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import FrozenObject
+
+    if method not in DERIVATION_METHODS:
+        raise ValueError("unknown_weights_derivation_method")
+    if len(set(artifact_ids)) != len(artifact_ids):
+        raise ValueError("duplicate_derivation_source")
+    if method == "ema" and len(artifact_ids) != 1:
+        raise ValueError("ema_derivation_requires_exactly_one_checkpoint")
+    if method == "mean_of_last_n" and len(artifact_ids) < 2:
+        raise ValueError("mean_of_last_n_requires_at_least_two_checkpoints")
+    sources, weights_list = [], []
+    base = base_manifest = None
+    for artifact_id in artifact_ids:
+        manifest, payload, cp = _source_checkpoint(store, artifact_id)
+        if base is not None:
+            if (cp.identity.run != base.identity.run
+                    or dataclasses.replace(cp.construction, text_digest="")
+                    != dataclasses.replace(base.construction, text_digest="")):
+                raise ValueError("mean_of_last_n_sources_differ_in_run_or_construction")
+            if cp.counters.updates <= base.counters.updates:
+                raise ValueError("mean_of_last_n_sources_must_be_oldest_first")
+            _same_layout(base.weights, cp.weights, "mean_of_last_n_weight_layout_differs")
+        sources.append({"checkpoint_artifact_id": artifact_id,
+                        "checkpoint_payload_sha256": payload.sha256,
+                        "training_generation": cp.identity.training_generation,
+                        "sequence": cp.identity.sequence, "updates": cp.counters.updates})
+        weights_list.append(cp.weights)
+        base, base_manifest = cp, manifest
+    assert base is not None and base_manifest is not None
+    derivation: dict[str, Any] = {"method": method, "sources": sources}
+    if method == "ema":
+        if not base.ema:
+            raise ValueError("checkpoint_has_no_weight_ema")
+        _same_layout(base.weights, base.ema, "checkpoint_ema_does_not_cover_weights")
+        # Own copies: the codec refuses two state entries sharing storage.
+        weights = {name: base.ema[name].clone() for name in base.weights}
+        derivation["ema_decay"] = (base.config.get("segments") or {}).get("ema_decay")
+    else:
+        weights = {}
+        for name, reference in base.weights.items():
+            if reference.is_floating_point():
+                total = torch.zeros(reference.shape, dtype=torch.float64)
+                for value in weights_list:
+                    total += value[name].double()
+                weights[name] = (total / len(weights_list)).to(reference.dtype)
+            elif all(torch.equal(value[name], reference) for value in weights_list):
+                weights[name] = reference
+            else:
+                raise ValueError("mean_of_last_n_integer_weights_differ")
+    if derived_by is not None:
+        derivation["derived_by"] = derived_by
+    derived = dataclasses.replace(
+        base, weights=weights,
+        construction=dataclasses.replace(base.construction, text_digest=text_digest(weights)))
+    payload = store.put_bytes("checkpoint", encode_state(derived),
+                              "application/vnd.stpd.tensor-tree")
+    manifest = Manifest(
+        "checkpoint", base_manifest.producer,
+        tuple(Parent(f"weights_source_{index}", artifact_id)
+              for index, artifact_id in enumerate(artifact_ids)),
+        (payload,),
+        FrozenObject.of({"schema": SCHEMA, "run": base.identity.run,
+                         "training_generation": base.identity.training_generation,
+                         "sequence": base.identity.sequence,
+                         "version": base.counters.mu_version,
+                         "weights_derivation": derivation}))
+    store.publish(manifest)
+    return {"checkpoint_artifact_id": manifest.artifact_id,
+            "checkpoint_payload_sha256": payload.sha256, "weights_derivation": derivation}
 
 
 def inspect_checkpoint(store: Any, artifact_id: str, *, run: str | None = None,
@@ -118,7 +243,8 @@ def inspect_checkpoint(store: Any, artifact_id: str, *, run: str | None = None,
     schema = manifest.parameters.value().get("schema")
     info.update(schema=schema, producer=manifest.producer.to_dict(),
                 parameters={k: v for k, v in manifest.parameters.value().items()
-                            if k in ("run", "training_generation", "sequence", "version")})
+                            if k in ("run", "training_generation", "sequence", "version",
+                                     "weights_derivation")})
 
     def readable() -> None:
         if schema not in READABLE_SCHEMAS:
