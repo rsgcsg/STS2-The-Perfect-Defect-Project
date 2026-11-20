@@ -350,10 +350,11 @@ class EvaluationLedger:
             **value,
             "host_kind": "managed",
             "elapsed_seconds": row.get("elapsed_seconds"),
-            # The executor records cleanup once it may own a Host; a not-started row
-            # without that record never launched one, so there is nothing to clean.
+            # Only the executor can launch a Host, and the ledger marks every row it
+            # hands to one; an unmarked not-started row was stopped before, so clean.
             "cleanup_accepted": row.get("cleanup_accepted") is True or (
-                not opened and "cleanup_accepted" not in row),
+                not opened and row.get("executor_attempted") is not True),
+            "executor_attempted": row.get("executor_attempted") is True,
             "score_eligible": eligible,
             "retention": row.get("retention"),
             "reason": row.get("reason"),
@@ -459,6 +460,7 @@ class EvaluationLedger:
                     row["formal_audit_selected"] = slot["formal_audit_selected"]
                 row["retention"] = self.plan.get(
                     "retention", retention_configuration(configuration))
+                row["executor_attempted"] = True
                 executor(row, manifest, artifacts, checkpoint)
 
             return run_suite(

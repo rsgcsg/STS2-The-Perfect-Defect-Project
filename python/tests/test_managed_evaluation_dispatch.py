@@ -1123,6 +1123,7 @@ def test_slot_check_timeout_is_one_not_started_slot_and_the_rest_still_score(
     assert requested == [60.0]
     timed_out = next(row for row in ledger.slots() if row["slot_id"] == calls[0])
     assert timed_out["status"] == "not_started" and timed_out["cleanup_accepted"] is True
+    assert timed_out["executor_attempted"] is True
     attempt = json.loads(Path(timed_out["report"]["path"]).read_bytes())["episodes"][0]
     assert attempt["reason"] == "resource_slot_check_timeout"
     assert attempt["timeout_failure"] == {"command": "node resource-slot.mjs",
@@ -1155,10 +1156,13 @@ def test_slot_stopped_before_its_executor_is_not_started_not_a_retention_mismatc
     value = current._managed_result(row, attempt / "report.json")
     assert value["status"] == "not_started" and value["cleanup_accepted"] is True
     assert value["world_mutation_offered"] is False
-    # A not-started row whose executor may have launched a Host keeps its own record.
-    launched = {**row, "cleanup_accepted": False}
-    assert current._managed_result(launched, attempt / "report.json")[
-        "cleanup_accepted"] is False
+    assert value["executor_attempted"] is False
+    # A row handed to an executor keeps its own record: a possibly launched Host, or an
+    # error that escaped the executor before it wrote any cleanup, is never assumed clean.
+    for touched in ({**row, "executor_attempted": True, "cleanup_accepted": False},
+                    {**row, "executor_attempted": True, "reason": "CalledProcessError"}):
+        assert current._managed_result(touched, attempt / "report.json")[
+            "cleanup_accepted"] is False
 
 
 def test_partial_shard_frees_credit_before_an_unrelated_slow_game_finishes(ledger, monkeypatch):

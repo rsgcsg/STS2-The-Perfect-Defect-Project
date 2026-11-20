@@ -55,6 +55,11 @@ def normal_result(quick, plan_path, scenario):
         if unsettled and n != slots[0]['seed_ordinal']:
             slot.update(status='not_started', world_mutation_offered=False)
             continue
+        if status == 'not_started':  # the executor refused it before any world
+            reason = slot.pop('fixture_reason')
+            slot.update(status=status, world_mutation_offered=False, cleanup_accepted=True,
+                        reason=reason, executor_attempted=reason != 'stop_requested')
+            continue
         floor = slot.pop('fixture_floor',
                          None if status != 'finished' else 12 if role == 'current' else 10)
         run_id = role + '-' + str(n)
@@ -182,6 +187,40 @@ def test_save_failed_after_retry_is_an_excluded_pair_and_refills(quick, tmp_path
     assert offers == [('current', list(range(1, 21))), ('current', [21]), ('baseline', [21])]
     statuses = [r['status'] for r in result['batches'][1]['cohort']['rows']]
     assert statuses.count('save_failed') == 1
+
+
+@pytest.mark.parametrize('reason,closed', [('resource_slot_check_timeout', True),
+                                            ('stop_requested', False)])
+def test_attempted_not_started_slot_is_one_excluded_pair_but_undispatched_is_unsettled(
+        quick, tmp_path, monkeypatch, reason, closed):
+    """A slot-check timeout (no world, cleanup accepted) is excluded like an unknown; a
+    slot stopped before its executor ran leaves the batch unsettled for the owner."""
+    path, _ = configured(quick, tmp_path, monkeypatch)
+    offers = []
+
+    def execute(batch_path, *, on_stop=None):
+        batch = quick.evaluate.load_plan(batch_path)
+        role = next(iter(batch['selections']))
+        offers.append((role, batch['seed_ordinals']))
+
+        def scenario(_role, slots):
+            if role == 'current' and batch['seed_ordinals'][0] == 1:
+                slot = next(s for s in slots if not s['formal_audit_selected'])
+                slot.update(fixture_status='not_started', fixture_reason=reason)
+            return set(), True, False
+        normal_result(quick, batch_path, scenario)
+
+    monkeypatch.setattr(quick.evaluate, 'run', execute)
+    result = quick.run(path)
+    batch = result['batches'][1]
+    assert batch['closed'] is closed
+    if closed:
+        assert result['complete'] and result['paired_n'] == 20
+        assert offers == [('current', list(range(1, 21))), ('current', [21]),
+                          ('baseline', [21])]
+        assert len(quick.qualified(batch)) == 19
+    else:
+        assert not result['complete'] and quick.qualified(batch) == {}
 
 
 def test_audit_slot_save_failed_is_one_excluded_pair_like_any_other(

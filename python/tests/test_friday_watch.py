@@ -109,6 +109,30 @@ def test_save_failed_after_retry_is_an_excluded_pair_not_a_voided_evaluation(wat
     assert watch.evaluate_result(path, 2, 16)["complete"] is False
 
 
+@pytest.mark.parametrize("reason,attempted,complete", [
+    ("resource_slot_check_timeout", True, True), ("stop_requested", False, False)])
+def test_attempted_not_started_slot_is_excluded_but_an_undispatched_one_is_unplayed(
+        watch, tmp_path, reason, attempted, complete):
+    """19 losses + 1 slot whose node-admission check timed out (no world, cleanup
+    accepted) is a complete round with 19 scored, like one unknown. A slot stopped
+    before its executor ran (STOP or round abort) still leaves the round unplayed."""
+    slots = ([{"status": "finished", "max_observed_floor": 20, "cleanup_accepted": True,
+               "natural_result": "loss"}] * 19
+             + [{"status": "not_started", "reason": reason, "world_mutation_offered": False,
+                 "cleanup_accepted": True, "executor_attempted": attempted}])
+    report = {"score_admitted": True, "planned": 20, "not_started": 1, "reserved": 0,
+              "save_pending": 0, "save_failed": 0, "saved_unscored": 0,
+              "trajectory_pending": 0, "censored": 0, "win": 0, "loss": 19, "unknown": 0,
+              "groups": [{"scored": 19}], "slots": slots}
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps({"ledger_report": report}))
+    result = watch.evaluate_result(path, 2, 16)
+    assert result["complete"] is complete and result["scored"] == 19
+    reasons = watch.evaluation_incomplete({"ledger_report": report})
+    assert reasons == ([] if complete else
+                       [{"reason": "originals_missing", "statuses": {"not_started": 1}}])
+
+
 def test_audit_slot_save_failure_is_one_excluded_pair_like_any_other(watch, tmp_path):
     """The formal-audit slot's failed save is excluded and counted; the rest still score."""
     slots = ([{"status": "finished", "max_observed_floor": 20,

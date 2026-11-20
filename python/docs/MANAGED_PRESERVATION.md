@@ -56,6 +56,10 @@ typed 失败完整保留失败原件，记录 unknown；只恢复保存，不重
 空间为每个未完原件保守计原 2 GiB 峰值，并留原容量余量/本轮停止线；达到队列或空间上限
 就停新准入、排空已开局。可能已启动 Host 而关闭未确认才停新准入；没开局（执行器前已停，或
 节点占位检查超时，无 Host、无世界）记 `not_started`、关闭视为已确认，继续发后面的局。
+执行器试过的这类局（账本行带 `executor_attempted`）在 watch/quick 里和 unknown 一样算排除
+并计数的一局；执行器前就被 STOP 或整轮中止拦下的局没有这个标记，仍算这一轮没打完。节点持续
+过载时每局最多等满占位检查上限（默认 60 s）才记 `not_started`，不停、不重试，整轮可能因
+未打完比例超线被标 DEGRADED。
 每局子进程上限取冻结执行配置：节点占位检查 `resource_slot_check_seconds`、公开环境协商
 `environment_negotiation_seconds`，默认都是 60 s（桌面注册仍 12 s）；超时在该局报告写
 `timeout_failure`（程序/脚本名与实际上限秒数，不含路径和参数）。已关闭的局保存失败记 `save_failed`，

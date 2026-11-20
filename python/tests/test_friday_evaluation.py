@@ -400,6 +400,10 @@ def test_slot_check_timeout_under_the_strict_policy_writes_no_stop(
     assert not stop.exists()
     assert result['status'] == 'completed' and result['dispatched'] == 3
     assert ledger.report()['unknown'] == 0 and ledger.report()['not_started'] == 60
+    # The real ledger rows feed the watch/quick reader: the three attempted slots are
+    # excluded and counted, the 57 never dispatched stay unplayed.
+    settled = [evaluate.settled_not_started(row) for row in ledger.report()['slots']]
+    assert settled.count(True) == 3 and settled.count(False) == 57
 
 
 def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(

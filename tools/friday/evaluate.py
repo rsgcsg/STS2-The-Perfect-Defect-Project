@@ -524,6 +524,19 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         return result
 
 
+def settled_not_started(slot: dict[str, Any]) -> bool:
+    """A slot its executor attempted and refused before any world, with nothing left to
+    clean (e.g. ``resource_slot_check_timeout``): one excluded, counted game like an
+    unknown. A slot never dispatched, or stopped before its executor ran (STOP or a round
+    abort), lacks the ledger's ``executor_attempted`` and is unplayed: the round did not
+    finish. Ledgers written before that field never settle a not-started slot.
+    """
+    return (slot.get('status') == 'not_started'
+            and slot.get('executor_attempted') is True
+            and slot.get('world_mutation_offered') is not True
+            and slot.get('cleanup_accepted') is True)
+
+
 class StopOnUncertain:
     """Delegate unchanged owner execution and halt NEW admission on uncertainty."""
     def __init__(self, delegate: Any, stop: Path, *, unknown_policy: str = 'stop'):
