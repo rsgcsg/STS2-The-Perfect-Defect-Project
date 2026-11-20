@@ -555,7 +555,8 @@ def test_batches_merge_into_one_cohort_of_disjoint_seeds(tmp_path):
 # The ledger_report of one batch of a round, shaped as evaluation_ledger.report() writes
 # it into result.json on hardware (#612: a46afd12, A0, 3 x 100): per-slot formal-audit
 # selection, ledger status and execution status/reason, the public floor of an unfinished
-# game, and the batch's own score_admitted (False when a formal-audit game did not finish).
+# game, and the batch's own score_admitted (ledgers of that time wrote False when a
+# formal-audit game did not finish; such results stay readable, so the shape is kept).
 REAL_BATCHES = (
     [(1, 'unknown', 'episode_wall_limit_reached', 42, None, False),
      (2, 'unknown', 'TimeoutExpired', None, None, False),

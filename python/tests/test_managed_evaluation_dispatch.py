@@ -88,7 +88,8 @@ def test_create_freezes_seed_prefix_without_changing_canonical_manifest(
     frozen_plan = current.store.get("plan.json")
     reopened = EvaluationLedger(current.directory)
     assert reopened.report()["planned"] == planned
-    assert reopened.report()["score_admitted"] is False
+    assert reopened.report()["score_admitted"] is True
+    assert reopened.report()["formal_audit"]["satisfied"] is False
     with pytest.raises(BoundaryError, match="new_directory_and_distinct_selections_required"):
         EvaluationLedger.create(current.directory, manifest, sha,
             selections=selections, execution=execution, seed_prefix=1)
@@ -1026,7 +1027,7 @@ def test_immutable_nonformal_plan_controls_score_even_for_a_legacy_executor(ledg
     assert all(group["scored"] == 0 for group in report["groups"])
 
 
-def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_gates_scores(ledger):
+def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_keeps_its_receipt(ledger):
     original = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
     original["retention"] = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
     execution = ledger.directory.parent / "evaluation-execution.json"
@@ -1039,7 +1040,7 @@ def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_gates_scores(l
     assert audits["count"] == 1
     assert current.slots()[0]["formal_audit_selected"] is True
     assert sum(slot["formal_audit_selected"] for slot in current.slots()) == 1
-    assert current.report()["score_admitted"] is False
+    assert current.report()["formal_audit"]["satisfied"] is False
     seen = []
 
     def executor(row, manifest, artifacts, checkpoint):
@@ -1066,10 +1067,98 @@ def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_gates_scores(l
 
     unknown_ledger.run_managed(workers=1, max_episodes=2, executor=unknown_audit)
     missing = unknown_ledger.report()
+    # An unknown audit game is one excluded, counted slot: its receipt stays
+    # unsatisfied while the other finished game still scores.
     assert missing["formal_audit"]["qualified"] == 0
-    assert missing["score_admitted"] is False
-    assert missing["unknown"] == 1 and missing["loss"] == missing["win"] == 0
-    assert all(group["scored"] == 0 for group in missing["groups"])
+    assert missing["formal_audit"]["satisfied"] is False
+    assert missing["score_admitted"] is True
+    assert missing["unknown"] == 1 and missing["loss"] == 1 and missing["win"] == 0
+    assert sum(group["scored"] for group in missing["groups"]) == 1
+
+
+def _evaluation_ledger(ledger, name):
+    original = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
+    original["retention"] = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
+    execution = ledger.directory.parent / f"{name}-execution.json"
+    execution.write_bytes(json_bytes(original))
+    manifest_ref = ledger.plan["slots"][0]["manifest"]
+    return EvaluationLedger.create(ledger.directory.parent / name,
+        Path(manifest_ref["path"]), manifest_ref["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+
+
+def test_slot_check_timeout_is_one_not_started_slot_and_the_rest_still_score(
+    ledger, monkeypatch,
+):
+    """Cluster seq 88: the node-admission check timed out before any Host or world.
+
+    The real executor entry records that slot not started with accepted cleanup, so the
+    ledger neither marks it unknown nor stops admission; the other games score.
+    """
+    import subprocess as sp
+
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    requested = []
+
+    def slow_check(seconds):
+        requested.append(seconds)
+        raise sp.TimeoutExpired(["node", "/node/private/tools/resource-slot.mjs", "check"],
+                                seconds)
+
+    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot", slow_check)
+    real = object.__new__(ManagedEpisodeExecutor)  # returns before any Host attribute
+    calls = []
+
+    def executor(row, manifest, artifacts, checkpoint):
+        calls.append(row["ledger_slot_id"])
+        if len(calls) == 1:
+            real(row, manifest, artifacts, checkpoint)
+        else:
+            complete(row, artifacts, checkpoint)
+
+    result = ledger.run_managed(workers=1, max_episodes=3, executor=executor)
+    assert result["status"] == "completed" and result["stop_reason"] is None
+    assert result["dispatched"] == 3 and result["new_finished"] == 2
+    assert requested == [60.0]
+    timed_out = next(row for row in ledger.slots() if row["slot_id"] == calls[0])
+    assert timed_out["status"] == "not_started" and timed_out["cleanup_accepted"] is True
+    attempt = json.loads(Path(timed_out["report"]["path"]).read_bytes())["episodes"][0]
+    assert attempt["reason"] == "resource_slot_check_timeout"
+    assert attempt["timeout_failure"] == {"command": "node resource-slot.mjs",
+                                          "timeout_seconds": 60.0}
+    assert attempt["world_mutation_offered"] is False
+    report = ledger.report()
+    assert report["unknown"] == 0 and report["loss"] == 2
+    assert report["not_started"] == len(ledger.plan["slots"]) - 2
+
+
+def test_slot_stopped_before_its_executor_is_not_started_not_a_retention_mismatch(ledger):
+    """A slot dispatched as STOP appeared never ran its executor: no retention or audit
+    binding was written, and it must read back as not started with nothing to clean."""
+    from spireagent.workbench.reference_suite import run_suite
+
+    current = _evaluation_ledger(ledger, "stopped-evaluation-ledger")
+    slot = current.slots()[0]
+    attempt = current.directory / "attempts" / "000001"
+    conditions = current.plan["conditions"]
+    report = run_suite(Path(slot["manifest"]["path"]), slot["manifest"]["sha256"],
+        client=None, host_kind="managed", run_dir=attempt, selection=slot["selection_id"],
+        episode_keys=((slot["seed"], slot["selection_id"]),),
+        run_profile=conditions["run_profile"], display_mode=conditions["display_mode"],
+        speed=conditions["speed"], evidence_peer=conditions["evidence_peer"],
+        limits=SuiteLimits(150, 1800, 60, 86400, 1, 30), max_episodes=1,
+        episode_executor=lambda *_: pytest.fail("stopped before the executor"),
+        should_stop=lambda: True)
+    row = report["episodes"][0]
+    assert report["stop_reason"] == "stop_requested" and "retention" not in row
+    value = current._managed_result(row, attempt / "report.json")
+    assert value["status"] == "not_started" and value["cleanup_accepted"] is True
+    assert value["world_mutation_offered"] is False
+    # A not-started row whose executor may have launched a Host keeps its own record.
+    launched = {**row, "cleanup_accepted": False}
+    assert current._managed_result(launched, attempt / "report.json")[
+        "cleanup_accepted"] is False
 
 
 def test_partial_shard_frees_credit_before_an_unrelated_slow_game_finishes(ledger, monkeypatch):
@@ -1210,7 +1299,7 @@ def synthetic_managed_admission(monkeypatch):
     """Host/process tests isolate node reservation; test_resource_slot owns its real guard."""
     checks = []
     monkeypatch.setattr("spireagent.resource_slot.require_managed_slot",
-                        lambda: checks.append("checked"))
+                        lambda _seconds: checks.append("checked"))
     return checks
 
 
@@ -1265,6 +1354,7 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     executor.build = {"artifact_sha256": "candidate"}
     executor.evidence_durability = "event"
     executor.max_auto_submissions = 1
+    executor.environment_negotiation_seconds = 90  # as decoded from the frozen execution
     executor.inference_pool = (SimpleNamespace(
         attachment=lambda: {"schema": "synthetic-binding"},
         environment=lambda: {"STPD_LOCAL_INFERENCE_TOKEN": "synthetic-inference-secret"},
@@ -1286,9 +1376,11 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
         ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
     )
     monkeypatch.setattr(backend, "runtime_arguments", lambda *_: [])
-    envelope_options = []
+    envelope_options, envelope_caps = [], []
     monkeypatch.setattr(backend, "global_environment_manifest",
-                        lambda _runtime, options, *_: envelope_options.append(dict(options)) or {})
+                        lambda _runtime, options, *_, maximum_seconds:
+                        envelope_caps.append(maximum_seconds)
+                        or envelope_options.append(dict(options)) or {})
     monkeypatch.setattr(backend.export, "declared_p1_revision", lambda _: revision)
     monkeypatch.setattr(backend.export, "register",
                         lambda _package, target, *_args, **_kwargs: target.mkdir())
@@ -1309,6 +1401,7 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     if agent_timeout is not None:
         expected_options["agent-timeout-ms"] = str(agent_timeout)
     assert envelope_options == [expected_options]
+    assert envelope_caps == [90]
     assert len(captured) == 1
     command, environment = captured[0]
     assert command[:2] == ["node", str(tmp_path / "cli.js")]
@@ -1323,6 +1416,42 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     assert environment["LD_LIBRARY_PATH"] == loader_value
     assert "synthetic-parent-credential" not in json.dumps(row)
     assert loader_value not in json.dumps(row)
+
+
+@pytest.mark.parametrize("key", ["resource_slot_check_seconds",
+                                 "environment_negotiation_seconds"])
+@pytest.mark.parametrize("value", [True, 0, 601, "60", None])
+def test_invalid_child_process_cap_is_rejected_before_host_or_store(key, value):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+    with pytest.raises(BoundaryError, match="invalid_" + key):
+        ManagedEpisodeExecutor({key: value}, episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("cap,expected", [(None, 12.0), (60, 60)])
+def test_environment_negotiation_cap_is_configured_and_its_timeout_names_the_step(
+    tmp_path, monkeypatch, cap, expected,
+):
+    """Cluster: two games timed out at 12.1 s with no command or cap in the report.
+
+    Desktop registration keeps 12 s; Managed evaluation passes its configured cap. The
+    timeout keeps its type and names only the step, not the script, paths or options.
+    """
+    import subprocess as sp
+    import time
+
+    from spireagent.workbench import local_model_registration as registration
+
+    def slow(command, *, timeout, **_):
+        raise sp.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(registration.subprocess, "run", slow)
+    keywords = {} if cap is None else {"maximum_seconds": cap}
+    with pytest.raises(sp.TimeoutExpired) as raised:
+        registration.global_environment_manifest(
+            tmp_path, {"managed-attachment": "/private/attachment.json"},
+            tmp_path / "artifact", {}, "selection", time.monotonic() + 600, **keywords)
+    assert raised.value.cmd == ["node", "global-environment-manifest"]
+    assert raised.value.timeout == expected
 
 
 @pytest.mark.parametrize("value", [True, 0, -1, 300001, 1.5])
@@ -1597,7 +1726,7 @@ def test_in_process_transport_starts_the_same_runtime_arguments_inside_the_host_
         ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
     )
     monkeypatch.setattr(backend, "runtime_arguments", lambda *_: ["--managed-binding", "b"])
-    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_: {})
+    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_, **__: {})
     monkeypatch.setattr(backend.export, "declared_p1_revision", lambda _: "r1.9")
     monkeypatch.setattr(backend.export, "register",
                         lambda _package, target, *_args, **_kwargs: target.mkdir())

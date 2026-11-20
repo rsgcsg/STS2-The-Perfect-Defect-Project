@@ -91,7 +91,7 @@ def test_real_canonical20_by_three_models_freezes60_and_two_audits(evaluate, exe
     assert ledger.plan['audit_selection']['count'] == 2
     assert sum(slot['formal_audit_selected'] for slot in ledger.slots()) == 2
     assert all(slot['status'] == 'not_started' for slot in ledger.slots())
-    assert ledger.report()['score_admitted'] is False
+    assert ledger.report()['formal_audit']['satisfied'] is False
     assert (directory / 'plan.json').is_file()
 
 
@@ -370,7 +370,36 @@ def test_real_ledger_unknown_stops_new_admission_and_never_reoffers(
     ledger.run_managed(workers=1, max_episodes=3, executor=executor,
                        limits=SuiteLimits(10, 10, 10, 60))
     assert len(offered) == 1
-    assert ledger.report()['score_admitted'] is False
+    assert ledger.report()['formal_audit']['satisfied'] is False
+
+
+def test_slot_check_timeout_under_the_strict_policy_writes_no_stop(
+        evaluate, execution, tmp_path, monkeypatch):
+    """Cluster seq 88: a timed-out node-admission check wrote STOP and ended the round.
+
+    The real executor entry records it as not started (no Host, no world), so even the
+    strict unknown policy keeps admitting the next slots.
+    """
+    from spireagent.workbench import evaluation_ledger as owner
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+    from spireagent.workbench.reference_suite import SuiteLimits
+
+    plan, _ = prepared(evaluate, execution, tmp_path)
+    ledger = evaluate.create_ledger(plan, (tmp_path / 'ledger').resolve())
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(owner.shutil, 'disk_usage', lambda _: usage._replace(free=100 * 1024**3))
+
+    def slow_check(seconds):
+        raise subprocess.TimeoutExpired(['node', 'resource-slot.mjs', 'check'], seconds)
+
+    monkeypatch.setattr('spireagent.resource_slot.require_managed_slot', slow_check)
+    stop = ledger.directory / 'STOP'
+    executor = evaluate.StopOnUncertain(object.__new__(ManagedEpisodeExecutor), stop)
+    result = ledger.run_managed(workers=1, max_episodes=3, executor=executor,
+                                limits=SuiteLimits(10, 10, 10, 60))
+    assert not stop.exists()
+    assert result['status'] == 'completed' and result['dispatched'] == 3
+    assert ledger.report()['unknown'] == 0 and ledger.report()['not_started'] == 60
 
 
 def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
@@ -401,7 +430,7 @@ def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
     assert not stop.exists()
     assert ledger.report()['unknown'] == 6
     assert ledger.report()['not_started'] == 54
-    assert ledger.report()['score_admitted'] is False
+    assert ledger.report()['formal_audit']['satisfied'] is False
 
 
 @pytest.mark.parametrize('row', [
@@ -531,7 +560,7 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
     assert result['status'] == 'stopped'
     assert result['ledger_report']['unknown'] == 1
     assert result['ledger_report']['not_started'] == 59
-    assert result['ledger_report']['score_admitted'] is False
+    assert result['ledger_report']['formal_audit']['satisfied'] is False
     assert len(offers) == 1
     receipt = json.loads((directory / 'snapshot.json').read_bytes())
     assert receipt['full_readback'] is True and receipt['peer_held'] == []

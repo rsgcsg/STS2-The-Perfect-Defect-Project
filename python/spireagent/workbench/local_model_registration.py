@@ -62,8 +62,14 @@ from spireagent.workbench.runtime_install import (
 
 def global_environment_manifest(runtime: Path, options: dict[str, str], artifact_path: Path,
                                 adapter: dict[str, str], selection: str,
-                                deadline: float) -> dict[str, Any]:
-    """Negotiate the owner-supplied complete public P1 environment envelope."""
+                                deadline: float, *,
+                                maximum_seconds: float = 12.0) -> dict[str, Any]:
+    """Negotiate the owner-supplied complete public P1 environment envelope.
+
+    ``maximum_seconds`` caps this one child process; desktop registration keeps
+    the 12 s default and Managed evaluation passes its configured cap. A timeout
+    keeps its type but names only the step, never the script, paths or options.
+    """
     script = (
         "import{pathToFileURL}from'node:url';"
         "import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
@@ -88,23 +94,27 @@ def global_environment_manifest(runtime: Path, options: dict[str, str], artifact
         "p1Revision:o['p1-revision']??'r1.5',"
         "agentTimeoutMs:o['agent-timeout-ms']===undefined?undefined:Number(o['agent-timeout-ms'])})));"
     )
-    reply = subprocess.run(
-        [
-            "node",
-            "--input-type=module",
-            "-e",
-            script,
-            str(runtime),
-            json.dumps(options),
-            str(artifact_path),
-            json.dumps(adapter),
-            selection,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=_remaining(deadline),
-        check=False,
-    )
+    try:
+        reply = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                script,
+                str(runtime),
+                json.dumps(options),
+                str(artifact_path),
+                json.dumps(adapter),
+                selection,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_remaining(deadline, maximum_seconds),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise subprocess.TimeoutExpired(
+            ["node", "global-environment-manifest"], error.timeout) from None
     if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
         raise BoundaryError("global_program", "public_environment_unavailable")
     value = json.loads(reply.stdout)

@@ -73,9 +73,10 @@ Unknown games stay excluded and counted as in one job. A reference (baseline or 
 round) pairs by seed when one round's seed manifest is a prefix of the other's (the A0 300
 starts with the A0 100 seeds), and may be named by its `batches.json`.
 
-Batches of one round each carry their own ledger admission: a batch whose formal-audit
-game did not finish is closed unscored by its ledger (its games stay rows, never scores)
-and is named in `batches_not_admitted`; the batches still merge (#612). Batches with
+Batches of one round each carry their own ledger admission: a batch whose retention
+tier is not score-eligible is closed unscored by its ledger (its games stay rows, never
+scores) and is named in `batches_not_admitted`; the batches still merge (#612). A
+formal-audit game that did not finish is one excluded pair, never an unscored batch. Batches with
 another checkpoint binding, model selection, host kind, character or ascension are refused.
 
 Node class (#612): `--partition` / `--constraint` (or a site profile's `eval_partition` /
@@ -980,7 +981,7 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
     is never voided. Beside it, `<root>/eval-record.json` (`evaluation_record`; the
     watcher adds its own times). A batched round (#591) is one merged cohort of its
     batches with an observation report; the others are named in `batches_missing`, and
-    a batch its ledger closed unscored (formal-audit slot not finished) in
+    a batch its ledger closed unscored (retention tier not score-eligible) in
     `batches_not_admitted`. A round above `degraded_share` of planned games (missing
     batches included) not finished and scored is labelled degraded (`degraded`, the report's first line); `submission`
     (partition, constraint) heads the report.
@@ -1019,8 +1020,8 @@ def write_evaluation_report(root: Path, baseline: dict[str, Any] | None,
         notes.append(f"DEGRADED ROUND: {degradation_text(degraded)}; reported, never used "
                      "as a pairing baseline.")
     if not_admitted:
-        notes.append("BATCHES NOT SCORE-ADMITTED (their ledger closed them unscored: a "
-                     "formal-audit game did not finish; their games are rows, not scores): "
+        notes.append("BATCHES NOT SCORE-ADMITTED (their ledger closed them unscored: "
+                     "retention tier not score-eligible; their games are rows, not scores): "
                      + ", ".join(not_admitted) + ".")
     if smoke:
         notes.append(f"SMOKE: {current['planned']} games < {DECISION_GAMES}: smoke, not a "

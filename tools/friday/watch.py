@@ -137,8 +137,7 @@ def evaluate_result(path: Path, version: int, updates: int, *,
               if row['status'] == 'finished' and row.get('max_observed_floor') is not None]
     planned = expected_planned or (40 if confirmation else 20)
     # save_failed is the ledger's state AFTER its one batch-end resume-save retry:
-    # one excluded pair like an unknown (RL5 3E). On the formal-audit slot it leaves
-    # score_admitted False, so the cohort stays incomplete and unscored (fail closed).
+    # one excluded pair like an unknown (RL5 3E), on the formal-audit slot too.
     complete = (report['score_admitted'] is True and report['planned'] == planned
                 and report['not_started'] == report['reserved'] == report['save_pending'] == 0
                 and report['saved_unscored'] == 0
@@ -160,16 +159,12 @@ def evaluate_result(path: Path, version: int, updates: int, *,
 def save_failed_alarm(slots: list[dict[str, Any]]) -> str | None:
     """Typed alarm for saves that still failed after the ledger's one batch-end retry.
 
-    A non-audit game is one excluded pair. The formal-audit slot's failure leaves the
-    ledger's score_admitted False, so the whole cohort is closed as unscored (fail
-    closed, like an unknown audit slot) rather than one pair being excluded.
+    Each such game, the formal-audit slot included, is one excluded pair; the audit
+    slot's failure only leaves the ledger's audit receipt unsatisfied.
     """
-    failed = [slot for slot in slots if slot.get('status') == 'save_failed']
-    if not failed:
-        return None
-    if any(slot.get('formal_audit_selected') for slot in failed):
-        return 'evaluation_audit_save_failed_cohort_not_scored'
-    return 'evaluation_save_failed_after_retry_pair_excluded'
+    if any(slot.get('status') == 'save_failed' for slot in slots):
+        return 'evaluation_save_failed_after_retry_pair_excluded'
+    return None
 
 
 def reward_overview(cohort: dict[str, Any]) -> dict[str, Any]:
@@ -323,7 +318,7 @@ EVALUATION_PLAYED_STATUSES = frozenset({'finished', 'unknown', 'save_failed', 'c
 def evaluation_incomplete(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Typed reasons an evaluation is incomplete; empty means it is used for decisions.
 
-    ``audit_mismatch``: the ledger did not admit scores (formal audit not satisfied) or a
+    ``audit_mismatch``: the ledger did not admit scores (a non-score retention tier) or a
     scored-status row failed typed verification. ``originals_missing``: the job failed,
     a planned game was not played or its original is still pending, or its cleanup was
     not accepted. Scores are reported either way; unknown/save_failed/censored games are

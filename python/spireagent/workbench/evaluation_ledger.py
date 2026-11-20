@@ -307,10 +307,14 @@ class EvaluationLedger:
 
     def _managed_result(self, row: dict[str, Any], path: Path) -> dict[str, Any]:
         declared = self.plan.get("retention")
-        if declared is not None and row.get("retention") != declared:
+        # A slot stopped before its executor ran never received the plan's retention
+        # or audit binding; with no world offered it is recorded as not started.
+        opened = row.get("status") != "not_started"
+        if opened and declared is not None and row.get("retention") != declared:
             reject("attempt_retention_differs_from_plan")
         eligible = (declared or {}).get("score_eligible", True)
-        if (declared or {}).get("purpose") == "evaluation" and declared["tier"] == "trajectory":
+        if (opened and (declared or {}).get("purpose") == "evaluation"
+                and declared["tier"] == "trajectory"):
             slot = next((item for item in self.plan["slots"]
                          if item["slot_id"] == row.get("ledger_slot_id")), None)
             if (slot is None or row.get("formal_audit_selected")
@@ -346,7 +350,10 @@ class EvaluationLedger:
             **value,
             "host_kind": "managed",
             "elapsed_seconds": row.get("elapsed_seconds"),
-            "cleanup_accepted": row.get("cleanup_accepted") is True,
+            # The executor records cleanup once it may own a Host; a not-started row
+            # without that record never launched one, so there is nothing to clean.
+            "cleanup_accepted": row.get("cleanup_accepted") is True or (
+                not opened and "cleanup_accepted" not in row),
             "score_eligible": eligible,
             "retention": row.get("retention"),
             "reason": row.get("reason"),
@@ -368,14 +375,17 @@ class EvaluationLedger:
 
         Workers receive one already-reserved slot each and never touch the queue.
         Unknown/censored results belong to their own slots; other isolated workers
-        continue. Unconfirmed cleanup stops admission because a process may still
-        consume the bounded worker capacity. No unknown slot is offered again.
+        continue. Unconfirmed cleanup of a Host it may have launched stops admission
+        because a process may still consume the bounded worker capacity; a slot that
+        never launched one (stopped before its executor, or a timed-out node-admission
+        check) is not started and admission continues. No unknown slot is offered again.
 
         A closed game whose save fails is excluded and admission continues. When no
         work is left, each such save is retried once through ``preserve_report`` (the
         same resume-save path and identity checks); the game is never re-executed.
-        A retry that fails again stays ``save_failed`` with its originals retained;
-        on the formal-audit slot ``report()`` then leaves the whole cohort unscored.
+        A retry that fails again stays ``save_failed`` with its originals retained,
+        excluded and counted like an unknown, the formal-audit slot included (its
+        receipt then records ``satisfied: false``; the other slots still score).
         Only ``preserve_report`` failures are deferred: a trajectory-shard upload
         failure still stops admission (its members stay ``trajectory_pending``).
         """
@@ -592,8 +602,8 @@ class EvaluationLedger:
                     if not value.get("cleanup_accepted"):
                         stop_reason = "unknown_cleanup_requires_owner_read"
                     elif value["status"] == "save_failed":
-                        # Never a stopped batch (card RL5 3E): one excluded pair, or
-                        # on the formal-audit slot an unscored cohort via report().
+                        # Never a stopped batch (card RL5 3E): one excluded pair, on
+                        # the formal-audit slot too (its audit receipt is unsatisfied).
                         if slot["slot_id"] in save_retried:
                             save_failed_after_retry.append(slot["slot_id"])
                         else:
@@ -834,7 +844,6 @@ class EvaluationLedger:
             audit_receipt = {"planned": audit["count"], "qualified": len(qualified),
                              "qualified_slot_ids": qualified,
                              "satisfied": len(qualified) == audit["count"]}
-            eligible = eligible and audit_receipt["satisfied"]
         groups = []
         for character, ascension, step in sorted(
             {(r["character"], r["ascension"], r["step"]) for r in rows}
