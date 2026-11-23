@@ -60,7 +60,13 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
                     "clip_fraction", "acting_kl_theta_mu", "terminal_loss", "hp_loss",
                     "gradient_norm",
                     # ticket K: control-arm KL (kl_stop_scope "control" only) and the lr used
-                    "approx_kl_control", "lr")
+                    "approx_kl_control", "lr",
+                    # #632 (stpd.rl.loss.SCORE_READOUT): per attempt p50/p90 of policy rows'
+                    # raw score mean, max |score|, max - min; |action + read| on diagnostics
+                    # steps only (absent elsewhere); averaged over attempts like the rest
+                    "score_row_mean_p50", "score_row_mean_p90", "score_max_abs_p50",
+                    "score_max_abs_p90", "score_range_p50", "score_range_p90",
+                    "score_read_norm_p50", "score_read_norm_p90")
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows

@@ -31,7 +31,8 @@ PREPARED_PERFORMANCE_FIELDS = (
 # default config, its effective file and the binary recipe digest stay byte-equal.
 # Not a resume-compared objective field: a new generation may switch it from a CP.
 FORWARD_IMPLEMENTATION_DEFAULTS = {"prepared_forward": "padded-v1", "prepared_compile": False,
-                                   "prepared_kernels": "", "prepared_bucket_rows": 256}
+                                   "prepared_kernels": "", "prepared_bucket_rows": 256,
+                                   "score_head_fp32": False}
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,12 @@ class PerformanceConfig:
     # (C-SCALE/V3 T6 measured -3.1..-3.3% step time on the 80 GB A100 with the levers).
     # Same rows, members and denominators; only the bucket partition changes.
     prepared_bucket_rows: int = 256
+    # #632: the action score head (`MStd.score_actions`) in FP32 with autocast off, so a
+    # large common score offset is not rounded to BF16 before the softmax. Same function,
+    # other rounding (like the forward implementation: not resume-compared). Only changes
+    # anything under precision "bf16". The inference services take the same choice
+    # (`FastInferenceService(score_head_fp32=...)`); the operator sets both.
+    score_head_fp32: bool = False
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -79,7 +86,7 @@ class PerformanceConfig:
                 self.reference_device_cache, self.joint_nodes,
                 self.async_transfer, self.precompile_inputs,
                 self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches,
-                self.deduplicate_text, self.compile_loss)):
+                self.deduplicate_text, self.compile_loss, self.score_head_fp32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 1280
                 or any(type(value) is not int or not 1 <= value <= 2**40 for value in (
@@ -224,13 +231,16 @@ def prepared_precision(model: MStd, config: PerformanceConfig) -> Iterator[None]
     if config.tf32 and device.type != "cuda":
         raise BoundaryError("rl_performance", "tf32_requires_cuda")
     old_tf32 = torch.backends.cuda.matmul.allow_tf32 if device.type == "cuda" else None
+    old_score_head = model.score_head_fp32
     try:
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = config.tf32
+        model.score_head_fp32 = config.score_head_fp32
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=config.precision == "bf16"):
             yield
     finally:
+        model.score_head_fp32 = old_score_head
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = old_tf32
 

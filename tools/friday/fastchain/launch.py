@@ -511,6 +511,7 @@ FEATURES = {
     "lr_warmup_steps": ("python/stpd/rl/segments.py", "lr_warmup_steps"),  # ticket K
     "value_config_input": ("python/stpd/rl/segments.py", "value_config_input"),  # 11-19
     "arm_policy_update": ("python/stpd/rl/loss.py", "arm_policy_update"),  # 11-19
+    "score_head_fp32": ("python/stpd/rl/performance.py", "score_head_fp32"),  # #632
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),
     "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528

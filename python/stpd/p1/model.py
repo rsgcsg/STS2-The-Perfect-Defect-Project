@@ -123,6 +123,13 @@ def architecture(value_heads: bool = False, model_size: str = "standard") -> dic
 
 
 class MStd(nn.Module):
+    # Runtime execution choice, not state (#632): True runs the action score head
+    # (`self.head`) in FP32 with autocast off, so BF16 rounding of large common score
+    # offsets does not reach the softmax. Set per process by the learner
+    # (`performance.score_head_fp32`) and the inference scorer; a class default, so a
+    # module pickled before it reads False.
+    score_head_fp32 = False
+
     def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None,
                  *, value_heads: bool = False, model_size: str = "standard"):
         if model_size not in {"standard", "large"}:
@@ -485,6 +492,13 @@ class MStd(nn.Module):
             raise ValueError("non_finite_rl4_head_outputs")
         return scores, logits, hp
 
+    def score_actions(self, features: Tensor) -> Tensor:
+        """The action score head on [..., 384] features; FP32 under `score_head_fp32`."""
+        if not self.score_head_fp32:
+            return cast(Tensor, self.head(features))
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            return cast(Tensor, self.head(features.float()))
+
     def forward_prepared_rl4(self, group: Any, *, compile_rows: bool = False,
                              kernels: str = "", value_config: Tensor | None = None
                              ) -> tuple[Tensor, Tensor, Tensor]:
@@ -540,7 +554,7 @@ class MStd(nn.Module):
             roles.append(mean.reshape(action.shape))
         action = action + self.source_role(roles[0]) + self.target_role(roles[1])
         read, _ = self.cross(action, scene, scene, key_padding_mask=mask, need_weights=False)
-        scores = self.head(torch.cat((action + read,
+        scores = self.score_actions(torch.cat((action + read,
             current[:, None, :].expand(-1, action.shape[1], -1)), -1)).squeeze(-1)
         return (scores.masked_fill(t["catalog_mask"], -torch.inf)[:len(group.rows)],
                 logits[:len(group.rows)], hp[:len(group.rows)])
@@ -732,7 +746,7 @@ class MStd(nn.Module):
             return [self.ids.weight.new_empty((0,)) for _ in frames], current
         action = nn.utils.rnn.pad_sequence(actions, batch_first=True)
         read, _ = self.cross(action, scene, scene, key_padding_mask=mask, need_weights=False)
-        scores = self.head(
+        scores = self.score_actions(
             torch.cat((action + read, current[:, None, :].expand(-1, action.shape[1], -1)), -1)
         ).squeeze(-1)
         if selected is not None:

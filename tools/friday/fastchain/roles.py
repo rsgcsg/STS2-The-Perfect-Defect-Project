@@ -522,6 +522,9 @@ def service() -> None:
     first = source.latest()
     holder: dict = {}
     kwargs = dict(K["service_kwargs"])
+    # #632: the learner's performance.score_head_fp32 (learner_config), passed only when on
+    if K["score_head_fp32"]:
+        kwargs["score_head_fp32"] = True
     # #529 R7 audit games: every mu such a game's segments bind is archived by sha256
     # (run dir, `mu_archive_gb` split over the services; full = that row refused loudly),
     # read from this node's mu cache under its reader lock.

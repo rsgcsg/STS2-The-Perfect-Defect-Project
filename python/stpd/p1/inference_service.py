@@ -804,7 +804,7 @@ def _join_worker(inputs: list[Connection], output: Connection, keep: int,
 def _device_worker(control: Connection, inputs: list[Connection], output: Connection,
                    device: str, bf16: bool, compile: bool, threads: int,
                    arena: torch.Tensor | None = None, device_rows: bool = False,
-                   kernels: str = "") -> None:
+                   kernels: str = "", score_head_fp32: bool = False) -> None:
     """Spawned device process: models and forwards only, no per-row Python work
     (with `device_rows` it also turns a forward's tensors into per-row scores).
 
@@ -871,7 +871,8 @@ def _device_worker(control: Connection, inputs: list[Connection], output: Connec
             if kind == "model":
                 model = torch.load(io.BytesIO(blob), map_location=device, weights_only=False)
                 model.eval().requires_grad_(False)
-                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile, kernels=kernels)
+                scorers[key] = RowsScorer(model, bf16=bf16, compile=compile, kernels=kernels,
+                                          score_head_fp32=score_head_fp32)
             else:
                 scorers.pop(key, None)
             control.send_bytes(b"ok")
@@ -1104,6 +1105,7 @@ class FastInferenceService:
                  device_threads: int = 2, bf16: bool = True, compile: bool = False,
                  part_rows: int = 0, device_rows: bool = False, trace: bool = False,
                  audit_fraction: float = 0.01, kernels: str = "",
+                 score_head_fp32: bool = False,
                  failure_dir: str | Path | None = None, encoder_sha256: str | None = None,
                  env_sha256: str | None = None, exit_code_on_failure: int | None = None,
                  exit_grace_seconds: float = 60.0, temperature_min: float = 1.0) -> None:
@@ -1155,6 +1157,11 @@ class FastInferenceService:
         self.part_rows, self.device_rows = part_rows, bool(device_rows)
         self.trace = bool(trace)
         self.bf16, self.compile, self.kernels = bf16, compile, kernels
+        # #632: the action score head in FP32 under BF16; must match the learner's
+        # `performance.score_head_fp32` (the operator sets both; nothing checks it here).
+        if type(score_head_fp32) is not bool:
+            raise ValueError("invalid_score_head_fp32")
+        self.score_head_fp32 = score_head_fp32
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.expected_encoder = {"implementation": "python",
                                  "sha256": encoder_sha256 or encoder_digest()}
@@ -1216,7 +1223,7 @@ class FastInferenceService:
             target=_device_worker, daemon=True, name="rl-inference-4-device",
             args=(control_child, device_inputs, results_child,
                   self.device, bf16, compile, device_threads, self.arena,
-                  self.device_rows, kernels))
+                  self.device_rows, kernels, score_head_fp32))
         self.device_process.start()
         self.joiners: list[Any] = []
         for index, (_, writer) in enumerate(joined_pipes):
@@ -1352,8 +1359,8 @@ class FastInferenceService:
         """
         from .rows_scorer import RowsScorer
 
-        RowsScorer(model, bf16=self.bf16, compile=self.compile,
-                   kernels=self.kernels)  # immutable eval snapshot
+        RowsScorer(model, bf16=self.bf16, compile=self.compile, kernels=self.kernels,
+                   score_head_fp32=self.score_head_fp32)  # immutable eval snapshot
         blob = model_blob(model)
         key = handoff.snapshot_sha256
         with self.control_lock:

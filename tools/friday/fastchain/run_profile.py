@@ -460,6 +460,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "value_config_input": _bool,
     # the learner's loss.arm_policy_update (owner 11-19; learner_config)
     "arm_policy_update": _choice(*ARM_POLICY_UPDATES),
+    # #632: the action score head in FP32 under BF16, learner (performance) and services
+    "score_head_fp32": _bool,
     # RL5-METHODS C: declared recipe changes at a continuation from a CP (learner_config)
     "declared_changes": _declared_changes,
     "service_window_ms": _num(0),

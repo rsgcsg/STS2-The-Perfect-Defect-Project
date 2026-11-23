@@ -47,6 +47,8 @@ DECLARABLE: dict[str, str] = {
                                    "weights start with fresh Adam state; on -> off refused",
     "loss.arm_policy_update": "which policy a row's PPO ratio, clip and KL use (T = 1 or "
                               "its own cell's); loss only, no state",
+    "loss.logit_mean_penalty_coef": "weight of the row-mean score penalty (#632); loss only, "
+                                    "no state",
 }
 # Recipe keys `_resume_config` leaves out at their default (so older CPs keep their
 # digest): a missing key means this value.
@@ -56,6 +58,7 @@ RECIPE_DEFAULTS: dict[str, Any] = {
     "loss.explore_ratio_floor": 0.0,
     "segments.value_config_input": False,
     "loss.arm_policy_update": "normal",
+    "loss.logit_mean_penalty_coef": 0.0,
 }
 _MISSING = object()
 

@@ -59,7 +59,7 @@ class RowsScorer:
     """Score prepared rows-v2 groups with one immutable mu on one device."""
 
     def __init__(self, model: Any, *, bf16: bool = True, compile: bool = False,
-                 kernels: str = "") -> None:
+                 kernels: str = "", score_head_fp32: bool = False) -> None:
         if model.training or any(p.requires_grad for p in model.parameters()):
             raise ValueError("rows_scorer_requires_immutable_eval_snapshot")
         if not hasattr(model, "rl4_heads"):
@@ -70,6 +70,11 @@ class RowsScorer:
         self.bf16 = bf16 and self.device.type == "cuda"
         self.compile = compile
         self.kernels = kernels
+        # #632: the action score head in FP32 (`MStd.score_head_fp32`), as the learner's
+        # `performance.score_head_fp32`; only changes anything under BF16 autocast.
+        if type(score_head_fp32) is not bool:
+            raise ValueError("invalid_score_head_fp32")
+        model.score_head_fp32 = score_head_fp32
         # `segments.value_config_input`: this mu's heads read each row's sampling config.
         self.reads_value_config = bool(model.rl4_heads.has_value_config)
 

@@ -185,6 +185,8 @@ def batched_segment_loss(
     row_diagnostics: list[torch.Tensor] | None = None,
     control_kl: list[torch.Tensor] | None = None,
     explore_ratio_floor: float = 0.0,
+    logit_mean_penalty_coef: float = 0.0,
+    score_rows: list[torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
@@ -199,6 +201,10 @@ def batched_segment_loss(
     `t["arm_sampling"]` (`loss.arm_policy_update` "own", `with_arm_sampling`): ratio, clip,
     KL and the KL diagnostics use each row's cell policy (`arm_log_probabilities`); the
     entropy stays the T = 1 policy's. Absent: the T = 1 policy for all of them.
+    `logit_mean_penalty_coef` (`LossConfig.logit_mean_penalty_coef`, 0 = off): see there;
+    added to the policy component. `score_rows` (readout): appends a [rows, 3] tensor of
+    each row's raw catalog score mean, max |score| and max - min, NaN on rows that are not
+    policy rows.
     """
     logp = scores.float().log_softmax(-1)
     probability = logp.exp()
@@ -261,8 +267,27 @@ def batched_segment_loss(
         if hp_rows
         else logits.new_zeros(())
     )
+    policy_component = policy_coef * policy - entropy_coef * entropy
+    if logit_mean_penalty_coef or score_rows is not None:
+        # Raw (pre-temperature) catalog scores in FP32; the row mean is the common offset
+        # every softmax ignores (#632).
+        valid = t["catalog_valid"]
+        raw = scores.float().masked_fill(~valid, 0)
+        row_mean = raw.sum(-1) / valid.sum(-1).clamp_min(1)
+        if logit_mean_penalty_coef:
+            policy_component = policy_component + logit_mean_penalty_coef * (
+                row_mean.square() * policy_mask).sum()
+        if score_rows is not None:
+            with torch.no_grad():
+                policy_row = t["policy_mask"] > 0
+                real = scores.detach().float()
+                spread = (real.masked_fill(~valid, -math.inf).amax(-1)
+                          - real.masked_fill(~valid, math.inf).amin(-1))
+                score_rows.append(torch.stack((
+                    row_mean.detach(), raw.detach().abs().amax(-1), spread), 1).masked_fill(
+                        ~policy_row[:, None], math.nan))
     components = (
-        policy_coef * policy - entropy_coef * entropy,
+        policy_component,
         value_coef * td,
         terminal_coef * terminal,
         hp_coef * hp_loss,
@@ -279,6 +304,30 @@ def batched_segment_loss(
         components,
         dynamic_valid,
     )
+
+
+# Per optimizer attempt (#632): this rank's multi-choice policy rows, raw catalog scores
+# (before any temperature): p50/p90 of each row's mean (the common offset the softmax
+# ignores), of its max |score| and of its max - min (catalog entries only); then, on
+# diagnostics steps only (eager forward, None otherwise), p50/p90 of each row's mean over
+# its catalog of |action + cross-attention read|, the part of the score head's input
+# that carries the read (the rest is the row's scene mean). Under data parallel the
+# record carries rank 0's rows.
+SCORE_READOUT = ("score_row_mean_p50", "score_row_mean_p90",
+                 "score_max_abs_p50", "score_max_abs_p90",
+                 "score_range_p50", "score_range_p90",
+                 "score_read_norm_p50", "score_read_norm_p90")
+
+
+def _score_quantiles(score_rows: list[torch.Tensor], read_rows: list[torch.Tensor],
+                     like: torch.Tensor) -> torch.Tensor:
+    """`SCORE_READOUT` in order (NaN where this rank has no such row), on device."""
+    columns = ([torch.cat(score_rows).float()[:, index] for index in range(3)]
+               if score_rows else [like.new_full((1,), math.nan, dtype=torch.float32)] * 3)
+    columns.append(torch.cat(read_rows).float() if read_rows
+                   else like.new_full((1,), math.nan, dtype=torch.float32))
+    levels = columns[0].new_tensor((0.5, 0.9))
+    return torch.cat([column.nanquantile(levels) for column in columns]).to(like.dtype)
 
 
 def prepared_update(
@@ -344,6 +393,7 @@ def prepared_update(
     row_diagnostics: list[torch.Tensor] | None = [] if collect_policy_rows else None
     row_values: list[float] = []
     hook = None  # the cross-cell query's capture (value_cells, diagnostics steps)
+    head_hook = None  # the score head's input readout (diagnostics steps, #632)
     try:
         t = minibatch.tensors
         # `loss.arm_policy_update`: "own" needs every row's cell (`with_arm_sampling`); a
@@ -389,6 +439,16 @@ def prepared_update(
             hook = model.rl4_heads.outcome.mlp[0].register_forward_hook(
                 lambda module, inputs, output: store.append(output.detach()))
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
+        score_rows: list[torch.Tensor] = []  # readout: row score mean, max |score| (#632)
+        read_rows: list[torch.Tensor] = []  # diagnostics steps: per row mean |action + read|
+        head_inputs: list[torch.Tensor] | None = None
+        if diagnostics:
+            # Diagnostics steps run eager: the score head's input of every bucket, in bucket
+            # order, as |action + read| per catalog entry ([bucket rows, catalog]).
+            head_inputs = head_store = []
+            head_hook = model.head.register_forward_pre_hook(
+                lambda module, inputs: head_store.append(
+                    inputs[0].detach()[..., :inputs[0].shape[-1] // 2].float().norm(dim=-1)))
         offset = 0
         rows_forward = performance.prepared_forward == "rows-v2"
         # Per-head diagnostics take retain_graph gradients, which a compiled backward
@@ -447,9 +507,22 @@ def prepared_update(
                     multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
                     terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows,
                     row_diagnostics=row_diagnostics, control_kl=control_parts,
-                    explore_ratio_floor=config.explore_ratio_floor)
+                    explore_ratio_floor=config.explore_ratio_floor,
+                    logit_mean_penalty_coef=config.logit_mean_penalty_coef,
+                    score_rows=score_rows)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
+                if head_inputs:
+                    read_norms = torch.cat(head_inputs)
+                    head_inputs.clear()
+                    if rows_forward:  # buckets back to group row order, as forward_rows
+                        read_norms = read_norms.index_select(
+                            0, group.layout.scene_inverse.to(device))
+                    read_norms = read_norms[:rows]
+                    catalog = group_tensors["catalog_valid"][:, :read_norms.shape[1]]
+                    per_row = (read_norms * catalog).sum(-1) / catalog.sum(-1).clamp_min(1)
+                    read_rows.append(per_row.masked_fill(
+                        ~(group_tensors["policy_mask"] > 0), math.nan))
                 value_sums = value_sums + learning_diagnostics.value_statistics(
                     logits.detach(), hp.detach(), group_tensors)
                 if value_cells is not None:
@@ -508,6 +581,12 @@ def prepared_update(
                                   valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
+            # Readout (#632): p50/p90 of this rank's policy rows' score mean and max |score|
+            # (NaN without one); in the one pre-step transfer, before the parts read from
+            # the end.
+            score_at = decision.numel()
+            decision = torch.cat((decision, _score_quantiles(score_rows, read_rows,
+                                                             decision)))
             cell_size = cell_sums.numel() + cross_sums.numel()
             decision = torch.cat((decision, cell_sums.detach().float(),
                                   cross_sums.detach().float(), value_sums.detach().float()))
@@ -575,6 +654,8 @@ def prepared_update(
             },
         }
         result.update(learning_diagnostics.headline(result["value_statistics"]))
+        result.update({name: value if math.isfinite(value) else None for name, value in zip(
+            SCORE_READOUT, measured[score_at:score_at + len(SCORE_READOUT)], strict=True)})
         if value_cells is not None:
             start = values_end - learning_diagnostics.SIZE - cell_size
             split = start + cell_count * learning_diagnostics.CELL_SIZE
@@ -640,6 +721,8 @@ def prepared_update(
     finally:
         if hook is not None:
             hook.remove()
+        if head_hook is not None:
+            head_hook.remove()
         model.train(original_mode)
 
 
@@ -747,6 +830,12 @@ class LossConfig:
     # own cell's policy. "own" and explore_ratio_floor > 0 are alternatives (refused).
     # prepared_update only; resume-locked like every loss key.
     arm_policy_update: str = "normal"
+    # c_mean (#632): adds c_mean * mean over multi-choice policy rows of (the row's mean raw
+    # catalog score)^2, in FP32, before any temperature. The softmax ignores a row's common
+    # offset, so nothing else holds it; this anchors it at 0 without changing any policy
+    # (its gradient is the same for every catalog entry of a row). 0 = off (today's loss
+    # exactly). prepared_update only; resume-locked like every loss key, declarable.
+    logit_mean_penalty_coef: float = 0.0
 
     def __post_init__(self) -> None:
         if self.arm_policy_update not in ARM_POLICY_UPDATES:
@@ -757,7 +846,7 @@ class LossConfig:
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef, self.policy_coef,
                                  self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef,
-                                 self.hp_advantage_coef))
+                                 self.hp_advantage_coef, self.logit_mean_penalty_coef))
                 or type(self.clip) not in (int, float) or not 0 < self.clip <= 1
                 or type(self.max_grad_norm) not in (int, float)
                 or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
@@ -840,6 +929,8 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
         raise BoundaryError("rl_loss", "explore_ratio_floor_needs_prepared_update")
     if config.arm_policy_update != "normal":  # the same: prepared_update only
         raise BoundaryError("rl_loss", "arm_policy_update_needs_prepared_update")
+    if config.logit_mean_penalty_coef:  # the same: prepared_update only
+        raise BoundaryError("rl_loss", "logit_mean_penalty_needs_prepared_update")
     if config.mode == "ppo":
         if performance is not None:
             from .performance import prepare_models

@@ -273,7 +273,7 @@ def rows_block(model: Any, tokens: Tensor, positions: Tensor, lengths: Tensor, o
         read = padded_cross(model.cross, action, padded, ~mask)
     else:
         read = attention(model.cross, action, scene, mask)
-    scores = model.head(torch.cat((action + read,
+    scores = model.score_actions(torch.cat((action + read,
                                    current[:, None, :].expand(-1, action.shape[1], -1)), -1))
     return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
 
@@ -341,7 +341,7 @@ def rows_block_packed(model: Any, tokens: Tensor, positions: Tensor, lengths: Te
     else:
         read = packed_attention(model.cross, action.reshape(rows * catalog, -1), encoded,
                                 one * catalog, offsets, catalog, longest).view(action.shape)
-    scores = model.head(torch.cat((action + read,
+    scores = model.score_actions(torch.cat((action + read,
                                    current[:, None, :].expand(-1, catalog, -1)), -1))
     return scores.squeeze(-1).masked_fill(catalog_mask, -torch.inf), logits, hp
 

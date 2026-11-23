@@ -46,13 +46,14 @@ DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
               "loss.hp_advantage_coef", "loss.hp_advantage_scope", "loss.explore_ratio_floor",
               "segments.target_kl",
               "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda",
-              "segments.value_config_input", "loss.arm_policy_update")
+              "segments.value_config_input", "loss.arm_policy_update",
+              "loss.logit_mean_penalty_coef")
 # A key missing from a learner config (a CP's or this run's) means this value: the learner's
 # own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
 CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
                    "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket",
                    "loss.explore_ratio_floor": 0.0, "segments.value_config_input": False,
-                   "loss.arm_policy_update": "normal"}
+                   "loss.arm_policy_update": "normal", "loss.logit_mean_penalty_coef": 0.0}
 MISSING = "<missing>"
 
 
@@ -214,6 +215,10 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     # The arm policy update (owner 11-19): the same rule (normal = key left out).
     if knobs.get("arm_policy_update", "normal") != "normal":
         config["loss"]["arm_policy_update"] = knobs["arm_policy_update"]
+    # #632: the score head in FP32 (a precision choice, not resume-compared): written only
+    # when on, so the default learner.json is unchanged; roles.py gives the services the same.
+    if knobs.get("score_head_fp32", False):
+        config["performance"]["score_head_fp32"] = True
     if run.get("window"):
         config.update(run["window"])
     # RL5-METHODS C: written only when declared (an older learner refuses the key).

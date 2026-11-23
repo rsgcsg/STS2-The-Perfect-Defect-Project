@@ -593,6 +593,9 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     # The arm policy update: left out at "normal" (the rule before it), the same reason.
     if value["loss"].get("arm_policy_update", "normal") == "normal":
         value["loss"].pop("arm_policy_update", None)
+    # The row-mean score penalty (#632): left out at 0 (off), the same reason.
+    if value["loss"].get("logit_mean_penalty_coef", 0.0) == 0:
+        value["loss"].pop("logit_mean_penalty_coef", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
