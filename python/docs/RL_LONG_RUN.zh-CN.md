@@ -407,7 +407,8 @@ RL5 整链（env → 推理 → 组装 → 数据面 → 备料 → 训练 → �
        只许 `lr`、`segments.head_lr`、`loss.entropy_coef`、`loss.hp_coef`、
        `loss.hp_advantage_coef`（c_hp，血量优势系数；不是 HP 头损失权重 `loss.hp_coef`）、`loss.hp_advantage_scope`、`segments.target_kl`、
        `segments.kl_stop_scope`、`segments.value_target`、`segments.gae_lambda`、
-       `loss.explore_ratio_floor`、`segments.value_config_input`、`loss.arm_policy_update`；每个键为什么
+       `loss.explore_ratio_floor`、`segments.value_config_input`、`loss.arm_policy_update`、
+       `loss.logit_mean_penalty_coef`；每个键为什么
        可以改，写在 `python/stpd/rl/recipe_changes.py`。改 `segments.kl_stop_scope` 时，旋钮
        `kl_stop_scope` 也要设成同一个新值。`segments.value_config_input`（价值头读本局采样配置）
        只许从关到开（false -> true），旋钮 `value_config_input` 设 true；接上的 CP 的两个价值头

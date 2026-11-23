@@ -173,6 +173,33 @@ def test_prepared_precision_sets_and_restores_the_choice(model):
         PerformanceConfig(score_head_fp32=1)
 
 
+@pytest.mark.parametrize("tf32", [False, True])
+def test_prepared_precision_keeps_tf32_off_for_the_fp32_head(tf32):
+    """Strict FP32 like the inference service: on, the learner's matmul TF32 flag stays off;
+    off, it is `config.tf32` as before. No GPU here: a stand-in whose weights claim a CUDA
+    device drives only the flag logic; the flag's effect on an A100 matmul is not run."""
+    import types
+    import warnings
+
+    stand_in = types.SimpleNamespace(
+        ids=types.SimpleNamespace(weight=types.SimpleNamespace(device=torch.device("cuda"))),
+        score_head_fp32=False)
+    matmul = torch.backends.cuda.matmul
+    before = matmul.allow_tf32
+    try:
+        for head_fp32 in (False, True):
+            matmul.allow_tf32 = not tf32  # a different value going in: it is set, not kept
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # CPU-only autocast("cuda") warns, disabled
+                with prepared_precision(stand_in, PerformanceConfig(
+                        tf32=tf32, score_head_fp32=head_fp32)):
+                    assert matmul.allow_tf32 is (tf32 and not head_fp32)
+                    assert stand_in.score_head_fp32 is head_fp32
+            assert matmul.allow_tf32 is (not tf32)  # restored
+    finally:
+        matmul.allow_tf32 = before
+
+
 def test_old_checkpoint_weights_load_with_both_switches_on(model):
     """No new parameter or buffer: an existing state dict loads strictly."""
     fresh = copy.deepcopy(model)

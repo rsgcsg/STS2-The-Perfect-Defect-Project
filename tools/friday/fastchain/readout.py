@@ -63,7 +63,8 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
                     "approx_kl_control", "lr",
                     # #632 (stpd.rl.loss.SCORE_READOUT): per attempt p50/p90 of policy rows'
                     # raw score mean, max |score|, max - min; |action + read| on diagnostics
-                    # steps only (absent elsewhere); averaged over attempts like the rest
+                    # steps only (absent elsewhere); averaged over attempts like the rest;
+                    # under data parallel rank 0's rows only (as the loss.py comment)
                     "score_row_mean_p50", "score_row_mean_p90", "score_max_abs_p50",
                     "score_max_abs_p90", "score_range_p50", "score_range_p90",
                     "score_read_norm_p50", "score_read_norm_p90")

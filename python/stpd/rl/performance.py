@@ -75,8 +75,10 @@ class PerformanceConfig:
     prepared_bucket_rows: int = 256
     # #632: the action score head (`MStd.score_actions`) in FP32 with autocast off, so a
     # large common score offset is not rounded to BF16 before the softmax. Same function,
-    # other rounding (like the forward implementation: not resume-compared). Only changes
-    # anything under precision "bf16". The inference services take the same choice
+    # other rounding (like the forward implementation: not resume-compared). Strict FP32:
+    # on, `prepared_precision` leaves matmul TF32 off whatever `tf32` says (as the
+    # inference services). Without that, it changes anything only under precision
+    # "bf16". The inference services take the same choice
     # (`FastInferenceService(score_head_fp32=...)`); the operator sets both.
     score_head_fp32: bool = False
 
@@ -234,7 +236,11 @@ def prepared_precision(model: MStd, config: PerformanceConfig) -> Iterator[None]
     old_score_head = model.score_head_fp32
     try:
         if old_tf32 is not None:
-            torch.backends.cuda.matmul.allow_tf32 = config.tf32
+            # `score_head_fp32` means strict FP32, as the inference service (TF32 off), so
+            # the head's FP32 matmuls (forward and backward) must not run as TF32. Under
+            # BF16 autocast every other matmul is BF16 and does not read this flag; under
+            # precision "fp32" this also makes the rest of the forward strict FP32.
+            torch.backends.cuda.matmul.allow_tf32 = config.tf32 and not config.score_head_fp32
         model.score_head_fp32 = config.score_head_fp32
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=config.precision == "bf16"):
