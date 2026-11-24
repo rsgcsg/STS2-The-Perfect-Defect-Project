@@ -430,6 +430,42 @@ def test_bad_row_bytes_and_unknown_game_are_refused(vocabulary, model):
     assert aborted == {3: "ROW_DECODE_FAILED", 5: "IDENTITY_MISMATCH"}
 
 
+GREEDY = {**SAMPLING, "arm_id": "greedy",
+          "classes": {"combat": {"temperature": 0, "uniform_mix": 0.0},
+                      "noncombat": {"temperature": 0.0, "uniform_mix": 0.0}}}
+
+
+def test_a_greedy_class_takes_the_highest_score_with_a_one_hot_q(vocabulary, model):
+    """User 2026-11-24: temperature exactly 0 opens at the default minimum 1, every row takes
+    the first highest score, q is one-hot (selected_q 1) and `applied` echoes the 0."""
+    from stpd.p1.inference_service import check_sampling
+
+    assert check_sampling(GREEDY) is None and check_sampling(GREEDY, 0.25) is None
+    encoder = RowsEncoder(vocabulary)
+    observation = _observations(1)[0]
+    encoded = encoder.encode(json.dumps(observation).encode())
+    expected = RowsScorer(model, bf16=False).score(
+        [FrameCompiler(vocabulary).compile(observation)], [2])[0].scores
+    best = max(range(len(expected)), key=expected.__getitem__)
+    assert len(expected) > 1 and sorted(expected)[-2] < expected[best]  # a real choice
+    service = _service(vocabulary, model, FakeAssembler())
+    client = _open_client(service, encoder, "greedy", GREEDY)
+    try:
+        for request_id, in_combat in ((4, True), (5, False), (6, False)):
+            result = _score(client, encoded, request_id, "greedy", in_combat=in_combat)
+            policy = GREEDY["classes"]["combat" if in_combat else "noncombat"]
+            assert result["status"] == "scored"
+            assert result["applied"] == {"arm_id": "greedy", **policy, "decision_class":
+                                         "combat" if in_combat else "noncombat"}
+            assert result["selected_index"] == best
+            assert result["behavior_q"] == [float(i == best) for i in range(len(expected))]
+            assert result["selected_q"] == 1.0
+    finally:
+        client.close()
+        report = service.close()
+    assert report["episodes_refused"] == 0
+
+
 def _open_client(service: FastInferenceService, encoder: RowsEncoder, game: str,
                  sampling: dict[str, Any] = SAMPLING) -> Any:
     client = _attach(service, encoder.identity["encoder"])
@@ -777,7 +813,8 @@ def _bad_samplings() -> list[Any]:
     return [None, missing_seed, {**SAMPLING, "extra": 1}, {**SAMPLING, "mode": "greedy"},
             {**SAMPLING, "seed": 7}, {**SAMPLING, "arm_id": "a b"},
             {**SAMPLING, "classes": {"combat": SAMPLING["classes"]["combat"]}},
-            classes(temperature=0), classes(temperature=3.5), classes(temperature="1"),
+            # 0 is the greedy class now (test_rl_greedy_cell); just above it stays refused
+            classes(temperature=0.1), classes(temperature=3.5), classes(temperature="1"),
             classes(temperature=True), classes(uniform_mix=-0.01), classes(uniform_mix=0.2),
             {**SAMPLING, "classes": {**SAMPLING["classes"], "combat": {"temperature": 1.0}}}]
 
@@ -794,8 +831,8 @@ def test_episode_open_sampling_is_checked_and_a_bad_one_is_refused(vocabulary, m
     service = _service(vocabulary, model, FakeAssembler())
     client = _open_client(service, encoder, "good")
     try:
-        bad = {**SAMPLING, "classes": {**SAMPLING["classes"],
-                                       "combat": {"temperature": 0, "uniform_mix": 0.0}}}
+        bad = {**SAMPLING, "classes": {**SAMPLING["classes"],  # 0 would be greedy
+                                       "combat": {"temperature": 0.1, "uniform_mix": 0.0}}}
         client.send_bytes(pack_message({
             "schema": V3_SCHEMA, "kind": "episode_open", "ascension": 0, "request_id": 3,
             "game_instance_id": "bad", "actor_id": "a", "sampling": bad,

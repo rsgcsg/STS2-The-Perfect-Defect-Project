@@ -250,7 +250,8 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             assert getattr(source, name) == getattr(plain, name), name
         for name in ("probabilities", "targets", "raw_advantages"):
             assert torch.equal(getattr(source, name), getattr(plain, name)), name
-        assert [{k: v for k, v in m.items() if k not in ("exploration", "policy_entropy")}
+        assert [{k: v for k, v in m.items() if k not in (
+                    "exploration", "policy_entropy", "low_probability_noncombat")}
                 for m in source.metadata] == list(plain.metadata)
         # One count table per source, on its first row only (not a tuple per row).
         assert all("exploration" not in m for m in source.metadata[1:])
@@ -278,6 +279,19 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             row_entropy[1] += h
             row_entropy[2] += h / math.log(len(p))
         assert source.metadata[0]["exploration"] == expected
+        # rare noncombat choices (model p of the chosen option < 5%): no game reward under
+        # "segment" value targets, so no outcome column
+        rare = {}
+        for row, (kind, combat, _floor, reply) in enumerate(record["steps"]):
+            if not combat and record["p"][row][reply["selected_index"]] < 0.05:
+                total = rare.setdefault(f"{record['dose']}|{kind}", [0, 0.0, 0, 0.0])
+                total[0] += 1
+                total[1] += float(source.raw_advantages[row])
+        got_rare = source.metadata[0].get("low_probability_noncombat")
+        got_rows = got_rare["rows"] if got_rare else {}
+        assert set(got_rows) == set(rare)
+        for key, values in rare.items():
+            assert got_rows[key] == pytest.approx(values, abs=1e-6)
         got = source.metadata[0]["policy_entropy"]
         assert set(got) == set(entropy)
         for key, (rows, h, normalized) in entropy.items():

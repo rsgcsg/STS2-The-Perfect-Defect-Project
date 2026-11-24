@@ -119,6 +119,7 @@ from .learning_diagnostics import (
     entropy_fields,
     exploration_fields,
     explore_floor_by_arm,
+    low_probability_fields,
     policy_by_arm,
     row_arms,
     row_cells,
@@ -128,11 +129,16 @@ from .local_retention import LocalRetention
 from .local_retention import trim as local_retention_trim
 from .loss import (
     batch_arm_sampling,
+    batch_noncombat_rows,
+    learning_policy_mask,
     minibatch_control_rows,
     minibatch_explore_rows,
+    minibatch_learn_rows,
     prepared_update,
+    refuse_greedy_learning_rows,
     warmup_learning_rates,
     with_arm_sampling,
+    with_noncombat,
     with_value_config,
 )
 from .performance import PerformanceConfig
@@ -596,6 +602,11 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
     # The row-mean score penalty (#632): left out at 0 (off), the same reason.
     if value["loss"].get("logit_mean_penalty_coef", 0.0) == 0:
         value["loss"].pop("logit_mean_penalty_coef", None)
+    # The noncombat barrier and the observation cells (user 2026-11-24): the same reason.
+    if value["loss"].get("noncombat_log_barrier_coef", 0.0) == 0:
+        value["loss"].pop("noncombat_log_barrier_coef", None)
+    if not value["segments"].get("observe_arms"):
+        value["segments"].pop("observe_arms", None)
     if value.get("performance") is not None:
         from .performance import PREPARED_PERFORMANCE_FIELDS
 
@@ -679,6 +690,7 @@ class SegmentLearner:
     policy_mask_cache: tuple[Any, list[bool]] | None  # (batch, mask list): per dataset
     row_arm_cache: tuple[Any, list[str | None] | None] | None  # (batch, arms): per dataset
     row_cell_cache: tuple[Any, ValueCells | None] | None  # (batch, cells): per dataset
+    learn_mask_cache: tuple[Any, list[bool]] | None  # (batch, learning policy rows)
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
@@ -1581,6 +1593,8 @@ class SegmentLearner:
             "performance": asdict(self.performance), "target_kl": settings.target_kl,
             **({"kl_stop_scope": settings.kl_stop_scope}
                if settings.kl_stop_scope != "all" else {}),
+            **({"observe_arms": list(settings.observe_arms)}
+               if settings.observe_arms else {}),
             **({"lr_warmup_steps": settings.lr_warmup_steps}
                if settings.lr_warmup_steps else {}),
             "ema_decay": settings.ema_decay, "diagnostics_every": settings.diagnostics_every,
@@ -3792,6 +3806,11 @@ class SegmentLearner:
         if self.config.loss.arm_policy_update == "own":  # each row updates its own cell
             minibatch = with_arm_sampling(
                 minibatch, batch_arm_sampling(batch.metadata, batch.request), self.device)
+        if self.config.loss.noncombat_log_barrier_coef:  # the barrier's decision class
+            minibatch = with_noncombat(
+                minibatch, batch_noncombat_rows(batch.metadata, batch.request), self.device)
+        learning = self._learn_mask(batch)  # observation cells out; greedy rows checked
+        observing = bool(self.settings.observe_arms)
         result = prepared_update(
             self.model,
             self.optimizer,
@@ -3803,18 +3822,22 @@ class SegmentLearner:
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
             collect_policy_rows=True,
             control_rows=(minibatch_control_rows(minibatch, self._dataset_arms(batch),
-                                                 self._policy_mask(batch))
+                                                 learning)
                           if self.settings.kl_stop_scope == "control" else None),
             explore_rows=(minibatch_explore_rows(minibatch, self._dataset_arms(batch),
-                                                 self._policy_mask(batch))
+                                                 learning)
                           if self.config.loss.explore_ratio_floor else None),
             value_cells=self._dataset_cells(batch, configs),
+            learn_rows=minibatch_learn_rows(minibatch, learning) if observing else None,
         )
         if index == 0 and active["epoch"] == 0:  # once per dataset, before its normalization
             result["advantage_raw"] = advantage_fields(self.device_batch.normalization)
             result["exploration"] = exploration_fields(self.device_batch.metadata)
             result["value_target"] = value_target_fields(self.device_batch.metadata)
             result["policy_entropy"] = entropy_fields(self.device_batch.metadata)
+            rare = low_probability_fields(self.device_batch.metadata)
+            if rare is not None:
+                result["low_probability_noncombat"] = rare
         policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         return self._account_step(active, batch, index, len(batch.minibatches), result,
@@ -3923,7 +3946,7 @@ class SegmentLearner:
             self.active = self.active_batch = None
             self.device_batch = None
             self.policy_mask_cache = None  # never retain a finished batch
-            self.row_arm_cache = self.row_cell_cache = None
+            self.row_arm_cache = self.row_cell_cache = self.learn_mask_cache = None
             self._promote()  # before forgetting: its sources stay retained
             self._forget_unreferenced()
             if self.updates > active["start_updates"]:
@@ -3973,6 +3996,19 @@ class SegmentLearner:
             derived = row_arms(batch.metadata, [m.rows for m in batch.request.members])
             self.row_arm_cache = batch, (derived if any(derived) else None)
         return self.row_arm_cache[1]
+
+    def _learn_mask(self, batch: Any) -> list[bool]:
+        """Per row of `batch`, once per dataset: the policy rows that learn, i.e. the policy
+        mask without `segments.observe_arms` rows (`learning_policy_mask`); no learning row
+        may be greedy (`refuse_greedy_learning_rows`)."""
+        if self.learn_mask_cache is None or self.learn_mask_cache[0] is not batch:
+            mask = self._policy_mask(batch)
+            if self.settings.observe_arms:
+                mask = learning_policy_mask(self._dataset_arms(batch), mask,
+                                            frozenset(self.settings.observe_arms))
+            refuse_greedy_learning_rows(batch.metadata, mask)
+            self.learn_mask_cache = batch, mask
+        return self.learn_mask_cache[1]
 
     def _dataset_cells(self, batch: Any, configs: list[tuple[float, ...]] | None
                        ) -> ValueCells | None:
@@ -4076,7 +4112,7 @@ class SegmentLearner:
     def _init_progress_telemetry(self) -> None:
         self.memory_sample = None
         self.policy_mask_cache = None
-        self.row_arm_cache = self.row_cell_cache = None
+        self.row_arm_cache = self.row_cell_cache = self.learn_mask_cache = None
 
     def _memory(self) -> dict[str, Any]:
         """Peak memory, sampled at most every MEMORY_SAMPLE_SECONDS (peaks only grow)."""

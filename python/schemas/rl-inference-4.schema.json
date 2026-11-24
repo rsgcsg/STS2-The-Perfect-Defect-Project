@@ -36,7 +36,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["temperature", "uniform_mix"],
       "properties": {
-        "temperature": {"description": "Envelope [0.25, 3]; the service refuses an episode below the run's configured minimum (recipe sampling_temperature_min, default 1).", "type": "number", "minimum": 0.25, "maximum": 3.0},
+        "temperature": {"description": "Envelope [0.25, 3]; the service refuses an episode below the run's configured minimum (recipe sampling_temperature_min, default 1). Exactly 0 = greedy (the T -> 0 limit, whatever the minimum): the highest score, the lowest catalog position on ties, so q is one-hot at uniform_mix 0; the learner trains no policy on such rows.", "type": "number", "anyOf": [{"const": 0}, {"minimum": 0.25, "maximum": 3.0}]},
         "uniform_mix": {"type": "number", "minimum": 0, "maximum": 0.1}
       }
     },

@@ -100,8 +100,20 @@ NORMAL_SAMPLING = (1.0, 0.0)  # (T, m) of the T = 1 policy: auxiliary rows (no p
 
 
 def _checked_sampling(value: Any) -> tuple[float, float]:
-    from stpd.p1.sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
+    from stpd.p1.sampling import (
+        ARM_TEMPERATURE_FLOOR,
+        ARM_TEMPERATURE_MAX,
+        ARM_UNIFORM_MIX_MAX,
+        is_greedy,
+    )
 
+    if value is not None and len(value) == 2 and is_greedy(value[0]):
+        # A greedy class (T = 0) has no differentiable cell policy. Its rows carry no policy
+        # weight (`refuse_greedy_learning_rows`: only observation cells may be greedy), so,
+        # like the auxiliary rows, they take the T = 1 dummy.
+        if type(value[1]) not in (int, float) or not 0 <= value[1] <= ARM_UNIFORM_MIX_MAX:
+            raise ValueError("arm_sampling_missing_or_invalid")
+        return NORMAL_SAMPLING
     if (value is None or len(value) != 2
             or type(value[0]) not in (int, float) or type(value[1]) not in (int, float)
             or not ARM_TEMPERATURE_FLOOR <= value[0] <= ARM_TEMPERATURE_MAX
@@ -147,6 +159,92 @@ def arm_log_probabilities(scores: torch.Tensor, sampling: torch.Tensor,
     return mixed.masked_fill(~valid, -torch.inf)
 
 
+# Observation cells (`segments.observe_arms`, user 2026-11-24): the rows of a named cell (an
+# arm and its save starts `<arm>+save`) keep their value / HP targets but leave the policy
+# part of the loss: no policy, entropy or noncombat-barrier term, and no weight in the KL
+# stop, the clip fraction or the per-arm policy statistics. The policy denominator is the
+# minibatch's learning policy rows. Empty (default): every policy row learns, as before.
+def learning_policy_mask(arms: list[str | None] | None, policy_mask: list[bool],
+                         observe: Any) -> list[bool]:
+    """Per dataset row (`PreparedBatch.policy_mask` as a list): True for a policy row whose
+    cell is not in `observe`. `arms` = the dataset's `row_arms` (None: no source names one).
+    A policy row without an arm fails: an observation cell is never guessed."""
+    out = []
+    for row, policy in enumerate(policy_mask):
+        if not policy:
+            out.append(False)
+            continue
+        arm = arms[row] if arms is not None and row < len(arms) else None
+        if arm is None:
+            raise ValueError("observe_arms_need_row_arms")
+        out.append(arm.split("+", 1)[0] not in observe)
+    return out
+
+
+def refuse_greedy_learning_rows(metadata: Any, learn: list[bool]) -> None:
+    """A greedy class (T = 0, `stpd.p1.sampling.is_greedy`) records a one-hot q: its rows
+    are observation rows only. Fails when one of the dataset's learning policy rows
+    (`learn`: `learning_policy_mask`, or the policy mask without observation cells) was
+    sampled greedily (`metadata["arm_sampling"]`, fast_source); rows without it pass."""
+    from stpd.p1.sampling import is_greedy
+
+    for row, meta in enumerate(metadata):
+        cell = meta.get("arm_sampling")
+        if learn[row] and cell is not None and is_greedy(cell[0]):
+            raise ValueError("greedy_row_needs_an_observation_cell")
+
+
+def minibatch_learn_rows(minibatch: Any, learn: list[bool]) -> list[bool]:
+    """`learning_policy_mask` of the dataset in `minibatch`'s tensor order."""
+    return [learn[row] for group in minibatch.groups for row in group.rows]
+
+
+# Noncombat log barrier (`loss.noncombat_log_barrier_coef` beta, user 2026-11-24): on every
+# learning policy row (>= 2 legal choices) outside combat, adds -beta * the mean over the
+# row's legal catalog of log pi(a|s) (the T = 1 log_softmax on the catalog), with the
+# policy term's row weight and denominator. Its gradient on a row's scores is
+# beta * w * (pi(a) - 1 / N): it lifts the options below uniform, the rarest most. It needs
+# each row's combat flag (`with_noncombat`). 0 = off (the loss before it exactly).
+BARRIER_READOUT = ("noncombat_barrier", "noncombat_barrier_rows",
+                   "noncombat_min_probability_p50", "noncombat_min_probability_p10")
+
+
+def batch_noncombat_rows(metadata: Any, request: Any) -> list[bool]:
+    """Every row of a prepared dataset in its row order: True for a PPO row outside combat
+    (`metadata["in_combat"]`, fast_source), False for the auxiliary rows `n + local`. A PPO
+    row without the flag fails (the barrier never guesses a decision class)."""
+    if len(metadata) != sum(member.rows for member in request.members):
+        raise ValueError("batch_noncombat_rows: members do not cover the metadata")
+    out = []
+    for row in metadata:
+        flag = row.get("in_combat")
+        if type(flag) is not bool:
+            raise ValueError("noncombat_barrier_needs_row_in_combat")
+        out.append(not flag)
+    out.extend([False] * len(request.auxiliary))
+    return out
+
+
+def with_noncombat(minibatch: Any, rows: list[bool], device: Any) -> Any:
+    """`minibatch` with tensor "noncombat" (float [rows], its tensor order) from
+    `batch_noncombat_rows`. Added before the step (and an offline dump), like the cells."""
+    value = torch.tensor([rows[row] for group in minibatch.groups for row in group.rows],
+                         dtype=torch.float32).to(device)
+    return replace(minibatch, tensors={**minibatch.tensors, "noncombat": value})
+
+
+def _barrier_readout(rows: list[torch.Tensor], like: torch.Tensor) -> torch.Tensor:
+    """`BARRIER_READOUT` in order: this rank's barrier term (sum over its rows), its rows,
+    p50 / p10 of those rows' smallest legal probability (NaN without a row)."""
+    if not rows:
+        return like.new_tensor((0.0, 0.0, math.nan, math.nan), dtype=torch.float32)
+    values = torch.cat(rows).float()
+    present = ~torch.isnan(values[:, 0])
+    return torch.cat((values[:, 0].nansum()[None], present.sum().float()[None],
+                      values[:, 1].nanquantile(values.new_tensor((0.5, 0.1))))
+                     ).to(like.dtype)
+
+
 def warmup_learning_rates(optimizer: torch.optim.Optimizer, base: tuple[float, ...],
                           updates: int, steps: int) -> None:
     """`segments.lr_warmup_steps` (RL5-METHODS K): before optimizer step `updates + 1`
@@ -187,6 +285,9 @@ def batched_segment_loss(
     explore_ratio_floor: float = 0.0,
     logit_mean_penalty_coef: float = 0.0,
     score_rows: list[torch.Tensor] | None = None,
+    noncombat_log_barrier_coef: float = 0.0,
+    barrier_rows: list[torch.Tensor] | None = None,
+    observed_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
@@ -205,6 +306,13 @@ def batched_segment_loss(
     added to the policy component. `score_rows` (readout): appends a [rows, 3] tensor of
     each row's raw catalog score mean, max |score| and max - min, NaN on rows that are not
     policy rows.
+    `noncombat_log_barrier_coef` (`LossConfig.noncombat_log_barrier_coef`, 0 = off): see
+    `BARRIER_READOUT`; it needs `t["noncombat"]` (`with_noncombat`) and is added to the
+    policy component. `barrier_rows` (readout, coef > 0): appends a [rows, 2] tensor of each
+    barrier row's term and smallest legal probability, NaN elsewhere.
+    `observed_rows` (`segments.observe_arms` non-empty): the caller zeroed the policy weight
+    of observation rows; their acting-KL terms are then dropped before the weight, so a
+    greedy row's one-hot q (0 * inf) cannot turn the total into NaN.
     """
     logp = scores.float().log_softmax(-1)
     probability = logp.exp()
@@ -237,11 +345,11 @@ def batched_segment_loss(
         control_kl.append(((ratio.detach() - 1 - log_ratio.detach())
                            * t["control_weight"]).sum())
     clipped = (((ratio.detach() - 1).abs() > clip).float() * policy_mask).sum()
-    reverse = (
-        (cell_probability * safe_cell
-         - torch.special.xlogy(cell_probability, t["old_probabilities"])).sum(-1)
-        * policy_mask
-    ).sum()
+    reverse_rows = (cell_probability * safe_cell
+                    - torch.special.xlogy(cell_probability, t["old_probabilities"])).sum(-1)
+    if observed_rows:
+        reverse_rows = reverse_rows.masked_fill(t["policy_mask"] == 0, 0)
+    reverse = (reverse_rows * policy_mask).sum()
     if row_diagnostics is not None:
         with torch.no_grad():
             old = t["old_probabilities"]
@@ -286,6 +394,19 @@ def batched_segment_loss(
                 score_rows.append(torch.stack((
                     row_mean.detach(), raw.detach().abs().amax(-1), spread), 1).masked_fill(
                         ~policy_row[:, None], math.nan))
+    if noncombat_log_barrier_coef:
+        valid = t["catalog_valid"]
+        weight = policy_mask * t["noncombat"]  # the policy term's row weight, noncombat only
+        mean_logp = safe_logp.sum(-1) / valid.sum(-1).clamp_min(1)
+        barrier = -(mean_logp * weight).sum()
+        policy_component = policy_component + noncombat_log_barrier_coef * barrier
+        if barrier_rows is not None:
+            with torch.no_grad():
+                row = (t["policy_mask"] * t["noncombat"]) > 0
+                smallest = probability.detach().masked_fill(~valid, math.inf).amin(-1)
+                barrier_rows.append(torch.stack((
+                    -noncombat_log_barrier_coef * mean_logp.detach() * weight.detach(),
+                    smallest), 1).masked_fill(~row[:, None], math.nan))
     components = (
         policy_component,
         value_coef * td,
@@ -346,8 +467,14 @@ def prepared_update(
     control_rows: list[bool] | None = None,
     explore_rows: list[bool] | None = None,
     value_cells: ValueCells | None = None,
+    learn_rows: list[bool] | None = None,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
+
+    `learn_rows` (`segments.observe_arms` non-empty): per row of this minibatch in tensor
+    order (`minibatch_learn_rows`), True for a policy row of a learning cell. Every other
+    row's policy weight is 0 (no policy, entropy or barrier gradient, no KL / clip weight)
+    and the policy denominator is the count of True rows. None: every policy row learns.
 
     `value_cells` (diagnostics only, `learning_diagnostics.row_cells` of the dataset):
     on `diagnostics` steps adds `value_by_cell` and, with value-config heads,
@@ -400,6 +527,16 @@ def prepared_update(
         # minibatch carrying cells under "normal" would silently change the rule. Both fail.
         if (config.arm_policy_update == "own") != ("arm_sampling" in t):
             raise ValueError("arm_sampling_must_match_arm_policy_update")
+        # The same for the noncombat barrier's per-row combat flag (`with_noncombat`).
+        if bool(config.noncombat_log_barrier_coef) != ("noncombat" in t):
+            raise ValueError("noncombat_rows_must_match_noncombat_log_barrier_coef")
+        multi = minibatch.policy_rows
+        if learn_rows is not None:
+            if len(learn_rows) != len(t["targets"]):
+                raise ValueError("learn_rows_must_cover_the_minibatch")
+            multi = sum(learn_rows)
+            t = {**t, "policy_mask": t["policy_mask"] * torch.tensor(
+                learn_rows, dtype=torch.float32).to(device)}
         control_count = sum(control_rows) if control_rows is not None else 0
         control_parts: list[torch.Tensor] | None = None
         if control_rows is not None:
@@ -440,6 +577,7 @@ def prepared_update(
                 lambda module, inputs, output: store.append(output.detach()))
         dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
         score_rows: list[torch.Tensor] = []  # readout: row score mean, max |score| (#632)
+        barrier_rows: list[torch.Tensor] = []  # readout: noncombat barrier rows (beta > 0)
         read_rows: list[torch.Tensor] = []  # diagnostics steps: per row mean |action + read|
         head_inputs: list[torch.Tensor] | None = None
         if diagnostics:
@@ -504,12 +642,14 @@ def prepared_update(
                     entropy_coef=config.entropy_coef, value_coef=config.value_coef,
                     policy_coef=config.policy_coef,
                     terminal_coef=config.terminal_coef, hp_coef=config.hp_coef,
-                    multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
+                    multi=multi, td_rows=minibatch.td_rows,
                     terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows,
                     row_diagnostics=row_diagnostics, control_kl=control_parts,
                     explore_ratio_floor=config.explore_ratio_floor,
                     logit_mean_penalty_coef=config.logit_mean_penalty_coef,
-                    score_rows=score_rows)
+                    score_rows=score_rows,
+                    noncombat_log_barrier_coef=config.noncombat_log_barrier_coef,
+                    barrier_rows=barrier_rows, observed_rows=learn_rows is not None)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
                 if head_inputs:
@@ -540,7 +680,7 @@ def prepared_update(
                 phases["loss"] += time.perf_counter() - phase
                 if diagnostic is not None:
                     phase = time.perf_counter()
-                    diagnostic.add(components, (minibatch.policy_rows, minibatch.td_rows,
+                    diagnostic.add(components, (multi, minibatch.td_rows,
                                                minibatch.terminal_rows, minibatch.hp_rows))
                     phases["diagnostics"] += time.perf_counter() - phase
                 phase = time.perf_counter()
@@ -587,6 +727,9 @@ def prepared_update(
             score_at = decision.numel()
             decision = torch.cat((decision, _score_quantiles(score_rows, read_rows,
                                                              decision)))
+            barrier_at = decision.numel()
+            if config.noncombat_log_barrier_coef:  # readout, rank-local like the scores
+                decision = torch.cat((decision, _barrier_readout(barrier_rows, decision)))
             cell_size = cell_sums.numel() + cross_sums.numel()
             decision = torch.cat((decision, cell_sums.detach().float(),
                                   cross_sums.detach().float(), value_sums.detach().float()))
@@ -656,6 +799,14 @@ def prepared_update(
         result.update(learning_diagnostics.headline(result["value_statistics"]))
         result.update({name: value if math.isfinite(value) else None for name, value in zip(
             SCORE_READOUT, measured[score_at:score_at + len(SCORE_READOUT)], strict=True)})
+        if config.noncombat_log_barrier_coef:
+            barrier = measured[barrier_at:barrier_at + len(BARRIER_READOUT)]
+            result.update({name: value if math.isfinite(value) else None
+                           for name, value in zip(BARRIER_READOUT, barrier, strict=True)})
+            result["noncombat_barrier_rows"] = round(barrier[1])
+        if learn_rows is not None:
+            result["policy_learning_rows"] = multi
+            result["policy_observed_rows"] = minibatch.policy_rows - multi
         if value_cells is not None:
             start = values_end - learning_diagnostics.SIZE - cell_size
             split = start + cell_count * learning_diagnostics.CELL_SIZE
@@ -836,6 +987,11 @@ class LossConfig:
     # (its gradient is the same for every catalog entry of a row). 0 = off (today's loss
     # exactly). prepared_update only; resume-locked like every loss key, declarable.
     logit_mean_penalty_coef: float = 0.0
+    # beta (user 2026-11-24): the noncombat log barrier (`BARRIER_READOUT`): adds -beta * the
+    # mean over a learning noncombat policy row's legal catalog of log pi(a|s), T = 1, with
+    # the policy term's row weight and denominator. 0 = off (today's loss exactly).
+    # prepared_update only; resume-locked like every loss key, declarable.
+    noncombat_log_barrier_coef: float = 0.0
 
     def __post_init__(self) -> None:
         if self.arm_policy_update not in ARM_POLICY_UPDATES:
@@ -846,7 +1002,8 @@ class LossConfig:
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef, self.policy_coef,
                                  self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef,
-                                 self.hp_advantage_coef, self.logit_mean_penalty_coef))
+                                 self.hp_advantage_coef, self.logit_mean_penalty_coef,
+                                 self.noncombat_log_barrier_coef))
                 or type(self.clip) not in (int, float) or not 0 < self.clip <= 1
                 or type(self.max_grad_norm) not in (int, float)
                 or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
@@ -931,6 +1088,8 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
         raise BoundaryError("rl_loss", "arm_policy_update_needs_prepared_update")
     if config.logit_mean_penalty_coef:  # the same: prepared_update only
         raise BoundaryError("rl_loss", "logit_mean_penalty_needs_prepared_update")
+    if config.noncombat_log_barrier_coef:  # the same: prepared_update only
+        raise BoundaryError("rl_loss", "noncombat_log_barrier_needs_prepared_update")
     if config.mode == "ppo":
         if performance is not None:
             from .performance import prepare_models

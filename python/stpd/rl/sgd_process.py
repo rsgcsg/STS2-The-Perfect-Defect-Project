@@ -1329,6 +1329,8 @@ class _SgdWorker:
         self.target_kl, self.ema_decay = init["target_kl"], init["ema_decay"]
         # RL5-METHODS K (absent from an older controller's init = the defaults).
         self.kl_stop_scope = init.get("kl_stop_scope", "all")
+        # Observation cells (absent from an older controller's init = none).
+        self.observe_arms = frozenset(init.get("observe_arms", ()))
         self.lr_warmup_steps = init.get("lr_warmup_steps", 0)
         self.base_rates = (init["lr"], init["head_lr"])  # the configured, not the CP's
         self.diagnostics_every = init["diagnostics_every"]
@@ -1459,7 +1461,13 @@ class _SgdWorker:
         """
         from . import batch_preparation as bp
         from .heads import CONTROL_VALUE_CONFIG
-        from .loss import NORMAL_SAMPLING, prepared_update, with_arm_sampling, with_value_config
+        from .loss import (
+            NORMAL_SAMPLING,
+            prepared_update,
+            with_arm_sampling,
+            with_noncombat,
+            with_value_config,
+        )
         from .offline_step import load
 
         torch = self.torch
@@ -1484,6 +1492,11 @@ class _SgdWorker:
         if self.loss.arm_policy_update == "own" and "arm_sampling" not in staged.tensors:
             # never steps either: the T = 1 cell gives the live step's shapes
             staged = with_arm_sampling(staged, [NORMAL_SAMPLING] * (1 + max(
+                (row for group in staged.groups for row in group.rows), default=0)),
+                self.device)
+        if self.loss.noncombat_log_barrier_coef and "noncombat" not in staged.tensors:
+            # never steps either: combat rows give the live step's shapes
+            staged = with_noncombat(staged, [False] * (1 + max(
                 (row for group in staged.groups for row in group.rows), default=0)),
                 self.device)
         devices = [self.device] if self.device.type == "cuda" else []
@@ -1735,17 +1748,23 @@ class _SgdWorker:
             advantage_fields,
             entropy_fields,
             exploration_fields,
+            low_probability_fields,
             row_arms,
             row_cells,
             value_target_fields,
         )
         from .loss import (
             batch_arm_sampling,
+            batch_noncombat_rows,
+            learning_policy_mask,
             minibatch_control_rows,
             minibatch_explore_rows,
+            minibatch_learn_rows,
             prepared_update,
+            refuse_greedy_learning_rows,
             warmup_learning_rates,
             with_arm_sampling,
+            with_noncombat,
             with_value_config,
         )
 
@@ -1761,10 +1780,18 @@ class _SgdWorker:
         # once per dataset (every rank holds it whole); the floor's rows as the learner's
         # `_dataset_arms`: None when no source names an arm
         floor = self.loss.explore_ratio_floor
-        if self.kl_stop_scope == "control" or floor:
+        if self.kl_stop_scope == "control" or floor or self.observe_arms:
             arms = row_arms(device_batch.metadata,
                             [m.rows for m in device_batch.request.members])
-            policy = device_batch.policy_mask.tolist()
+        # the policy rows that learn: observation cells out (`learning_policy_mask`, as the
+        # learner's `_learn_mask`); no learning row may be greedy
+        policy = device_batch.policy_mask.tolist()
+        if self.observe_arms:
+            policy = learning_policy_mask(arms if arms and any(arms) else None, policy,
+                                          self.observe_arms)
+        refuse_greedy_learning_rows(device_batch.metadata, policy)
+        noncombat = (batch_noncombat_rows(device_batch.metadata, device_batch.request)
+                     if self.loss.noncombat_log_barrier_coef else None)
         # segments.value_config_input: each row's (PPO and auxiliary) sampling config
         configs = (batch_value_configs(device_batch.metadata, device_batch.request)
                    if self.model.rl4_heads.has_value_config else None)
@@ -1810,6 +1837,8 @@ class _SgdWorker:
                 batch = with_value_config(batch, configs, self.device)
             if cells is not None:  # the same: the dump and its replay carry the cells
                 batch = with_arm_sampling(batch, cells, self.device)
+            if noncombat is not None:  # the same for the barrier's decision class
+                batch = with_noncombat(batch, noncombat, self.device)
             diagnostics = self.updates % self.diagnostics_every == 0
             dumped = None
             if (self.next_dump is not None and self.updates >= self.next_dump
@@ -1838,7 +1867,9 @@ class _SgdWorker:
                               if self.kl_stop_scope == "control" else None),
                 explore_rows=(minibatch_explore_rows(batch, arms if arms and any(arms)
                                                      else None, policy) if floor else None),
-                value_cells=value_cells)
+                value_cells=value_cells,
+                learn_rows=(minibatch_learn_rows(batch, policy) if self.observe_arms
+                            else None))
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
                 result = self.gather_step(result, diagnostics)
@@ -1848,6 +1879,9 @@ class _SgdWorker:
                     result["exploration"] = exploration_fields(device_batch.metadata)
                     result["value_target"] = value_target_fields(device_batch.metadata)
                     result["policy_entropy"] = entropy_fields(device_batch.metadata)
+                    rare = low_probability_fields(device_batch.metadata)
+                    if rare is not None:
+                        result["low_probability_noncombat"] = rare
             ema_seconds = 0.0
             if result["stepped"]:
                 self.state["stage"] = "ema"

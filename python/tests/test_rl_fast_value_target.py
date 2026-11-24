@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import math
 import os
 import random
 from typing import Any
@@ -23,6 +24,7 @@ from test_rl_fast_source import (
 
 from stpd.rl.fast_source import (
     ENVELOPE_KEYS,
+    GAME_REWARD_KEY,
     GAME_TARGET_KEYS,
     SPILL_SUFFIX,
     FastIntakeError,
@@ -188,7 +190,10 @@ def test_a_held_game_is_spilled_then_admitted_at_close_with_whole_game_targets(t
     cursor, weights = 0, []
     for segment, envelope in decision.admit:
         assert segment.data == next(s.data for s in sealed if s.segment_id == segment.segment_id)
-        assert set(envelope) == ENVELOPE_KEYS | GAME_TARGET_KEYS
+        assert set(envelope) == ENVELOPE_KEYS | GAME_TARGET_KEYS | {GAME_REWARD_KEY}
+        # readout only: the game's real reward (terminal end) on every segment of it
+        assert envelope[GAME_REWARD_KEY] == float(class_reward_values()[
+            sealed[-1].header["seal"]["terminal"]["class"]])
         source, _ = decode_fast_packet(segment.data, envelope=envelope, compiler=COMPILER)
         n = len(segment.header["rows"])
         assert torch.allclose(source.targets.double(), whole[cursor:cursor + n], atol=2e-6)
@@ -255,6 +260,7 @@ def test_a_stop_closed_game_stitches_to_its_last_bootstrap(tmp_path):
     assert envelopes[0]["value_target_tail"] is not None and envelopes[1]["value_target_tail"] \
         is None
     assert envelopes[0]["outcome_tail_weight"] == envelopes[1]["outcome_tail_weight"] == 0
+    assert envelopes[0][GAME_REWARD_KEY] is envelopes[1][GAME_REWARD_KEY] is None  # no end
     assert i.report()["game_target_bootstrap_end_rows"] == 128
 
 
@@ -315,7 +321,7 @@ def test_label_rows_of_a_held_game_take_the_released_envelopes_at_the_close(tmp_
     assert {row["segment"].segment_id for row in rows} == set(released)
     for row in rows:
         assert row["envelope"] is released[row["segment"].segment_id]
-        assert set(row["envelope"]) == ENVELOPE_KEYS | GAME_TARGET_KEYS
+        assert set(row["envelope"]) == ENVELOPE_KEYS | GAME_TARGET_KEYS | {GAME_REWARD_KEY}
 
 
 def test_label_rows_of_an_excluded_held_game_leave_with_it(tmp_path):
@@ -566,6 +572,19 @@ def test_decode_refuses_a_stitched_tail_on_a_terminal_segment():
     with pytest.raises(FastIntakeError, match="fields"):
         decode_fast_packet(terminal.data, envelope={**envelope_for(terminal),
                                                     "value_target_tail": None},
+                           compiler=COMPILER)
+    game = {**envelope_for(terminal), "value_target_tail": None,
+            "outcome_tail_weight": 1.0, "rows_to_game_end": 0}
+    for bad in (1, math.nan, "0.5", True):
+        with pytest.raises(FastIntakeError, match="game_reward"):
+            decode_fast_packet(terminal.data, envelope={**game, GAME_REWARD_KEY: bad},
+                               compiler=COMPILER)
+    for good in (None, 0.25):  # optional beside the game keys, never alone
+        decode_fast_packet(terminal.data, envelope={**game, GAME_REWARD_KEY: good},
+                           compiler=COMPILER)
+    with pytest.raises(FastIntakeError, match="fields"):
+        decode_fast_packet(terminal.data, envelope={**envelope_for(terminal),
+                                                    GAME_REWARD_KEY: 0.25},
                            compiler=COMPILER)
 
 

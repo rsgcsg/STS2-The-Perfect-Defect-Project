@@ -22,7 +22,12 @@ from typing import Any, cast
 import torch
 from torch import Tensor, nn
 
-from stpd.p1.sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
+from stpd.p1.sampling import (
+    ARM_TEMPERATURE_FLOOR,
+    ARM_TEMPERATURE_MAX,
+    ARM_UNIFORM_MIX_MAX,
+    is_greedy,
+)
 from stpd.p1.value_head import AttentionValueResidual
 
 # Golden Compass has a witnessed alternate Act-2 map: natural death on floor35
@@ -43,13 +48,18 @@ _BOSS_FLOORS = (17, 33, 48)
 # per row: (ln T, mix / 0.1) of the combat class, then of the noncombat class. Control
 # (T 1, mix 0) is all zeros. Within the rl-inference-4 arm envelope (`stpd.p1.sampling`)
 # ln T spans [ln 0.25, ln 3] ~ [-1.39, 1.10] ([0, 1.10] at the default temperature
-# minimum 1) and mix / 0.1 spans [0, 1], so both inputs are order one. The policy logits
-# never read it.
+# minimum 1) and mix / 0.1 spans [0, 1], so both inputs are order one; a greedy class reads
+# ln T = ln(floor / 2) (`GREEDY_VALUE_LOG_TEMPERATURE`). The policy logits never read it.
 VALUE_CONFIG_SIZE = 4
 VALUE_CONFIG_HEAD = "rl4-value-config-4"  # architecture["auxiliary_heads"] entry
 # Rl4Heads state keys: one ParameterDict registered after `hp`, so last in parameter order.
 VALUE_CONFIG_KEYS = ("value_config.outcome", "value_config.hp")
 CONTROL_VALUE_CONFIG = (0.0,) * VALUE_CONFIG_SIZE
+# A greedy class (T = 0, `stpd.p1.sampling.GREEDY_TEMPERATURE`; user 2026-11-24) has no
+# ln T. It reads as T = floor / 2: colder than every sampled cell, distinct from all of
+# them by construction (no run rule needed) and still order one (-2.08). The 4 inputs
+# and every stored config of a sampled cell are unchanged, so an older CP loads as is.
+GREEDY_VALUE_LOG_TEMPERATURE = math.log(ARM_TEMPERATURE_FLOOR / 2)
 
 
 def value_config_vector(classes: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -58,11 +68,13 @@ def value_config_vector(classes: dict[str, Any]) -> tuple[float, float, float, f
     for name in ("combat", "noncombat"):
         policy = classes[name]
         temperature, mix = policy["temperature"], policy["uniform_mix"]
+        greedy = is_greedy(temperature)
         if (type(temperature) not in (int, float)
-                or not ARM_TEMPERATURE_FLOOR <= temperature <= ARM_TEMPERATURE_MAX
+                or not (greedy or ARM_TEMPERATURE_FLOOR <= temperature <= ARM_TEMPERATURE_MAX)
                 or type(mix) not in (int, float) or not 0 <= mix <= ARM_UNIFORM_MIX_MAX):
             raise ValueError("invalid_value_config_sampling")
-        out += [math.log(temperature), mix / ARM_UNIFORM_MIX_MAX]
+        out += [GREEDY_VALUE_LOG_TEMPERATURE if greedy else math.log(temperature),
+                mix / ARM_UNIFORM_MIX_MAX]
     return out[0], out[1], out[2], out[3]
 
 

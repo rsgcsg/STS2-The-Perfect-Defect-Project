@@ -67,9 +67,19 @@ LEARNING_SCALARS = ("td_loss", "policy_loss", "entropy", "approx_kl_mu_theta",
                     # under data parallel rank 0's rows only (as the loss.py comment)
                     "score_row_mean_p50", "score_row_mean_p90", "score_max_abs_p50",
                     "score_max_abs_p90", "score_range_p50", "score_range_p90",
-                    "score_read_norm_p50", "score_read_norm_p90")
+                    "score_read_norm_p50", "score_read_norm_p90",
+                    # stpd.rl.loss.BARRIER_READOUT (loss.noncombat_log_barrier_coef > 0 only):
+                    # the barrier term, its rows, p50/p10 of their smallest legal probability;
+                    # rank 0's rows under data parallel, like the scores
+                    "noncombat_barrier", "noncombat_barrier_rows",
+                    "noncombat_min_probability_p50", "noncombat_min_probability_p10",
+                    # segments.observe_arms only: policy rows per attempt that learn / observe
+                    "policy_learning_rows", "policy_observed_rows")
 # stpd.rl.learning_diagnostics.exploration_fields: per "arm|actN|decision" these counts.
 EXPLORATION_FIELDS = ("rows", "second", "third_plus", "top_p_over_099", "nontop_positive")
+# stpd.rl.learning_diagnostics.LOW_PROBABILITY_FIELDS: per "arm|decision", noncombat rows
+# whose chosen option had model probability (T 1) < 5%, plus the distinct games (`games`)
+LOW_PROBABILITY_FIELDS = ("rows", "advantage_sum", "outcome_rows", "outcome_minus_value_sum")
 # stpd.rl.learning_diagnostics.POLICY_ARM_FIELDS: per arm, summed over policy rows
 UNATTRIBUTED = "unattributed"  # learning_diagnostics: rows of a source without a table
 POLICY_ARM_FIELDS = ("rows", "approx_kl_sum", "outside_clip", "ratio_nonfinite")
@@ -539,7 +549,7 @@ LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advanta
                  "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped",
                  "value_target",
                  "value_calibration", "policy_entropy", "first_use_mu_age_seconds",
-                 "value_by_cell", "value_cross_cell")
+                 "value_by_cell", "value_cross_cell", "low_probability_noncombat")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
 
@@ -653,6 +663,9 @@ class _Learning:
         self.raw_last: dict[str, Any] | None = None
         self.hp = [0.0, 0.0, 0]  # A2, c_hp > 0: sum of hp_share, of hp_std, datasets
         self.exploration: dict[str, list[int]] = {}
+        # rare noncombat choices: per "arm|decision" LOW_PROBABILITY_FIELDS and game keys
+        self.rare: dict[str, list[float]] = {}
+        self.rare_games: dict[str, set[str]] = {}
         self.policy_arms: dict[str, list[float]] = {}
         self.floor_arms: dict[str, list[float]] = {}  # loss.explore_ratio_floor > 0
         self.cells: dict[str, dict[str, Any]] = {}  # value_by_cell, pooled sums
@@ -706,6 +719,15 @@ class _Learning:
             row = self.exploration.setdefault(key, [0] * len(EXPLORATION_FIELDS))
             for i, value in enumerate(values):
                 row[i] += value
+        rare = e.get("low_probability_noncombat") or {}
+        for key, values in (rare.get("rows") or {}).items():
+            if len(values) != len(LOW_PROBABILITY_FIELDS):
+                raise ValueError(f"low_probability_noncombat {key}: {len(values)} fields, "
+                                 f"expected {len(LOW_PROBABILITY_FIELDS)}")
+            row = self.rare.setdefault(key, [0, 0.0, 0, 0.0])
+            for i, value in enumerate(values):
+                row[i] += value
+            self.rare_games.setdefault(key, set()).update(rare["games"].get(key, ()))
         for arm, values in (e.get("policy_by_arm") or {}).items():
             if len(values) != len(POLICY_ARM_FIELDS):
                 raise ValueError(f"policy_by_arm {arm}: {len(values)} fields, expected "
@@ -904,6 +926,16 @@ class _Learning:
             "variance": (self.raw_variance[0] / self.raw_variance[1]
                          if self.raw_variance[1] else None)} if self.datasets else None
         out["exploration"] = exploration_summary(self.exploration)
+        # Noncombat multi-choice training rows whose chosen option had model probability
+        # (T 1, recovered from q) < 5%, per arm and decision type: rows, distinct games, mean
+        # advantage before normalisation, and over the rows whose game's real reward is known
+        # ("game" value targets, terminal end) the mean of real reward - the row's V.
+        out["low_probability_noncombat"] = {
+            key: {"rows": round(rows), "games": len(self.rare_games.get(key, ())),
+                  "advantage_mean": advantage / rows if rows else None,
+                  "outcome_rows": round(known),
+                  "outcome_minus_value_mean": gap / known if known else None}
+            for key, (rows, advantage, known, gap) in sorted(self.rare.items())} or None
         # Per arm, pooled over its policy rows of every attempt (KL-stopped included):
         # share outside the clip range and mean r - 1 - log r. The run-wide scalars above
         # are means of per-attempt means, so they need not equal a row-weighted mix of these.
@@ -1798,6 +1830,24 @@ def render_record(r: dict[str, Any]) -> list[str]:
                 "(top% / p>0.99%): " + ", ".join(
                     f"{name} {100 * d['top']:.0f}/{100 * d['top_p_over_099']:.0f}"
                     for name, d in dose["by_decision"].items()))
+        if key == "run_mean" and x.get("low_probability_noncombat"):
+            out.append("  noncombat choices at model p < 5% (arm|decision: rows / games / "
+                       "mean advantage / mean real reward - V over rows with a known end): "
+                       + ", ".join(
+                           f"{name} {t['rows']:,} / {t['games']:,} / "
+                           f"{fmt(t['advantage_mean'], 4)} / "
+                           f"{fmt(t['outcome_minus_value_mean'], 4)} ({t['outcome_rows']:,})"
+                           for name, t in x["low_probability_noncombat"].items()))
+        if x.get("noncombat_barrier") is not None:
+            out.append(f"  noncombat barrier {label}: term {fmt(x['noncombat_barrier'], 5)} "
+                       f"over {fmt(x.get('noncombat_barrier_rows'))} rows per attempt, "
+                       "smallest legal p p50 "
+                       f"{fmt(x.get('noncombat_min_probability_p50'), 4)} p10 "
+                       f"{fmt(x.get('noncombat_min_probability_p10'), 4)}")
+        if x.get("policy_observed_rows") is not None:
+            out.append(f"  observation cells {label}: {fmt(x['policy_observed_rows'], 1)} policy "
+                       f"rows per attempt observed, {fmt(x.get('policy_learning_rows'), 1)} "
+                       "learn")
         arms = dict(x.get("policy_by_arm") or {})
         lost = arms.pop(UNATTRIBUTED, None)
         if key == "latest" and set(arms) - {"control"}:

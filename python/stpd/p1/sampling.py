@@ -22,6 +22,17 @@ TEMPERATURE_RANGE = (1.0, 1.3)
 ARM_TEMPERATURE_FLOOR = 0.25
 ARM_TEMPERATURE_MAX = 3.0
 ARM_UNIFORM_MIX_MAX = 0.1
+# Greedy class (user 2026-11-24): T = 0 exactly, the limit of q as T -> 0. Every draw is
+# the highest score (ties: the lowest catalog position), so with uniform_mix 0 the recorded
+# q is one-hot. Outside the [floor, 3] envelope on purpose: no run minimum admits it, only
+# an explicit 0 in the arm (rl-inference-4 class_policy; the learner trains no policy on
+# such rows, `stpd.rl.loss.refuse_greedy_learning_rows`).
+GREEDY_TEMPERATURE = 0
+
+
+def is_greedy(temperature: object) -> bool:
+    """T is the greedy marker: the number 0 (int or float, never a bool)."""
+    return type(temperature) in (int, float) and temperature == GREEDY_TEMPERATURE
 
 
 def validate_policy(policy: Any) -> dict[str, Any]:
@@ -46,7 +57,11 @@ def distribution(logits: list[float], temperature: float, uniform_mix: float
     weights = [math.exp(v - top) for v in logits]
     total = sum(weights)
     model = [w / total for w in weights]
-    tempered = [p ** (1 / temperature) for p in model]
+    if is_greedy(temperature):  # the first highest score: max returns the lowest index
+        best = max(range(len(logits)), key=logits.__getitem__)
+        tempered = [1.0 if index == best else 0.0 for index in range(len(logits))]
+    else:
+        tempered = [p ** (1 / temperature) for p in model]
     scale = sum(tempered)
     count = len(logits)
     behavior = [(1 - uniform_mix) * w / scale + uniform_mix / count for w in tempered]

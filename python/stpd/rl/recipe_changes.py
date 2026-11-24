@@ -49,6 +49,11 @@ DECLARABLE: dict[str, str] = {
                               "its own cell's); loss only, no state",
     "loss.logit_mean_penalty_coef": "weight of the row-mean score penalty (#632); loss only, "
                                     "no state",
+    "loss.noncombat_log_barrier_coef": "weight of the noncombat log barrier; loss only, no "
+                                       "state (the rows' combat flag is read from fresh "
+                                       "segments)",
+    "segments.observe_arms": "which arms' rows skip the policy part of the loss; loss and "
+                             "KL-stop membership only, no state",
 }
 # Recipe keys `_resume_config` leaves out at their default (so older CPs keep their
 # digest): a missing key means this value.
@@ -59,6 +64,8 @@ RECIPE_DEFAULTS: dict[str, Any] = {
     "segments.value_config_input": False,
     "loss.arm_policy_update": "normal",
     "loss.logit_mean_penalty_coef": 0.0,
+    "loss.noncombat_log_barrier_coef": 0.0,
+    "segments.observe_arms": [],
 }
 _MISSING = object()
 

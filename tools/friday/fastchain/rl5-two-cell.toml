@@ -1,0 +1,26 @@
+# Two-cell training (user 2026-11-24): an overlay on rl5-long-run-1.toml, only the knobs that
+# differ from it. Six temperature cells -> two: the normal cell (control, share 0.95, combat
+# and noncombat T 1, uniform mix 0) learns; the greedy cell (share 0.05, every step the
+# highest score: temperature 0) is an observation cell (learn_policy = false: its rows train
+# the outcome and HP heads only, never the policy, entropy or barrier terms, the KL stop or
+# the clip statistics) that opens new runs only (new_runs_only = true: no save starts, no
+# save points); its per-arm training-game results in the readout are the online-play curve.
+# Frozen recipe python/configs/rl5-two-cell.json = rl5-long-run-1.json + the noncombat log
+# barrier 0.02 (loss.noncombat_log_barrier_coef), segments.observe_arms ["greedy"] and the
+# KL stop over every learning row (kl_stop_scope "all", left out of the JSON at default).
+# Evaluation: off unless the chain is started with --eval-execution / --eval-manifest (no
+# evaluation template is needed to start; the eval_* knobs below are only read with them).
+# Start (site, not here): fresh from a package or --resume-checkpoint CP with
+# declared_changes (segments.kl_stop_scope control -> all, loss.noncombat_log_barrier_coef
+# 0 -> 0.02, segments.observe_arms [] -> ["greedy"]); which one is the user's decision.
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-long-run-1.toml"
+
+[knobs]
+# --- learner recipe ---
+frozen_learner_config = { value = "python/configs/rl5-two-cell.json", default = "python/configs/rl5-long-run-1.json", why = "the two-cell frozen recipe: rl5-long-run-1.json + loss.noncombat_log_barrier_coef 0.02, segments.observe_arms [greedy], kl_stop_scope all (default, left out)", measured = "user 2026-11-24 (approved); unit tests only" }
+kl_stop_scope = { value = "all", default = "control", why = "the KL stop over every learning policy row: observation-cell rows (greedy) never count, so all = the normal cell's rows; control would also work here but all needs no arm named control", measured = "unit tests only" }
+score_head_fp32 = { value = true, default = false, why = "#632: the action score head in strict FP32 (learner and services), so a large common score offset is not rounded to BF16 before the softmax", measured = "#632 CPU BF16 tests; not yet run on hardware with this recipe" }
+# --- exploration (env-side recipe) ---
+exploration_ladder = { value = { control = { share = 0.95, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }, greedy = { share = 0.05, combat = { temperature = 0.0, uniform_mix = 0.0 }, noncombat = { temperature = 0.0, uniform_mix = 0.0 }, learn_policy = false, new_runs_only = true } }, default = { control = { share = 0.40, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }, cold = { share = 0.10, combat = { temperature = 0.5, uniform_mix = 0.0 }, noncombat = { temperature = 0.5, uniform_mix = 0.0 } }, cool = { share = 0.10, combat = { temperature = 0.7, uniform_mix = 0.0 }, noncombat = { temperature = 0.7, uniform_mix = 0.0 } }, nc16 = { share = 0.15, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.6, uniform_mix = 0.0 } }, nc25 = { share = 0.15, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 2.5, uniform_mix = 0.0 } }, both13 = { share = 0.10, combat = { temperature = 1.3, uniform_mix = 0.0 }, noncombat = { temperature = 1.3, uniform_mix = 0.0 } } }, why = "two cells: control 0.95 at T 1 (learns); greedy 0.05 at temperature 0 = highest score every step (observation cell, new runs only: the online-play curve and value / HP rows of the greedy style)", measured = "user 2026-11-24 (approved); whether it helps is not measured" }
+sampling_temperature_min = { value = 1.0, default = 0.5, why = "no sampled cell below T 1 (the greedy temperature 0 is outside the minimum by definition)", measured = "user 2026-11-24" }

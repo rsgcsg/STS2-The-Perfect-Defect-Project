@@ -5119,3 +5119,115 @@ def test_profile_overlay_rules(tmp_path):
     write('bad.toml', '')
     with pytest.raises(run_profile.ProfileError, match='profile bad.toml is not valid TOML'):
         run_profile.load_profile(overlay)
+
+
+# ---------------- two-cell training (user 2026-11-24) ----------------
+
+TWO_CELL = FASTCHAIN / 'rl5-two-cell.toml'
+TWO_CELL_FROZEN = json.loads(
+    (Path(__file__).resolve().parents[1] / 'configs/rl5-two-cell.json').read_text())
+
+
+def two_cell_ladder(**greedy):
+    return {'control': {'share': 0.95, 'combat': {'temperature': 1.0, 'uniform_mix': 0.0},
+                        'noncombat': {'temperature': 1.0, 'uniform_mix': 0.0}},
+            'greedy': {'share': 0.05, 'combat': {'temperature': 0.0, 'uniform_mix': 0.0},
+                       'noncombat': {'temperature': 0.0, 'uniform_mix': 0.0}, **greedy}}
+
+
+def test_two_cell_profile_passes_preflight_and_writes_the_learner_recipe(tmp_path):
+    site = long_run_site(tmp_path)
+    plan = long_run_plan(TWO_CELL, site)
+    k = plan['knobs']
+    assert k['frozen_learner_config'] == 'python/configs/rl5-two-cell.json'
+    assert k['exploration_ladder'] == two_cell_ladder(learn_policy=False, new_runs_only=True)
+    assert (k['kl_stop_scope'], k['score_head_fp32'], k['sampling_temperature_min']) == \
+        ('all', True, 1.0)
+    assert k['save_starts']['share'] == 0.5  # the long run's; the greedy arm opens new runs
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+             'gate_learner_base': long_run_gate()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert 'loss.noncombat_log_barrier_coef' in results['frozen_recipe'].detail  # filled
+    assert {'greedy_class', 'observe_arms', 'new_runs_only', 'score_head_fp32'} <= set(
+        preflight.required_features(plan))
+    learner, _ = learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN, k, {
+        'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+        'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
+        'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': None})
+    assert learner['loss']['noncombat_log_barrier_coef'] == 0.02
+    assert learner['segments']['observe_arms'] == ['greedy']
+    assert 'kl_stop_scope' not in learner['segments']  # all = the default, left out
+    assert learner['performance']['score_head_fp32'] is True
+    assert (learner['loss']['arm_policy_update'], learner['segments']['value_config_input']) \
+        == ('own', True)
+    assert learner_config.recipe_drift(learner, TWO_CELL_FROZEN) == []
+    # the learner takes this config (SegmentConfig / LossConfig validation)
+    from stpd.rl.loss import LossConfig
+    from stpd.rl.segments import SegmentConfig
+    LossConfig(**learner['loss'])
+    SegmentConfig(**{key: value for key, value in learner['segments'].items()
+                     if key in SegmentConfig.__dataclass_fields__})
+
+
+def test_ladder_arm_options_and_their_cross_rules():
+    check = run_profile._exploration_ladder
+    assert check(two_cell_ladder(learn_policy=False, new_runs_only=True)) is None
+    assert 'learn_policy true or false' in check(two_cell_ladder(learn_policy='no'))
+    assert 'optional' in check(two_cell_ladder(other=True))
+    base = run_profile.values(run_profile.load_profile(TWO_CELL))
+    assert run_profile.cross_problems(base) == []
+
+    def problems(ladder, **changes):
+        return run_profile.cross_problems({**base, 'exploration_ladder': ladder, **changes})
+
+    # a greedy class records a one-hot q: only an observation cell may have one
+    assert any('needs learn_policy = false' in p for p in problems(two_cell_ladder()))
+    # the run minimum never applies to the greedy 0, still to the sampled classes
+    assert problems(two_cell_ladder(learn_policy=False), sampling_temperature_min=1.0) == []
+    every = {arm: {**spec, 'learn_policy': False}
+             for arm, spec in two_cell_ladder().items()}
+    assert any('no policy rows' in p for p in problems(every))
+    control = two_cell_ladder(learn_policy=False)
+    control['control']['learn_policy'] = False
+    assert any('control arm to learn' in p for p in problems(control, kl_stop_scope='control'))
+    declared = {'checkpoint': 'cp', 'changes': {
+        'segments.observe_arms': {'old': [], 'new': ['other']}}}
+    assert run_profile._declared_changes(declared) is None  # lists of arm ids are allowed
+    assert any('observe_arms new' in p
+               for p in problems(two_cell_ladder(learn_policy=False), declared_changes=declared))
+
+
+def test_learner_config_observe_arms_only_when_some_arm_observes():
+    assert learner_config.observe_arms(two_cell_ladder(learn_policy=False)) == ['greedy']
+    assert learner_config.observe_arms(two_cell_ladder(learn_policy=True)) == []
+    assert learner_config.observe_arms(two_cell_ladder()) == []
+
+
+def test_readout_folds_the_rare_noncombat_table_and_the_new_scalars():
+    events = [
+        {"t": 1, "kind": "progress", "stepped": True, "low_probability_noncombat": {
+            "rows": {"control|rest": [2, 0.4, 1, 0.25]}, "games": {"control|rest": ["a"]}},
+         "noncombat_barrier": 0.01, "noncombat_barrier_rows": 10,
+         "noncombat_min_probability_p50": 0.1, "noncombat_min_probability_p10": 0.02,
+         "policy_learning_rows": 90, "policy_observed_rows": 10},
+        {"t": 2, "kind": "progress", "stepped": True, "low_probability_noncombat": {
+            "rows": {"control|rest": [1, -0.1, 0, 0.0], "control|map": [1, 0.3, 1, -0.2]},
+            "games": {"control|rest": ["a", "b"], "control|map": ["c"]}}}]
+    learning = readout._Learning()
+    for e in events:
+        learning.add(readout._slim(e))
+    result = learning.result()
+    assert result["low_probability_noncombat"] == {
+        "control|map": {"rows": 1, "games": 1, "advantage_mean": 0.3, "outcome_rows": 1,
+                        "outcome_minus_value_mean": -0.2},
+        "control|rest": {"rows": 3, "games": 2, "advantage_mean": pytest.approx(0.1),
+                         "outcome_rows": 1, "outcome_minus_value_mean": 0.25}}
+    assert result["noncombat_barrier"] == 0.01 and result["policy_observed_rows"] == 10
+    lines = readout.render_record({"learning": {"latest": result, "run_mean": result}})
+    assert any("noncombat choices at model p < 5%" in line for line in lines)
+    assert any("noncombat barrier" in line for line in lines)
+    assert any("observation cells" in line for line in lines)
+    with pytest.raises(ValueError, match="low_probability_noncombat"):
+        readout._Learning().add({"low_probability_noncombat": {"rows": {"x|rest": [1]},
+                                                               "games": {}}})

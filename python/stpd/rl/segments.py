@@ -11,11 +11,14 @@ import copy
 import math
 import operator
 import random
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 _SEGMENT_ID = operator.itemgetter("segment_id")
+# rl-inference-4 sampling.arm_id (an arm id never contains "+": `<arm>+save` is derived)
+_ARM_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
                       "archive_min_free_inodes",
@@ -63,6 +66,11 @@ class SegmentConfig:
     # an older model's outputs are unchanged. False = the heads before it. Resume-locked;
     # a continuation may declare off -> on (the CP's heads get the zero input), never back.
     value_config_input: bool = False
+    # Observation cells (user 2026-11-24; `loss.learning_policy_mask`): exploration arms
+    # whose rows train the outcome and HP heads only (no policy, entropy or barrier term,
+    # no KL-stop or clip weight). Sorted distinct arm ids; [] = every arm learns (the
+    # behaviour before it). Resume-locked, left out of the recipe when empty; declarable.
+    observe_arms: list[str] = field(default_factory=list)
     ema_decay: float = 0.999
     head_lr: float = 1e-4
     checkpoint_seconds: float = 900
@@ -103,6 +111,11 @@ class SegmentConfig:
                 or self.kl_stop_scope not in ("all", "control")
                 or type(self.lr_warmup_steps) is not int or self.lr_warmup_steps < 0
                 or type(self.value_config_input) is not bool
+                or not isinstance(self.observe_arms, list)
+                or any(type(arm) is not str or not _ARM_ID.match(arm)
+                       for arm in self.observe_arms)
+                or self.observe_arms != sorted(set(self.observe_arms))
+                or (self.kl_stop_scope == "control" and "control" in self.observe_arms)
                 or any(type(v) not in (int, float) or not math.isfinite(v)
                        for v in (self.target_kl, self.ema_decay, self.head_lr,
                                  self.inference_window_ms, self.checkpoint_seconds,

@@ -135,10 +135,17 @@ function bool(value: unknown, field: string): boolean {
 
 /** The lowest arm temperature any run may configure (rl-inference-4 envelope [0.25, 3]). */
 export const TEMPERATURE_FLOOR = 0.25;
+/** Greedy class (stpd.p1.sampling.GREEDY_TEMPERATURE): exactly 0 = the highest score, lowest catalog position on ties; one-hot q at uniform_mix 0. Outside every run minimum: only an explicit 0. */
+export const GREEDY_TEMPERATURE = 0;
+
+/** A temperature in [min, 3] or exactly the greedy 0. */
+function temperature(value: unknown, field: string, min: number): number {
+  return value === GREEDY_TEMPERATURE ? GREEDY_TEMPERATURE : num(value, field, min, 3);
+}
 
 function classPolicy(value: unknown, field: string, temperatureMin: number): ClassPolicy {
   const v = obj(value, field, ["temperature", "uniform_mix"]);
-  return { temperature: num(v.temperature, `${field}.temperature`, temperatureMin, 3), uniform_mix: num(v.uniform_mix, `${field}.uniform_mix`, 0, 0.1) };
+  return { temperature: temperature(v.temperature, `${field}.temperature`, temperatureMin), uniform_mix: num(v.uniform_mix, `${field}.uniform_mix`, 0, 0.1) };
 }
 
 /** `temperatureMin` = the run's configured minimum (config `inference.temperature_min`, default 1 = the original [1, 3]). */
@@ -302,5 +309,5 @@ export function parseLinkReply(value: unknown): LinkReply {
     row_in_segment: int(v.row_in_segment, "reply.row_in_segment", 0, 63), selected_index: int(v.selected_index, "reply.selected_index", 0, Number.MAX_SAFE_INTEGER),
     behavior_q: q, selected_q: selectedQ,
     applied: { arm_id: str(applied.arm_id, "reply.applied.arm_id", ID), decision_class: applied.decision_class,
-      temperature: num(applied.temperature, "reply.applied.temperature", TEMPERATURE_FLOOR, 3), uniform_mix: num(applied.uniform_mix, "reply.applied.uniform_mix", 0, 0.1) } };
+      temperature: temperature(applied.temperature, "reply.applied.temperature", TEMPERATURE_FLOOR), uniform_mix: num(applied.uniform_mix, "reply.applied.uniform_mix", 0, 0.1) } };
 }

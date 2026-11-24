@@ -403,3 +403,41 @@ def test_policy_and_target_entropy_and_model_age_helpers():
     assert len(age["histogram"]) == len(MU_AGE_EDGES) + 1
     assert age["histogram"][0] == 2  # 5 s: equal to the first edge, in that bin
     assert age["histogram"][MU_AGE_EDGES.index(120)] == 1  # 100 s
+
+
+def test_rare_noncombat_choices_per_arm_and_decision():
+    """User 2026-11-24: the chosen option's model p (from q), the per-source table and the
+    dataset fold with distinct games."""
+    from stpd.p1.sampling import distribution
+    from stpd.rl.learning_diagnostics import (
+        DECISIONS,
+        add_low_probability,
+        chosen_model_probability,
+        game_key,
+        low_probability_fields,
+    )
+
+    p, _ = distribution([3.0, 0.0, -1.0], 1.0, 0.0)
+    for temperature, mix in ((1.0, 0.0), (2.5, 0.0), (0.5, 0.05)):
+        _, q = distribution([3.0, 0.0, -1.0], temperature, mix)
+        assert [chosen_model_probability(q, i, temperature, mix) for i in range(3)] == \
+            pytest.approx(p, abs=1e-9)
+    with pytest.raises(ValueError, match="greedy"):
+        chosen_model_probability([1.0, 0.0], 0, 0, 0.0)
+    table: dict[str, list[float]] = {}
+    rest = DECISIONS.index("rest")
+    add_low_probability(table, "control", rest, 0.5, 0.25)
+    add_low_probability(table, "control", rest, -0.1, None)
+    assert table == {"control|rest": [2, 0.4, 1, 0.25]}
+    assert game_key("g1") == game_key("g1") != game_key("g2") and len(game_key("g1")) == 16
+    metadata = [{"low_probability_noncombat": {"game": game_key("g1"), "rows": table}}, {},
+                {"low_probability_noncombat": {"game": game_key("g1"), "rows": {
+                    "control|rest": [1, 0.1, 0, 0.0], "control|map": [1, 0.2, 1, -0.1]}}},
+                {"low_probability_noncombat": {"game": game_key("g2"), "rows": {
+                    "control|rest": [1, 0.0, 1, 0.5]}}}]
+    fields = low_probability_fields(metadata)
+    assert fields["rows"] == {"control|rest": [4, pytest.approx(0.5), 2, 0.75],
+                              "control|map": [1, 0.2, 1, -0.1]}
+    assert fields["games"] == {"control|rest": sorted([game_key("g1"), game_key("g2")]),
+                               "control|map": [game_key("g1")]}
+    assert low_probability_fields([{}, {}]) is None

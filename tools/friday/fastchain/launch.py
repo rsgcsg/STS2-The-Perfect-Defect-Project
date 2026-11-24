@@ -512,6 +512,12 @@ FEATURES = {
     "value_config_input": ("python/stpd/rl/segments.py", "value_config_input"),  # 11-19
     "arm_policy_update": ("python/stpd/rl/loss.py", "arm_policy_update"),  # 11-19
     "score_head_fp32": ("python/stpd/rl/performance.py", "score_head_fp32"),  # #632
+    # user 2026-11-24: greedy classes (fast env and service), observation cells (learner),
+    # arms that never open from a save (driver)
+    "greedy_class": ("components/policy-runtime/src/fast-env/contracts.ts",
+                     "GREEDY_TEMPERATURE"),
+    "observe_arms": ("python/stpd/rl/segments.py", "observe_arms"),
+    "new_runs_only": ("tools/friday/fastchain/env_driver.mjs", "new_runs_only"),
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),
     "eval_suite": ("tools/friday/fast_eval.py", '"--suite"'),  # #528

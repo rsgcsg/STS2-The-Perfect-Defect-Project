@@ -51,6 +51,12 @@ is closed and versioned.
     unknown) and null otherwise; segment format 4 refuses a combat row without one of
     those values (`hp_encounter_required`), format 3 ignores it; it is never model input
     beyond the observation it came from;
+  - a class `temperature` of exactly 0 (greedy, user 2026-11-24; no version bump, like the
+    A3 envelope change: 0 is the T -> 0 limit of the existing q formula and an older peer
+    refuses it) draws
+    the highest score, the lowest catalog position on ties, and records that q (one-hot at
+    `uniform_mix` 0); `applied` echoes the 0; it is accepted whatever the run's minimum and
+    the learner trains no policy on such rows (observation cells only);
   - `single_choice: omit` (L1) changes training data: one-option states are not rows,
     their native steps fold into the previous row's outcome (`forced_steps`), and
     `max_decisions_per_game` counts model rows only. The user approved omit for the fast

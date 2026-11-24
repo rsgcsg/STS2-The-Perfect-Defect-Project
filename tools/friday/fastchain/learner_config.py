@@ -47,13 +47,15 @@ DECLARABLE = ("lr", "segments.head_lr", "loss.entropy_coef", "loss.hp_coef",
               "segments.target_kl",
               "segments.kl_stop_scope", "segments.value_target", "segments.gae_lambda",
               "segments.value_config_input", "loss.arm_policy_update",
-              "loss.logit_mean_penalty_coef")
+              "loss.logit_mean_penalty_coef", "loss.noncombat_log_barrier_coef",
+              "segments.observe_arms")
 # A key missing from a learner config (a CP's or this run's) means this value: the learner's
 # own defaults (SegmentConfig, LossConfig; _resume_config adds the loss pair to older CPs).
 CONFIG_DEFAULTS = {"segments.value_target": "segment", "segments.kl_stop_scope": "all",
                    "loss.hp_advantage_coef": 0.0, "loss.hp_advantage_scope": "combat_ticket",
                    "loss.explore_ratio_floor": 0.0, "segments.value_config_input": False,
-                   "loss.arm_policy_update": "normal", "loss.logit_mean_penalty_coef": 0.0}
+                   "loss.arm_policy_update": "normal", "loss.logit_mean_penalty_coef": 0.0,
+                   "loss.noncombat_log_barrier_coef": 0.0, "segments.observe_arms": []}
 MISSING = "<missing>"
 
 
@@ -166,6 +168,11 @@ def start_fields(start_package: str, checkpoint: dict[str, Any] | None) -> dict[
     return {"start_package": start_package, "start_model_sha256": descriptor["package_sha256"]}
 
 
+def observe_arms(ladder: dict[str, Any]) -> list[str]:
+    """`segments.observe_arms` of a ladder: its arms with `learn_policy = false`, sorted."""
+    return sorted(arm for arm, spec in ladder.items() if spec.get("learn_policy") is False)
+
+
 def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     """`run`: run_name, peer_dir, start_package, wall_seconds, device, generation,
     warmup_artifact_id, rendezvous_path, ranks, resume_checkpoint (or None) and, in a
@@ -212,6 +219,11 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     # The value-config input (owner 11-19): the same rule (off = key left out).
     if knobs.get("value_config_input", False):
         config["segments"]["value_config_input"] = True
+    # Observation cells (user 2026-11-24): the ladder's arms with learn_policy = false, the
+    # same rule (none = key left out).
+    observe = observe_arms(knobs.get("exploration_ladder") or {})
+    if observe:
+        config["segments"]["observe_arms"] = observe
     # The arm policy update (owner 11-19): the same rule (normal = key left out).
     if knobs.get("arm_policy_update", "normal") != "normal":
         config["loss"]["arm_policy_update"] = knobs["arm_policy_update"]

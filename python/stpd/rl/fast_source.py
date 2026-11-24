@@ -119,8 +119,22 @@ from .fast_handoff import (
 )
 from .fast_segment import FORMAT as FAST_FORMAT
 from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, sha256
-from .heads import OUTCOME_CLASSES, categorical_lambda_targets, value_config_vector
-from .learning_diagnostics import add_entropy, add_exploration, exploration_row, row_entropy
+from .heads import (
+    OUTCOME_CLASSES,
+    categorical_lambda_targets,
+    class_reward_values,
+    value_config_vector,
+)
+from .learning_diagnostics import (
+    LOW_PROBABILITY,
+    add_entropy,
+    add_exploration,
+    add_low_probability,
+    chosen_model_probability,
+    exploration_row,
+    game_key,
+    row_entropy,
+)
 
 CLOSED_SCHEMA = "stpd/rl-fast-instance-closed-1"
 CLOSED_KEYS = frozenset({"schema", "assembler_id", "game_instance_id", "close_reason",
@@ -145,6 +159,9 @@ VALUE_TARGETS = ("segment", "game")
 # Envelope fields added only under "game": the segment's stitched tail (None = its own
 # seal) and that tail's weight on the real outcome (diagnostic only).
 GAME_TARGET_KEYS = frozenset({"value_target_tail", "outcome_tail_weight", "rows_to_game_end"})
+# Optional beside them (readout only, user 2026-11-24): the game's real reward v2.1 when its
+# last released segment is a terminal seal, else None (`learning_diagnostics.LOW_PROBABILITY`).
+GAME_REWARD_KEY = "game_reward"
 SPILL_SUFFIX = ".held"
 _REASON = re.compile(r"[a-z0-9_]{1,64}")
 LABELS_SCHEMA = "stpd/rl-fast-instance-labels-1"
@@ -251,7 +268,8 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     if compiler is None:
         raise FastIntakeError("fast_source_requires_frame_compiler")
     keys = set(envelope)
-    if (keys not in (ENVELOPE_KEYS, ENVELOPE_KEYS | GAME_TARGET_KEYS)
+    if (keys not in (ENVELOPE_KEYS, ENVELOPE_KEYS | GAME_TARGET_KEYS,
+                     ENVELOPE_KEYS | GAME_TARGET_KEYS | {GAME_REWARD_KEY})
             or envelope["format"] != FAST_FORMAT):
         raise FastIntakeError("fast_envelope_fields_changed")
     if len(raw) != envelope["packet_size"]:
@@ -296,7 +314,9 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         metadata.append({"generated_at": None, "generated_timestamp": None,
                          "floor": meta["floor"], "mu_version": header["mu"]["version"],
                          "mu_updates": header["mu"]["updates"],
-                         "arm_sampling": [cell["temperature"], cell["uniform_mix"]]})
+                         "arm_sampling": [cell["temperature"], cell["uniform_mix"]],
+                         # the noncombat barrier's decision class (`loss.with_noncombat`)
+                         "in_combat": bool(meta["in_combat"])})
     decoded = time.perf_counter()
     probabilities = torch.tensor([meta["outcome_probabilities"] for meta in header["rows"]],
                                  dtype=torch.float32)
@@ -316,6 +336,10 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             raise FastIntakeError("fast_game_tail_weight_invalid")
         if type(envelope["rows_to_game_end"]) is not int or envelope["rows_to_game_end"] < 0:
             raise FastIntakeError("fast_game_rows_to_end_invalid")
+    game_reward = envelope.get(GAME_REWARD_KEY)
+    if game_reward is not None and (type(game_reward) is not float
+                                    or not math.isfinite(game_reward)):
+        raise FastIntakeError("fast_game_reward_invalid")
     # The game's own reward table (format 3 names the level; formats 1/2 are A0).
     targets, advantages = categorical_lambda_targets(
         probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
@@ -352,6 +376,8 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             arm += "+save"
         counts: dict[str, list[int]] = {}
         entropies: dict[str, list[float]] = {}
+        rare: dict[str, list[float]] = {}  # learning_diagnostics.LOW_PROBABILITY_FIELDS
+        rewards = class_reward_values(ascension=segment_ascension(header)).tolist()
         for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
             q = meta["behavior_q"]
             if len(q) < 2:
@@ -364,11 +390,23 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
             decision = 0 if meta["in_combat"] else min(
                 decisions[action] for action in frame.tensors["actions"].tolist())
             add_exploration(counts, arm, act, decision, rank, top, signs[index])
+            if applied["temperature"] == 0:  # greedy: the model's p is not recoverable
+                continue
             add_entropy(entropies, arm, act, decision, row_entropy(
                 q, applied["temperature"], applied["uniform_mix"]))
+            if decision and chosen_model_probability(
+                    q, meta["selected_index"], applied["temperature"],
+                    applied["uniform_mix"]) < LOW_PROBABILITY:
+                value = sum(p * r for p, r in zip(meta["outcome_probabilities"], rewards,
+                                                  strict=True))
+                add_low_probability(rare, arm, decision, float(advantages[index]),
+                                    None if game_reward is None else game_reward - value)
         if counts:  # once per source, not per row (the transport walks every row)
             metadata[0]["exploration"] = counts
             metadata[0]["policy_entropy"] = entropies
+        if rare:  # readout: the game it came from, for the distinct-game count
+            metadata[0]["low_probability_noncombat"] = {
+                "game": game_key(header["game_instance_id"]), "rows": rare}
     labels = {"segment_id": header["segment_id"], "run_id": header["game_instance_id"],
               "terminal": terminal, "hp_battles": []}
     source = bp.PreparedSource(
@@ -1360,6 +1398,10 @@ class FastSegmentIntake:
         after = [0] * len(segments)  # rows of this game after each segment
         for position in range(len(segments) - 2, -1, -1):
             after[position] = after[position + 1] + segments[position + 1].rows
+        last_header = segments[-1].header
+        reward = (float(class_reward_values(ascension=segment_ascension(last_header))[
+            last_header["seal"]["terminal"]["class"]])
+                  if last_header["seal"]["kind"] == "terminal" else None)
         admitted = []
         with self.lock:
             # A lost leading segment is a gap too (the chain never reached row 0).
@@ -1370,6 +1412,7 @@ class FastSegmentIntake:
                 envelope["value_target_tail"] = tail
                 envelope["outcome_tail_weight"] = weight
                 envelope["rows_to_game_end"] = after[position]
+                envelope[GAME_REWARD_KEY] = reward
                 admitted.append((segment, envelope))
                 self.counters["game_target_chained_segments"] += chained
                 if (not chained and position + 1 < len(segments)

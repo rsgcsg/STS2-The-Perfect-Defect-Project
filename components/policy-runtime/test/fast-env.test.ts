@@ -19,8 +19,8 @@ import { FastActionEvidenceSink, readFastGameEvidence } from "../src/global-fast
 import { StreamDecisionLink } from "../src/fast-env/link.js";
 import { ResponseBinding } from "../src/fast-env/binding.js";
 import { MinimalJsonlEvidenceSink, type FastEvidenceSink, type FastGameMeta } from "../src/fast-env/evidence-sink.js";
-import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, TEMPERATURE_FLOOR, parseFastEnvCommand, parseFastEnvConfig, parseSampling,
-  type FastEnvConfig } from "../src/fast-env/contracts.js";
+import { FAST_ENV_COMMAND_SCHEMA, FAST_ENV_LINK_SCHEMA, GREEDY_TEMPERATURE, TEMPERATURE_FLOOR, parseFastEnvCommand, parseFastEnvConfig,
+  parseLinkReply, parseSampling, type FastEnvConfig } from "../src/fast-env/contracts.js";
 import { HostSlotNative, SampledCheckFailure, SaveMapFailure, captureSampleOffset, fastGameInstanceId, captureSampleSchedule, type NativeEpisode,
   type SaveMapResult, type SlotNative, type SlotNativeFactory } from "../src/fast-env/host.js";
 
@@ -923,6 +923,24 @@ describe("fast-env failure paths", () => {
     expect(() => parseFastEnvConfig(raw({ sampling: bold, temperature_min: 0.8 }))).toThrow(/inference.sampling.classes.combat.temperature/u);
     for (const bad of [0.2, 1.5, "0.7"]) expect(() => parseFastEnvConfig(raw({ sampling: SAMPLING, temperature_min: bad }))).toThrow(/inference.temperature_min/u);
     expect(TEMPERATURE_FLOOR).toBe(0.25);
+  });
+
+  it("greedy class: temperature exactly 0 at any run minimum, in the sampling and the reply's applied echo", () => {
+    const greedy = { ...SAMPLING, arm_id: "greedy", classes: { combat: { temperature: 0, uniform_mix: 0 }, noncombat: { temperature: 0, uniform_mix: 0 } } };
+    expect(GREEDY_TEMPERATURE).toBe(0);
+    for (const minimum of [1, 0.25]) expect(parseSampling(greedy, "sampling", minimum)).toEqual(greedy);
+    for (const bad of [0.1, -0.5, false, "0"]) {
+      expect(() => parseSampling({ ...greedy, classes: { ...greedy.classes, combat: { temperature: bad, uniform_mix: 0 } } }, "sampling", 0.25))
+        .toThrow(/sampling.classes.combat.temperature/u);
+    }
+    const reply = { schema: FAST_ENV_LINK_SCHEMA, type: "scored", row_id: 1, game_instance_id: "g", catalog_sha256: "c".repeat(64), mu_snapshot_sha256: "a".repeat(64),
+      segment_id: "s", row_in_segment: 0, selected_index: 1, behavior_q: [0, 1, 0], selected_q: 1,
+      applied: { arm_id: "greedy", decision_class: "noncombat", temperature: 0, uniform_mix: 0 } };
+    expect(parseLinkReply(reply)).toMatchObject({ selected_index: 1, applied: { temperature: 0 } });
+    expect(() => parseLinkReply({ ...reply, applied: { ...reply.applied, temperature: 0.1 } })).toThrow(/reply.applied.temperature/u);
+    const binding = new ResponseBinding();
+    const row = { row_id: 1, game_instance_id: "g", catalog_sha256: "c".repeat(64), catalog_len: 3, in_combat: false };
+    expect(binding.check(row, parseLinkReply(reply), parseSampling(greedy))).toEqual({ verdict: "accept", index: 1 });
   });
 
   it("C1 reduce_light config: off unless named, strict_interval 1..1024, unknown keys refused", () => {

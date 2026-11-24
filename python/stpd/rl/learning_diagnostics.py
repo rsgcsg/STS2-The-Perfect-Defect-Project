@@ -240,10 +240,13 @@ def exploration_row(q: list[float], selected: int, temperature: float, uniform_m
 
     q = (1-eps) p^(1/T) / sum + eps/N is strictly increasing in p, so the rank in q is
     the rank in the model's p; p is recovered as ((q - eps/N) / (1-eps))^T normalised
-    (T = 1, eps = 0: p = q).
+    (T = 1, eps = 0: p = q). A greedy row (T = 0) keeps p unknown: q is one-hot at the
+    model's top (rank 0), and its top-p flag is counted False (not measured).
     """
     chosen = q[selected]
     rank = min(sum(value > chosen for value in q), 2)
+    if temperature == 0:
+        return rank, False
     share = uniform_mix / len(q)
     tempered = [max(value - share, 0.0) ** temperature for value in q]
     return rank, max(tempered) > 0.99 * sum(tempered)
@@ -252,12 +255,75 @@ def exploration_row(q: list[float], selected: int, temperature: float, uniform_m
 def row_entropy(q: list[float], temperature: float, uniform_mix: float
                 ) -> tuple[float, float]:
     """(entropy in nats, entropy / ln N) of the model's own p over a row's N >= 2 choices,
-    recovered from the recorded q as in `exploration_row` (T = 1, eps = 0: p = q)."""
+    recovered from the recorded q as in `exploration_row` (T = 1, eps = 0: p = q). A greedy
+    row (T = 0) has no recoverable p: refused (fast_source leaves such rows out)."""
+    if temperature == 0:
+        raise ValueError("row_entropy_of_a_greedy_row")
     share = uniform_mix / len(q)
     tempered = [max(value - share, 0.0) ** temperature for value in q]
     total = sum(tempered)
     entropy = -sum(x / total * math.log(x / total) for x in tempered if x > 0)
     return entropy, entropy / math.log(len(q))
+
+
+# Rare noncombat choices (user 2026-11-24), per "arm|decision": multi-choice noncombat rows
+# whose chosen option had model probability (T = 1, recovered from q as in
+# `exploration_row`) below LOW_PROBABILITY; greedy rows (T = 0) are left out (p unknown).
+# Per key: the rows, the sum of their advantage before the one normalisation (the
+# current A, c_hp part included), the rows whose game's real reward is known (the
+# fast-source envelope's `game_reward`: "game" value targets and a terminal end) and the
+# sum over those of real reward - the row's recorded V (outcome probabilities x reward
+# table). Each source names its game (`game_key`) so the readout counts distinct games.
+# Metadata only: nothing reaches the model, the loss or the prepared digest.
+LOW_PROBABILITY = 0.05
+LOW_PROBABILITY_FIELDS = ("rows", "advantage_sum", "outcome_rows", "outcome_minus_value_sum")
+
+
+def chosen_model_probability(q: list[float], selected: int, temperature: float,
+                             uniform_mix: float) -> float:
+    """The model's own T = 1 probability of the chosen option, recovered from the recorded
+    q as in `exploration_row` (T = 1, eps = 0: q itself). Not defined for T = 0."""
+    if temperature == 0:
+        raise ValueError("chosen_model_probability_of_a_greedy_row")
+    share = uniform_mix / len(q)
+    tempered = [max(value - share, 0.0) ** temperature for value in q]
+    return float(tempered[selected] / sum(tempered))
+
+
+def add_low_probability(table: dict[str, list[float]], arm: str, decision: int,
+                        advantage: float, outcome_minus_value: float | None) -> None:
+    row = table.setdefault(f"{arm}|{DECISIONS[decision]}", [0, 0.0, 0, 0.0])
+    row[0] += 1
+    row[1] += advantage
+    if outcome_minus_value is not None:
+        row[2] += 1
+        row[3] += outcome_minus_value
+
+
+def game_key(game_instance_id: str) -> str:
+    """A short stable name of one game for distinct counts (not the id itself)."""
+    import hashlib
+
+    return hashlib.sha256(game_instance_id.encode()).hexdigest()[:16]
+
+
+def low_probability_fields(metadata: Any) -> dict[str, Any] | None:
+    """One dataset's rare noncombat choices: per "arm|decision" the summed
+    `LOW_PROBABILITY_FIELDS` and the sorted distinct `game_key`s; None without a row."""
+    rows: dict[str, list[float]] = {}
+    games: dict[str, set[str]] = {}
+    for meta in metadata:
+        part = meta.get("low_probability_noncombat")
+        if not part:
+            continue
+        for key, values in part["rows"].items():
+            total = rows.setdefault(key, [0, 0.0, 0, 0.0])
+            for i, value in enumerate(values):
+                total[i] += value
+            games.setdefault(key, set()).add(part["game"])
+    if not rows:
+        return None
+    return {"rows": rows, "games": {key: sorted(names) for key, names in games.items()}}
 
 
 # Policy entropy (RL5-METHODS R) per "arm|actN|decision", the exploration key: the

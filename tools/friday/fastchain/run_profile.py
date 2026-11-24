@@ -139,28 +139,43 @@ ARM_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")  # rl-inference-4 sampling.arm_
 TEMPERATURE_FLOOR = 0.25  # rl-inference-4 envelope; the run's floor is sampling_temperature_min
 
 
+GREEDY_TEMPERATURE = 0  # = stpd.p1.sampling.GREEDY_TEMPERATURE: the first highest score
+# Optional per-arm keys (user 2026-11-24), never sent to the fast env: `learn_policy`
+# (default true; false = an observation cell, learner `segments.observe_arms`) and
+# `new_runs_only` (default false; true = the arm's drivers never open from a save, whatever
+# `save_starts.share`).
+ARM_OPTIONS = frozenset({"learn_policy", "new_runs_only"})
+
+
 def _class_policy(value: Any) -> str | None:
-    """rl-inference-4 class policy: temperature in [0.25, 3], uniform_mix in [0, 0.1]
-    (the run's own minimum `sampling_temperature_min` is a cross check)."""
+    """rl-inference-4 class policy: temperature in [0.25, 3] or exactly 0 (greedy),
+    uniform_mix in [0, 0.1] (the run's own minimum `sampling_temperature_min` is a cross
+    check; it does not apply to greedy)."""
     if not isinstance(value, dict) or set(value) != {"temperature", "uniform_mix"}:
         return "exactly {temperature, uniform_mix}"
     t, mix = value["temperature"], value["uniform_mix"]
-    if type(t) not in (int, float) or not TEMPERATURE_FLOOR <= t <= 3:
-        return f"temperature in [{TEMPERATURE_FLOOR}, 3] (got {t!r})"
+    if type(t) not in (int, float) or not (t == GREEDY_TEMPERATURE or TEMPERATURE_FLOOR <= t <= 3):
+        return f"temperature in [{TEMPERATURE_FLOOR}, 3] or 0 = greedy (got {t!r})"
     if type(mix) not in (int, float) or not 0 <= mix <= 0.1:
         return f"uniform_mix in [0, 0.1] (got {mix!r})"
     return None
 
 
 def _exploration_ladder(value: Any) -> str | None:
-    """{arm: {share, combat: {temperature, uniform_mix}, noncombat: {...}}}, shares sum 1."""
+    """{arm: {share, combat: {temperature, uniform_mix}, noncombat: {...}}, optional
+    learn_policy / new_runs_only booleans (`ARM_OPTIONS`)}, shares sum 1."""
     if not isinstance(value, dict) or not value:
         return "table arm -> {share, combat, noncombat}"
     for arm, spec in value.items():
         if not ARM_ID.match(arm):
             return f"arm names as rl-inference-4 arm_id (bad arm {arm!r})"
-        if not isinstance(spec, dict) or set(spec) != {"share", "combat", "noncombat"}:
-            return f"arm {arm}: exactly {{share, combat, noncombat}}"
+        if (not isinstance(spec, dict) or not {"share", "combat", "noncombat"} <= set(spec)
+                or set(spec) - {"share", "combat", "noncombat"} - ARM_OPTIONS):
+            return (f"arm {arm}: exactly {{share, combat, noncombat}} plus optional "
+                    f"{sorted(ARM_OPTIONS)}")
+        for key in ARM_OPTIONS & set(spec):
+            if type(spec[key]) is not bool:
+                return f"arm {arm}: {key} true or false (got {spec[key]!r})"
         if type(spec["share"]) not in (int, float) or not 0 <= spec["share"] <= 1:
             return f"arm {arm}: share in [0, 1] (got {spec['share']!r})"
         for name in ("combat", "noncombat"):
@@ -249,9 +264,14 @@ def _declared_changes(value: Any) -> str | None:
     for key, change in value["changes"].items():
         if key not in DECLARABLE:
             return f"changes key {key!r} not declarable (allowed: {', '.join(DECLARABLE)})"
+        lists = key == "segments.observe_arms"  # the one list-valued declarable key
         if (not isinstance(change, dict) or set(change) != {"old", "new"}
-                or any(type(change[k]) not in (bool, int, float, str) for k in change)):
-            return f"changes.{key}: exactly old and new, each a number or string"
+                or any(not (type(change[k]) in (bool, int, float, str)
+                            or (lists and isinstance(change[k], list)
+                                and all(type(arm) is str for arm in change[k])))
+                       for k in change)):
+            return (f"changes.{key}: exactly old and new, each a number or string"
+                    + (" (lists of arm ids for segments.observe_arms)" if lists else ""))
         if change["old"] == change["new"] and type(change["old"]) is type(change["new"]):
             return f"changes.{key}: old and new are both {change['old']!r} (nothing changes)"
     return None
@@ -309,9 +329,27 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
         out.append("declared_changes loss.arm_policy_update new "
                    f"{policy['new']!r} needs the arm_policy_update knob at the same "
                    f"value (have {values['arm_policy_update']!r})")
+    observe = sorted(arm for arm, spec in values["exploration_ladder"].items()
+                     if spec.get("learn_policy") is False)
+    declared = (values["declared_changes"].get("changes") or {}).get("segments.observe_arms")
+    if declared and declared["new"] != observe:
+        out.append(f"declared_changes segments.observe_arms new {declared['new']!r} needs the "
+                   f"ladder's learn_policy = false arms to be the same (have {observe!r})")
+    if values["kl_stop_scope"] == "control" and "control" in observe:
+        out.append('kl_stop_scope "control" needs the control arm to learn its policy '
+                   "(learn_policy = false leaves the KL stop no rows)")
+    if observe and len(observe) == len(values["exploration_ladder"]):
+        out.append("exploration_ladder: every arm has learn_policy = false (no policy rows)")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
+        greedy = [name for name in ("combat", "noncombat")
+                  if spec[name]["temperature"] == GREEDY_TEMPERATURE]
+        if greedy and spec.get("learn_policy", True):
+            out.append(f"exploration_ladder arm {arm}: a greedy class ({', '.join(greedy)}, "
+                       "temperature 0) records a one-hot q: the arm needs learn_policy = false")
         for name in ("combat", "noncombat"):
+            if name in greedy:
+                continue
             if spec[name]["temperature"] < low:
                 out.append(f"exploration_ladder arm {arm}.{name}: temperature "
                            f"{spec[name]['temperature']} below sampling_temperature_min {low}")

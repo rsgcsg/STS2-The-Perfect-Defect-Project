@@ -42,7 +42,7 @@ from stpd.rl.heads import value_config_vector
 
 from .data import digest, json_bytes
 from .local_inference import CentralInferencePool, tcp_nodelay
-from .sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX
+from .sampling import ARM_TEMPERATURE_FLOOR, ARM_TEMPERATURE_MAX, ARM_UNIFORM_MIX_MAX, is_greedy
 from .text_cache import TextVectorCache
 
 ROLE = "inference_service"
@@ -434,7 +434,8 @@ TEMPERATURE_FLOOR = ARM_TEMPERATURE_FLOOR
 def check_sampling(sampling: Any, temperature_min: float = 1.0) -> str | None:
     """The episode_open `sampling` against the rl-inference-4 schema; None if valid.
 
-    T in [temperature_min, 3] (the run's configured minimum, default 1),
+    T in [temperature_min, 3] (the run's configured minimum, default 1) or exactly 0
+    (greedy: `sampling.GREEDY_TEMPERATURE`, the first highest score, whatever the minimum),
     uniform_mix in [0, 0.1], both classes, seed and arm_id strings,
     no other keys (#431 review M1): the draw must never meet a value it cannot
     use, and out-of-range arms would silently change the training data.
@@ -458,7 +459,8 @@ def check_sampling(sampling: Any, temperature_min: float = 1.0) -> str | None:
             return "sampling_class_keys"
         temperature, mix = policy["temperature"], policy["uniform_mix"]
         if (type(temperature) not in (int, float)
-                or not temperature_min <= temperature <= ARM_TEMPERATURE_MAX):
+                or not (is_greedy(temperature)
+                        or temperature_min <= temperature <= ARM_TEMPERATURE_MAX)):
             return "sampling_temperature"
         if type(mix) not in (int, float) or not 0.0 <= mix <= ARM_UNIFORM_MIX_MAX:
             return "sampling_uniform_mix"
