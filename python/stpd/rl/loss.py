@@ -209,6 +209,30 @@ BARRIER_READOUT = ("noncombat_barrier", "noncombat_barrier_rows",
                    "noncombat_min_probability_p50", "noncombat_min_probability_p10")
 
 
+# The barrier's log pi value is floored at BARRIER_LOG_FLOOR (= ln 1.8e-35, just above
+# ln FLT_MIN = -87.3, where an FP32 probability stops being a normal number). FP32
+# log_softmax is -inf on a legal entry only when the row's finite score spread overflows
+# FP32 (> 3.4e38); without the floor that -inf would make the barrier term (and its
+# readout) -inf / NaN. Below the floor the value is the floor but the gradient stays the
+# exact log_softmax one (e_i - pi), so an option far below e^-80 is still lifted (a plain
+# clamp would give it no gradient: a dead zone exactly where the barrier is meant to act).
+# Only the barrier reads it; every other term keeps the plain log_softmax.
+BARRIER_LOG_FLOOR = -80.0
+
+
+def barrier_log_probabilities(scores: torch.Tensor, logp: torch.Tensor,
+                              probability: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """log pi per catalog entry for the noncombat barrier ([rows, width], 0 outside the
+    catalog): `logp` (= scores.float().log_softmax(-1)) with values below
+    `BARRIER_LOG_FLOOR` (an overflow's -inf included) at the floor, gradient unchanged."""
+    finite = scores.float().masked_fill(~valid, 0)
+    delta = finite - finite.detach()  # 0 in value; d/dx = identity
+    # value exactly 0, gradient the log_softmax Jacobian (e_i - pi) applied to d scores
+    linear = delta - (probability.detach() * delta).sum(-1, keepdim=True)
+    floored = torch.where(logp < BARRIER_LOG_FLOOR, BARRIER_LOG_FLOOR + linear, logp)
+    return floored.masked_fill(~valid, 0)
+
+
 def batch_noncombat_rows(metadata: Any, request: Any) -> list[bool]:
     """Every row of a prepared dataset in its row order: True for a PPO row outside combat
     (`metadata["in_combat"]`, fast_source), False for the auxiliary rows `n + local`. A PPO
@@ -397,7 +421,8 @@ def batched_segment_loss(
     if noncombat_log_barrier_coef:
         valid = t["catalog_valid"]
         weight = policy_mask * t["noncombat"]  # the policy term's row weight, noncombat only
-        mean_logp = safe_logp.sum(-1) / valid.sum(-1).clamp_min(1)
+        barrier_logp = barrier_log_probabilities(scores, logp, probability, valid)
+        mean_logp = barrier_logp.sum(-1) / valid.sum(-1).clamp_min(1)
         barrier = -(mean_logp * weight).sum()
         policy_component = policy_component + noncombat_log_barrier_coef * barrier
         if barrier_rows is not None:

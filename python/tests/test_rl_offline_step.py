@@ -197,3 +197,28 @@ def test_compile_options_need_prepared_compile_and_are_explicit():
                 {"size_guard": 1}):
         with pytest.raises(ValueError, match="invalid_sgd_compile"):
             sgd_options({**base, "sgd_compile": bad})
+
+
+@pytest.mark.parametrize("learn_rows", [None, [True, False, True]])
+def test_replay_passes_the_dumped_observation_rows(model, monkeypatch, learn_rows):
+    """Observation cells: a dump carries the attempt's `learn_rows` and replay passes them
+    to the same `prepared_update`; a dump without them replays every policy row."""
+    from stpd.rl import checkpoint_state, loss
+    from stpd.rl.loss import LossConfig
+    from stpd.rl.performance import PerformanceConfig
+
+    seen = {}
+    monkeypatch.setattr(checkpoint_state, "ModelConstruction", lambda **kwargs: kwargs)
+    monkeypatch.setattr(checkpoint_state, "construct_model", lambda construction: model)
+    monkeypatch.setattr(loss, "prepared_update",
+                        lambda *args, **kwargs: seen.update(kwargs) or {"stepped": True})
+    optimizer = torch.optim.AdamW(
+        [{"params": [p for name, p in model.named_parameters()
+                     if not name.startswith("rl4_heads.")], "lr": 1e-4},
+         {"params": list(model.rl4_heads.parameters()), "lr": 1e-3}])
+    value = {"construction": {}, "weights": model.state_dict(),
+             "optimizer": optimizer.state_dict(), "loss": dc.asdict(LossConfig()),
+             "performance": dc.asdict(PerformanceConfig()), "diagnostics": False,
+             **({"learn_rows": learn_rows} if learn_rows is not None else {})}
+    offline_step.replay(value, object())
+    assert seen["learn_rows"] == learn_rows

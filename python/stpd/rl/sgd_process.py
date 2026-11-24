@@ -1840,12 +1840,14 @@ class _SgdWorker:
             if noncombat is not None:  # the same for the barrier's decision class
                 batch = with_noncombat(batch, noncombat, self.device)
             diagnostics = self.updates % self.diagnostics_every == 0
+            learn = minibatch_learn_rows(batch, policy) if self.observe_arms else None
             dumped = None
             if (self.next_dump is not None and self.updates >= self.next_dump
                     and not diagnostics):
                 # Before the attempt and outside its timing: pre-step theta/Adam.
                 self.state["stage"] = "offline_dump"
-                dumped = self.dump_offline_step(batch, device_batch, dataset, minibatch, epoch)
+                dumped = self.dump_offline_step(batch, device_batch, dataset, minibatch, epoch,
+                                                learn_rows=learn)
             self.state["stage"] = "update"
             if probe is not None:
                 probe.begin()
@@ -1868,8 +1870,7 @@ class _SgdWorker:
                 explore_rows=(minibatch_explore_rows(batch, arms if arms and any(arms)
                                                      else None, policy) if floor else None),
                 value_cells=value_cells,
-                learn_rows=(minibatch_learn_rows(batch, policy) if self.observe_arms
-                            else None))
+                learn_rows=learn)
             optimizer_seconds = time.perf_counter() - step_began
             if self.parallel is not None:
                 result = self.gather_step(result, diagnostics)
@@ -2002,8 +2003,9 @@ class _SgdWorker:
         return result
 
     def dump_offline_step(self, batch: Any, device_batch: Any, dataset: int, minibatch: int,
-                          epoch: int) -> dict[str, Any]:
+                          epoch: int, learn_rows: list[bool] | None = None) -> dict[str, Any]:
         """Write one `p3-offline-step-input-1` file of the attempt about to run.
+        `learn_rows` (observation cells on): the attempt's `learn_rows`, replayed with it.
 
         A diagnostic, not learning state: a failed write is reported on this step
         and ends further dumps; it never fences training or changes the attempt.
@@ -2028,7 +2030,8 @@ class _SgdWorker:
                 "performance": dataclasses.asdict(self.performance),
                 "target_kl": self.target_kl, "diagnostics": False,
                 "online_update": update, "dataset": dataset,
-                "minibatch_index": minibatch, "epoch": epoch}
+                "minibatch_index": minibatch, "epoch": epoch,
+                **({"learn_rows": list(learn_rows)} if learn_rows is not None else {})}
             captured = time.perf_counter()
             receipt = {
                 **facts, **offline_step.minibatch_facts(batch), "online_update": update,

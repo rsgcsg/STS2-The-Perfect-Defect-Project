@@ -21,8 +21,10 @@ from test_rl_rows_forward import prepared
 from spireagent.json_boundary import BoundaryError
 from stpd.rl import recipe_changes
 from stpd.rl.loss import (
+    BARRIER_LOG_FLOOR,
     BARRIER_READOUT,
     LossConfig,
+    barrier_log_probabilities,
     batch_noncombat_rows,
     batched_segment_loss,
     prepared_update,
@@ -171,3 +173,32 @@ def test_one_step_reports_the_barrier_readout_and_default_reports_none(model):
     # the same rows' policy loss and KL as without the barrier (it changes no other total)
     for key in ("policy_loss", "approx_kl_mu_theta", "entropy", "clip_fraction", "td_loss"):
         assert on[key] == pytest.approx(off[key], rel=1e-6, abs=1e-9), key
+
+
+def test_barrier_log_probability_has_a_floor_with_the_exact_gradient():
+    """FP32 log_softmax is -inf on a legal entry when the finite score spread overflows;
+    the barrier's log pi is floored at BARRIER_LOG_FLOOR there (and for any entry below
+    it), with the log_softmax gradient kept (e_i - pi), so the term stays finite and a
+    rare option is still lifted. Rows above the floor are the plain log_softmax."""
+    scores = torch.tensor([[3e38, -3e38, 0.0],      # overflow: -inf without the floor
+                           [0.0, -120.0, -math.inf],     # far below the floor; padded entry
+                           [0.5, -0.5, 1.0]]).requires_grad_(True)
+    valid = torch.tensor([[True, True, True], [True, True, False], [True, True, True]])
+    logp = scores.float().log_softmax(-1)
+    assert math.isinf(float(logp[0, 1].detach()))  # the case the floor is for
+    probability = logp.exp()
+    barrier = barrier_log_probabilities(scores, logp, probability, valid)
+    assert torch.isfinite(barrier).all()
+    value = barrier.detach()
+    assert float(value[0, 1]) == float(value[1, 1]) == BARRIER_LOG_FLOOR
+    assert float(value[1, 2]) == 0.0  # outside the catalog
+    assert torch.equal(barrier[2], logp[2])  # above the floor: unchanged, bit for bit
+    weights = torch.tensor([[1.0, 2.0, 3.0], [1.0, 2.0, 0.0], [1.0, 2.0, 3.0]])
+    gradient = torch.autograd.grad((barrier * weights).sum(), scores)[0]
+    # the exact log_softmax Jacobian on the catalog: g_j - pi_j * sum(g)
+    p = probability.detach().masked_fill(~valid, 0)
+    expected = (weights - p * weights.sum(-1, keepdim=True)).masked_fill(~valid, 0)
+    assert torch.isfinite(gradient).all()
+    assert torch.allclose(gradient, expected, atol=1e-6)
+    # the rare entry is lifted: its own gradient is not cut off by the floor
+    assert float(gradient[1, 1]) > 1.9

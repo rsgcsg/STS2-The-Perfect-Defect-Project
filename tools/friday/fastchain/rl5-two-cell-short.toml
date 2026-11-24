@@ -1,0 +1,18 @@
+# Two-cell 1 h short test: an overlay on rl5-two-cell.toml (same recipe, cells, hardware and
+# retention); only the training target and the wall keys that follow it differ, as the A77
+# blank FP32 1 h short test shortened its 20 h base: train_target_seconds 3600, the chain
+# wall 14400 s (4 h from submission, queue included) and prep_lead_seconds 9000 (the GPU
+# queue the prep hosts may wait behind, leaving room in the 4 h wall for 1 h of training and
+# the start-ups). `default` = the rl5-two-cell.toml value.
+# env_pkg_build / env_candidate_artifact_sha256 are deliberately NOT set here: the env
+# package must be rebuilt on the cluster by the operator from the final commit of this
+# branch, and only then are both filled in (site overlay or a --set at start); preflight's
+# env_package check refuses the base's stale values until then.
+# Evaluation: off unless the chain is started with --eval-execution / --eval-manifest.
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-two-cell.toml"
+
+[knobs]
+train_target_seconds = { value = 3600, default = 72000, why = "1 h of learner training: the two-cell short test before the long run (the A77 short test's target)", measured = "A77 1 h short test (11-23/24): training 3570 of 3600 s, target reached, wall 3724 s" }
+long_wall_seconds = { value = 14400, default = 86400, why = "the chain's wall limit: <= 4 h from submission incl. queue, room for 1 h of training, start-ups and one resume (as A77)", measured = "A77 brief cap; A77 chain wall 3724 s" }
+prep_lead_seconds = { value = 9000, default = 7200, why = "how long the first prep host may wait for the GPU start, inside the 4 h wall with 1 h of training + start-ups (as A77)", measured = "derived as A77 (A77 GPU queue 10 s)" }

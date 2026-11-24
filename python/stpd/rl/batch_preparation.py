@@ -1528,7 +1528,12 @@ def assemble(
     prepared_layout: str = "padded-v1",
     group_shards: int = 1,
     prepared_bucket_rows: int = ROW_BUCKET_ROWS,
+    observe_arms: tuple[str, ...] = (),
 ) -> PreparedBatch:
+    """`observe_arms` (`segments.observe_arms`, empty = off): the advantage normalisation
+    reads only the learning policy rows (`loss.learning_policy_mask`); an observation row's
+    normalised advantage is 0, like every other row without policy weight. Its raw
+    advantage, value targets and metadata are unchanged."""
     began = time.perf_counter()
     if prepared_layout not in PREPARED_LAYOUTS:
         raise ValueError("unsupported_prepared_layout")
@@ -1612,15 +1617,26 @@ def assemble(
     terminal_mask = torch.tensor([kind == "terminal" for kind in kinds])
     hp_mask = torch.tensor([kind == "hp" for kind in kinds])
     advantages = torch.zeros(total)
-    multi = raw_advantages[policy_mask[:n]]
+    learning = policy_mask[:n]
+    if observe_arms:
+        # Observation rows have policy weight 0 in the loss; they must not move the mean
+        # and scale the learning rows are normalised with either.
+        from .learning_diagnostics import row_arms
+        from .loss import learning_policy_mask
+
+        arms = row_arms(metadata, [member.rows for member in request.members])
+        learning = torch.tensor(learning_policy_mask(arms, learning.tolist(),
+                                                     frozenset(observe_arms)),
+                                dtype=torch.bool)
+    multi = raw_advantages[learning]
     mean = float(multi.mean()) if len(multi) else 0.0
     scale = max(float(multi.std(unbiased=False)), 1e-8) if len(multi) else 1.0
-    advantages[:n][policy_mask[:n]] = (multi - mean) / scale
+    advantages[:n][learning] = (multi - mean) / scale
     hp_std = hp_share = None  # read-only diagnostics of c_hp * A_hp (A2)
     if len(multi) and any(source.hp_advantages is not None for source in ppo):
         hp = torch.cat([source.raw_advantages.new_zeros(source.raw_advantages.shape)
                         if source.hp_advantages is None else source.hp_advantages
-                        for source in ppo])[policy_mask[:n]].double()
+                        for source in ppo])[learning].double()
         centred = multi.double() - multi.double().mean()
         hp_std = float(hp.std(unbiased=False))
         # The HP term's part of Var(A) in Var(A) = Cov(A_out, A) + Cov(c_hp A_hp, A).
@@ -1862,6 +1878,7 @@ class BatchPreparer:
         gae_lambda: float = 0.99,
         prepared_layout: str = "padded-v1",
         prepared_bucket_rows: int = ROW_BUCKET_ROWS,
+        observe_arms: tuple[str, ...] = (),
     ) -> None:
         if prepared_layout not in PREPARED_LAYOUTS:
             raise ValueError("unsupported_prepared_layout")
@@ -1885,6 +1902,8 @@ class BatchPreparer:
             self.options["prepared_layout"] = prepared_layout
         if prepared_bucket_rows != ROW_BUCKET_ROWS:
             self.options["prepared_bucket_rows"] = prepared_bucket_rows
+        if observe_arms:
+            self.options["observe_arms"] = tuple(observe_arms)
         self.pending: Future[PreparedBatch] | None = None
 
     def submit(

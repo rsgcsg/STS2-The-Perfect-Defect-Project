@@ -246,8 +246,11 @@ def check_shards(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   f"({aggregators // services} per service)")
 
 
-def required_features(plan: dict[str, Any]) -> dict[str, str]:
-    """Source features this run's knobs need -> why (PR that brings it)."""
+def required_features(plan: dict[str, Any],
+                      frozen: dict[str, Any] | None = None) -> dict[str, str]:
+    """Source features this run's knobs need -> why (PR that brings it). `frozen` = the
+    run's frozen learner config (`facts["frozen_recipe"]`): recipe switches that live only
+    there (the noncombat barrier, observation cells) count too."""
     k = plan["knobs"]
     need = {}
     if k["shards"]:
@@ -307,8 +310,14 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
     ladder = k["exploration_ladder"].values()
     if any(spec[name]["temperature"] == 0 for spec in ladder for name in ("combat", "noncombat")):
         need["greedy_class"] = "greedy classes, temperature 0 (user 2026-11-24)"
-    if any(spec.get("learn_policy") is False for spec in ladder):
+    recipe_loss = ((frozen or {}).get("loss") or {})
+    recipe_segments = ((frozen or {}).get("segments") or {})
+    if (any(spec.get("learn_policy") is False for spec in ladder)
+            or recipe_segments.get("observe_arms")):
         need["observe_arms"] = "observation cells, learn_policy = false (user 2026-11-24)"
+    if recipe_loss.get("noncombat_log_barrier_coef"):
+        need["noncombat_barrier"] = ("noncombat log barrier, "
+                                     "loss.noncombat_log_barrier_coef (user 2026-11-24)")
     if any(spec.get("new_runs_only") for spec in ladder):
         need["new_runs_only"] = "arms that never open from a save (user 2026-11-24)"
     if k.get("declared_changes"):
@@ -322,7 +331,7 @@ def required_features(plan: dict[str, Any]) -> dict[str, str]:
 
 def check_features(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     have = facts.get("src_features") or {}
-    need = required_features(plan)
+    need = required_features(plan, facts.get("frozen_recipe"))
     missing = [f"{name}: {why}" for name, why in need.items() if not have.get(name)]
     # A warning only (owner 11-14): the product itself refuses a missing feature loudly.
     return Result("source_features", True,

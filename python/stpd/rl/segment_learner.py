@@ -1102,6 +1102,9 @@ class SegmentLearner:
                 # Only a non-default partition is passed: default options stay byte-equal.
                 preparation_options["prepared_bucket_rows"] = (
                     self.performance.prepared_bucket_rows)
+        if settings.observe_arms:
+            # Only when on: default options stay byte-equal (as prepared_bucket_rows).
+            preparation_options["observe_arms"] = tuple(settings.observe_arms)
         if (self.sgd_options is not None and self.sgd_options.compile is not None
                 and not self.performance.prepared_compile):
             raise BoundaryError("rl_learner", "sgd_compile_options_require_prepared_compile")

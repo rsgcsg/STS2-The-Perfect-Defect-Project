@@ -51,12 +51,15 @@ is closed and versioned.
     unknown) and null otherwise; segment format 4 refuses a combat row without one of
     those values (`hp_encounter_required`), format 3 ignores it; it is never model input
     beyond the observation it came from;
-  - a class `temperature` of exactly 0 (greedy, user 2026-11-24; no version bump, like the
-    A3 envelope change: 0 is the T -> 0 limit of the existing q formula and an older peer
-    refuses it) draws
-    the highest score, the lowest catalog position on ties, and records that q (one-hot at
-    `uniform_mix` 0); `applied` echoes the 0; it is accepted whatever the run's minimum and
-    the learner trains no policy on such rows (observation cells only);
+  - a class `temperature` of exactly 0 (greedy, user 2026-11-24) is accepted in both
+    directions: the request's `class_policy.temperature` and the reply's
+    `applied.temperature` each take exactly 0 or the envelope [0.25, 3], nothing between.
+    0 = every step takes the highest score, ties go to the lowest catalog position, and
+    the recorded q is that choice (one-hot at `uniform_mix` 0); `applied` echoes the 0;
+    it is accepted whatever the run's minimum and the learner trains no policy on such
+    rows (observation cells only). Same schema id, no version bump (lead decision,
+    following the A3 envelope widening 1 -> 0.25): an older peer refuses 0 loudly at
+    `episode_open` or on the reply, so a mixed pair cannot mislabel a row;
   - `single_choice: omit` (L1) changes training data: one-option states are not rows,
     their native steps fold into the previous row's outcome (`forced_steps`), and
     `max_decisions_per_game` counts model rows only. The user approved omit for the fast

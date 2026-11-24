@@ -391,6 +391,24 @@ def test_inference_valid_and_invalid_messages() -> None:
         assert not validator.is_valid(message), name
 
 
+def test_inference_greedy_temperature_is_exactly_zero_in_request_and_reply() -> None:
+    """A class temperature is exactly 0 (greedy) or in [0.25, 3], in the episode_open
+    sampling and in the reply's `applied` echo alike (same schema id, no version bump)."""
+    validator = _inference()
+    valid = json.loads((INFERENCE / "valid.json").read_bytes())
+    for temperature, ok in ((0, True), (0.0, True), (0.25, True), (3.0, True),
+                            (0.1, False), (-0.5, False), (3.5, False)):
+        opened = json.loads(json.dumps(valid["episode_open_new_run"]))
+        opened["sampling"]["classes"]["noncombat"]["temperature"] = temperature
+        assert validator.is_valid(opened) is ok, ("request", temperature)
+        reply = json.loads(json.dumps(valid["score_response"]))
+        scored = [r for r in reply["results"] if r["status"] == "scored"]
+        assert scored
+        for result in scored:
+            result["applied"]["temperature"] = temperature
+        assert validator.is_valid(reply) is ok, ("reply", temperature)
+
+
 _NOT_STARTED_REASONS = ("inference_timeout", "response_binding_mismatch", "refused",
                         "stop_before_send", "native_not_delivered")
 _UNKNOWN_REASONS = ("delivery_unknown", "native_crash", "compact_state_divergence")

@@ -5151,6 +5151,17 @@ def test_two_cell_profile_passes_preflight_and_writes_the_learner_recipe(tmp_pat
     assert 'loss.noncombat_log_barrier_coef' in results['frozen_recipe'].detail  # filled
     assert {'greedy_class', 'observe_arms', 'new_runs_only', 'score_head_fp32'} <= set(
         preflight.required_features(plan))
+    # the barrier lives in the frozen recipe only: named once the preflight reads it
+    assert 'noncombat_barrier' not in preflight.required_features(plan)
+    assert 'noncombat_barrier' in preflight.required_features(plan, TWO_CELL_FROZEN)
+    assert 'noncombat_barrier' in launch.FEATURES
+    assert 'noncombat_barrier' in results['source_features'].detail
+    assert 'observe_arms' in results['source_features'].detail
+    long_frozen = json.loads((Path(__file__).resolve().parents[1]
+                              / 'configs/rl5-long-run-1.json').read_text())
+    assert not {'noncombat_barrier', 'observe_arms'} & set(
+        preflight.required_features(long_run_plan(TWO_CELL.with_name('rl5-long-run-1.toml'),
+                                                  site), long_frozen))
     learner, _ = learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN, k, {
         'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
         'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
@@ -5168,6 +5179,43 @@ def test_two_cell_profile_passes_preflight_and_writes_the_learner_recipe(tmp_pat
     LossConfig(**learner['loss'])
     SegmentConfig(**{key: value for key, value in learner['segments'].items()
                      if key in SegmentConfig.__dataclass_fields__})
+
+
+def test_a_gate_value_for_a_knob_owned_key_cannot_override_the_knob(tmp_path):
+    """A fresh gate learner-base.json still carrying kl_stop_scope "control" under the
+    two-cell profile (knob "all", left out of the frozen config): refused, not passed."""
+    site = long_run_site(tmp_path)
+    plan = long_run_plan(TWO_CELL, site)
+    gate = long_run_gate()
+    gate['segments']['kl_stop_scope'] = 'control'
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN, 'gate_learner_base': gate}
+    result = by_name(preflight.checks(plan, facts))['frozen_recipe']
+    assert not result.ok and 'segments.kl_stop_scope' in result.detail, result.detail
+    gate['segments']['kl_stop_scope'] = 'all'  # the same value as the knob passes
+    facts['gate_learner_base'] = gate
+    assert by_name(preflight.checks(plan, facts))['frozen_recipe'].ok
+    for section, key, value in (('segments', 'observe_arms', []),
+                                ('loss', 'arm_policy_update', 'normal')):
+        other = long_run_gate()
+        other[section][key] = value
+        facts['gate_learner_base'] = other
+        assert not by_name(preflight.checks(plan, facts))['frozen_recipe'].ok, key
+
+
+def test_two_cell_short_profile_changes_only_the_training_target_and_its_walls(tmp_path):
+    short = run_profile.values(run_profile.load_profile(FASTCHAIN / 'rl5-two-cell-short.toml'))
+    full = run_profile.values(run_profile.load_profile(TWO_CELL))
+    changed = {key for key in full if short[key] != full[key]}
+    assert changed == {'train_target_seconds', 'long_wall_seconds', 'prep_lead_seconds'}
+    assert (short['train_target_seconds'], short['long_wall_seconds'],
+            short['prep_lead_seconds']) == (3600, 14400, 9000)
+    assert short['env_pkg_build'] == full['env_pkg_build']  # filled by the operator only
+    site = long_run_site(tmp_path)
+    plan = long_run_plan(FASTCHAIN / 'rl5-two-cell-short.toml', site)
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+             'gate_learner_base': long_run_gate()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
 
 
 def test_ladder_arm_options_and_their_cross_rules():

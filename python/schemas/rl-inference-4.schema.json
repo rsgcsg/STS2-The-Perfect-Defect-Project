@@ -219,7 +219,7 @@
           "properties": {
             "arm_id": {"$ref": "#/$defs/id"},
             "decision_class": {"enum": ["combat", "noncombat"]},
-            "temperature": {"type": "number", "minimum": 0.25, "maximum": 3.0},
+            "temperature": {"description": "The class temperature the draw used: [0.25, 3], or exactly 0 (greedy, as in class_policy).", "type": "number", "anyOf": [{"const": 0}, {"minimum": 0.25, "maximum": 3.0}]},
             "uniform_mix": {"type": "number", "minimum": 0, "maximum": 0.1}
           }
         }

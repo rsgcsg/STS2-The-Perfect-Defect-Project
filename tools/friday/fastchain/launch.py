@@ -517,6 +517,7 @@ FEATURES = {
     "greedy_class": ("components/policy-runtime/src/fast-env/contracts.ts",
                      "GREEDY_TEMPERATURE"),
     "observe_arms": ("python/stpd/rl/segments.py", "observe_arms"),
+    "noncombat_barrier": ("python/stpd/rl/loss.py", "noncombat_log_barrier_coef"),
     "new_runs_only": ("tools/friday/fastchain/env_driver.mjs", "new_runs_only"),
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),

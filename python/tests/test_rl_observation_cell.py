@@ -12,11 +12,13 @@ import math
 from dataclasses import asdict, replace
 
 import pytest
+import test_rl41_w1 as w1
 import torch
 from test_rl41_w1 import model as model  # noqa: F401  (fixture)
 from test_rl_explore_ratio_floor import OPTIONS, _data
 from test_rl_rows_forward import prepared
 
+from stpd.rl import batch_preparation as bp
 from stpd.rl import recipe_changes
 from stpd.rl.loss import (
     LossConfig,
@@ -172,3 +174,60 @@ def test_observe_arms_config_is_validated_resume_locked_and_declarable():
             "segments.observe_arms": {"old": [], "new": ["greedy"]}}},
         recipe(), recipe(observe_arms=["greedy"])) == {
             "segments.observe_arms": {"old": [], "new": ["greedy"]}}
+
+
+def _arm_sources(model, arms):
+    """One w1 segment per arm; its first row names the arm (fast_source's count table)."""
+    values = [w1.segment(model, name=f"actor/{i}", run_id=f"episode-{i}", rows=5)
+              for i in range(len(arms))]
+    sources = []
+    for i, (value, arm) in enumerate(zip(values, arms, strict=True)):
+        source = w1.source(model, value)
+        metadata = list(source.metadata)
+        metadata[0] = {**metadata[0], "exploration": {f"{arm}|act1|combat": [1, 0, 0, 0, 0]}}
+        # distinct raw advantages per source, so the observed rows move the statistics
+        raw = source.raw_advantages * (1 + 3 * i) + 2 * i
+        sources.append(replace(source, metadata=tuple(metadata), raw_advantages=raw))
+    return values, sources
+
+
+def test_observed_rows_leave_the_advantage_normalisation(model):
+    values, sources = _arm_sources(model, ["control", "greedy"])
+    request = w1.request(values)
+    plain = bp.assemble(request, tuple(sources))
+    observed = bp.assemble(request, tuple(sources), observe_arms=("greedy",))
+    n = sum(v["rows"] for v in values)
+    policy = plain.policy_mask[:n]
+    learn = policy.clone()
+    learn[values[0]["rows"]:] = False
+    assert learn.any() and (policy & ~learn).any()
+    raw = torch.cat([s.raw_advantages for s in sources])
+    multi = raw[learn]
+    mean, scale = float(multi.mean()), max(float(multi.std(unbiased=False)), 1e-8)
+    assert observed.normalization.multi_rows == int(learn.sum())
+    assert observed.normalization.mean == mean and observed.normalization.scale == scale
+    assert torch.equal(observed.advantages[:n][learn], (multi - mean) / scale)
+    assert not observed.advantages[:n][~learn].any()  # observation rows: 0, no policy weight
+    # the plain normalisation (every policy row) differs: the bug this guards against
+    assert plain.normalization.multi_rows == int(policy.sum())
+    assert not torch.equal(plain.advantages[:n][learn], observed.advantages[:n][learn])
+    # whatever the observed rows' raw advantages, the learning rows' values are the same
+    moved = list(sources)
+    moved[1] = replace(moved[1], raw_advantages=moved[1].raw_advantages * -40 + 7)
+    again = bp.assemble(request, tuple(moved), observe_arms=("greedy",))
+    assert torch.equal(again.advantages, observed.advantages)
+    for a, b in zip(again.minibatches, observed.minibatches, strict=True):
+        assert torch.equal(a.tensors["advantages"], b.tensors["advantages"])
+
+
+def test_no_observed_arm_is_the_normalisation_before_it(model):
+    values, sources = _arm_sources(model, ["control", "bold"])
+    request = w1.request(values)
+    plain = bp.assemble(request, tuple(sources))
+    unobserved = bp.assemble(request, tuple(sources), observe_arms=("greedy",))
+    assert plain.normalization == unobserved.normalization
+    assert torch.equal(plain.advantages, unobserved.advantages)
+    with pytest.raises(ValueError, match="observe_arms_need_row_arms"):
+        bp.assemble(request, tuple(replace(s, metadata=tuple(
+            {k: v for k, v in m.items() if k != "exploration"} for m in s.metadata))
+            for s in sources), observe_arms=("greedy",))

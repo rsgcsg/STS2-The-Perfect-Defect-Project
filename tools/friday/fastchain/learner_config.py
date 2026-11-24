@@ -210,6 +210,20 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         "diagnostics_every": knobs["diagnostics_every"],
         **({"checkpoint_seconds": float(knobs["checkpoint_seconds"])}
            if knobs["checkpoint_seconds"] else {})})
+    # The knob-owned recipe keys below are written only off their default. A gate that
+    # already carries one with another value would win silently whenever the knob is at its
+    # default (A9 compares the frozen keys only, and a frozen config leaves a default out):
+    # e.g. a fresh gate keeping kl_stop_scope "control" under a profile at "all". Refused.
+    owned = (("segments", "kl_stop_scope", knobs.get("kl_stop_scope", "all")),
+             ("segments", "lr_warmup_steps", knobs.get("lr_warmup_steps", 0)),
+             ("segments", "value_config_input", knobs.get("value_config_input", False)),
+             ("segments", "observe_arms", observe_arms(knobs.get("exploration_ladder") or {})),
+             ("loss", "arm_policy_update", knobs.get("arm_policy_update", "normal")))
+    for section, key, value in owned:
+        if key in (config.get(section) or {}) and config[section][key] != value:
+            raise ValueError(f"gate learner-base.json {section}.{key} = "
+                             f"{config[section][key]!r} differs from this run's knob value "
+                             f"{value!r}: the knob owns it; remove it from the gate")
     # Ticket K: written only off their default, so the default learner.json (and an older
     # source, which refuses unknown segment keys) is unchanged; resume-locked in the recipe.
     if knobs.get("kl_stop_scope", "all") != "all":

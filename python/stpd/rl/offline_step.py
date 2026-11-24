@@ -180,7 +180,9 @@ def replay(value: dict[str, Any], minibatch: Any, *, device: str = "cpu",
         model, optimizer, staged, config=LossConfig(**value["loss"]),
         performance=PerformanceConfig(**value["performance"]),
         target_kl=value.get("target_kl", 0.03) if target_kl is None else target_kl,
-        diagnostics=value["diagnostics"], collect_policy_rows=False)
+        diagnostics=value["diagnostics"], collect_policy_rows=False,
+        # Observation cells: the dumped attempt's learning rows (absent: every policy row).
+        learn_rows=value.get("learn_rows"))
     return model, optimizer, result
 
 
