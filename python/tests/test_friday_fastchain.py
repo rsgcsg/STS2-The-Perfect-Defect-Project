@@ -5206,7 +5206,9 @@ def test_two_cell_short_profile_changes_only_the_training_target_and_its_walls(t
     short = run_profile.values(run_profile.load_profile(FASTCHAIN / 'rl5-two-cell-short.toml'))
     full = run_profile.values(run_profile.load_profile(TWO_CELL))
     changed = {key for key in full if short[key] != full[key]}
-    assert changed == {'train_target_seconds', 'long_wall_seconds', 'prep_lead_seconds'}
+    assert changed == {'train_target_seconds', 'long_wall_seconds', 'prep_lead_seconds',
+                       'kl_stop_scope'}
+    assert short['kl_stop_scope'] == 'control'  # the lineage's gate value; same rows as all
     assert (short['train_target_seconds'], short['long_wall_seconds'],
             short['prep_lead_seconds']) == (3600, 14400, 9000)
     assert short['env_pkg_build'] == full['env_pkg_build']  # filled by the operator only
