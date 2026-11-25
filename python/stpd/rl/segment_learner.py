@@ -567,6 +567,7 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         "resume_checkpoint",
         "resume_source",
         "resume_recipe_changes",
+        "serve_checkpoint",
         "republish_on_resume",
         "start_package",
         "start_artifact_id",
@@ -976,6 +977,10 @@ class SegmentLearner:
         declared = (declaration is not None
                     and declaration["checkpoint_artifact_id"] == config.resume_checkpoint)
         self.recipe_changes: dict[str, Any] | None = None
+        if config.serve_checkpoint and (restored is not None or self.settings.warmup_artifact_id):
+            raise ValueError("serve_checkpoint_excludes_resume_and_fitted_heads")
+        if restored is not None and restored.config.get("serve_checkpoint"):
+            raise ValueError("evaluation_run_checkpoint_is_never_a_resume_source")
         if restored is not None and not declared:
             if (
                 restored.identity.run != config.run
@@ -1960,6 +1965,17 @@ class SegmentLearner:
         return checkpoint
 
     def _start_model(self) -> MStd:
+        if self.config.serve_checkpoint:
+            # eval_only: the CP read by its content id (manifest and payload verified),
+            # its weights only; the heads check below compares its value-config input.
+            served = self._read_checkpoint(self.config.serve_checkpoint)
+            refusal = recipe_changes.served_checkpoint_refusal(
+                served.config, self.settings.value_config_input)
+            if refusal:
+                raise ValueError(refusal)
+            model = construct_model(served.construction)
+            model.load_state_dict(served.weights, strict=True)
+            return model
         if self.config.start_package:
             package = Path(self.config.start_package)
         elif self.config.start_artifact_id and self.config.start_model_sha256:
@@ -4227,6 +4243,8 @@ class SegmentLearner:
         if configuration["resume_recipe_changes"] is None:
             # Not declared: the CP config stays what it was before the field existed.
             del configuration["resume_recipe_changes"]
+        if configuration["serve_checkpoint"] is None:  # the same: training CPs unchanged
+            del configuration["serve_checkpoint"]
         if configuration["operating_budget"] is not None:
             active = (time.monotonic() - self.active_training_began
                       if self.active_training_began is not None else self.active_training_seconds)

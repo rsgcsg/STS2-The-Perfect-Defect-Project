@@ -878,6 +878,8 @@ def check_resume(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     left."""
     k, chain, cp = plan["knobs"], plan.get("chain"), plan.get("resume_checkpoint")
     bad = []
+    if k["eval_only"] and cp:  # served in a fresh run: the learner's own refusals, now
+        bad += served_checkpoint_problems(plan, facts)
     if not cp and facts.get("start_model") is None:
         bad.append(f"fresh start without a start package: no model.json in site "
                    f"start_package {plan['site']['start_package']}")
@@ -893,6 +895,33 @@ def check_resume(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
                   f"chain {chain['id']} generation {chain['generation']}, "
                   f"{plan['wall_seconds']} s of the window left, from "
                   f"{cp or 'the start package'}")
+
+
+def served_checkpoint_problems(plan: dict[str, Any], facts: dict[str, Any]) -> list[str]:
+    """eval_only --resume-checkpoint (LearnerConfig.serve_checkpoint): what the learner
+    refuses at start, from the CP header (no torch): not a self-contained CP, restore
+    parents, a CP of an evaluation run is fine (same weights), heads whose value-config input
+    differs from this run's (stpd.rl.recipe_changes.served_checkpoint_refusal)."""
+    from stpd.rl.recipe_changes import served_checkpoint_refusal
+
+    cp, served = plan["resume_checkpoint"], facts.get("served_checkpoint") or {}
+    if "config" not in served:
+        return [f"served CP {cp}: {served.get('error', 'not read')}"]
+    if served["kind"] != "checkpoint" or served["parents"]:
+        return [f"served CP {cp}: manifest kind {served['kind']!r}, {served['parents']} "
+                "parents (the learner needs a self-contained CP without parents)"]
+    base, frozen = facts.get("gate_learner_base"), facts.get("frozen_recipe")
+    if base is None or frozen is None:
+        return ["no gate learner-base.json or frozen config"]
+    config, _ = learner_config.learner_base(base, frozen, plan["knobs"], {
+        "run_name": "preflight", "peer_dir": "-", "start_package": "-",
+        "wall_seconds": plan["wall_seconds"], "device": plan["placement"]["learner_device"],
+        "generation": "-", "warmup_artifact_id": None, "rendezvous_path": "-",
+        "ranks": plan["placement"]["ranks"], "resume_checkpoint": cp,
+        "served_config": served["config"]})
+    refusal = served_checkpoint_refusal(served["config"],
+                                        config["segments"]["value_config_input"])
+    return [f"served CP {cp}: {refusal}"] if refusal else []
 
 
 def check_queue(facts: dict[str, Any]) -> Result:

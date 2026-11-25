@@ -254,6 +254,15 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         config["performance"]["score_head_fp32"] = True
     if run.get("window"):
         config.update(run["window"])
+    if knobs.get("eval_only") and run["resume_checkpoint"]:
+        # A CP of any run served in a fresh run (LearnerConfig.serve_checkpoint): its
+        # weights and heads, no restore, no fitted heads; value_config_input is its heads'.
+        if run.get("served_config") is None:
+            raise ValueError("eval_only serving a CP needs that CP's config (served_config)")
+        config.update(serve_checkpoint=run["resume_checkpoint"], resume_checkpoint=None)
+        config["segments"]["warmup_artifact_id"] = None
+        config["segments"]["value_config_input"] = (run["served_config"].get(
+            "segments") or {}).get("value_config_input", False)
     # RL5-METHODS C: written only when declared (an older learner refuses the key).
     config = apply_declared(config, knobs.get("declared_changes") or {})
     # "own" and the gate's (or a declared) explore_ratio_floor > 0 are alternatives; the

@@ -423,6 +423,23 @@ def resume_checkpoint_facts(plan: dict[str, Any], peer_dir: Path) -> dict[str, A
                 f"{declared['checkpoint']} (missing or not a self-contained learner CP)"}
 
 
+def served_checkpoint_facts(plan: dict[str, Any], peer_dir: Path) -> dict[str, Any]:
+    """eval_only with --resume-checkpoint: the served CP's manifest kind and parents and its
+    config, as the learner reads them (SegmentLearner._read_checkpoint, served_checkpoint_
+    refusal). A failed read names the CP and the error type, never the store path."""
+    cp = plan.get("resume_checkpoint")
+    if not (plan["knobs"]["eval_only"] and cp):
+        return {}
+    try:
+        manifest = json.loads((peer_dir / "manifests" / f"{cp}.json").read_bytes())
+        return {"served_checkpoint": {"kind": manifest["kind"],
+                                      "parents": len(manifest.get("parents") or []),
+                                      "config": checkpoint_config(peer_dir, cp)}}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {"served_checkpoint": {"error": f"{type(error).__name__} reading checkpoint "
+                                      f"{cp} (missing or not a self-contained learner CP)"}}
+
+
 def warmup_package(peer_dir: Path, artifact_id: str) -> str:
     """`model_package_sha256` of the fitted heads in a local peer store, read from the JSON
     header at the front of the warm-up artifact's checkpoint payload."""
@@ -483,6 +500,7 @@ def collect_facts(plan: dict[str, Any], cmds: dict[str, list[str]]) -> dict[str,
                              "training_identity": descriptor.get("training_identity")}
                             if descriptor else None)
     facts.update(resume_checkpoint_facts(plan, Path(site["peer_dir"])))
+    facts.update(served_checkpoint_facts(plan, Path(site["peer_dir"])))
     rev = Path(site["env_pkg"]) / "SOURCE_REVISION"
     facts["env_pkg_rev"] = rev.read_text().strip() if rev.exists() else None
     dll = Path(site["env_candidate"]) / CANDIDATE_DLL

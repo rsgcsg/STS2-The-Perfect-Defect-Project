@@ -157,3 +157,15 @@ def check(declaration: Any, old: dict[str, Any], new: dict[str, Any]) -> dict[st
                          + ", ".join(differing_paths(rest_old, rest_new)))
     return {key: {"old": change["old"], "new": change["new"]}
             for key, change in changes.items()}
+
+
+def served_checkpoint_refusal(checkpoint_config: dict[str, Any],
+                              value_config_input: bool) -> str | None:
+    """eval_only `serve_checkpoint` (segment learner start and fast-chain preflight): the
+    learner refuses heads whose value-config input differs from this run's; every other
+    recipe key only shapes training, which an evaluation run never does."""
+    have = (checkpoint_config.get("segments") or {}).get("value_config_input", False)
+    if have is not value_config_input:
+        return (f"value_config_input_differs_from_restored_heads: served CP {have!r}, "
+                f"this run {value_config_input!r}")
+    return None

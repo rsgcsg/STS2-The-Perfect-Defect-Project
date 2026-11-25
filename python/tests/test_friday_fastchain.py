@@ -5403,6 +5403,74 @@ def test_eval_only_still_checks_the_heads_match_the_served_start_package(tmp_pat
     assert not by_name(preflight.checks(plan, facts))['warmup_artifact'].ok
 
 
+def fake_cp_peer(peer, cp_id, config, kind='checkpoint', parents=()):
+    """A peer store holding only a CP's header (launch.checkpoint_tree reads no more)."""
+    def node(value):
+        if isinstance(value, dict):
+            return {'kind': 'mapping', 'value': [[k, node(v)] for k, v in value.items()]}
+        if isinstance(value, list):
+            return {'kind': 'list', 'value': [node(v) for v in value]}
+        return {'kind': 'scalar', 'value': value}
+    header = json.dumps({'tree': node({'config': config})}).encode()
+    raw = launch.CHECKPOINT_MAGIC + len(header).to_bytes(8, 'little') + header
+    for sub in ('manifests', 'payload-indexes/v1', 'objects/sha256'):
+        (peer / sub).mkdir(parents=True, exist_ok=True)
+    (peer / 'objects/sha256' / ('1' * 64)).write_bytes(raw)
+    (peer / 'payload-indexes/v1' / f"{'2' * 64}.json").write_text(json.dumps(
+        {'chunks': [{'sha256': '1' * 64}]}))
+    (peer / 'manifests' / f'{cp_id}.json').write_text(json.dumps({
+        'kind': kind, 'parents': list(parents),
+        'payloads': [{'role': 'checkpoint', 'sha256': '2' * 64}]}))
+
+
+def test_eval_only_serves_a_cp_of_another_lineage_in_a_fresh_learner_run(tmp_path):
+    """--resume-checkpoint under eval_only: the learner gets serve_checkpoint (a fresh run
+    from the CP's weights, LearnerConfig.serve_checkpoint), never a resume; preflight reads
+    the CP header and applies the learner's start refusals; training resumes unchanged."""
+    cp = 'c' * 64
+    old = copy.deepcopy(TWO_CELL_FROZEN)  # another lineage: older recipe, other run
+    old['segments'].update(minibatches=4, value_config_input=False)
+    old.update(run='tl8h', lr=0.0002)
+    peer = tmp_path / 'peer'
+    fake_cp_peer(peer, cp, old)
+    plan = long_run_plan(EVAL_ONLY, long_run_site(tmp_path))
+    plan.update(eval_only=EVAL_LIST, resume_checkpoint=cp)
+    facts = launch.served_checkpoint_facts(plan, peer)
+    assert facts['served_checkpoint']['config'] == old
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+             'gate_learner_base': long_run_gate(), **facts}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    run = {'run_name': 'eval', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+           'device': 'cuda', 'generation': '-', 'warmup_artifact_id': 'f' * 64,
+           'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': cp, 'served_config': old,
+           'window': learner_config.window('chain', 3600, None, None, None)}
+    learner, _ = learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN,
+                                             plan['knobs'], run)
+    assert (learner['serve_checkpoint'], learner['resume_checkpoint']) == (cp, None)
+    assert learner['segments']['warmup_artifact_id'] is None  # the CP's own heads
+    assert learner['segments']['value_config_input'] is False  # = the CP's heads
+    assert learner['operating_budget_parent'] is None  # a fresh window, nothing inherited
+    with pytest.raises(ValueError, match='served_config'):
+        learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN, plan['knobs'],
+                                    {**run, 'served_config': None})
+    # refused before submission, as the learner would at start
+    for bad in ({'served_checkpoint': {'error': 'OSError reading checkpoint'}},
+                {'served_checkpoint': {**facts['served_checkpoint'], 'parents': 1}},
+                {'served_checkpoint': {**facts['served_checkpoint'], 'kind': 'model'}}):
+        result = by_name(preflight.checks(plan, {**facts, **bad}))['resume']
+        assert not result.ok and f'served CP {cp}' in result.detail, result.detail
+    assert launch.served_checkpoint_facts(plan, tmp_path / 'none')['served_checkpoint'][
+        'error'].startswith('FileNotFoundError')
+    # training: the same CP stays a resume, every learner check as before
+    training = long_run_plan(TWO_CELL, long_run_site(tmp_path))
+    training['resume_checkpoint'] = cp
+    assert launch.served_checkpoint_facts(training, peer) == {}
+    built, _ = learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN,
+                                           training['knobs'], run)
+    assert built['resume_checkpoint'] == cp and 'serve_checkpoint' not in built
+
+
 def test_eval_only_cross_rules_refuse_training_shaped_settings():
     base = run_profile.values(run_profile.load_profile(EVAL_ONLY))
     assert run_profile.cross_problems(base) == []

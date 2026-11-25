@@ -119,6 +119,11 @@ class LearnerConfig:
     # Segment learner (RL5-METHODS C): the CP a continuation starts from and each declared
     # recipe change old -> new (stpd.rl.recipe_changes); None = the exact recipe check.
     resume_recipe_changes: dict[str, Any] | None = None
+    # Segment learner, eval_only (play, never train): a learner CP whose weights (heads
+    # included) are this fresh run's start; nothing else of it is restored and no lineage
+    # is continued (its run, generation, recipe and producer are not compared). A CP of a
+    # run with this set is never a resume source.
+    serve_checkpoint: str | None = None
     # Explicitly publish restored weights before actors receive another version.
     republish_on_resume: bool = False
     tensorboard_steps: int = 10

@@ -172,13 +172,14 @@ def learner() -> None:
         restored_config = restored.config
         del restored
     window = None
+    serve = K["eval_only"] and resume is not None  # a fresh run serving the CP's weights
     if os.environ.get("FC_CHAIN_ID"):  # a generation of a resume chain (supervise.py)
-        cp_config = (None if restored_config is None else
+        cp_config = (None if restored_config is None or serve else
                      {k: restored_config.get(k) for k in ("deadline_at", "operating_budget")})
         window = learner_config.window(
             os.environ["FC_CHAIN_ID"], int(os.environ["FC_CHAIN_TOTAL_SECONDS"]),
             float(os.environ["FC_CHAIN_DEADLINE"]) if os.environ["FC_CHAIN_DEADLINE"] else None,
-            resume, cp_config)
+            None if serve else resume, cp_config)
         jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_window",
                                              "chain": os.environ["FC_CHAIN_ID"],
                                              "resume_checkpoint": resume,
@@ -197,7 +198,7 @@ def learner() -> None:
                                if site("warmup_file") else None),
         "rendezvous_path": str(RUN / "inference.json"), "ranks": int(os.environ["FC_RANKS"]),
         # A resumed generation (supervisor): the newest valid CP of the previous one.
-        "resume_checkpoint": resume, "window": window})
+        "resume_checkpoint": resume, "window": window, "served_config": restored_config})
     if filled:
         jline(RUN / "learner-events.jsonl", {"t": time.time(), "kind": "harness_gate_filled",
                                              "loss": filled})

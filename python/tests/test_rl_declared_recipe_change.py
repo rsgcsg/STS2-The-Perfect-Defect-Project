@@ -335,3 +335,48 @@ def test_value_config_input_off_to_on_upgrades_the_cp_and_a_second_resume_keeps_
         SegmentLearner(continuation(config, record["checkpoint_artifact_id"],
                                     generation="g-new-r4", declared=back),
                        tmp_path / "back2", io)
+
+
+def test_eval_only_serves_a_cp_of_another_run_and_its_cps_never_resume_a_training(
+        tmp_path, monkeypatch):
+    """LearnerConfig.serve_checkpoint (fast-chain eval_only --resume-checkpoint): a trained
+    CP of another run, recipe and generation starts a fresh run with exactly its weights;
+    the same request as a resume stays refused; the serving run's CPs name the CP and are
+    refused as a resume source."""
+    config, io, cp_id, cp = trained_cp(tmp_path, monkeypatch)
+    other = {"run": "eval-run", "lr": config.lr * 2,
+             "loss.entropy_coef": config.loss.entropy_coef + 0.01}
+    as_resume = continuation(config, cp_id, generation="g-eval", **other)
+    with pytest.raises(ValueError, match=LOCKED):  # training: not one check loosened
+        SegmentLearner(as_resume, tmp_path / "resume", io)
+    serve = dataclasses.replace(as_resume, resume_checkpoint=None, serve_checkpoint=cp_id)
+    for bad, message in (
+            (dataclasses.replace(serve, resume_checkpoint=cp_id), "serve_checkpoint_excludes"),
+            (dataclasses.replace(serve, segments=dataclasses.replace(
+                serve.segments, warmup_artifact_id="f" * 64)), "serve_checkpoint_excludes"),
+            (dataclasses.replace(serve, segments=dataclasses.replace(
+                serve.segments, value_config_input=True)), "value_config_input_differs")):
+        with pytest.raises(ValueError, match=message):
+            SegmentLearner(bad, tmp_path / message, io)
+    owner = SegmentLearner(serve, tmp_path / "serve", io)
+    try:
+        assert_tree(owner.model.state_dict(), cp.weights)  # the CP's weights, heads included
+        assert owner.updates == 0 and not owner.optimizer.state_dict()["state"]
+        owner.checkpoint(final=True)
+        record, served = read_cp(owner)
+        assert served.config["serve_checkpoint"] == cp_id and served.config["run"] == "eval-run"
+    finally:
+        owner.close()
+    again = continuation(dataclasses.replace(serve, serve_checkpoint=None),
+                         record["checkpoint_artifact_id"], generation="g-eval-2")
+    with pytest.raises(ValueError, match="evaluation_run_checkpoint_is_never_a_resume_source"):
+        SegmentLearner(again, tmp_path / "again", io)
+    assert "serve_checkpoint" not in cp.config  # training CPs keep their bytes
+
+
+def test_served_checkpoint_refusal_is_the_value_config_input_only():
+    assert recipe_changes.served_checkpoint_refusal({"segments": {}}, False) is None
+    assert recipe_changes.served_checkpoint_refusal(
+        {"segments": {"value_config_input": True}, "lr": 1.0}, True) is None
+    assert recipe_changes.served_checkpoint_refusal({"segments": {}}, True).startswith(
+        "value_config_input_differs_from_restored_heads")
