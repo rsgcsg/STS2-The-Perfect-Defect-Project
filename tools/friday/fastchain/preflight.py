@@ -831,9 +831,10 @@ def check_seeds(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     k, chain, count = plan["knobs"], plan.get("chain"), facts.get("seeds_file_count")
     if k["eval_only"]:
         listed, slots = plan.get("eval_only") or {}, plan["seed_stride"] * k["env_slots"]
-        if not listed.get("seeds"):
-            return Result("seeds", False, "eval_only: no frozen eval list (--eval-manifest)")
-        return Result("seeds", True, f"EVALUATION (play, never train): {listed['suite']} "
+        if not listed.get("seeds") or not listed.get("model"):
+            return Result("seeds", False, "eval_only: no frozen eval list or no served model")
+        return Result("seeds", True, f"EVALUATION (play, never train) of model "
+                      f"{listed['model']}: {listed['suite']} "
                       f"sha256 {listed['sha256'][:12]}, {len(listed['seeds'])} seeds, one game "
                       f"each on {slots} slots, no wrap", warn=slots < len(listed["seeds"]))
     if not count:

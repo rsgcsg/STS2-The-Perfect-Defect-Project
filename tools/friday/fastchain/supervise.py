@@ -452,6 +452,7 @@ class Chain:
         argv += ["--resume-checkpoint", checkpoint] if checkpoint else []
         if self.knobs["eval_only"]:
             argv += ["--eval-manifest", str(Path(self.args.eval_manifest).resolve())]
+            argv += ["--eval-start-package"] if self.args.eval_start_package else []
         for item in [*self.args.set, *recipe]:  # a later --set of the same knob wins
             argv += ["--set", item]
         generation = {"number": number, "runtag": tag, "checkpoint": checkpoint,
@@ -518,9 +519,16 @@ class Chain:
             live = self.squeue(ids)
             env = {str(job) for name, job in generation["jobs"].items() if name.startswith("env")}
             if self.knobs["eval_only"] and live is not None and gpu in live and not live & env:
-                done = self.end_generation(generation, "service stop: eval-only: every env "
-                                           "job ended (see eval_pairs.py)")
-                return {"kind": "eval_done", "failure": None, "stop": done}
+                # ok only when every planned driver logged eval_seeds_done (else a failure)
+                logs = sorted(run.glob("env-n*/p*/driver.jsonl"))
+                done = sum('"eval_seeds_done"' in p.read_text() for p in logs)
+                planned = json.loads((run / "plan.json").read_text())["seed_stride"]
+                ok = done == len(logs) >= planned
+                why = f"{done} of {len(logs)} drivers done, {planned} planned"
+                stop = self.end_generation(generation, f"service stop: eval-only: every env "
+                                           f"job ended, {why}")
+                return {"kind": "eval_done" if ok else "eval_env_failed",
+                        "failure": None if ok else why, "stop": stop}
             lost = self.env_lost(generation, live)
             if lost:
                 done = self.end_generation(generation, f"service stop: env side lost: {lost}")
@@ -1141,6 +1149,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume-checkpoint")
     parser.add_argument("--eval-execution", type=Path)
     parser.add_argument("--eval-manifest", type=Path)
+    parser.add_argument("--eval-start-package", action="store_true",
+                        help="eval_only: evaluate the site start package (no CP)")
     parser.add_argument("--eval-baseline-plan", type=Path,
                         help="plan.json of the reference round for the A0 watcher's report "
                              "(default: the site's eval_baselines.a0)")
@@ -1169,8 +1179,10 @@ def main(argv: list[str] | None = None) -> int:
     if re.search(r"-r\d+$", args.chain):  # generation names are CHAIN-rN (review D4)
         parser.error("chain: must not end in -rN (that names a generation of another chain)")
     eval_only = run_profile.values(run_profile.load_profile(args.profile, args.set))["eval_only"]
-    if eval_only and (args.eval_execution or not args.eval_manifest):
-        parser.error("eval_only takes --eval-manifest (the list it plays), no --eval-execution")
+    if eval_only and (args.eval_execution or not args.eval_manifest
+                      or bool(args.resume_checkpoint) == args.eval_start_package):
+        parser.error("eval_only takes --eval-manifest (the list it plays), no --eval-execution, "
+                     "and one of --resume-checkpoint / --eval-start-package (the served model)")
     if not eval_only and bool(args.eval_execution) != bool(args.eval_manifest):
         parser.error("--eval-execution and --eval-manifest go together")
     if args.eval_execution and bool(args.eval_a10_manifest) != bool(

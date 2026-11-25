@@ -42,8 +42,8 @@ def game(r: dict[str, Any]) -> dict[str, Any]:  # a driver closed / open_refused
 
 
 def baseline(checkpoint: str | None, path: str, suite: str, sha256: str | None,
-             seeds: list[str], games: dict[str, Any]) -> dict[str, Any]:
-    return {"schema": "spireagent/friday-eval-baseline-1", "checkpoint": checkpoint,
+             seeds: list[str], games: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"schema": "spireagent/friday-eval-baseline-1", "checkpoint": checkpoint, **extra,
             "action_path": path, "list": {"suite": suite, "sha256": sha256}, "seeds": seeds,
             "games": {s: games.get(s, {"status": "not_played", **UNPLAYED}) for s in seeds}}
 
@@ -57,12 +57,14 @@ def table(run: Path, action_path: str) -> dict[str, Any]:
                 if r["seed"] in games or r["seed"] not in listed["seeds"]:
                     raise SystemExit(f"seed {r['seed']} ({path}): closed twice or not listed")
                 games[r["seed"]] = game(r)
-    return baseline(plan.get("resume_checkpoint"), action_path, listed["suite"],
-                    listed["sha256"], listed["seeds"], games)
+    return baseline(listed["model"], action_path, listed["suite"], listed["sha256"],
+                    listed["seeds"], games, note="eval_only run: its learner CPs (final one "
+                    "included) hold the served weights unchanged, never a trained model")
 
 
 def from_paired(path: Path, side: str, checkpoint: str, suite: str) -> dict[str, Any]:
-    """`side` columns of a paired.csv (old CPU evaluator; unscored rows: no floor, 0.0)."""
+    """`side` columns of a paired.csv (old CPU evaluator). Its unknown rows carry no floor,
+    so its conservative reading is not comparable with a table's (pair leaves it out)."""
     with path.open(encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
     games = {}
@@ -78,7 +80,7 @@ def from_paired(path: Path, side: str, checkpoint: str, suite: str) -> dict[str,
             "last_boss_reached": win or 3 in json.loads(col("boss_reached_acts") or "[]"),
             "reward": reward, "conservative": reward if scored else 0.0}
     return baseline(checkpoint, "cpu-evaluator-old", suite, None, [r["seed"] for r in rows],
-                    games)
+                    games, conservative_comparable=False)
 
 
 def delta(a: dict[str, Any], b: dict[str, Any], seeds: list[str], key: str) -> dict[str, Any]:
@@ -96,7 +98,7 @@ def describe(x: dict[str, Any]) -> dict[str, Any]:
     status = dict(collections.Counter(g["status"] for g in games))
     f = sorted(g["floor"] for g in games if g["status"] == "finished")
     wins = sum(g["result"] == "win" for g in games)
-    out = {"checkpoint": x["checkpoint"], "action_path": x["action_path"],
+    out = {"checkpoint": x["checkpoint"], "action_path": x["action_path"], "note": x.get("note"),
            "planned": len(x["seeds"]), "status": status, "wins": wins,
            "last_boss_reached": sum(g["last_boss_reached"] for g in games
                                     if g["status"] == "finished")}
@@ -126,7 +128,9 @@ def pair(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
                                       for g in (ga, gb)]}
     return {"a": describe(a), "b": describe(b), "lists": [a["list"], b["list"]],
             "official": official, "conservative": {
-                "pairs": len(seeds), "reward_delta": delta(ga, gb, seeds, "conservative")},
+                "pairs": len(seeds), "reward_delta": delta(ga, gb, seeds, "conservative")}
+            if a.get("conservative_comparable", True) and b.get("conservative_comparable", True)
+            else "not comparable: a side has no per-seed conservative value (paired.csv)",
             # same model on two action paths: outcome and floor per seed finished on both
             "same": {"compared": len(both), "identical": len(both) - len(differ),
                      "differ": len(differ), "differ_seeds": differ}}

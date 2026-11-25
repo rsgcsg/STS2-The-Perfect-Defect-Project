@@ -300,10 +300,13 @@ def commands(plan: dict[str, Any]) -> dict[str, list[str]]:
     return out
 
 
-def eval_list(path: Path | None, knobs: dict[str, Any]) -> dict[str, Any]:
-    """eval_only: the first eval_seeds seeds of the frozen eval_suite manifest."""
-    if path is None:
-        raise run_profile.ProfileError("eval_only needs --eval-manifest (the frozen eval list)")
+def eval_list(path: Path | None, knobs: dict[str, Any], checkpoint: str | None,
+              start_package: bool) -> dict[str, Any]:
+    """eval_only: the first eval_seeds seeds of the frozen eval_suite manifest, and the
+    served model named explicitly (never the start package by default)."""
+    if path is None or bool(checkpoint) == start_package:
+        raise run_profile.ProfileError("eval_only needs --eval-manifest (the frozen eval list) "
+                                       "and one of --resume-checkpoint / --eval-start-package")
     from spireagent.workbench.reference_suite import load_manifest
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     _, frozen = load_manifest(path, sha)
@@ -991,6 +994,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--chain-json", type=Path,
                         help="supervise.py only: this run is one generation of a chain")
     parser.add_argument("--eval-manifest", type=Path, help="eval_only: the frozen eval list")
+    parser.add_argument("--eval-start-package", action="store_true",
+                        help="eval_only: the served model is the site start package")
     parser.add_argument("--out", type=Path, help="plan: also write the full plan.json here "
                         "(e.g. for `readout.py --plan` on a run made before this launcher)")
     args = parser.parse_args(argv)
@@ -1013,7 +1018,8 @@ def main(argv: list[str] | None = None) -> int:
                           chain=(json.loads(args.chain_json.read_text())
                                  if args.chain_json else None))
         if knobs["eval_only"]:
-            plan["eval_only"] = eval_list(args.eval_manifest, knobs)
+            plan["eval_only"] = eval_list(args.eval_manifest, knobs, args.resume_checkpoint,
+                                          args.eval_start_package)
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2
@@ -1030,6 +1036,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=1, ensure_ascii=False, default=str))
         return 0
     facts = collect_facts(plan, cmds)
+    if plan.get("eval_only"):  # the served model, in plan.json and every baseline table
+        sha = (facts.get("start_model") or {}).get("package_sha256")
+        plan["eval_only"]["model"] = plan.get("resume_checkpoint") or (
+            sha and f"start-package:{sha}")
     results = preflight.checks(plan, facts)
     print(preflight.report(results))
     if not all(r.ok for r in results):

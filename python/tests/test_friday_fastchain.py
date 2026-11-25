@@ -5286,7 +5286,7 @@ def test_readout_folds_the_rare_noncombat_table_and_the_new_scalars():
 # ---------------- eval-only chain: play, never train (RL5 eval B + C, 11-26) ----------------
 
 EVAL_ONLY = FASTCHAIN / 'rl5-eval-only.toml'
-EVAL_LIST = {'manifest': 'm.json', 'sha256': 'a' * 64, 'suite': 'suite-a0',
+EVAL_LIST = {'manifest': 'm.json', 'sha256': 'a' * 64, 'suite': 'suite-a0', 'model': 'cp-1',
              'ascension': 0, 'seeds': [f'S{i}' for i in range(10)]}
 
 
@@ -5311,13 +5311,21 @@ def test_eval_only_profile_passes_preflight_and_shows_it_is_an_evaluation(tmp_pa
              'gate_learner_base': long_run_gate()}
     results = by_name(preflight.checks(plan, facts))
     assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
-    assert results['seeds'].detail.startswith('EVALUATION (play, never train): suite-a0')
+    assert results['seeds'].detail.startswith(
+        'EVALUATION (play, never train) of model cp-1: suite-a0')
     assert not results['seeds'].warn  # every seed has a slot from the start
     env = launch.job_env(plan)
     assert 'export FC_EVAL_ONLY=1' in env
     assert f"FC_EVAL_SEEDS_FILE={plan['run']}/eval-seeds.txt" in env
+    plan['eval_only'] = {**EVAL_LIST, 'model': None}  # no served model: refused
+    assert not by_name(preflight.checks(plan, facts))['seeds'].ok
     del plan['eval_only']
     assert not by_name(preflight.checks(plan, facts))['seeds'].ok  # no list: refused
+    # the served model is named explicitly: a CP or the start package, exactly one
+    knobs_ = plan['knobs']
+    for cp, start in ((None, False), ('cp-1', True)):
+        with pytest.raises(run_profile.ProfileError, match='--eval-start-package'):
+            launch.eval_list(tmp_path / 'm.json', knobs_, cp, start)
 
 
 def test_eval_only_cross_rules_refuse_training_shaped_settings():
@@ -5357,11 +5365,12 @@ def test_eval_only_driver_plays_each_seed_once_unattested_then_stops(tmp_path):
     # the readout: one row per planned seed, the reward of readout.reward_v21
     run = tmp_path / 'run'
     (run / 'plan.json').write_text(json.dumps({'eval_only': {
-        **EVAL_LIST, 'seeds': [f'S{i}' for i in range(11)]}, 'resume_checkpoint': 'cp-1'}))
+        **EVAL_LIST, 'seeds': [f'S{i}' for i in range(11)]}}))
     eval_pairs = load_eval_pairs()
     table = eval_pairs.table(run, 'gpu-service')
     assert (table['checkpoint'], table['action_path'], table['list']['suite']) == \
         ('cp-1', 'gpu-service', 'suite-a0')
+    assert 'never a trained model' in table['note']
     games = table['games']
     assert games['S10']['status'] == 'not_played' and games['S10']['conservative'] == 0.0
     played = [games[f'S{i}'] for i in range(10)]
@@ -5417,21 +5426,77 @@ def test_eval_pairs_readings_and_the_paired_csv_converter(tmp_path):
                                  'conservative': 0.7}
     assert [old['games'][s]['status'] for s in 'BC'] == ['not_started', 'unknown']
     assert eval_pairs.pair(old, b)['official']['pairs'] == 2  # A and D
+    # its unknown rows have no floor: no biased conservative delta against a table
+    assert eval_pairs.pair(old, b)['conservative'].startswith('not comparable')
     with pytest.raises(SystemExit, match='same eval list'):
         eval_pairs.pair(old, {**b, 'seeds': seeds[:3]})
 
 
-def test_eval_only_chain_forwards_its_list_and_ends_ok_when_the_env_side_is_done(
-        tmp_path, capsys):
+def eval_only_chain(tmp_path, done_drivers):
+    """An eval-only chain whose env side ends at once; 2 planned drivers, of which
+    `done_drivers` logged eval_seeds_done."""
     chain, cluster, cancelled = env_side_chain(tmp_path)
     chain.knobs['eval_only'], chain.args.eval_manifest = True, tmp_path / 'm.json'
+    chain.args.eval_start_package = True
+    launch = chain.launch_main
+
+    def with_drivers(argv):
+        code = launch(argv)
+        run = tmp_path / f'run-{argv[1]}'
+        (run / 'plan.json').write_text(json.dumps({'seed_stride': 2}))
+        for p in (1, 2):
+            (run / 'env-n0-1' / f'p{p}').mkdir(parents=True)
+            (run / 'env-n0-1' / f'p{p}' / 'driver.jsonl').write_text(json.dumps(
+                {'event': 'eval_seeds_done' if p <= done_drivers else 'closed'}) + '\n')
+        return code
+    chain.launch_main = with_drivers
+    return chain, cluster
+
+
+def test_eval_only_chain_ends_ok_only_when_every_driver_played_its_seeds(tmp_path, capsys):
+    chain, cluster = eval_only_chain(tmp_path / 'ok', 2)
     assert chain.run() == 0
     argv = cluster.argvs[0]
-    assert argv[argv.index('--eval-manifest') + 1] == str(tmp_path / 'm.json')
-    stop = (tmp_path / 'run-lr1' / 'STOP').read_text()
-    assert stop.startswith('service stop: eval-only: every env job ended')
+    assert argv[argv.index('--eval-manifest') + 1] == str(tmp_path / 'ok' / 'm.json')
+    assert '--eval-start-package' in argv
+    stop = (tmp_path / 'ok' / 'run-lr1' / 'STOP').read_text()
+    assert stop.startswith('service stop: eval-only: every env job ended, 2 of 2 drivers')
     assert chain.state['final']['cause'].startswith('eval-only list done')
-    with pytest.raises(SystemExit):
-        supervise.main(['start', 'e1', '--profile', str(EVAL_ONLY), '--site', str(SITE),
-                        '--cards', '1', '--card-type', 'A100-40'])  # no --eval-manifest
-    assert 'eval_only takes --eval-manifest' in capsys.readouterr().err
+    # a driver that crashed (no eval_seeds_done): a failure, never resumed
+    chain, cluster = eval_only_chain(tmp_path / 'crash', 1)
+    assert chain.run() == 1 and len(cluster.argvs) == 1
+    assert 'eval_env_failed' in chain.state['final']['cause']
+    assert '1 of 2 drivers done' in chain.state['final']['cause']
+    for binding in ([], ['--resume-checkpoint', 'cp', '--eval-start-package']):
+        with pytest.raises(SystemExit):
+            supervise.main(['start', 'e1', '--profile', str(EVAL_ONLY), '--site', str(SITE),
+                            '--cards', '1', '--card-type', 'A100-40', '--eval-manifest', 'm',
+                            *binding])
+        assert 'one of --resume-checkpoint / --eval-start-package' in capsys.readouterr().err
+
+
+def test_eval_only_drivers_split_the_list_without_overlap_or_replays(tmp_path):
+    world = fake_driver_world(tmp_path)
+    seeds = [f'S{i}' for i in range(9)] + ['bad9']  # the fake env refuses bad*: open_refused
+    (world / 'seeds.txt').write_text('\n'.join(seeds) + '\n')
+    ladder = json.dumps(run_profile.values(run_profile.load_profile(EVAL_ONLY))[
+        'exploration_ladder'])
+    opened = []
+    for offset in (0, 1):
+        admit = AdmitAll()
+        out = tmp_path / 'run' / 'env-n0-1' / f'p{offset + 1}'
+        try:
+            done = run_driver(world, out, admit.path, '--exploration-ladder', ladder, '--arm',
+                              'greedy', '--replay-k', '1', '--eval-only', 'on',
+                              '--seed-stride', '2', steady=50, seed_offset=offset)
+        finally:
+            admit.close()
+        assert done.returncode == 0, done.stderr
+        opened.append([json.loads(line)['seed']
+                       for line in (out / 'opens.jsonl').read_text().splitlines()])
+    assert opened == [seeds[0::2], seeds[1::2]]  # disjoint, complete, each once
+    (tmp_path / 'run' / 'plan.json').write_text(json.dumps({'eval_only': {
+        **EVAL_LIST, 'seeds': seeds}}))
+    table = load_eval_pairs().table(tmp_path / 'run', 'gpu-service')
+    assert table['games']['bad9']['status'] == 'not_started'  # refused, never replayed
+    assert sum(g['status'] == 'finished' for g in table['games'].values()) == 9
