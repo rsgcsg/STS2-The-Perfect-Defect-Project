@@ -3105,6 +3105,7 @@ const path = process.argv[process.argv.indexOf("--config") + 1];
 const config = JSON.parse(readFileSync(path, "utf8"));
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
 let n = 0;
+const tries = {};
 emit({ event: "ready" });
 createInterface({ input: process.stdin }).on("line", line => {
   const c = JSON.parse(line);
@@ -3122,6 +3123,17 @@ createInterface({ input: process.stdin }).on("line", line => {
       return;
     }
     const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
+    // eval retries: flaky* never starts on its first open; late* stops after a native step,
+    // unk* ends unknown; both before any terminal
+    tries[c.seed] = (tries[c.seed] ?? 0) + 1;
+    if ((c.seed.startsWith("flaky") && tries[c.seed] === 1) || /^(late|unk)/.test(c.seed)) {
+      emit({ event: "opened", ...game, start: c.start });
+      setTimeout(() => emit({ event: "closed", ...game, reason: c.seed.startsWith("unk")
+        ? "unknown" : "not_started", detail: "inference_timeout", decisions: 1,
+        native_steps: c.seed.startsWith("late") ? 3 : 0, public_facts: null, terminal: null,
+        evidence_failed: false }), 30);
+      return;
+    }
     const act = (f) => f <= 17 ? 1 : f <= 33 ? 2 : 3;
     emit({ event: "opened", ...game, start: c.start });
     for (const f of c.save_points?.floors ?? []) if (f <= floor) {
@@ -5556,9 +5568,62 @@ def test_eval_only_drivers_split_the_list_without_overlap_or_replays(tmp_path):
         assert done.returncode == 0, done.stderr
         opened.append([json.loads(line)['seed']
                        for line in (out / 'opens.jsonl').read_text().splitlines()])
-    assert opened == [seeds[0::2], seeds[1::2]]  # disjoint, complete, each once
+    # disjoint, complete; the refused bad9 is queued again twice (eval_not_started_retries)
+    assert opened == [seeds[0::2], seeds[1::2] + ['bad9', 'bad9']]
     (tmp_path / 'run' / 'plan.json').write_text(json.dumps({'eval_only': {
         **EVAL_LIST, 'seeds': seeds}}))
     table = load_eval_pairs().table(tmp_path / 'run', 'gpu-service')
-    assert table['games']['bad9']['status'] == 'not_started'  # refused, never replayed
+    assert table['games']['bad9']['status'] == 'not_started'  # refused 3 times: given up
+    assert (table['games']['bad9']['attempts'], table['starts_per_seed']) == (3, {1: 9, 3: 1})
     assert sum(g['status'] == 'finished' for g in table['games'].values()) == 9
+
+
+def test_eval_only_queues_again_only_seeds_that_never_started(tmp_path):
+    """A never-started game (no native step) is opened again later, at most
+    --eval-retries times; a game that sent a native step or ended unknown never is; the
+    training driver (eval-only off) never queues anything again."""
+    world = fake_driver_world(tmp_path)
+    seeds = ['flaky0', 'S1', 'late2', 'unk3', 'bad4']
+    (world / 'seeds.txt').write_text('\n'.join(seeds) + '\n')
+    ladder = json.dumps(run_profile.values(run_profile.load_profile(EVAL_ONLY))[
+        'exploration_ladder'])
+    out = tmp_path / 'run' / 'env-n0-1' / 'p1'
+    admit = AdmitAll()
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', ladder, '--arm',
+                          'greedy', '--replay-k', '1', '--eval-only', 'on', '--eval-retries',
+                          '1', '--reopen-backoff-start-ms', '10', steady=50)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    opens = [json.loads(line)['seed'] for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert sorted(opens) == sorted(seeds + ['flaky0', 'bad4'])  # one requeue each, at most
+    lines = readout.jsonl(out / 'driver.jsonl')
+    requeued = [(r['seed'], r['attempt'], r['reason']) for r in lines
+                if r['event'] == 'eval_seed_requeued']
+    assert sorted(requeued) == [('bad4', 2, 'reset_failed:x'),
+                                ('flaky0', 2, 'not_started:inference_timeout')]
+    assert [r for r in lines if r['event'] == 'eval_seeds_done']
+    (tmp_path / 'run' / 'plan.json').write_text(json.dumps({'eval_only': {
+        **EVAL_LIST, 'seeds': seeds}}))
+    games = load_eval_pairs().table(tmp_path / 'run', 'gpu-service')['games']
+    assert (games['flaky0']['status'], games['flaky0']['attempts']) == ('finished', 2)
+    assert (games['late2']['status'], games['late2']['attempts']) == ('not_started', 1)
+    assert (games['unk3']['status'], games['unk3']['attempts']) == ('unknown', 1)
+    assert (games['bad4']['status'], games['bad4']['attempts']) == ('not_started', 2)
+    # training: the same seeds, the next seed after a never-started game, nothing queued again
+    train = tmp_path / 'train'
+    admit = AdmitAll()
+    try:
+        done = run_driver(world, train, admit.path, '--exploration-ladder', ladder, '--arm',
+                          'greedy', '--replay-k', '1', '--eval-retries', '1', steady=2)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    assert not [r for r in readout.jsonl(train / 'driver.jsonl')
+                if r['event'] == 'eval_seed_requeued' or 'attempt' in r]
+    assert 'eval_retries' not in next(r for r in readout.jsonl(train / 'driver.jsonl')
+                                      if r['event'] == 'driver_flags')
+    assert run_profile.values(run_profile.load_profile(PROFILE))[
+        'eval_not_started_retries'] == 2
+    assert '--eval-retries $FC_EVAL_NOT_STARTED_RETRIES' in (FASTCHAIN / 'env.sh').read_text()

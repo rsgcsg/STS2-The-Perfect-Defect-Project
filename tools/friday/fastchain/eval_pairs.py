@@ -22,6 +22,7 @@ from readout import BOSS_FLOORS, jsonl, reward_v21  # noqa: E402
 
 UNPLAYED = {"result": None, "floor": None, "bosses_passed": 0, "last_boss_reached": False,
             "reward": None, "conservative": 0.0}
+UNSTARTED = {"status": "not_started"}
 
 
 def game(r: dict[str, Any]) -> dict[str, Any]:  # a driver closed / open_refused line
@@ -50,15 +51,19 @@ def baseline(checkpoint: str | None, path: str, suite: str, sha256: str | None,
 
 def table(run: Path, action_path: str) -> dict[str, Any]:
     plan = json.loads((run / "plan.json").read_text())
-    listed, games = plan["eval_only"], {}
+    listed, games, tries = plan["eval_only"], {}, collections.Counter()
     for path in sorted(run.glob("env-*/p*/driver.jsonl")):
         for r in jsonl(path):
             if r.get("event") in ("closed", "open_refused") and r.get("seed") is not None:
-                if r["seed"] in games or r["seed"] not in listed["seeds"]:
-                    raise SystemExit(f"seed {r['seed']} ({path}): closed twice or not listed")
-                games[r["seed"]] = game(r)
+                seed = r["seed"]  # only a never-started game is followed by another start
+                if games.get(seed, UNSTARTED)["status"] != "not_started" \
+                        or seed not in listed["seeds"]:
+                    raise SystemExit(f"seed {seed} ({path}): closed twice or not listed")
+                games[seed], tries[seed] = game(r), tries[seed] + 1
+    games = {seed: {**g, "attempts": tries[seed]} for seed, g in games.items()}
     return baseline(listed["model"], action_path, listed["suite"], listed["sha256"],
-                    listed["seeds"], games, note="eval_only run: its learner CPs (final one "
+                    listed["seeds"], games, starts_per_seed=dict(sorted(collections.Counter(
+                        tries.values()).items())), note="eval_only run: its learner CPs (final one "
                     "included) hold the served weights unchanged, never a trained model")
 
 

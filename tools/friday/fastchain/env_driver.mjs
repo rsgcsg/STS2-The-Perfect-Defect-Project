@@ -71,9 +71,20 @@ const SEED_STRIDE = Number(arg("seed-stride", "1"));
 const seedStream = { offset: seedIndex, stride: SEED_STRIDE, taken: 0, wrapped: 0, file_seeds: SEEDS.length };
 // --eval-only on: no wrap, no game attested to the learner (never trained), stop when done.
 const EVAL_ONLY = arg("eval-only", "off") === "on";
+// eval_only: a seed whose game never started (open refused at native start or reset, or
+// closed not_started with no native step sent) goes to the back of this driver's queue, at
+// most --eval-retries times; a game that sent any native step, or unknown, is never replayed.
+const EVAL_RETRIES = Number(arg("eval-retries", "2"));
+const retryQueue = [], attempts = new Map();  // seed -> starts so far
+const requeue = (seed, reason) => {
+  const n = attempts.get(seed) ?? 1;
+  if (!EVAL_ONLY || n > EVAL_RETRIES) return;
+  attempts.set(seed, n + 1); retryQueue.push(seed);
+  log({ event: "eval_seed_requeued", seed, attempt: n + 1, reason });
+};
 const nextSeed = () => {
   const index = seedIndex;
-  if (EVAL_ONLY && index >= SEEDS.length) return null;
+  if (EVAL_ONLY && index >= SEEDS.length) return retryQueue.shift() ?? null;
   seedIndex += SEED_STRIDE;
   seedStream.taken += 1;
   if (index >= SEEDS.length) {
@@ -146,7 +157,7 @@ const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
   single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
   ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, temperature_min: TEMPERATURE_MIN, replay_k: REPLAY_K,
-  save_starts: SAVE_STARTS, new_runs_only: NEW_RUNS_ONLY };
+  save_starts: SAVE_STARTS, new_runs_only: NEW_RUNS_ONLY, ...(EVAL_ONLY ? { eval_retries: EVAL_RETRIES } : {}) };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 
@@ -164,7 +175,8 @@ const openWith = (slot, r7) => {
   if (next === null) return evalDone();
   const { group: { id, plan, seed }, member } = next, ref = `g${++opened}`;
   live.add(slot);
-  games.set(ref, { seed, group: id, member, start: plan.start.kind, ...(saves ? saves.opening(ref, plan, member) : {}) });
+  games.set(ref, { seed, group: id, member, start: plan.start.kind,
+    ...(EVAL_ONLY ? { attempt: attempts.get(seed) ?? 1 } : {}), ...(saves ? saves.opening(ref, plan, member) : {}) });
   send({ cmd: "open", slot, game_ref: ref, seed, initial_progress: initialProgress, start: plan.start, r7, retain_originals: false,
     ...(plan.save_points ? { save_points: plan.save_points } : {}) });
 };
@@ -242,11 +254,13 @@ createInterface({ input: env.stdout }).on("line", line => {
       game_instance_id: event.game_instance_id, evidence_failed: event.evidence_failed ?? null,
       native_steps: event.native_steps, floor: event.public_facts?.floor ?? null, terminal: event.terminal?.result ?? null });
     if (event.reason === "not_started") {
+      if (event.native_steps === 0) requeue(games.get(event.game_ref)?.seed, `not_started:${event.detail}`);
       const n = (notStartedRun.get(event.slot) ?? 0) + 1; notStartedRun.set(event.slot, n);
       const slot = event.slot; setTimeout(() => open(slot), reopenDelayMs(n));
     } else { notStartedRun.delete(event.slot); open(event.slot); }
   } else if (event.event === "open_refused") {
     summary.refused.push(event); live.delete(event.slot);
+    if (/^(native_start|reset)_failed:/.test(event.reason)) requeue(games.get(event.game_ref)?.seed, event.reason);
     if (event.reason !== "build_output_stopped") open(event.slot); else evalDone();
   }
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);

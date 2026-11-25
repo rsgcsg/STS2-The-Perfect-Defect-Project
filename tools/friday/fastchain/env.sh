@@ -100,7 +100,7 @@ pids=()
 for p in $(seq 1 $P); do
   node $H/env_driver.mjs --pkg $FC_SITE_ENV_PKG --memo "$FC_ENV_MEMO" --out $O/p$p --tag n$NODEIDX-p$p --slots $K --single-choice omit --compact on \
     --warm-s $FC_DRIVER_WARM_SECONDS --steady-s $FC_DRIVER_STEADY_SECONDS --status-s $FC_DRIVER_STATUS_SECONDS --link $TMPDIR/agg-$(( (p - 1) % AGGS )).sock --admit $TMPDIR/admit.sock \
-    --seeds $SEEDS --eval-only $EVAL --seed-offset $(( FC_SEED_START + NODEIDX * P + p - 1 )) --seed-stride $SEED_STRIDE \
+    --seeds $SEEDS --eval-only $EVAL --eval-retries $FC_EVAL_NOT_STARTED_RETRIES --seed-offset $(( FC_SEED_START + NODEIDX * P + p - 1 )) --seed-stride $SEED_STRIDE \
     --input-spec $FC_SITE_INPUT_SPEC_FILE --initial-progress $FC_SITE_INITIAL_PROGRESS_FILE --candidate $FC_SITE_ENV_CANDIDATE \
     --cold-start $FC_DRIVER_COLD_START --elu-preload $H/elu_preload.mjs \
     --inference-timeout-ms $FC_DRIVER_INFERENCE_TIMEOUT_MS --reopen-backoff-start-ms $FC_DRIVER_REOPEN_BACKOFF_START_MS \

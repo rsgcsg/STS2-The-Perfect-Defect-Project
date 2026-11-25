@@ -581,6 +581,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "disk_stop_free_pct": _int(1, 99),
     "eval_suite": _str_or_empty,
     "eval_only": _bool,  # play, never train: one greedy game per seed of the eval list
+    "eval_not_started_retries": _int(0, 10),  # eval_only: requeues of a never-started seed
     "eval_a10_enabled": _bool,
     "eval_a10_suite": _str_or_empty,
     "eval_a10_seeds": _int(1, 100),
