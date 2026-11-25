@@ -274,6 +274,14 @@ def checked_terminal_class(*, result: str, floor: int, reward: float,
     return matched[0]
 
 
+def check_target_distribution(tail: Tensor) -> None:
+    """One 51-class target row (a segment's tail): shape, finite, >= 0, mass 1 within 1e-5."""
+    if (tail.shape != (OUTCOME_CLASSES,) or not bool(torch.isfinite(tail).all())
+            or bool((tail < 0).any())
+            or not torch.isclose(tail.sum(), tail.new_tensor(1), atol=1e-5)):
+        raise ValueError("invalid_segment_probability_mass")
+
+
 def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *,
                                terminal_class: int | None = None,
                                gae_lambda: float = 0.99,
@@ -302,12 +310,10 @@ def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *
         raise ValueError("nonterminal_requires_confirmed_boundary")
     else:
         tail = boundary.detach().to(device=p.device, dtype=torch.float32)
-    if (tail.shape != (OUTCOME_CLASSES,) or not bool(torch.isfinite(p).all())
-            or not bool(torch.isfinite(tail).all()) or bool((p < 0).any())
-            or bool((tail < 0).any())
-            or not torch.allclose(p.sum(1), torch.ones_like(p[:, 0]), atol=1e-5)
-            or not torch.isclose(tail.sum(), tail.new_tensor(1), atol=1e-5)):
+    if (not bool(torch.isfinite(p).all()) or bool((p < 0).any())
+            or not torch.allclose(p.sum(1), torch.ones_like(p[:, 0]), atol=1e-5)):
         raise ValueError("invalid_segment_probability_mass")
+    check_target_distribution(tail)
     targets = torch.empty_like(p)
     targets[-1] = tail
     for index in range(len(p) - 2, -1, -1):

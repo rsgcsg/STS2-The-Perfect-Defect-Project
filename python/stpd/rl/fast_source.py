@@ -128,6 +128,7 @@ from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, 
 from .heads import (
     OUTCOME_CLASSES,
     categorical_lambda_targets,
+    check_target_distribution,
     class_reward_values,
     value_config_vector,
 )
@@ -353,7 +354,13 @@ def _combat_settled(probabilities: torch.Tensor, targets: torch.Tensor,
     last = len(p) - 1
     states[last] = settle["state"]
     if settle["tail"] is not None:
-        settled[last] = torch.tensor(settle["tail"], dtype=targets.dtype)
+        # the stitched value tail's own checks (`heads.categorical_lambda_targets`)
+        tail = settle["tail"]
+        if type(tail) is not list or set(map(type, tail)) - {float, int}:
+            raise FastIntakeError("fast_combat_settle_tail_invalid")
+        row = torch.tensor(tail, dtype=targets.dtype)
+        check_target_distribution(row)
+        settled[last] = row
     for t in range(last - 1, -1, -1):
         if not in_combat[t]:
             continue

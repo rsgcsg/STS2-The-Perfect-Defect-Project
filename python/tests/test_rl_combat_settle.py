@@ -180,6 +180,21 @@ def test_bad_kappa_and_mismatched_flags_are_refused():
             _combat_settled(p, p, [True], bad, 0.99)
 
 
+def test_a_settled_tail_gets_the_value_tails_own_checks():
+    p = torch.tensor([one_hot(1)])
+    good = [float(x) for x in one_hot(3)]
+    settled, _ = _combat_settled(p, p, [True], {"kappa": 0.5, "tail": good,
+                                                "state": "settled"}, 0.99)
+    assert torch.equal(settled[0], torch.tensor(good))
+    nan = [*good[:-1], float("nan")]
+    for bad in (good[:-1], nan, [2 * x for x in good], [-x for x in good]):
+        with pytest.raises(ValueError, match="invalid_segment_probability_mass"):
+            _combat_settled(p, p, [True], {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
+    for bad in ("x", [str(x) for x in good], [True] * 51):
+        with pytest.raises(FastIntakeError, match="combat_settle"):
+            _combat_settled(p, p, [True], {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
+
+
 # --- the real path: assembler segments, "game" intake, decode ------------------------------
 
 def combat(step: int) -> bool:
