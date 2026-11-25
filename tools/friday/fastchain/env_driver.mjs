@@ -102,10 +102,18 @@ const log = (record) => appendFileSync(join(OUT, "driver.jsonl"), `${JSON.string
 // (env.sh). Off (share 0 or no flag): every start is the next seed of the list as a new run.
 // An arm with `new_runs_only` (user 2026-11-24) never touches the pool: no save start and no
 // save points, whatever the share (the arm's games are new runs only).
+// Recipe A (tickets.mjs "Greedy cell"): with save_starts.act_target "greedy_cell" or greedy_saves, a new_runs_only
+// arm's driver takes the role "greedy" (still new runs only): it writes its floor stats and, with greedy_saves,
+// saves and exports them to --greedy-dir (the run directory); pool drivers read and import from there.
 const SAVE_STARTS = JSON.parse(arg("save-starts") ?? "null");
 const NEW_RUNS_ONLY = LADDER[ARM].new_runs_only === true;
-const saves = SAVE_STARTS?.share > 0 && !NEW_RUNS_ONLY ? new SaveTickets(SAVE_STARTS, { id: arg("tag"), ascension: ASCENSION, character: "Defect",
-  pool: arg("save-pool"), progress_sha256: createHash("sha256").update(JSON.stringify(initialProgress)).digest("hex") }, { log }) : null;
+const GREEDY_ROLE = NEW_RUNS_ONLY && SAVE_STARTS?.share > 0
+  && (SAVE_STARTS.act_target === "greedy_cell" || SAVE_STARTS.greedy_saves === true);
+const saves = SAVE_STARTS?.share > 0 && (!NEW_RUNS_ONLY || GREEDY_ROLE) ? new SaveTickets(SAVE_STARTS, { id: arg("tag"), ascension: ASCENSION, character: "Defect",
+  pool: arg("save-pool"), progress_sha256: createHash("sha256").update(JSON.stringify(initialProgress)).digest("hex"),
+  ...(GREEDY_ROLE ? { role: "greedy" } : {}), greedy_dir: arg("greedy-dir"),
+  node_index: arg("node-index") === undefined ? null : Number(arg("node-index")),
+  node_count: arg("node-count") === undefined ? null : Number(arg("node-count")) }, { log }) : null;
 // I6 K replay: each start opens REPLAY_K times in this driver's slots as group `TAG-kN` (a
 // save start: one claimed use per game); a member that is refused or ends early is never
 // replaced (no game is retried).
@@ -159,7 +167,7 @@ const GC1 = arg("single-threaded-gc", "off") === "on";  // V8 --single-threaded-
 const DRIVER_FLAGS = { inference_timeout_ms: INFERENCE_TIMEOUT_MS, reopen_backoff: REOPEN_BACKOFF,
   single_threaded_gc: GC1, reduce_light_interval: Number(arg("reduce-light-interval", "0")), memo: MEMO,
   ascension: ASCENSION, r7: R7, arm: ARM, sampling_classes: SAMPLING.classes, temperature_min: TEMPERATURE_MIN, replay_k: REPLAY_K,
-  save_starts: SAVE_STARTS, new_runs_only: NEW_RUNS_ONLY, ...(EVAL_ONLY ? { eval_retries: EVAL_RETRIES } : {}) };
+  save_starts: SAVE_STARTS, new_runs_only: NEW_RUNS_ONLY, ...(GREEDY_ROLE ? { save_role: "greedy" } : {}), ...(EVAL_ONLY ? { eval_retries: EVAL_RETRIES } : {}) };
 log({ event: "driver_flags", ...DRIVER_FLAGS });
 process.stderr.write(`driver_flags ${JSON.stringify(DRIVER_FLAGS)}\n`);
 

@@ -17,9 +17,11 @@
 // from a save make no saves (the fast env refuses save points on them). A save loads only into a driver of
 // the same level, character, Host candidate and initial progress (sha256), and the load itself checks the
 // file sha256. Saves are management-plane only: nothing from a save reaches model input.
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync,
+  statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const SAVE_SCHEMA = "sts2.host-runtime/managed-map-continue-1";
 const SHA = /^[0-9a-f]{64}$/u;
@@ -34,8 +36,13 @@ const fail = (field) => { throw new Error(`save_starts_config:${field}`); };
 const int = (value, field, min, max) => (Number.isSafeInteger(value) && value >= min && value <= max ? value : fail(field));
 const num = (value, field, min, max) => (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : fail(field));
 export const SAVE_STARTS_KEYS = ["share", "random_saves", "act_weights", "died_later_weight", "uses_per_save", "pool_gb"];
-// Optional keys (absent = the behaviour before them): `act_floor` (recipe A, default 0).
-export const SAVE_STARTS_OPTIONAL = ["act_floor"];
+// Optional keys (absent = the behaviour before them), recipe A: `act_floor` (default 0), `act_target` ("fixed"),
+// `act_target_min_games` (30), `act_target_read_seconds` (60), `greedy_saves` (false), `greedy_save_share` (0),
+// `greedy_import_seconds` (60). See "Greedy cell" below.
+export const SAVE_STARTS_OPTIONAL = ["act_floor", "act_target", "act_target_min_games", "act_target_read_seconds", "greedy_saves",
+  "greedy_save_share", "greedy_import_seconds"];
+const choice = (value, field, options) => (options.includes(value) ? value : fail(field));
+const bool = (value, field) => (typeof value === "boolean" ? value : fail(field));
 
 /** The recipe knob `save_starts` (run_profile.py checks the same table; defaults live in the profile only). */
 export function parseSaveStarts(value) {
@@ -61,7 +68,19 @@ export function parseSaveStarts(value) {
     pool_bytes: Math.round(num(value.pool_gb, "pool_gb", 0.001, 1000) * 1e9),
     // Recipe A: each act with a save to start from gets at least this share of the act draw
     // (0 = off, the draw exactly as before; at most 1/3).
-    act_floor: num(value.act_floor ?? 0, "act_floor", 0, 1 / 3)
+    act_floor: num(value.act_floor ?? 0, "act_floor", 0, 1 / 3),
+    // Recipe A B1: "fixed" = act_weights is the target; "greedy_cell" = the per-act floors the greedy cell's own
+    // closed new runs walked, summed over its drivers' stats files, once they hold >= act_target_min_games games
+    // (act_weights until then), read at most every act_target_read_seconds.
+    act_target: choice(value.act_target ?? "fixed", "act_target", ["fixed", "greedy_cell"]),
+    act_target_min_games: int(value.act_target_min_games ?? 30, "act_target_min_games", 1, 1e6),
+    act_target_read_seconds: num(value.act_target_read_seconds ?? 60, "act_target_read_seconds", 1, 3600),
+    // Recipe A B3: the greedy cell's new runs save (same floors as any new run) and export each save of an
+    // admitted, evidence-intact game to the run directory; B4: a save start draws, inside the act #pickAct
+    // chose, among greedy saves with this probability (0 = off: greedy saves are never imported or drawn).
+    greedy_saves: bool(value.greedy_saves ?? false, "greedy_saves"),
+    greedy_save_share: num(value.greedy_save_share ?? 0, "greedy_save_share", 0, 1),
+    greedy_import_seconds: num(value.greedy_import_seconds ?? 60, "greedy_import_seconds", 1, 3600)
   };
 }
 
@@ -88,6 +107,18 @@ function draw(weights, random) {
   return index;
 }
 
+// Greedy cell (recipe A B1/B3/B4). The greedy arm's drivers (role "greedy": new runs only, never a save start)
+// write, per driver, `<greedy_dir>/stats/<driver>.json` = { floors: [act 1, 2, 3], games } over their closed
+// terminal new runs (temp file + rename), and, with greedy_saves, copy each pooled-worthy save to
+// `<greedy_dir>/saves/<sha256>.save` with its ledger line as `<sha256>.json` (each written to a temp name and
+// renamed; the .json last, so a .json means a complete export). The run directory is shared by every node; the
+// node pools are not. A pool driver imports, at most every greedy_import_seconds, the exports this node owns
+// (sha256 prefix mod the run's env node count = this node's index: one node per save, so a save's uses stay
+// uses_per_save) into its own pool, claimed node-wide by an exclusive `imports/<sha256>` file (one import, ever;
+// a failed import stays sealed, counted and logged). Every read or import failure is counted and logged.
+const SAVE_ROLES = ["pool", "greedy"];
+const sumOf = (values) => values[0] + values[1] + values[2];
+
 export class SaveTickets {
   /**
    * `driver`: who plans here (ledger attribution), the env session's `ascension` and `character`, the node
@@ -98,6 +129,31 @@ export class SaveTickets {
     this.config = parseSaveStarts(config);
     if (typeof driver?.id !== "string" || !driver.id || !Number.isSafeInteger(driver.ascension) || typeof driver.character !== "string"
         || typeof driver.pool !== "string" || !driver.pool.startsWith("/") || !SHA.test(driver.progress_sha256 ?? "")) fail("driver");
+    this.role = choice(driver.role ?? "pool", "driver.role", SAVE_ROLES);
+    const c = this.config;
+    this.targetOn = this.role === "pool" && c.act_target === "greedy_cell";
+    this.importOn = this.role === "pool" && c.greedy_save_share > 0;
+    if (this.role === "greedy" || this.targetOn || this.importOn) {
+      if (typeof driver.greedy_dir !== "string" || !driver.greedy_dir.startsWith("/")) fail("greedy_dir");
+      this.statsDir = join(driver.greedy_dir, "stats");
+      this.exportDir = join(driver.greedy_dir, "saves");
+      mkdirSync(this.statsDir, { recursive: true, mode: 0o700 });
+      mkdirSync(this.exportDir, { recursive: true, mode: 0o700 });
+    }
+    if (this.importOn) {
+      // The node's share of the exports: never guessed (env.sh passes NODEIDX and FC_ENV_NODES).
+      if (!Number.isSafeInteger(driver.node_count) || driver.node_count < 1 || !Number.isSafeInteger(driver.node_index)
+          || driver.node_index < 0 || driver.node_index >= driver.node_count) fail("node_index/node_count");
+      this.nodeShare = { index: driver.node_index, count: driver.node_count };
+      this.importDir = join(driver.pool, "imports");
+      mkdirSync(this.importDir, { recursive: true, mode: 0o700 });
+      this.seenExports = new Set();
+      this.importedAt = null;
+    }
+    // B1: the act target now; "start" = act_weights (too few greedy games, or none read yet).
+    this.target = { mode: c.act_target, state: "start", weights: [...c.act_weights], greedy_games: 0, read_at: null,
+      switched_at: null, logged: false };
+    this.greedyStats = { floors: [0, 0, 0], games: 0 };
     this.driver = { id: driver.id, ascension: driver.ascension, character: driver.character, node: hostname() };
     this.progressSha = driver.progress_sha256;
     this.random = random; this.now = now; this.log = log;
@@ -124,6 +180,12 @@ export class SaveTickets {
       tickets_claimed: 0, claim_conflicts: 0, from_save_opened: 0, load_failed: 0, open_refused_other: 0,
       ticket_closes: {}, families_paused: 0, new_run_without_ticket: {}, died_later_draws: 0, ledger_bad_lines: 0,
       evicted: {}, evictions_kept: 0 };
+    // Recipe A counters, only when their switch is on (the driver.jsonl lines are as before otherwise).
+    if (this.targetOn) Object.assign(this.counts, { act_target_reads: 0, act_target_read_failed: {} });
+    if (this.importOn) Object.assign(this.counts, { greedy_imported: 0, greedy_import_failed: {}, greedy_draws: 0,
+      greedy_fallback: 0, ordinary_fallback: 0 });
+    if (this.role === "greedy") Object.assign(this.counts, { greedy_games: 0, greedy_stats_write_failed: 0,
+      greedy_exported: 0, greedy_export_bytes: 0, greedy_export_failed: {} });
   }
 
   #append(record) {
@@ -167,7 +229,8 @@ export class SaveTickets {
       this.saves.set(record.id, { id: record.id, family: record.family, act: record.act, floor: record.floor, bytes: record.bytes,
         path: record.path, scenario: `${record.ascension}|${record.character}|${JSON.stringify(record.candidate)}|${record.progress_sha256}`,
         seed: record.seed, problem: record.problem === true, source_floor: record.source_end?.floor ?? null,
-        source_terminal: record.source_end?.terminal ?? null, used: 0, open: 0, save: record.save });
+        source_terminal: record.source_end?.terminal ?? null, used: 0, open: 0, save: record.save,
+        ...(record.source === "greedy" ? { source: "greedy" } : {}) });
       this.bytes += record.bytes;
     } else if (record.kind === "claim" && !this.used.has(record.ticket)) {
       this.used.add(record.ticket);
@@ -193,8 +256,10 @@ export class SaveTickets {
   #eligible(count) {
     if (this.candidate === null) return [];
     const scenario = this.#scenario(), out = [];
+    const greedy = this.config.greedy_save_share > 0;
     for (const entry of this.saves.values())
-      if (entry.scenario === scenario && !this.paused.has(entry.family) && this.config.uses_per_save - entry.used >= count) out.push(entry);
+      if (entry.scenario === scenario && !this.paused.has(entry.family) && this.config.uses_per_save - entry.used >= count
+          && (greedy || entry.source !== "greedy")) out.push(entry);
     return out;
   }
 
@@ -209,7 +274,7 @@ export class SaveTickets {
    * is drawn with probability at least f; the fill-the-gap draw itself is unchanged.
    */
   #pickAct(acts) {
-    const weights = this.config.act_weights, total = weights[0] + weights[1] + weights[2];
+    const weights = this.target.weights, total = weights[0] + weights[1] + weights[2];
     const played = this.covered[0] + this.covered[1] + this.covered[2];
     const target = acts.map(act => (weights[act - 1] ?? 0) / total);
     const below = acts.map((act, index) => Math.max(0, target[index] - (played ? this.covered[act - 1] / played : 0)));
@@ -232,7 +297,17 @@ export class SaveTickets {
     }
     const act = this.#pickAct([...byAct.keys()].sort((a, b) => a - b));
     if (act === null) return null;
-    const floors = [...byAct.get(act).values()];
+    let floors = [...byAct.get(act).values()];
+    if (this.config.greedy_save_share > 0) {
+      // B4: which kind of save inside the chosen act; none of that kind there = the other kind, counted.
+      const greedy = this.random() < this.config.greedy_save_share;
+      const kept = floors.map(saves => saves.filter(entry => (entry.source === "greedy") === greedy)).filter(saves => saves.length > 0);
+      if (kept.length > 0) { floors = kept; if (greedy) this.counts.greedy_draws += 1; }
+      else {
+        this.counts[greedy ? "greedy_fallback" : "ordinary_fallback"] += 1;
+        this.log({ event: "greedy_save_fallback", act, wanted: greedy ? "greedy" : "ordinary" });
+      }
+    }
     const saves = floors[Math.floor(this.random() * floors.length)];
     return saves[Math.floor(this.random() * saves.length)];
   }
@@ -286,7 +361,14 @@ export class SaveTickets {
    * of `save_points`.
    */
   plan(group, count = 1) {
+    if (this.role === "greedy") {
+      this.counts.save_points_games += count;
+      return { seed: null, start: { kind: "new_run" }, tickets: null, entry: null,
+        save_points: this.config.greedy_saves ? { directory: this.saveDir, floors: this.#saveFloors() } : null };
+    }
     this.refresh();
+    if (this.importOn) this.#import();
+    if (this.targetOn) this.#readTarget();
     if (this.random() < this.config.share) {
       const claimed = this.#claim(group, count);
       if (claimed !== null) return { seed: claimed.entry.seed, start: { kind: "from_save", save: claimed.entry.save }, save_points: null,
@@ -306,7 +388,7 @@ export class SaveTickets {
     const { entry } = plan, { ticket, use } = plan.tickets[member];
     this.games.set(gameRef, { ticket, entry, from: entry.floor });
     return { save: entry.id.slice(0, 16), save_act: entry.act, save_floor: entry.floor, use,
-      source_floor: entry.source_floor, source_terminal: entry.source_terminal };
+      source_floor: entry.source_floor, source_terminal: entry.source_terminal, ...(entry.source ? { save_source: entry.source } : {}) };
   }
 
   /** The admission verdict of a game (the driver's admission sidecar). Saves of a refused game never enter the pool. */
@@ -331,6 +413,10 @@ export class SaveTickets {
     // The problem save: the last save before the game died, in the act it died in.
     const died = end.terminal === "defeat" && Number.isSafeInteger(end.floor) ? game.saves.filter(line => line.act === end.act && line.floor <= end.floor) : [];
     const problem = died.length > 0 ? died[died.length - 1] : null;
+    if (this.role === "greedy") {
+      for (const line of game.saves) this.#export({ ...line, problem: line === problem, source_game_ref: gameRef, source_end: end, source: "greedy" });
+      return;
+    }
     this.refresh();
     for (const line of game.saves) {
       if (this.saves.has(line.id)) { this.counts.saves_duplicate += 1; continue; }
@@ -413,6 +499,7 @@ export class SaveTickets {
     } else if (event.event === "closed") {
       const facts = event.public_facts;
       if (Number.isSafeInteger(facts?.floor)) for (let floor = game.from + 1; floor <= facts.floor; floor += 1) this.covered[actOf(floor) - 1] += 1;
+      if (this.role === "greedy" && event.reason === "terminal" && Number.isSafeInteger(facts?.floor)) this.#writeStats(facts.floor);
       if (game.ticket) {
         this.games.delete(event.game_ref);
         this.#count(this.counts.ticket_closes, event.reason);
@@ -430,9 +517,120 @@ export class SaveTickets {
 
   #count(table, key, n = 1) { table[key] = (table[key] ?? 0) + n; }
 
+  /** Greedy role, B1: this driver's closed terminal new runs, floors per act, as one file (temp + rename). */
+  #writeStats(endFloor) {
+    for (let floor = 1; floor <= endFloor; floor += 1) this.greedyStats.floors[actOf(floor) - 1] += 1;
+    this.greedyStats.games += 1;
+    this.counts.greedy_games += 1;
+    const path = join(this.statsDir, `${this.driver.id}.json`), temp = `${path}.tmp`;
+    try {
+      writeFileSync(temp, JSON.stringify({ driver: this.driver.id, floors: this.greedyStats.floors, games: this.greedyStats.games, t: this.now() }), { mode: 0o600 });
+      renameSync(temp, path);
+    } catch (error) {
+      this.counts.greedy_stats_write_failed += 1;
+      this.log({ event: "greedy_stats_write_failed", error: String(error?.code ?? error?.message ?? error) });
+    }
+  }
+
+  /** Greedy role, B3: one save of an admitted, evidence-intact game to the run's export directory; the local
+   * file goes either way (the greedy driver keeps no pool). */
+  #export(record) {
+    const base = join(this.exportDir, record.id), temp = `.${this.driver.id}.tmp`;
+    try {
+      copyFileSync(record.path, `${base}.save${temp}`);
+      renameSync(`${base}.save${temp}`, `${base}.save`);
+      writeFileSync(`${base}.json${temp}`, JSON.stringify({ kind: "save", ...record, path: null }), { mode: 0o600 });
+      renameSync(`${base}.json${temp}`, `${base}.json`);
+      this.counts.greedy_exported += 1; this.counts.greedy_export_bytes += record.bytes;
+      this.log({ event: "save_exported", save: record.id.slice(0, 16), act: record.act, floor: record.floor, bytes: record.bytes,
+        problem: record.problem, source_floor: record.source_end.floor, source_terminal: record.source_end.terminal });
+    } catch (error) {
+      const why = String(error?.code ?? "error");
+      this.#count(this.counts.greedy_export_failed, why);
+      this.log({ event: "greedy_export_failed", save: record.id.slice(0, 16), error: why });
+    } finally { unlinkQuiet(record.path); }
+  }
+
+  /** B4: imports this node's new exports into the pool (exclusive marker first: once per save, node-wide). */
+  #import() {
+    const now = this.now();
+    if (this.importedAt !== null && now - this.importedAt < this.config.greedy_import_seconds * 1000) return;
+    this.importedAt = now;
+    let names;
+    try { names = readdirSync(this.exportDir); }
+    catch (error) { return this.#importFailed("export_dir", null, error); }
+    for (const name of names) {
+      if (!name.endsWith(".json") || this.seenExports.has(name)) continue;
+      this.seenExports.add(name);
+      const id = name.slice(0, -5);
+      if (!SHA.test(id) || Number.parseInt(id.slice(0, 8), 16) % this.nodeShare.count !== this.nodeShare.index || this.saves.has(id)) continue;
+      try { closeSync(openSync(join(this.importDir, id), "wx", 0o600)); }
+      catch (error) { if (error?.code === "EEXIST") continue; this.#importFailed("marker", id, error); continue; }
+      try {
+        const line = JSON.parse(readFileSync(join(this.exportDir, name), "utf8"));
+        if (line?.kind !== "save" || line.id !== id || line.source !== "greedy" || typeof line.save?.path !== "string") throw new Error("bad_export_line");
+        const bytes = readFileSync(join(this.exportDir, `${id}.save`));
+        if (bytes.length !== line.bytes || createHash("sha256").update(bytes).digest("hex") !== id) throw new Error("sha256_mismatch");
+        const path = join(this.saveDir, basename(line.save.path)), temp = `${path}.import-tmp`;
+        writeFileSync(temp, bytes, { mode: 0o600 });
+        renameSync(temp, path);
+        const record = { ...line, path, save: { ...line.save, path }, imported_from: "greedy_export" };
+        this.#append(record); this.#apply(record);
+        this.counts.greedy_imported += 1;
+        this.log({ event: "save_imported", save: id.slice(0, 16), act: line.act, floor: line.floor, bytes: line.bytes, source: "greedy" });
+      } catch (error) { this.#importFailed("import", id, error); }
+    }
+  }
+
+  #importFailed(stage, id, error) {
+    const why = `${stage}:${error?.code ?? error?.message ?? "error"}`;
+    this.#count(this.counts.greedy_import_failed, why);
+    this.log({ event: "greedy_import_failed", save: id?.slice(0, 16) ?? null, why });
+  }
+
+  /** B1: the greedy cell's measured floors per act, read at most every act_target_read_seconds. A failed read
+   * keeps the target as it was (act_weights before the switch, the last measured after), counted and logged. */
+  #readTarget() {
+    const now = this.now(), t = this.target;
+    if (t.read_at !== null && now - t.read_at < this.config.act_target_read_seconds * 1000) return;
+    t.read_at = now;
+    this.counts.act_target_reads += 1;
+    const floors = [0, 0, 0];
+    let games = 0, names;
+    try { names = readdirSync(this.statsDir).filter(name => name.endsWith(".json")); }
+    catch (error) { return this.#targetFailed("stats_dir", null, error); }
+    for (const name of names) {
+      let stats;
+      try { stats = JSON.parse(readFileSync(join(this.statsDir, name), "utf8")); }
+      catch (error) { return this.#targetFailed(error?.code === "ENOENT" ? "missing" : "parse", name, error); }
+      if (!Array.isArray(stats?.floors) || stats.floors.length !== 3 || !stats.floors.every(n => Number.isSafeInteger(n) && n >= 0)
+          || !Number.isSafeInteger(stats.games) || stats.games < 0) return this.#targetFailed("parse", name, null);
+      stats.floors.forEach((n, index) => { floors[index] += n; });
+      games += stats.games;
+    }
+    t.greedy_games = games;
+    if (games < this.config.act_target_min_games || !(sumOf(floors) > 0)) {
+      if (!t.logged) { t.logged = true; this.log({ event: "act_target", state: "start", greedy_games: games, target: t.weights }); }
+      return;
+    }
+    if (t.state === "start") {
+      t.switched_at = now;
+      this.log({ event: "act_target_switched", greedy_games: games, floors, start: [...this.config.act_weights] });
+    }
+    t.state = "measured"; t.weights = floors;
+  }
+
+  #targetFailed(why, name, error) {
+    this.#count(this.counts.act_target_read_failed, why);
+    this.log({ event: "act_target_read_failed", why, file: name, error: error ? String(error.code ?? error.message ?? error) : null,
+      state: this.target.state, kept: this.target.weights });
+  }
+
   /** For the driver summary: what this driver did and the node pool as it last read it. */
   counters() {
     return { ...this.counts, pool_saves: this.saves.size, pool_bytes: this.bytes, pool_paused_families: this.paused.size,
-      covered_floors: [...this.covered], candidate_known: this.candidate !== null };
+      covered_floors: [...this.covered], candidate_known: this.candidate !== null,
+      ...(this.targetOn ? { act_target: { state: this.target.state, target: [...this.target.weights], greedy_games: this.target.greedy_games,
+        read_at: this.target.read_at, switched_at: this.target.switched_at } } : {}) };
   }
 }

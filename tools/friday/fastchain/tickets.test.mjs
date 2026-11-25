@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRE_BOSS_FLOORS, SaveTickets, parseSaveStarts } from "./tickets.mjs";
@@ -282,4 +283,143 @@ test("act_floor 0 (default) keeps the draw sequence of tickets.mjs at 2574aebc; 
   assert.equal(parseSaveStarts(KNOB).act_floor, 0);
   assert.equal(parseSaveStarts({ ...KNOB, act_floor: 0.1 }).act_floor, 0.1);
   for (const bad of [-0.1, 0.34, "x"]) assert.throws(() => parseSaveStarts({ ...KNOB, act_floor: bad }), /save_starts_config:act_floor/u);
+});
+
+// ---- Recipe A greedy cell (B1 target, B3 export/import, B4 draw) ----
+const realSaved = (gameRef, dir, { floor = 20, act = 2, text = `save-${gameRef}-${floor}` } = {}) => {
+  const event = saved(gameRef, { floor, act, dir: "/pool" });
+  const sha256 = createHash("sha256").update(text).digest("hex");
+  const path = join(dir, "saves", `${sha256}.json`);
+  writeFileSync(path, text);
+  return { ...event, save: { ...event.save, path, sha256, bytes: Buffer.byteLength(text) } };
+};
+const owner = (sha, count) => Number.parseInt(sha.slice(0, 8), 16) % count;
+const greedyRun = (tickets, gameRef, saves, floor = 30) => {
+  const plan = tickets.plan(`grp-${gameRef}`);
+  assert.equal(plan.start.kind, "new_run");
+  tickets.opening(gameRef, plan, 0);
+  for (const event of saves) tickets.onEvent(event);
+  tickets.onAdmission(gameRef, true);
+  tickets.onEvent(closed(gameRef, "terminal", died(actOfFloor(floor), floor)));
+  return plan;
+};
+const actOfFloor = (floor) => (floor <= 17 ? 1 : floor <= 33 ? 2 : 3);
+
+test("switches off (defaults): no greedy counters, no greedy_dir needed, the greedy keys parse to their defaults", () => {
+  const parsed = parseSaveStarts(KNOB);
+  assert.deepEqual([parsed.act_target, parsed.act_target_min_games, parsed.act_target_read_seconds, parsed.greedy_saves,
+    parsed.greedy_save_share, parsed.greedy_import_seconds], ["fixed", 30, 60, false, 0, 60]);
+  const counters = make(pool(), { share: 0.5 }).counters();
+  for (const key of ["act_target", "act_target_reads", "greedy_imported", "greedy_draws", "greedy_games"]) assert.equal(key in counters, false);
+  for (const bad of [{ act_target: "live" }, { act_target_min_games: 0 }, { greedy_saves: 1 }, { greedy_save_share: 1.5 }])
+    assert.throws(() => parseSaveStarts({ ...KNOB, ...bad }), /save_starts_config/u);
+  assert.throws(() => make(pool(), { act_target: "greedy_cell" }), /save_starts_config:greedy_dir/u);
+  assert.throws(() => make(pool(), { greedy_save_share: 0.25 }, { greedy_dir: pool() }), /save_starts_config:node_index\/node_count/u);
+  assert.throws(() => make(pool(), { greedy_save_share: 0.25 }, { greedy_dir: pool(), node_index: 2, node_count: 2 }), /node_index\/node_count/u);
+});
+
+test("B1: act_weights until the greedy cell has act_target_min_games closed games, then its summed floors; a bad read keeps the target", () => {
+  const cell = pool(); let clock = 1000; const now = () => clock;
+  const logged = [];
+  const knob = { share: 0.5, act_weights: [0.42, 0.37, 0.21], act_target: "greedy_cell", act_target_min_games: 3, act_target_read_seconds: 60 };
+  const control = make(pool(), knob, { greedy_dir: cell }, { now, log: record => logged.push(record) });
+  const g1 = make(pool(), knob, { id: "g1", role: "greedy", greedy_dir: cell }, { now });
+  const g2 = make(pool(), knob, { id: "g2", role: "greedy", greedy_dir: cell }, { now });
+  greedyRun(g1, "a", [], 20); greedyRun(g2, "b", [], 40);
+  g1.onEvent(closed("x", "stop")); // not a game of this driver: ignored
+  assert.deepEqual(readdirSync(join(cell, "stats")).sort(), ["g1.json", "g2.json"]); // temp files renamed away
+  assert.deepEqual(JSON.parse(readFileSync(join(cell, "stats", "g2.json"), "utf8")).floors, [17, 16, 7]);
+  control.plan("p1");
+  assert.deepEqual(control.counters().act_target, { state: "start", target: [0.42, 0.37, 0.21], greedy_games: 2, read_at: 1000, switched_at: null });
+  greedyRun(g1, "c", [], 10);
+  clock += 30_000; control.plan("p2"); // inside the read interval: not read again
+  assert.equal(control.counters().act_target_reads, 1);
+  clock += 30_000; control.plan("p3");
+  assert.deepEqual(control.counters().act_target, { state: "measured", target: [17 + 17 + 10, 3 + 16, 7], greedy_games: 3, read_at: 61_000, switched_at: 61_000 });
+  writeFileSync(join(cell, "stats", "broken.json"), "{");
+  clock += 60_000; control.plan("p4");
+  const after = control.counters();
+  assert.deepEqual(after.act_target_read_failed, { parse: 1 });
+  assert.deepEqual(after.act_target.target, [44, 19, 7]); // the last measured target kept
+  assert.deepEqual(logged.filter(record => record.event.startsWith("act_target")).map(record => record.event),
+    ["act_target", "act_target_switched", "act_target_read_failed"]);
+  assert.equal(g1.counters().greedy_games, 2);
+});
+
+test("B3: greedy saves are exported (local file removed); each node imports only its own by hash, once, sha checked", () => {
+  const cell = pool();
+  const knob = { share: 0, greedy_saves: true, greedy_save_share: 0.25, greedy_import_seconds: 60 };
+  const greedyPool = pool();
+  const greedy = make(greedyPool, knob, { id: "g1", role: "greedy", greedy_dir: cell });
+  const events = Array.from({ length: 12 }, (_, n) => realSaved("s", greedyPool, { floor: 18 + n }));
+  const plan = greedyRun(greedy, "s", events, 30);
+  assert.ok(plan.save_points.floors.length > 0);
+  assert.ok(events.every(event => !existsSync(event.save.path)));
+  assert.equal(greedy.counters().greedy_exported, 12);
+  assert.equal(readdirSync(join(cell, "saves")).filter(name => !name.endsWith(".save") && !name.endsWith(".json")).length, 0);
+  let clock = 0; const now = () => clock;
+  const node0 = pool(), node1 = pool();
+  const a = make(node0, knob, { id: "a", greedy_dir: cell, node_index: 0, node_count: 2 }, { now });
+  const b = make(node0, knob, { id: "b", greedy_dir: cell, node_index: 0, node_count: 2 }, { now });
+  const c = make(node1, knob, { id: "c", greedy_dir: cell, node_index: 1, node_count: 2 }, { now });
+  a.plan("1"); b.plan("1"); c.plan("1");
+  const mine = (dir) => ledger(dir).filter(line => line.kind === "save").map(line => line.id).sort();
+  const want = (index) => events.map(event => event.save.sha256).filter(sha => owner(sha, 2) === index).sort();
+  assert.deepEqual(mine(node0), want(0)); assert.deepEqual(mine(node1), want(1));
+  assert.ok(want(0).length > 0 && want(1).length > 0);
+  assert.equal(a.counters().greedy_imported + b.counters().greedy_imported, want(0).length); // the marker: once per node
+  for (const line of ledger(node0)) {
+    assert.equal(line.source, "greedy"); assert.equal(line.imported_from, "greedy_export");
+    assert.equal(line.path, line.save.path); assert.ok(line.path.startsWith(join(node0, "saves")));
+    assert.equal(createHash("sha256").update(readFileSync(line.path)).digest("hex"), line.id);
+  }
+  clock += 120_000; a.plan("2"); b.plan("2");
+  assert.equal(mine(node0).length, want(0).length); // a rescan imports nothing again
+  // A corrupt export of node 0: counted, sealed by its marker, never imported.
+  let text = "x", sha;
+  do { text += "x"; sha = createHash("sha256").update(text).digest("hex"); } while (owner(sha, 2) !== 0);
+  writeFileSync(join(cell, "saves", `${sha}.save`), "other bytes");
+  writeFileSync(join(cell, "saves", `${sha}.json`), JSON.stringify({ ...ledger(node0)[0], id: sha, bytes: text.length, path: null }));
+  clock += 120_000; a.plan("3"); clock += 120_000; a.plan("4"); b.plan("4");
+  assert.deepEqual(a.counters().greedy_import_failed, { "import:sha256_mismatch": 1 });
+  assert.deepEqual(b.counters().greedy_import_failed, {});
+  assert.equal(mine(node0).length, want(0).length);
+});
+
+test("B4: within the drawn act, greedy saves with greedy_save_share; none of the wanted kind there = the other kind, counted", () => {
+  const cell = pool();
+  const greedyPool = pool();
+  const greedy = make(greedyPool, { greedy_saves: true }, { id: "g1", role: "greedy", greedy_dir: cell });
+  greedyRun(greedy, "gs", [realSaved("gs", greedyPool, { floor: 10, act: 1 })], 12);
+  let r = 0.5;
+  const run = (weights) => {
+    const dir = pool(), logged = [];
+    const tickets = make(dir, { share: 1, act_weights: weights, greedy_save_share: 0.25 },
+      { greedy_dir: cell, node_index: 0, node_count: 1 }, { random: () => r, log: record => logged.push(record) });
+    pooled(tickets, "own", [{ act: 2, floor: 20, dir }]); // ordinary, act 2; makes the candidate known
+    return { tickets, logged };
+  };
+  // Act 1 drawn (act 2 weight 0), ordinary wanted (r >= 0.25): only a greedy save there.
+  const one = run([1, 0, 0]);
+  r = 0.5; const p1 = one.tickets.plan("x");
+  assert.equal(p1.entry.source, "greedy");
+  assert.equal(one.tickets.opening("t", p1, 0).save_source, "greedy");
+  assert.deepEqual([one.tickets.counters().ordinary_fallback, one.tickets.counters().greedy_draws], [1, 0]);
+  // Act 2 drawn, greedy wanted (r < 0.25): only an ordinary save there.
+  r = 0.5; const two = run([0, 1, 0]);
+  r = 0.1; const p2 = two.tickets.plan("y");
+  assert.equal(p2.entry.source, undefined);
+  assert.deepEqual([two.tickets.counters().greedy_fallback, two.tickets.counters().greedy_draws], [1, 0]);
+  assert.deepEqual(two.logged.filter(record => record.event === "greedy_save_fallback").map(record => [record.act, record.wanted]), [[2, "greedy"]]);
+  // Greedy wanted in act 1, where there is one: a greedy draw.
+  r = 0.1; const p3 = one.tickets.plan("z");
+  assert.equal(p3.entry.source, "greedy");
+  assert.equal(one.tickets.counters().greedy_draws, 1);
+  // greedy_save_share 0 on a driver of the same pool: the imported greedy save (act 1) is never drawn.
+  const shared = pool();
+  make(shared, { greedy_save_share: 0.25 }, { id: "imp", greedy_dir: cell, node_index: 0, node_count: 1 }).plan("i");
+  assert.deepEqual(ledger(shared).map(line => [line.source, line.act]), [["greedy", 1]]);
+  r = 0.5; const off = make(shared, { share: 1, act_weights: [1, 1, 0] }, { id: "off" }, { random: () => r });
+  pooled(off, "own", [{ act: 2, floor: 20, dir: shared }]);
+  for (let n = 0; n < 5; n += 1) { r = n / 5; const plan = off.plan(`w${n}`); assert.equal(plan.entry.act, 2); assert.equal(plan.entry.source, undefined); }
 });

@@ -301,6 +301,11 @@ def required_features(plan: dict[str, Any],
         need["hp_potion_plain"] = "one HP formula for every combat row, no death / max-HP terms (recipe A)"
     if (k["save_starts"] or {}).get("act_floor"):
         need["save_act_floor"] = "save starts: each act's floor share of the act draw (recipe A)"
+    saves = k["save_starts"] or {}
+    if saves.get("act_target", "fixed") != "fixed":
+        need["greedy_cell_target"] = "save starts: act target from the greedy cell's floors (recipe A)"
+    if saves.get("greedy_saves") or saves.get("greedy_save_share"):
+        need["greedy_cell_saves"] = "save starts: greedy-cell saves exported and imported per node (recipe A)"
     if k["kl_stop_scope"] != "all":
         need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
     if k["lr_warmup_steps"]:

@@ -560,6 +560,8 @@ FEATURES = {
     "observe_arms": ("python/stpd/rl/segments.py", "observe_arms"),
     "noncombat_barrier": ("python/stpd/rl/loss.py", "noncombat_log_barrier_coef"),
     "save_act_floor": ("tools/friday/fastchain/tickets.mjs", "act_floor"),  # recipe A
+    "greedy_cell_target": ("tools/friday/fastchain/tickets.mjs", "act_target_min_games"),  # recipe A
+    "greedy_cell_saves": ("tools/friday/fastchain/env.sh", "--node-count $FC_ENV_NODES"),  # recipe A
     "new_runs_only": ("tools/friday/fastchain/env_driver.mjs", "new_runs_only"),
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),

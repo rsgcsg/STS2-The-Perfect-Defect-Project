@@ -87,7 +87,9 @@ R7=$(awk "BEGIN { print ($FC_R7_GAMES_PER_HOUR > 0) ? \"on\" : \"off\" }")
 echo "ascension per driver: ${ASC[*]} arm per driver: ${ARM[*]} replay_k=$FC_REPLAY_K r7=$R7"
 # Save starts (tickets.mjs): one pool per job on this node's own disk (/tmp: local xfs, 106 and
 # 181 GB on two fc430 smp nodes 11-15; TMPDIR is shared scratch), shared by this node's
-# drivers, capped by save_starts.pool_gb, deleted when the job ends.
+# drivers, capped by save_starts.pool_gb, deleted when the job ends. Recipe A's greedy cell
+# (tickets.mjs) shares its floor stats and saves through $RUN/greedy-cell (the shared run dir);
+# each node imports the exports it owns (save sha256 mod FC_ENV_NODES = NODEIDX).
 SAVEPOOL=/tmp/fc-saves-$SLURM_JOB_ID
 trap 'rm -rf $SAVEPOOL' EXIT
 # #603: disjoint seed streams. Driver d = NODEIDX x P + p - 1 of the run's FC_ENV_NODES x P
@@ -108,6 +110,7 @@ for p in $(seq 1 $P); do
     --reduce-light-interval $FC_DRIVER_REDUCE_LIGHT_INTERVAL $GC --ascension ${ASC[$((p - 1))]} --r7 $R7 \
     --exploration-ladder "$FC_EXPLORATION_LADDER" --arm ${ARM[$((p - 1))]} --replay-k $FC_REPLAY_K \
     --temperature-min $FC_SAMPLING_TEMPERATURE_MIN --save-starts "$FC_SAVE_STARTS" --save-pool $SAVEPOOL \
+    --greedy-dir $RUN/greedy-cell --node-index $NODEIDX --node-count $FC_ENV_NODES \
     > $O/p$p.driver.log 2>&1 &
   pids+=($!)
 done

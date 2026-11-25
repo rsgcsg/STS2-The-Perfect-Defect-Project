@@ -1172,7 +1172,7 @@ class Readout:
         # start act and per use of the save; opened games per start; each driver's latest
         # save counters (cumulative, #553 review C)
         self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {},
-                                      "opened": {}, "counters": {}}
+                                      "source": {}, "opened": {}, "counters": {}}
         # recipe A: floors played per act by complete games (terminal, admitted, evidence
         # ok), per arm and start ("arm" new runs, "arm+save" save starts)
         self.floors: dict[str, list[int]] = {}
@@ -1403,7 +1403,8 @@ class Readout:
         won = r.get("terminal") == "victory"
         n = use + 1
         uses = next(label for label, top in SAVE_USE_BUCKETS if n <= top)
-        for table, key in ((self.saves["act"], str(r.get("save_act"))), (self.saves["use"], uses)):
+        for table, key in ((self.saves["act"], str(r.get("save_act"))), (self.saves["use"], uses),
+                           (self.saves["source"], r.get("save_source") or "ordinary")):
             b = table.setdefault(key, {"games": 0, "floor_sum": 0, "gained_sum": 0, "wins": 0,
                                        "source_died": 0, "passed": 0})
             b["games"] += 1
@@ -1429,9 +1430,13 @@ class Readout:
         opened = s["opened"]
         total = sum(opened.values())
         counters: dict[str, Any] = {}
+        # recipe A B1: every pool driver reads the same greedy stats; the latest read is shown
+        targets = [line["act_target"] for line in s["counters"].values()
+                   if isinstance(line.get("act_target"), dict)]
+        target = max(targets, key=lambda t: t.get("read_at") or 0) if targets else None
         for line in s["counters"].values():
             for key, value in line.items():
-                if key.startswith("pool_") or key in ("t", "event"):
+                if key.startswith("pool_") or key in ("t", "event", "act_target"):
                     continue
                 if type(value) is int:
                     counters[key] = counters.get(key, 0) + value
@@ -1448,6 +1453,7 @@ class Readout:
                     for key, b in sorted(table.items())}
         return {"pooled_by_act": dict(sorted(s["pooled"].items())), "problem_saves": s["problem"],
                 "by_start_act": rows(s["act"]), "by_use": rows(s["use"]),
+                "by_source": rows(s["source"]), "act_target": target,
                 "opened_by_start": dict(sorted(opened.items())),
                 "effective_share": opened.get("from_save", 0) / total if total else None,
                 "drivers_reporting": len(s["counters"]),
@@ -2002,6 +2008,41 @@ def render_record(r: dict[str, Any]) -> list[str]:
     return out
 
 
+def save_start_lines(saves: dict[str, Any], configured: dict[str, Any]) -> list[str]:
+    """The save-start block of the readout (render): pools, counters, recipe A's greedy cell."""
+    c = saves.get("driver_counters") or {}
+    out = ["", f"save starts: pooled per act {saves['pooled_by_act']}, problem saves "
+            f"{saves['problem_saves']} (complete games; pass = past the source's death floor)",
+            f"  opened {saves.get('opened_by_start')}, effective share "
+            f"{fmt(saves.get('effective_share'), 3)} (configured {configured.get('share')}); "
+            f"{saves.get('drivers_reporting')} drivers: new run without ticket "
+            f"{c.get('new_run_without_ticket', {})}, load failed {c.get('load_failed', 0)}, "
+            f"families paused {c.get('families_paused', 0)}, claim conflicts "
+            f"{c.get('claim_conflicts', 0)}, evicted {c.get('evicted', {})}"]
+    t = saves.get("act_target")
+    if t:
+        out.append(f"  act target (greedy cell): {t['state']}, target act 1/2/3 "
+                   + "/".join(f"{x:,}" if type(x) is int else f"{x:g}" for x in t["target"])
+                   + f", greedy games {t['greedy_games']:,}, read failures "
+                   f"{c.get('act_target_read_failed', {})}")
+    if "greedy_imported" in c or "greedy_exported" in c:
+        out.append(f"  greedy saves: exported {c.get('greedy_exported', 0):,} "
+                   f"({c.get('greedy_export_bytes', 0) / 1e9:.2f} GB), export failed "
+                   f"{c.get('greedy_export_failed', {})}, imported "
+                   f"{c.get('greedy_imported', 0):,}, import failed "
+                   f"{c.get('greedy_import_failed', {})}, greedy draws "
+                   f"{c.get('greedy_draws', 0):,}, fallback greedy->ordinary "
+                   f"{c.get('greedy_fallback', 0):,} / ordinary->greedy "
+                   f"{c.get('ordinary_fallback', 0):,}")
+    for key, label in (("by_start_act", "act"), ("by_use", "use"), ("by_source", "source")):
+        for name, row in (saves.get(key) or {}).items():
+            out.append(f"  {label + ' ' + name:<12}{row['games']:>8,} games  floor "
+                       f"{fmt(row['mean_floor'], 1)}  +{fmt(row['mean_floors_gained'], 1)}"
+                       f"  wins {row['wins']}  pass {row['passed_source_death']}/"
+                       f"{row['source_died']}")
+    return out
+
+
 def render(r: dict[str, Any]) -> str:
     t, tg = r["training"], r["target"]
     goal = tg.get("target_rows_h")
@@ -2063,22 +2104,8 @@ def render(r: dict[str, Any]) -> str:
                               f"{fmt(row['mean_floor_range'], 1):>7}" if grouped else ""))
     saves = r.get("save_starts") or {}
     if saves:
-        configured = ((r.get("identity") or {}).get("recipe") or {}).get("save_starts") or {}
-        c = saves.get("driver_counters") or {}
-        out += ["", f"save starts: pooled per act {saves['pooled_by_act']}, problem saves "
-                f"{saves['problem_saves']} (complete games; pass = past the source's death floor)",
-                f"  opened {saves.get('opened_by_start')}, effective share "
-                f"{fmt(saves.get('effective_share'), 3)} (configured {configured.get('share')}); "
-                f"{saves.get('drivers_reporting')} drivers: new run without ticket "
-                f"{c.get('new_run_without_ticket', {})}, load failed {c.get('load_failed', 0)}, "
-                f"families paused {c.get('families_paused', 0)}, claim conflicts "
-                f"{c.get('claim_conflicts', 0)}, evicted {c.get('evicted', {})}"]
-        for key, label in (("by_start_act", "act"), ("by_use", "use")):
-            for name, row in saves[key].items():
-                out.append(f"  {label + ' ' + name:<12}{row['games']:>8,} games  floor "
-                           f"{fmt(row['mean_floor'], 1)}  +{fmt(row['mean_floors_gained'], 1)}"
-                           f"  wins {row['wins']}  pass {row['passed_source_death']}/"
-                           f"{row['source_died']}")
+        out += save_start_lines(saves, ((r.get("identity") or {}).get("recipe") or {})
+                                .get("save_starts") or {})
     if r["loss_table"]:
         out += ["", "loss table (万 rows/h incl. aux; fixable / bound to fill):"]
         for row in r["loss_table"]:

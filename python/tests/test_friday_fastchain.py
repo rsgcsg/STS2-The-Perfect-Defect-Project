@@ -5731,7 +5731,10 @@ def test_recipe_a_profile_is_the_two_cell_profile_plus_the_tn8h_settings_and_the
     assert changed == tn8h | corrections
     assert (a['hp_potion_mode'], a['prepared_batches'], a['prepared_batch_expected_max_gb']) \
         == ('plain', 24, 1.21)
-    assert a['save_starts'] == {**two['save_starts'], 'act_floor': 0.1}
+    assert a['save_starts'] == {
+        **two['save_starts'], 'act_weights': [0.42, 0.37, 0.21], 'act_floor': 0.1,
+        'act_target': 'greedy_cell', 'act_target_min_games': 30, 'act_target_read_seconds': 60,
+        'greedy_saves': True, 'greedy_save_share': 0.25, 'greedy_import_seconds': 60}
     assert (a['train_target_seconds'], a['lr_warmup_steps'], a['kl_stop_scope']) == \
         (28800, 500, 'control')
     # the frozen recipe = the two-cell one + tn8h's minibatches 1, warm-up 500, KL scope control
@@ -5755,8 +5758,9 @@ def test_recipe_a_profile_passes_preflight_and_writes_the_frozen_recipe(tmp_path
     results = by_name(preflight.checks(plan, facts))
     assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
     need = preflight.required_features(plan, RECIPE_A_FROZEN)
-    assert {'hp_potion_plain', 'save_act_floor', 'hp_potion_mode'} <= set(need)
-    assert {'hp_potion_plain', 'save_act_floor'} <= set(launch.FEATURES)
+    new = {'hp_potion_plain', 'save_act_floor', 'greedy_cell_target', 'greedy_cell_saves'}
+    assert new | {'hp_potion_mode'} <= set(need)
+    assert new <= set(launch.FEATURES)
     assert 'hp_potion_plain' in results['source_features'].detail
     learner, _ = learner_config.learner_base(recipe_a_gate(), RECIPE_A_FROZEN, k, {
         'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
@@ -5776,9 +5780,11 @@ def test_recipe_a_profile_passes_preflight_and_writes_the_frozen_recipe(tmp_path
                                            if p.name != 'rl5-recipe-a.toml'))
 def test_recipe_a_switches_are_off_in_every_other_profile(tmp_path, profile):
     k = run_profile.values(run_profile.load_profile(FASTCHAIN / profile))
-    assert k['hp_potion_mode'] != 'plain' and 'act_floor' not in k['save_starts']
+    assert k['hp_potion_mode'] != 'plain'
+    assert not run_profile.SAVE_STARTS_OPTIONAL & set(k['save_starts'])
     plan = {'knobs': k}
-    assert not {'hp_potion_plain', 'save_act_floor'} & set(preflight.required_features(plan))
+    assert not {'hp_potion_plain', 'save_act_floor', 'greedy_cell_target',
+                'greedy_cell_saves'} & set(preflight.required_features(plan))
 
 
 TWO_CELL_LEARNER_SHA256 = '08bedebfc62ee9859fb4903515d20d839f0ee3591c096f6acbaa312ccb576c75'
@@ -5801,6 +5807,17 @@ def test_save_starts_act_floor_is_optional_and_bounded():
             'died_later_weight': 0.0, 'uses_per_save': 16, 'pool_gb': 10.0}
     assert check(base) is None and check({**base, 'act_floor': 0.1}) is None
     assert check({**base, 'act_floor': 0.34}) is not None
+    for key, bad in (('act_target', 'live'), ('act_target_min_games', 0), ('greedy_saves', 1),
+                     ('greedy_save_share', 1.5), ('greedy_import_seconds', 0),
+                     ('act_target_read_seconds', 4000)):
+        assert check({**base, key: bad}) is not None, key
+    a = run_profile.values(run_profile.load_profile(RECIPE_A))
+    assert run_profile.cross_problems(a) == []
+    no_greedy = {**a, 'exploration_ladder': {'control': {
+        **a['exploration_ladder']['control'], 'share': 1.0}}}
+    assert any('new_runs_only' in p for p in run_profile.cross_problems(no_greedy))
+    no_saves = {**a, 'save_starts': {**a['save_starts'], 'greedy_saves': False}}
+    assert any('greedy_saves = true' in p for p in run_profile.cross_problems(no_saves))
     assert check({**base, 'other': 1}) is not None
     assert check({k: v for k, v in base.items() if k != 'share'}) is not None
 
@@ -5838,3 +5855,26 @@ def test_readout_potion_discard_and_floors_by_act(tmp_path):
     assert acts['all']['floors'] == [22, 6, 7]
     assert any(line.startswith('floors by act 1/2/3 %')
                for line in readout.render_record({'floors_by_act': acts}))
+
+
+def test_readout_act_target_and_greedy_save_counters(tmp_path):
+    driver = tmp_path / 'env-n0-1' / 'p1'
+    driver.mkdir(parents=True)
+    other = tmp_path / 'env-n1-1' / 'p1'
+    other.mkdir(parents=True)
+    line = {'event': 'save_counters', 't': 5, 'greedy_imported': 3, 'greedy_draws': 2,
+            'greedy_fallback': 1, 'ordinary_fallback': 0, 'greedy_import_failed': {},
+            'act_target_read_failed': {'parse': 1},
+            'act_target': {'state': 'measured', 'target': [40, 30, 20], 'greedy_games': 31,
+                           'read_at': 9, 'switched_at': 9}}
+    old = {**line, 'act_target': {**line['act_target'], 'read_at': 2, 'greedy_games': 5,
+                                  'state': 'start', 'target': [0.42, 0.37, 0.21]}}
+    (driver / 'driver.jsonl').write_text(jsonl_text([line]))
+    (other / 'driver.jsonl').write_text(jsonl_text([old]))
+    saves = readout.Readout(tmp_path).update().save_starts()
+    assert saves['act_target']['greedy_games'] == 31  # the latest read
+    assert saves['driver_counters']['greedy_imported'] == 6
+    assert 'act_target' not in saves['driver_counters']
+    text = '\n'.join(readout.save_start_lines(saves, {}))
+    assert 'act target (greedy cell): measured, target act 1/2/3 40/30/20, greedy games 31' in text
+    assert "read failures {'parse': 2}" in text and 'fallback greedy->ordinary 2' in text

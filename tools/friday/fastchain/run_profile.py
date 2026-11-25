@@ -214,8 +214,14 @@ SAVE_STARTS_KEYS = frozenset({"share", "random_saves", "act_weights", "died_late
                               "uses_per_save", "pool_gb"})
 
 
-# Optional (absent = as before): act_floor (recipe A, tickets.mjs #pickAct; 0 = off).
-SAVE_STARTS_OPTIONAL = frozenset({"act_floor"})
+# Optional (absent = as before), recipe A (tickets.mjs, its defaults): act_floor (0 = off),
+# act_target ("fixed"), act_target_min_games (30), act_target_read_seconds (60), greedy_saves
+# (false), greedy_save_share (0 = off), greedy_import_seconds (60).
+SAVE_STARTS_OPTIONAL_CHECKS: dict[str, Callable[[Any], str | None]] = {
+    "act_floor": _num(0, 1 / 3), "act_target": _choice("fixed", "greedy_cell"),
+    "act_target_min_games": _int(1, 10**6), "act_target_read_seconds": _num(1, 3600),
+    "greedy_saves": _bool, "greedy_save_share": _num(0, 1), "greedy_import_seconds": _num(1, 3600)}
+SAVE_STARTS_OPTIONAL = frozenset(SAVE_STARTS_OPTIONAL_CHECKS)
 
 
 def _save_starts(value: Any) -> str | None:
@@ -224,8 +230,10 @@ def _save_starts(value: Any) -> str | None:
             or set(value) - SAVE_STARTS_KEYS - SAVE_STARTS_OPTIONAL):
         return (f"table with exactly {sorted(SAVE_STARTS_KEYS)} plus optional "
                 f"{sorted(SAVE_STARTS_OPTIONAL)}")
-    if "act_floor" in value and _num(0, 1 / 3)(value["act_floor"]):
-        return f"act_floor: {_num(0, 1 / 3)(value['act_floor'])}"
+    for key, check in SAVE_STARTS_OPTIONAL_CHECKS.items():
+        error = check(value[key]) if key in value else None
+        if error:
+            return f"{key}: {error}"
     for key, check in (("share", _num(0, 1)), ("random_saves", _int(0, 44)),
                        ("died_later_weight", _num(0, 1)), ("uses_per_save", _int(1, 1024)),
                        ("pool_gb", _num(0.001, 1000))):
@@ -313,6 +321,17 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
     if values["sgd_gc_refreeze_objects"] != 200_000 and not values["sgd_gc_freeze"]:
         out.append("sgd_gc_refreeze_objects other than 200000 needs sgd_gc_freeze")
+    saves = values["save_starts"]
+    if saves.get("act_target", "fixed") != "fixed" or saves.get("greedy_saves") \
+            or saves.get("greedy_save_share"):
+        if not saves["share"] or not any(spec.get("new_runs_only") is True
+                                         for spec in values["exploration_ladder"].values()):
+            out.append("save_starts act_target greedy_cell / greedy_saves / greedy_save_share "
+                       "need save_starts.share > 0 and an exploration arm with new_runs_only "
+                       "(the greedy cell, tickets.mjs)")
+        if saves.get("greedy_save_share") and not saves.get("greedy_saves"):
+            out.append("save_starts.greedy_save_share > 0 needs greedy_saves = true (no greedy "
+                       "save would exist to draw)")
     if values["kl_stop_scope"] == "control":
         control = values["exploration_ladder"].get("control")
         if not control or not control["share"]:
