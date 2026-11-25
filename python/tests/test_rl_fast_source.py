@@ -102,7 +102,8 @@ class Game:
         self.steps[game] = 0
 
     def step(self, game: str, *, terminal: bool = False, status: str = "completed",
-             reason: str | None = None, in_combat: bool = True, hp: int = 50) -> None:
+             reason: str | None = None, in_combat: bool = True, hp: int = 50,
+             floor: int = 1) -> None:
         self.request += 1
         step = self.steps[game]
         self.steps[game] += 1
@@ -111,7 +112,7 @@ class Game:
                "consumption_id": f"c-{self.request}", "catalog_len": n,
                "catalog_sha256": "c" * 64, "observation_sha256": "d" * 64,
                "in_combat": in_combat,
-               "floor": 1, "payload": {"offset": 0, "length": len(raw),
+               "floor": floor, "payload": {"offset": 0, "length": len(raw),
                                        "row_sha256": hashlib.sha256(raw).hexdigest()}}
         plan = self.assembler.begin_row(row, raw)
         decision = "combat" if in_combat else "noncombat"
@@ -128,15 +129,15 @@ class Game:
                               "decision_class": decision,
                               **self.sampling["classes"][decision]}}
         shift = 0.01 * (step % 7)
-        self.assembler.finish_row(plan, scored, values(1, shift),
-                                  values(1, 0.2) if plan.tail is not None else None)
+        self.assembler.finish_row(plan, scored, values(floor, shift),
+                                  values(floor, 0.2) if plan.tail is not None else None)
         message = {"schema": "stpd/rl-inference-4", "kind": "step_outcome",
                    "row_request_id": row["request_id"], "game_instance_id": game,
                    "step_index": step, "status": status}
         if status == "completed":
             message.update(receipt_sha256="e" * 64,
                            terminal={"result": "defeat"} if terminal else None,
-                           public_facts={"act": 1, "floor": 1, "hp": hp, "max_hp": 75})
+                           public_facts={"act": 1, "floor": floor, "hp": hp, "max_hp": 75})
         else:
             message["reason"] = reason
         self.assembler.step_outcome(message)

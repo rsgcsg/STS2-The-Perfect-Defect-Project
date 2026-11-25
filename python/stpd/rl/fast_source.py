@@ -45,8 +45,9 @@ Under "game", `segments.combat_end_kappa` k < 1 (combat-end settlement, default 
 also gives each released segment a second, settled tail (`combat_settle_tails`, envelope
 key `combat_settle`): combat rows' policy advantages use G' = (1 - k) [the in-battle
 lambda trace ended at V(first row after the battle)] + k G; value targets and noncombat
-rows keep G. A battle whose end the chain never reached keeps G and is counted
-(`game_target_settle_lost_battles`).
+rows keep G. A battle ends where the next scored row is not in combat or is on another
+floor; one whose end the chain never reached, or with a floor missing, keeps G; counted
+(`game_target_settle_{end_noncombat,end_floor,lost,lost_floor}_battles`).
 
 Receive-side contract (sender: `fast_handoff` / `fast_assembly` / actor, WP8 甲):
 
@@ -262,43 +263,89 @@ def game_target_tails(
 # `segments.combat_end_kappa` k < 1 (combat-end settlement, "game" value targets only): the
 # envelope key the intake adds, {"kappa", "tail", "state"} (see `combat_settle_tails`).
 COMBAT_SETTLE_KEY = "combat_settle"
-SETTLE_STATES = ("noncombat", "settled", "lost", "terminal")
+SETTLE_STATES = ("noncombat", "settled", "lost", "lost_floor", "terminal")
+# per game (`combat_settle_tails`): settled battles ended by a noncombat next row / by a
+# floor change, battles lost to a gap or bootstrap end / to a missing or non-int floor
+SETTLE_COUNTS = ("end_noncombat", "end_floor", "lost", "lost_floor")
+
+
+def _floor_ok(floor: Any) -> bool:
+    return type(floor) is int and floor >= 0
+
+
+def _settle_step(lam: float, k: float, combat: bool, floor: Any, nxt: Any,
+                 counts: dict[str, int] | None) -> tuple[str, Any]:
+    """One combat-settlement step for row t given its next scored row
+    `nxt` = (combat, floor, p, G, G', state) or None (game end / gap: the caller decides).
+    Returns (state, how): how "end" = G' from (p, G) of the next row, "trace" = the battle
+    goes on into the next row's G' (settled), None = G' = G."""
+    if not combat:
+        return "noncombat", None
+    n_combat, n_floor, _p, _g, _h, n_state = nxt
+    if not n_combat:
+        if counts is not None:
+            counts["end_noncombat"] += 1
+        return "settled", "end"
+    if not _floor_ok(floor) or not _floor_ok(n_floor):
+        if counts is not None:  # once per run of rows lost to a floor
+            counts["lost_floor"] += n_state != "lost_floor"
+        return "lost_floor", None
+    if floor != n_floor:  # an omitted boundary: the next scored row is the next battle's
+        if counts is not None:
+            counts["end_floor"] += 1
+        return "settled", "end"
+    if n_state == "settled":
+        return "settled", "trace"
+    return n_state, None
+
+
+def _settle_value(lam: float, k: float, how: str, p: Any, g: Any, h: Any) -> Any:
+    if how == "end":  # G'_e = (1 - lam k) p_{e+1} + lam k G_{e+1}
+        return [(1 - lam * k) * float(a) + lam * k * x for a, x in zip(p, g, strict=True)]
+    return [(1 - lam) * float(a) + lam * x for a, x in zip(p, h, strict=True)]
 
 
 def combat_settle_tails(
         parts: Sequence[tuple[int, Sequence[Sequence[float]], Sequence[float], bool]],
-        in_combat: Sequence[Sequence[bool]],
+        in_combat: Sequence[Sequence[bool]], floors: Sequence[Sequence[Any]],
         tails: Sequence[tuple[list[float] | None, float, bool]],
-        gae_lambda: float, kappa: float) -> list[tuple[list[float] | None, str]]:
+        gae_lambda: float, kappa: float,
+) -> tuple[list[tuple[list[float] | None, str]], dict[str, int]]:
     """The settled combat targets' cross-segment part, one backward pass per game.
 
-    Combat-end settlement (`segments.combat_end_kappa` = k): for a combat row t of a battle
-    whose last combat row is e and whose first later row s_end = e + 1 is not in combat
-    (`r7_audit.public_battle_hp`'s battle rule), the policy's target is
+    Combat-end settlement (`segments.combat_end_kappa` = k). A battle is a run of
+    consecutive scored combat rows on the same public floor (row metadata `floor`); it
+    ends at row e when the next scored row e + 1 is (1) not in combat or (2) in combat on
+    another floor (a boundary `--single-choice omit` left without a scored row: e + 1 is
+    the next battle's first row, and that battle settles itself). For its rows
 
-        G'_t = (1 - k) C_t + k G_t,   C_e = p(s_end),  C_t = (1 - lam) p_{t+1} + lam C_{t+1}
+        G'_t = (1 - k) C_t + k G_t,   C_e = p_{e+1},  C_t = (1 - lam) p_{t+1} + lam C_{t+1}
 
     with G the unbroken game lambda target ("game" value targets). Equivalently, the
     recursion G'_t = (1 - lam) p_{t+1} + lam G'_{t+1} inside the battle and, at its end,
     G'_e = (1 - lam k) p_{e+1} + lam k G_{e+1}. k = 1 is G; k = 0 ends at V(s_end).
-    Only the policy advantage of combat rows uses G'; value targets and noncombat rows keep G.
-    A battle that ends the game (terminal in combat) has no s_end: G' = G. A battle whose
-    end the chain never reached (a gap, or the game's last segment a bootstrap seal) falls
-    back to G' = G ("lost", counted by the caller).
+    Only the policy advantage of combat rows uses G'; value targets and noncombat rows keep
+    G (the HP score's battles, `r7_audit.public_battle_hp`, are not changed). A battle that
+    ends the game (terminal in combat): G' = G. A battle whose end the chain never reached
+    (a gap, or a bootstrap end) keeps G ("lost"); one where a floor is missing or not an
+    int keeps G ("lost_floor"), never guessed. Known limit: two battles on one floor with
+    no scored row between are one battle (not measured); the native combat_end fact
+    replaces the floor rule once the native emits it.
 
-    `parts` and `tails` are `game_target_tails`'s input and output, `in_combat` each part's
-    row flags. Returns per part (tail, state) at its last row: state "noncombat" (G' = G
-    there, no tail), "terminal" / "lost" (G' = G for that battle's rows here, no tail) or
-    "settled" (tail = G' at the last row, float64)."""
+    `parts` and `tails` are `game_target_tails`'s input and output, `in_combat` / `floors`
+    each part's row flags / floors. Returns per part (tail, state) at its last row (state
+    "noncombat", "terminal", "lost", "lost_floor": no tail, G' = G; "settled": tail = G'
+    at the last row, float64) and the game's SETTLE_COUNTS (battles, each counted once)."""
     lam, k = float(gae_lambda), float(kappa)
     if not math.isfinite(k) or not 0 <= k <= 1:
         raise ValueError("invalid_combat_end_kappa")
+    counts = dict.fromkeys(SETTLE_COUNTS, 0)
     out: list[tuple[list[float] | None, str]] = [(None, "noncombat")] * len(parts)
-    head: tuple[list[float], list[float], str] | None = None  # next part row 0: G, G', state
+    head: tuple[bool, Any, Any, list[float], list[float], str] | None = None  # next row 0
     for position in range(len(parts) - 1, -1, -1):
         _index, rows, seal_tail, terminal = parts[position]
-        flags = in_combat[position]
-        if len(flags) != len(rows):
+        flags, fl = in_combat[position], floors[position]
+        if len(flags) != len(rows) or len(fl) != len(rows):
             raise ValueError("combat_settle_flags_rows_differ")
         tail, _weight, chained = tails[position]
         g = [float(x) for x in (seal_tail if tail is None else tail)]  # G at the last row
@@ -307,47 +354,32 @@ def combat_settle_tails(
             state = "noncombat"
         elif not chained or head is None:
             state = "terminal" if terminal else "lost"
+            counts["lost"] += state == "lost"
         else:
-            following = parts[position + 1][1][0]
-            g_next, h_next, state_next = head
-            if not in_combat[position + 1][0]:  # s_end = the next part's row 0
-                state = "settled"
-                settle = [(1 - lam * k) * float(p) + lam * k * x
-                          for p, x in zip(following, g_next, strict=True)]
-            elif state_next == "settled":
-                state = "settled"
-                settle = [(1 - lam) * float(p) + lam * x
-                          for p, x in zip(following, h_next, strict=True)]
-            else:  # the battle goes on into a part where it is terminal or lost: G' = G
-                state = state_next
+            state, how = _settle_step(lam, k, True, fl[-1], head, counts)
+            if how is not None:
+                settle = _settle_value(lam, k, how, head[2], head[3], head[4])
         out[position] = (settle, state)
         h = g if settle is None else settle
         for t in range(len(rows) - 2, -1, -1):
-            p = rows[t + 1]
-            g_after = g
-            g = [(1 - lam) * float(a) + lam * x for a, x in zip(p, g, strict=True)]
-            if not flags[t]:
-                h, state = g, "noncombat"
-            elif not flags[t + 1]:
-                h, state = [(1 - lam * k) * float(a) + lam * k * x
-                            for a, x in zip(p, g_after, strict=True)], "settled"
-            elif state == "settled":
-                h = [(1 - lam) * float(a) + lam * x for a, x in zip(p, h, strict=True)]
-            else:
-                h = g
-        head = (g, h, state)
-    return out
+            nxt = (bool(flags[t + 1]), fl[t + 1], rows[t + 1], g, h, state)
+            g = [(1 - lam) * float(a) + lam * x for a, x in zip(rows[t + 1], g, strict=True)]
+            state, how = _settle_step(lam, k, bool(flags[t]), fl[t], nxt, counts)
+            h = g if how is None else _settle_value(lam, k, how, nxt[2], nxt[3], nxt[4])
+        head = (bool(flags[0]), fl[0], rows[0], g, h, state)
+    return out, counts
 
 
 def _combat_settled(probabilities: torch.Tensor, targets: torch.Tensor,
-                    in_combat: Sequence[bool], settle: dict[str, Any],
+                    in_combat: Sequence[bool], floors: Sequence[Any], settle: dict[str, Any],
                     gae_lambda: float) -> tuple[torch.Tensor, list[str]]:
-    """One segment's settled combat targets G' (`combat_settle_tails` has the formula) and
+    """One segment's settled combat targets G' (`combat_settle_tails` has the rule) and
     each row's state; a row not "settled" keeps its G row exactly (G' = G)."""
     lam, k = float(gae_lambda), settle["kappa"]
     if (type(k) not in (int, float) or not 0 <= k <= 1 or settle["state"] not in SETTLE_STATES
             or (settle["state"] == "settled") != (settle["tail"] is not None)
-            or (settle["state"] == "noncombat") == bool(in_combat[-1])):
+            or (settle["state"] == "noncombat") == bool(in_combat[-1])
+            or len(floors) != len(in_combat)):
         raise FastIntakeError("fast_combat_settle_tail_invalid")
     p, settled = probabilities, targets.clone()
     states = ["noncombat"] * len(p)
@@ -362,16 +394,12 @@ def _combat_settled(probabilities: torch.Tensor, targets: torch.Tensor,
         check_target_distribution(row)
         settled[last] = row
     for t in range(last - 1, -1, -1):
-        if not in_combat[t]:
-            continue
-        if not in_combat[t + 1]:
+        nxt = (bool(in_combat[t + 1]), floors[t + 1], None, None, None, states[t + 1])
+        states[t], how = _settle_step(lam, k, bool(in_combat[t]), floors[t], nxt, None)
+        if how == "end":
             settled[t] = (1 - lam * k) * p[t + 1] + lam * k * targets[t + 1]
-            states[t] = "settled"
-        elif states[t + 1] == "settled":
+        elif how == "trace":
             settled[t] = (1 - lam) * p[t + 1] + lam * settled[t + 1]
-            states[t] = "settled"
-        else:
-            states[t] = states[t + 1]
     return settled, states
 
 
@@ -474,8 +502,9 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         gae_lambda=envelope["gae_lambda"], ascension=segment_ascension(header))
     if settle is not None:  # combat rows: the policy's advantage from G' (targets keep G)
         flags = [bool(meta["in_combat"]) for meta in header["rows"]]
-        settled, states = _combat_settled(probabilities, targets, flags, settle,
-                                          envelope["gae_lambda"])
+        settled, states = _combat_settled(probabilities, targets, flags,
+                                          [meta.get("floor") for meta in header["rows"]],
+                                          settle, envelope["gae_lambda"])
         mask = torch.tensor([state == "settled" for state in states])
         old_combat = advantages[torch.tensor(flags)].double()
         if bool(mask.any()):
@@ -487,7 +516,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         # combat rows' outcome advantage sum / square sum under G (old) and G' (new)
         metadata[0]["combat_settle"] = [
             len(old_combat), int(mask.sum()),
-            sum(f and s == "lost" for f, s in zip(flags, states, strict=True)),
+            sum(f and s in ("lost", "lost_floor") for f, s in zip(flags, states, strict=True)),
             float(old_combat.sum()), float((old_combat ** 2).sum()),
             float(new_combat.sum()), float((new_combat ** 2).sum())]
     coef = envelope["hp_advantage_coef"]
@@ -1553,9 +1582,12 @@ class FastSegmentIntake:
                   _seal_tail(s.header), s.header["seal"]["kind"] == "terminal")
                  for s in segments]
         tails = game_target_tails(parts, self.gae_lambda)
-        settles = (None if self.combat_end_kappa == 1 else combat_settle_tails(
-            parts, [[bool(meta["in_combat"]) for meta in s.header["rows"]] for s in segments],
-            tails, self.gae_lambda, self.combat_end_kappa))
+        settles, settle_counts = (None, None) if self.combat_end_kappa == 1 else (
+            combat_settle_tails(
+                parts, [[bool(meta["in_combat"]) for meta in s.header["rows"]]
+                        for s in segments],
+                [[meta.get("floor") for meta in s.header["rows"]] for s in segments],
+                tails, self.gae_lambda, self.combat_end_kappa))
         after = [0] * len(segments)  # rows of this game after each segment
         for position in range(len(segments) - 2, -1, -1):
             after[position] = after[position + 1] + segments[position + 1].rows
@@ -1578,16 +1610,17 @@ class FastSegmentIntake:
                     settle, state = settles[position]
                     envelope[COMBAT_SETTLE_KEY] = {"kappa": self.combat_end_kappa,
                                                    "tail": settle, "state": state}
-                    # a battle whose end the chain never reached: its rows keep G (counted
-                    # once, where it was lost; the rows per dataset in the readout)
-                    self.counters["game_target_settle_lost_battles"] += (
-                        state == "lost" and not tails[position][2])
                 admitted.append((segment, envelope))
                 self.counters["game_target_chained_segments"] += chained
                 if (not chained and position + 1 < len(segments)
                         and segments[position + 1].header["segment_index"]
                         != segment.header["segment_index"] + 1):
                     self.counters["game_target_gaps"] += 1
+            if settle_counts is not None:
+                # battles, each once: settled ending at a noncombat row / a floor change;
+                # lost (end never reached) / lost_floor (a floor missing): rows keep G
+                for name, value in settle_counts.items():
+                    self.counters[f"game_target_settle_{name}_battles"] += value
             last = segments[-1].header
             # The end the chain reached: the real outcome, the game's own bootstrap
             # (stop/budget close), or the bootstrap before a lost final segment.

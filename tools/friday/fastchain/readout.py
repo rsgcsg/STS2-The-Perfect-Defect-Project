@@ -1954,9 +1954,14 @@ def render_record(r: dict[str, Any]) -> list[str]:
         out.append(f"game value targets: held {fmt(intake.get('held_rows'))} rows, spill "
                    f"{fmt(intake.get('spill_bytes'))} bytes in {fmt(intake.get('spill_files'))} "
                    f"files (peak {fmt(intake.get('spill_peak_bytes'))}), dropped rows {dropped}"
-                   + (f", combat-end settlement fell back to G in "
-                      f"{intake['game_target_settle_lost_battles']:,} battles (end not reached)"
-                      if "game_target_settle_lost_battles" in intake else ""))
+                   + (", combat-end settlement battles: settled at a noncombat row "
+                      f"{intake.get('game_target_settle_end_noncombat_battles', 0):,} / at a "
+                      f"floor change {intake.get('game_target_settle_end_floor_battles', 0):,}"
+                      f", fell back to G {intake.get('game_target_settle_lost_battles', 0):,} "
+                      "(end not reached) / "
+                      f"{intake.get('game_target_settle_lost_floor_battles', 0):,} (floor "
+                      "missing)" if "game_target_settle_end_noncombat_battles" in intake
+                      else ""))
     games = r.get("training_games") or {}
     windows = [(games.get("rolling_games"), games.get("rolling") or {}),
                *((int(n), part) for n, part in (games.get("rolling_windows") or {}).items())]

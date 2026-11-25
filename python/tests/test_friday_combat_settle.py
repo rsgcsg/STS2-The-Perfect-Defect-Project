@@ -108,3 +108,13 @@ def test_readout_combat_settle_lines():
     assert any('combat-end settlement' in line and '100 of 200 combat rows settled (50.0%)'
                in line for line in lines), lines
     assert readout._Learning().result()['combat_settle'] is None
+
+
+def test_readout_counts_battles_by_how_they_ended():
+    intake = {'held_rows': 0, 'spill_bytes': 0, 'spill_files': 0, 'spill_peak_bytes': 0,
+              'game_target_settle_end_noncombat_battles': 90,
+              'game_target_settle_end_floor_battles': 7,
+              'game_target_settle_lost_battles': 3, 'game_target_settle_lost_floor_battles': 0}
+    lines = readout.render_record({'value_target_intake': {'intake': intake}})
+    assert any('settled at a noncombat row 90 / at a floor change 7, fell back to G 3 '
+               '(end not reached) / 0 (floor missing)' in line for line in lines), lines

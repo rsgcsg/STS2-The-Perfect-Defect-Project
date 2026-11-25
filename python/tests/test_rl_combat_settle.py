@@ -31,9 +31,12 @@ R = class_reward_values().double()
 
 
 def definition(rows: list[list[float]], flags: list[bool], end: list[float], lam: float,
-               kappa: float) -> torch.Tensor:
-    """The lead's definition, written out per battle: G' = (1 - k) C + k G on combat rows
-    whose battle has a following noncombat row (C ends at its p), G elsewhere."""
+               kappa: float, floors: list[Any] | None = None) -> torch.Tensor:
+    """The lead's definition, written out per battle (consecutive combat rows on one floor):
+    G' = (1 - k) C + k G on the rows of a battle whose next scored row is noncombat or on
+    another floor (C ends at that row's p); G elsewhere (game end, gap, floor missing)."""
+    floors = [1] * len(rows) if floors is None else floors
+    ok = [type(f) is int and f >= 0 for f in floors]
     p = torch.tensor(rows, dtype=torch.float64)
     g = reference(rows, end, lam)
     out = g.clone()
@@ -43,9 +46,10 @@ def definition(rows: list[list[float]], flags: list[bool], end: list[float], lam
             t += 1
             continue
         e = t
-        while e + 1 < len(rows) and flags[e + 1]:
+        while (e + 1 < len(rows) and flags[e + 1] and ok[e] and ok[e + 1]
+               and floors[e + 1] == floors[e]):
             e += 1
-        if e + 1 < len(rows):  # s_end = e + 1
+        if e + 1 < len(rows) and (not flags[e + 1] or (ok[e] and ok[e + 1])):  # s_end
             c = p[e + 1].clone()
             for row in range(e, t - 1, -1):
                 if row < e:
@@ -56,21 +60,22 @@ def definition(rows: list[list[float]], flags: list[bool], end: list[float], lam
 
 
 def settled_parts(parts: list[Any], flags: list[list[bool]], lam: float, kappa: float,
-                  terminal_class: int | None) -> tuple[list[torch.Tensor], list[torch.Tensor],
-                                                       list[list[str]]]:
+                  terminal_class: int | None, floors: list[list[Any]] | None = None,
+                  ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[list[str]]]:
     """What decode does per segment: G (categorical_lambda_targets on the stitched tail),
     then G' (`_combat_settled` on the intake's settled tail)."""
+    floors = [[1] * len(f) for f in flags] if floors is None else floors
     tails = game_target_tails(parts, lam)
-    settles = combat_settle_tails(parts, flags, tails, lam, kappa)
+    settles, _counts = combat_settle_tails(parts, flags, floors, tails, lam, kappa)
     targets, settled, states = [], [], []
-    for (_i, rows, seal, terminal), (tail, _w, _c), (s_tail, state), f in zip(
-            parts, tails, settles, flags, strict=True):
+    for (_i, rows, seal, terminal), (tail, _w, _c), (s_tail, state), f, fl in zip(
+            parts, tails, settles, flags, floors, strict=True):
         p = torch.tensor(rows)
         g, _ = categorical_lambda_targets(
             p, None if terminal else torch.tensor(tail if tail is not None else seal),
             terminal_class=terminal_class if terminal else None, gae_lambda=lam)
-        h, row_states = _combat_settled(p, g, f, {"kappa": kappa, "tail": s_tail,
-                                                  "state": state}, lam)
+        h, row_states = _combat_settled(p, g, f, fl, {"kappa": kappa, "tail": s_tail,
+                                                      "state": state}, lam)
         targets.append(g)
         settled.append(h)
         states.append(row_states)
@@ -135,13 +140,15 @@ def test_every_split_of_a_random_game_matches_the_definition(kappa, lam, termina
     rows = [distribution(rng) for _ in range(n)]
     flags = [rng.random() < 0.6 for _ in range(n)]
     flags[-3:] = [True, True, True]  # the game ends inside a battle
+    floors = list(itertools.accumulate(rng.random() < 0.2 for _ in range(n)))
+    floors[-3:] = [floors[-3]] * 3
     end = one_hot(7) if terminal else distribution(rng)
-    whole = definition(rows, flags, end, lam, kappa)
+    whole = definition(rows, flags, end, lam, kappa, floors)
     for cuts in [(), (5,), (11, 12), (4, 9, 17, 20), (1, 2, 3, 22)]:
         pieces, fl = split(rows, cuts), split(flags, cuts)
         parts = [(i, piece, end if i == len(pieces) - 1 else distribution(rng),
                   terminal and i == len(pieces) - 1) for i, piece in enumerate(pieces)]
-        _g, settled, states = settled_parts(parts, fl, lam, kappa, 7)
+        _g, settled, states = settled_parts(parts, fl, lam, kappa, 7, split(floors, cuts))
         assert torch.allclose(torch.cat(settled).double(), whole, atol=2e-6)
         # the final battle has no s_end: terminal (G' = G) or lost (bootstrap end)
         assert [s for part in states for s in part][-3:] == [
@@ -155,8 +162,9 @@ def test_a_gap_after_a_battle_keeps_g_for_that_battle_and_is_lost():
     parts = [(0, rows[0], distribution(rng), False), (1, rows[1], distribution(rng), False),
              (3, rows[2], one_hot(7), True)]  # index 2 never arrived
     tails = game_target_tails(parts, 0.99)
-    settles = combat_settle_tails(parts, flags, tails, 0.99, 0.0)
+    settles, counts = combat_settle_tails(parts, flags, [[1] * 4] * 3, tails, 0.99, 0.0)
     assert [state for _t, state in settles] == ["settled", "lost", "noncombat"]
+    assert counts == {"end_noncombat": 2, "end_floor": 0, "lost": 1, "lost_floor": 0}
     targets, settled, states = settled_parts(parts, flags, 0.99, 0.0, 7)
     assert states[1] == ["settled", "noncombat", "lost", "lost"]
     assert torch.equal(settled[1][2:], targets[1][2:])  # lost battle: G exactly
@@ -164,35 +172,131 @@ def test_a_gap_after_a_battle_keeps_g_for_that_battle_and_is_lost():
     assert states[2] == ["noncombat", "settled", "settled", "noncombat"]
 
 
+# --- omitted boundaries (--single-choice omit): a floor change between combat rows -------
+
+# rows: 0 nc, 1-2 battle A (floor 1), 3-4 battle B (floor 2; A's post-battle states were
+# all single-choice, so no scored row between), 5 nc, then the terminal class
+OMIT_CLASSES = [10, 20, 30, 12, 22, 32]
+OMIT_FLAGS = [False, True, True, True, True, False]
+OMIT_FLOORS = [1, 1, 1, 2, 2, 2]
+
+
+@pytest.mark.parametrize("kappa", KAPPAS)
+@pytest.mark.parametrize("cuts", [(), (3,), (2,), (4,), (1, 3, 5)])
+def test_a_floor_change_ends_battle_a_and_battle_b_settles_itself(kappa, cuts):
+    lam = 0.5
+    v = [float(R[c]) for c in OMIT_CLASSES]
+    z = float(R[TERMINAL])
+    g = [0.0] * 6
+    g[5] = z
+    for t in range(4, -1, -1):
+        g[t] = 0.5 * v[t + 1] + 0.5 * g[t + 1]
+    # A ends at row 2 with B's first row's prediction; B ends at row 4 with row 5's
+    c = {2: v[3], 1: 0.5 * v[2] + 0.5 * v[3], 4: v[5], 3: 0.5 * v[4] + 0.5 * v[5]}
+    expected = [c[t] * (1 - kappa) + kappa * g[t] if t in c else g[t] for t in range(6)]
+    rows = [one_hot(k) for k in OMIT_CLASSES]
+    pieces, flags, floors = split(rows, cuts), split(OMIT_FLAGS, cuts), split(OMIT_FLOORS, cuts)
+    parts = [(n, piece, one_hot(TERMINAL), n == len(pieces) - 1)
+             for n, piece in enumerate(pieces)]
+    _t, settled, states = settled_parts(parts, flags, lam, kappa, TERMINAL, floors)
+    p = torch.tensor(rows, dtype=torch.float64)
+    assert torch.allclose((torch.cat(settled).double() - p) @ R,
+                          torch.tensor(expected, dtype=torch.float64) - p @ R, atol=1e-6)
+    assert torch.allclose(definition(rows, OMIT_FLAGS, one_hot(TERMINAL), lam, kappa,
+                                     OMIT_FLOORS) @ R,
+                          torch.tensor(expected, dtype=torch.float64), atol=1e-12)
+    assert [x for part in states for x in part] == ["noncombat"] + ["settled"] * 4 + [
+        "noncombat"]
+    _s, counts = combat_settle_tails(parts, flags, floors, game_target_tails(parts, lam),
+                                     lam, kappa)
+    assert counts == {"end_noncombat": 1, "end_floor": 1, "lost": 0, "lost_floor": 0}
+
+
+def test_combat_rows_on_one_floor_stay_one_battle():
+    flags, floors = [False, True, True, True, True, False], [1, 3, 3, 3, 3, 3]
+    rows = [one_hot(k) for k in OMIT_CLASSES]
+    parts = [(0, rows[:3], one_hot(TERMINAL), False), (1, rows[3:], one_hot(TERMINAL), True)]
+    pf, pfl = [flags[:3], flags[3:]], [floors[:3], floors[3:]]
+    _s, counts = combat_settle_tails(parts, pf, pfl, game_target_tails(parts, 0.5), 0.5, 0.0)
+    assert counts == {"end_noncombat": 1, "end_floor": 0, "lost": 0, "lost_floor": 0}
+    _t, settled, _st = settled_parts(parts, pf, 0.5, 0.0, TERMINAL, pfl)
+    assert torch.allclose(torch.cat(settled).double(),
+                          definition(rows, flags, one_hot(TERMINAL), 0.5, 0.0, floors),
+                          atol=1e-6)
+    # k = 0: every row of the one battle ends at row 5's prediction (lam 0.5 trace)
+    assert torch.cat(settled)[4].tolist() == pytest.approx(one_hot(OMIT_CLASSES[5]))
+
+
+@pytest.mark.parametrize("cuts", [(), (1,), (2,)])
+def test_battle_a_ending_in_death_keeps_g(cuts):
+    flags, floors = [False, True, True], [1, 1, 1]
+    rows = [one_hot(k) for k in OMIT_CLASSES[:3]]
+    pieces = split(rows, cuts)
+    parts = [(n, piece, one_hot(2), n == len(pieces) - 1) for n, piece in enumerate(pieces)]
+    targets, settled, states = settled_parts(parts, split(flags, cuts), 0.5, 0.0, 2,
+                                             split(floors, cuts))
+    assert torch.equal(torch.cat(settled), torch.cat(targets))
+    assert [x for part in states for x in part] == ["noncombat", "terminal", "terminal"]
+    _s, counts = combat_settle_tails(parts, split(flags, cuts), split(floors, cuts),
+                                     game_target_tails(parts, 0.5), 0.5, 0.0)
+    assert counts == dict.fromkeys(counts, 0)
+
+
+@pytest.mark.parametrize("cuts", [(), (2,), (3,)])
+@pytest.mark.parametrize("missing", [2, 3])
+def test_a_missing_floor_loses_that_battle_and_counts_it(cuts, missing):
+    floors: list[Any] = list(OMIT_FLOORS)
+    floors[missing] = None if missing == 2 else 2.0
+    rows = [one_hot(k) for k in OMIT_CLASSES]
+    pieces = split(rows, cuts)
+    parts = [(n, piece, one_hot(TERMINAL), n == len(pieces) - 1)
+             for n, piece in enumerate(pieces)]
+    pf, pfl = split(OMIT_FLAGS, cuts), split(floors, cuts)
+    _s, counts = combat_settle_tails(parts, pf, pfl, game_target_tails(parts, 0.5), 0.5, 0.0)
+    assert counts == {"end_noncombat": 1, "end_floor": 0, "lost": 0, "lost_floor": 1}
+    targets, settled, states = settled_parts(parts, pf, 0.5, 0.0, TERMINAL, pfl)
+    flat = [x for part in states for x in part]
+    lost = 3 if missing == 2 else 4  # a bad floor on B's first row loses B's row 3 too
+    assert flat == ["noncombat", *["lost_floor"] * (lost - 1),
+                    *["settled"] * (5 - lost), "noncombat"]
+    assert torch.equal(torch.cat(settled)[1:lost], torch.cat(targets)[1:lost])  # keeps G
+    assert torch.allclose(torch.cat(settled).double(), definition(
+        rows, OMIT_FLAGS, one_hot(TERMINAL), 0.5, 0.0, floors), atol=1e-6)
+
+
 def test_bad_kappa_and_mismatched_flags_are_refused():
     parts = [(0, [one_hot(1)], one_hot(7), True)]
     tails = game_target_tails(parts, 0.99)
     with pytest.raises(ValueError, match="kappa"):
-        combat_settle_tails(parts, [[True]], tails, 0.99, 1.5)
+        combat_settle_tails(parts, [[True]], [[1]], tails, 0.99, 1.5)
     with pytest.raises(ValueError, match="flags"):
-        combat_settle_tails(parts, [[True, False]], tails, 0.99, 0.5)
+        combat_settle_tails(parts, [[True, False]], [[1, 1]], tails, 0.99, 0.5)
+    with pytest.raises(ValueError, match="flags"):
+        combat_settle_tails(parts, [[True]], [[1, 1]], tails, 0.99, 0.5)
     p = torch.tensor([one_hot(1)])
     for bad in ({"kappa": 0.5, "tail": None, "state": "settled"},
                 {"kappa": 0.5, "tail": None, "state": "noncombat"},
                 {"kappa": 1.5, "tail": None, "state": "terminal"},
                 {"kappa": 0.5, "tail": None, "state": "other"}):
         with pytest.raises(FastIntakeError, match="combat_settle"):
-            _combat_settled(p, p, [True], bad, 0.99)
+            _combat_settled(p, p, [True], [1], bad, 0.99)
 
 
 def test_a_settled_tail_gets_the_value_tails_own_checks():
     p = torch.tensor([one_hot(1)])
     good = [float(x) for x in one_hot(3)]
-    settled, _ = _combat_settled(p, p, [True], {"kappa": 0.5, "tail": good,
+    settled, _ = _combat_settled(p, p, [True], [1], {"kappa": 0.5, "tail": good,
                                                 "state": "settled"}, 0.99)
     assert torch.equal(settled[0], torch.tensor(good))
     nan = [*good[:-1], float("nan")]
     for bad in (good[:-1], nan, [2 * x for x in good], [-x for x in good]):
         with pytest.raises(ValueError, match="invalid_segment_probability_mass"):
-            _combat_settled(p, p, [True], {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
+            _combat_settled(p, p, [True], [1],
+                            {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
     for bad in ("x", [str(x) for x in good], [True] * 51):
         with pytest.raises(FastIntakeError, match="combat_settle"):
-            _combat_settled(p, p, [True], {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
+            _combat_settled(p, p, [True], [1],
+                            {"kappa": 0.5, "tail": bad, "state": "settled"}, 0.99)
 
 
 # --- the real path: assembler segments, "game" intake, decode ------------------------------
@@ -277,6 +381,41 @@ def test_the_released_game_settles_combat_rows_only(tmp_path, kappa):
     assert fields[3] == pytest.approx(float(old.sum()), rel=1e-6)
     assert fields[4] == pytest.approx(float((old ** 2).sum()), rel=1e-6)
     assert i.report()["game_target_settle_lost_battles"] == 0
+
+
+def test_the_reviewers_omitted_boundary_through_the_real_path(tmp_path):
+    # battle A (floor 1) is followed directly by battle B (floor 2): A's post-battle states
+    # were single-choice, so no scored row between; A settles with B's first row, B alone
+    g = Game()
+    g.open("g1")
+    plan = [(False, 1)] * 5 + [(True, 1)] * 10 + [(True, 2)] * 60 + [(False, 2)] * 6
+    for in_combat, floor in plan:
+        g.step("g1", in_combat=in_combat, floor=floor)
+    g.step("g1", terminal=True, in_combat=False, floor=2)
+    g.close("g1", "terminal")
+    sealed = g.sealed
+    admitted, i = released(tmp_path, sealed, combat_end_kappa=0.5)
+    rows = [meta["outcome_probabilities"] for s in sealed for meta in s.header["rows"]]
+    flags = [bool(meta["in_combat"]) for s in sealed for meta in s.header["rows"]]
+    floors = [meta["floor"] for s in sealed for meta in s.header["rows"]]
+    assert floors[14:16] == [1, 2] and flags[14:16] == [True, True]
+    end = one_hot(sealed[-1].header["seal"]["terminal"]["class"])
+    whole = definition(rows, flags, end, 0.99, 0.5, floors)
+    merged = definition(rows, flags, end, 0.99, 0.5)  # the old, floor-blind battles
+    assert not torch.allclose(whole[5:15], merged[5:15])
+    p = torch.tensor(rows, dtype=torch.float64)
+    cursor, metadata = 0, []
+    for segment, envelope in admitted:
+        source, _ = decode_fast_packet(segment.data, envelope=envelope, compiler=COMPILER)
+        n = len(segment.header["rows"])
+        assert torch.allclose(source.raw_advantages.double(),
+                              (whole[cursor:cursor + n] - p[cursor:cursor + n]) @ R, atol=2e-6)
+        metadata.append(source.metadata[0])
+        cursor += n
+    assert combat_settle_fields(metadata)[:3] == [70, 70, 0]
+    report = i.report()
+    assert [report[f"game_target_settle_{k}_battles"] for k in (
+        "end_noncombat", "end_floor", "lost", "lost_floor")] == [1, 1, 0, 0]
 
 
 def test_a_stop_closed_game_that_ends_in_a_battle_falls_back_and_counts(tmp_path):
