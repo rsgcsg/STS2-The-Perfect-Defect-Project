@@ -279,8 +279,10 @@ export class SaveTickets {
     const target = acts.map(act => (weights[act - 1] ?? 0) / total);
     const below = acts.map((act, index) => Math.max(0, target[index] - (played ? this.covered[act - 1] / played : 0)));
     const use = below.some(value => value > 0) ? below : target;
-    if (!use.some(value => value > 0)) return null;
     const floor = this.config.act_floor;
+    // No act has a positive target (a measured target can be 0 for an act): with a floor every act with a save
+    // still gets a draw (equal shares); without one, no save start, as before.
+    if (!use.some(value => value > 0)) return floor > 0 && acts.length > 0 ? acts[draw(acts.map(() => 1), this.random)] : null;
     if (floor === 0) return acts[draw(use, this.random)];
     const sum = use.reduce((total, value) => total + value, 0);
     return acts[draw(use.map(value => floor + (1 - acts.length * floor) * value / sum), this.random)];

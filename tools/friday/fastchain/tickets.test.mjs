@@ -285,6 +285,16 @@ test("act_floor 0 (default) keeps the draw sequence of tickets.mjs at 2574aebc; 
   for (const bad of [-0.1, 0.34, "x"]) assert.throws(() => parseSaveStarts({ ...KNOB, act_floor: bad }), /save_starts_config:act_floor/u);
 });
 
+test("act_floor > 0 still draws an act whose target is 0 (review of 5c9a7e57); act_floor 0 opens a new run there, as before", () => {
+  const only3 = (knob) => {
+    const tickets = make(pool(), { share: 1, act_weights: [400, 70, 0], ...knob }, {}, { random: lcg(7) });
+    pooled(tickets, "src", [{ act: 3, floor: 40 }]);
+    return Array.from({ length: 8 }, (_, n) => tickets.plan(`d${n}`).entry?.act ?? 0).join("");
+  };
+  assert.equal(only3({}), "00000000");
+  assert.equal(only3({ act_floor: 0.1 }), "33333333");
+});
+
 // ---- Recipe A greedy cell (B1 target, B3 export/import, B4 draw) ----
 const realSaved = (gameRef, dir, { floor = 20, act = 2, text = `save-${gameRef}-${floor}` } = {}) => {
   const event = saved(gameRef, { floor, act, dir: "/pool" });

@@ -5733,7 +5733,7 @@ def test_recipe_a_profile_is_the_two_cell_profile_plus_the_tn8h_settings_and_the
         == ('plain', 24, 1.21)
     assert a['save_starts'] == {
         **two['save_starts'], 'act_weights': [0.42, 0.37, 0.21], 'act_floor': 0.1,
-        'act_target': 'greedy_cell', 'act_target_min_games': 30, 'act_target_read_seconds': 60,
+        'act_target': 'greedy_cell', 'act_target_min_games': 300, 'act_target_read_seconds': 60,
         'greedy_saves': True, 'greedy_save_share': 0.25, 'greedy_import_seconds': 60}
     assert (a['train_target_seconds'], a['lr_warmup_steps'], a['kl_stop_scope']) == \
         (28800, 500, 'control')
