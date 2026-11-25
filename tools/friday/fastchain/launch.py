@@ -46,6 +46,7 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE.parents[2] / "python"))  # this checkout's spireagent / stpd
 
 import layout as layouts  # noqa: E402
 import preflight  # noqa: E402

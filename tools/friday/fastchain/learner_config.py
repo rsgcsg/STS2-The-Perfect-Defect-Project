@@ -219,8 +219,13 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
              ("segments", "value_config_input", knobs.get("value_config_input", False)),
              ("segments", "observe_arms", observe_arms(knobs.get("exploration_ladder") or {})),
              ("loss", "arm_policy_update", knobs.get("arm_policy_update", "normal")))
+    # eval_only (never trained): these training-recipe keys keep the gate's value (the
+    # served model's lineage); preflight names each one (check_frozen_recipe).
+    kept = {(section, key): config[section][key] for section, key, _ in owned
+            if knobs.get("eval_only") and key in (config.get(section) or {})}
     for section, key, value in owned:
-        if key in (config.get(section) or {}) and config[section][key] != value:
+        if (section, key) not in kept and key in (config.get(section) or {}) \
+                and config[section][key] != value:
             raise ValueError(f"gate learner-base.json {section}.{key} = "
                              f"{config[section][key]!r} differs from this run's knob value "
                              f"{value!r}: the knob owns it; remove it from the gate")
@@ -241,6 +246,8 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     # The arm policy update (owner 11-19): the same rule (normal = key left out).
     if knobs.get("arm_policy_update", "normal") != "normal":
         config["loss"]["arm_policy_update"] = knobs["arm_policy_update"]
+    for (section, key), value in kept.items():
+        config[section][key] = value
     # #632: the score head in FP32 (a precision choice, not resume-compared): written only
     # when on, so the default learner.json is unchanged; roles.py gives the services the same.
     if knobs.get("score_head_fp32", False):

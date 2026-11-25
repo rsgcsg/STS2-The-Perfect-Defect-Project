@@ -5328,6 +5328,68 @@ def test_eval_only_profile_passes_preflight_and_shows_it_is_an_evaluation(tmp_pa
             launch.eval_list(tmp_path / 'm.json', knobs_, cp, start)
 
 
+def eval_only_and_training(tmp_path, gate):
+    """The eval_only and the two-cell training preflight results under the same gate."""
+    out = []
+    for profile in (EVAL_ONLY, TWO_CELL):
+        plan = long_run_plan(profile, long_run_site(tmp_path))
+        plan['eval_only'] = EVAL_LIST
+        facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+                 'gate_learner_base': gate}
+        out.append(by_name(preflight.checks(plan, facts)))
+    return out
+
+
+@pytest.mark.parametrize('scope', ['control', 'all'])
+def test_eval_only_takes_any_lineage_kl_stop_scope_and_training_still_refuses(
+        tmp_path, scope):
+    gate = long_run_gate()
+    gate['segments']['kl_stop_scope'] = scope
+    evaluation, training = eval_only_and_training(tmp_path, gate)
+    assert all(r.ok for r in evaluation.values()), preflight.report(list(evaluation.values()))
+    assert f"eval_only: not trained, not applicable: segments.kl_stop_scope = '{scope}'" \
+        in evaluation['frozen_recipe'].detail
+    assert training['frozen_recipe'].ok == (scope == 'all')  # the knob is "all": unchanged
+    run = {'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+           'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
+           'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': None}
+    knobs = run_profile.values(run_profile.load_profile(EVAL_ONLY))
+    learner, _ = learner_config.learner_base(gate, TWO_CELL_FROZEN, knobs, run)
+    assert learner['segments']['kl_stop_scope'] == scope  # the gate's value stands
+    if scope == 'control':
+        with pytest.raises(ValueError, match='kl_stop_scope'):
+            learner_config.learner_base(gate, TWO_CELL_FROZEN, {**knobs, 'eval_only': False},
+                                        run)
+
+
+@pytest.mark.parametrize('section, key, value', [
+    ('segments', 'minibatches', 1), (None, 'lr', 0.0002),
+    ('segments', 'lr_warmup_steps', 7), ('loss', 'entropy_coef', 0.05),
+    ('loss', 'noncombat_log_barrier_coef', 0.0), ('loss', 'hp_coef', 0.3),
+    ('segments', 'head_lr', 0.001), ('segments', 'observe_arms', []),
+    ('loss', 'arm_policy_update', 'normal'), ('segments', 'value_config_input', False)])
+def test_eval_only_names_each_training_only_item_and_training_still_refuses(
+        tmp_path, section, key, value):
+    gate = long_run_gate()
+    (gate[section] if section else gate)[key] = value
+    evaluation, training = eval_only_and_training(tmp_path, gate)
+    result = evaluation['frozen_recipe']
+    assert result.ok, result.detail
+    name = f'{section}.{key}' if section else key
+    assert any(line.startswith('  eval_only: not trained, not applicable: ') and name in line
+               for line in result.detail.splitlines()), result.detail
+    assert not training['frozen_recipe'].ok, key  # the training chain is unchanged
+
+
+def test_eval_only_still_checks_the_heads_match_the_served_start_package(tmp_path):
+    plan = long_run_plan(EVAL_ONLY, long_run_site(tmp_path))
+    plan['eval_only'] = EVAL_LIST
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+             'gate_learner_base': long_run_gate(),
+             'start_model': {'package_sha256': 'd' * 64, 'training_identity': None}}
+    assert not by_name(preflight.checks(plan, facts))['warmup_artifact'].ok
+
+
 def test_eval_only_cross_rules_refuse_training_shaped_settings():
     base = run_profile.values(run_profile.load_profile(EVAL_ONLY))
     assert run_profile.cross_problems(base) == []

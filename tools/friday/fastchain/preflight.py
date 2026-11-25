@@ -393,6 +393,17 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
             f"loss.explore_ratio_floor = {floor!r})" if gate_floor else ""))
     declared = frozenset((plan["knobs"].get("declared_changes") or {}).get("changes") or {})
     drift = learner_config.recipe_drift(effective, frozen, declared=declared)
+    if plan["knobs"]["eval_only"]:
+        # never trained: the learner recipe does not reach the served actions (the services
+        # serve the start package / CP weights, heads checked by warmup_artifact)
+        owned = [f"{s}.{k} = {effective[s][k]!r} (gate)" for s, k in (
+            ("segments", "kl_stop_scope"), ("segments", "lr_warmup_steps"),
+            ("segments", "value_config_input"), ("segments", "observe_arms"),
+            ("loss", "arm_policy_update")) if k in (base.get(s) or {})]
+        return Result("frozen_recipe", True, "eval_only: the learner never trains; "
+                      f"{len(drift) + len(owned)} training-recipe items not applicable"
+                      + "".join(f"\n  eval_only: not trained, not applicable: {item}"
+                                for item in drift + owned))
     return Result("frozen_recipe", not drift, ("drift from the frozen parameters: "
                   + "; ".join(drift)) if drift else
                   f"effective learner config = {plan['knobs']['frozen_learner_config']} "
