@@ -550,7 +550,7 @@ LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advanta
                  "value_target",
                  "value_calibration", "policy_entropy", "first_use_mu_age_seconds",
                  "value_by_cell", "value_cross_cell", "low_probability_noncombat",
-                 "potion_discard")
+                 "potion_discard", "combat_settle")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
 
@@ -685,6 +685,8 @@ class _Learning:
         self.calibration: list[list[float]] = []
         self.entropy: dict[str, list[float]] = {}
         self.discard: dict[str, list[int]] = {}  # recipe A: per arm [offered, chosen]
+        # combat-end settlement: combat rows, settled, lost, G sum / sq, G' sum / sq
+        self.settle: list[float] | None = None
         self.lags: dict[str, dict[int, int]] = {key: {} for key in LAG_KEYS}
         self.mu_age = [0, 0, 0.0, [0] * (len(MU_AGE_EDGES) + 1)]  # n, missing, sum, bins
 
@@ -738,6 +740,9 @@ class _Learning:
             for i, value in enumerate(values):
                 row[i] += value
         self._cells(e)
+        if e.get("combat_settle") is not None:
+            self.settle = [a + b for a, b in zip(self.settle or [0] * len(e["combat_settle"]),
+                                                  e["combat_settle"], strict=True)]
         for arm, values in (e.get("potion_discard") or {}).items():
             row = self.discard.setdefault(arm, [0, 0])
             row[0] += values[0]
@@ -965,6 +970,20 @@ class _Learning:
         out["potion_discard"] = {
             arm: {"rows_offered": offered, "chosen": chosen, "rate": chosen / offered}
             for arm, (offered, chosen) in sorted(self.discard.items()) if offered} or None
+        # Combat-end settlement (segments.combat_end_kappa < 1): training combat rows per
+        # dataset (row visits), the share settled, rows of lost battles (kept G), and the
+        # standard deviation of the same rows' outcome advantage under G and under G'.
+        out["combat_settle"] = None
+        if self.settle is not None and self.settle[0]:
+            n, settled, lost, s_old, q_old, s_new, q_new = self.settle
+
+            def std(total: float, square: float) -> float:
+                return max(square / n - (total / n) ** 2, 0.0) ** 0.5
+
+            out["combat_settle"] = {"combat_rows": round(n), "settled_rows": round(settled),
+                                    "settled_share": settled / n, "lost_rows": round(lost),
+                                    "std_game": std(s_old, q_old),
+                                    "std_settled": std(s_new, q_new)}
         out.update(self.settings_result())
         out.update(self.cells_result())
         return out
@@ -1886,6 +1905,13 @@ def render_record(r: dict[str, Any]) -> list[str]:
                            f"{fmt(t['advantage_mean'], 4)} / "
                            f"{fmt(t['outcome_minus_value_mean'], 4)} ({t['outcome_rows']:,})"
                            for name, t in x["low_probability_noncombat"].items()))
+        if x.get("combat_settle"):
+            c = x["combat_settle"]
+            out.append(f"  combat-end settlement {label}: {c['settled_rows']:,} of "
+                       f"{c['combat_rows']:,} combat rows settled "
+                       f"({100 * c['settled_share']:.1f}%), {c['lost_rows']:,} in lost "
+                       f"battles (kept G); outcome advantage std G {fmt(c['std_game'], 4)}, "
+                       f"G' {fmt(c['std_settled'], 4)} (same rows)")
         if x.get("potion_discard"):
             out.append(f"  noncombat potion discard {label} (arm: chosen / rows offering it): "
                        + ", ".join(f"{arm} {d['chosen']:,}/{d['rows_offered']:,} "
@@ -1927,7 +1953,10 @@ def render_record(r: dict[str, Any]) -> list[str]:
                    if k.endswith("_dropped_rows") and v}
         out.append(f"game value targets: held {fmt(intake.get('held_rows'))} rows, spill "
                    f"{fmt(intake.get('spill_bytes'))} bytes in {fmt(intake.get('spill_files'))} "
-                   f"files (peak {fmt(intake.get('spill_peak_bytes'))}), dropped rows {dropped}")
+                   f"files (peak {fmt(intake.get('spill_peak_bytes'))}), dropped rows {dropped}"
+                   + (f", combat-end settlement fell back to G in "
+                      f"{intake['game_target_settle_lost_battles']:,} battles (end not reached)"
+                      if "game_target_settle_lost_battles" in intake else ""))
     games = r.get("training_games") or {}
     windows = [(games.get("rolling_games"), games.get("rolling") or {}),
                *((int(n), part) for n, part in (games.get("rolling_windows") or {}).items())]

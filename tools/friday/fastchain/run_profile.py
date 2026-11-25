@@ -537,6 +537,8 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     # RL5-METHODS K: the learner's segments.kl_stop_scope / lr_warmup_steps (learner_config)
     "kl_stop_scope": _choice(*KL_STOP_SCOPES),
     "lr_warmup_steps": _int(0, 1_000_000),
+    # the learner's segments.combat_end_kappa (combat-end settlement; learner_config)
+    "combat_end_kappa": _num(0, 1),
     # the learner's segments.value_config_input (owner 11-19; learner_config)
     "value_config_input": _bool,
     # the learner's loss.arm_policy_update (owner 11-19; learner_config)

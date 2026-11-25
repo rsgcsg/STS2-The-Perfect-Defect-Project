@@ -310,6 +310,8 @@ def required_features(plan: dict[str, Any],
         need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
     if k["lr_warmup_steps"]:
         need["lr_warmup_steps"] = "lr warm-up (ticket K)"
+    if k["combat_end_kappa"] != 1:
+        need["combat_end_kappa"] = "combat-end settlement of combat rows' advantages (11-26)"
     if k["value_config_input"]:
         need["value_config_input"] = "value heads read the sampling config (owner 11-19)"
     if k["arm_policy_update"] != "normal":
@@ -407,6 +409,7 @@ def check_frozen_recipe(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
         # serve the start package / CP weights, heads checked by warmup_artifact)
         owned = [f"{s}.{k} = {effective[s][k]!r} (gate)" for s, k in (
             ("segments", "kl_stop_scope"), ("segments", "lr_warmup_steps"),
+            ("segments", "combat_end_kappa"),
             ("segments", "value_config_input"), ("segments", "observe_arms"),
             ("loss", "arm_policy_update")) if k in (base.get(s) or {})]
         return Result("frozen_recipe", True, "eval_only: the learner never trains; "

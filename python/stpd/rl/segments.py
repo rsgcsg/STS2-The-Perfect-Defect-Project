@@ -39,6 +39,11 @@ class SegmentConfig:
     # segment's own seal (the behaviour before V); "game" = traces stitched to the
     # game's end (fast chain only; `fast_source.game_target_tails`). Resume-locked.
     value_target: str = "segment"
+    # Combat-end settlement (`fast_source.combat_settle_tails`): combat rows' policy
+    # advantage from (1 - k) [in-battle trace ended at V(s_end)] + k [game target]; 1 = off
+    # (the behaviour before it), < 1 needs value_target "game". Resume-locked, left out of
+    # the recipe at 1.
+    combat_end_kappa: float = 1.0
     # Which queued fast segments a full queue drops (operational: the queue is not
     # restored): "oldest" (the 11-09 rule) or "hash" (lowest packet sha256 first,
     # independent of age and position in the game). "game" admits a whole game at
@@ -107,6 +112,9 @@ class SegmentConfig:
                 or type(self.auxiliary_rows) is not int or self.auxiliary_rows < 0
                 or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
                 or self.value_target not in ("segment", "game")
+                or type(self.combat_end_kappa) not in (int, float)
+                or not 0 <= self.combat_end_kappa <= 1
+                or (self.combat_end_kappa < 1 and self.value_target != "game")
                 or self.capacity_victim not in ("oldest", "hash")
                 or self.kl_stop_scope not in ("all", "control")
                 or type(self.lr_warmup_steps) is not int or self.lr_warmup_steps < 0

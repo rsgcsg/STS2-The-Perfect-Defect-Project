@@ -550,6 +550,7 @@ FEATURES = {
                          "resume_recipe_changes"),
     "kl_stop_scope": ("python/stpd/rl/segments.py", "kl_stop_scope"),  # ticket K
     "lr_warmup_steps": ("python/stpd/rl/segments.py", "lr_warmup_steps"),  # ticket K
+    "combat_end_kappa": ("python/stpd/rl/segments.py", "combat_end_kappa"),  # 11-26
     "value_config_input": ("python/stpd/rl/segments.py", "value_config_input"),  # 11-19
     "arm_policy_update": ("python/stpd/rl/loss.py", "arm_policy_update"),  # 11-19
     "score_head_fp32": ("python/stpd/rl/performance.py", "score_head_fp32"),  # #632

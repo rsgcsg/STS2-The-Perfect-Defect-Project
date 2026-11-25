@@ -116,6 +116,7 @@ from .learner import ROOT, LearnerConfig, _device
 from .learning_diagnostics import (
     ValueCells,
     advantage_fields,
+    combat_settle_fields,
     entropy_fields,
     exploration_fields,
     explore_floor_by_arm,
@@ -592,6 +593,9 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         value["segments"].pop("kl_stop_scope", None)
     if value["segments"].get("lr_warmup_steps", 0) == 0:
         value["segments"].pop("lr_warmup_steps", None)
+    # Combat-end settlement: the same (1 = off).
+    if value["segments"].get("combat_end_kappa", 1.0) == 1:
+        value["segments"].pop("combat_end_kappa", None)
     # The value-config input: the same (off = the heads before it).
     if value["segments"].get("value_config_input", False) is False:
         value["segments"].pop("value_config_input", None)
@@ -623,7 +627,9 @@ def value_target_options(settings: Any, live_work: Path) -> dict[str, Any]:
     if settings.value_target == "segment":
         return {}
     return {"value_target": settings.value_target,
-            "spill_dir": str(Path(live_work) / "value-target-spill")}
+            "spill_dir": str(Path(live_work) / "value-target-spill"),
+            **({"combat_end_kappa": settings.combat_end_kappa}
+               if settings.combat_end_kappa != 1 else {})}
 
 
 # Distance of a segment's last row to its game's end ("game" value targets only):
@@ -3855,6 +3861,9 @@ class SegmentLearner:
             result["exploration"] = exploration_fields(self.device_batch.metadata)
             result["value_target"] = value_target_fields(self.device_batch.metadata)
             result["policy_entropy"] = entropy_fields(self.device_batch.metadata)
+            settle = combat_settle_fields(self.device_batch.metadata)
+            if settle is not None:
+                result["combat_settle"] = settle
             discards = potion_discard_fields(self.device_batch.metadata)
             if discards:
                 result["potion_discard"] = discards

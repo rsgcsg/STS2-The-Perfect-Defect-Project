@@ -216,6 +216,7 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
     # e.g. a fresh gate keeping kl_stop_scope "control" under a profile at "all". Refused.
     owned = (("segments", "kl_stop_scope", knobs.get("kl_stop_scope", "all")),
              ("segments", "lr_warmup_steps", knobs.get("lr_warmup_steps", 0)),
+             ("segments", "combat_end_kappa", knobs.get("combat_end_kappa", 1.0)),
              ("segments", "value_config_input", knobs.get("value_config_input", False)),
              ("segments", "observe_arms", observe_arms(knobs.get("exploration_ladder") or {})),
              ("loss", "arm_policy_update", knobs.get("arm_policy_update", "normal")))
@@ -235,6 +236,13 @@ def build(base: dict[str, Any], knobs: dict[str, Any], run: dict[str, Any]) -> d
         config["segments"]["kl_stop_scope"] = knobs["kl_stop_scope"]
     if knobs.get("lr_warmup_steps", 0):
         config["segments"]["lr_warmup_steps"] = knobs["lr_warmup_steps"]
+    # Combat-end settlement (segments.combat_end_kappa): the same rule (1 = off = left out);
+    # the learner refuses k < 1 without "game" value targets, this says so before launch.
+    if knobs.get("combat_end_kappa", 1.0) != 1:
+        config["segments"]["combat_end_kappa"] = knobs["combat_end_kappa"]
+        if config["segments"].get("value_target", "segment") != "game":
+            raise ValueError("combat_end_kappa < 1 needs the gate's segments.value_target "
+                             '"game" (the settled tail is stitched over the whole game)')
     # The value-config input (owner 11-19): the same rule (off = key left out).
     if knobs.get("value_config_input", False):
         config["segments"]["value_config_input"] = True

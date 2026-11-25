@@ -387,6 +387,19 @@ def value_target_fields(metadata: Any) -> dict[str, Any]:
             "target_entropy_mean": entropy[1] / entropy[0] if entropy[0] else None}
 
 
+def combat_settle_fields(metadata: Any) -> list[float] | None:
+    """One dataset's combat-end settlement (`segments.combat_end_kappa` < 1), summed over its
+    sources: [combat rows, settled rows, rows of a lost battle (kept G), sum and square sum of
+    the combat rows' outcome advantage under G (old), the same under G' (new)]; None when
+    no source carries it (k = 1)."""
+    out: list[float] | None = None
+    for row in metadata:
+        values = row.get("combat_settle")
+        if values is not None:
+            out = [a + b for a, b in zip(out or [0] * len(values), values, strict=True)]
+    return out
+
+
 def potion_discard_fields(metadata: Any) -> dict[str, list[int]]:
     """One dataset's noncombat potion discards per arm: [multi-choice noncombat rows offering
     `potion.discard`, rows choosing it], summed over its sources (recipe A readout)."""

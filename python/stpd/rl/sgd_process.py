@@ -1746,6 +1746,7 @@ class _SgdWorker:
         from .heads import batch_value_configs
         from .learning_diagnostics import (
             advantage_fields,
+            combat_settle_fields,
             entropy_fields,
             exploration_fields,
             low_probability_fields,
@@ -1881,6 +1882,9 @@ class _SgdWorker:
                     result["exploration"] = exploration_fields(device_batch.metadata)
                     result["value_target"] = value_target_fields(device_batch.metadata)
                     result["policy_entropy"] = entropy_fields(device_batch.metadata)
+                    settle = combat_settle_fields(device_batch.metadata)
+                    if settle is not None:
+                        result["combat_settle"] = settle
                     discards = potion_discard_fields(device_batch.metadata)
                     if discards:
                         result["potion_discard"] = discards
