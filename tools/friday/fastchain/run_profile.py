@@ -338,7 +338,9 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["kl_stop_scope"] == "control" and "control" in observe:
         out.append('kl_stop_scope "control" needs the control arm to learn its policy '
                    "(learn_policy = false leaves the KL stop no rows)")
-    if observe and len(observe) == len(values["exploration_ladder"]):
+    if values["eval_only"]:
+        out += eval_only_problems(values)
+    elif observe and len(observe) == len(values["exploration_ladder"]):
         out.append("exploration_ladder: every arm has learn_policy = false (no policy rows)")
     low = values["sampling_temperature_min"]
     for arm, spec in sorted(values["exploration_ladder"].items()):
@@ -353,6 +355,20 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
             if spec[name]["temperature"] < low:
                 out.append(f"exploration_ladder arm {arm}.{name}: temperature "
                            f"{spec[name]['temperature']} below sampling_temperature_min {low}")
+    return out
+
+
+def eval_only_problems(values: dict[str, Any]) -> list[str]:
+    """eval_only: every arm greedy on new runs, one game per seed, one generation."""
+    out = [f"eval_only: arm {arm} needs temperature 0, learn_policy = false, new_runs_only"
+           for arm, spec in sorted(values["exploration_ladder"].items()) if spec["share"] and not (
+               spec.get("learn_policy") is False and spec.get("new_runs_only") is True
+               and {spec["combat"]["temperature"], spec["noncombat"]["temperature"]}
+               == {GREEDY_TEMPERATURE})]
+    out += [f"eval_only needs {knob} = {want} (have {values[knob]})" for knob, want in (
+        ("replay_k", 1), ("r7_games_per_hour", 0), ("resume_max_total", 0)) if values[knob] != want]
+    if values["save_starts"]["share"] or not values["eval_suite"]:
+        out.append("eval_only needs save_starts.share = 0 and eval_suite (the frozen list)")
     return out
 
 
@@ -564,6 +580,7 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "disk_warn_free_pct": _int(1, 99),
     "disk_stop_free_pct": _int(1, 99),
     "eval_suite": _str_or_empty,
+    "eval_only": _bool,  # play, never train: one greedy game per seed of the eval list
     "eval_a10_enabled": _bool,
     "eval_a10_suite": _str_or_empty,
     "eval_a10_seeds": _int(1, 100),

@@ -1,0 +1,16 @@
+# Play, never train (RL5 eval B, 11-26), over rl5-two-cell.toml. supervise.py start CHAIN
+# --profile THIS --cards 1 --resume-checkpoint CP --eval-manifest M ...; eval_pairs.py reads.
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-two-cell.toml"
+
+[knobs]
+eval_only = { value = true, default = false, why = "play, never train: games are never attested to the learner, one game per seed of the eval list", measured = "unit tests only" }
+exploration_ladder = { value = { greedy = { share = 1.0, combat = { temperature = 0.0, uniform_mix = 0.0 }, noncombat = { temperature = 0.0, uniform_mix = 0.0 }, learn_policy = false, new_runs_only = true } }, default = { control = { share = 0.95, combat = { temperature = 1.0, uniform_mix = 0.0 }, noncombat = { temperature = 1.0, uniform_mix = 0.0 } }, greedy = { share = 0.05, combat = { temperature = 0.0, uniform_mix = 0.0 }, noncombat = { temperature = 0.0, uniform_mix = 0.0 }, learn_policy = false, new_runs_only = true } }, why = "every driver greedy on new runs (the agreed evaluation: complete games from the start, greedy, fixed seeds)", measured = "user 11-25 (B + C)" }
+save_starts = { value = { share = 0.0, random_saves = 2, act_weights = [1.0, 1.0, 1.0], died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }, default = { share = 0.5, random_saves = 2, act_weights = [1.0, 1.0, 1.0], died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }, why = "no save starts, no save points", measured = "-" }
+r7_games_per_hour = { value = 0, default = 10, why = "no R7 audit games (evaluation games only)", measured = "-" }
+resume_max_total = { value = 0, default = 6, why = "one generation: a resumed eval would restart the seed list", measured = "-" }
+train_target_seconds = { value = 0, default = 72000, why = "nothing is trained; the chain ends when the list is played", measured = "-" }
+long_wall_seconds = { value = 5400, default = 86400, why = "wall cap: GPU start + restore (~10 min, inferred) + the longest game (594 s on the fast type, A50) with margin", measured = "inferred, not run" }
+env_core_budget = { value = { "1" = 64, "2" = 64, "3" = 64 }, default = { "1" = 215, "2" = 256, "3" = 304 }, why = "4 nodes x 10 drivers x 12 slots = 480 slots >= 300 seeds: every game starts at once", measured = "inferred, not run" }
+remote_prepare = { value = false, default = true, why = "no batches to prepare: nothing is trained", measured = "-" }
+allow_switch_off = { value = ["remote_prepare"], default = [], why = "remote_prepare is off (no training)", measured = "-" }

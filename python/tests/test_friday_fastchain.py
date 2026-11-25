@@ -5281,3 +5281,157 @@ def test_readout_folds_the_rare_noncombat_table_and_the_new_scalars():
     with pytest.raises(ValueError, match="low_probability_noncombat"):
         readout._Learning().add({"low_probability_noncombat": {"rows": {"x|rest": [1]},
                                                                "games": {}}})
+
+
+# ---------------- eval-only chain: play, never train (RL5 eval B + C, 11-26) ----------------
+
+EVAL_ONLY = FASTCHAIN / 'rl5-eval-only.toml'
+EVAL_LIST = {'manifest': 'm.json', 'sha256': 'a' * 64, 'suite': 'suite-a0',
+             'ascension': 0, 'seeds': [f'S{i}' for i in range(10)]}
+
+
+def load_eval_pairs():
+    sys.path.insert(0, str(FASTCHAIN))
+    try:
+        return importlib.import_module('eval_pairs')
+    finally:
+        sys.path.remove(str(FASTCHAIN))
+        sys.modules.pop('eval_pairs', None)
+
+
+def test_eval_only_profile_passes_preflight_and_shows_it_is_an_evaluation(tmp_path):
+    k = run_profile.values(run_profile.load_profile(EVAL_ONLY))
+    assert k['eval_only'] and list(k['exploration_ladder']) == ['greedy']
+    assert (k['replay_k'], k['r7_games_per_hour'], k['resume_max_total'],
+            k['save_starts']['share'], k['train_target_seconds']) == (1, 0, 0, 0.0, 0)
+    assert k['frozen_learner_config'] == 'python/configs/rl5-two-cell.json'
+    plan = long_run_plan(EVAL_ONLY, long_run_site(tmp_path))
+    plan['eval_only'] = EVAL_LIST
+    facts = {**good_facts(plan), 'frozen_recipe': TWO_CELL_FROZEN,
+             'gate_learner_base': long_run_gate()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    assert results['seeds'].detail.startswith('EVALUATION (play, never train): suite-a0')
+    assert not results['seeds'].warn  # every seed has a slot from the start
+    env = launch.job_env(plan)
+    assert 'export FC_EVAL_ONLY=1' in env
+    assert f"FC_EVAL_SEEDS_FILE={plan['run']}/eval-seeds.txt" in env
+    del plan['eval_only']
+    assert not by_name(preflight.checks(plan, facts))['seeds'].ok  # no list: refused
+
+
+def test_eval_only_cross_rules_refuse_training_shaped_settings():
+    base = run_profile.values(run_profile.load_profile(EVAL_ONLY))
+    assert run_profile.cross_problems(base) == []
+    bad = {**base, 'replay_k': 2, 'resume_max_total': 1, 'eval_suite': '',
+           'exploration_ladder': two_cell_ladder(learn_policy=False, new_runs_only=True)}
+    problems = run_profile.cross_problems(bad)
+    assert any('arm control needs temperature 0' in p for p in problems)
+    assert any('replay_k = 1' in p for p in problems)
+    assert any('resume_max_total = 0' in p for p in problems)
+    assert any('eval_suite' in p for p in problems)
+    knob = tomllib.loads((FASTCHAIN / 'rl5-fastchain.toml').read_text())['knobs']['eval_only']
+    assert knob['value'] is False  # training profiles are never an evaluation
+
+
+def test_eval_only_driver_plays_each_seed_once_unattested_then_stops(tmp_path):
+    world, admit = fake_driver_world(tmp_path), AdmitAll()
+    (world / 'seeds.txt').write_text('\n'.join(f'S{i}' for i in range(10)) + '\n')
+    out = tmp_path / 'run' / 'env-n0-1' / 'p1'
+    ladder = json.dumps(run_profile.values(run_profile.load_profile(EVAL_ONLY))[
+        'exploration_ladder'])
+    began = time.monotonic()
+    try:
+        done = run_driver(world, out, admit.path, '--exploration-ladder', ladder, '--arm',
+                          'greedy', '--replay-k', '1', '--eval-only', 'on', steady=50)
+    finally:
+        admit.close()
+    assert done.returncode == 0, done.stderr
+    assert time.monotonic() - began < 30  # stopped by itself, not at warm + steady
+    opens = [json.loads(line) for line in (out / 'opens.jsonl').read_text().splitlines()]
+    assert sorted(o['seed'] for o in opens) == sorted(f'S{i}' for i in range(10))  # no wrap
+    lines = readout.jsonl(out / 'driver.jsonl')
+    assert not [r for r in lines if r['event'] == 'admission']  # never sent to the learner
+    assert len([r for r in lines if r['event'] == 'eval_unattested']) == 10
+    assert [r for r in lines if r['event'] == 'eval_seeds_done']
+    # the readout: one row per planned seed, the reward of readout.reward_v21
+    run = tmp_path / 'run'
+    (run / 'plan.json').write_text(json.dumps({'eval_only': {
+        **EVAL_LIST, 'seeds': [f'S{i}' for i in range(11)]}, 'resume_checkpoint': 'cp-1'}))
+    eval_pairs = load_eval_pairs()
+    table = eval_pairs.table(run, 'gpu-service')
+    assert (table['checkpoint'], table['action_path'], table['list']['suite']) == \
+        ('cp-1', 'gpu-service', 'suite-a0')
+    games = table['games']
+    assert games['S10']['status'] == 'not_played' and games['S10']['conservative'] == 0.0
+    played = [games[f'S{i}'] for i in range(10)]
+    assert all(g['status'] == 'finished' for g in played)
+    assert {g['floor'] for g in played} <= {3, 4, 5, 6, 7}
+    win = next(g for g in played if g['floor'] == 7)
+    assert (win['result'], win['reward'], win['bosses_passed']) == ('win', 1.0, 3)
+    loss = next(g for g in played if g['floor'] == 5)
+    assert loss['reward'] == readout.reward_v21('defeat', 5, 0) and loss['bosses_passed'] == 0
+
+
+def test_eval_pairs_readings_and_the_paired_csv_converter(tmp_path):
+    eval_pairs = load_eval_pairs()
+    seeds = ['A', 'B', 'C', 'D']
+
+    def side(rows):
+        return eval_pairs.baseline('cp', 'gpu-service', 'suite-a0', 'a' * 64, seeds, {
+            seed: eval_pairs.game({'event': 'closed', 'ascension': 0, **row})
+            for seed, row in zip(seeds, rows, strict=True) if row})
+    end = lambda floor, result='defeat': {'reason': 'terminal', 'floor': floor,  # noqa: E731
+                                          'terminal': result}
+    a = side([end(10), end(20), end(40), {'reason': 'budget', 'floor': 30}])
+    b = side([end(12), end(48, 'victory'), None, end(30)])
+    out = eval_pairs.pair(a, b)
+    official = out['official']
+    assert (official['pairs'], official['dropped']) == (2, 2)  # C unplayed, D unknown in a
+    want = [1.0 - readout.reward_v21('defeat', 20, 0),
+            readout.reward_v21('defeat', 12, 0) - readout.reward_v21('defeat', 10, 0)]
+    assert official['reward_delta']['mean'] == pytest.approx(sum(want) / 2)
+    lo, hi = official['reward_delta']['ci95']
+    assert lo <= official['reward_delta']['mean'] <= hi
+    assert official['wins'] == [0, 1] and official['last_boss_reached'] == [0, 1]
+    # conservative: every planned seed; unknown D = a loss at floor 30, unplayed C = 0.0
+    assert out['conservative']['pairs'] == 4
+    cons = out['conservative']['reward_delta']['mean']
+    assert cons == pytest.approx((sum(want) + (0.0 - readout.reward_v21('defeat', 40, 0))) / 4)
+    assert out['b']['bins'] == {'1-16': 1, '17-33': 1, '34-48 loss': 0, 'win': 1}
+    assert out['same'] == {'compared': 2, 'identical': 0, 'differ': 2,
+                           'differ_seeds': ['A', 'B']}
+    assert eval_pairs.pair(a, a)['same']['identical'] == 3
+    # the a46 columns of paired.csv -> the same baseline, action path the old CPU evaluator
+    csv_path = tmp_path / 'paired.csv'
+    head = ('ordinal,seed,a46_status,a46_scored,a46_result,a46_floor,a46_boss_reached_acts,'
+            'a46_boss_cleared_acts,a46_reward,a78_status\n')
+    csv_path.write_text('﻿' + head + '1,A,finished,True,loss,48,"[1, 2, 3]","[1, 2]",0.7,x\n'
+                        '2,B,not_started,False,,,[],[],,x\n3,C,censored,False,,,[],[],,x\n'
+                        '4,D,finished,True,win,48,"[1, 2, 3]","[1, 2, 3]",1.0,x\n',
+                        encoding='utf-8')
+    old = eval_pairs.from_paired(csv_path, 'a46', 'a46afd12', 'suite-a0')
+    assert old['action_path'] == 'cpu-evaluator-old' and old['seeds'] == seeds
+    assert old['games']['A'] == {'status': 'finished', 'result': 'loss', 'floor': 48,
+                                 'bosses_passed': 2, 'last_boss_reached': True, 'reward': 0.7,
+                                 'conservative': 0.7}
+    assert [old['games'][s]['status'] for s in 'BC'] == ['not_started', 'unknown']
+    assert eval_pairs.pair(old, b)['official']['pairs'] == 2  # A and D
+    with pytest.raises(SystemExit, match='same eval list'):
+        eval_pairs.pair(old, {**b, 'seeds': seeds[:3]})
+
+
+def test_eval_only_chain_forwards_its_list_and_ends_ok_when_the_env_side_is_done(
+        tmp_path, capsys):
+    chain, cluster, cancelled = env_side_chain(tmp_path)
+    chain.knobs['eval_only'], chain.args.eval_manifest = True, tmp_path / 'm.json'
+    assert chain.run() == 0
+    argv = cluster.argvs[0]
+    assert argv[argv.index('--eval-manifest') + 1] == str(tmp_path / 'm.json')
+    stop = (tmp_path / 'run-lr1' / 'STOP').read_text()
+    assert stop.startswith('service stop: eval-only: every env job ended')
+    assert chain.state['final']['cause'].startswith('eval-only list done')
+    with pytest.raises(SystemExit):
+        supervise.main(['start', 'e1', '--profile', str(EVAL_ONLY), '--site', str(SITE),
+                        '--cards', '1', '--card-type', 'A100-40'])  # no --eval-manifest
+    assert 'eval_only takes --eval-manifest' in capsys.readouterr().err

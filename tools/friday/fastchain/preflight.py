@@ -829,6 +829,13 @@ def check_seeds(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     allowed (each driver counts it in summary.json) but warned loudly. For a chain the
     reach is up to the chain's wall limit, else to this run's wall."""
     k, chain, count = plan["knobs"], plan.get("chain"), facts.get("seeds_file_count")
+    if k["eval_only"]:
+        listed, slots = plan.get("eval_only") or {}, plan["seed_stride"] * k["env_slots"]
+        if not listed.get("seeds"):
+            return Result("seeds", False, "eval_only: no frozen eval list (--eval-manifest)")
+        return Result("seeds", True, f"EVALUATION (play, never train): {listed['suite']} "
+                      f"sha256 {listed['sha256'][:12]}, {len(listed['seeds'])} seeds, one game "
+                      f"each on {slots} slots, no wrap", warn=slots < len(listed["seeds"]))
     if not count:
         return Result("seeds", False, f"no seeds in site seeds_file {plan['site']['seeds_file']}")
     rate, stride, start = k["seed_games_per_driver_hour"], plan["seed_stride"], plan["seed_start"]

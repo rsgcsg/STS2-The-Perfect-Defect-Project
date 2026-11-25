@@ -69,8 +69,11 @@ const SEEDS = readFileSync(arg("seeds"), "utf8").trim().split("\n");
 let seedIndex = Number(arg("seed-offset", "0"));
 const SEED_STRIDE = Number(arg("seed-stride", "1"));
 const seedStream = { offset: seedIndex, stride: SEED_STRIDE, taken: 0, wrapped: 0, file_seeds: SEEDS.length };
+// --eval-only on: no wrap, no game attested to the learner (never trained), stop when done.
+const EVAL_ONLY = arg("eval-only", "off") === "on";
 const nextSeed = () => {
   const index = seedIndex;
+  if (EVAL_ONLY && index >= SEEDS.length) return null;
   seedIndex += SEED_STRIDE;
   seedStream.taken += 1;
   if (index >= SEEDS.length) {
@@ -98,7 +101,9 @@ const nextStart = () => {
   if (group === null || group.member >= group.size) {
     const id = `${arg("tag")}-k${++groupCount}`;
     const plan = saves ? saves.plan(id, REPLAY_K) : { seed: null, start: { kind: "new_run" }, save_points: null, tickets: null };
-    group = { id, plan, member: 0, size: plan.tickets?.length ?? REPLAY_K, seed: plan.seed ?? nextSeed() };
+    const seed = plan.seed ?? nextSeed();
+    if (seed === null) return null;
+    group = { id, plan, member: 0, size: plan.tickets?.length ?? REPLAY_K, seed };
   }
   return { group, member: group.member++ };
 };
@@ -156,7 +161,9 @@ const openWith = (slot, r7) => {
   if (stopping) return;
   let next;
   try { next = nextStart(); } catch (error) { return ticketFailed({ slot, reason: "save_start_failed", detail: String(error?.message ?? error) }); }
+  if (next === null) return evalDone();
   const { group: { id, plan, seed }, member } = next, ref = `g${++opened}`;
+  live.add(slot);
   games.set(ref, { seed, group: id, member, start: plan.start.kind, ...(saves ? saves.opening(ref, plan, member) : {}) });
   send({ cmd: "open", slot, game_ref: ref, seed, initial_progress: initialProgress, start: plan.start, r7, retain_originals: false,
     ...(plan.save_points ? { save_points: plan.save_points } : {}) });
@@ -188,6 +195,13 @@ const open = (slot) => {
     setTimeout(() => open(slot), 1000);
   });
 };
+const live = new Set();  // eval-only: slots with a game open
+const evalDone = () => {
+  if (!EVAL_ONLY || live.size || stopping) return;
+  log({ event: "eval_seeds_done", seed_stream: seedStream });
+  stopping = true; summary.final_status = true;
+  if (!stopSent) { stopSent = true; send({ cmd: "stop" }); }
+};
 const exclude = (gameInstanceId, reason) => admitCall({ op: "exclude", actor: `v3g-${arg("tag")}`, intent_id: "-", seed: "-", game_instance_id: gameInstanceId, reason })
   .then(r => { if (r.ok) admission.excluded += 1; else admission.exclusion_failed[r.code] = (admission.exclusion_failed[r.code] ?? 0) + 1; });
 const excludedSent = new Set();
@@ -208,6 +222,7 @@ createInterface({ input: env.stdout }).on("line", line => {
     setTimeout(() => { summary.final_status = true; send({ cmd: "status" }); }, (WARM_S + STEADY_S) * 1000);
   } else if (event.event === "opened") {
     const tag = arg("tag"), ref = event.game_ref, instance = event.game_instance_id;
+    if (EVAL_ONLY) { log({ event: "eval_unattested", game_ref: ref, game_instance_id: instance }); return; }
     admission.sent += 1;
     admitCall({ op: "admit", actor: `v3g-${tag}`, intent_id: `v3g-${tag}-${ref}`, seed: games.get(ref).seed, game_instance_id: instance }).then(r => {
       log({ event: "admission", game_ref: ref, game_instance_id: instance, ok: r.ok, code: r.code ?? null });
@@ -221,6 +236,7 @@ createInterface({ input: env.stdout }).on("line", line => {
     summary.failures.push(event);
     if (!excludedSent.has(event.game_instance_id)) { excludedSent.add(event.game_instance_id); exclude(event.game_instance_id, "evidence_failed"); }
   } else if (event.event === "closed") {
+    live.delete(event.slot);
     if (event.evidence_failed && !excludedSent.has(event.game_instance_id)) { excludedSent.add(event.game_instance_id); exclude(event.game_instance_id, "evidence_failed"); }
     summary.closed.push({ t: Date.now(), ...gameFacts(event.game_ref), slot: event.slot, reason: event.reason, detail: event.detail, decisions: event.decisions,
       game_instance_id: event.game_instance_id, evidence_failed: event.evidence_failed ?? null,
@@ -230,8 +246,8 @@ createInterface({ input: env.stdout }).on("line", line => {
       const slot = event.slot; setTimeout(() => open(slot), reopenDelayMs(n));
     } else { notStartedRun.delete(event.slot); open(event.slot); }
   } else if (event.event === "open_refused") {
-    summary.refused.push(event);
-    if (event.reason !== "build_output_stopped") open(event.slot);
+    summary.refused.push(event); live.delete(event.slot);
+    if (event.reason !== "build_output_stopped") open(event.slot); else evalDone();
   }
   else if (["slot_failed", "build_output_stopped"].includes(event.event)) summary.failures.push(event);
   else if (event.event === "status") {

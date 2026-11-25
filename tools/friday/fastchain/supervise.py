@@ -450,6 +450,8 @@ class Chain:
                 "--long-run", "--chain-json", str(chain_json)]
         argv += ["--layout", self.args.layout] if self.args.layout else []
         argv += ["--resume-checkpoint", checkpoint] if checkpoint else []
+        if self.knobs["eval_only"]:
+            argv += ["--eval-manifest", str(Path(self.args.eval_manifest).resolve())]
         for item in [*self.args.set, *recipe]:  # a later --set of the same knob wins
             argv += ["--set", item]
         generation = {"number": number, "runtag": tag, "checkpoint": checkpoint,
@@ -514,6 +516,11 @@ class Chain:
         run = Path(generation["run"])
         while True:
             live = self.squeue(ids)
+            env = {str(job) for name, job in generation["jobs"].items() if name.startswith("env")}
+            if self.knobs["eval_only"] and live is not None and gpu in live and not live & env:
+                done = self.end_generation(generation, "service stop: eval-only: every env "
+                                           "job ended (see eval_pairs.py)")
+                return {"kind": "eval_done", "failure": None, "stop": done}
             lost = self.env_lost(generation, live)
             if lost:
                 done = self.end_generation(generation, f"service stop: env side lost: {lost}")
@@ -998,6 +1005,8 @@ class Chain:
                 self.note("generation_ended", number=number, outcome=result)
                 if result["kind"] == "normal":
                     return self.final(True, self.normal_cause(result))
+                if result["kind"] == "eval_done":
+                    return self.final(True, f"eval-only list done: {result['stop']}")
                 if result["kind"] != "resumable":
                     return self.final(False, f"generation {number} ended {result['kind']}: "
                                       f"{result.get('failure') or result.get('stop')}")
@@ -1159,7 +1168,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("chain: lowercase letters, digits and '-', at most 30")
     if re.search(r"-r\d+$", args.chain):  # generation names are CHAIN-rN (review D4)
         parser.error("chain: must not end in -rN (that names a generation of another chain)")
-    if bool(args.eval_execution) != bool(args.eval_manifest):
+    eval_only = run_profile.values(run_profile.load_profile(args.profile, args.set))["eval_only"]
+    if eval_only and (args.eval_execution or not args.eval_manifest):
+        parser.error("eval_only takes --eval-manifest (the list it plays), no --eval-execution")
+    if not eval_only and bool(args.eval_execution) != bool(args.eval_manifest):
         parser.error("--eval-execution and --eval-manifest go together")
     if args.eval_execution and bool(args.eval_a10_manifest) != bool(
             run_profile.values(run_profile.load_profile(args.profile, args.set))

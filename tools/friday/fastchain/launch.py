@@ -300,6 +300,22 @@ def commands(plan: dict[str, Any]) -> dict[str, list[str]]:
     return out
 
 
+def eval_list(path: Path | None, knobs: dict[str, Any]) -> dict[str, Any]:
+    """eval_only: the first eval_seeds seeds of the frozen eval_suite manifest."""
+    if path is None:
+        raise run_profile.ProfileError("eval_only needs --eval-manifest (the frozen eval list)")
+    from spireagent.workbench.reference_suite import load_manifest
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    _, frozen = load_manifest(path, sha)
+    if (frozen["suite_id"] != knobs["eval_suite"] or len(frozen["seeds"]) < knobs["eval_seeds"]
+            or knobs["ascension_mix"] != {str(frozen["ascension"]): 1}):
+        raise run_profile.ProfileError(
+            f"--eval-manifest {frozen['suite_id']} A{frozen['ascension']} "
+            f"({len(frozen['seeds'])} seeds): needs eval_suite, eval_seeds, ascension_mix")
+    return {"manifest": str(path), "sha256": sha, "suite": frozen["suite_id"],
+            "ascension": frozen["ascension"], "seeds": frozen["seeds"][:knobs["eval_seeds"]]}
+
+
 def job_env(plan: dict[str, Any]) -> str:
     """Shell exports for the job scripts. Paths and knobs only; secrets stay in files."""
     p, site, k = plan["placement"], plan["site"], plan["knobs"]
@@ -328,6 +344,7 @@ def job_env(plan: dict[str, Any]) -> str:
         "FC_ENV_NODES": plan["env_nodes_max"],  # R7: each node takes 1/N of rate and cap
         "FC_RESUME_CHECKPOINT": plan.get("resume_checkpoint") or "",
         "FC_SEED_START": plan["seed_start"],
+        "FC_EVAL_SEEDS_FILE": f"{plan['run']}/eval-seeds.txt" if plan.get("eval_only") else "",
         "FC_DRIVER_STEADY_SECONDS": plan["driver_steady_seconds"],
         **({"FC_CHAIN_ID": plan["chain"]["id"],
             # empty with a training target: the learner gets no absolute deadline (#603)
@@ -579,6 +596,8 @@ def freeze(plan: dict[str, Any], profile: dict[str, Any], cmds: dict[str, list[s
                  "harness_sha256": digests}
     (run / "effective-profile.json").write_text(json.dumps(effective, indent=1, sort_keys=True))
     (run / "job-env.sh").write_text(job_env(plan))
+    if plan.get("eval_only"):
+        (run / "eval-seeds.txt").write_text("\n".join(plan["eval_only"]["seeds"]) + "\n")
     record = {k: v for k, v in plan.items() if k not in ("knobs", "site")}
     record["commands"] = cmds
     (run / "plan.json").write_text(json.dumps(record, indent=1, default=str))
@@ -971,6 +990,7 @@ def main(argv: list[str] | None = None) -> int:
                         "no-shard CP: --set shards_adopt_unsharded_checkpoint=true)")
     parser.add_argument("--chain-json", type=Path,
                         help="supervise.py only: this run is one generation of a chain")
+    parser.add_argument("--eval-manifest", type=Path, help="eval_only: the frozen eval list")
     parser.add_argument("--out", type=Path, help="plan: also write the full plan.json here "
                         "(e.g. for `readout.py --plan` on a run made before this launcher)")
     args = parser.parse_args(argv)
@@ -992,6 +1012,8 @@ def main(argv: list[str] | None = None) -> int:
                           long_run=args.long_run, resume_checkpoint=args.resume_checkpoint,
                           chain=(json.loads(args.chain_json.read_text())
                                  if args.chain_json else None))
+        if knobs["eval_only"]:
+            plan["eval_only"] = eval_list(args.eval_manifest, knobs)
     except (run_profile.ProfileError, layouts.LayoutError) as error:
         print(error, file=sys.stderr)
         return 2
