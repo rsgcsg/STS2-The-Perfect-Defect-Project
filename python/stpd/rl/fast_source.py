@@ -14,7 +14,11 @@ Three pieces, none used by the old chain:
   ticket.end == "combat" (single-combat practice), "all_combats" every one.
   The learner's one normalisation then runs on that sum. c_hp > 0 refuses a
   segment of an older format (`fast_segment_without_hp_score`), never reads it as
-  A_hp = 0; c_hp = 0 leaves the advantage exactly as before.
+  A_hp = 0; c_hp = 0 leaves the advantage exactly as before. A format-5 segment's
+  `boss_adv` column (Boss progress, coef x (progress - baseline), already in reward units
+  and scaled by the assembler's `boss_progress.coef`) is added the same way, before the
+  normalisation; a row without one adds 0, and a segment with none at all (coef 0) leaves
+  the advantage exactly as before.
 - `FastSegmentIntake`: admission bookkeeping keyed by `game_instance_id`.
   An instance is trainable only after the actor's `fast_instance_admission`
   (seed/holdout check once per game). Segments sealed before that are buffered
@@ -118,7 +122,14 @@ from .fast_handoff import (
     check_handoff_end,
 )
 from .fast_segment import FORMAT as FAST_FORMAT
-from .fast_segment import FORMAT_4, MU_KEYS, decode_segment, segment_ascension, sha256
+from .fast_segment import (
+    FORMAT_5,
+    HP_FORMATS,
+    MU_KEYS,
+    decode_segment,
+    segment_ascension,
+    sha256,
+)
 from .heads import (
     OUTCOME_CLASSES,
     categorical_lambda_targets,
@@ -350,7 +361,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     coef = envelope["hp_advantage_coef"]
     hp_part = None  # c_hp * A_hp as added (A2: the run record's HP share of Var(A))
     if coef:  # A = A_outcome + c_hp * A_hp, before the learner's one normalisation
-        if header["format"] != FORMAT_4:
+        if header["format"] not in HP_FORMATS:
             raise FastIntakeError("fast_segment_without_hp_score")
         if (envelope["hp_advantage_scope"] == "all_combats"
                 or header["ticket"]["end"] == "combat"):
@@ -358,6 +369,11 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
                 [0.0 if value is None else value for value in header["hp_adv"]],
                 dtype=advantages.dtype)
             advantages = advantages + hp_part
+    if header["format"] == FORMAT_5 and any(v is not None for v in header["boss_adv"]):
+        # Boss progress: coef x (progress - baseline), scaled at the assembler.
+        advantages = advantages + torch.tensor(
+            [0.0 if value is None else value for value in header["boss_adv"]],
+            dtype=advantages.dtype)
     # V: the targets' mass on the real outcome, per source (metadata only): rows,
     # weight sum, noncombat rows, noncombat weight sum.
     lam, last = float(envelope["gae_lambda"]), len(rows) - 1

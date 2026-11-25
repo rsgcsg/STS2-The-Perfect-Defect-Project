@@ -49,6 +49,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 
+from ..rl.boss_progress import public_enemies
 from .data import digest, json_bytes
 from .inference_service import V3_MAX_MESSAGE, V3_SCHEMA, pack_message, unpack_message
 from .local_inference import tcp_nodelay
@@ -107,6 +108,14 @@ def public_hp(observation: dict[str, Any], in_combat: bool) -> dict[str, Any] | 
             if "hp" in player and "max_hp" in player else None)
 
 
+def boss_enemies(observation: dict[str, Any], in_combat: bool) -> list[list[Any]] | None:
+    """A Boss combat row's public enemy table (`combat.content.enemies`, the model's own
+    input) for the format-5 Boss progress; None off a Boss combat or without a list."""
+    if public_encounter(observation, in_combat) != "boss":
+        return None
+    return public_enemies((observation["combat"].get("content") or {}).get("enemies"))
+
+
 def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
     """Encoder-pool handler: one decision line -> (meta, row); parsed once, here."""
     from .rows_encoder import parse_public_json
@@ -123,6 +132,7 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
             "in_combat": encoded.in_combat, "floor": message.get("floor"),
             "encounter": public_encounter(source["observation"], encoded.in_combat),
             "public_hp": public_hp(source["observation"], encoded.in_combat),
+            "enemies": boss_enemies(source["observation"], encoded.in_combat),
             "step_index": message.get("step_index"),
             "consumption_id": message.get("consumption_id"), "binding": None}
     # The line's own claims must equal what was encoded (no repair, no fallback).
@@ -331,6 +341,7 @@ class NodeAggregator:
                              "in_combat": meta["in_combat"], "floor": meta["floor"],
                              "encounter": meta["encounter"],
                              "public_hp": meta["public_hp"],
+                             "enemies": meta["enemies"],
                              "payload": {"offset": len(binary), "length": len(row),
                                          "row_sha256": meta["row_sha256"]}})
                 binary += row

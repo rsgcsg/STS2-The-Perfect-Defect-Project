@@ -538,6 +538,9 @@ FEATURES = {
     "r7_audit_mu": ("components/policy-runtime/src/fast-env/kernel.ts", "audit_retain_mu"),
     "segment_format_3": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-3"),  # #530
     "segment_format_4": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-4"),  # W2
+    "segment_format_5": ("python/stpd/rl/fast_segment.py", "stpd/rl-fast-segment-5"),  # Boss
+    "boss_progress": ("python/stpd/rl/fast_assembly.py",  # third training
+                      "boss_progress_needs_segment_format_5"),
     "hp_combat_weights": ("python/stpd/rl/fast_assembly.py",  # RL5-METHODS A2
                           "hp_weights_need_segment_format_4"),
     "hp_potion_mode": ("python/stpd/rl/fast_assembly.py",  # ticket H

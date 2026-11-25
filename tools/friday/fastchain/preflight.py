@@ -291,6 +291,10 @@ def required_features(plan: dict[str, Any],
         need["segment_format_3"] = "segment format 3 (#530 S-1)"
     if k["segment_format"] == run_profile.SEGMENT_FORMAT_4:
         need["segment_format_4"] = "segment format 4 + per-combat HP score (W2)"
+    if k["segment_format"] == run_profile.SEGMENT_FORMAT_5:
+        need["segment_format_5"] = "segment format 5: Boss enemy table + progress columns"
+    if k["boss_progress"]["coef"] > 0:
+        need["boss_progress"] = "Boss progress score coef x (progress - baseline) (third training)"
     if any(w != 1 for w in k["hp_combat_weights"].values()):
         need["hp_combat_weights"] = "HP-change weight per combat type (RL5-METHODS A2)"
     if k["hp_potion_mode"] != "points":
@@ -505,12 +509,12 @@ def check_hp_score(plan: dict[str, Any], facts: dict[str, Any]) -> Result:
     if potion != "points" and not coef > 0:
         return Result("hp_score", False, f"hp_potion_mode {potion!r} needs c_hp > 0 (have "
                       f"{coef}: no row receives A_hp)")
-    if potion != "points" and fmt != run_profile.SEGMENT_FORMAT_4:
+    if potion != "points" and fmt not in run_profile.HP_SEGMENT_FORMATS:
         return Result("hp_score", False, f"hp_potion_mode {potion!r} needs segment_format = "
-                      f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no HP score)")
-    if coef > 0 and fmt != run_profile.SEGMENT_FORMAT_4:
+                      f"{run_profile.SEGMENT_FORMAT_4!r} or 5 (have {fmt!r}: no HP score)")
+    if coef > 0 and fmt not in run_profile.HP_SEGMENT_FORMATS:
         return Result("hp_score", False, f"c_hp {coef} > 0 needs segment_format = "
-                      f"{run_profile.SEGMENT_FORMAT_4!r} (have {fmt!r}: no hp_adv column)")
+                      f"{run_profile.SEGMENT_FORMAT_4!r} or 5 (have {fmt!r}: no hp_adv column)")
     if coef > 0 and scope == "combat_ticket":
         # fast_source adds c_hp * A_hp only to segments whose ticket.end == "combat". No
         # source sends one: the fast env's episode_open names no ticket (kernel.ts), so the

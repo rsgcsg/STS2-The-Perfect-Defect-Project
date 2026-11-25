@@ -84,6 +84,18 @@ A format-4 `bootstrap` seal may hold fewer than 64 rows only when
 segment mu's value on the post-combat row (a truncation, no new terminal class).
 Formats 1-3 are read as before and never converted; a learner that needs
 `hp_adv` refuses them.
+
+`stpd/rl-fast-segment-5` (2026-11-26, RL5 Boss progress, the one 4 -> 5 step): format 4
+with magic b"STPDFS05", one more stored header key and two more columns:
+- `enemies`: per row, null or the row's public enemy table (Boss fight rows only), each
+  enemy [entity_id, definition_id, hp, max_hp, minion, hp_display_mode] as the player sees
+  it (`boss_progress.public_enemies`); only the Boss progress reads it, never the model;
+- column `boss_progress` (`<f8`): the final progress of the row's Boss fight
+  (`boss_progress.fight_progress`, 0..1), NaN / None when the row is in no scored Boss fight;
+- column `boss_adv` (`<f8`): coef x (progress - the Boss's running baseline), in reward
+  units, NaN / None when not given (coef 0, the Boss's first fight in the assembler, or no
+  progress). The learner adds it to the row's advantage before the one normalisation.
+Formats 1-4 are read as before and never converted.
 """
 from __future__ import annotations
 
@@ -96,6 +108,7 @@ from typing import Any
 
 import numpy as np
 
+from .boss_progress import valid_table
 from .heads import CLASS_FLOORS, OUTCOME_CLASSES
 from .segment_validation import _probabilities as learner_distribution_check
 
@@ -103,16 +116,19 @@ FORMAT = "stpd/rl-fast-segment-1"
 FORMAT_2 = "stpd/rl-fast-segment-2"
 FORMAT_3 = "stpd/rl-fast-segment-3"
 FORMAT_4 = "stpd/rl-fast-segment-4"
-FORMATS = (FORMAT, FORMAT_2, FORMAT_3, FORMAT_4)
-COLUMNAR_FORMATS = (FORMAT_2, FORMAT_3, FORMAT_4)
-ASCENSION_FORMATS = (FORMAT_3, FORMAT_4)
+FORMAT_5 = "stpd/rl-fast-segment-5"
+FORMATS = (FORMAT, FORMAT_2, FORMAT_3, FORMAT_4, FORMAT_5)
+COLUMNAR_FORMATS = (FORMAT_2, FORMAT_3, FORMAT_4, FORMAT_5)
+ASCENSION_FORMATS = (FORMAT_3, FORMAT_4, FORMAT_5)
+HP_FORMATS = (FORMAT_4, FORMAT_5)  # group, ticket and the per-combat HP score
 ROW_FORMAT = "stpd/rows-v2-row-1"
 MAGIC = b"STPDFS01"
 MAGIC_2 = b"STPDFS02"
 MAGIC_3 = b"STPDFS03"
 MAGIC_4 = b"STPDFS04"
-_MAGIC_OF = {FORMAT_2: MAGIC_2, FORMAT_3: MAGIC_3, FORMAT_4: MAGIC_4}
-_FORMAT_OF = {MAGIC_2: FORMAT_2, MAGIC_3: FORMAT_3, MAGIC_4: FORMAT_4}
+MAGIC_5 = b"STPDFS05"
+_MAGIC_OF = {FORMAT_2: MAGIC_2, FORMAT_3: MAGIC_3, FORMAT_4: MAGIC_4, FORMAT_5: MAGIC_5}
+_FORMAT_OF = {magic: name for name, magic in _MAGIC_OF.items()}
 TICKET_STARTS = ("new_run", "from_save")
 TICKET_ENDS = ("game", "combat")
 MAX_ROWS = 64
@@ -133,8 +149,12 @@ HEADER_KEYS_3 = HEADER_KEYS | {"ascension"}
 STORED_KEYS_3 = HEADER_KEYS_2 | {"ascension"}
 HEADER_KEYS_4 = HEADER_KEYS_3 | {"group_id", "ticket", "hp_adv"}
 STORED_KEYS_4 = STORED_KEYS_3 | {"group_id", "ticket"}
-_LOGICAL_KEYS = {FORMAT_3: HEADER_KEYS_3, FORMAT_4: HEADER_KEYS_4}
-_STORED_KEYS = {FORMAT_2: HEADER_KEYS_2, FORMAT_3: STORED_KEYS_3, FORMAT_4: STORED_KEYS_4}
+BOSS_COLUMNS = ("boss_progress", "boss_adv")
+HEADER_KEYS_5 = HEADER_KEYS_4 | {"enemies", *BOSS_COLUMNS}
+STORED_KEYS_5 = STORED_KEYS_4 | {"enemies"}
+_LOGICAL_KEYS = {FORMAT_3: HEADER_KEYS_3, FORMAT_4: HEADER_KEYS_4, FORMAT_5: HEADER_KEYS_5}
+_STORED_KEYS = {FORMAT_2: HEADER_KEYS_2, FORMAT_3: STORED_KEYS_3, FORMAT_4: STORED_KEYS_4,
+                FORMAT_5: STORED_KEYS_5}
 MAX_ASCENSION = 10
 TEXT_COLUMNS_2 = ("consumption_id", "catalog_sha256", "observation_sha256", "row_sha256")
 INT_COLUMNS_2 = ("request_id", "step_index", "catalog_len", "floor", "selected_index",
@@ -142,6 +162,9 @@ INT_COLUMNS_2 = ("request_id", "step_index", "catalog_len", "floor", "selected_i
 COLUMNS_2 = (*((name, "<i8") for name in INT_COLUMNS_2), ("in_combat", "|u1"),
              ("selected_q", "<f8"), ("behavior_q", "<f8"), ("outcome_probabilities", "<f8"))
 COLUMNS_4 = (*COLUMNS_2, ("hp_adv", "<f8"))
+COLUMNS_5 = (*COLUMNS_4, *((name, "<f8") for name in BOSS_COLUMNS))
+_FLOAT_COLUMNS = {FORMAT_4: ("hp_adv",), FORMAT_5: ("hp_adv", *BOSS_COLUMNS)}
+_LAYOUT = {FORMAT_4: COLUMNS_4, FORMAT_5: COLUMNS_5}
 _INT64 = (-(1 << 63), (1 << 63) - 1)
 BOOTSTRAP_KEYS = frozenset({"mu_snapshot_sha256", "successor_request_id", "successor_step_index",
                             "successor_row_sha256", "floor", "outcome_probabilities"})
@@ -273,7 +296,7 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
         _reject("segment_ascension")
     # Format 4: a single-combat episode's last segment may bootstrap short (I3).
     short_bootstrap = False
-    if byte_format == FORMAT_4:
+    if byte_format in HP_FORMATS:
         ticket = header["ticket"]
         if (type(header["group_id"]) is not str or not header["group_id"]
                 or not isinstance(ticket, dict) or set(ticket) != {"start", "end"}
@@ -299,13 +322,28 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
         if row["applied"].get("decision_class") != ("combat" if row["in_combat"]
                                                      else "noncombat"):
             _reject("segment_decision_class")
-    if byte_format == FORMAT_4:
+    if byte_format in HP_FORMATS:
         scores = header["hp_adv"]
         if not isinstance(scores, list) or len(scores) != len(rows) or any(
                 value is not None and (type(value) is not float or not math.isfinite(value)
                                        or not row["in_combat"])
                 for value, row in zip(scores, rows, strict=True)):
             _reject("segment_hp_adv")
+    if byte_format == FORMAT_5:
+        tables, progress, boss = header["enemies"], header["boss_progress"], header["boss_adv"]
+        if (not isinstance(tables, list) or len(tables) != len(rows) or any(
+                table is not None and (not row["in_combat"] or not valid_table(table))
+                for table, row in zip(tables, rows, strict=True))):
+            _reject("segment_enemies")
+        for name, values in (("boss_progress", progress), ("boss_adv", boss)):
+            if not isinstance(values, list) or len(values) != len(rows):
+                _reject(f"segment_{name}")
+        for table, p, adv in zip(tables, progress, boss, strict=True):
+            if ((p is not None and (table is None or type(p) is not float
+                                    or not 0 <= p <= 1))
+                    or (adv is not None and (p is None or type(adv) is not float
+                                             or not math.isfinite(adv)))):
+                _reject("segment_boss_progress")
     seal = header["seal"]
     kind = seal.get("kind") if isinstance(seal, dict) else None
     if kind not in SEAL_KINDS or set(seal) != {"kind", "bootstrap", "terminal", "truncation"}:
@@ -351,7 +389,7 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
 def segment_ascension(header: dict[str, Any]) -> int:
     """The ascension of a decoded (logical) segment header.
 
-    Formats 3 and 4 name it; formats 1 and 2 were produced only for A0 (see the
+    Formats 3-5 name it; formats 1 and 2 were produced only for A0 (see the
     module docstring), so they are A0. Anything else is refused.
     """
     byte_format = header.get("format")
@@ -566,12 +604,14 @@ def encode_segment_columns(header: dict[str, Any], rows: list[bytes], *,
     counts = [len(owned_rows)] * (len(INT_COLUMNS_2) + 2) + [
         len(q), len(owned_rows) * OUTCOME_CLASSES]
     layout = COLUMNS_2
-    if byte_format == FORMAT_4:  # None (no HP score) is NaN on the wire
-        layout = COLUMNS_4
-        columns.append(np.asarray([math.nan if value is None else value
-                                   for value in logical["hp_adv"]], dtype="<f8").tobytes())
-        counts.append(len(owned_rows))
-    stored = {key: value for key, value in logical.items() if key not in ("rows", "hp_adv")}
+    if byte_format in HP_FORMATS:  # None (no HP / Boss score) is NaN on the wire
+        layout = _LAYOUT[byte_format]
+        for name in _FLOAT_COLUMNS[byte_format]:
+            columns.append(np.asarray([math.nan if value is None else value
+                                       for value in logical[name]], dtype="<f8").tobytes())
+            counts.append(len(owned_rows))
+    stored = {key: value for key, value in logical.items()
+              if key not in ("rows", "hp_adv", *BOSS_COLUMNS)}
     stored.update(row_count=len(owned_rows), text=text,
                   outcomes=[row["outcome"] for row in owned_rows],
                   columns=[[name, dtype, count]
@@ -637,7 +677,7 @@ def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format
         _reject("segment_header_keys")
     if stored["format"] != byte_format:
         _reject("segment_format")
-    layout = COLUMNS_4 if byte_format == FORMAT_4 else COLUMNS_2
+    layout = _LAYOUT.get(byte_format, COLUMNS_2)
     count = stored["row_count"]
     text, outcomes = stored["text"], stored["outcomes"]
     if (type(count) is not int or not 1 <= count <= MAX_ROWS
@@ -703,9 +743,9 @@ def _decode_columns(raw: memoryview, length: int, header_only: bool, byte_format
         start += width
         offset += size + _pad(size)
     header["rows"] = rows_meta
-    if byte_format == FORMAT_4:  # NaN = no HP score (any NaN; +-inf is refused below)
-        header["hp_adv"] = [None if math.isnan(value) else value
-                            for value in arrays["hp_adv"].tolist()]
+    for name in _FLOAT_COLUMNS.get(byte_format, ()):  # NaN = none (+-inf refused below)
+        header[name] = [None if math.isnan(value) else value
+                        for value in arrays[name].tolist()]
     validate_header(header, byte_format)
     return header, _rows_section(raw, base, header["rows"], header_only)
 

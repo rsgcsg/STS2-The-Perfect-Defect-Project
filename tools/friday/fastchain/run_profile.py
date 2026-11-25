@@ -251,6 +251,10 @@ def _save_starts(value: Any) -> str | None:
 # group_id, ticket and the per-combat HP score column). Both carry the level.
 SEGMENT_FORMAT_3 = "stpd/rl-fast-segment-3"
 SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
+# Third training: 5 adds the Boss enemy table and the Boss progress columns (boss_progress).
+SEGMENT_FORMAT_5 = "stpd/rl-fast-segment-5"
+HP_SEGMENT_FORMATS = (SEGMENT_FORMAT_4, SEGMENT_FORMAT_5)
+BOSS_PROGRESS_MAX_COEF = 0.05  # stpd.rl.boss_progress.MAX_COEF (lead 11-26)
 # RL5-METHODS A2: the format-4 HP-change weight per combat type (fast_assembly.hp_weights).
 HP_COMBAT_TYPES = ("normal", "elite", "boss")
 # Ticket H: how the per-combat HP score treats potions (fast_assembly.HP_POTION_MODES).
@@ -265,6 +269,18 @@ def _hp_combat_weights(value: Any) -> str | None:
     if not isinstance(value, dict) or set(value) != set(HP_COMBAT_TYPES):
         return f"table with exactly the keys {list(HP_COMBAT_TYPES)}"
     return _table_of(_num(0))(value)
+
+
+def _boss_progress(value: Any) -> str | None:
+    """Third training: {coef, decay} of the assembler's Boss progress score (coef 0 = off;
+    the cap 0.05 is the lead's 11-26 line; decay = the per-Boss running mean's weight)."""
+    if (not isinstance(value, dict) or set(value) != {"coef", "decay"}
+            or type(value["coef"]) not in (int, float) or type(value["decay"]) not in (int, float)
+            or not 0 <= value["coef"] <= BOSS_PROGRESS_MAX_COEF
+            or not 0 < value["decay"] <= 1):
+        return (f"{{ coef = [0, {BOSS_PROGRESS_MAX_COEF}], decay = (0, 1] }} "
+                "(exactly these two keys)")
+    return None
 
 
 def _declared_changes(value: Any) -> str | None:
@@ -310,12 +326,16 @@ def cross_problems(values: dict[str, Any]) -> list[str]:
     if values["eval_a10_enabled"] and not values["eval_a10_suite"]:
         out.append("eval_a10_enabled needs eval_a10_suite (the A10 suite id, #530 S-2)")
     if (any(w != 1 for w in values["hp_combat_weights"].values())
-            and values["segment_format"] != SEGMENT_FORMAT_4):
+            and values["segment_format"] not in HP_SEGMENT_FORMATS):
         out.append("hp_combat_weights other than 1 / 1 / 1 need segment_format "
-                   f"{SEGMENT_FORMAT_4} (the per-combat HP score)")
-    if values["hp_potion_mode"] != "points" and values["segment_format"] != SEGMENT_FORMAT_4:
+                   f"{SEGMENT_FORMAT_4} or 5 (the per-combat HP score)")
+    if (values["hp_potion_mode"] != "points"
+            and values["segment_format"] not in HP_SEGMENT_FORMATS):
         out.append(f"hp_potion_mode {values['hp_potion_mode']!r} needs segment_format "
-                   f"{SEGMENT_FORMAT_4} (the per-combat HP score)")
+                   f"{SEGMENT_FORMAT_4} or 5 (the per-combat HP score)")
+    if values["boss_progress"]["coef"] and values["segment_format"] != SEGMENT_FORMAT_5:
+        out.append(f"boss_progress.coef > 0 needs segment_format {SEGMENT_FORMAT_5} "
+                   "(the Boss enemy table and progress columns)")
     if values["replay_k"] > values["env_slots"]:
         out.append(f"replay_k {values['replay_k']} must not exceed env_slots "
                    f"{values['env_slots']} (the K games of one start share one driver, I6)")
@@ -531,7 +551,9 @@ KNOBS: dict[str, Callable[[Any], str | None]] = {
     "services": _int(1, 64),
     "service_kwargs": _table_of(_service_kwarg, SERVICE_KWARGS, "service keywords"),
     # c_hp > 0 (the gate's loss.hp_advantage_coef) needs 4: preflight check_hp_score
-    "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4),
+    "segment_format": _choice(SEGMENT_FORMAT_3, SEGMENT_FORMAT_4, SEGMENT_FORMAT_5),
+    # third training: the assembler's Boss progress score (fast_assembly boss_progress)
+    "boss_progress": _boss_progress,
     "hp_combat_weights": _hp_combat_weights,
     "hp_potion_mode": _choice(*HP_POTION_MODES),
     # RL5-METHODS K: the learner's segments.kl_stop_scope / lr_warmup_steps (learner_config)

@@ -300,6 +300,39 @@ def hp_score_arm_edge(run: Path, scores: list[dict[str, Any]] | None = None) -> 
             for arm in names}
 
 
+def boss_progress_edge(run: Path) -> dict[str, Any]:
+    """Segment format 5 (third training): per Boss (level + its non-minion enemies) the
+    fights scored, wins and mean final progress (whole run, summed over the services'
+    latest cumulative `assembler.boss_progress`), the fights not scored by reason, those
+    never ended, those without a baseline (each Boss's first per service) and Boss rows
+    without an enemy table. Empty under formats 1-4."""
+    parts = [((_last_record(path) or {}).get("assembler") or {}).get("boss_progress")
+             for path in sorted(glob.glob(str(run / "service-status-*.jsonl")))]
+    parts = [part for part in parts if part]
+    if not parts:
+        return {}
+    by: dict[str, list[float]] = {}
+    unscored: dict[str, int] = {}
+    for part in parts:
+        for key, c in (part.get("by_boss") or {}).items():
+            t = by.setdefault(key, [0, 0, 0.0])
+            t[0] += c["battles"]
+            t[1] += c["wins"]
+            t[2] += c["progress"]
+        for reason, n in (part.get("unscored") or {}).items():
+            unscored[reason] = unscored.get(reason, 0) + n
+    total = lambda name: sum(part.get(name) or 0 for part in parts)
+    return {"coef": parts[0].get("coef"), "decay": parts[0].get("decay"),
+            "fights": total("battles"), "unfinished": total("unfinished"),
+            "baseline_missing": total("baseline_missing"),
+            "rows_without_enemies": total("rows_without_enemies"),
+            "unscored": {reason: n for reason, n in unscored.items() if n},
+            "by_boss": {key: {"fights": n, "wins": w,
+                              "mean_progress": p / n if n else None,
+                              "mean_loss_progress": (p - w) / (n - w) if n > w else None}
+                        for key, (n, w, p) in sorted(by.items())}}
+
+
 def gpu_cards(run: Path, window: tuple[float, float] | None) -> dict[str, dict[str, float]]:
     cards: dict[str, list[tuple[float, float]]] = {}
     try:
@@ -1678,6 +1711,7 @@ class Readout:
                 "value_target_intake": self.value_target_intake(),
                 "hp_score": hp_score_edge(self.run, scores),
                 "hp_score_arms": hp_score_arm_edge(self.run, scores),
+                "boss_progress": boss_progress_edge(self.run),
                 "training_games": self.training_games(),
                 "boundary_sections": self.boundary_result(),
                 "incidents": self.incidents(),
@@ -1975,6 +2009,16 @@ def render_record(r: dict[str, Any]) -> list[str]:
     hp_arms = r.get("hp_score_arms") or {}
     for arm, table in hp_arms.items() if set(hp_arms) - {"control"} else ():
         out.append(f"  arm {arm}: " + hp_line(table))
+    boss = r.get("boss_progress") or {}
+    if boss:
+        out.append(f"Boss progress (coef {boss['coef']}, decay {boss['decay']}; whole run): "
+                   f"{boss['fights']} fights scored, {boss['baseline_missing']} without a "
+                   f"baseline, {boss['unfinished']} unfinished, unscored "
+                   + (", ".join(f"{k} {n}" for k, n in boss["unscored"].items()) or "0")
+                   + f", Boss rows without enemies {boss['rows_without_enemies']}")
+        for key, c in boss["by_boss"].items():
+            out.append(f"  {key}: {c['fights']} fights, {c['wins']} won, mean progress "
+                       f"{fmt(c['mean_progress'], 3)}, losses {fmt(c['mean_loss_progress'], 3)}")
     if games.get("unscored_closes"):
         out.append(f"training games: {games['unscored_closes']} complete control closes "
                    "without a natural end (no victory/defeat or floor) not scored")

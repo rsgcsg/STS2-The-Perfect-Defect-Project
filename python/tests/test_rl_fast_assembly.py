@@ -1168,10 +1168,10 @@ def test_columnar_segment_rejects_tampering():
         with pytest.raises(SegmentFormatError):
             decode_segment(data)
     with pytest.raises(SegmentFormatError, match="segment_magic_or_size"):
-        decode_segment(b"STPDFS05" + segment.data[8:])
+        decode_segment(b"STPDFS06" + segment.data[8:])
 
 
-@pytest.mark.parametrize("options", [{"segment_format": "stpd/rl-fast-segment-5"},
+@pytest.mark.parametrize("options", [{"segment_format": "stpd/rl-fast-segment-6"},
                                      {"verify_every": 0}, {"verify_every": True}])
 def test_segment_format_switch_values_are_checked(options: dict):
     with pytest.raises(AssemblyError, match="invalid_segment_format"):

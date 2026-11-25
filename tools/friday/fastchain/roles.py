@@ -543,6 +543,10 @@ def service() -> None:
     # Ticket H: passed only off the default (preflight then needs the feature).
     if K["hp_potion_mode"] != "points":
         hp["hp_potion_mode"] = K["hp_potion_mode"]
+    # Third training: passed with format 5 only (coef > 0 needs it: run_profile), so other
+    # formats run on any source as before; format 5 with coef 0 records, scores nothing.
+    if K["segment_format"] == "stpd/rl-fast-segment-5":
+        hp["boss_progress"] = dict(K["boss_progress"])
     assembler = FastSegmentAssembler(
         assembler_id=f"fc{tag}", compiler_identity=compiler.identity,
         segment_format=K["segment_format"], **hp, **audit,

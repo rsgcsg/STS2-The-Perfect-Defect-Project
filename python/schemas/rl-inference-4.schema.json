@@ -170,6 +170,13 @@
                             "max_hp": {"type": "integer", "minimum": 1}}}
           ]
         },
+        "enemies": {
+          "description": "Optional (third training): on a Boss combat row, the observation's public combat.content.enemies as rows [entity_id, definition_id, hp, max_hp, minion, hp_display_mode] (minion = MINION_POWER among its statuses), null otherwise or without a list. Segment format 5 keeps it per row for the Boss progress score; never model input.",
+          "oneOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"type": "array", "minItems": 6, "maxItems": 6}}
+          ]
+        },
         "payload": {
           "type": "object", "additionalProperties": false,
           "required": ["offset", "length", "row_sha256"],

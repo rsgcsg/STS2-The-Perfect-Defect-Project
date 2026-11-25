@@ -5878,3 +5878,39 @@ def test_readout_act_target_and_greedy_save_counters(tmp_path):
     text = '\n'.join(readout.save_start_lines(saves, {}))
     assert 'act target (greedy cell): measured, target act 1/2/3 40/30/20, greedy games 31' in text
     assert "read failures {'parse': 2}" in text and 'fallback greedy->ordinary 2' in text
+
+
+# -- third training: Boss progress knob and readout ------------------------------------
+def test_boss_progress_knob_is_capped_and_needs_format_5():
+    check = run_profile._boss_progress
+    assert check({'coef': 0.0, 'decay': 0.05}) is None
+    assert check({'coef': 0.05, 'decay': 1}) is None
+    for bad in ({'coef': 0.051, 'decay': 0.05}, {'coef': -0.01, 'decay': 0.05},
+                {'coef': 0.01, 'decay': 0}, {'coef': 0.01}, {'coef': 0.01, 'decay': 0.1, 'x': 1}):
+        assert check(bad) is not None, bad
+    base = knobs()
+    assert base['boss_progress'] == {'coef': 0.0, 'decay': 0.05}
+    assert run_profile.cross_problems(base) == []
+    on = {**base, 'boss_progress': {'coef': 0.01, 'decay': 0.05}}
+    assert any('boss_progress.coef > 0 needs segment_format' in p
+               for p in run_profile.cross_problems(on))
+    assert run_profile.cross_problems(
+        {**on, 'segment_format': run_profile.SEGMENT_FORMAT_5}) == []
+
+
+# -- readout -----------------------------------------------------------------------
+def test_the_readout_sums_each_boss_over_the_services(tmp_path: Path):
+    for index, (n, wins, total) in enumerate(((3, 1, 2.2), (1, 0, 0.5))):
+        part = {'coef': 0.01, 'decay': 0.05, 'battles': n, 'unfinished': index,
+                'baseline_missing': 1, 'rows_scored': 9, 'rows_without_enemies': 0,
+                'unscored': {'test_subject_ascension': 2, 'hp_hidden': 0},
+                'by_boss': {'a0:QUEEN': {'battles': n, 'wins': wins, 'progress': total}}}
+        (tmp_path / f'service-status-{index}.jsonl').write_text(
+            json.dumps({'assembler': {'boss_progress': part}}) + '\n')
+    edge = readout.boss_progress_edge(tmp_path)
+    assert edge['fights'] == 4 and edge['unfinished'] == 1 and edge['baseline_missing'] == 2
+    assert edge['unscored'] == {'test_subject_ascension': 4}
+    assert edge['by_boss']['a0:QUEEN'] == {'fights': 4, 'wins': 1,
+                                          'mean_progress': pytest.approx(2.7 / 4),
+                                          'mean_loss_progress': pytest.approx(1.7 / 3)}
+    assert readout.boss_progress_edge(tmp_path / 'none') == {}

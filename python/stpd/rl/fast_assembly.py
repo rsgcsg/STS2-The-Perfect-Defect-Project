@@ -104,6 +104,18 @@ by the outcome advantage (the value head), not by the HP it saves.
 is the mean HP-change part of the non-potion rows of its own combat (0 when the combat
 has none), so the HP score pushes neither for nor against potions.
 
+Boss progress (`stpd/rl-fast-segment-5` only; RL5 third training, default off): under
+format 5 every Boss combat row (public `encounter` "boss") carries its public enemy table
+(`enemies`, required there, `boss_progress.public_enemies`), kept per row in the segment.
+When a Boss combat ends (the same rule and moment as its HP score), `fight_progress` gives
+its final progress (a win is 1); every row of the fight records it and, with
+`boss_progress.coef` > 0, `coef x (progress - baseline)` (`boss_adv`), the baseline being
+that Boss's running mean final progress in this assembler before the fight
+(`BossBaselines`, decay `boss_progress.decay`). A fight it cannot read is not scored and is
+counted by reason; a Boss's first fight in this assembler (also after a restart: nothing is
+kept) has no baseline, so no `boss_adv`, counted (`baseline_missing`). Elite and normal
+combats get none. coef 0 records the progress but no row gets `boss_adv`.
+
 Temporary mu (E5 publication change): a `MuHandoff` names the snapshot the
 learner pushed to the service every few seconds. It is not a Store asset; its
 identity is the snapshot digest plus training generation, version and update
@@ -127,12 +139,15 @@ from typing import Any
 
 from stpd.p1.trajectory import boss_clearance
 
+from .boss_progress import DEFAULT_DECAY, MAX_COEF, UNSCORED, BossBaselines, fight_progress
+from .boss_progress import valid_table as valid_enemy_table
 from .fast_segment import (
     ASCENSION_FORMATS,
     COLUMNAR_FORMATS,
     FORMAT,
-    FORMAT_4,
+    FORMAT_5,
     FORMATS,
+    HP_FORMATS,
     MAX_ROWS,
     ROW_FORMAT,
     TICKET_ENDS,
@@ -482,6 +497,11 @@ class _Segment:
     # Format 4: A_hp per row (None = none, or not yet) and the combat rows still
     # waiting for their combat's score; `released`: the mu reference is given back.
     hp_adv: list[float | None] = field(default_factory=list)
+    # Format 5: per row the public enemy table (Boss rows), the fight's final progress and
+    # coef x (progress - baseline).
+    enemies: list[list[Any] | None] = field(default_factory=list)
+    boss_progress: list[float | None] = field(default_factory=list)
+    boss_adv: list[float | None] = field(default_factory=list)
     hp_open: int = 0
     released: bool = False
 
@@ -538,6 +558,8 @@ class _Battle:
     # (segment, row index, row meta, 100 x HP prediction, potion used), in order.
     rows: list[tuple[_Segment, int, dict[str, Any], float, bool]] = field(default_factory=list)
     ended: bool = False
+    # Format 5, Boss combats: each row's public enemy table, in order.
+    enemies: list[list[Any]] = field(default_factory=list)
 
 
 def _archive_key(handoff: MuHandoff) -> tuple[str, str]:
@@ -554,7 +576,8 @@ class FastSegmentAssembler:
                  on_closed: Callable[[InstanceClosed], None] | None = None,
                  segment_format: str = FORMAT, verify_every: int = 64,
                  hp_weights: Mapping[str, float] | None = None,
-                 hp_potion_mode: str = "points") -> None:
+                 hp_potion_mode: str = "points",
+                 boss_progress: Mapping[str, float] | None = None) -> None:
         if (not isinstance(assembler_id, str) or not assembler_id or len(assembler_id) > 64
                 or any(not (c.isalnum() or c in "._-") for c in assembler_id)):
             raise AssemblyError("invalid_assembler_id")
@@ -565,25 +588,38 @@ class FastSegmentAssembler:
                 or any(type(w) not in (int, float) or not 0 <= w < math.inf
                        for w in weights.values())):
             raise AssemblyError("invalid_hp_weights")
-        if weights != DEFAULT_HP_WEIGHTS and segment_format != FORMAT_4:
+        if weights != DEFAULT_HP_WEIGHTS and segment_format not in HP_FORMATS:
             raise AssemblyError("hp_weights_need_segment_format_4")
         self.hp_weights = {kind: float(w) for kind, w in weights.items()}
         if hp_potion_mode not in HP_POTION_MODES:
             raise AssemblyError("invalid_hp_potion_mode")
-        if hp_potion_mode != "points" and segment_format != FORMAT_4:
+        if hp_potion_mode != "points" and segment_format not in HP_FORMATS:
             raise AssemblyError("hp_potion_mode_needs_segment_format_4")
         self.hp_potion_mode = hp_potion_mode
+        # Boss progress (format 5): coef (0 = no boss_adv, at most MAX_COEF) and the
+        # running baseline's decay.
+        boss = {"coef": 0.0, "decay": DEFAULT_DECAY, **(boss_progress or {})}
+        if (set(boss) != {"coef", "decay"}
+                or any(type(v) not in (int, float) for v in boss.values())
+                or not 0 <= boss["coef"] <= MAX_COEF or not 0 < boss["decay"] <= 1):
+            raise AssemblyError("invalid_boss_progress")
+        if boss["coef"] and segment_format != FORMAT_5:
+            raise AssemblyError("boss_progress_needs_segment_format_5")
+        self.boss_coef = float(boss["coef"])
+        self.boss_score = segment_format == FORMAT_5
+        self.boss_baselines = BossBaselines(boss["decay"])
         # T3 (fast_chain only, default off): `stpd/rl-fast-segment-2` seals the same
         # logical segment columnar. Every `verify_every`-th format-2 segment (1 = every
         # one) is decoded again and compared in full with the format-1 logical content;
         # a difference keeps the original as rejected and raises (never a fallback).
         # `stpd/rl-fast-segment-3` is format 2 plus the game's `ascension`; formats 1
         # and 2 carry none, so a game above A0 is refused at open under them.
-        # `stpd/rl-fast-segment-4` adds group, ticket and the per-combat HP score.
+        # `stpd/rl-fast-segment-4` adds group, ticket and the per-combat HP score;
+        # `stpd/rl-fast-segment-5` adds the Boss rows' enemy tables and Boss progress.
         if segment_format not in FORMATS or type(verify_every) is not int or verify_every < 1:
             raise AssemblyError("invalid_segment_format")
         self.segment_format, self.verify_every = segment_format, verify_every
-        self.hp_score = segment_format == FORMAT_4
+        self.hp_score = segment_format in HP_FORMATS
         self.columns_sealed = 0
         self.assembler_id, self.steps = assembler_id, MAX_ROWS
         self.instance_id = f"{assembler_id}.{secrets.token_hex(6)}"
@@ -633,6 +669,15 @@ class FastSegmentAssembler:
                 "by_encounter": {kind: {"battles": 0, "deaths": 0, "hp_change": 0}
                                  for kind in ENCOUNTERS},
                 "by_arm": {}}
+        if self.boss_score:
+            # Boss fights: scored, not scored by reason, never ended (game closed first),
+            # without a baseline (the Boss's first here); per Boss (level + its enemies)
+            # the scored fights, wins and the sum of their final progress.
+            self.counters["boss_progress"] = {
+                "coef": self.boss_coef, "decay": self.boss_baselines.decay,
+                "battles": 0, "unscored": dict.fromkeys(UNSCORED, 0), "unfinished": 0,
+                "baseline_missing": 0, "rows_scored": 0, "rows_without_enemies": 0,
+                "by_boss": {}}
 
     # ------------------------------------------------------------------ mu
     def offer_mu(self, handoff: MuHandoff) -> MuOffer:
@@ -891,6 +936,23 @@ class FastSegmentAssembler:
         self.counters["rows"] += 1
         if self.hp_score:
             segment.hp_adv.append(None)
+            if self.boss_score:
+                # A Boss combat row's public enemy table; one without a valid table is
+                # kept as None (its fight is then not scored, `enemies_missing`), counted
+                # and logged once: it never fails the game.
+                table = None
+                if row["in_combat"] and row.get("encounter") == "boss":
+                    table = row.get("enemies")
+                    if not valid_enemy_table(table):
+                        table = None
+                        first = not self.counters["boss_progress"]["rows_without_enemies"]
+                        self.counters["boss_progress"]["rows_without_enemies"] += 1
+                        if first:
+                            print("fast_assembly Boss row without a valid enemy table: its "
+                                  "fight is not scored (counted)", file=sys.stderr, flush=True)
+                segment.enemies.append(table)
+                segment.boss_progress.append(None)
+                segment.boss_adv.append(None)
             self._battle_row(game, segment, meta, 100.0 * hp, potion,  # type: ignore[operator]
                              row.get("encounter"), row.get("public_hp"))
         if plan.tail is not None:
@@ -1061,6 +1123,9 @@ class FastSegmentAssembler:
         broken: BaseException | None = None
         if self.hp_score:
             self._resolve_battles(game)
+            if self.boss_score:  # Boss fights the game never finished: no progress
+                self.counters["boss_progress"]["unfinished"] += sum(
+                    battle.encounter == "boss" for battle in game.battles)
         for segment in list(game.segments):
             if not segment.rows:
                 game.segments.remove(segment)
@@ -1198,6 +1263,9 @@ class FastSegmentAssembler:
                     and game.start.get("kind") == "from_save" else None)))
             game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
                                           potion))
+            if self.boss_score and game.battles[-1].encounter == "boss":
+                # A row of another type inside a Boss combat has no table: never scored.
+                game.battles[-1].enemies.append(segment.enemies[-1])
             segment.hp_open += 1
         elif game.battles:
             game.battles[-1].ended = True
@@ -1242,9 +1310,38 @@ class FastSegmentAssembler:
                     by["battles"] += 1
                     by["deaths"] += death
                     by["hp_change"] += change
+            if self.boss_score and battle.encounter == "boss":
+                self._boss_battle(game, battle)
             for index, (segment, row, *_rest) in enumerate(battle.rows):
                 segment.hp_adv[row] = None if scores is None else scores[index]
                 segment.hp_open -= 1
+
+    def _boss_battle(self, game: _Game, battle: _Battle) -> None:
+        """Final progress of one ended Boss combat, its rows' boss_adv, the counters."""
+        counters = self.counters["boss_progress"]
+        last = battle.rows[-1][2]["outcome"]
+        won = ((last.get("terminal") or {}).get("result") != "defeat")
+        progress, reason, key = fight_progress(battle.enemies, won=won,
+                                               ascension=game.ascension)
+        if reason is not None:
+            counters["unscored"][reason] += 1
+            return
+        assert progress is not None and key is not None
+        baseline = self.boss_baselines.baseline(key)
+        self.boss_baselines.add(key, progress)
+        counters["battles"] += 1
+        boss = counters["by_boss"].setdefault(key, {"battles": 0, "wins": 0, "progress": 0.0})
+        boss["battles"] += 1
+        boss["wins"] += won
+        boss["progress"] += progress
+        if baseline is None:
+            counters["baseline_missing"] += 1
+        adv = (None if baseline is None or not self.boss_coef
+               else float(self.boss_coef * (progress - baseline)))
+        counters["rows_scored"] += 0 if adv is None else len(battle.rows)
+        for segment, row, *_rest in battle.rows:
+            segment.boss_progress[row] = float(progress)
+            segment.boss_adv[row] = adv
 
     def _ticket_end(self, game: _Game,
                     segment: _Segment) -> list[SealedSegment | RejectedSegment] | None:
@@ -1263,6 +1360,9 @@ class FastSegmentAssembler:
         rows.pop()
         segment.data.pop()
         segment.hp_adv.pop()
+        if self.boss_score:
+            for column in (segment.enemies, segment.boss_progress, segment.boss_adv):
+                column.pop()
         holders = game.by_request.get(post["request_id"], [])
         holders[:] = [held for held in holders if held[1] is not post]
         if not holders:
@@ -1322,6 +1422,10 @@ class FastSegmentAssembler:
             header.update(group_id=game.group_id,
                           ticket={"start": game.start["kind"], "end": game.ticket_end},
                           hp_adv=list(segment.hp_adv))
+            if self.boss_score:
+                header.update(enemies=list(segment.enemies),
+                              boss_progress=list(segment.boss_progress),
+                              boss_adv=list(segment.boss_adv))
             if kind != "truncated":
                 self.counters["hp_score"]["rows_unscored"] += sum(
                     row["in_combat"] and value is None
