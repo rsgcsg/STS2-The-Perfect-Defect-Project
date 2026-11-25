@@ -3123,14 +3123,15 @@ createInterface({ input: process.stdin }).on("line", line => {
       return;
     }
     const game = { slot: c.slot, game_ref: c.game_ref, game_instance_id: id };
-    // eval retries: flaky* never starts on its first open; late* stops after a native step,
-    // unk* ends unknown; both before any terminal
+    // eval retries: on its first open flaky* times out before a native step, stall* times out
+    // after 40; late* ends not_started on a native step not delivered, unk* ends unknown
     tries[c.seed] = (tries[c.seed] ?? 0) + 1;
-    if ((c.seed.startsWith("flaky") && tries[c.seed] === 1) || /^(late|unk)/.test(c.seed)) {
+    if ((/^(flaky|stall)/.test(c.seed) && tries[c.seed] === 1) || /^(late|unk)/.test(c.seed)) {
       emit({ event: "opened", ...game, start: c.start });
       setTimeout(() => emit({ event: "closed", ...game, reason: c.seed.startsWith("unk")
-        ? "unknown" : "not_started", detail: "inference_timeout", decisions: 1,
-        native_steps: c.seed.startsWith("late") ? 3 : 0, public_facts: null, terminal: null,
+        ? "unknown" : "not_started", decisions: 1, public_facts: null, terminal: null,
+        detail: c.seed.startsWith("late") ? "native_not_delivered" : "inference_timeout",
+        native_steps: c.seed.startsWith("late") ? 3 : c.seed.startsWith("stall") ? 40 : 0,
         evidence_failed: false }), 30);
       return;
     }
@@ -5583,7 +5584,7 @@ def test_eval_only_queues_again_only_seeds_that_never_started(tmp_path):
     --eval-retries times; a game that sent a native step or ended unknown never is; the
     training driver (eval-only off) never queues anything again."""
     world = fake_driver_world(tmp_path)
-    seeds = ['flaky0', 'S1', 'late2', 'unk3', 'bad4']
+    seeds = ['flaky0', 'S1', 'late2', 'unk3', 'bad4', 'stall5']
     (world / 'seeds.txt').write_text('\n'.join(seeds) + '\n')
     ladder = json.dumps(run_profile.values(run_profile.load_profile(EVAL_ONLY))[
         'exploration_ladder'])
@@ -5597,12 +5598,13 @@ def test_eval_only_queues_again_only_seeds_that_never_started(tmp_path):
         admit.close()
     assert done.returncode == 0, done.stderr
     opens = [json.loads(line)['seed'] for line in (out / 'opens.jsonl').read_text().splitlines()]
-    assert sorted(opens) == sorted(seeds + ['flaky0', 'bad4'])  # one requeue each, at most
+    assert sorted(opens) == sorted(seeds + ['flaky0', 'bad4', 'stall5'])  # one requeue, at most
     lines = readout.jsonl(out / 'driver.jsonl')
-    requeued = [(r['seed'], r['attempt'], r['reason']) for r in lines
+    requeued = [(r['seed'], r['attempt'], r['reason'], r['native_steps']) for r in lines
                 if r['event'] == 'eval_seed_requeued']
-    assert sorted(requeued) == [('bad4', 2, 'reset_failed:x'),
-                                ('flaky0', 2, 'not_started:inference_timeout')]
+    assert sorted(requeued) == [('bad4', 2, 'reset_failed:x', 0),
+                                ('flaky0', 2, 'not_started:inference_timeout', 0),
+                                ('stall5', 2, 'not_started:inference_timeout', 40)]
     assert [r for r in lines if r['event'] == 'eval_seeds_done']
     (tmp_path / 'run' / 'plan.json').write_text(json.dumps({'eval_only': {
         **EVAL_LIST, 'seeds': seeds}}))
@@ -5611,6 +5613,11 @@ def test_eval_only_queues_again_only_seeds_that_never_started(tmp_path):
     assert (games['late2']['status'], games['late2']['attempts']) == ('not_started', 1)
     assert (games['unk3']['status'], games['unk3']['attempts']) == ('unknown', 1)
     assert (games['bad4']['status'], games['bad4']['attempts']) == ('not_started', 2)
+    assert (games['stall5']['status'], games['stall5']['attempts']) == ('finished', 2)
+    assert run_profile.values(run_profile.load_profile(EVAL_ONLY))[
+        'driver_inference_timeout_ms'] == 60000
+    assert run_profile.values(run_profile.load_profile(TWO_CELL))[
+        'driver_inference_timeout_ms'] == 10000  # training unchanged
     # training: the same seeds, the next seed after a never-started game, nothing queued again
     train = tmp_path / 'train'
     admit = AdmitAll()

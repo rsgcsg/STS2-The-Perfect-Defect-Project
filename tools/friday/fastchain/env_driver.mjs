@@ -71,16 +71,18 @@ const SEED_STRIDE = Number(arg("seed-stride", "1"));
 const seedStream = { offset: seedIndex, stride: SEED_STRIDE, taken: 0, wrapped: 0, file_seeds: SEEDS.length };
 // --eval-only on: no wrap, no game attested to the learner (never trained), stop when done.
 const EVAL_ONLY = arg("eval-only", "off") === "on";
-// eval_only: a seed whose game never started (open refused at native start or reset, or
-// closed not_started with no native step sent) goes to the back of this driver's queue, at
-// most --eval-retries times; a game that sent any native step, or unknown, is never replayed.
+// eval_only: a seed whose game ended with no delivery in question (open refused at native
+// start or reset; closed not_started with no native step sent, or at any step on an inference
+// timeout: that step's successor was read and no action came) goes to the back of this
+// driver's queue, at most --eval-retries times, as a new game from the start (greedy: the same
+// game); any other not_started after a native step, or unknown, is never replayed.
 const EVAL_RETRIES = Number(arg("eval-retries", "2"));
 const retryQueue = [], attempts = new Map();  // seed -> starts so far
-const requeue = (seed, reason) => {
+const requeue = (seed, reason, nativeSteps = 0) => {
   const n = attempts.get(seed) ?? 1;
   if (!EVAL_ONLY || n > EVAL_RETRIES) return;
   attempts.set(seed, n + 1); retryQueue.push(seed);
-  log({ event: "eval_seed_requeued", seed, attempt: n + 1, reason });
+  log({ event: "eval_seed_requeued", seed, attempt: n + 1, reason, native_steps: nativeSteps });
 };
 const nextSeed = () => {
   const index = seedIndex;
@@ -254,7 +256,8 @@ createInterface({ input: env.stdout }).on("line", line => {
       game_instance_id: event.game_instance_id, evidence_failed: event.evidence_failed ?? null,
       native_steps: event.native_steps, floor: event.public_facts?.floor ?? null, terminal: event.terminal?.result ?? null });
     if (event.reason === "not_started") {
-      if (event.native_steps === 0) requeue(games.get(event.game_ref)?.seed, `not_started:${event.detail}`);
+      if (event.native_steps === 0 || event.detail === "inference_timeout")
+        requeue(games.get(event.game_ref)?.seed, `not_started:${event.detail}`, event.native_steps);
       const n = (notStartedRun.get(event.slot) ?? 0) + 1; notStartedRun.set(event.slot, n);
       const slot = event.slot; setTimeout(() => open(slot), reopenDelayMs(n));
     } else { notStartedRun.delete(event.slot); open(event.slot); }
