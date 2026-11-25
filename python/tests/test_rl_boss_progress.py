@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import torch
 from test_p1_input_v2 import public_state
-from test_rl_fast_hp_score import HpGame, sources
+from test_rl_fast_hp_score import HpGame, link_model, sources  # noqa: F401 (fixture)
 from test_rl_fast_source import COMPILER, mu
 
 from stpd.p1.fast_aggregator import boss_enemies
@@ -130,6 +130,18 @@ def test_an_a10_test_subject_is_never_scored_only_counted():
     ([[enemy("e", None, 10)]], "hp_hidden"),
     ([[enemy("e", 10, 10)], [enemy("e", None, 10)]], "hp_hidden"),
     ([[enemy("e", 10, 10), enemy("e", 10, 10)]], "duplicate_entity"),
+    # only the Waterfall Giant's infinite bar is "hp done" (review 11-26)
+    ([[enemy("q", 100, 100, definition="QUEEN")],
+      [enemy("q", None, None, definition="QUEEN", mode="infinite_without_numbers")]],
+     "infinite_not_waterfall"),
+    ([[enemy("q", 100, 100)], [enemy("q", 999_999_999, 999_999_999)]], "infinite_not_waterfall"),
+    # a negative claw never offsets the other one; hp above max is no reading either
+    ([[enemy("c", 100, 100, definition="CRUSHER"), enemy("r", 100, 100, definition="ROCKET")],
+      [enemy("c", -10, 100, definition="CRUSHER"), enemy("r", 5, 100, definition="ROCKET")]],
+     "hp_inconsistent"),
+    ([[enemy("e", 10, 10)], [enemy("e", 11, 10)]], "hp_inconsistent"),
+    ([[enemy("e", 12, 10)]], "hp_inconsistent"),
+    ([[enemy("e", 0, 0)]], "hp_inconsistent"),
 ])
 def test_a_fight_that_cannot_be_read_with_certainty_is_unscored_with_its_reason(tables, reason):
     value, got, _key = progress(tables)
@@ -150,38 +162,57 @@ def test_the_row_table_is_the_public_enemy_list():
     assert boss_enemies(observation, False) is None              # off combat
     observation["combat"]["content"]["encounter_type"] = "elite"
     assert boss_enemies(observation, True) is None               # Boss fights only
+    observation["combat"]["content"]["encounter_type"] = "unknown"
+    assert boss_enemies(observation, True) == table              # a combat's first read
     assert public_enemies(None) is None
+    # any other shape is "no table", never an exception (the encoder pool lives on)
+    one = observation["combat"]["content"]["enemies"][0]
+    for bad in ({**one, "statuses": 1}, {**one, "statuses": [3]}, {**one, "hp": "9"},
+                {**one, "entity_id": None}, 7):
+        assert public_enemies([bad]) is None
+    observation["combat"] = {"content": 5}
+    assert boss_enemies(observation, True) is None
 
 
 # -- baseline ----------------------------------------------------------------------
-def test_the_baseline_is_read_before_the_fight_and_is_the_running_mean_per_boss():
+def test_the_baseline_is_read_before_the_fight_and_is_the_row_weighted_running_mean():
     b = BossBaselines(decay=0.25)
     assert b.baseline("a0:X") is None
     seen = []
-    for value in (0.2, 0.4, 0.6, 0.8, 1.0, 0.0):
+    fights = ((0.2, 10), (0.4, 30), (0.6, 10), (0.8, 50), (1.0, 20), (0.0, 10))
+    for value, rows in fights:
         seen.append(b.baseline("a0:X"))
-        b.add("a0:X", value)
-    # the mean of the first 1/decay = 4 fights, then weight 0.25
-    assert seen[0] is None and seen[1:] == pytest.approx([0.2, 0.3, 0.4, 0.5, 0.625])
-    assert b.baseline("a0:X") == pytest.approx(0.625 - 0.25 * 0.625)
+        b.add("a0:X", value, rows)
+    # the row-weighted mean of the first 1/decay = 4 fights, then sums kept x 0.75
+    s, r = 2 + 12 + 6 + 40, 100
+    assert seen[0] is None and seen[1:] == pytest.approx(
+        [0.2, 14 / 40, 20 / 50, s / r, (0.75 * s + 20) / (0.75 * r + 20)])
+    s, r = 0.75 * s + 20, 0.75 * r + 20
+    assert b.baseline("a0:X") == pytest.approx(0.75 * s / (0.75 * r + 10))
     assert b.baseline("a0:Y") is None  # another Boss has its own
     with pytest.raises(ValueError):
         BossBaselines(decay=0)
+    with pytest.raises(ValueError):
+        b.add("a0:X", 0.5, 0)
 
 
-def test_the_score_is_mean_zero_per_boss_on_a_stationary_stream():
+def test_the_score_is_mean_zero_per_row_when_long_fights_go_further():
+    # Rows and progress correlated (a long fight goes further): the per-fight mean of the
+    # score is then not zero, the per-row mean is.
     rng = random.Random(7)
     b = BossBaselines(decay=0.05)
-    centred: dict[str, list[float]] = {"a0:A": [], "a0:B": []}
-    for _ in range(20_000):
-        key = rng.choice(list(centred))
+    per_row = {"a0:A": [0.0, 0], "a0:B": [0.0, 0]}
+    for _ in range(40_000):
+        key = rng.choice(list(per_row))
         value = rng.betavariate(2, 5) if key == "a0:A" else rng.betavariate(5, 2)
+        rows = 5 + int(60 * value) + rng.randrange(10)
         base = b.baseline(key)
         if base is not None:
-            centred[key].append(value - base)
-        b.add(key, value)
-    for values in centred.values():
-        assert abs(sum(values) / len(values)) < 0.01  # sd of each ~0.16 / sqrt(10^4)
+            per_row[key][0] += rows * (value - base)
+            per_row[key][1] += rows
+        b.add(key, value, rows)
+    for total, rows in per_row.values():
+        assert abs(total / rows) < 0.01
 
 
 # -- the assembler and format 5 ----------------------------------------------------
@@ -215,11 +246,21 @@ class BossGame(HpGame):
             return begin(row, raw)
 
         self.assembler.begin_row = begin_row  # type: ignore[method-assign]
+        self.combat_end: Any = None
+        outcome = self.assembler.step_outcome
 
-    def boss(self, game: str, hp: int, table: Any, **kw: Any) -> None:
-        self.table = table
-        self.step(game, combat=True, hp=hp, encounter="boss", **kw)
-        self.table = None
+        def step_outcome(message: dict[str, Any]) -> Any:
+            if self.combat_end is not None:
+                message["combat_end"] = self.combat_end
+            return outcome(message)
+
+        self.assembler.step_outcome = step_outcome  # type: ignore[method-assign]
+
+    def boss(self, game: str, hp: int, table: Any, *, encounter: str = "boss",
+             combat_end: Any = None, **kw: Any) -> None:
+        self.table, self.combat_end = table, combat_end
+        self.step(game, combat=True, hp=hp, encounter=encounter, **kw)
+        self.table = self.combat_end = None
 
 
 def boss_game(g: BossGame, game: str = "g", left: tuple[int, ...] = (60, 40),
@@ -324,3 +365,143 @@ def test_format_5_refuses_a_table_off_combat_or_progress_without_a_table():
                    {"boss_adv": [1.0] + [None] * (n - 1)}):
         with pytest.raises(SegmentFormatError):
             encode_segment_columns({**header, **change}, rows, bound=True)
+
+
+@pytest.mark.parametrize("boss_enemies", [False, True])
+def test_the_aggregator_reads_enemy_tables_under_format_5_only_and_never_fails_on_them(
+        link_model, boss_enemies):  # noqa: F811
+    """A malformed public `statuses` (1, not a list) on a Boss row: off format 5 the
+    aggregator never reads it; under format 5 that row has no table (its fight unscored),
+    and the encoder pool keeps running."""
+    import os
+    import tempfile
+
+    import test_p1_fast_inference as link
+
+    class Rows(link.FakeAssembler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows: list[dict[str, Any]] = []
+
+        def begin_row(self, row: dict[str, Any], row_bytes: bytes) -> Any:
+            self.rows.append(dict(row))
+            return super().begin_row(row, row_bytes)
+
+    assembler = Rows()
+    service = link._service(link_model.vocabulary, link_model, assembler)
+    path = os.path.join(tempfile.mkdtemp(), "link.sock")
+    aggregator = link._aggregator(link_model.vocabulary, service, path,
+                                  boss_enemies=boss_enemies)
+    good = [{"entity_id": "e1", "definition_id": "QUEEN", "hp": 90, "max_hp": 100,
+             "hp_display_mode": "normal", "statuses": []}]
+    bad = [{**good[0], "statuses": 1}]
+    try:
+        env = link.FakeEnv(path)
+        env.send({"type": "hello", "env_process_id": "env-1", "slots": 1, "p1_revision": "x",
+                  "input_spec": link.AGENT_SPEC})
+        env.send({"type": "episode_open", "ascension": 0, "game_instance_id": "g1",
+                  "actor_id": "actor-1", "sampling": link.SAMPLING, "single_choice": "score",
+                  "start": {"kind": "new_run"}})
+        lines = []
+        for step, enemies in enumerate((good, bad)):
+            fight = public_state()
+            fight["combat"] = {"availability": "available",
+                               "content": {"encounter_type": "boss", "enemies": enemies}}
+            fight["player"] = {"content": {"hp": 50, "max_hp": 70}}
+            lines.append(link._decision_line(step + 1, "g1", step, fight).replace(
+                b'"in_combat":false', b'"in_combat":true'))
+        for step, line in enumerate(lines):
+            env.socket.sendall(line)
+            assert env.reply()["type"] == "scored"
+            env.send({"type": "step_outcome", "row_id": step + 1, "game_instance_id": "g1",
+                      "step_index": step, "status": "completed", "receipt_sha256": "b" * 64,
+                      "public_facts": {"act": 1, "floor": 3, "hp": 50, "max_hp": 70},
+                      "terminal": None})
+    finally:
+        stats = aggregator.close()
+        service.close()
+    assert stats["failure"] is None and len(assembler.rows) == 2
+    if boss_enemies:
+        assert [row["enemies"] for row in assembler.rows] == [
+            [["e1", "QUEEN", 90, 100, False, "normal"]], None]
+    else:
+        assert not any("enemies" in row for row in assembler.rows)
+
+
+def combat_end(act: int = 3, floor: int = 48) -> list[dict[str, Any]]:
+    """A native combat_end fact as the fast env copies it onto the row whose step ended
+    the combat (kernel.ts #collectCombatEnd; fields as in the env's own tests)."""
+    return [{"index": 7, "act": act, "floor": floor, "room_kind": "boss",
+             "encounter_id": "ENCOUNTER-BOSS", "result": "victory", "hp_start": 70,
+             "hp_end": 41, "max_hp_start": 80, "max_hp_end": 80, "potions_used": 1,
+             "turns": 9}]
+
+
+def test_the_last_boss_won_and_the_run_ended_in_victory_is_one():
+    # The run's last Boss: its last row's step kills it; that outcome carries the native
+    # combat_end victory and the terminal victory, and no row follows (eval-win shape).
+    g = BossGame(coef=0.05, decay=0.05)
+    for name, end in (("a", "defeat"), ("b", "won")):
+        g.open(name)
+        g.step(name, combat=False, hp=70)
+        g.boss(name, 70, [enemy("e1", 300, 300)])
+        g.boss(name, 60, [enemy("e1", 120, 300)])
+        if end == "defeat":
+            g.boss(name, 0, [enemy("e1", 120, 300)], terminal="defeat")
+        else:
+            g.boss(name, 41, [enemy("e1", 15, 300)], terminal="victory",
+                   combat_end=combat_end())
+        g.close(name, "terminal")
+    won = g.sealed[-1].header
+    assert won["boss_progress"] == [None, 1.0, 1.0, 1.0]
+    assert won["boss_adv"] == [None] + [pytest.approx(0.05 * (1.0 - 0.6))] * 3
+    report = g.assembler.report()["boss_progress"]
+    assert (report["battles"], report["unfinished"]) == (2, 0)
+    assert report["by_boss"]["a0:BOSS"]["wins"] == 1
+
+
+def test_a_boss_win_confirmed_by_combat_end_then_a_stop_is_one_not_unfinished():
+    # The win's combat_end rides on the last Boss row; the game then stops before any
+    # non-combat model row (review 11-26: was counted unfinished).
+    g = BossGame(coef=0.05, decay=0.05)
+    g.open("s")
+    g.step("s", combat=False, hp=70)
+    g.boss("s", 60, [enemy("e1", 100, 100)])
+    g.boss("s", 55, [enemy("e1", 20, 100)], combat_end=combat_end(1, 17))
+    g.close("s", "stop")
+    assert g.sealed[-1].header["boss_progress"] == [None, 1.0, 1.0]
+    report = g.assembler.report()["boss_progress"]
+    assert (report["battles"], report["unfinished"], report["baseline_missing"]) == (1, 0, 1)
+
+
+def test_a_boss_fight_first_read_as_unknown_is_still_scored_and_a_mixed_one_counted():
+    g = BossGame()
+    g.open("k")
+    g.step("k", combat=False, hp=70)
+    g.boss("k", 60, [enemy("e1", 100, 100)], encounter="unknown")   # first read
+    g.boss("k", 55, [enemy("e1", 40, 100)])
+    g.step("k", combat=False, hp=55)
+    g.close("k", "stop")
+    assert g.sealed[-1].header["boss_progress"] == [None, 1.0, 1.0, None]
+    g.open("m")                                    # a row of another type in it
+    g.step("m", combat=False, hp=70)
+    g.boss("m", 60, [enemy("e1", 100, 100)], encounter="normal")
+    g.boss("m", 55, [enemy("e1", 40, 100)])
+    g.step("m", combat=False, hp=55)
+    g.close("m", "stop")
+    report = g.assembler.report()["boss_progress"]
+    assert report["battles"] == 1 and report["unscored"]["encounter_mixed"] == 1
+    assert report["by_boss"] == {"a0:BOSS": {"battles": 1, "wins": 1, "progress": 1.0}}
+
+
+def test_the_reader_refuses_a_boss_adv_beyond_the_cap():
+    g = BossGame(coef=0.05, decay=0.05)
+    boss_game(g, "g1", end="defeat")
+    boss_game(g, "g2", left=(70, 20), end="defeat")
+    header, rows = decode_segment(g.sealed[-1].data)
+    adv = header["boss_adv"]
+    assert encode_segment_columns(header, rows, bound=True)  # 0.01: inside
+    for value in (0.0501, -0.06, 1e300):
+        bad = [None if a is None else value for a in adv]
+        with pytest.raises(SegmentFormatError, match="segment_boss_progress"):
+            encode_segment_columns({**header, "boss_adv": bad}, rows, bound=True)

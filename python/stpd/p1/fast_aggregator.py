@@ -109,15 +109,31 @@ def public_hp(observation: dict[str, Any], in_combat: bool) -> dict[str, Any] | 
 
 
 def boss_enemies(observation: dict[str, Any], in_combat: bool) -> list[list[Any]] | None:
-    """A Boss combat row's public enemy table (`combat.content.enemies`, the model's own
-    input) for the format-5 Boss progress; None off a Boss combat or without a list."""
-    if public_encounter(observation, in_combat) != "boss":
+    """A Boss (or not yet named: "unknown") combat row's public enemy table
+    (`combat.content.enemies`, the model's own input) for the format-5 Boss progress; None
+    off such a combat, and None, never an exception, for any other shape (the fight is
+    then not scored, counted by the assembler)."""
+    combat = observation.get("combat") if in_combat else None
+    content = combat.get("content") if isinstance(combat, dict) else None
+    if not isinstance(content, dict) or content.get("encounter_type") not in ("boss", "unknown"):
         return None
-    return public_enemies((observation["combat"].get("content") or {}).get("enemies"))
+    return public_enemies(content.get("enemies"))
+
+
+def encode_link_decision_boss(encoder: Any, payload: memoryview
+                              ) -> tuple[dict[str, Any], bytes]:
+    """The handler under segment format 5: `encode_link_decision` plus the row's Boss
+    enemy table (`enemies`). Other formats use the plain handler and never read it."""
+    return _encode_link(encoder, payload, boss=True)
 
 
 def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, Any], bytes]:
     """Encoder-pool handler: one decision line -> (meta, row); parsed once, here."""
+    return _encode_link(encoder, payload, boss=False)
+
+
+def _encode_link(encoder: Any, payload: memoryview, *, boss: bool
+                 ) -> tuple[dict[str, Any], bytes]:
     from .rows_encoder import parse_public_json
 
     message = parse_public_json(bytes(payload))
@@ -132,9 +148,10 @@ def encode_link_decision(encoder: Any, payload: memoryview) -> tuple[dict[str, A
             "in_combat": encoded.in_combat, "floor": message.get("floor"),
             "encounter": public_encounter(source["observation"], encoded.in_combat),
             "public_hp": public_hp(source["observation"], encoded.in_combat),
-            "enemies": boss_enemies(source["observation"], encoded.in_combat),
             "step_index": message.get("step_index"),
             "consumption_id": message.get("consumption_id"), "binding": None}
+    if boss:
+        meta["enemies"] = boss_enemies(source["observation"], encoded.in_combat)
     # The line's own claims must equal what was encoded (no repair, no fallback).
     differs = [name for name, ok in (
         ("input_spec", source.get("input_spec") == agent_input_spec(encoder.identity)),
@@ -216,7 +233,8 @@ class NodeAggregator:
                  encoder_cpus: list[int] | None = None,
                  window_ms: float = 1.5, cache_bytes: int | None = None,
                  verify_every: int = 0,
-                 services: list[tuple[tuple[str, int], bytes]] | None = None) -> None:
+                 services: list[tuple[tuple[str, int], bytes]] | None = None,
+                 boss_enemies: bool = False) -> None:
         # One service (service_address + authkey, the default) or a card's K
         # services as [(address, authkey), ...]; never both, never empty.
         if services is None:
@@ -227,7 +245,8 @@ class NodeAggregator:
             raise ValueError("fast_aggregator_services_or_service_address")
         options: dict[str, Any] = {"workers": encoder_workers, "cpus": encoder_cpus,
                                    "verify_every": verify_every,
-                                   "handler": "stpd.p1.fast_aggregator:encode_link_decision"}
+                                   "handler": "stpd.p1.fast_aggregator:encode_link_decision"
+                                              + ("_boss" if boss_enemies else "")}
         if cache_bytes is not None:
             options["cache_bytes"] = cache_bytes
         self.pool = EncoderPool(vocabulary, **options)
@@ -341,7 +360,7 @@ class NodeAggregator:
                              "in_combat": meta["in_combat"], "floor": meta["floor"],
                              "encounter": meta["encounter"],
                              "public_hp": meta["public_hp"],
-                             "enemies": meta["enemies"],
+                             **({"enemies": meta["enemies"]} if "enemies" in meta else {}),
                              "payload": {"offset": len(binary), "length": len(row),
                                          "row_sha256": meta["row_sha256"]}})
                 binary += row

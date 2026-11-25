@@ -108,7 +108,7 @@ from typing import Any
 
 import numpy as np
 
-from .boss_progress import valid_table
+from .boss_progress import MAX_COEF, valid_table
 from .heads import CLASS_FLOORS, OUTCOME_CLASSES
 from .segment_validation import _probabilities as learner_distribution_check
 
@@ -150,6 +150,9 @@ STORED_KEYS_3 = HEADER_KEYS_2 | {"ascension"}
 HEADER_KEYS_4 = HEADER_KEYS_3 | {"group_id", "ticket", "hp_adv"}
 STORED_KEYS_4 = STORED_KEYS_3 | {"group_id", "ticket"}
 BOSS_COLUMNS = ("boss_progress", "boss_adv")
+# |boss_adv| = coef x |progress - baseline| <= MAX_COEF (both in [0, 1]); a value past it
+# (plus float slack) is a bad segment, refused, never clamped.
+BOSS_ADV_BOUND = MAX_COEF + 1e-9
 HEADER_KEYS_5 = HEADER_KEYS_4 | {"enemies", *BOSS_COLUMNS}
 STORED_KEYS_5 = STORED_KEYS_4 | {"enemies"}
 _LOGICAL_KEYS = {FORMAT_3: HEADER_KEYS_3, FORMAT_4: HEADER_KEYS_4, FORMAT_5: HEADER_KEYS_5}
@@ -342,7 +345,8 @@ def validate_header(header: dict[str, Any], byte_format: str = FORMAT, *,
             if ((p is not None and (table is None or type(p) is not float
                                     or not 0 <= p <= 1))
                     or (adv is not None and (p is None or type(adv) is not float
-                                             or not math.isfinite(adv)))):
+                                             or not math.isfinite(adv)
+                                             or abs(adv) > BOSS_ADV_BOUND))):
                 _reject("segment_boss_progress")
     seal = header["seal"]
     kind = seal.get("kind") if isinstance(seal, dict) else None

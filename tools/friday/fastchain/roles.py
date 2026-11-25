@@ -603,7 +603,9 @@ def service() -> None:
     threading.Thread(target=stall_dumper, name="stall-dumper", daemon=True).start()
     info = {"host": service.address[0], "port": service.address[1],
             "authkey_hex": service.auth.hex(), "env_mark": python_env_sha256(),
-            "compiler_identity": compiler.identity}
+            "compiler_identity": compiler.identity,
+            # the node aggregators extract Boss enemy tables only under format 5
+            "boss_enemies": K["segment_format"] == "stpd/rl-fast-segment-5"}
     temporary = RUN / f".service{tag}.json.tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as handle:

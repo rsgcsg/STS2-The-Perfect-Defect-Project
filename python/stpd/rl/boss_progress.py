@@ -9,9 +9,10 @@ Definition (lead 11-26, one enemy at a time):
   list it is dead (0 hp left);
 - progress = 1 - (hp left on the enemies that must die) / (their first max hp), the
   denominator fixed for the whole fight; a won fight is 1;
-- minions (MINION_POWER) never count; both Kaiser Crab claws count; an infinite hp bar
-  (Waterfall Giant at 0: display mode not "normal", or hp >= 1e8) is "hp done" (0 left);
-  heals count as they are;
+- minions (MINION_POWER) never count; both Kaiser Crab claws count; the Waterfall Giant's
+  infinite hp bar (at 0 hp: display mode not "normal", or hp >= 1e8) is "hp done" (0
+  left), and only its: another enemy showing one, or an hp below 0 or above its max, is
+  not certain (unscored); heals count as they are;
 - the Test Subject is one enemy with three lives (A0 max 100 -> 200 -> 300, same entity
   id): the denominator is the sum of the lives (600), hp left = this life's hp + the lives
   still to come; an empty list ends a life, it is no death. Only the A0 table is measured,
@@ -30,13 +31,16 @@ from typing import Any
 
 MINION = "MINION_POWER"
 INFINITE_HP = 100_000_000  # >= this with mode "normal" is still the infinite bar
+# The one enemy whose infinite bar means "hp done" (A98: 999999999 after 0, 4 of 4 fights).
+WATERFALL_GIANT = "WATERFALL_GIANT"
 TEST_SUBJECT = "TEST_SUBJECT"
 # Max hp of each life by ascension (A103: 38 A0 fights, entity id never changes).
 TEST_SUBJECT_LIVES: dict[int, tuple[int, ...]] = {0: (100, 200, 300)}
 # Why a Boss fight was not scored (the readout counts each).
 UNSCORED = ("enemies_missing", "no_target", "new_enemy", "enemy_returned", "minion_changed",
             "max_hp_changed", "hp_hidden", "infinite_at_first", "test_subject_ascension",
-            "test_subject_phase", "duplicate_entity")
+            "test_subject_phase", "duplicate_entity", "infinite_not_waterfall",
+            "hp_inconsistent", "encounter_mixed")
 MAX_COEF = 0.05
 DEFAULT_DECAY = 0.05
 
@@ -46,20 +50,22 @@ Enemy = Sequence[Any]
 
 def public_enemies(enemies: Any) -> list[list[Any]] | None:
     """The row's enemy table from `combat.content.enemies` (the model's own public input);
-    None when the observation has no list."""
+    None, never an exception, when the list or any part of it has another shape (that
+    fight is then not scored: `enemies_missing`)."""
     if not isinstance(enemies, list):
         return None
     table = []
     for enemy in enemies:
         if not isinstance(enemy, Mapping):
             return None
-        statuses = enemy.get("statuses") or []
-        table.append([enemy.get("entity_id"), enemy.get("definition_id"), enemy.get("hp"),
-                      enemy.get("max_hp"),
-                      any(isinstance(s, Mapping) and s.get("definition_id") == MINION
-                          for s in statuses),
-                      enemy.get("hp_display_mode")])
-    return table
+        statuses = enemy.get("statuses", [])
+        if not isinstance(statuses, list) or not all(isinstance(s, Mapping) for s in statuses):
+            return None
+        row = [enemy.get("entity_id"), enemy.get("definition_id"), enemy.get("hp"),
+               enemy.get("max_hp"), any(s.get("definition_id") == MINION for s in statuses),
+               enemy.get("hp_display_mode")]
+        table.append(row)
+    return table if valid_table(table) else None
 
 
 def _number(value: Any) -> bool:
@@ -127,6 +133,8 @@ def fight_progress(tables: Sequence[Any], *, won: bool, ascension: int
                 return None, "duplicate_entity", key
             seen.add(entity_id)
             infinite = mode != "normal" or (hp is not None and hp >= INFINITE_HP)
+            if infinite and not minion and definition != WATERFALL_GIANT:
+                return None, "infinite_not_waterfall", key
             entity = entities.get(entity_id)
             returning = False
             if entity is None:
@@ -136,8 +144,10 @@ def fight_progress(tables: Sequence[Any], *, won: bool, ascension: int
                 if not minion:
                     if infinite:
                         return None, "infinite_at_first", key
-                    if hp is None or max_hp is None or not max_hp > 0:
+                    if hp is None or max_hp is None:
                         return None, "hp_hidden", key
+                    if not 0 <= hp <= max_hp or not max_hp > 0:
+                        return None, "hp_inconsistent", key
                     if definition == TEST_SUBJECT:
                         lives = TEST_SUBJECT_LIVES.get(ascension)
                         if lives is None:
@@ -158,6 +168,8 @@ def fight_progress(tables: Sequence[Any], *, won: bool, ascension: int
                 continue
             if hp is None or max_hp is None:
                 return None, "hp_hidden", key
+            if not 0 <= hp <= max_hp:
+                return None, "hp_inconsistent", key
             if max_hp != entity.max:
                 if entity.lives is None:
                     return None, "max_hp_changed", key
@@ -182,25 +194,33 @@ def fight_progress(tables: Sequence[Any], *, won: bool, ascension: int
 
 
 class BossBaselines:
-    """Per-Boss running mean of the final progress (one per assembler process).
+    """Per-Boss running mean of the final progress, weighted by each fight's rows (one per
+    assembler process): a fight's score lands on every one of its rows, so the mean is
+    taken per row and the score is mean zero per row, not per fight.
 
-    The mean of the first 1 / decay fights, then an exponential mean with weight `decay`.
-    A fight reads `baseline(key)` before `add(key, progress)`; the first fight of a Boss
-    in this process has none (no score, counted). Not kept across a restart: a resumed
-    run starts empty, and each Boss's first fight per service is unscored again.
+    With n_i rows and progress p_i per fight, b = S / R, S = sum of f^k n_i p_i and
+    R = sum of f^k n_i (k = fights since): f = 1 for the first 1 / decay fights (the plain
+    row-weighted mean), then f = 1 - decay per fight. A fight reads `baseline(key)` before
+    `add(key, progress, rows)`; the first fight of a Boss in this process has none (no
+    score, counted). Not kept across a restart: a resumed run starts empty, and each
+    Boss's first fight per service is unscored again.
     """
 
     def __init__(self, decay: float = DEFAULT_DECAY) -> None:
         if type(decay) not in (int, float) or not 0 < decay <= 1:
             raise ValueError("invalid_boss_progress_decay")
         self.decay = float(decay)
-        self.state: dict[str, list[float]] = {}  # key -> [fights, mean]
+        self.state: dict[str, list[float]] = {}  # key -> [fights, S, R]
 
     def baseline(self, key: str) -> float | None:
         state = self.state.get(key)
-        return None if state is None else state[1]
+        return None if state is None else state[1] / state[2]
 
-    def add(self, key: str, progress: float) -> None:
-        state = self.state.setdefault(key, [0.0, 0.0])
+    def add(self, key: str, progress: float, rows: int) -> None:
+        if type(rows) is not int or rows < 1:
+            raise ValueError("invalid_boss_progress_rows")
+        state = self.state.setdefault(key, [0, 0.0, 0.0])
         state[0] += 1
-        state[1] += max(self.decay, 1.0 / state[0]) * (progress - state[1])
+        keep = 1.0 if state[0] <= 1 / self.decay else 1.0 - self.decay
+        state[1] = keep * state[1] + rows * progress
+        state[2] = keep * state[2] + rows

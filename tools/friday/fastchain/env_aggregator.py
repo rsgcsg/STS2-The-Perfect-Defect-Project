@@ -29,7 +29,9 @@ def main() -> None:
                                 socket_path=sys.argv[2], aggregator_id=__import__("os").environ.get("AGG_ID", "wp8m-node"),
                                 python_env_sha256=mark, encoder_workers=workers,
                                 encoder_cpus=None,
-                                window_ms=float(sys.argv[5]) if len(sys.argv) > 5 else 1.5)
+                                window_ms=float(sys.argv[5]) if len(sys.argv) > 5 else 1.5,
+                                # segment format 5 only (the service says so): Boss tables
+                                boss_enemies=info.get("boss_enemies", False))
     print(json.dumps({"ready": True, "workers": workers}), flush=True)
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: done.set())

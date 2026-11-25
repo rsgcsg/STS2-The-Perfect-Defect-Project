@@ -843,7 +843,7 @@ def test_the_aggregator_hands_the_service_each_combat_rows_encounter_and_hp(link
     assert [(row["in_combat"], row["encounter"], row["public_hp"])
             for row in assembler.rows] == [
         (False, None, None), (True, "elite", {"hp": 50, "max_hp": 70})]
-    assert [row["enemies"] for row in assembler.rows] == [None, None]  # Boss rows only (format 5)
+    assert not any("enemies" in row for row in assembler.rows)  # format 5 only
     assert all(type(hp) is float for _, hp, _ in assembler.hp)  # the HP head, for format 4
 
 

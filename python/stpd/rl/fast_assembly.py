@@ -238,6 +238,9 @@ DEATH_POINTS = 30
 # event's combat). An "unknown" combat takes the normal weight.
 HP_WEIGHT_TYPES = ("normal", "elite", "boss")
 ENCOUNTERS = (*HP_WEIGHT_TYPES, "unknown")
+# Format 5: combat rows whose public enemy table is kept (a combat's first read may name
+# its type "unknown"; the combat is a Boss fight once one of its rows says "boss").
+BOSS_TABLE_ENCOUNTERS = ("boss", "unknown")
 DEFAULT_HP_WEIGHTS = {kind: 1.0 for kind in HP_WEIGHT_TYPES}
 # Ticket H: how A_hp treats potions. "points": -5 per potion used from the row on
 # (card §6.5). "value_head": no potion points, and a potion row keeps only the death
@@ -558,8 +561,22 @@ class _Battle:
     # (segment, row index, row meta, 100 x HP prediction, potion used), in order.
     rows: list[tuple[_Segment, int, dict[str, Any], float, bool]] = field(default_factory=list)
     ended: bool = False
-    # Format 5, Boss combats: each row's public enemy table, in order.
-    enemies: list[list[Any]] = field(default_factory=list)
+    # Format 5: each row's public enemy table (None without one), in order, and the
+    # encounter types its rows named (a Boss combat: one row "boss", the rest "boss" or
+    # "unknown"; the first read of a combat may still be "unknown").
+    enemies: list[list[Any] | None] = field(default_factory=list)
+    kinds: set[str] = field(default_factory=set)
+
+    def boss(self) -> bool:
+        return "boss" in self.kinds
+
+
+def _combat_won(battle: _Battle) -> bool:
+    """A native `combat_end` fact with result victory on one of the combat's row outcomes
+    (the environment copies them onto the row whose step led there)."""
+    return any(isinstance(fact, Mapping) and fact.get("result") == "victory"
+               for _, _, meta, *_ in battle.rows
+               for fact in ((meta["outcome"] or {}).get("combat_end") or ()))
 
 
 def _archive_key(handoff: MuHandoff) -> tuple[str, str]:
@@ -941,10 +958,12 @@ class FastSegmentAssembler:
                 # kept as None (its fight is then not scored, `enemies_missing`), counted
                 # and logged once: it never fails the game.
                 table = None
-                if row["in_combat"] and row.get("encounter") == "boss":
+                if row["in_combat"] and row.get("encounter") in BOSS_TABLE_ENCOUNTERS:
                     table = row.get("enemies")
                     if not valid_enemy_table(table):
                         table = None
+                    # (an "unknown" row's table is kept: its combat may turn out a Boss)
+                    if table is None and row.get("encounter") == "boss":
                         first = not self.counters["boss_progress"]["rows_without_enemies"]
                         self.counters["boss_progress"]["rows_without_enemies"] += 1
                         if first:
@@ -1123,9 +1142,19 @@ class FastSegmentAssembler:
         broken: BaseException | None = None
         if self.hp_score:
             self._resolve_battles(game)
-            if self.boss_score:  # Boss fights the game never finished: no progress
-                self.counters["boss_progress"]["unfinished"] += sum(
-                    battle.encounter == "boss" for battle in game.battles)
+            if self.boss_score:
+                # A Boss fight the game closed in: won when the environment confirmed it
+                # (a native combat_end victory on one of its rows, or a victory terminal:
+                # the last Boss of a run, or a Stop right after the win); else unfinished.
+                for battle in game.battles:
+                    if not battle.boss():
+                        continue
+                    last = battle.rows[-1][2]["outcome"] or {}
+                    if _combat_won(battle) or (
+                            (last.get("terminal") or {}).get("result") == "victory"):
+                        self._boss_battle(game, battle, won=True)
+                    else:
+                        self.counters["boss_progress"]["unfinished"] += 1
         for segment in list(game.segments):
             if not segment.rows:
                 game.segments.remove(segment)
@@ -1263,8 +1292,8 @@ class FastSegmentAssembler:
                     and game.start.get("kind") == "from_save" else None)))
             game.battles[-1].rows.append((segment, len(segment.rows) - 1, meta, predicted,
                                           potion))
-            if self.boss_score and game.battles[-1].encounter == "boss":
-                # A row of another type inside a Boss combat has no table: never scored.
+            if self.boss_score:
+                game.battles[-1].kinds.add(str(encounter))
                 game.battles[-1].enemies.append(segment.enemies[-1])
             segment.hp_open += 1
         elif game.battles:
@@ -1310,17 +1339,20 @@ class FastSegmentAssembler:
                     by["battles"] += 1
                     by["deaths"] += death
                     by["hp_change"] += change
-            if self.boss_score and battle.encounter == "boss":
-                self._boss_battle(game, battle)
+            if self.boss_score and battle.boss():
+                last = battle.rows[-1][2]["outcome"]
+                self._boss_battle(game, battle, won=(
+                    _combat_won(battle) or (last.get("terminal") or {}).get("result") != "defeat"))
             for index, (segment, row, *_rest) in enumerate(battle.rows):
                 segment.hp_adv[row] = None if scores is None else scores[index]
                 segment.hp_open -= 1
 
-    def _boss_battle(self, game: _Game, battle: _Battle) -> None:
-        """Final progress of one ended Boss combat, its rows' boss_adv, the counters."""
+    def _boss_battle(self, game: _Game, battle: _Battle, *, won: bool) -> None:
+        """Final progress of one Boss combat, its rows' boss_adv, the counters."""
         counters = self.counters["boss_progress"]
-        last = battle.rows[-1][2]["outcome"]
-        won = ((last.get("terminal") or {}).get("result") != "defeat")
+        if battle.kinds - set(BOSS_TABLE_ENCOUNTERS):  # a row named another type
+            counters["unscored"]["encounter_mixed"] += 1
+            return
         progress, reason, key = fight_progress(battle.enemies, won=won,
                                                ascension=game.ascension)
         if reason is not None:
@@ -1328,7 +1360,7 @@ class FastSegmentAssembler:
             return
         assert progress is not None and key is not None
         baseline = self.boss_baselines.baseline(key)
-        self.boss_baselines.add(key, progress)
+        self.boss_baselines.add(key, progress, len(battle.rows))
         counters["battles"] += 1
         boss = counters["by_boss"].setdefault(key, {"battles": 0, "wins": 0, "progress": 0.0})
         boss["battles"] += 1
