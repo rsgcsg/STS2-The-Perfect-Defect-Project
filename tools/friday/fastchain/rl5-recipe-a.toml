@@ -1,0 +1,35 @@
+# Recipe A (first training of the correction arm, 11-26): an overlay on rl5-two-cell.toml that
+# carries every setting the tn8h run used (8 h from a46, minibatches 1, warm-up 500) plus the
+# corrections only: the plain HP score (hp_potion_mode "plain"), a per-act floor on save-start
+# draws (save_starts.act_floor 0.10) and the prepared-batch read-ahead 24 / 1.21 GB.
+# Frozen recipe python/configs/rl5-recipe-a.json = rl5-two-cell.json + segments.minibatches 1,
+# segments.lr_warmup_steps 500 and segments.kl_stop_scope "control" (the last two are knob-owned
+# and written into learner.json by the launcher; the JSON names them so the recipe reads whole).
+# Start fresh from the a46 package (minibatches is not declarable on a resume): supervise.py
+# start CHAIN --profile THIS --set env_pkg_build=<this source revision> ... (site arguments).
+schema = "spireagent/friday-fastchain-profile-1"
+base = "rl5-two-cell.toml"
+
+[knobs]
+# --- learner recipe (as tn8h) ---
+frozen_learner_config = { value = "python/configs/rl5-recipe-a.json", default = "python/configs/rl5-two-cell.json", why = "the named frozen recipe of this run: tn8h's frozen copy (rl5-two-cell.json with minibatches 1) + the knob-owned warm-up 500 and kl_stop_scope control written out; preflight frozen_recipe compares it key by key with declared_changes none", measured = "tn8h effective-config recipe_drift empty (RUNLOG)" }
+kl_stop_scope = { value = "control", default = "all", why = "as tn8h; with the greedy cell an observation cell (observe_arms) the KL rows of all and control are the same rows, kept at tn8h's value so nothing but the corrections changes", measured = "tn8h effective-config" }
+lr_warmup_steps = { value = 500, default = 0, why = "as tn8h: linear lr warm-up over the first 500 optimizer steps of the fresh start from a46", measured = "tn8h effective-config" }
+# --- the corrections ---
+hp_potion_mode = { value = "plain", default = "value_head_neutral", why = "recipe A: every combat row scores w x (end HP - HP-head prediction), end HP 0 on a death; no death or max-HP terms, no special potion rows, heals not capped; c_hp 0.003 and weights 1/1/0.3 unchanged", measured = "unit tests only (python/tests/test_rl_fast_hp_score.py)" }
+save_starts = { value = { share = 0.5, random_saves = 2, act_weights = [1.0, 1.0, 1.0], died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0, act_floor = 0.10 }, default = { share = 0.5, random_saves = 2, act_weights = [1.0, 1.0, 1.0], died_later_weight = 0.0, uses_per_save = 16, pool_gb = 10.0 }, why = "as tn8h + act_floor 0.10 (recipe A B2): over the acts with a save, p_a -> 0.10 + (1 - n 0.10) p_a, the fill-the-gap draw unchanged; act_weights stay tn8h's [1, 1, 1] because the live greedy-cell target (B1) needs cross-node transport and is not built", measured = "unit tests only (tickets.test.mjs)" }
+prepared_batches = { value = 24, default = 32, why = "per-batch cap prepared_gib / (24 + 1) = 1.65e9 bytes >= 1.15 x 1.21e9; 32 gave 1.25 GiB, under the tn8h batch tail", measured = "batch bytes of tn8h (max 1.163e9) and tl8h (max 1.210e9), next-recipe batch-bytes.txt" }
+prepared_batch_expected_max_gb = { value = 1.21, default = 0.96, why = "largest prepared batch measured over the two 8 h runs, in 1e9 bytes (minibatches does not change a batch)", measured = "tl8h max 1.210e9, tn8h max 1.163e9 (next-recipe batch-bytes.txt)" }
+# --- run window and retention (as tn8h) ---
+train_target_seconds = { value = 28800, default = 72000, why = "8 h of learner training time, as tn8h", measured = "tn8h effective-config" }
+long_wall_seconds = { value = 46800, default = 86400, why = "13 h wall: the 8 h target + queue, start-ups and one resume, as tn8h", measured = "tn8h effective-config" }
+checkpoint_keep_newest = { value = 128, default = 24, why = "keep every CP of an 8 h run (about 96 at one per 300 s) for the per-CP evaluation curve, as tn8h", measured = "tn8h effective-config" }
+min_generation_seconds = { value = 600, default = 1800, why = "as tn8h: a resume late in the window still starts", measured = "tn8h effective-config" }
+# --- resources (as tn8h: one card, 8 env nodes of 16 cores, 2 prep hosts) ---
+env_core_budget = { value = { "1" = 128, "2" = 256, "3" = 304 }, default = { "1" = 215, "2" = 256, "3" = 304 }, why = "one card on 128 env cores, as tn8h", measured = "tn8h effective-config" }
+env_procs_fraction = { value = 0.375, default = 0.625, why = "6 drivers per 16-core node, as tn8h", measured = "tn8h effective-config" }
+env_wait_seconds = { value = 300, default = 1800, why = "as tn8h", measured = "tn8h effective-config" }
+job_mem_g = { value = { "1" = 128, "2" = 200, "3" = 240 }, default = { "1" = 160, "2" = 200, "3" = 240 }, why = "as tn8h", measured = "tn8h effective-config" }
+prep_groups = { value = [{ type = "r640", nodes = 2, cpus = 16, mem_g = 75, workers = 7 }], default = [{ type = "r640", nodes = 5, cpus = 32, mem_g = 150, workers = 14 }, { type = "fc430", nodes = 3, cpus = 24, mem_g = 100, workers = 10 }], why = "2 prep hosts, as tn8h", measured = "tn8h effective-config" }
+remote_prepare_connections = { value = 18, default = 36, why = "as tn8h (divides over the 2 hosts)", measured = "tn8h effective-config" }
+remote_prepare_wait_seconds = { value = 600, default = 300, why = "as tn8h", measured = "tn8h effective-config" }

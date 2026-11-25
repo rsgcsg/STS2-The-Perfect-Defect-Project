@@ -260,3 +260,26 @@ test("a claim whose ledger line is not written yet still keeps its save; trim gi
   assert.equal(ledger(dir).filter(line => line.kind === "evict").length, 0);
   assert.equal(a.counters().evictions_kept, 1);
 });
+
+/** A seeded uniform draw, so a draw sequence can be pinned. */
+const lcg = (seed) => () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+const actSequence = (knob) => {
+  const tickets = make(pool(), { share: 1, ...knob }, {}, { random: lcg(7) });
+  pooled(tickets, "src", [{ act: 1, floor: 10 }, { act: 2, floor: 20 }, { act: 3, floor: 40 }]);
+  tickets.covered = [30, 2, 0];
+  return Array.from({ length: 40 }, (_, n) => tickets.plan(`d${n}`).entry?.act ?? 0).join("");
+};
+
+test("act_floor 0 (default) keeps the draw sequence of tickets.mjs at 2574aebc; act_floor f lifts every act with a save to >= f", () => {
+  // Pinned with the tickets.mjs of 2574aebc (no act_floor) on the same seed: act 1 is far over its share, never drawn
+  // until acts 2 and 3 have used up their 16 uses.
+  const before = "3223323232222232332333232323233211111111";
+  assert.equal(actSequence({}), before);
+  assert.equal(actSequence({ act_floor: 0 }), before);
+  const lifted = actSequence({ act_floor: 0.1 });
+  assert.notEqual(lifted, before);
+  assert.ok(lifted.slice(0, 32).includes("1"), lifted);  // act 1 now drawn while 2 and 3 still have uses
+  assert.equal(parseSaveStarts(KNOB).act_floor, 0);
+  assert.equal(parseSaveStarts({ ...KNOB, act_floor: 0.1 }).act_floor, 0.1);
+  for (const bad of [-0.1, 0.34, "x"]) assert.throws(() => parseSaveStarts({ ...KNOB, act_floor: bad }), /save_starts_config:act_floor/u);
+});

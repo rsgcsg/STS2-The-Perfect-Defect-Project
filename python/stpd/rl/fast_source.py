@@ -255,6 +255,7 @@ def game_target_tails(
 def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
                        compiler: FrameCompiler | None,
                        decisions: Sequence[int] | None = None,
+                       discard_action: int | None = None,
                        ) -> tuple[bp.PreparedSource, dict[str, Any]]:
     """Fast segment bytes -> (PreparedSource, {"envelope", "witness"}); never repaired.
 
@@ -262,7 +263,9 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
     source's run-record exploration counts to its first row's metadata (A3): per arm,
     act and decision type, the multi-choice rows, chosen rank second / third+, top
     p > 0.99, non-top with advantage > 0. Metadata only: the training tensors and
-    actions are the same with or without it.
+    actions are the same with or without it. With `decisions`, `discard_action` (the
+    vocabulary index of `potion.discard`) also counts per arm the noncombat multi-choice rows
+    offering it and those choosing it (`metadata["potion_discard"]`, recipe A readout).
     """
     began = time.perf_counter()
     if compiler is None:
@@ -377,6 +380,7 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         counts: dict[str, list[int]] = {}
         entropies: dict[str, list[float]] = {}
         rare: dict[str, list[float]] = {}  # learning_diagnostics.LOW_PROBABILITY_FIELDS
+        discards = [0, 0]  # noncombat multi-choice rows offering potion.discard, choosing it
         rewards = class_reward_values(ascension=segment_ascension(header)).tolist()
         for index, (meta, frame) in enumerate(zip(header["rows"], frames, strict=True)):
             q = meta["behavior_q"]
@@ -387,8 +391,11 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
                                         applied["uniform_mix"])
             floor = meta["floor"]
             act = 1 if floor <= 17 else 2 if floor <= 33 else 3
-            decision = 0 if meta["in_combat"] else min(
-                decisions[action] for action in frame.tensors["actions"].tolist())
+            choices = None if meta["in_combat"] else frame.tensors["actions"].tolist()
+            decision = 0 if choices is None else min(decisions[action] for action in choices)
+            if choices is not None and discard_action is not None and discard_action in choices:
+                discards[0] += 1
+                discards[1] += choices[meta["selected_index"]] == discard_action
             add_exploration(counts, arm, act, decision, rank, top, signs[index])
             if applied["temperature"] == 0:  # greedy: the model's p is not recoverable
                 continue
@@ -404,6 +411,8 @@ def decode_fast_packet(raw: bytes | memoryview, *, envelope: dict[str, Any],
         if counts:  # once per source, not per row (the transport walks every row)
             metadata[0]["exploration"] = counts
             metadata[0]["policy_entropy"] = entropies
+        if discards[0]:
+            metadata[0]["potion_discard"] = {arm: discards}
         if rare:  # readout: the game it came from, for the distinct-game count
             metadata[0]["low_probability_noncombat"] = {
                 "game": game_key(header["game_instance_id"]), "rows": rare}

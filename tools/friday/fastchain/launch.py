@@ -544,6 +544,8 @@ FEATURES = {
                        "hp_potion_mode_needs_segment_format_4"),
     "hp_potion_neutral": ("python/stpd/rl/fast_assembly.py",  # #608
                           '"value_head_neutral"'),
+    "hp_potion_plain": ("python/stpd/rl/fast_assembly.py",  # recipe A
+                        'potion_mode == "plain"'),
     "declared_changes": ("python/stpd/rl/segment_learner.py",  # RL5-METHODS C
                          "resume_recipe_changes"),
     "kl_stop_scope": ("python/stpd/rl/segments.py", "kl_stop_scope"),  # ticket K
@@ -557,6 +559,7 @@ FEATURES = {
                      "GREEDY_TEMPERATURE"),
     "observe_arms": ("python/stpd/rl/segments.py", "observe_arms"),
     "noncombat_barrier": ("python/stpd/rl/loss.py", "noncombat_log_barrier_coef"),
+    "save_act_floor": ("tools/friday/fastchain/tickets.mjs", "act_floor"),  # recipe A
     "new_runs_only": ("tools/friday/fastchain/env_driver.mjs", "new_runs_only"),
     "ascension": ("components/host-runtime/src/managed-player-environment.mjs",  # #530
                   "managed_ascension_mismatch"),

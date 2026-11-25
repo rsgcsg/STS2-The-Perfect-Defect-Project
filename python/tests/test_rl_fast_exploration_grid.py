@@ -279,6 +279,20 @@ def test_three_arm_grid_with_a_cold_combat_arm_end_to_end(vocabulary, model, tmp
             row_entropy[1] += h
             row_entropy[2] += h / math.log(len(p))
         assert source.metadata[0]["exploration"] == expected
+        # Recipe A: with discard_action, per dose the noncombat multi-choice rows offering
+        # that action and those choosing it (here reward.proceed stands in for
+        # potion.discard); metadata only, and absent when no row offers it.
+        assert "potion_discard" not in source.metadata[0]
+        proceed = vocabulary["actions"].index("reward.proceed")
+        counted, _ = decode_fast_packet(segment.data, envelope=envelope, compiler=compiler,
+                                        decisions=codes, discard_action=proceed)
+        assert torch.equal(counted.raw_advantages, source.raw_advantages)
+        offered = [reply for kind, _c, _f, reply in record["steps"] if kind == "card_reward"]
+        want = [len(offered), sum(reply["selected_index"] == 2 for reply in offered)]
+        assert counted.metadata[0].get("potion_discard") == (
+            {record["dose"]: want} if offered else None)
+        assert [{k: v for k, v in m.items() if k != "potion_discard"}
+                for m in counted.metadata] == list(source.metadata)
         # rare noncombat choices (model p of the chosen option < 5%): no game reward under
         # "segment" value targets, so no outcome column
         rare = {}

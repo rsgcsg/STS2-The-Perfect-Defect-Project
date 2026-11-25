@@ -228,7 +228,8 @@ DEFAULT_HP_WEIGHTS = {kind: 1.0 for kind in HP_WEIGHT_TYPES}
 # (card §6.5). "value_head": no potion points, and a potion row keeps only the death
 # points (its HP-change part is 0). "value_head_neutral" (#608): as "value_head", but a
 # potion row's HP-change part is the mean of the non-potion rows' in its combat (0 if none).
-HP_POTION_MODES = ("points", "value_head", "value_head_neutral")
+# "plain" (recipe A): every row w (H_T - 100 HP(s_t)), H_T = 0 on death, nothing else.
+HP_POTION_MODES = ("points", "value_head", "value_head_neutral", "plain")
 
 
 def hp_advantages(start: Mapping[str, Any] | None,
@@ -260,6 +261,8 @@ def hp_advantages(start: Mapping[str, Any] | None,
     "value_head_neutral" (#608): the same, except that a potion row's HP-change part is
     the mean of w (h_t - (100 HP(s_t) - H_t)) over the combat's non-potion rows (0 when
     there is none); non-potion rows are exactly as under "value_head".
+    "plain" (recipe A): every row w (H_T - (100 HP(s_t))) with H_T the end HP (0 on death):
+    no potion or death points, no max-HP terms, potion rows like the others.
     """
     facts = [start, *((outcome or {}).get("public_facts") for outcome, _, _ in steps)]
     checked = [fact for fact in facts if isinstance(fact, Mapping)
@@ -272,6 +275,8 @@ def hp_advantages(start: Mapping[str, Any] | None,
     end_hp = 0 if death else hp[-1]
     lost_max = max_hp[-1] - max_hp[0] if death else 0
     scores: list[float] = []
+    if potion_mode == "plain":
+        return [float(weight * (end_hp - predicted)) for _, predicted, _ in steps]
     if potion_mode == "value_head":
         for t, (_, predicted, potion) in enumerate(steps):
             dead = -float(DEATH_POINTS if death else 0)

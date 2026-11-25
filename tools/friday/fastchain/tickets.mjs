@@ -34,11 +34,13 @@ const fail = (field) => { throw new Error(`save_starts_config:${field}`); };
 const int = (value, field, min, max) => (Number.isSafeInteger(value) && value >= min && value <= max ? value : fail(field));
 const num = (value, field, min, max) => (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : fail(field));
 export const SAVE_STARTS_KEYS = ["share", "random_saves", "act_weights", "died_later_weight", "uses_per_save", "pool_gb"];
+// Optional keys (absent = the behaviour before them): `act_floor` (recipe A, default 0).
+export const SAVE_STARTS_OPTIONAL = ["act_floor"];
 
 /** The recipe knob `save_starts` (run_profile.py checks the same table; defaults live in the profile only). */
 export function parseSaveStarts(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail("config");
-  for (const key of Object.keys(value)) if (!SAVE_STARTS_KEYS.includes(key)) fail(key);
+  for (const key of Object.keys(value)) if (!SAVE_STARTS_KEYS.includes(key) && !SAVE_STARTS_OPTIONAL.includes(key)) fail(key);
   const weights = value.act_weights;
   if (!Array.isArray(weights) || weights.length !== 3) fail("act_weights");
   weights.forEach((weight, index) => num(weight, `act_weights.${index}`, 0, 1e6));
@@ -56,7 +58,10 @@ export function parseSaveStarts(value) {
     // Uses per save, against learning one deck order by heart.
     uses_per_save: int(value.uses_per_save, "uses_per_save", 1, 1024),
     // The node pool's size cap; past it the oldest saves without an open claim are deleted.
-    pool_bytes: Math.round(num(value.pool_gb, "pool_gb", 0.001, 1000) * 1e9)
+    pool_bytes: Math.round(num(value.pool_gb, "pool_gb", 0.001, 1000) * 1e9),
+    // Recipe A: each act with a save to start from gets at least this share of the act draw
+    // (0 = off, the draw exactly as before; at most 1/3).
+    act_floor: num(value.act_floor ?? 0, "act_floor", 0, 1 / 3)
   };
 }
 
@@ -200,6 +205,8 @@ export class SaveTickets {
    * is drawn in proportion to how far each act (with a save to start from) is below its target share; when
    * none is below, in proportion to the targets. Rows per floor differ (a fight floor has more decisions than
    * a shop), so the shares are rough: the readout reports the result per act.
+   * `act_floor` f > 0 (recipe A): over the n acts with a save, p_a -> f + (1 - n f) p_a, so every such act
+   * is drawn with probability at least f; the fill-the-gap draw itself is unchanged.
    */
   #pickAct(acts) {
     const weights = this.config.act_weights, total = weights[0] + weights[1] + weights[2];
@@ -207,7 +214,11 @@ export class SaveTickets {
     const target = acts.map(act => (weights[act - 1] ?? 0) / total);
     const below = acts.map((act, index) => Math.max(0, target[index] - (played ? this.covered[act - 1] / played : 0)));
     const use = below.some(value => value > 0) ? below : target;
-    return use.some(value => value > 0) ? acts[draw(use, this.random)] : null;
+    if (!use.some(value => value > 0)) return null;
+    const floor = this.config.act_floor;
+    if (floor === 0) return acts[draw(use, this.random)];
+    const sum = use.reduce((total, value) => total + value, 0);
+    return acts[draw(use.map(value => floor + (1 - acts.length * floor) * value / sum), this.random)];
   }
 
   /** The save of a draw: act (#pickAct), then a floor uniformly among that act's floors, then a save of that floor. */

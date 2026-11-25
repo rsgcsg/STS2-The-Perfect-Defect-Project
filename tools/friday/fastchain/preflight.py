@@ -297,6 +297,10 @@ def required_features(plan: dict[str, Any],
         need["hp_potion_mode"] = "potions judged by the value head in the HP score (ticket H)"
     if k["hp_potion_mode"] == "value_head_neutral":
         need["hp_potion_neutral"] = "potion rows take their combat's mean HP-change part (#608)"
+    if k["hp_potion_mode"] == "plain":
+        need["hp_potion_plain"] = "one HP formula for every combat row, no death / max-HP terms (recipe A)"
+    if (k["save_starts"] or {}).get("act_floor"):
+        need["save_act_floor"] = "save starts: each act's floor share of the act draw (recipe A)"
     if k["kl_stop_scope"] != "all":
         need["kl_stop_scope"] = "KL stop over control-arm rows (ticket K)"
     if k["lr_warmup_steps"]:

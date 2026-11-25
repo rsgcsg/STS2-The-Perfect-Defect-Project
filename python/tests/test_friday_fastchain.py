@@ -5702,3 +5702,139 @@ def test_eval_only_queues_again_only_seeds_that_never_started(tmp_path):
     assert run_profile.values(run_profile.load_profile(PROFILE))[
         'eval_not_started_retries'] == 2
     assert '--eval-retries $FC_EVAL_NOT_STARTED_RETRIES' in (FASTCHAIN / 'env.sh').read_text()
+
+
+# ---------------- recipe A: first training of the correction arm (11-26) ----------------
+
+RECIPE_A = FASTCHAIN / 'rl5-recipe-a.toml'
+RECIPE_A_FROZEN = json.loads(
+    (Path(__file__).resolve().parents[1] / 'configs/rl5-recipe-a.json').read_text())
+
+
+def recipe_a_gate():
+    """The tn8h gate: the two-cell gate with segments.minibatches 1 (as the R2 / tn8h copy)."""
+    gate = long_run_gate()
+    gate['segments']['minibatches'] = 1
+    return gate
+
+
+def test_recipe_a_profile_is_the_two_cell_profile_plus_the_tn8h_settings_and_the_corrections():
+    a = run_profile.values(run_profile.load_profile(RECIPE_A))
+    two = run_profile.values(run_profile.load_profile(TWO_CELL))
+    changed = {key for key in two if a[key] != two[key]}
+    tn8h = {'frozen_learner_config', 'kl_stop_scope', 'lr_warmup_steps', 'train_target_seconds',
+            'long_wall_seconds', 'checkpoint_keep_newest', 'min_generation_seconds',
+            'env_core_budget', 'env_procs_fraction', 'env_wait_seconds', 'job_mem_g',
+            'prep_groups', 'remote_prepare_connections', 'remote_prepare_wait_seconds'}
+    corrections = {'hp_potion_mode', 'save_starts', 'prepared_batches',
+                   'prepared_batch_expected_max_gb'}
+    assert changed == tn8h | corrections
+    assert (a['hp_potion_mode'], a['prepared_batches'], a['prepared_batch_expected_max_gb']) \
+        == ('plain', 24, 1.21)
+    assert a['save_starts'] == {**two['save_starts'], 'act_floor': 0.1}
+    assert (a['train_target_seconds'], a['lr_warmup_steps'], a['kl_stop_scope']) == \
+        (28800, 500, 'control')
+    # the frozen recipe = the two-cell one + tn8h's minibatches 1, warm-up 500, KL scope control
+    two_frozen = copy.deepcopy(TWO_CELL_FROZEN)
+    two_frozen['segments'].update(minibatches=1, lr_warmup_steps=500, kl_stop_scope='control')
+    assert RECIPE_A_FROZEN == two_frozen
+
+
+def test_recipe_a_profile_passes_preflight_and_writes_the_frozen_recipe(tmp_path):
+    site = long_run_site(tmp_path)
+    k = run_profile.values(run_profile.load_profile(RECIPE_A))
+    chain = {'id': 'c-a', 'deadline_at': time.time() + k['long_wall_seconds'], 'generation': 0,
+             'total_seconds': 28800, 'train_target_seconds': 28800,
+             'train_left_seconds': 28800, 'seed_start': 0}
+    plan = launch.build_plan('ra', k, site, cards=1, card_type='A100-40', layout_spec=None,
+                             env_cores=None, smoke=False, probe_rows=[probe_row()],
+                             long_run=True, chain=chain)
+    assert not k['declared_changes'] and plan['env_cores_max'] == 128 and plan['prep_hosts'] == 2
+    facts = {**good_facts(plan), 'frozen_recipe': RECIPE_A_FROZEN,
+             'gate_learner_base': recipe_a_gate()}
+    results = by_name(preflight.checks(plan, facts))
+    assert all(r.ok for r in results.values()), preflight.report(list(results.values()))
+    need = preflight.required_features(plan, RECIPE_A_FROZEN)
+    assert {'hp_potion_plain', 'save_act_floor', 'hp_potion_mode'} <= set(need)
+    assert {'hp_potion_plain', 'save_act_floor'} <= set(launch.FEATURES)
+    assert 'hp_potion_plain' in results['source_features'].detail
+    learner, _ = learner_config.learner_base(recipe_a_gate(), RECIPE_A_FROZEN, k, {
+        'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+        'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
+        'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': None})
+    assert learner_config.recipe_drift(learner, RECIPE_A_FROZEN) == []
+    assert (learner['segments']['minibatches'], learner['segments']['lr_warmup_steps'],
+            learner['segments']['kl_stop_scope']) == (1, 500, 'control')
+    assert learner['loss']['hp_advantage_coef'] == 0.003  # unchanged
+    # the gate without tn8h's minibatches 1 is refused (the recipe is frozen, not filled)
+    facts['gate_learner_base'] = long_run_gate()
+    result = by_name(preflight.checks(plan, facts))['frozen_recipe']
+    assert not result.ok and 'segments.minibatches' in result.detail, result.detail
+
+
+@pytest.mark.parametrize('profile', sorted(p.name for p in FASTCHAIN.glob('rl5-*.toml')
+                                           if p.name != 'rl5-recipe-a.toml'))
+def test_recipe_a_switches_are_off_in_every_other_profile(tmp_path, profile):
+    k = run_profile.values(run_profile.load_profile(FASTCHAIN / profile))
+    assert k['hp_potion_mode'] != 'plain' and 'act_floor' not in k['save_starts']
+    plan = {'knobs': k}
+    assert not {'hp_potion_plain', 'save_act_floor'} & set(preflight.required_features(plan))
+
+
+TWO_CELL_LEARNER_SHA256 = '08bedebfc62ee9859fb4903515d20d839f0ee3591c096f6acbaa312ccb576c75'
+
+
+def test_two_cell_learner_json_is_pinned_unchanged_by_recipe_a():
+    """learner.json of the two-cell profile, written with the code at 2574aebc."""
+    k = run_profile.values(run_profile.load_profile(TWO_CELL))
+    learner, _ = learner_config.learner_base(long_run_gate(), TWO_CELL_FROZEN, k, {
+        'run_name': 'r', 'peer_dir': '-', 'start_package': '-', 'wall_seconds': 1,
+        'device': 'cuda', 'generation': '-', 'warmup_artifact_id': None,
+        'rendezvous_path': '-', 'ranks': 1, 'resume_checkpoint': None})
+    digest = hashlib.sha256(json.dumps(learner, sort_keys=True).encode()).hexdigest()
+    assert digest == TWO_CELL_LEARNER_SHA256
+
+
+def test_save_starts_act_floor_is_optional_and_bounded():
+    check = run_profile._save_starts
+    base = {'share': 0.5, 'random_saves': 2, 'act_weights': [1.0, 1.0, 1.0],
+            'died_later_weight': 0.0, 'uses_per_save': 16, 'pool_gb': 10.0}
+    assert check(base) is None and check({**base, 'act_floor': 0.1}) is None
+    assert check({**base, 'act_floor': 0.34}) is not None
+    assert check({**base, 'other': 1}) is not None
+    assert check({k: v for k, v in base.items() if k != 'share'}) is not None
+
+
+def test_readout_potion_discard_and_floors_by_act(tmp_path):
+    learning = readout._Learning()
+    for e in ({'t': 1, 'kind': 'progress', 'stepped': True,
+               'potion_discard': {'control': [10, 2], 'control+save': [4, 0]}},
+              {'t': 2, 'kind': 'progress', 'stepped': True,
+               'potion_discard': {'control': [10, 1]}}):
+        learning.add(readout._slim(e))
+    got = learning.result()['potion_discard']
+    assert got == {'control': {'rows_offered': 20, 'chosen': 3, 'rate': 0.15},
+                   'control+save': {'rows_offered': 4, 'chosen': 0, 'rate': 0.0}}
+    lines = readout.render_record({'learning': {'latest': learning.result(), 'run_mean': None}})
+    assert any('noncombat potion discard' in line and 'control 3/20 15.0%' in line
+               for line in lines)
+    driver = tmp_path / 'env-n0-1' / 'p1'
+    driver.mkdir(parents=True)
+
+    def closed(ref, floor, start='new_run', arm='control', save_floor=None, reason='terminal'):
+        return {'event': 'closed', 't': 1000 + int(ref[1:]), 'game_ref': ref, 'reason': reason,
+                'arm': arm, 'ascension': 0, 'replay_k': 1, 'group': ref, 'member': 0,
+                'seed': 's', 'start': start, 'decisions': 100, 'floor': floor,
+                'terminal': 'defeat', 'evidence_failed': False,
+                **({'save_floor': save_floor, 'save_act': 2} if save_floor else {})}
+    records = [{'event': 'admission', 'game_ref': f'g{i}', 'ok': True} for i in range(1, 5)]
+    records += [closed('g1', 20), closed('g2', 40, start='from_save', save_floor=30),
+                closed('g3', 5, arm='greedy'), closed('g4', 50, reason='unknown')]
+    (driver / 'driver.jsonl').write_text(jsonl_text(records))
+    acts = readout.Readout(tmp_path).update().floors_by_act()
+    assert acts['by_arm_start']['control']['floors'] == [17, 3, 0]
+    assert acts['by_arm_start']['control+save']['floors'] == [0, 3, 7]
+    assert acts['by_arm_start']['greedy']['floors'] == [5, 0, 0]
+    assert acts['all']['floors'] == [22, 6, 7]
+    assert any(line.startswith('floors by act 1/2/3 %')
+               for line in readout.render_record({'floors_by_act': acts}))

@@ -214,10 +214,18 @@ SAVE_STARTS_KEYS = frozenset({"share", "random_saves", "act_weights", "died_late
                               "uses_per_save", "pool_gb"})
 
 
+# Optional (absent = as before): act_floor (recipe A, tickets.mjs #pickAct; 0 = off).
+SAVE_STARTS_OPTIONAL = frozenset({"act_floor"})
+
+
 def _save_starts(value: Any) -> str | None:
     """RL5-METHODS B: tickets.mjs parses the same table (share 0 = no save starts)."""
-    if not isinstance(value, dict) or set(value) != SAVE_STARTS_KEYS:
-        return f"table with exactly {sorted(SAVE_STARTS_KEYS)}"
+    if (not isinstance(value, dict) or not SAVE_STARTS_KEYS <= set(value)
+            or set(value) - SAVE_STARTS_KEYS - SAVE_STARTS_OPTIONAL):
+        return (f"table with exactly {sorted(SAVE_STARTS_KEYS)} plus optional "
+                f"{sorted(SAVE_STARTS_OPTIONAL)}")
+    if "act_floor" in value and _num(0, 1 / 3)(value["act_floor"]):
+        return f"act_floor: {_num(0, 1 / 3)(value['act_floor'])}"
     for key, check in (("share", _num(0, 1)), ("random_saves", _int(0, 44)),
                        ("died_later_weight", _num(0, 1)), ("uses_per_save", _int(1, 1024)),
                        ("pool_gb", _num(0.001, 1000))):
@@ -238,7 +246,7 @@ SEGMENT_FORMAT_4 = "stpd/rl-fast-segment-4"
 # RL5-METHODS A2: the format-4 HP-change weight per combat type (fast_assembly.hp_weights).
 HP_COMBAT_TYPES = ("normal", "elite", "boss")
 # Ticket H: how the per-combat HP score treats potions (fast_assembly.HP_POTION_MODES).
-HP_POTION_MODES = ("points", "value_head", "value_head_neutral")  # neutral: #608
+HP_POTION_MODES = ("points", "value_head", "value_head_neutral", "plain")  # neutral: #608; plain: recipe A
 # Ticket K: which policy rows the learner's KL stop measures (stpd.rl.loss.KL_STOP_SCOPES).
 KL_STOP_SCOPES = ("all", "control")
 # Owner 11-19: which policy a row updates (stpd.rl.loss.ARM_POLICY_UPDATES).

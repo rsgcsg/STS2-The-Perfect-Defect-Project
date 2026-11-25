@@ -387,6 +387,18 @@ def value_target_fields(metadata: Any) -> dict[str, Any]:
             "target_entropy_mean": entropy[1] / entropy[0] if entropy[0] else None}
 
 
+def potion_discard_fields(metadata: Any) -> dict[str, list[int]]:
+    """One dataset's noncombat potion discards per arm: [multi-choice noncombat rows offering
+    `potion.discard`, rows choosing it], summed over its sources (recipe A readout)."""
+    out: dict[str, list[int]] = {}
+    for row in metadata:
+        for arm, values in (row.get("potion_discard") or {}).items():
+            total = out.setdefault(arm, [0, 0])
+            total[0] += values[0]
+            total[1] += values[1]
+    return out
+
+
 def exploration_fields(metadata: Any) -> dict[str, list[int]]:
     """One dataset's counts: the sum of its sources' `metadata["exploration"]`."""
     out: dict[str, list[int]] = {}

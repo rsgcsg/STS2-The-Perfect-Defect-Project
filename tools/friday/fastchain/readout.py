@@ -549,7 +549,8 @@ LEARNING_KEYS = ("t", "stepped", *LEARNING_SCALARS, "value_statistics", "advanta
                  "exploration", "policy_by_arm", "explore_floor_by_arm", "gradient_clipped",
                  "value_target",
                  "value_calibration", "policy_entropy", "first_use_mu_age_seconds",
-                 "value_by_cell", "value_cross_cell", "low_probability_noncombat")
+                 "value_by_cell", "value_cross_cell", "low_probability_noncombat",
+                 "potion_discard")
 # first-use lag lists, kept in the latest window as {lag: rows} only
 LAG_KEYS = ("first_use_version_lag", "first_use_pre_update_SGD_lag")
 
@@ -683,6 +684,7 @@ class _Learning:
         self.value_target_last: dict[str, Any] | None = None
         self.calibration: list[list[float]] = []
         self.entropy: dict[str, list[float]] = {}
+        self.discard: dict[str, list[int]] = {}  # recipe A: per arm [offered, chosen]
         self.lags: dict[str, dict[int, int]] = {key: {} for key in LAG_KEYS}
         self.mu_age = [0, 0, 0.0, [0] * (len(MU_AGE_EDGES) + 1)]  # n, missing, sum, bins
 
@@ -736,6 +738,10 @@ class _Learning:
             for i, value in enumerate(values):
                 row[i] += value
         self._cells(e)
+        for arm, values in (e.get("potion_discard") or {}).items():
+            row = self.discard.setdefault(arm, [0, 0])
+            row[0] += values[0]
+            row[1] += values[1]
         for arm, values in (e.get("explore_floor_by_arm") or {}).items():
             if len(values) != len(EXPLORE_FLOOR_FIELDS):
                 raise ValueError(f"explore_floor_by_arm {arm}: {len(values)} fields, "
@@ -954,6 +960,11 @@ class _Learning:
                   "floor_weight_sum": given, "ratio_weight_sum": replaced}
             for arm, (rows, floored, positive, magnitude, given, replaced)
             in sorted(self.floor_arms.items())} or None
+        # Recipe A: per arm (save starts apart, "+save"), noncombat multi-choice training rows
+        # offering potion.discard, the share choosing it (row visits, KL-stopped included).
+        out["potion_discard"] = {
+            arm: {"rows_offered": offered, "chosen": chosen, "rate": chosen / offered}
+            for arm, (offered, chosen) in sorted(self.discard.items()) if offered} or None
         out.update(self.settings_result())
         out.update(self.cells_result())
         return out
@@ -1162,6 +1173,9 @@ class Readout:
         # save counters (cumulative, #553 review C)
         self.saves: dict[str, Any] = {"pooled": {}, "problem": 0, "act": {}, "use": {},
                                       "opened": {}, "counters": {}}
+        # recipe A: floors played per act by complete games (terminal, admitted, evidence
+        # ok), per arm and start ("arm" new runs, "arm+save" save starts)
+        self.floors: dict[str, list[int]] = {}
         # a resumed chain generation: the earlier generations' run dirs, oldest first; their
         # drivers' scored games start the rolling windows (bounded by the largest window)
         self.seed_runs = [Path(earlier) for earlier in seed]
@@ -1309,6 +1323,8 @@ class Readout:
             self._recipe(path, r, counted)
         if counted and reason == "terminal" and r.get("start") == "from_save":
             self._save_start(r)
+        if counted and reason == "terminal" and type(r.get("floor")) is int and "arm" in r:
+            self._floors(r)
         arm = r.get("arm")
         if not (counted and reason == "terminal" and type(arm) is str
                 and r.get("start") == "new_run"):
@@ -1351,6 +1367,31 @@ class Readout:
         group[4] += 1  # every member game closes once: after K closes the group is done
         if group[0].isdigit() and group[4] >= int(group[0]):
             del self.groups[name]
+
+    def _floors(self, r: dict[str, Any]) -> None:
+        """Floors a complete game played per act (tickets.mjs actOf: act 1 up to 17, act 2 up
+        to 33): a new run from floor 1, a save start from the floor after its save."""
+        save = r.get("start") == "from_save"
+        first = (r.get("save_floor") if save else 0)
+        if type(first) is not int:
+            return
+        row = self.floors.setdefault(f"{r['arm']}{'+save' if save else ''}", [0, 0, 0])
+        for floor in range(first + 1, r["floor"] + 1):
+            row[0 if floor <= 17 else 1 if floor <= 33 else 2] += 1
+
+    def floors_by_act(self) -> dict[str, Any]:
+        """Recipe A: floors per act of complete games, per arm|start and all trained games
+        (every arm that learns is not known here: all rows, the reader picks)."""
+        if not self.floors:
+            return {}
+        total = [sum(row[i] for row in self.floors.values()) for i in range(3)]
+
+        def shares(row: list[int]) -> dict[str, Any]:
+            n = sum(row)
+            return {"floors": list(row), "shares": [x / n for x in row] if n else None}
+
+        return {"by_arm_start": {key: shares(row) for key, row in sorted(self.floors.items())},
+                "all": shares(total)}
 
     def _save_start(self, r: dict[str, Any]) -> None:
         """A complete game started from a save: end floor, floors gained over the save, and
@@ -1620,6 +1661,7 @@ class Readout:
                 "env": env_edge(self.run, span), "compile": self.compile.result(),
                 "disk": disk_edge(self.run), "recipe": self.recipe(),
                 "save_starts": self.save_starts(),
+                "floors_by_act": self.floors_by_act(),
                 # #603: training and wall seconds from the learner report (None while it runs)
                 "clock": (_json(self.run / "learner-report.json") or {}).get("clock"),
                 "verdict": verdict(train.get("rows_h"), target),
@@ -1838,6 +1880,14 @@ def render_record(r: dict[str, Any]) -> list[str]:
                            f"{fmt(t['advantage_mean'], 4)} / "
                            f"{fmt(t['outcome_minus_value_mean'], 4)} ({t['outcome_rows']:,})"
                            for name, t in x["low_probability_noncombat"].items()))
+        if x.get("potion_discard"):
+            out.append(f"  noncombat potion discard {label} (arm: chosen / rows offering it): "
+                       + ", ".join(f"{arm} {d['chosen']:,}/{d['rows_offered']:,} "
+                                   f"{100 * d['rate']:.1f}%"
+                                   for arm, d in x["potion_discard"].items()))
+        for arm, dose in (x.get("exploration") or {}).items() if key == "latest" else ():
+            out.append(f"  training rows by act, arm {arm}: " + ", ".join(
+                f"{name} {d['rows']:,}" for name, d in sorted(dose["by_act"].items())))
         if x.get("noncombat_barrier") is not None:
             out.append(f"  noncombat barrier {label}: term {fmt(x['noncombat_barrier'], 5)} "
                        f"over {fmt(x.get('noncombat_barrier_rows'))} rows per attempt, "
@@ -1900,6 +1950,14 @@ def render_record(r: dict[str, Any]) -> list[str]:
                                + " ".join(f"{name.replace('_boss', '')} "
                                           f"{100 * b['clear_rate']:.0f}%"
                                           for name, b in g["bosses"].items()))
+
+    acts = r.get("floors_by_act") or {}
+    if acts:
+        def part(d: dict[str, Any]) -> str:
+            return "/".join(f"{100 * s:.1f}" for s in d["shares"]) if d["shares"] else "-"
+        out.append("floors by act 1/2/3 % (complete games, whole run): all " + part(acts["all"])
+                   + "; " + ", ".join(f"{key} {part(d)} ({sum(d['floors']):,})"
+                                      for key, d in acts["by_arm_start"].items()))
 
     def hp_line(table: dict[str, Any]) -> str:
         return ", ".join(f"{kind} {c['combats']} / {c['deaths']} / "

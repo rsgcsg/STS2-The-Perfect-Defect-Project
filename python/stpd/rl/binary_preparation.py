@@ -47,15 +47,18 @@ from .tensor_segment import auxiliary_frame, decode_packet, packet_header
 
 _worker_compiler: FrameCompiler | None = None
 _worker_decisions: tuple[int, ...] | None = None  # fast rows' run-record decision types
+_worker_discard: int | None = None  # vocabulary index of potion.discard (run-record count)
 
 
 def _initialize(vocabulary: dict[str, Any], threads: int) -> None:
-    global _worker_compiler, _worker_decisions
+    global _worker_compiler, _worker_decisions, _worker_discard
     torch.set_num_threads(threads)
     if torch.get_num_interop_threads() != 1:
         torch.set_num_interop_threads(1)
     _worker_compiler = FrameCompiler(vocabulary)
     _worker_decisions = decision_codes(vocabulary["actions"])
+    _worker_discard = (vocabulary["actions"].index("potion.discard")
+                       if "potion.discard" in vocabulary["actions"] else None)
     # Import-time objects (torch, numpy, stpd, the compiler: ~2e5) never die.
     # Move them out of the collector's view once, so the per-task
     # `gc.collect()` scans only what the task created (~60 ms -> ~0 per call
@@ -337,7 +340,7 @@ def _decode_source(descriptor: _Descriptor) -> _ReadySource:
                 # fast_chain only: the learner's own envelope binds the sealed segment.
                 _source, header = decode_fast_packet(
                     raw, envelope=descriptor.envelope, compiler=_worker_compiler,
-                    decisions=_worker_decisions,
+                    decisions=_worker_decisions, discard_action=_worker_discard,
                 )
             else:
                 _source, header = decode_packet(

@@ -121,6 +121,7 @@ from .learning_diagnostics import (
     explore_floor_by_arm,
     low_probability_fields,
     policy_by_arm,
+    potion_discard_fields,
     row_arms,
     row_cells,
     value_target_fields,
@@ -3854,6 +3855,9 @@ class SegmentLearner:
             result["exploration"] = exploration_fields(self.device_batch.metadata)
             result["value_target"] = value_target_fields(self.device_batch.metadata)
             result["policy_entropy"] = entropy_fields(self.device_batch.metadata)
+            discards = potion_discard_fields(self.device_batch.metadata)
+            if discards:
+                result["potion_discard"] = discards
             rare = low_probability_fields(self.device_batch.metadata)
             if rare is not None:
                 result["low_probability_noncombat"] = rare

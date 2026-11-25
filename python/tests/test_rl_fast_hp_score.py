@@ -1044,3 +1044,50 @@ def test_hp_potion_mode_is_checked_and_needs_format_4():
         assembler(FORMAT_3, "value_head")
     with pytest.raises(AssemblyError, match="hp_potion_mode_needs_segment_format_4"):
         assembler(FORMAT_3, "value_head_neutral")
+
+
+# -- recipe A: hp_potion_mode "plain" ------------------------------------------------
+PINNED_MODES = {
+    # (start, steps): the "max_hp_gain" and "death" combats of PINNED_538.
+    "survive": (PINNED_538["max_hp_gain"][0], PINNED_538["max_hp_gain"][1]),
+    "death": (PINNED_538["death"][0], PINNED_538["death"][1]),
+}
+# The three older modes at w 1 and 0.3, computed with fast_assembly.py at 2574aebc (before
+# "plain"): adding the mode leaves each of them to the float.
+PINNED_OLD_MODES = {
+    ("survive", "points", 0.3): [-5.510000000000002, -1.4899999999999993, 2.1300000000000003],
+    ("survive", "value_head", 1.0): [-1.7000000000000028, -0.0, 7.100000000000001],
+    ("survive", "value_head", 0.3): [-0.5100000000000011, -0.0, 2.1300000000000003],
+    ("survive", "value_head_neutral", 1.0):
+        [-1.7000000000000028, 2.6999999999999993, 7.100000000000001],
+    ("survive", "value_head_neutral", 0.3):
+        [-0.5100000000000011, 0.8099999999999996, 2.1300000000000003],
+    ("death", "points", 0.3): [-61.84176046954594, -49.01287272067489, -32.72309031130983],
+    ("death", "value_head", 1.0): [-30.0, -93.37624240224966, -39.07696770436609],
+    ("death", "value_head", 0.3): [-30.0, -49.01287272067489, -32.72309031130983],
+    ("death", "value_head_neutral", 1.0):
+        [-66.22660505330788, -93.37624240224966, -39.07696770436609],
+    ("death", "value_head_neutral", 0.3):
+        [-40.86798151599236, -49.01287272067489, -32.72309031130983],
+}
+
+
+@pytest.mark.parametrize("key", sorted(PINNED_OLD_MODES))
+def test_the_older_potion_modes_are_unchanged_by_plain(key):
+    case, mode, weight = key
+    start, steps = PINNED_MODES[case]
+    assert hp_advantages(start, steps, weight, mode) == PINNED_OLD_MODES[key]
+
+
+def test_plain_mode_is_the_weighted_end_hp_minus_the_prediction_on_every_row():
+    start, steps = PINNED_MODES["survive"]  # a potion row and a max-HP gain (57 of 83)
+    assert hp_advantages(start, steps, 0.3, "plain") == [
+        0.3 * (57 - 61.7), 0.3 * (57 - 48.3), 0.3 * (57 - 52.9)]
+    # death: end HP 0, no -30, no max-HP take-back, the potion row like the others
+    start, steps = PINNED_MODES["death"]
+    assert hp_advantages(start, steps, 1.0, "plain") == [-predicted for _, predicted, _ in steps]
+    # a heal above the combat's start HP is not capped
+    healed = [(outcome(60), 55.0, True), (outcome(78), 70.0, False)]
+    assert hp_advantages(facts(50), healed, 1.0, "plain") == [78 - 55.0, 78 - 70.0]
+    # a missing public fact still gives no score
+    assert hp_advantages(None, healed, 1.0, "plain") is None

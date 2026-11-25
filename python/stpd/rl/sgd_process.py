@@ -1749,6 +1749,7 @@ class _SgdWorker:
             entropy_fields,
             exploration_fields,
             low_probability_fields,
+            potion_discard_fields,
             row_arms,
             row_cells,
             value_target_fields,
@@ -1880,6 +1881,9 @@ class _SgdWorker:
                     result["exploration"] = exploration_fields(device_batch.metadata)
                     result["value_target"] = value_target_fields(device_batch.metadata)
                     result["policy_entropy"] = entropy_fields(device_batch.metadata)
+                    discards = potion_discard_fields(device_batch.metadata)
+                    if discards:
+                        result["potion_discard"] = discards
                     rare = low_probability_fields(device_batch.metadata)
                     if rare is not None:
                         result["low_probability_noncombat"] = rare

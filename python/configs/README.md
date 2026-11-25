@@ -42,6 +42,12 @@ true), and the four LossConfig-default loss keys a V5-era gate carries (`kl_coef
 frozen JSON matches the existing gate copies key by key, at their defaults, no behaviour
 change).
 The values and their reasons are listed in `python/docs/RL_LONG_RUN.zh-CN.md`.
+`rl5-recipe-a.json` is the frozen recipe of recipe A, the first correction-arm training
+(fast-chain profile `tools/friday/fastchain/rl5-recipe-a.toml`): `rl5-two-cell.json` with
+`segments.minibatches` 1 (as the tn8h copy), `segments.lr_warmup_steps` 500 and
+`segments.kl_stop_scope` `"control"` (both knob-owned, written out here so the recipe reads
+whole). Its corrections (`hp_potion_mode` `"plain"`, `save_starts.act_floor`) are run knobs,
+not learner keys. `kl_coef` / `anchor_coef` / `rho_max` stay, unread, as above.
 `loss.hp_advantage_coef` (c_hp, default 0 = off) weights the per-combat HP score
 (segment format 4): A = A_outcome + c_hp * A_hp before the one normalisation. A_hp is
 in HP points (tens), A_outcome in 0..1 reward units, so c_hp is expected around
